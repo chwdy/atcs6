@@ -200,6 +200,106 @@ class RailwayNetwork:
                 track.block_section_id = block_id
         
         return block
+
+    def auto_generate_blocks(self):
+        """
+        Automatically detect and create block sections based on signal placement.
+        
+        Algorithm:
+        1. Find all signals.
+        2. For each signal, traverse track in signal direction.
+        3. Collect tracks until next signal or end of line.
+        4. Create block section.
+        """
+        self.block_sections.clear()
+        block_counter = 1
+        
+        # Find all signals
+        signals = []
+        for pos, track in self.tracks.items():
+            if track.track_type == TrackType.SIGNAL:
+                signals.append((pos, track))
+                
+        # Also consider track starts (dead ends) as implicit signals for block start?
+        # For now, just start from explicit signals
+        
+        visited_tracks = set()
+        
+        for sig_pos, sig_track in signals:
+            # Start traversal from this signal
+            current_block_tracks = []
+            entry_signal = sig_pos
+            
+            # Get initial direction from signal
+            # Signal faces 'signal_direction', so trains travel in that direction
+            direction = sig_track.signal_direction
+            
+            # Start BFS/Traversal
+            queue = [(sig_pos, direction)]
+            
+            # We need to be careful not to cross into other blocks
+            # But we might have branching (switches)
+            # A block can contain switches
+            
+            # Simplified: Just trace one path for now. 
+            # Real block detection with switches is complex (interlocking limits).
+            # Let's assume blocks are bounded by signals.
+            
+            # Actually, we should traverse from the track *after* the signal
+            # The signal itself is usually the entry to the block ahead
+            
+            # Get next track
+            # Signal at (x,y) facing EAST. Train goes EAST. Next track is (x+1, y).
+            dx, dy = direction.value
+            next_x, next_y = sig_pos[0] + dx, sig_pos[1] + dy
+            
+            if (next_x, next_y) in self.tracks:
+                queue = [((next_x, next_y), direction)]
+            else:
+                continue
+                
+            block_tracks = []
+            exit_signal = None
+            
+            # Traverse
+            while queue:
+                curr_pos, curr_dir = queue.pop(0)
+                if curr_pos in visited_tracks:
+                    continue
+                    
+                track = self.get_track(*curr_pos)
+                if not track:
+                    continue
+                
+                # If we hit a signal facing the same way, it's the end of this block
+                if track.track_type == TrackType.SIGNAL and track.signal_direction == curr_dir:
+                    exit_signal = curr_pos
+                    # Don't add this signal to the block (it belongs to next block?)
+                    # Actually, usually the block ends *at* the signal.
+                    # Let's say the block includes the track up to the signal.
+                    # But the signal object itself controls entry to the *next* block.
+                    break
+                
+                block_tracks.append(curr_pos)
+                visited_tracks.add(curr_pos)
+                
+                # Get next
+                # If switch, we might have multiple branches.
+                # A block can split? Usually blocks are linear sections between interlockings.
+                # If we hit a switch, we might be entering an interlocking.
+                # For this simple demo, let's just follow the path.
+                
+                exits = track.get_exit_directions(curr_dir.opposite())
+                for exit_dir in exits:
+                    dx, dy = exit_dir.value
+                    nx, ny = curr_pos[0] + dx, curr_pos[1] + dy
+                    if (nx, ny) in self.tracks:
+                        queue.append(((nx, ny), exit_dir))
+            
+            if block_tracks:
+                block_id = f"AUTO_BLOCK_{block_counter}"
+                self.create_block_section(block_id, block_tracks, entry_signal, exit_signal)
+                block_counter += 1
     
     def get_track(self, x: int, y: int) -> Optional[TrackSegment]:
         """Get track segment at specified position"""
@@ -273,3 +373,59 @@ class RailwayNetwork:
             "total_routes": len(self.interlocking.routes),
             "total_schedules": len(self.schedules)
         }
+
+    def to_dict(self) -> dict:
+        """Convert network to dictionary for serialization"""
+        return {
+            "tracks": [t.to_dict() for t in self.tracks.values()],
+            "trains": [t.to_dict() for t in self.trains.values()]
+        }
+
+    def from_dict(self, data: dict):
+        """Reconstruct network from dictionary"""
+        # Clear existing
+        self.tracks.clear()
+        self.trains.clear()
+        self.block_sections.clear()
+        self.interlocking.routes.clear()
+        self.schedules.clear()
+        
+        # Rebuild tracks
+        for t_data in data.get("tracks", []):
+            x = t_data["x"]
+            y = t_data["y"]
+            t_type = TrackType[t_data["type"]]
+            
+            track = TrackSegment(x, y, t_type)
+            track.length = t_data.get("length", 1.0)
+            track.block_section_id = t_data.get("block_section_id")
+            
+            if "curve_radius" in t_data:
+                track.curve_radius = t_data["curve_radius"]
+                
+            if "switch_position" in t_data:
+                track.switch_position = SwitchPosition[t_data["switch_position"]]
+                
+            if "signal_state" in t_data:
+                track.signal_state = SignalState[t_data["signal_state"]]
+                if t_data.get("signal_direction"):
+                    track.signal_direction = Direction[t_data["signal_direction"]]
+                    
+            if "station_name" in t_data:
+                track.station_name = t_data["station_name"]
+                
+            # Rebuild connections
+            if "connections" in t_data:
+                track.connections = {}
+                for entry, exits in t_data["connections"].items():
+                    entry_dir = Direction[entry]
+                    track.connections[entry_dir] = [Direction[e] for e in exits]
+            
+            self.add_track(track)
+            
+            # Re-register blocks if needed
+            if track.block_section_id:
+                if track.block_section_id not in self.block_sections:
+                    # Create placeholder block if not exists
+                    # In a real scenario, we might want to serialize blocks separately
+                    pass

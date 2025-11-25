@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rail Control System</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <div class="logo">
+                <span class="icon">🚂</span>
+                <h1>Rail Control</h1>
+            </div>
+            <div class="controls">
+                <div class="simulation-controls">
+                    <button id="btn-play" class="btn btn-primary" title="Start Simulation">▶ Play</button>
+                    <button id="btn-pause" class="btn btn-secondary" title="Pause Simulation">⏸ Pause</button>
+                    <button id="btn-reset" class="btn btn-danger" title="Reset Simulation">↺ Reset</button>
+                    <div class="speed-control">
+                        <label>Speed:</label>
+                        <input type="range" id="speed-slider" min="0.1" max="10" step="0.1" value="1">
+                        <span id="speed-value">1x</span>
+                    </div>
+                </div>
+                <div class="mode-switch">
+                    <button id="mode-edit" class="btn active">Editor</button>
+                    <button id="mode-sim" class="btn">Simulation</button>
+                </div>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <aside class="sidebar">
+                <div class="sidebar-section" id="tools-panel">
+                    <h3>Tools</h3>
+                    <div class="tool-grid">
+                        <button class="tool-btn active" data-tool="select" title="Select">
+                            <span class="tool-icon">↖</span> Select
+                        </button>
+                        <button class="tool-btn" data-tool="track" title="Track">
+                            <span class="tool-icon">═</span> Track
+                        </button>
+                        <button class="tool-btn" data-tool="curve" title="Curve">
+                            <span class="tool-icon">╭</span> Curve
+                        </button>
+                        <button class="tool-btn" data-tool="switch" title="Switch">
+                            <span class="tool-icon">Y</span> Switch
+                        </button>
+                        <button class="tool-btn" data-tool="signal" title="Signal">
+                            <span class="tool-icon">🚦</span> Signal
+                        </button>
+                        <button class="tool-btn" data-tool="station" title="Station">
+                            <span class="tool-icon">🚉</span> Station
+                        </button>
+                        <button class="tool-btn" data-tool="eraser" title="Eraser">
+                            <span class="tool-icon">⌫</span> Eraser
+                        </button>
+                    </div>
+                </div>
+
+                <div class="sidebar-section" id="properties-panel">
+                    <h3>Properties</h3>
+                    <div id="properties-content">
+                        <p class="placeholder-text">Select an object to view properties</p>
+                    </div>
+                </div>
+
+                <div class="sidebar-section" id="trains-panel">
+                    <h3>Trains</h3>
+                    <div id="trains-list">
+                        <!-- Train list items will be injected here -->
+                    </div>
+                    <button id="btn-add-train" class="btn btn-sm btn-outline">+ Add Train</button>
+                </div>
+            </aside>
+
+            <div class="canvas-container">
+                <canvas id="rail-canvas"></canvas>
+                <div class="canvas-overlay">
+                    <div class="status-bar">
+                        <span id="status-coords">0, 0</span>
+                        <span id="status-zoom">100%</span>
+                        <span id="status-state">Ready</span>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/renderer.js"></script>
+    <script src="js/editor.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

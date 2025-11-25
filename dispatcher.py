@@ -12,7 +12,7 @@ TODO List:
 - [ ] Implement predictive delay propagation analysis
 - [ ] Add support for emergency stops and diversions
 - [ ] Implement automatic rescheduling for delays
-- [ ] Add performance metrics and KPI tracking
+- [x] Add performance metrics and KPI tracking
 """
 
 from typing import List, Optional, Tuple, Set

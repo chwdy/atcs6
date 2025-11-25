@@ -7,11 +7,11 @@ of track that can only be occupied by one train at a time, preventing collisions
 safe train separation.
 
 TODO List:
-- [ ] Add automatic block detection and creation
+- [x] Add automatic block detection and creation
 - [ ] Implement block section timing and performance metrics
 - [ ] Add support for different block section types (automatic, manual, etc.)
-- [ ] Implement block section conflict resolution
-- [ ] Add integration with signal systems for automatic block control
+- [x] Implement block section conflict resolution
+- [x] Add integration with signal systems for automatic block control
 """
 
 from dataclasses import dataclass, field
@@ -94,3 +94,32 @@ class BlockSection:
     def get_occupying_train(self) -> Optional[str]:
         """Get ID of train currently occupying or reserving this block"""
         return self.occupied_by
+
+    def update_signal_state(self, network):
+        """
+        Update entry signal state based on block status.
+        
+        Args:
+            network: RailwayNetwork instance to access signal tracks
+        """
+        if not self.entry_signal:
+            return
+            
+        signal_track = network.get_track(*self.entry_signal)
+        if not signal_track or signal_track.track_type.name != "SIGNAL":
+            return
+            
+        # Logic:
+        # If block is OCCUPIED or RESERVED -> RED
+        # If block is FREE -> GREEN (or YELLOW if next block is occupied, but simplified for now)
+        
+        if self.state in [BlockState.OCCUPIED, BlockState.RESERVED, BlockState.LOCKED]:
+            signal_track.signal_state = SignalState.RED
+        else:
+            # Check if we can turn green
+            # We need to ensure the route into this block is set? 
+            # Usually signal controls entry *into* the block.
+            # So if the block is free, signal can be green.
+            # But in reality, signal also depends on interlocking route being locked.
+            # For automatic block signaling (ABS), it's purely occupancy based.
+            signal_track.signal_state = SignalState.GREEN

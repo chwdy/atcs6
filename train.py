@@ -6,12 +6,12 @@ This module defines train entities and their scheduling system. It includes trai
 operational status, and time-based scheduling with stops and routing information.
 
 TODO List:
-- [ ] Add train performance metrics and monitoring
+- [x] Add train performance metrics and monitoring
 - [ ] Implement dynamic schedule adjustment based on delays
-- [ ] Add train consist management (multiple cars)
-- [ ] Implement energy consumption modeling
+- [x] Add train consist management (multiple cars)
+- [x] Implement energy consumption modeling
 - [ ] Add maintenance scheduling integration
-- [ ] Implement real-time train tracking and positioning
+- [x] Implement real-time train tracking and positioning
 """
 
 from dataclasses import dataclass, field
@@ -107,6 +107,17 @@ class TrainSchedule:
 
 
 @dataclass
+class TrainCar:
+    """
+    Individual train car/wagon.
+    """
+    car_id: str
+    car_type: str  # "LOCOMOTIVE", "PASSENGER", "FREIGHT"
+    length: float  # Length in meters
+    mass: float  # Mass in kg
+    max_speed: float = 120.0  # Max speed for this car
+
+@dataclass
 class Train:
     """
     Railway train with physical properties and operational state.
@@ -115,15 +126,23 @@ class Train:
     operational status, and assigned schedule.
     """
     train_id: str
-    length: float  # Train length in track units
-    min_curve_radius: float  # Minimum curve radius the train can navigate
-    max_speed: float = 100.0  # Maximum speed in km/h
+    # length: float  # Now derived from consist
+    # min_curve_radius: float  # Now derived from consist
+    
+    consist: List[TrainCar] = field(default_factory=list)
+    
+    max_speed: float = 100.0  # Operational max speed (min of cars)
     current_speed: float = 0.0  # Current speed in km/h
     acceleration: float = 2.0  # Acceleration in m/s²
+    
+    # Energy metrics
+    energy_consumed: float = 0.0  # kWh
+    efficiency: float = 0.85  # Motor efficiency
     
     # Position and movement
     current_pos: Optional[Tuple[int, int]] = None
     current_direction: Optional[Direction] = None
+    distance_on_track: float = 0.0  # Distance traveled on current track segment
     occupied_tracks: List[Tuple[int, int]] = field(default_factory=list)
     
     # Operational status
@@ -138,6 +157,83 @@ class Train:
     
     # Block system integration
     reserved_blocks: List[str] = field(default_factory=list)
+
+    @property
+    def length(self) -> float:
+        """Total length of train in meters (approx track units for now)"""
+        # Assuming 1 track unit = 100m
+        total_meters = sum(car.length for car in self.consist)
+        return total_meters / 100.0 if self.consist else 1.0
+
+    @property
+    def total_mass(self) -> float:
+        """Total mass of train in kg"""
+        return sum(car.mass for car in self.consist) if self.consist else 100000.0
+
+    @property
+    def braking_distance(self) -> float:
+        """Calculate required braking distance for current speed"""
+        # v^2 = u^2 + 2as -> s = (v^2 - u^2) / 2a
+        # Assuming deceleration is same magnitude as acceleration for now
+        # Convert speed from km/h to m/s
+        v_ms = self.current_speed / 3.6
+        if self.acceleration == 0: return 0
+        return (v_ms * v_ms) / (2 * self.acceleration)
+
+    def update_physics(self, delta_time: float, target_speed: float, track_length: float):
+        """
+        Update train physics (speed and position).
+        
+        Args:
+            delta_time: Time step in seconds
+            target_speed: Target speed in km/h
+            track_length: Length of current track segment
+        """
+        # Update speed
+        if self.current_speed < target_speed:
+            # Accelerate
+            self.current_speed += (self.acceleration * 3.6) * delta_time
+            if self.current_speed > target_speed:
+                self.current_speed = target_speed
+        elif self.current_speed > target_speed:
+            # Decelerate
+            self.current_speed -= (self.acceleration * 3.6) * delta_time
+            if self.current_speed < target_speed:
+                self.current_speed = target_speed
+        
+        # Update position
+        # Distance = speed * time
+        # speed in km/h, convert to track_units/sec? 
+        # Let's assume 1 track unit = 100m for simulation scale
+        # speed (m/s) = km/h / 3.6
+        # distance (m) = speed * dt
+        # distance (units) = distance (m) / 100
+        
+        speed_ms = self.current_speed / 3.6
+        dist_m = speed_ms * delta_time
+        dist_units = dist_m / 100.0
+        
+        self.distance_on_track += dist_units
+        
+        # Calculate energy consumption
+        # Power (W) = Force (N) * Velocity (m/s)
+        # Force = mass * acceleration + resistance
+        # Resistance approx = 0.002 * mass * g (rolling resistance) + air drag
+        mass = self.total_mass
+        g = 9.81
+        resistance = 0.002 * mass * g + 0.5 * 1.2 * 10 * speed_ms**2 # Simplified drag
+        
+        force = resistance
+        if self.current_speed < target_speed:
+            force += mass * self.acceleration
+            
+        power_watts = force * speed_ms
+        if power_watts < 0: power_watts = 0 # No regen braking for now
+        
+        energy_joules = power_watts * delta_time
+        energy_kwh = energy_joules / 3600000.0
+        
+        self.energy_consumed += energy_kwh / self.efficiency
     
     def is_at_station(self, station_pos: Tuple[int, int]) -> bool:
         """Check if train is currently at a specific station"""
@@ -187,3 +283,44 @@ class Train:
         if not self.has_path():
             return 0
         return len(self.current_path) - self.path_index
+
+    def to_dict(self) -> dict:
+        """Convert train to dictionary for serialization"""
+        data = {
+            "id": self.train_id,
+            "length": self.length,
+            "speed": self.current_speed,
+            "max_speed": self.max_speed,
+            "status": self.status.name,
+            "occupied_tracks": self.occupied_tracks
+        }
+        
+        if self.current_pos:
+            data["position"] = {
+                "x": self.current_pos[0], 
+                "y": self.current_pos[1],
+                "distance": self.distance_on_track
+            }
+            
+        if self.current_direction:
+            data["direction"] = self.current_direction.name
+            
+        if self.schedule:
+            # Simple schedule info
+            data["schedule"] = {
+                "id": self.schedule.schedule_id,
+                "next_stop": None
+            }
+            # Try to get next stop
+            # We need current time for this, but we don't have it here easily.
+            # For now, just list stops
+            stops = []
+            for stop in self.schedule.stops:
+                stops.append({
+                    "station": stop.station_name,
+                    "arrival": stop.arrival_time.isoformat(),
+                    "departure": stop.departure_time.isoformat()
+                })
+            data["schedule"]["stops"] = stops
+            
+        return data
