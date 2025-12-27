@@ -18,7 +18,7 @@ TODO List:
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 import heapq
-from enums import Direction, TrackType, SignalState, SwitchPosition
+from enums import Direction, TrackType, SignalState
 from train import Train
 
 
@@ -169,7 +169,7 @@ class RailwayPathfinder:
         
         neighbors = []
         current_movement_dir = current.movement_direction
-        possible_exits = self._get_exit_directions(current_track, current_movement_dir)
+        possible_exits = current_track.get_exit_directions(current_movement_dir.opposite())
         print(f"From ({current.x},{current.y}) moving {current_movement_dir.name}, possible exits: {[d.name for d in possible_exits]}")
         
         for exit_dir in possible_exits:
@@ -181,45 +181,15 @@ class RailwayPathfinder:
                 continue
             
             if not self._check_all_constraints(
-                current_track, next_track, train, 
+                current_track, next_track, train,
                 current_movement_dir, exit_dir
             ):
                 continue
             
-            move_cost = self._calculate_move_cost(current_track, next_track, train)
+            move_cost = self._calculate_move_cost(current_track, next_track, current_movement_dir, exit_dir, train)
             neighbors.append(((next_x, next_y), exit_dir, move_cost))
         
         return neighbors
-    
-    def _get_exit_directions(self, track, movement_dir: Direction) -> List[Direction]:
-        """
-        Get possible exit directions from track given movement direction.
-        
-        Args:
-            track: TrackSegment instance
-            movement_dir: Direction train is moving (heading)
-            
-        Returns:
-            List of possible exit directions
-        """
-        entry_dir = movement_dir.opposite()
-        if track.track_type == TrackType.SWITCH:
-            # For switches, use switch routes based on movement direction
-            if entry_dir == track.main_route[0]:
-                if track.switch_position == SwitchPosition.MAIN:
-                    return [track.main_route[1]]
-                else:
-                    return [track.diverging_route[1]]
-            elif entry_dir == track.main_route[1].opposite():
-                return [track.main_route[0].opposite()]
-            elif entry_dir == track.diverging_route[1].opposite():
-                return [track.diverging_route[0].opposite()]
-            else:
-                return []
-        else:
-            # For regular tracks, lookup using entry direction
-
-            return track.connections.get(entry_dir, [])
     
     def _check_all_constraints(self, current_track, next_track, 
                                train: Train, movement_dir: Direction,
@@ -229,75 +199,51 @@ class RailwayPathfinder:
         # Track availability check
         if not self.network.is_track_available(next_track.x, next_track.y, train.train_id):
             return False
-        
+
         # Signal check
         if current_track.track_type == TrackType.SIGNAL:
             if current_track.signal_direction == exit_dir:
                 if current_track.signal_state == SignalState.RED:
                     return False
-        
-        # Curve radius check
-        if next_track.track_type == TrackType.CURVE:
-            if next_track.curve_radius < train.min_curve_radius:
-                return False
-        
-        # Switch movement validation - ensure exit direction is valid for the switch state
-        if current_track.track_type == TrackType.SWITCH:
-            # Get entry direction (where train comes from)
-            entry_dir = movement_dir.opposite()
-            
-            # Check if this movement through the switch is valid
-            if entry_dir == current_track.main_route[0]:
-                # Entering from main route entry
-                if current_track.switch_position == SwitchPosition.MAIN:
-                    # Switch set to main, must exit via main route
-                    if exit_dir != current_track.main_route[1]:
+
+        # Curve radius check (only if caller provided one); curves are orientation changes
+        if next_track.curve_radius is not None:
+            # If the next traversal will be a turn, enforce minimum radius
+            next_entry_dir = exit_dir.opposite()
+            exits_from_next = next_track.get_exit_directions(next_entry_dir)
+            if exits_from_next:
+                # If any exit would curve too sharply, reject
+                # Use first exit as representative because switch state already resolved
+                if next_track.is_turn(next_entry_dir, exits_from_next[0]):
+                    if next_track.curve_radius < train.min_curve_radius:
                         return False
-                else:
-                    # Switch set to diverging, must exit via diverging route
-                    if exit_dir != current_track.diverging_route[1]:
-                        return False
-            elif entry_dir == current_track.main_route[1].opposite():
-                # Entering from main route exit (reverse direction)
-                if exit_dir != current_track.main_route[0].opposite():
-                    return False
-            elif entry_dir == current_track.diverging_route[1].opposite():
-                # Entering from diverging route exit (reverse direction)
-                if exit_dir != current_track.diverging_route[0].opposite():
-                    return False
-            else:
-                # Invalid entry direction for this switch
-                return False
-        
-        # Next track connection check - use entry direction, not movement direction
-        next_entry_dir = exit_dir.opposite()  # Train enters next track from opposite of exit direction
-        if next_track.track_type == TrackType.SWITCH:
-            # For switches, check if entry direction matches any switch route
-            if (next_entry_dir != next_track.main_route[0] and 
-                next_entry_dir != next_track.main_route[1].opposite() and
-                next_entry_dir != next_track.diverging_route[1].opposite()):
-                return False
-        else:
-            # For regular tracks, check connections dictionary
-            if next_entry_dir not in next_track.connections:
-                return False
-        
+
+        # Validate that the chosen exit is actually available from the current entry
+        entry_dir = movement_dir.opposite()
+        if exit_dir not in current_track.get_exit_directions(entry_dir):
+            return False
+
+        # Ensure the next tile accepts the incoming edge
+        next_entry_dir = exit_dir.opposite()
+        if not next_track.get_exit_directions(next_entry_dir):
+            return False
+
         return True
     
-    def _calculate_move_cost(self, current_track, next_track, train: Train) -> float:
-        """Calculate movement cost from current to next track"""
+    def _calculate_move_cost(self, current_track, next_track, movement_dir: Direction, exit_dir: Direction, train: Train) -> float:
+        """Calculate movement cost from current to next track using orientation groups."""
         base_cost = next_track.length
-        
-        if next_track.track_type == TrackType.CURVE:
+
+        entry_dir = movement_dir.opposite()
+        if current_track.is_turn(entry_dir, exit_dir):
             base_cost *= 1.5
-        
-        if next_track.track_type == TrackType.SWITCH:
+
+        if current_track.track_type == TrackType.SWITCH:
             base_cost *= 1.3
-        
-        if current_track.track_type == TrackType.SIGNAL:
-            if current_track.signal_state == SignalState.YELLOW:
-                base_cost *= 2.0
-        
+
+        if current_track.track_type == TrackType.SIGNAL and current_track.signal_state == SignalState.YELLOW:
+            base_cost *= 2.0
+
         return base_cost
     
     def _heuristic(self, pos1: Tuple[int, int], pos2: Tuple[int, int]) -> float:

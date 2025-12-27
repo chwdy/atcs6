@@ -39,136 +39,33 @@ class RailwayNetwork:
         self.schedules: Dict[str, TrainSchedule] = {}
     
     def add_track(self, track: TrackSegment):
-        """Add a track segment to the network"""
-        self.tracks[(track.x, track.y)] = track
+        """Add a track segment to the network and propagate updates"""
+        key = (track.x, track.y)
+        self.tracks[key] = track
+
+        # Propagate to this tile and neighbors
+        self.propagate_from_tile(track.x, track.y)
     
-    def add_straight_track(self, x: int, y: int, direction: Direction, 
-                          block_id: Optional[str] = None):
+    def add_stub_track(self, x: int, y: int, block_id: Optional[str] = None):
         """
-        Add a straight track segment.
+        Add a stub/isolated track point (no connections).
+        track_bits = 0, displays as a dot on the map.
         
         Args:
             x, y: Track position
-            direction: Track orientation (e.g., EAST for horizontal track)
             block_id: Optional block section ID
         """
-        track = TrackSegment(x, y, TrackType.STRAIGHT)
-        opposite = direction.opposite()
-        # For straight tracks: entry_direction -> [exit_direction]
-        # If train enters from WEST (moving EAST), it exits EAST
-        track.connections = {
-            opposite: [direction],  # Enter from opposite of orientation, exit in orientation
-            direction: [opposite]   # Enter from orientation direction, exit in opposite
-        }
+        track = TrackSegment(x, y)
+        # No paths - track_bits = 0
         track.block_section_id = block_id
         self.add_track(track)
     
-    def add_curve_track(self, x: int, y: int, entry_dir: Direction, 
-                       exit_dir: Direction, radius: float,
-                       block_id: Optional[str] = None):
-        """
-        Add a curved track segment.
-        
-        Args:
-            x, y: Track position
-            entry_dir: Direction from which trains enter
-            exit_dir: Direction in which trains exit
-            radius: Curve radius
-            block_id: Optional block section ID
-        """
-        track = TrackSegment(
-            x, y, TrackType.CURVE, 
-            curve_radius=radius,
-            block_section_id=block_id
-        )
-        track.connections = {
-            entry_dir: [exit_dir],
-            exit_dir.opposite(): [entry_dir.opposite()]
-        }
-        self.add_track(track)
-    
-    def add_switch(self, x: int, y: int, 
-                   entry_dir: Direction,
-                   main_exit: Direction, 
-                   diverging_exit: Direction,
-                   block_id: Optional[str] = None):
-        """
-        Add a railway switch/turnout.
-        
-        Args:
-            x, y: Switch position
-            entry_dir: Direction from which trains enter the switch
-            main_exit: Main route exit direction
-            diverging_exit: Diverging route exit direction
-            block_id: Optional block section ID
-        """
-        track = TrackSegment(
-            x, y, TrackType.SWITCH,
-            switch_position=SwitchPosition.MAIN,
-            block_section_id=block_id
-        )
-        
-        track.main_route = (entry_dir, main_exit)
-        track.diverging_route = (entry_dir, diverging_exit)
-        
-        track.connections = {
-            entry_dir: [main_exit, diverging_exit],
-            main_exit.opposite(): [entry_dir.opposite()],
-            diverging_exit.opposite(): [entry_dir.opposite()]
-        }
-        
-        self.add_track(track)
-    
-    def add_signal(self, x: int, y: int, direction: Direction, 
-                   state: SignalState = SignalState.RED,
-                   block_id: Optional[str] = None):
-        """
-        Add a railway signal.
-        
-        Args:
-            x, y: Signal position
-            direction: Direction the signal faces
-            state: Initial signal state
-            block_id: Optional block section ID
-        """
-        track = TrackSegment(
-            x, y, TrackType.SIGNAL,
-            signal_state=state,
-            signal_direction=direction,
-            block_section_id=block_id
-        )
-        
-        opposite = direction.opposite()
-        track.connections = {
-            opposite: [direction],  # Enter from opposite, exit in signal direction
-            direction: [opposite]   # Enter from signal direction, exit in opposite
-        }
-        self.add_track(track)
-    
-    def add_station(self, x: int, y: int, direction: Direction,
-                   station_name: str, block_id: Optional[str] = None):
-        """
-        Add a railway station.
-        
-        Args:
-            x, y: Station position
-            direction: Station platform orientation
-            station_name: Name of the station
-            block_id: Optional block section ID
-        """
-        track = TrackSegment(
-            x, y, TrackType.STATION,
-            block_section_id=block_id
-        )
-        track.station_name = station_name
-        
-        opposite = direction.opposite()
-        track.connections = {
-            opposite: [direction],  # Enter from opposite, exit in direction
-            direction: [opposite]   # Enter from direction, exit in opposite
-        }
-        self.add_track(track)
-    
+    # Legacy helper functions removed - use track_bits directly
+    # For straight tracks: TrackSegment(x, y, track_bits=TRACK_EW or TRACK_NS)
+    # For curves: TrackSegment(x, y, track_bits=TRACK_NE, TRACK_NW, TRACK_SE, or TRACK_SW)
+    # For switches: TrackSegment(x, y, track_bits=TRACK_NS | TRACK_NE, etc.)
+    # Dead-ends are auto-detected by propagation system
+
     def create_block_section(self, block_id: str, 
                            track_positions: List[Tuple[int, int]],
                            entry_signal: Tuple[int, int],
@@ -304,6 +201,89 @@ class RailwayNetwork:
     def get_track(self, x: int, y: int) -> Optional[TrackSegment]:
         """Get track segment at specified position"""
         return self.tracks.get((x, y))
+
+    def get_neighbor(self, x: int, y: int, edge: str) -> Optional[TrackSegment]:
+        """Get neighbor tile in the specified direction.
+
+        Args:
+            x, y: Current tile coordinates
+            edge: Direction to look ('N', 'E', 'S', 'W')
+
+        Returns:
+            TrackSegment if neighbor exists, None otherwise
+
+        Coordinate system:
+            N (North) = Y+ direction (0, +1)
+            E (East)  = X+ direction (+1, 0)
+            S (South) = Y- direction (0, -1)
+            W (West)  = X- direction (-1, 0)
+        """
+        offsets = {
+            'N': (0, 1),   # North neighbor is at y+1
+            'E': (1, 0),   # East neighbor is at x+1
+            'S': (0, -1),  # South neighbor is at y-1
+            'W': (-1, 0)   # West neighbor is at x-1
+        }
+
+        if edge not in offsets:
+            return None
+
+        dx, dy = offsets[edge]
+        neighbor_key = (x + dx, y + dy)
+        return self.tracks.get(neighbor_key)
+
+    def propagate_from_tile(self, x: int, y: int) -> None:
+        """Propagate updates from a tile using BFS wave.
+
+        This updates derived data (dead-ends, switch states) when:
+        - A tile's track_bits changes
+        - A tile is added or removed
+        - A tile's switch_states changes
+
+        The wave visits each affected tile once and calls propagate_update().
+        """
+        from collections import deque
+
+        queue = deque([(x, y)])
+        visited = set()
+
+        while queue:
+            tx, ty = queue.popleft()
+
+            if (tx, ty) in visited:
+                continue
+            visited.add((tx, ty))
+
+            tile = self.get_track(tx, ty)
+            if not tile:
+                continue
+
+            # Update this tile's derived data
+            tile.propagate_update(self)
+
+            # Enqueue all neighbors for update
+            for edge in ['N', 'E', 'S', 'W']:
+                neighbor = self.get_neighbor(tx, ty, edge)
+                if neighbor and (neighbor.x, neighbor.y) not in visited:
+                    queue.append((neighbor.x, neighbor.y))
+
+    def remove_track(self, x: int, y: int) -> bool:
+        """Remove track segment and propagate updates to neighbors"""
+        key = (x, y)
+        if key not in self.tracks:
+            return False
+
+        del self.tracks[key]
+
+        # Propagate to neighbors (this tile is gone, so check each neighbor)
+        # N=Y+, E=X+, S=Y-, W=X-
+        offsets = {'N': (0, 1), 'E': (1, 0), 'S': (0, -1), 'W': (-1, 0)}
+        for edge, (dx, dy) in offsets.items():
+            neighbor_key = (x + dx, y + dy)
+            if neighbor_key in self.tracks:
+                self.propagate_from_tile(x + dx, y + dy)
+
+        return True
     
     def is_track_available(self, x: int, y: int, train_id: str) -> bool:
         """Check if track is available for specified train"""
@@ -374,6 +354,82 @@ class RailwayNetwork:
             "total_schedules": len(self.schedules)
         }
 
+    # === Helper methods for track_bits-based construction ===
+    def add_simple_straight_track(self, x: int, y: int, orientation: str) -> TrackSegment:
+        """Create straight track (NS or EW) using track_bits.
+
+        Args:
+            x, y: Tile coordinates
+            orientation: 'NS' or 'EW'
+
+        Returns:
+            Created TrackSegment
+        """
+        from track import TRACK_NS, TRACK_EW
+
+        track_bits = TRACK_NS if orientation == 'NS' else TRACK_EW
+        track = TrackSegment(x, y, track_bits=track_bits)
+        self.add_track(track)
+        return track
+
+    def add_simple_curve_track(self, x: int, y: int, curve: str) -> TrackSegment:
+        """Create curve track (NE, NW, SE, SW) using track_bits.
+
+        Args:
+            x, y: Tile coordinates
+            curve: 'NE', 'NW', 'SE', or 'SW'
+
+        Returns:
+            Created TrackSegment
+        """
+        from track import TRACK_NE, TRACK_NW, TRACK_SE, TRACK_SW
+
+        curve_map = {
+            'NE': TRACK_NE,
+            'NW': TRACK_NW,
+            'SE': TRACK_SE,
+            'SW': TRACK_SW
+        }
+        track_bits = curve_map.get(curve, 0)
+        track = TrackSegment(x, y, track_bits=track_bits)
+        self.add_track(track)
+        return track
+
+    def add_simple_switch_track(self, x: int, y: int, paths: list) -> TrackSegment:
+        """Create switch track with multiple paths using track_bits.
+
+        Args:
+            x, y: Tile coordinates
+            paths: List of path names like ['NS', 'NE']
+
+        Returns:
+            Created TrackSegment
+
+        Raises:
+            ValueError if combination is forbidden
+        """
+        from track import TRACK_NS, TRACK_EW, TRACK_NE, TRACK_NW, TRACK_SE, TRACK_SW, FORBIDDEN_TRACK_BITS
+
+        path_map = {
+            'NS': TRACK_NS,
+            'EW': TRACK_EW,
+            'NE': TRACK_NE,
+            'NW': TRACK_NW,
+            'SE': TRACK_SE,
+            'SW': TRACK_SW
+        }
+
+        track_bits = 0
+        for path in paths:
+            track_bits |= path_map.get(path, 0)
+
+        if track_bits in FORBIDDEN_TRACK_BITS:
+            raise ValueError(f"Forbidden track configuration: {track_bits}")
+
+        track = TrackSegment(x, y, track_bits=track_bits)
+        self.add_track(track)
+        return track
+
     def to_dict(self) -> dict:
         """Convert network to dictionary for serialization"""
         return {
@@ -390,42 +446,13 @@ class RailwayNetwork:
         self.interlocking.routes.clear()
         self.schedules.clear()
         
-        # Rebuild tracks
+        # Rebuild tracks using TrackSegment.from_dict
         for t_data in data.get("tracks", []):
-            x = t_data["x"]
-            y = t_data["y"]
-            t_type = TrackType[t_data["type"]]
-            
-            track = TrackSegment(x, y, t_type)
-            track.length = t_data.get("length", 1.0)
-            track.block_section_id = t_data.get("block_section_id")
-            
-            if "curve_radius" in t_data:
-                track.curve_radius = t_data["curve_radius"]
-                
-            if "switch_position" in t_data:
-                track.switch_position = SwitchPosition[t_data["switch_position"]]
-                
-            if "signal_state" in t_data:
-                track.signal_state = SignalState[t_data["signal_state"]]
-                if t_data.get("signal_direction"):
-                    track.signal_direction = Direction[t_data["signal_direction"]]
-                    
-            if "station_name" in t_data:
-                track.station_name = t_data["station_name"]
-                
-            # Rebuild connections
-            if "connections" in t_data:
-                track.connections = {}
-                for entry, exits in t_data["connections"].items():
-                    entry_dir = Direction[entry]
-                    track.connections[entry_dir] = [Direction[e] for e in exits]
-            
+            track = TrackSegment.from_dict(t_data)
             self.add_track(track)
             
             # Re-register blocks if needed
             if track.block_section_id:
                 if track.block_section_id not in self.block_sections:
                     # Create placeholder block if not exists
-                    # In a real scenario, we might want to serialize blocks separately
                     pass

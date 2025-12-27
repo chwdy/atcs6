@@ -98,12 +98,36 @@ body {
 
 /* Sidebar */
 .sidebar {
-    width: 280px;
+    width: 320px;
+    min-width: 200px;
+    max-width: 600px;
     background-color: var(--bg-panel);
     border-right: 1px solid var(--border-color);
     display: flex;
     flex-direction: column;
-    overflow-y: auto;
+    overflow: auto;
+    resize: horizontal;
+    position: relative;
+    flex-shrink: 0;
+}
+
+/* Resize handle visual indicator */
+.sidebar::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    cursor: ew-resize;
+    background: linear-gradient(to right, transparent, rgba(130, 87, 229, 0.3));
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+}
+
+.sidebar:hover::after {
+    opacity: 1;
 }
 
 .sidebar-section {
@@ -161,11 +185,15 @@ body {
     position: relative;
     background-color: #0a0a0c;
     overflow: hidden;
+    min-height: 400px;
 }
 
-canvas {
+#rail-canvas {
     display: block;
     cursor: crosshair;
+    position: absolute;
+    top: 0;
+    left: 0;
 }
 
 .canvas-overlay {
@@ -297,4 +325,217 @@ input[type="range"] {
 .prop-input:focus {
     outline: none;
     border-color: var(--accent-color);
+}
+
+/* Property Items */
+.property-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 12px;
+}
+
+.property-item label {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.property-item span,
+.property-item pre {
+    color: var(--text-primary);
+    text-align: right;
+}
+
+/* Trains Panel */
+.trains-list {
+    max-height: 200px;
+    overflow-y: auto;
+    margin-bottom: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+}
+
+.train-item:hover {
+    background-color: var(--bg-hover);
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg-dark);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--text-secondary);
+}
+
+/* ============= Debug Panel Styles ============= */
+.debug-panel {
+    background: var(--bg-panel);
+    border-radius: 8px;
+    padding: 16px;
+    margin-top: 12px;
+}
+
+.debug-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.debug-controls label {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    font-size: 13px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    transition: background 0.2s;
+}
+
+.debug-controls label:hover {
+    background: rgba(130, 87, 229, 0.1);
+}
+
+.debug-controls input[type="checkbox"] {
+    margin-right: 8px;
+    cursor: pointer;
+    width: 16px;
+    height: 16px;
+}
+
+.debug-controls span {
+    color: var(--text-primary);
+}
+
+.tile-details {
+    background: var(--bg-dark);
+    border-radius: 4px;
+    padding: 12px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.debug-table {
+    width: 100%;
+    font-size: 12px;
+    margin-top: 8px;
+    border-collapse: collapse;
+}
+
+.debug-table tr {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.debug-table tr:last-child {
+    border-bottom: none;
+}
+
+.debug-table td {
+    padding: 4px 0;
+}
+
+.debug-table td:first-child {
+    color: var(--accent-purple);
+    font-weight: bold;
+    padding-right: 8px;
+    width: 40%;
+}
+
+.debug-table td:last-child {
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.debug-hint {
+    color: var(--text-secondary);
+    font-style: italic;
+    text-align: center;
+    padding: 20px;
+    margin: 0;
+}
+
+/* ============= Bit Editor Styles ============= */
+.bit-toggles {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin: 12px 0;
+}
+
+.bit-toggles label {
+    display: flex;
+    align-items: center;
+    padding: 6px;
+    background: var(--bg-dark);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.2s;
+    font-size: 11px;
+}
+
+.bit-toggles label:hover {
+    background: var(--bg-hover);
+}
+
+.bit-toggles input[type="checkbox"] {
+    margin-right: 8px;
+    cursor: pointer;
+}
+
+.bit-info {
+    margin: 12px 0;
+    padding: 8px;
+    background: var(--bg-dark);
+    border-radius: 4px;
+}
+
+.bit-info p {
+    margin: 0;
+    font-size: 11px;
+    color: var(--text-primary);
+}
+
+.bit-warning {
+    font-weight: bold;
+    animation: pulse 1s infinite;
+    margin-top: 4px !important;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.btn-primary {
+    background: var(--accent-color);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+    font-size: 12px;
+    transition: background 0.2s, transform 0.1s;
+}
+
+.btn-primary:hover {
+    background: var(--accent-hover);
+    transform: translateY(-1px);
+}
+
+.btn-primary:active {
+    transform: translateY(0);
 }
