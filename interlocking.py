@@ -1,5 +1,17 @@
 """
-Interlocking System
+Interlocking System - ALTERNATIVE IMPLEMENTATION (Not Currently Active)
+
+NOTE: This module represents an alternative/future implementation of railway interlocking.
+The currently active route management system is dispatcher_interface.py.
+
+This code is preserved for:
+- Future integration with centralized traffic control
+- Alternative route-based interlocking approach
+- Reference implementation of classic interlocking patterns
+
+To activate this system, integrate with network.py and update server.py API routes.
+
+---
 
 Definition:
 This module implements the railway interlocking system which ensures safe route setting
@@ -12,6 +24,7 @@ TODO List:
 - [ ] Add support for complex junction interlocking
 - [ ] Implement route timing and automatic route release
 - [ ] Add integration with centralized traffic control systems
+- [ ] Integrate with network.py for active use
 """
 
 from dataclasses import dataclass, field
@@ -148,9 +161,9 @@ class InterlockingSystem:
         # Lock the route
         if route.lock(train_id):
             # Set entry signal to green
-            start_signal = network.get_track(*route.start_signal)
-            if start_signal:
-                start_signal.signal_state = SignalState.GREEN
+            entry_signal = network.get_signal_at(*route.start_signal)
+            if entry_signal:
+                entry_signal.state = SignalState.GREEN
             
             print(f"  ✓ Route {route_id} locked for train {train_id}")
             return True
@@ -222,9 +235,9 @@ class InterlockingSystem:
                 switch_track.reserved_by = None
         
         # Set signals to red
-        start_signal = network.get_track(*route.start_signal)
-        if start_signal:
-            start_signal.signal_state = SignalState.RED
+        entry_signal = network.get_signal_at(*route.start_signal)
+        if entry_signal:
+            entry_signal.state = SignalState.RED
         
         route.unlock()
         print(f"  Route {route_id} released")

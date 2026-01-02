@@ -202,8 +202,12 @@ class RailwayPathfinder:
 
         # Signal check
         if current_track.track_type == TrackType.SIGNAL:
-            if current_track.signal_direction == exit_dir:
-                if current_track.signal_state == SignalState.RED:
+            signals = self.network.get_signals_at(current_track.x, current_track.y)
+            if signals:
+                # Find signal where detection_direction matches train's travel direction
+                aligned = next((s for s in signals if s.detection_direction.upper() == exit_dir.name), None)
+                sig = aligned or signals[0]
+                if sig.state == SignalState.RED:
                     return False
 
         # Curve radius check (only if caller provided one); curves are orientation changes
@@ -241,8 +245,14 @@ class RailwayPathfinder:
         if current_track.track_type == TrackType.SWITCH:
             base_cost *= 1.3
 
-        if current_track.track_type == TrackType.SIGNAL and current_track.signal_state == SignalState.YELLOW:
-            base_cost *= 2.0
+        if current_track.track_type == TrackType.SIGNAL:
+            signals = self.network.get_signals_at(current_track.x, current_track.y)
+            if signals:
+                # Find signal where detection_direction matches train's travel direction
+                aligned = next((s for s in signals if s.detection_direction.upper() == exit_dir.name), None)
+                sig = aligned or signals[0]
+                if sig.state == SignalState.YELLOW:
+                    base_cost *= 2.0
 
         return base_cost
     

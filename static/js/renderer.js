@@ -111,13 +111,11 @@ function getOppositeEdge(edge) {
 
 class Renderer {
     constructor(canvasId) {
-        console.log('[Renderer] Initializing with canvas ID:', canvasId);
         this.canvas = document.getElementById(canvasId);
         if (!this.canvas) {
             console.error('[Renderer] Canvas element not found!');
             return;
         }
-        console.log('[Renderer] Canvas found:', this.canvas);
         this.ctx = this.canvas.getContext('2d');
         this.gridSize = 40;
 
@@ -130,22 +128,79 @@ class Renderer {
         this.centerX = 0;
         this.centerY = 0;
 
-        // Block section colors
+        // Mouse position for hover detection
+        this.mouseX = -1;
+        this.mouseY = -1;
+        this.stationBounds = []; // Array of {bounds, name, abbrev} for hover detection
+
+        // Block display mode:
+        // - false: only show when debug checkbox is checked (full debug info)
+        // - true: show block colors only (for block tools)
+        this.showBlockColorsOnly = false;
+
+        // Block section colors (semi-transparent versions of track colors)
+        // FREE=Blue, RESERVED=Green, OCCUPIED=Red, CAUTION=Yellow
         this.blockColors = {
-            'FREE': 'rgba(100, 100, 100, 0.2)',
-            'RESERVED': 'rgba(255, 205, 30, 0.3)',
-            'OCCUPIED': 'rgba(232, 63, 91, 0.3)',
-            'LOCKED': 'rgba(66, 133, 244, 0.3)'
+            'FREE': 'rgba(66, 133, 244, 0.3)',      // Blue
+            'RESERVED': 'rgba(4, 211, 97, 0.3)',    // Green
+            'OCCUPIED': 'rgba(232, 63, 91, 0.3)',   // Red
+            'CAUTION': 'rgba(255, 205, 30, 0.3)'    // Yellow
         };
+
+        // Current blocks data for track coloring
+        this.currentBlocks = {};
+
+        // Block color cache for golden angle distribution
+        // Maps block_id -> assigned hue (ensures consistent colors across renders)
+        this.blockColorCache = {};
+        this.blockColorCounter = 0;  // Increments for each new block
+
+        // Store current network for redraws
+        this.currentNetwork = null;
+
+        // Set up mouse tracking for hover effects
+        this.canvas.addEventListener('mousemove', (e) => {
+            const rect = this.canvas.getBoundingClientRect();
+            const prevMouseX = this.mouseX;
+            const prevMouseY = this.mouseY;
+            this.mouseX = e.clientX - rect.left;
+            this.mouseY = e.clientY - rect.top;
+
+            // Redraw if mouse moved and we have a network
+            // Need redraw for: block hover, station name hover, etc.
+            const showBlocks = document.getElementById('debug-show-blocks')?.checked;
+            const hasStations = this.currentStations && this.currentStations.length > 0;
+
+            if (this.currentNetwork && (prevMouseX !== this.mouseX || prevMouseY !== this.mouseY)) {
+                // Redraw if blocks debug is enabled OR if there are stations (for hover-to-expand)
+                if (showBlocks || this.showBlockColorsOnly || hasStations) {
+                    this.drawNetwork(this.currentNetwork);
+                }
+            }
+        });
+        this.canvas.addEventListener('mouseleave', () => {
+            const prevMouseX = this.mouseX;
+            const prevMouseY = this.mouseY;
+            this.mouseX = -1;
+            this.mouseY = -1;
+
+            // Redraw when mouse leaves to clear hover state
+            const showBlocks = document.getElementById('debug-show-blocks')?.checked;
+            const hasStations = this.currentStations && this.currentStations.length > 0;
+
+            if (this.currentNetwork && (prevMouseX !== -1 || prevMouseY !== -1)) {
+                if (showBlocks || this.showBlockColorsOnly || hasStations) {
+                    this.drawNetwork(this.currentNetwork);
+                }
+            }
+        });
 
         this.resize();
         window.addEventListener('resize', () => this.resize());
-        console.log('[Renderer] Initialization complete');
     }
 
     resize() {
         const parent = this.canvas.parentElement;
-        console.log('[Renderer] Parent element:', parent);
 
         // Get dimensions, with fallbacks
         let width = parent ? parent.clientWidth : window.innerWidth;
@@ -162,26 +217,21 @@ class Renderer {
         this.centerX = Math.floor(width / 2);
         this.centerY = Math.floor(height / 2);
 
-        console.log('[Renderer] Resized canvas to', width, 'x', height, 'center at', this.centerX, this.centerY);
         this.draw();
     }
 
     draw() {
         // Basic draw - just clear and draw grid if no network loaded
-        console.log('[Renderer] draw() called, canvas size:', this.canvas.width, 'x', this.canvas.height);
         this.clear();
         this.drawGrid();
-        console.log('[Renderer] Basic draw completed');
     }
 
     clear() {
         this.ctx.fillStyle = '#0a0a0c';
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-        console.log('[Renderer] Cleared canvas');
     }
 
     drawGrid() {
-        console.log('[Renderer] Drawing isometric diamond grid...');
         this.ctx.save();
 
         // 1:1 square diamond tile (rotated 45 degrees)
@@ -189,24 +239,40 @@ class Renderer {
         const halfTile = tileSize / 2;
         const quarter = tileSize / 4;
 
-        // Calculate visible grid range (approximate)
+        // Calculate visible grid range based on current pan and viewport
         const viewWidth = this.canvas.width;
         const viewHeight = this.canvas.height;
 
-        // Rough estimate of visible tiles
-        const range = Math.ceil(Math.max(viewWidth, viewHeight) / tileSize) + 4;
+        // Convert screen corners to grid coordinates to find visible range
+        // Add padding to ensure we cover the entire visible area
+        const topLeft = this.screenToGrid(0, 0);
+        const topRight = this.screenToGrid(viewWidth, 0);
+        const bottomLeft = this.screenToGrid(0, viewHeight);
+        const bottomRight = this.screenToGrid(viewWidth, viewHeight);
+
+        // Find the bounding box in grid coordinates
+        const minGX = Math.min(topLeft.x, topRight.x, bottomLeft.x, bottomRight.x) - 2;
+        const maxGX = Math.max(topLeft.x, topRight.x, bottomLeft.x, bottomRight.x) + 2;
+        const minGY = Math.min(topLeft.y, topRight.y, bottomLeft.y, bottomRight.y) - 2;
+        const maxGY = Math.max(topLeft.y, topRight.y, bottomLeft.y, bottomRight.y) + 2;
 
         // Draw diamond grid lines
         this.ctx.strokeStyle = '#2a2a34';
         this.ctx.lineWidth = 1;
         this.ctx.beginPath();
 
-        // Draw diagonal lines forming diamonds
-        for (let gx = -range; gx <= range; gx++) {
-            for (let gy = -range; gy <= range; gy++) {
+        // Draw diagonal lines forming diamonds - only for visible tiles
+        for (let gx = minGX; gx <= maxGX; gx++) {
+            for (let gy = minGY; gy <= maxGY; gy++) {
                 // Get screen position of this grid cell's center
                 const centerX = this.gridToScreenX(gx, gy);
                 const centerY = this.gridToScreenY(gx, gy);
+
+                // Skip if completely outside viewport (with margin for tile size)
+                if (centerX < -tileSize || centerX > viewWidth + tileSize ||
+                    centerY < -tileSize || centerY > viewHeight + tileSize) {
+                    continue;
+                }
 
                 // Diamond corners (screen positions - Y increases downward on canvas)
                 // Named by their VISUAL position on screen
@@ -231,19 +297,22 @@ class Renderer {
         const gridPointX = (gx, gy) => this.centerX + this.panX + (gx + gy) * tileSize / 2;
         const gridPointY = (gx, gy) => this.centerY + this.panY + (gx - gy) * tileSize / 2;
 
+        // Calculate extended range for axes (they should extend beyond visible area)
+        const axisRange = Math.max(maxGX - minGX, maxGY - minGY) + 10;
+
         this.ctx.strokeStyle = '#4a4a5a';
         this.ctx.lineWidth = 2;
 
         // X-axis (Y=0 line) - goes from top-left to bottom-right on screen
         this.ctx.beginPath();
-        this.ctx.moveTo(gridPointX(-range, 0), gridPointY(-range, 0));
-        this.ctx.lineTo(gridPointX(range, 0), gridPointY(range, 0));
+        this.ctx.moveTo(gridPointX(-axisRange, 0), gridPointY(-axisRange, 0));
+        this.ctx.lineTo(gridPointX(axisRange, 0), gridPointY(axisRange, 0));
         this.ctx.stroke();
 
         // Y-axis (X=0 line) - goes from top-right to bottom-left on screen
         this.ctx.beginPath();
-        this.ctx.moveTo(gridPointX(0, -range), gridPointY(0, -range));
-        this.ctx.lineTo(gridPointX(0, range), gridPointY(0, range));
+        this.ctx.moveTo(gridPointX(0, -axisRange), gridPointY(0, -axisRange));
+        this.ctx.lineTo(gridPointX(0, axisRange), gridPointY(0, axisRange));
         this.ctx.stroke();
 
 
@@ -257,7 +326,6 @@ class Renderer {
         this.ctx.fill();
 
         this.ctx.restore();
-        console.log('[Renderer] Isometric grid drawn');
     }
 
     // Convert grid coordinates to screen X/Y (isometric/diamond projection)
@@ -297,28 +365,76 @@ class Renderer {
     }
 
     drawNetwork(network) {
-        console.log('[Renderer] drawNetwork called with:', network);
         this.clear();
         this.drawGrid();
 
         if (!network || !network.tracks) {
-            console.log('[Renderer] No network or tracks to draw');
+            this.currentNetwork = null;
             return;
         }
-        console.log('[Renderer] Drawing', network.tracks.length, 'tracks');
+
+        // Store network for hover redraws
+        this.currentNetwork = network;
+
+        // Store blocks and stations for rendering
+        this.currentBlocks = network.blocks || {};
+        this.currentStations = network.stations || [];
+        // Create track lookup map for station rendering
+        this.trackMap = {};
+        network.tracks.forEach(track => {
+            this.trackMap[`${track.x},${track.y}`] = track;
+        });
 
         // Draw block section overlays first (underneath tracks)
         if (network.block_sections) {
             this.drawBlockSections(network.block_sections, network.tracks);
         }
 
-        // Draw tracks
+        // Draw block ID colors BEFORE tracks (so they appear underneath)
+        // Show if: debug checkbox is checked OR showBlockColorsOnly is set (block tool mode)
+        const showBlockDebug = document.getElementById('debug-show-blocks')?.checked;
+        if (showBlockDebug || this.showBlockColorsOnly) {
+            this.drawBlockIdColors(network.tracks);
+        }
+
+        // Draw tracks (without signals first)
         network.tracks.forEach(track => {
-            this.drawTrack(track);
+            this.drawTrack(track, false); // Skip signals in first pass
         });
 
-        // Draw debug overlays (after tracks, before trains)
+        // Draw stations as spanning platforms (after tracks, so platforms appear on top)
+        this.drawStations();
+
+        // Draw signal-to-block connection lines (before signals, so they appear underneath)
+        const showSignalDebug = document.getElementById('debug-show-signals')?.checked;
+        if (showSignalDebug) {
+            this.drawSignalBlockConnections(network.tracks);
+        }
+
+        // Draw signals on top of connection lines
+        network.tracks.forEach(track => {
+            if (track.signals && track.signals.length > 0) {
+                const cx = this.gridToScreenX(track.x, track.y);
+                const cy = this.gridToScreenY(track.x, track.y);
+                const cellSize = this.gridSize * this.scale;
+                const half = cellSize / 2;
+
+                this.ctx.save();
+                this.ctx.translate(cx, cy);
+                for (const signal of track.signals) {
+                    this.drawSingleSignal(signal, track.track_bits, half);
+                }
+                this.ctx.restore();
+            }
+        });
+
+        // Draw other debug overlays (after signals, before trains)
         this.drawDebugOverlays(network.tracks);
+
+        // Draw block info labels and signal lines ONLY if debug checkbox is checked (not in block-tool-only mode)
+        if (showBlockDebug && !this.showBlockColorsOnly) {
+            this.drawBlockDetailLabels(network.tracks);
+        }
 
         // Draw trains
         if (network.trains) {
@@ -359,7 +475,7 @@ class Renderer {
         });
     }
 
-    drawTrack(track) {
+    drawTrack(track, drawSignals = true) {
         // Convert grid coordinates to screen coordinates (isometric)
         const cellSize = this.gridSize * this.scale;
         const cx = this.gridToScreenX(track.x, track.y);  // center X
@@ -372,9 +488,26 @@ class Renderer {
         this.ctx.save();
         this.ctx.translate(cx, cy);
 
-        // ATC style: determine track color based on state
-        let trackColor = '#666'; // Default grey for unoccupied
-        if (track.occupied_by) {
+        // ATC style: determine track color based on block state
+        // Color scheme: FREE=Blue, RESERVED=Green, OCCUPIED=Red, CAUTION=Yellow
+        let trackColor = '#666'; // Default grey for tracks without blocks
+        if (track.block_section_id && this.currentBlocks) {
+            const block = this.currentBlocks[track.block_section_id];
+            if (block) {
+                const blockState = (block.state || 'free').toLowerCase();
+                if (blockState === 'occupied') {
+                    trackColor = '#e83f5b'; // Red for occupied (train in block)
+                } else if (blockState === 'reserved') {
+                    trackColor = '#04d361'; // Green for reserved (train approaching)
+                } else if (blockState === 'free') {
+                    trackColor = '#4285f4'; // Blue for free (safe to enter)
+                } else if (blockState === 'caution') {
+                    trackColor = '#ffcd1e'; // Yellow for caution (train just left, slow down)
+                }
+            }
+        }
+        // Legacy fallback: direct track properties
+        else if (track.occupied_by) {
             trackColor = '#e83f5b'; // Red if occupied
         } else if (track.reserved_by) {
             trackColor = '#ffcd1e'; // Yellow if reserved
@@ -395,12 +528,13 @@ class Renderer {
             this.drawTrackFromBits(trackBits, half, trackColor, track.dead_end_ports || []);
         }
 
-        // Draw special elements (signals, stations)
-        // Note: TrackType enum values are lowercase ('signal', 'station')
-        if (track.type === 'signal') {
-            this.drawSignal(track, half);
-        } else if (track.type === 'station') {
-            this.drawStation(track, half);
+        // Draw signals (stations are drawn separately in drawStations() as spanning platforms)
+        // Now uses track.signals array (enriched by backend) for multi-signal support
+        // Signals can be drawn separately for better layering control
+        if (drawSignals && track.signals && track.signals.length > 0) {
+            for (const signal of track.signals) {
+                this.drawSingleSignal(signal, track.track_bits, half);
+            }
         }
 
         this.ctx.restore();
@@ -612,71 +746,650 @@ class Renderer {
         }
     }
 
-    drawSignal(track, half) {
-        // Signal direction arrow and aspect
-        const signalDir = track.signal_direction || 'EAST';
+    drawSingleSignal(signal, trackBits, half) {
+        // Get directions and calculate positioning
+        // approach_direction = where trains come FROM (signal light faces this direction)
+        // detection_direction = where trains travel TO (direction signal monitors)
+        // Both directions are REQUIRED - fail visibly if missing
+        if (!signal.detection_direction) {
+            console.error(`[Renderer] Signal ${signal.signal_id} missing detection_direction!`, signal);
+            return;  // Don't render invalid signal
+        }
+        if (!signal.approach_direction) {
+            console.error(`[Renderer] Signal ${signal.signal_id} missing approach_direction!`, signal);
+            return;  // Don't render invalid signal
+        }
+        const approachDir = signal.approach_direction;
+        const detectionDir = signal.detection_direction;
+        const facingEdge = approachDir.charAt(0).toUpperCase();  // Direction train comes from
+        console.log(`[Signal ${signal.signal_id}] det=${detectionDir} app=${approachDir} face=${facingEdge}`);
         const edgePoints = this.getEdgePoints(half);
+        const isLongPath = (trackBits === 1 || trackBits === 2);  // NS or EW straight tracks
 
-        // Draw signal head (enum values are lowercase: 'green', 'red')
-        const isGreen = track.signal_state === 'green' || track.signal_state === 'GREEN';
-        this.ctx.fillStyle = isGreen ? '#04d361' : '#e83f5b';
+        // Detect diagonal tracks: NE(4), NW(8), SE(16), SW(32)
+        const isDiagonal = (trackBits === 4 || trackBits === 8 || trackBits === 16 || trackBits === 32);
 
-        // Position signal head at edge midpoint
-        const edge = signalDir.charAt(0).toUpperCase();
-        const edgePoint = edgePoints[edge] || { x: 0, y: 0 };
-        const sx = edgePoint.x * 0.7;  // Slightly inward from edge
-        const sy = edgePoint.y * 0.7;
+        // Calculate signal position based on path type
+        let sx, sy;
+        if (isLongPath) {
+            // Right-hand side rule: position on right side relative to train's TRAVEL direction
+            // detection_direction IS the travel direction (where trains go TO)
+            const travelEdge = detectionDir.charAt(0).toUpperCase();
+            // Train going N -> right side is E
+            // Train going S -> right side is W
+            // Train going E -> right side is S
+            // Train going W -> right side is N
+            const rightSide = {
+                'N': 'E', 'S': 'W', 'E': 'S', 'W': 'N'
+            }[travelEdge] || 'E';
+            const sidePoint = edgePoints[rightSide] || { x: 0, y: 0 };
+            sx = sidePoint.x * 0.5;  // Quarter point toward that side
+            sy = sidePoint.y * 0.5;
+        } else {
+            // Center for short paths (diagonals: NE, NW, SE, SW)
+            sx = 0;
+            sy = 0;
+        }
 
-        // Calculate arrow angle based on direction
-        // Arrow points in the direction of travel (toward the edge)
-        let arrowAngle = Math.atan2(edgePoint.y, edgePoint.x);
+        // Get signal color based on state
+        const state = (signal.state || 'green').toUpperCase();
+        let signalColor;
+        if (state === 'GREEN') {
+            signalColor = '#04d361';
+        } else if (state === 'YELLOW') {
+            signalColor = '#ffd93d';
+        } else {
+            signalColor = '#e83f5b';  // RED or unknown
+        }
 
-        // Draw signal circle
+        // Calculate direction for stick angle
+        let dirX, dirY;
+
+        if (isDiagonal) {
+            // For diagonal tracks, stick points ALONG the diagonal path (45 degree angle in isometric)
+            //
+            // IMPORTANT: Cannot use approach_direction from backend for diagonals!
+            // Backend computes geometric opposite (N→S, E→W), but diagonals only connect two
+            // adjacent edges (e.g., NE connects N and E, not N and S).
+            //
+            // Solution: Use detection_direction to determine which edge train exits from,
+            // then point stick toward the OTHER edge of the diagonal (where train comes from).
+            //
+            // Base diagonal vectors represent direction from edge2 toward edge1 of the track
+            // These are calculated from isometric edge positions:
+            //   N edge: (h/2, -h/2)  top-right    |  E edge: (h/2, h/2)   bottom-right
+            //   S edge: (-h/2, h/2)  bottom-left  |  W edge: (-h/2, -h/2) top-left
+            //
+            // Vector calculation (edge2 → edge1):
+            //   NE (4):  E(h/2, h/2) → N(h/2, -h/2) = (0, -h)  → normalized (0, -1)  vertical up
+            //   NW (8):  W(-h/2,-h/2) → N(h/2, -h/2) = (h, 0)  → normalized (1, 0)   horizontal right
+            //   SE (16): E(h/2, h/2) → S(-h/2, h/2) = (-h, 0)  → normalized (-1, 0)  horizontal left
+            //   SW (32): W(-h/2,-h/2) → S(-h/2, h/2) = (0, h)  → normalized (0, 1)   vertical down
+            let diagonalX, diagonalY;
+            switch (trackBits) {
+                case 4:  diagonalX = 0;  diagonalY = -1; break;  // NE: vertical up (E→N)
+                case 8:  diagonalX = 1;  diagonalY = 0;  break;  // NW: horizontal right (W→N)
+                case 16: diagonalX = -1; diagonalY = 0;  break;  // SE: horizontal left (E→S)
+                case 32: diagonalX = 0;  diagonalY = 1;  break;  // SW: vertical down (W→S)
+                default: diagonalX = 1;  diagonalY = 0;  break;
+            }
+
+            // Determine the two edges of this diagonal
+            let edge1, edge2;
+            switch (trackBits) {
+                case 4:  edge1 = 'N'; edge2 = 'E'; break;
+                case 8:  edge1 = 'N'; edge2 = 'W'; break;
+                case 16: edge1 = 'S'; edge2 = 'E'; break;
+                case 32: edge1 = 'S'; edge2 = 'W'; break;
+                default: edge1 = 'N'; edge2 = 'E'; break;
+            }
+
+            // Use detection direction (not approach) to determine which way to point
+            // If train exits via edge1, it approaches from edge2 → flip base to point toward edge2
+            const detectionEdge = detectionDir.charAt(0).toUpperCase();
+            if (detectionEdge === edge1) {
+                diagonalX = -diagonalX;
+                diagonalY = -diagonalY;
+            }
+
+            // Normalize
+            const len = Math.sqrt(diagonalX * diagonalX + diagonalY * diagonalY);
+            dirX = diagonalX / len;
+            dirY = diagonalY / len;
+        } else {
+            // For straight tracks, use cardinal direction
+            const travelEdge = facingEdge || 'E';
+            const dirPoint = edgePoints[travelEdge] || { x: 1, y: 0 };
+            const len = Math.sqrt(dirPoint.x * dirPoint.x + dirPoint.y * dirPoint.y);
+            dirX = dirPoint.x / len;
+            dirY = dirPoint.y / len;
+        }
+        console.log(`[Signal ${signal.signal_id}] stick dir: dirX=${dirX.toFixed(2)}, dirY=${dirY.toFixed(2)}`);
+
+        // Draw black stick parallel to path direction
+        const stickLength = half * 0.4;
+        const stickEndX = sx + dirX * stickLength;
+        const stickEndY = sy + dirY * stickLength;
+
+        // Draw grey outer circle
+        this.ctx.strokeStyle = '#999';
+        this.ctx.lineWidth = 1.5 * this.scale;
         this.ctx.beginPath();
-        this.ctx.arc(sx, sy - 6, 5, 0, Math.PI * 2);
-        this.ctx.fill();
-
-        // Draw direction arrow
-        this.ctx.save();
-        this.ctx.translate(sx, sy + 6);
-        this.ctx.rotate(arrowAngle);
-        this.ctx.fillStyle = '#fff';
-        this.ctx.beginPath();
-        this.ctx.moveTo(6, 0);
-        this.ctx.lineTo(-2, -4);
-        this.ctx.lineTo(-2, 4);
-        this.ctx.closePath();
-        this.ctx.fill();
-        this.ctx.restore();
-    }
-
-    drawStation(track, half) {
-        // Station platform - draw as diamond shape matching the tile
-        const padding = 4 * this.scale;
-        const innerHalf = half - padding;
-
-        // Draw diamond-shaped platform
-        this.ctx.fillStyle = '#2a2a3a';
-        this.ctx.beginPath();
-        this.ctx.moveTo(0, -innerHalf);          // top
-        this.ctx.lineTo(innerHalf, 0);           // right
-        this.ctx.lineTo(0, innerHalf);           // bottom
-        this.ctx.lineTo(-innerHalf, 0);          // left
-        this.ctx.closePath();
-        this.ctx.fill();
-
-        // Station border
-        this.ctx.strokeStyle = '#4a4a5a';
-        this.ctx.lineWidth = 2 * this.scale;
+        this.ctx.arc(sx, sy, 4 * this.scale, 0, Math.PI * 2);
         this.ctx.stroke();
 
-        // Station name/label
-        this.ctx.fillStyle = '#fff';
-        this.ctx.font = `${9 * this.scale}px sans-serif`;
+        this.ctx.strokeStyle = '#999';
+        this.ctx.lineWidth = 2 * this.scale;
+        this.ctx.beginPath();
+        this.ctx.moveTo(sx, sy);
+        this.ctx.lineTo(stickEndX, stickEndY);
+        this.ctx.stroke();
+
+        // Draw colored inner circle
+        const innerRadius = 3 * this.scale;
+        this.ctx.fillStyle = signalColor;
+        this.ctx.beginPath();
+        this.ctx.arc(sx, sy, innerRadius, 0, Math.PI * 2);
+        this.ctx.fill();
+
+
+
+        // Draw orthogonal stroke at end of stick
+        const orthoX = -dirY;  // Perpendicular vector
+        const orthoY = dirX;
+        const orthoLen = half * 0.15;
+
+        this.ctx.beginPath();
+        this.ctx.moveTo(stickEndX - orthoX * orthoLen, stickEndY - orthoY * orthoLen);
+        this.ctx.lineTo(stickEndX + orthoX * orthoLen, stickEndY + orthoY * orthoLen);
+        this.ctx.stroke();
+
+        // Draw signal name label if set and "Show Signal Details" debug is enabled
+        const showSignalDetails = document.getElementById('debug-show-signals')?.checked;
+        if (signal.name && showSignalDetails) {
+            this.ctx.fillStyle = '#fff';
+            this.ctx.font = `bold ${6 * this.scale}px sans-serif`;
+            this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'top';
+            // Position label below signal circle
+            const labelY = sy + 8 * this.scale;
+            this.ctx.fillText(signal.name, sx, labelY);
+        }
+
+        // Draw orange warning triangle for invalid signals (no monitored block configured)
+        // A signal is invalid if it's a BLOCK type signal but has no monitored_block_id
+        const signalType = signal.signal_type || 'block';
+        const hasBlockConfigured = signal.monitored_block_id;
+        if (signalType === 'block' && !hasBlockConfigured) {
+            // Draw orange warning triangle
+            const triSize = 5 * this.scale;
+            const triX = sx + 6 * this.scale;  // Offset to right of signal
+            const triY = sy - 6 * this.scale;  // Offset above signal
+
+            this.ctx.fillStyle = '#ff9500';  // Orange warning color
+            this.ctx.beginPath();
+            this.ctx.moveTo(triX, triY - triSize);           // Top point
+            this.ctx.lineTo(triX - triSize * 0.866, triY + triSize * 0.5);  // Bottom left
+            this.ctx.lineTo(triX + triSize * 0.866, triY + triSize * 0.5);  // Bottom right
+            this.ctx.closePath();
+            this.ctx.fill();
+
+            // Draw exclamation mark inside triangle
+            this.ctx.fillStyle = '#000';
+            this.ctx.font = `bold ${6 * this.scale}px sans-serif`;
+            this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'middle';
+            this.ctx.fillText('!', triX, triY);
+        }
+    }
+
+    /**
+     * Draw all stations as spanning platforms.
+     * Each station is rendered as a single platform rectangle parallel to the track,
+     * spanning all tiles of the station.
+     *
+     * Algorithm:
+     * 1. Find the two endpoint tiles (largest distance apart)
+     * 2. Calculate path endpoints on those tiles (4 points total)
+     * 3. Find the longest pair - this defines platform direction
+     * 4. Draw platform rectangle parallel to that line, offset by side
+     */
+    drawStations() {
+        if (!this.currentStations || this.currentStations.length === 0) return;
+
+        const tileSize = this.gridSize * this.scale;
+        const half = tileSize / 2;
+
+        for (const station of this.currentStations) {
+            if (!station.positions || station.positions.length === 0) continue;
+
+            const positions = station.positions;
+            if (positions.length === 0) continue;
+
+            let orientation = station.orientation;
+            let platformSides = station.platform_sides || [];
+            const stationName = station.name || station.station_id || 'Station';
+
+            // Fallback: if no orientation from backend, try to determine from track
+            if (!orientation && positions.length > 0) {
+                const firstPos = positions[0];
+                const firstTrack = this.trackMap[`${firstPos[0]},${firstPos[1]}`];
+                if (firstTrack) {
+                    const trackBits = firstTrack.track_bits || 0;
+                    if (trackBits & TRACK_BITS.NS) orientation = 'NS';
+                    else if (trackBits & TRACK_BITS.EW) orientation = 'EW';
+                    else if (trackBits & TRACK_BITS.NE || trackBits & TRACK_BITS.SW) orientation = 'NE_SW';
+                    else if (trackBits & TRACK_BITS.NW || trackBits & TRACK_BITS.SE) orientation = 'NW_SE';
+                }
+            }
+
+            // Fallback: if no platformSides, use default based on platform_side
+            if (platformSides.length === 0 && orientation) {
+                const sideMapping = {
+                    'NS': { 'both': ['west', 'east'], 'left': ['west'], 'right': ['east'] },
+                    'EW': { 'both': ['north', 'south'], 'left': ['north'], 'right': ['south'] },
+                    'NE_SW': { 'both': ['northwest', 'southeast'], 'left': ['northwest'], 'right': ['southeast'] },
+                    'NW_SE': { 'both': ['southwest', 'northeast'], 'left': ['southwest'], 'right': ['northeast'] }
+                };
+                const side = station.platform_side || 'both';
+                platformSides = sideMapping[orientation]?.[side] || ['west', 'east'];
+            }
+
+            // Find the two endpoint tiles (largest distance apart)
+            const endpointTiles = this.findEndpointTiles(positions);
+            if (!endpointTiles) continue;
+
+            const [tile1, tile2] = endpointTiles;
+
+            // Get track info for each endpoint tile
+            const track1 = this.trackMap[`${tile1[0]},${tile1[1]}`];
+            const track2 = this.trackMap[`${tile2[0]},${tile2[1]}`];
+            if (!track1 || !track2) continue;
+
+            // Get path endpoints for each tile (where track enters/exits)
+            const endpoints1 = this.getPathEndpoints(tile1, track1.track_bits || 0, half);
+            const endpoints2 = this.getPathEndpoints(tile2, track2.track_bits || 0, half);
+
+            // Find the longest pair among all 4 endpoints
+            const longestPair = this.findLongestPair([...endpoints1, ...endpoints2]);
+            if (!longestPair) continue;
+
+            // Draw platform
+            this.ctx.save();
+
+            if (orientation && platformSides.length > 0) {
+                this.drawOrientedPlatform(
+                    longestPair[0], longestPair[1], orientation, platformSides,
+                    10 * this.scale, half
+                );
+            }
+
+            // Draw station name label alongside the platform
+            this.drawStationLabel(
+                stationName,
+                longestPair[0], longestPair[1],
+                orientation, platformSides[0],
+                half
+            );
+
+            this.ctx.restore();
+        }
+    }
+
+    /**
+     * Generate abbreviated station name (like real-world ATC codes).
+     * Examples: "Central Station" -> "CNT", "New York Penn" -> "NYP"
+     */
+    abbreviateStationName(name) {
+        if (!name || name.length <= 4) return name.toUpperCase();
+
+        // Split into words and take first letter of each (up to 4)
+        const words = name.split(/[\s\-_]+/).filter(w => w.length > 0);
+        if (words.length >= 2) {
+            // Multiple words: take first letter of each (max 4)
+            return words.slice(0, 4).map(w => w[0].toUpperCase()).join('');
+        } else {
+            // Single word: take first 3-4 consonants or first 4 chars
+            const consonants = name.replace(/[aeiou]/gi, '').toUpperCase();
+            if (consonants.length >= 3) {
+                return consonants.slice(0, 4);
+            }
+            return name.slice(0, 4).toUpperCase();
+        }
+    }
+
+    /**
+     * Draw station label alongside the platform.
+     * Shows abbreviated name by default, full name on hover.
+     */
+    drawStationLabel(fullName, point1, point2, orientation, side, half) {
+        const abbrev = this.abbreviateStationName(fullName);
+
+        // Calculate label position: center of platform, offset to the side
+        const centerX = (point1.x + point2.x) / 2;
+        const centerY = (point1.y + point2.y) / 2;
+
+        // Calculate direction along platform
+        const dx = point2.x - point1.x;
+        const dy = point2.y - point1.y;
+        const length = Math.sqrt(dx * dx + dy * dy);
+        if (length === 0) return;
+
+        // Perpendicular direction (same as platform offset)
+        const perpX = -dy / length;
+        const perpY = dx / length;
+
+        // Get side multiplier to position label on the correct side
+        const sideMultiplier = this.getSideMultiplier(side, orientation);
+
+        // Offset label to be alongside the platform (past the platform width)
+        const labelOffset = half * 0.3 + 18 * this.scale; // Past the platform
+        const labelX = centerX + perpX * labelOffset * sideMultiplier;
+        const labelY = centerY + perpY * labelOffset * sideMultiplier;
+
+        // Check if mouse is hovering near this station
+        const hoverRadius = 30 * this.scale;
+        const distToMouse = Math.sqrt(
+            Math.pow(this.mouseX - centerX, 2) +
+            Math.pow(this.mouseY - centerY, 2)
+        );
+        const isHovered = distToMouse < hoverRadius + length / 2;
+
+        // Choose display text based on hover state
+        const displayText = isHovered ? fullName : abbrev;
+
+        // Font size: smaller for abbreviation, slightly larger for full name on hover
+        const fontSize = isHovered ? 9 * this.scale : 7 * this.scale;
+        this.ctx.font = `bold ${fontSize}px sans-serif`;
+
+        const textWidth = this.ctx.measureText(displayText).width;
+        const labelPadding = 3 * this.scale;
+        const labelHeight = (isHovered ? 12 : 10) * this.scale;
+
+        // Background: more transparent for abbreviation, more visible on hover
+        const bgAlpha = isHovered ? 0.8 : 0.5;
+        this.ctx.fillStyle = `rgba(0, 0, 0, ${bgAlpha})`;
+        this.ctx.fillRect(
+            labelX - textWidth / 2 - labelPadding,
+            labelY - labelHeight / 2,
+            textWidth + labelPadding * 2,
+            labelHeight
+        );
+
+        // Border for visibility
+        this.ctx.strokeStyle = isHovered ? 'rgba(255, 255, 255, 0.6)' : 'rgba(255, 255, 255, 0.3)';
+        this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(
+            labelX - textWidth / 2 - labelPadding,
+            labelY - labelHeight / 2,
+            textWidth + labelPadding * 2,
+            labelHeight
+        );
+
+        // Text
+        this.ctx.fillStyle = '#ffffff';
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
-        const label = track.station_name ? track.station_name.substring(0, 4) : 'STA';
-        this.ctx.fillText(label, 0, 0);
+        this.ctx.fillText(displayText, labelX, labelY);
+    }
+
+    /**
+     * Find the two tiles that are furthest apart (endpoint tiles).
+     */
+    findEndpointTiles(positions) {
+        if (positions.length === 0) return null;
+        if (positions.length === 1) return [positions[0], positions[0]];
+
+        let maxDist = -1;
+        let endpointPair = null;
+
+        for (let i = 0; i < positions.length; i++) {
+            for (let j = i + 1; j < positions.length; j++) {
+                const dx = positions[j][0] - positions[i][0];
+                const dy = positions[j][1] - positions[i][1];
+                const dist = dx * dx + dy * dy;
+                if (dist > maxDist) {
+                    maxDist = dist;
+                    endpointPair = [positions[i], positions[j]];
+                }
+            }
+        }
+
+        return endpointPair;
+    }
+
+    /**
+     * Get the path endpoints for a tile based on its track_bits.
+     * Returns 2 screen coordinate points where the track enters/exits the tile.
+     */
+    getPathEndpoints(tilePos, trackBits, half) {
+        const centerX = this.gridToScreenX(tilePos[0], tilePos[1]);
+        const centerY = this.gridToScreenY(tilePos[0], tilePos[1]);
+
+        // Determine which edges the track connects
+        // In isometric view:
+        //   N edge = top-right (centerX + half/2, centerY - half/2)
+        //   S edge = bottom-left (centerX - half/2, centerY + half/2)
+        //   E edge = bottom-right (centerX + half/2, centerY + half/2)
+        //   W edge = top-left (centerX - half/2, centerY - half/2)
+        const edgePositions = {
+            'N': { x: centerX + half / 2, y: centerY - half / 2 },
+            'S': { x: centerX - half / 2, y: centerY + half / 2 },
+            'E': { x: centerX + half / 2, y: centerY + half / 2 },
+            'W': { x: centerX - half / 2, y: centerY - half / 2 }
+        };
+
+        const endpoints = [];
+
+        // Check each track segment and add its edge endpoints
+        if (trackBits & TRACK_BITS.NS) {
+            endpoints.push(edgePositions['N'], edgePositions['S']);
+        }
+        if (trackBits & TRACK_BITS.EW) {
+            endpoints.push(edgePositions['E'], edgePositions['W']);
+        }
+        if (trackBits & TRACK_BITS.NE) {
+            endpoints.push(edgePositions['N'], edgePositions['E']);
+        }
+        if (trackBits & TRACK_BITS.NW) {
+            endpoints.push(edgePositions['N'], edgePositions['W']);
+        }
+        if (trackBits & TRACK_BITS.SE) {
+            endpoints.push(edgePositions['S'], edgePositions['E']);
+        }
+        if (trackBits & TRACK_BITS.SW) {
+            endpoints.push(edgePositions['S'], edgePositions['W']);
+        }
+
+        // Return first 2 endpoints (for simple track, this is correct)
+        // For complex tracks, we might need smarter logic
+        return endpoints.slice(0, 2);
+    }
+
+    /**
+     * Find the pair of points with the longest distance.
+     */
+    findLongestPair(points) {
+        if (points.length < 2) return null;
+
+        let maxDist = -1;
+        let longestPair = null;
+
+        for (let i = 0; i < points.length; i++) {
+            for (let j = i + 1; j < points.length; j++) {
+                const dx = points[j].x - points[i].x;
+                const dy = points[j].y - points[i].y;
+                const dist = dx * dx + dy * dy;
+                if (dist > maxDist) {
+                    maxDist = dist;
+                    longestPair = [points[i], points[j]];
+                }
+            }
+        }
+
+        return longestPair;
+    }
+
+    /**
+     * Draw platform as a rectangle parallel to the line between two endpoints.
+     * The platform is offset perpendicular to the line based on side.
+     *
+     * @param {Object} point1 - {x, y} screen coordinates of first endpoint
+     * @param {Object} point2 - {x, y} screen coordinates of second endpoint
+     * @param {string} orientation - 'NS', 'EW', 'NE_SW', or 'NW_SE'
+     * @param {Array} platformSides - Compass directions like ['west', 'east']
+     * @param {number} width - Platform width in pixels
+     * @param {number} half - Half tile size
+     */
+    drawOrientedPlatform(point1, point2, orientation, platformSides, width, half) {
+        // Platform color
+        this.ctx.fillStyle = '#5a5a7a';
+        this.ctx.strokeStyle = '#3a3a5a';
+        this.ctx.lineWidth = 1 * this.scale;
+
+        // Normalize point order based on orientation to ensure consistent direction
+        // This prevents the platform from flipping when endpoints change
+        let p1 = point1;
+        let p2 = point2;
+
+        // Determine if we need to swap points to maintain consistent direction
+        // For each orientation, ensure the direction vector follows the expected direction
+        const needsSwap = this.shouldSwapEndpoints(p1, p2, orientation);
+        if (needsSwap) {
+            [p1, p2] = [p2, p1];
+        }
+
+        // Calculate direction vector along the platform
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const length = Math.sqrt(dx * dx + dy * dy);
+        if (length === 0) return;
+
+        // Normalized direction and perpendicular
+        const dirX = dx / length;
+        const dirY = dy / length;
+        // Perpendicular: rotate 90 degrees (perpX, perpY) = (-dirY, dirX)
+        const perpX = -dirY;
+        const perpY = dirX;
+
+        // Offset distance from track center
+        const perpOffset = half * 0.3;
+
+        // Draw each platform side
+        for (const side of platformSides) {
+            const sideMultiplier = this.getSideMultiplier(side, orientation);
+
+            // Offset from the track line
+            const offsetX = perpX * perpOffset * sideMultiplier;
+            const offsetY = perpY * perpOffset * sideMultiplier;
+
+            // Inner edge (closer to track)
+            const innerStartX = point1.x + offsetX;
+            const innerStartY = point1.y + offsetY;
+            const innerEndX = point2.x + offsetX;
+            const innerEndY = point2.y + offsetY;
+
+            // Outer edge (further from track)
+            const outerStartX = innerStartX + perpX * width * sideMultiplier;
+            const outerStartY = innerStartY + perpY * width * sideMultiplier;
+            const outerEndX = innerEndX + perpX * width * sideMultiplier;
+            const outerEndY = innerEndY + perpY * width * sideMultiplier;
+
+            this.drawPlatformQuad(
+                innerStartX, innerStartY,
+                outerStartX, outerStartY,
+                outerEndX, outerEndY,
+                innerEndX, innerEndY
+            );
+        }
+    }
+
+    /**
+     * Get multiplier for platform side offset based on compass direction.
+     * The perpendicular in drawOrientedPlatform is calculated as (-dirY, dirX),
+     * which is a counter-clockwise rotation from the direction vector.
+     */
+    getSideMultiplier(side, orientation) {
+        // Map compass direction to +1 or -1 multiplier for perpendicular offset
+        // +1 = use perpendicular direction as-is
+        // -1 = use opposite of perpendicular direction
+        const sideMap = {
+            // NS orientation: perpendicular points toward east when going N->S
+            'NS': { 'east': 1, 'west': -1 },
+            // EW orientation: perpendicular points toward south when going E->W
+            'EW': { 'south': 1, 'north': -1 },
+            // NE_SW orientation: perpendicular points toward southeast when going NE->SW
+            'NE_SW': { 'southeast': 1, 'northwest': -1 },
+            // NW_SE orientation: perpendicular points toward northeast when going NW->SE
+            'NW_SE': { 'northeast': 1, 'southwest': -1 }
+        };
+
+        return sideMap[orientation]?.[side] || 1;
+    }
+
+    /**
+     * Determine if endpoints should be swapped to maintain consistent direction.
+     * This ensures the platform always appears on the same side regardless of
+     * which endpoints are selected as the "longest pair".
+     *
+     * Expected directions (based on getSideMultiplier assumptions):
+     * - NS: North -> South (increasing y in screen coords, but depends on isometric)
+     * - EW: East -> West (decreasing x in screen coords)
+     * - NE_SW: NE -> SW (decreasing x+y in grid coords)
+     * - NW_SE: NW -> SE (increasing x-y in grid coords)
+     *
+     * In isometric screen coords with our transform:
+     * - Grid (x, y) -> Screen: screenX increases with grid x, screenY increases with grid x-y
+     *
+     * For consistent platform sides:
+     * - NS: ensure dy > 0 (going "south" in screen space)
+     * - EW: ensure dx < 0 (going "west" in screen space)
+     * - NE_SW: ensure p1 is the NE point (higher x+y in screen)
+     * - NW_SE: ensure p1 is the NW point (lower x in screen)
+     */
+    shouldSwapEndpoints(p1, p2, orientation) {
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+
+        switch (orientation) {
+            case 'NS':
+                // For NS, direction should go "south" (positive screen y)
+                // In isometric, moving south means dy should be positive
+                return dy < 0;
+
+            case 'EW':
+                // For EW, direction should go "west" (negative screen x)
+                return dx > 0;
+
+            case 'NE_SW':
+                // For NE_SW diagonal, direction should go from NE to SW
+                // In screen coords, NE is up-right, SW is down-left
+                // So we want the sum (x+y) to decrease (NE has higher x+y than SW)
+                return (dx + dy) > 0;
+
+            case 'NW_SE':
+                // For NW_SE diagonal, direction should go from NW to SE
+                // NW is up-left (lower x, higher y), SE is down-right (higher x, lower y)
+                // So x should increase as we go from p1 to p2
+                return dx < 0;
+
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Draw a quadrilateral platform shape.
+     */
+    drawPlatformQuad(x1, y1, x2, y2, x3, y3, x4, y4) {
+        this.ctx.beginPath();
+        this.ctx.moveTo(x1, y1);
+        this.ctx.lineTo(x2, y2);
+        this.ctx.lineTo(x3, y3);
+        this.ctx.lineTo(x4, y4);
+        this.ctx.closePath();
+        this.ctx.fill();
+        this.ctx.stroke();
     }
 
     drawTrain(train) {
@@ -765,11 +1478,8 @@ class Renderer {
     // Draw preview tracks with actual track geometry (semi-transparent light yellow)
     drawPreviewTracks(tracks) {
         if (!tracks || tracks.length === 0) {
-            console.log('[Renderer] drawPreviewTracks: no tracks to draw');
             return;
         }
-
-        console.log('[Renderer] drawPreviewTracks:', tracks.length, 'tracks');
 
         const cellSize = this.gridSize * this.scale;
         const half = cellSize / 2;
@@ -777,7 +1487,6 @@ class Renderer {
 
         for (const track of tracks) {
             const trackBits = track.track_bits ?? 0;
-            console.log('[Renderer] Drawing preview track at', track.x, track.y, 'bits:', trackBits);
             if (trackBits === 0) continue; // Skip empty tracks
 
             const cx = this.gridToScreenX(track.x, track.y);
@@ -1078,6 +1787,9 @@ class Renderer {
         const showCoords = document.getElementById('debug-show-coords')?.checked;
         const showSwitches = document.getElementById('debug-show-switches')?.checked;
         const showEdges = document.getElementById('debug-show-edges')?.checked;
+        const showBlocks = document.getElementById('debug-show-blocks')?.checked;
+
+        // Signal-to-block connections are now drawn separately before signals for better layering
 
         for (const track of tracks) {
             if (showBits && track.track_bits !== undefined) {
@@ -1097,5 +1809,661 @@ class Renderer {
                 this.drawEdgeLabels(track.x, track.y);
             }
         }
+    }
+
+    // Generate unique color from block ID using golden angle distribution
+    // Golden angle (137.508°) ensures maximum color separation between consecutive blocks
+    getBlockColor(blockId) {
+        if (!blockId) return null;
+
+        // Check cache first
+        if (this.blockColorCache[blockId] !== undefined) {
+            const hue = this.blockColorCache[blockId];
+            return `hsla(${hue}, 70%, 50%, 0.6)`;
+        }
+
+        // Assign new hue using golden angle distribution
+        // Golden angle = 360° * (1 - 1/φ) ≈ 137.508°
+        const goldenAngle = 137.508;
+        const hue = (this.blockColorCounter * goldenAngle) % 360;
+        
+        // Cache the hue for this block
+        this.blockColorCache[blockId] = hue;
+        this.blockColorCounter++;
+
+        return `hsla(${hue}, 70%, 50%, 0.6)`;
+    }
+
+    // Draw block ID colors as thicker lines along track paths
+    drawBlockIdColors(tracks) {
+        const tileSize = this.gridSize * this.scale;
+        const halfTile = tileSize / 2;
+
+        for (const track of tracks) {
+            if (!track.block_section_id) continue;
+
+            const cx = this.gridToScreenX(track.x, track.y);
+            const cy = this.gridToScreenY(track.x, track.y);
+            const color = this.getBlockColor(track.block_section_id);
+
+            // Draw thicker colored lines along track segments
+            this.ctx.save();
+            this.ctx.translate(cx, cy);
+
+            const trackBits = track.track_bits || 0;
+            const segments = getActiveSegments(trackBits);
+            const edgePoints = this.getEdgePoints(halfTile);
+
+            this.ctx.strokeStyle = color;
+            this.ctx.lineWidth = 12 * this.scale; // Thicker than regular track (4)
+            this.ctx.lineCap = 'butt'; // Use butt to avoid overlap with neighboring tiles
+
+            for (const [e1, e2] of segments) {
+                const start = edgePoints[e1];
+                const end = edgePoints[e2];
+                if (start && end) {
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(start.x, start.y);
+                    this.ctx.lineTo(end.x, end.y);
+                    this.ctx.stroke();
+                }
+            }
+
+            this.ctx.restore();
+        }
+
+        // Block detail labels are now drawn separately after tracks
+        // to ensure they appear on top of everything
+    }
+
+    // Draw block detail labels - multiline text box on top of tracks
+    drawBlockDetailLabels(tracks) {
+        // Group tracks by block_section_id and find center tile
+        const blockTracks = {};
+        for (const track of tracks) {
+            if (!track.block_section_id) continue;
+            if (!blockTracks[track.block_section_id]) {
+                blockTracks[track.block_section_id] = [];
+            }
+            blockTracks[track.block_section_id].push(track);
+        }
+
+        const tileSize = this.gridSize * this.scale;
+        const halfTile = tileSize / 2;
+
+        // First pass: find which block is being hovered
+        let hoveredBlockId = null;
+        let hoveredBlockData = null;
+
+        for (const [blockId, blockTrackList] of Object.entries(blockTracks)) {
+            if (blockTrackList.length === 0) continue;
+
+            const centerIndex = Math.floor(blockTrackList.length / 2);
+            const centerTrack = blockTrackList[centerIndex];
+            const cx = this.gridToScreenX(centerTrack.x, centerTrack.y);
+            const cy = this.gridToScreenY(centerTrack.x, centerTrack.y);
+
+            const offsetY = tileSize * 0.35;
+            const offsetX = tileSize * 0.3;
+            const neOffsetX = 10;
+            const neOffsetY = -10;
+
+            // Estimate label bounds (approximate)
+            const labelX = cx + offsetX + neOffsetX;
+            const labelY = cy + offsetY + neOffsetY;
+            const labelWidth = 100 * this.scale; // Approximate width
+            const labelHeight = 40 * this.scale; // Approximate height
+
+            // Check if mouse is over this label
+            if (this.mouseX >= labelX - 5 && this.mouseX <= labelX + labelWidth + 5 &&
+                this.mouseY >= labelY - 5 && this.mouseY <= labelY + labelHeight + 5) {
+                hoveredBlockId = blockId;
+                hoveredBlockData = {
+                    blockTrackList,
+                    centerTrack,
+                    cx, cy
+                };
+                break;
+            }
+        }
+
+        // Second pass: draw non-hovered blocks (70% alpha, single line only)
+        for (const [blockId, blockTrackList] of Object.entries(blockTracks)) {
+            if (blockId === hoveredBlockId) continue; // Skip hovered block
+            if (blockTrackList.length === 0) continue;
+
+            const centerIndex = Math.floor(blockTrackList.length / 2);
+            const centerTrack = blockTrackList[centerIndex];
+            const cx = this.gridToScreenX(centerTrack.x, centerTrack.y);
+            const cy = this.gridToScreenY(centerTrack.x, centerTrack.y);
+
+            const blockInfo = this.currentBlocks?.[blockId] || {};
+            const blockName = blockInfo.name || '';
+            const shortId = blockId.length > 10 ? blockId.slice(-6) : blockId;
+            const displayName = blockName || shortId;
+
+            const offsetY = tileSize * 0.35;
+            const offsetX = tileSize * 0.3;
+            const neOffsetX = 10;
+            const neOffsetY = -10;
+
+            this.ctx.save();
+
+            const fontSize = Math.max(5, 8 * this.scale);
+            this.ctx.font = `${fontSize}px sans-serif`;
+            this.ctx.textAlign = 'left';
+            this.ctx.textBaseline = 'top';
+            const lineHeight = fontSize + 2;
+
+            const line1 = displayName;
+            const line1Width = this.ctx.measureText(line1).width;
+
+            const padding = 1;
+            const boxX = cx + offsetX + neOffsetX - padding;
+            const boxY = cy + offsetY + neOffsetY - padding;
+            const boxWidth = line1Width + padding * 2;
+            const boxHeight = lineHeight + padding * 2;
+
+            // Draw background box with 70% alpha
+            this.ctx.fillStyle = 'rgba(13, 16, 32, 0.7)';
+            this.ctx.strokeStyle = 'rgba(100, 100, 150, 0.4)';
+            this.ctx.lineWidth = 1;
+            this.ctx.beginPath();
+            this.ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 3);
+            this.ctx.fill();
+            this.ctx.stroke();
+
+            // Line 1: Block name only
+            this.ctx.fillStyle = 'rgba(221, 221, 221, 0.7)';
+            this.ctx.fillText(line1, cx + offsetX + neOffsetX, cy + offsetY + neOffsetY);
+
+            this.ctx.restore();
+        }
+
+        // Third pass: if there's a hovered block, highlight tracks and draw full info
+        if (hoveredBlockId && hoveredBlockData) {
+            const { blockTrackList, centerTrack, cx, cy } = hoveredBlockData;
+            const blockInfo = this.currentBlocks?.[hoveredBlockId] || {};
+
+            // Draw highlighted tracks on top
+            this.ctx.save();
+            const blockColor = this.getBlockColor(hoveredBlockId);
+            const edgePoints = this.getEdgePoints(halfTile);
+
+            for (const track of blockTrackList) {
+                const trackCx = this.gridToScreenX(track.x, track.y);
+                const trackCy = this.gridToScreenY(track.x, track.y);
+                
+                this.ctx.save();
+                this.ctx.translate(trackCx, trackCy);
+
+                const trackBits = track.track_bits || 0;
+                const segments = getActiveSegments(trackBits);
+
+                this.ctx.strokeStyle = blockColor.replace('0.6', '0.9'); // Increase opacity
+                this.ctx.lineWidth = 12 * this.scale;
+                this.ctx.lineCap = 'butt';
+
+                for (const [e1, e2] of segments) {
+                    const start = edgePoints[e1];
+                    const end = edgePoints[e2];
+                    if (start && end) {
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(start.x, start.y);
+                        this.ctx.lineTo(end.x, end.y);
+                        this.ctx.stroke();
+                    }
+                }
+
+                this.ctx.restore();
+            }
+            this.ctx.restore();
+
+            // Draw full label with 100% alpha
+            const blockName = blockInfo.name || '';
+            const blockState = (blockInfo.state || 'FREE').toUpperCase();
+            const stateColors = {
+                'FREE': '#04d361',
+                'RESERVED': '#ffd93d',
+                'OCCUPIED': '#e83f5b',
+                'CAUTION': '#ff9500'
+            };
+            const stateColor = stateColors[blockState] || '#888';
+
+            const shortId = hoveredBlockId.length > 10 ? hoveredBlockId.slice(-6) : hoveredBlockId;
+            const displayName = blockName || shortId;
+
+            const offsetY = tileSize * 0.35;
+            const offsetX = tileSize * 0.3;
+            const neOffsetX = 10;
+            const neOffsetY = -10;
+
+            this.ctx.save();
+
+            const fontSize = Math.max(5, 8 * this.scale);
+            this.ctx.font = `${fontSize}px sans-serif`;
+            this.ctx.textAlign = 'left';
+            this.ctx.textBaseline = 'top';
+            const lineHeight = fontSize + 2;
+            const trackCount = blockTrackList.length;
+
+            // Build all lines
+            const line1 = displayName;
+            const line2 = `${blockState} ${trackCount} tiles`;
+            const lengthStr = blockInfo.length_cm ? `${blockInfo.length_cm}cm` : '-';
+            const radiusStr = blockInfo.min_radius_cm ? `R${blockInfo.min_radius_cm}` : '-';
+            const speedStr = blockInfo.max_speed_kmh ? `${blockInfo.max_speed_kmh}km/h` : '-';
+            const line3 = `${lengthStr} ${radiusStr} ${speedStr}`;
+
+            const maxWidth = Math.max(
+                this.ctx.measureText(line1).width,
+                this.ctx.measureText(line2).width,
+                this.ctx.measureText(line3).width
+            );
+
+            const padding = 1;
+            const boxX = cx + offsetX + neOffsetX - padding;
+            const boxY = cy + offsetY + neOffsetY - padding;
+            const boxWidth = maxWidth + padding * 2;
+            const boxHeight = lineHeight * 3 + padding * 2;
+
+            // Draw background box with 100% alpha
+            this.ctx.fillStyle = 'rgba(13, 16, 32, 1.0)';
+            this.ctx.strokeStyle = 'rgba(100, 100, 150, 1.0)';
+            this.ctx.lineWidth = 1;
+            this.ctx.beginPath();
+            this.ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 3);
+            this.ctx.fill();
+            this.ctx.stroke();
+
+            let yPos = cy + offsetY + neOffsetY;
+
+            // Line 1: Block name (white)
+            this.ctx.fillStyle = '#ddd';
+            this.ctx.fillText(line1, cx + offsetX + neOffsetX, yPos);
+            yPos += lineHeight;
+
+            // Line 2: State and track count (colored by state)
+            this.ctx.fillStyle = stateColor;
+            this.ctx.fillText(line2, cx + offsetX + neOffsetX, yPos);
+            yPos += lineHeight;
+
+            // Line 3: Length, radius, speed (gray)
+            this.ctx.fillStyle = '#999';
+            this.ctx.fillText(line3, cx + offsetX + neOffsetX, yPos);
+
+            this.ctx.restore();
+        }
+    }
+
+    // Draw dotted lines from signals to blocks they monitor
+    drawSignalBlockConnections(tracks) {
+        // Collect all track positions for each block
+        const blockTracks = {};
+        for (const track of tracks) {
+            if (track.block_section_id) {
+                if (!blockTracks[track.block_section_id]) {
+                    blockTracks[track.block_section_id] = [];
+                }
+                blockTracks[track.block_section_id].push({
+                    x: track.x,
+                    y: track.y,
+                    track_bits: track.track_bits,
+                    screenX: this.gridToScreenX(track.x, track.y),
+                    screenY: this.gridToScreenY(track.x, track.y)
+                });
+            }
+        }
+
+        const half = (this.gridSize * this.scale) / 2;
+
+        // Draw dotted lines from signals to their monitored blocks
+        for (const track of tracks) {
+            // Iterate over all signals on this track
+            if (!track.signals || track.signals.length === 0) continue;
+
+            for (const signal of track.signals) {
+                const monitoredBlockId = signal.monitored_block_id;
+                if (!monitoredBlockId || !blockTracks[monitoredBlockId]) continue;
+
+                // Calculate signal circle center position
+                // Signal position is offset based on direction (right-hand side rule)
+                const tileX = this.gridToScreenX(track.x, track.y);
+                const tileY = this.gridToScreenY(track.x, track.y);
+                // detection_direction = where trains travel TO (required)
+                if (!signal.detection_direction) {
+                    console.error(`[Renderer] Signal ${signal.signal_id} missing detection_direction in block line drawing!`, signal);
+                    continue;  // Skip this signal
+                }
+                const detectionDir = signal.detection_direction;
+                const travelEdge = detectionDir.charAt(0).toUpperCase();
+                const trackBits = track.track_bits || 0;
+                const isLongPath = (trackBits === 1 || trackBits === 2);
+
+                // Calculate signal position within tile (matching drawSignal logic)
+                let signalOffsetX = 0, signalOffsetY = 0;
+                if (isLongPath) {
+                    const edgePoints = this.getEdgePoints(half);
+                    const rightSide = { 'N': 'E', 'S': 'W', 'E': 'S', 'W': 'N' }[travelEdge] || 'E';
+                    const sidePoint = edgePoints[rightSide] || { x: 0, y: 0 };
+                    signalOffsetX = sidePoint.x * 0.5;
+                    signalOffsetY = sidePoint.y * 0.5;
+                }
+                const signalX = tileX + signalOffsetX;
+                const signalY = tileY + signalOffsetY;
+
+                // Find the nearest track in the monitored block
+                const blockTrackList = blockTracks[monitoredBlockId];
+                let nearestDist = Infinity;
+                let nearestEdgeX = null, nearestEdgeY = null;
+
+                for (const bt of blockTrackList) {
+                    // Get the actual edge midpoints for this tile
+                    const edgePointsRelative = this.getEdgePoints(half);
+
+                    // Find which edges this track actually uses based on track_bits
+                    const usedEdges = trackBitsToEdges(bt.track_bits || 0);
+
+                    // Find the closest edge point where the track path actually ends
+                    for (const edgeName of usedEdges) {
+                        const ep = edgePointsRelative[edgeName];
+                        if (!ep) continue;
+
+                        // Convert relative position to absolute screen coordinates
+                        const absX = bt.screenX + ep.x;
+                        const absY = bt.screenY + ep.y;
+
+                        const dx = absX - signalX;
+                        const dy = absY - signalY;
+                        const dist = dx * dx + dy * dy;
+                        if (dist < nearestDist) {
+                            nearestDist = dist;
+                            nearestEdgeX = absX;
+                            nearestEdgeY = absY;
+                        }
+                    }
+                }
+
+                // Draw thin dotted line from signal to nearest block track edge
+                // Only draw if we found a valid edge point
+                if (nearestEdgeX !== null && nearestEdgeY !== null) {
+                    this.ctx.save();
+                    this.ctx.strokeStyle = 'rgba(180, 100, 255, 0.6)';  // Purple/magenta
+                    this.ctx.lineWidth = 2 * this.scale;
+                    this.ctx.setLineDash([4 * this.scale, 4 * this.scale]);
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(signalX, signalY);
+                    this.ctx.lineTo(nearestEdgeX, nearestEdgeY);
+                    this.ctx.stroke();
+                    this.ctx.setLineDash([]);
+                    this.ctx.restore();
+                }
+            }
+        }
+    }
+
+    // Draw hover preview for signal/station tools
+    // Signal preview now matches actual signal rendering position (drawSignal logic)
+    // signalDirection is now the detection_direction (where trains travel TO)
+    drawHoverPreview(gridPos, toolType, isValid, signalDirection = null, trackBits = null) {
+        const cx = this.gridToScreenX(gridPos.x, gridPos.y);
+        const cy = this.gridToScreenY(gridPos.x, gridPos.y);
+        const half = (this.gridSize * this.scale) / 2;
+
+        this.ctx.save();
+
+        // Draw diamond highlight
+        this.ctx.strokeStyle = isValid ? 'rgba(4, 211, 97, 0.8)' : 'rgba(232, 63, 91, 0.5)';
+        this.ctx.fillStyle = isValid ? 'rgba(4, 211, 97, 0.2)' : 'rgba(232, 63, 91, 0.1)';
+        this.ctx.lineWidth = 2 * this.scale;
+
+        this.ctx.beginPath();
+        this.ctx.moveTo(cx, cy - half);
+        this.ctx.lineTo(cx + half, cy);
+        this.ctx.lineTo(cx, cy + half);
+        this.ctx.lineTo(cx - half, cy);
+        this.ctx.closePath();
+        this.ctx.fill();
+        this.ctx.stroke();
+
+        // Draw tool icon preview
+        if (isValid) {
+            if (toolType === 'signal' && signalDirection) {
+                // Draw signal preview matching actual signal rendering (drawSignal logic)
+                // signalDirection = detection_direction (where trains travel TO)
+                this.ctx.translate(cx, cy);
+
+                const detectionDir = signalDirection.charAt(0).toUpperCase();
+                const travelEdge = detectionDir;  // detection_direction IS the travel direction
+                const edgePoints = this.getEdgePoints(half);
+                const isLongPath = (trackBits === 1 || trackBits === 2);  // NS or EW straight tracks
+                const isDiagonal = (trackBits === 4 || trackBits === 8 || trackBits === 16 || trackBits === 32);
+
+                // Calculate signal position based on path type (same as drawSignal)
+                let sx, sy;
+                if (isLongPath) {
+                    // Right-hand side rule: position on right side relative to train's TRAVEL direction
+                    const rightSide = {
+                        'N': 'E', 'S': 'W', 'E': 'S', 'W': 'N'
+                    }[travelEdge] || 'E';
+                    const sidePoint = edgePoints[rightSide] || { x: 0, y: 0 };
+                    sx = sidePoint.x * 0.5;  // Quarter point toward that side
+                    sy = sidePoint.y * 0.5;
+                } else {
+                    // Center for short paths (diagonals: NE, NW, SE, SW)
+                    sx = 0;
+                    sy = 0;
+                }
+
+                // Calculate direction for stick angle (same logic as drawSingleSignal)
+                let dirX, dirY;
+                if (isDiagonal) {
+                    // For diagonal tracks, stick points ALONG the diagonal path (45 degree angle in isometric)
+                    // Base diagonal vectors represent direction from edge2 toward edge1 of the track
+                    // See drawSingleSignal for detailed vector calculation documentation
+                    let diagonalX, diagonalY;
+                    switch (trackBits) {
+                        case 4:  diagonalX = 0;  diagonalY = -1; break;  // NE: vertical up (E→N)
+                        case 8:  diagonalX = 1;  diagonalY = 0;  break;  // NW: horizontal right (W→N)
+                        case 16: diagonalX = -1; diagonalY = 0;  break;  // SE: horizontal left (E→S)
+                        case 32: diagonalX = 0;  diagonalY = 1;  break;  // SW: vertical down (W→S)
+                        default: diagonalX = 1;  diagonalY = 0;  break;
+                    }
+
+                    // Determine the two edges of this diagonal
+                    let edge1, edge2;
+                    switch (trackBits) {
+                        case 4:  edge1 = 'N'; edge2 = 'E'; break;
+                        case 8:  edge1 = 'N'; edge2 = 'W'; break;
+                        case 16: edge1 = 'S'; edge2 = 'E'; break;
+                        case 32: edge1 = 'S'; edge2 = 'W'; break;
+                        default: edge1 = 'N'; edge2 = 'E'; break;
+                    }
+
+                    // Use detection direction (not approach) to determine which way to point
+                    // If train exits via edge1, it approaches from edge2 → flip base to point toward edge2
+                    if (detectionDir === edge1) {
+                        diagonalX = -diagonalX;
+                        diagonalY = -diagonalY;
+                    }
+
+                    // Normalize
+                    const len = Math.sqrt(diagonalX * diagonalX + diagonalY * diagonalY);
+                    dirX = diagonalX / len;
+                    dirY = diagonalY / len;
+                } else {
+                    // For straight tracks, stick points in approach direction (where train comes FROM)
+                    // Compute approach direction (opposite of detection direction)
+                    const approachEdge = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}[detectionDir] || 'W';
+                    const dirPoint = edgePoints[approachEdge] || { x: 1, y: 0 };
+                    const len = Math.sqrt(dirPoint.x * dirPoint.x + dirPoint.y * dirPoint.y);
+                    dirX = dirPoint.x / len;
+                    dirY = dirPoint.y / len;
+                }
+
+                // Draw grey outer circle (preview style - semi-transparent)
+                this.ctx.strokeStyle = 'rgba(153, 153, 153, 0.8)';
+                this.ctx.lineWidth = 1.5 * this.scale;
+                this.ctx.beginPath();
+                this.ctx.arc(sx, sy, 4 * this.scale, 0, Math.PI * 2);
+                this.ctx.stroke();
+
+                // Draw stick parallel to path direction
+                const stickLength = half * 0.4;
+                const stickEndX = sx + dirX * stickLength;
+                const stickEndY = sy + dirY * stickLength;
+
+                this.ctx.strokeStyle = 'rgba(153, 153, 153, 0.8)';
+                this.ctx.lineWidth = 2 * this.scale;
+                this.ctx.beginPath();
+                this.ctx.moveTo(sx, sy);
+                this.ctx.lineTo(stickEndX, stickEndY);
+                this.ctx.stroke();
+
+                // Draw colored inner circle (green preview)
+                const innerRadius = 3 * this.scale;
+                this.ctx.fillStyle = 'rgba(4, 211, 97, 0.7)';  // Green semi-transparent
+                this.ctx.beginPath();
+                this.ctx.arc(sx, sy, innerRadius, 0, Math.PI * 2);
+                this.ctx.fill();
+
+                // Draw orthogonal stroke at end of stick
+                const orthoX = -dirY;
+                const orthoY = dirX;
+                const orthoLen = half * 0.15;
+
+                this.ctx.beginPath();
+                this.ctx.moveTo(stickEndX - orthoX * orthoLen, stickEndY - orthoY * orthoLen);
+                this.ctx.lineTo(stickEndX + orthoX * orthoLen, stickEndY + orthoY * orthoLen);
+                this.ctx.stroke();
+
+                // Draw direction label
+                this.ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                this.ctx.font = `bold ${8 * this.scale}px sans-serif`;
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                // Position label opposite to stick direction
+                const labelX = sx - dirX * half * 0.3;
+                const labelY = sy - dirY * half * 0.3;
+                this.ctx.fillText(signalDirection.charAt(0), labelX, labelY);
+                
+            } else {
+                // Draw icon
+                this.ctx.font = `${16 * this.scale}px sans-serif`;
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                const icon = toolType === 'signal' ? '🚦' : '🚉';
+                this.ctx.fillText(icon, cx, cy);
+            }
+        }
+
+        this.ctx.restore();
+    }
+
+    // Draw eraser preview path in red
+    drawEraserPreviewPath(path) {
+        if (!path || path.length === 0) return;
+
+        this.ctx.save();
+        this.ctx.strokeStyle = 'rgba(232, 63, 91, 0.8)';  // Red
+        this.ctx.fillStyle = 'rgba(232, 63, 91, 0.3)';
+        this.ctx.lineWidth = 4 * this.scale;
+        this.ctx.setLineDash([6, 4]);
+
+        const cellSize = this.gridSize * this.scale;
+        const halfTile = cellSize / 2;
+
+        // Draw X marks on each tile to be erased
+        for (const pos of path) {
+            const cx = this.gridToScreenX(pos.x, pos.y);
+            const cy = this.gridToScreenY(pos.x, pos.y);
+
+            // Fill diamond
+            this.ctx.beginPath();
+            this.ctx.moveTo(cx, cy - halfTile);
+            this.ctx.lineTo(cx + halfTile, cy);
+            this.ctx.lineTo(cx, cy + halfTile);
+            this.ctx.lineTo(cx - halfTile, cy);
+            this.ctx.closePath();
+            this.ctx.fill();
+
+            // Draw X
+            const xSize = halfTile * 0.4;
+            this.ctx.beginPath();
+            this.ctx.moveTo(cx - xSize, cy - xSize);
+            this.ctx.lineTo(cx + xSize, cy + xSize);
+            this.ctx.moveTo(cx + xSize, cy - xSize);
+            this.ctx.lineTo(cx - xSize, cy + xSize);
+            this.ctx.stroke();
+        }
+
+        // Connect path with line
+        this.ctx.setLineDash([]);
+        this.ctx.strokeStyle = 'rgba(232, 63, 91, 0.6)';
+        this.ctx.lineWidth = 2 * this.scale;
+        this.ctx.beginPath();
+        for (let i = 0; i < path.length; i++) {
+            const cx = this.gridToScreenX(path[i].x, path[i].y);
+            const cy = this.gridToScreenY(path[i].x, path[i].y);
+            if (i === 0) this.ctx.moveTo(cx, cy);
+            else this.ctx.lineTo(cx, cy);
+        }
+        this.ctx.stroke();
+
+        this.ctx.restore();
+    }
+
+    // Draw block assignment preview path in purple
+    drawBlockPreviewPath(path) {
+        if (!path || path.length === 0) return;
+
+        this.ctx.save();
+        this.ctx.strokeStyle = 'rgba(130, 87, 229, 0.8)';  // Purple
+        this.ctx.fillStyle = 'rgba(130, 87, 229, 0.3)';
+        this.ctx.lineWidth = 4 * this.scale;
+        this.ctx.setLineDash([6, 4]);
+
+        const cellSize = this.gridSize * this.scale;
+        const halfTile = cellSize / 2;
+
+        // Draw block indicator on each tile
+        for (const pos of path) {
+            const cx = this.gridToScreenX(pos.x, pos.y);
+            const cy = this.gridToScreenY(pos.x, pos.y);
+
+            // Fill diamond
+            this.ctx.beginPath();
+            this.ctx.moveTo(cx, cy - halfTile);
+            this.ctx.lineTo(cx + halfTile, cy);
+            this.ctx.lineTo(cx, cy + halfTile);
+            this.ctx.lineTo(cx - halfTile, cy);
+            this.ctx.closePath();
+            this.ctx.fill();
+
+            // Draw block symbol (square)
+            const boxSize = halfTile * 0.3;
+            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+            this.ctx.lineWidth = 2 * this.scale;
+            this.ctx.setLineDash([]);
+            this.ctx.strokeRect(cx - boxSize, cy - boxSize, boxSize * 2, boxSize * 2);
+            this.ctx.setLineDash([6, 4]);
+            this.ctx.strokeStyle = 'rgba(130, 87, 229, 0.8)';
+        }
+
+        // Connect path with line
+        this.ctx.setLineDash([]);
+        this.ctx.strokeStyle = 'rgba(130, 87, 229, 0.6)';
+        this.ctx.lineWidth = 2 * this.scale;
+        this.ctx.beginPath();
+        for (let i = 0; i < path.length; i++) {
+            const cx = this.gridToScreenX(path[i].x, path[i].y);
+            const cy = this.gridToScreenY(path[i].x, path[i].y);
+            if (i === 0) this.ctx.moveTo(cx, cy);
+            else this.ctx.lineTo(cx, cy);
+        }
+        this.ctx.stroke();
+
+        this.ctx.restore();
     }
 }

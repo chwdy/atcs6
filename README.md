@@ -1,21 +1,111 @@
 # Railway Management System
 
-A comprehensive railway management and simulation system implementing train dispatching, scheduling, safety systems, and pathfinding.
+A comprehensive railway management and simulation system implementing train dispatching, scheduling, safety systems, and pathfinding with a 6-bit track geometry system.
+
+## Quick Start
+
+### Running the Demo
+
+The demo includes automated regression testing to ensure no degradation:
+
+```bash
+# Run the demo with integrated tests
+python3 demo_main.py
+```
+
+This will:
+1. Run Python backend tests (if pytest is installed)
+2. Display test results
+3. Start the demo if tests pass
+4. Abort if critical tests fail
+
+### Starting the Server
+
+The server also includes automated regression testing:
+
+```bash
+# Start server with integrated tests (runs on port 5001)
+python3 server.py
+```
+
+This will:
+1. Run block validation tests (always)
+2. Run full backend test suite (if pytest is installed)
+3. Initialize demo network if tests pass
+4. Start Flask server on port 5001
+5. Abort if any tests fail
+
+**Note:** The server will NOT start if tests fail, ensuring you never deploy broken code!
+
+### Testing
+
+**Automated Test Suite (Recommended):**
+```bash
+# Run all tests with one command
+./run_all_tests.sh
+# or
+python3 run_all_tests.py
+```
+
+**Python Backend Tests:**
+```bash
+# Install pytest first
+pip install pytest
+
+# Run backend tests
+pytest tests/test_backend.py -v
+```
+
+**JavaScript API Tests:**
+```bash
+# Start the server first
+python3 server.py
+
+# In another terminal, run API tests
+node tests/test_api.js
+```
+
+**Integrated Testing:**
+The `demo_main.py` automatically runs Python tests before starting. This ensures:
+- No regression in core functionality
+- Block validation works correctly
+- Signal logic is intact
+- Track geometry is valid
+
+**Test Coverage:**
+- ✅ Track geometry and validation (42 valid track_bits configurations)
+- ✅ Block state management and transitions
+- ✅ Signal state calculation and placement validation
+- ✅ Station orientation detection (NS, EW, NW_SE, NE_SW)
+- ✅ Pathfinding algorithms
+- ✅ Dispatcher routing
+- ✅ Frontend-backend parity
+- ✅ All 42 REST API endpoints
 
 ## Project Structure
 
 ```
 atcs6/
-├── enums.py           # Base enumeration types
-├── track.py           # Track segment definitions
-├── blocking.py        # Block section safety system
-├── interlocking.py    # Interlocking and route management
-├── train.py           # Train and schedule definitions
-├── network.py         # Railway network management
-├── pathfinder.py      # A* pathfinding for trains
-├── dispatcher.py      # Train dispatching system
-├── demo_main.py       # Main demonstration script
-└── DEMO.py            # Original monolithic demo (deprecated)
+├── enums.py                 # Base enumeration types
+├── track.py                 # Track segment with 6-bit geometry
+├── blocking.py              # Block section safety system
+├── block.py                 # Block entity class
+├── block_validation.py      # Block continuity validation
+├── interlocking.py          # Interlocking and route management
+├── train.py                 # Train and schedule definitions
+├── network.py               # Railway network management
+├── pathfinder.py            # A* pathfinding for trains
+├── dispatcher.py            # Train dispatching system
+├── dispatcher_interface.py  # Route dispatcher interface
+├── railway_signal.py        # Signal entity class
+├── signal_validation.py     # Signal placement validation
+├── station.py               # Station entity with platforms
+├── simulation.py            # Background simulation loop
+├── server.py                # Flask REST API server
+├── demo_main.py             # Main demonstration script
+├── docs/                    # API and architecture documentation
+├── static/                  # Web frontend (HTML, CSS, JS)
+└── openttd_reference/       # External research documents
 ```
 
 ## Module Descriptions
@@ -28,7 +118,7 @@ atcs6/
 - `Direction`: Cardinal directions (NORTH, EAST, SOUTH, WEST)
 - `SignalState`: Railway signal states (GREEN, RED, YELLOW, DOUBLE_YELLOW)
 - `SwitchPosition`: Switch/turnout positions (MAIN, DIVERGING, LOCKED)
-- `BlockState`: Block section states (FREE, OCCUPIED, RESERVED, LOCKED)
+- `BlockState`: Block section states (FREE, OCCUPIED, RESERVED, CAUTION)
 - `TrainStatus`: Train operational status (IDLE, RUNNING, WAITING, AT_STATION, DELAYED)
 
 **TODO:**
@@ -196,7 +286,16 @@ atcs6/
 
 ## Usage
 
-Run the demonstration:
+### Run the Web Server
+
+```bash
+cd atcs6
+python server.py
+```
+
+Then open `http://localhost:5000` in your browser.
+
+### Run the Demo Script
 
 ```bash
 cd atcs6

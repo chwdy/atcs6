@@ -43,21 +43,23 @@
                         <button class="tool-btn" data-tool="track" title="Track">
                             <span class="tool-icon">═</span> Track
                         </button>
-                        <button class="tool-btn" data-tool="curve" title="Curve">
-                            <span class="tool-icon">╭</span> Curve
-                        </button>
-                        <button class="tool-btn" data-tool="switch" title="Switch">
-                            <span class="tool-icon">Y</span> Switch
-                        </button>
                         <button class="tool-btn" data-tool="signal" title="Signal">
                             <span class="tool-icon">🚦</span> Signal
                         </button>
                         <button class="tool-btn" data-tool="station" title="Station">
                             <span class="tool-icon">🚉</span> Station
                         </button>
+                        <button class="tool-btn" data-tool="extend-station" title="Extend Existing Station">
+                            <span class="tool-icon">🚉+</span> Extend
+                        </button>
                         <button class="tool-btn" data-tool="eraser" title="Eraser">
                             <span class="tool-icon">⌫</span> Eraser
                         </button>
+                        <button class="tool-btn" data-tool="block" title="Create New Block">
+                            <span class="tool-icon">▣</span> Block
+                        </button>
+                        <button class="tool-btn" data-tool="extend-block" title="Extend Existing Block">
+                            <span class="tool-icon">▣+</span> Extend</button>
                     </div>
                 </div>
 
@@ -75,7 +77,7 @@
                 </div>
 
                 <div class="sidebar-section debug-panel" id="debug-panel">
-                    <h3>🔍 Debug Info</h3>
+                    <h3>Debug Info</h3>
                     <div class="debug-controls">
                         <label>
                             <input type="checkbox" id="debug-show-bits" />
@@ -93,11 +95,30 @@
                             <input type="checkbox" id="debug-show-edges" />
                             <span>Show Edge Labels (N/E/S/W)</span>
                         </label>
+                        <label>
+                            <input type="checkbox" id="debug-show-blocks" />
+                            <span>Show Block Details</span>
+                        </label>
+                        <label>
+                            <input type="checkbox" id="debug-show-signals" />
+                            <span>Show Signal Details</span>
+                        </label>
                     </div>
 
                     <div id="tile-details" class="tile-details">
                         <p class="debug-hint">Hover over a tile to see details</p>
                     </div>
+                </div>
+            </aside>
+
+            <!-- Secondary sidebar for editors (block, signal details) - positioned to the right of main sidebar -->
+            <aside class="secondary-sidebar" id="secondary-sidebar">
+                <div class="secondary-sidebar-header">
+                    <h3 id="secondary-sidebar-title">Editor</h3>
+                    <button class="close-btn" id="close-secondary-sidebar" title="Close">×</button>
+                </div>
+                <div class="secondary-sidebar-content" id="secondary-sidebar-content">
+                    <!-- Dynamic content will be injected here -->
                 </div>
             </aside>
 
@@ -113,6 +134,9 @@
             </div>
         </main>
     </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="toast-container"></div>
 
     <script src="js/api.js?v=2"></script>
     <script src="js/renderer.js?v=2"></script>

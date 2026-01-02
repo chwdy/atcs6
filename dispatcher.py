@@ -15,12 +15,15 @@ TODO List:
 - [x] Add performance metrics and KPI tracking
 """
 
+import logging
 from typing import List, Optional, Tuple, Set
 from datetime import datetime
 from collections import defaultdict
 from train import Train, TrainSchedule
 from pathfinder import RailwayPathfinder
 from enums import TrainStatus, SignalState, Direction
+
+logger = logging.getLogger(__name__)
 
 
 class TrainDispatcher:
@@ -60,13 +63,13 @@ class TrainDispatcher:
         """
         train.schedule = schedule
         self.network.schedules[schedule.schedule_id] = schedule
-        
-        print(f"\nTrain {train.train_id} Schedule:")
+
+        logger.info("Train %s Schedule:", train.train_id)
         for i, stop in enumerate(schedule.stops):
-            print(f"  Stop {i+1}: {stop.station_name}")
-            print(f"    Arrival: {stop.arrival_time.strftime('%H:%M:%S')}")
-            print(f"    Departure: {stop.departure_time.strftime('%H:%M:%S')}")
-        
+            logger.info("  Stop %d: %s", i+1, stop.station_name)
+            logger.info("    Arrival: %s", stop.arrival_time.strftime('%H:%M:%S'))
+            logger.info("    Departure: %s", stop.departure_time.strftime('%H:%M:%S'))
+
         return True
     
     def dispatch_train(self, train: Train, target_pos: Tuple[int, int]) -> bool:
@@ -81,12 +84,12 @@ class TrainDispatcher:
             bool: True if dispatch successful
         """
         if not train.current_pos:
-            print(f"✗ Train {train.train_id} has no current position")
+            logger.warning("Train %s has no current position", train.train_id)
             return False
-        
-        print(f"\nDispatching train {train.train_id}")
-        print(f"  Current position: {train.current_pos}")
-        print(f"  Target position: {target_pos}")
+
+        logger.info("Dispatching train %s", train.train_id)
+        logger.info("  Current position: %s", train.current_pos)
+        logger.info("  Target position: %s", target_pos)
         
         # Find path
         path = self.pathfinder.find_path(
@@ -97,27 +100,27 @@ class TrainDispatcher:
         )
         
         if not path:
-            print(f"  ✗ No path found")
+            logger.warning("  No path found")
             return False
-        
-        print(f"  ✓ Path found, length: {len(path)} segments")
-        
+
+        logger.info("  Path found, length: %d segments", len(path))
+
         # Reserve block sections
         if not self._reserve_blocks_for_path(train, path):
-            print(f"  ✗ Cannot reserve required block sections")
+            logger.warning("  Cannot reserve required block sections")
             return False
-        
+
         # Lock interlocking routes
         if not self._lock_interlocking_routes(train, path):
-            print(f"  ✗ Cannot lock interlocking routes")
+            logger.warning("  Cannot lock interlocking routes")
             self._release_blocks(train)
             return False
-        
+
         train.current_path = path
         train.path_index = 0
         train.status = TrainStatus.RUNNING
-        
-        print(f"  ✓ Train dispatch successful")
+
+        logger.info("  Train dispatch successful")
         return True
     
     def _reserve_blocks_for_path(self, train: Train, 
@@ -131,20 +134,20 @@ class TrainDispatcher:
             if block:
                 required_blocks.add(block.block_id)
         
-        print(f"  Required block sections: {required_blocks}")
-        
+        logger.debug("  Required block sections: %s", required_blocks)
+
         # Attempt to reserve all blocks
         reserved = []
         for block_id in required_blocks:
             block = self.network.block_sections[block_id]
             if not block.reserve(train.train_id):
-                print(f"    ✗ Block section {block_id} reservation failed (state: {block.state.value})")
+                logger.warning("    Block section %s reservation failed (state: %s)", block_id, block.state.value)
                 # Rollback reservations
                 for prev_block_id in reserved:
                     self.network.block_sections[prev_block_id].release()
                 return False
             reserved.append(block_id)
-            print(f"    ✓ Block section {block_id} reserved")
+            logger.debug("    Block section %s reserved", block_id)
         
         train.reserved_blocks = reserved
         return True
@@ -182,7 +185,7 @@ class TrainDispatcher:
             # Reached destination
             train.status = TrainStatus.AT_STATION
             self._release_blocks(train)
-            print(f"Train {train.train_id} reached destination")
+            logger.info("Train %s reached destination", train.train_id)
             return False
         
         x, y, exit_dir = train.current_path[train.path_index]
@@ -190,8 +193,13 @@ class TrainDispatcher:
         # Check signal
         track = self.network.get_track(x, y)
         if track and track.track_type.value == "signal":
-            if track.signal_state == SignalState.RED:
-                print(f"Train {train.train_id} waiting at red signal ({x},{y})")
+            signals = self.network.get_signals_at(x, y)
+            blocking = None
+            if signals:
+                # Prefer signal where detection_direction matches train's travel direction
+                blocking = next((s for s in signals if s.detection_direction.upper() == exit_dir.name), signals[0])
+            if blocking and blocking.state == SignalState.RED:
+                logger.debug("Train %s waiting at red signal (%d,%d)", train.train_id, x, y)
                 train.status = TrainStatus.WAITING
                 return False
         

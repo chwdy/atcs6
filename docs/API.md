@@ -61,8 +61,6 @@ Create a new track segment.
   "x": 0,
   "y": 0,
   "track_bits": 3,
-  "signal_state": "GREEN",
-  "signal_direction": "NORTH",
   "station_name": "Main Station"
 }
 ```
@@ -72,9 +70,9 @@ Create a new track segment.
 | x | int | Yes | X coordinate |
 | y | int | Yes | Y coordinate |
 | track_bits | int | No | 6-bit track geometry (0-63) |
-| signal_state | string | No | RED, GREEN, YELLOW, DOUBLE_YELLOW |
-| signal_direction | string | No | NORTH, EAST, SOUTH, WEST |
 | station_name | string | No | Station name |
+
+Signals are created/updated via the signal endpoints; track creation no longer accepts `signal_state` or `signal_direction` on the track payload.
 
 **Response:**
 
@@ -102,9 +100,9 @@ Get track at coordinates. Supports negative coordinates: `/api/track/-5/10`
   "is_switch": false,
   "edges": ["N", "S"],
   "switch_points": {},
-  "signal_state": null,
-  "signal_direction": null,
-  "station_name": null
+  "station_name": null,
+  "block_section_id": null,
+  "signal_ids": []
 }
 ```
 
@@ -126,8 +124,9 @@ Update track properties.
 {
   "track_bits": 7,
   "switch_state": 0,
-  "signal_state": "RED",
-  "dead_end_ports": ["N"]
+  "dead_end_ports": ["N"],
+  "station_name": "Station A",
+  "block_section_id": "BLK_001"
 }
 ```
 
@@ -135,8 +134,11 @@ Update track properties.
 |-------|------|-------------|
 | track_bits | int | New track geometry |
 | switch_state | int | 0 = MAIN, 1 = DIVERGE |
-| signal_state | string | Signal color |
 | dead_end_ports | array | Manual dead-end override |
+| station_name | string | Station name (or null to clear) |
+| block_section_id | string | Block ID (or null to clear) |
+
+**Note:** Signal management via /api/track is deprecated. Use `/api/signal` endpoints instead.
 
 **Response:**
 
@@ -198,7 +200,7 @@ Add multiple tracks at once (used for drag-to-build).
 
 ### POST /api/trains
 
-Create a new train.
+Create a new train. Trains use a consist model where the train is composed of individual cars.
 
 **Request:**
 
@@ -207,7 +209,6 @@ Create a new train.
   "id": "train_1",
   "length": 1.0,
   "max_speed": 100.0,
-  "min_curve_radius": 50.0,
   "position": {"x": 0, "y": 0},
   "direction": "NORTH"
 }
@@ -216,18 +217,38 @@ Create a new train.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | id | string | Required | Unique train identifier |
-| length | float | 1.0 | Train length in tiles |
-| max_speed | float | 100.0 | Maximum speed |
-| min_curve_radius | float | 50.0 | Minimum curve radius |
+| length | float | 1.0 | Train length (used to create a LOCOMOTIVE car) |
+| max_speed | float | 100.0 | Maximum operational speed (km/h) |
 | position | object | null | Initial {x, y} position |
 | direction | string | null | NORTH, EAST, SOUTH, WEST |
+
+**Note:** The `length` parameter creates a single LOCOMOTIVE car with that length. For more complex consists, use the internal TrainCar model:
+
+```python
+# TrainCar model (internal)
+TrainCar(
+    car_id: str,
+    car_type: str,    # "LOCOMOTIVE", "PASSENGER", "FREIGHT"
+    length: float,    # Length in meters
+    mass: float,      # Mass in kg
+    max_speed: float  # Max speed for this car
+)
+```
 
 **Response:**
 
 ```json
 {
   "status": "success",
-  "train": { ... }
+  "train": {
+    "id": "train_1",
+    "length": 1.0,
+    "speed": 0,
+    "max_speed": 100.0,
+    "status": "IDLE",
+    "position": {"x": 0, "y": 0},
+    "direction": "NORTH"
+  }
 }
 ```
 
@@ -268,6 +289,610 @@ Control simulation execution.
 ### GET /api/simulation/state
 
 Get current simulation state. Returns same format as `/api/network`.
+
+---
+
+## Block Endpoints
+
+Blocks are track sections used for signaling and train separation.
+
+### GET /api/blocks
+
+List all blocks with track counts and positions.
+
+**Response:**
+
+```json
+[
+  {
+    "block_id": "BLK_abc123",
+    "name": "Main Line Block 1",
+    "state": "FREE",
+    "track_count": 5,
+    "positions": [[0, 0], [0, 1], [0, 2], [0, 3], [0, 4]],
+    "signal_count": 2
+  }
+]
+```
+
+### POST /api/blocks
+
+Create a new empty block.
+
+**Request:**
+
+```json
+{
+  "block_id": "BLK_MAIN_1",
+  "name": "Main Line Block 1"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| block_id | string | No | Custom block ID (auto-generated if not provided) |
+| name | string | No | Human-readable name |
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "block_id": "BLK_MAIN_1"
+}
+```
+
+### POST /api/blocks/create-with-tracks
+
+Create a new block with validated track assignments.
+
+**Request:**
+
+```json
+{
+  "name": "Platform Block",
+  "positions": [[0, 0], [0, 1], [0, 2]]
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "block_id": "BLK_abc123",
+  "tracks_assigned": 3
+}
+```
+
+**Validation:**
+- All positions must have tracks
+- All tracks must form a continuous connected path
+- Tracks cannot already belong to another block
+
+### GET /api/blocks/{block_id}
+
+Get block details including validation status and connected signals.
+
+**Response:**
+
+```json
+{
+  "block_id": "BLK_abc123",
+  "name": "Main Block",
+  "state": "FREE",
+  "track_count": 3,
+  "positions": [[0, 0], [0, 1], [0, 2]],
+  "is_valid": true,
+  "signals": ["SIG_001", "SIG_002"]
+}
+```
+
+### PATCH /api/blocks/{block_id}
+
+Update block properties.
+
+**Request:**
+
+```json
+{
+  "name": "New Block Name",
+  "state": "RESERVED"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| name | string | Block name |
+| state | string | FREE, RESERVED, OCCUPIED, or CAUTION |
+
+**Response:** Updated block object
+
+### DELETE /api/blocks/{block_id}
+
+Delete block and clear track references.
+
+**Response:** `{"success": true}`
+
+### POST /api/blocks/{block_id}/cycle-state
+
+Cycle block state through: FREE → RESERVED → OCCUPIED → CAUTION → FREE
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "new_state": "RESERVED"
+}
+```
+
+### GET /api/blocks/{block_id}/validate
+
+Validate block continuity (all tracks connected).
+
+**Response:**
+
+```json
+{
+  "valid": true
+}
+```
+
+Or with errors:
+
+```json
+{
+  "valid": false,
+  "error": "Block has disconnected segments"
+}
+```
+
+### POST /api/blocks/{block_id}/extend
+
+Extend an existing block with new track positions.
+
+**Request:**
+
+```json
+{
+  "positions": [[0, 3], [0, 4]],
+  "force": false
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| positions | array | Yes | List of [x, y] coordinates to add |
+| force | boolean | No | If true, removes signals in the path to allow extension |
+
+**Validation Rules:**
+- Block must exist
+- All positions must have tracks
+- Tracks cannot be switches (switches are block boundaries)
+- Tracks cannot be crossings (+ or X shape - crossings isolate paths)
+- Tracks cannot be station tiles
+- Tracks with signals require `force: true` to proceed (signals will be removed)
+- New positions must be adjacent to existing block
+- Extended block must remain continuous
+
+**Response (success):**
+
+```json
+{
+  "block_id": "BLK_abc123",
+  "name": "Main Block",
+  "state": "FREE",
+  "track_count": 5
+}
+```
+
+**Response with signal invalidation (when force=true):**
+
+When extending a block over tiles that have signals, the signals are not removed.
+Instead, their `monitored_block_id` is cleared and they are set to RED state.
+These invalidated signals will show an orange warning triangle in the UI until
+they are reconfigured to monitor a block.
+
+```json
+{
+  "block_id": "BLK_abc123",
+  "name": "Main Block",
+  "state": "FREE",
+  "track_count": 5,
+  "invalidated_signals": [
+    {
+      "signal_id": "SIG_001",
+      "position": [0, 3],
+      "direction": "NORTH",
+      "previous_block": "BLK_old456"
+    }
+  ]
+}
+```
+
+**Error Response:**
+
+```json
+{
+  "error": "Track at (0, 3): Has signal(s) - use force=true to invalidate and extend"
+}
+```
+
+### POST /api/blocks/{block_id}/tracks
+
+Add tracks to a block by positions.
+
+**Request:**
+
+```json
+{
+  "positions": [[0, 3], [0, 4]],
+  "force": false
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| positions | array | List of [x, y] coordinates |
+| force | boolean | If true, reassign tracks from other blocks |
+
+### DELETE /api/blocks/{block_id}/tracks
+
+Remove tracks from a block.
+
+**Request:**
+
+```json
+{
+  "positions": [[0, 3], [0, 4]]
+}
+```
+
+**Response:** `{"success": true, "removed": 2}`
+
+---
+
+## Signal Endpoints
+
+Signals control train movements and are associated with blocks.
+
+### GET /api/signals
+
+List all signals.
+
+**Response:**
+
+```json
+[
+  {
+    "signal_id": "SIG_abc123",
+    "x": 0,
+    "y": 0,
+    "direction": "NORTH",
+    "signal_type": "block",
+    "state": "GREEN",
+    "name": "Signal 1",
+    "monitored_block_id": "BLK_001"
+  }
+]
+```
+
+### POST /api/signal
+
+Create a new signal with validation.
+
+**Request:**
+
+```json
+{
+  "x": 0,
+  "y": 0,
+  "direction": "NORTH",
+  "signal_type": "block",
+  "name": "Home Signal",
+  "auto_connect": true
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| x | int | Yes | - | X coordinate |
+| y | int | Yes | - | Y coordinate |
+| direction | string | Yes | - | NORTH, EAST, SOUTH, WEST |
+| signal_type | string | No | "block" | Signal type |
+| name | string | No | null | Human-readable name |
+| auto_connect | boolean | No | true | Auto-connect to reachable block |
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "signal": {
+    "signal_id": "SIG_abc123",
+    "x": 0,
+    "y": 0,
+    "direction": "NORTH",
+    "signal_type": "block",
+    "state": "RED",
+    "monitored_block_id": "BLK_001"
+  }
+}
+```
+
+**Validation Errors:**
+- No track at position
+- Track has no valid exit in specified direction
+- Signal already exists at this position/direction
+
+### GET /api/signal/{signal_id}
+
+Get signal by ID.
+
+**Response:** Signal object
+
+### GET /api/signal/{x}/{y}
+
+Get signal at position.
+
+**Response:** Signal object or 404
+
+### PATCH /api/signal/{signal_id}
+
+Update signal properties.
+
+**Request:**
+
+```json
+{
+  "state": "GREEN",
+  "name": "Updated Name",
+  "monitored_block_id": "BLK_002"
+}
+```
+
+### DELETE /api/signal/{signal_id}
+
+Delete signal by ID.
+
+**Response:** `{"success": true}`
+
+### DELETE /api/signal/{x}/{y}
+
+Delete signal at position.
+
+**Response:** `{"success": true}`
+
+### GET /api/signal/validate/{x}/{y}
+
+Check if signal can be placed at position and get valid directions.
+
+**Response:**
+
+```json
+{
+  "can_place": true,
+  "valid_directions": ["NORTH", "SOUTH"],
+  "existing_block": "BLK_001"
+}
+```
+
+### POST /api/signal/{signal_id}/connect
+
+Manually connect signal to a block.
+
+**Request:**
+
+```json
+{
+  "block_id": "BLK_001"
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "connected_block": "BLK_001"
+}
+```
+
+### GET /api/signal/{signal_id}/reachable-blocks
+
+Get all blocks reachable from a signal (for manual connection UI).
+
+**Response:**
+
+```json
+{
+  "blocks": [
+    {"block_id": "BLK_001", "distance": 0},
+    {"block_id": "BLK_002", "distance": 3}
+  ]
+}
+```
+
+---
+
+## Bulk Track Operations
+
+### POST /api/tracks/bulk-delete
+
+Delete multiple tracks at once.
+
+**Request:**
+
+```json
+{
+  "positions": [[0, 0], [0, 1], [0, 2]]
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "deleted": 3
+}
+```
+
+### POST /api/tracks/assign-block
+
+Assign multiple tracks to a block.
+
+**Request:**
+
+```json
+{
+  "positions": [[0, 0], [0, 1], [0, 2]],
+  "block_id": "BLK_001"
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "assigned": 3
+}
+```
+
+---
+
+## Station Endpoints
+
+Stations are multi-tile platform entities with physical properties.
+
+### GET /api/stations
+
+List all stations with orientation data.
+
+**Response:**
+
+```json
+[
+  {
+    "station_id": "STA_abc123",
+    "name": "Central Station",
+    "positions": [[0, 0], [0, 1], [0, 2]],
+    "length_cm": 150.0,
+    "platform_side": "both",
+    "top_speed_kmh": 40.0,
+    "tile_count": 3,
+    "orientation": "NS",
+    "sorted_positions": [[0, 2], [0, 1], [0, 0]],
+    "platform_sides": ["west", "east"]
+  }
+]
+```
+
+| Field | Description |
+|-------|-------------|
+| orientation | Track direction: `NS`, `EW`, `NE_SW`, or `NW_SE` |
+| sorted_positions | Positions sorted along track direction |
+| platform_sides | Absolute compass directions for platforms |
+
+### POST /api/station
+
+Create a new station at specified position.
+
+**Request:**
+
+```json
+{
+  "x": 0,
+  "y": 0,
+  "station_id": "STA_MAIN",
+  "name": "Main Station",
+  "length_cm": 100.0,
+  "platform_side": "both",
+  "top_speed_kmh": 30.0
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| x | int | Yes | - | X coordinate |
+| y | int | Yes | - | Y coordinate |
+| station_id | string | No | Auto | Custom station ID |
+| name | string | No | "" | Human-readable name |
+| length_cm | float | No | 0.0 | Physical track length |
+| platform_side | string | No | "both" | `left`, `right`, or `both` |
+| top_speed_kmh | float | No | null | Speed limit |
+
+**Response:** Station object (same as GET response)
+
+### GET /api/station/{station_id}
+
+Get station by ID.
+
+**Response:** Station object
+
+**Error (404):** `{"error": "Station not found"}`
+
+### PATCH /api/station/{station_id}
+
+Update station properties.
+
+**Request:**
+
+```json
+{
+  "name": "New Name",
+  "length_cm": 200.0,
+  "platform_side": "left",
+  "top_speed_kmh": 50.0
+}
+```
+
+**Response:** Updated station object
+
+### DELETE /api/station/{station_id}
+
+Delete station.
+
+**Response:** `{"success": true}`
+
+### GET /api/station/validate/{x}/{y}
+
+Check if station can be placed at position.
+
+**Response:**
+
+```json
+{
+  "can_place": true,
+  "existing_block": "BLK_001"
+}
+```
+
+**Validation errors:**
+- No track at position
+- Cannot place on switch
+- Cannot place on tile with signal
+- Tile already belongs to station
+
+### POST /api/station/{station_id}/extend
+
+Extend station platform with new tiles.
+
+**Request:**
+
+```json
+{
+  "positions": [[0, 3], [0, 4]]
+}
+```
+
+**Response:** Updated station object
+
+**Validation:**
+- New tiles must be adjacent to existing station
+- All tiles must form continuous path
 
 ---
 

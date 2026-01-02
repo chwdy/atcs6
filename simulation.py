@@ -1,3 +1,4 @@
+import logging
 import time
 from datetime import datetime
 from typing import List, Optional
@@ -5,6 +6,8 @@ from network import RailwayNetwork
 from train import Train
 from dispatcher import TrainDispatcher
 from enums import TrainStatus, SignalState, TrackType
+
+logger = logging.getLogger(__name__)
 
 class SimulationController:
     def __init__(self, network: RailwayNetwork):
@@ -39,7 +42,7 @@ class SimulationController:
                 if target:
                     # If we are at the start of a journey or idle
                     if not train.current_path:
-                        print(f"Auto-dispatching train {train.train_id} to {target.station_name}")
+                        logger.info("Auto-dispatching train %s to %s", train.train_id, target.station_name)
                         self.dispatcher.dispatch_train(train, target.station_pos)
                         
                         # Request route immediately
@@ -85,10 +88,17 @@ class SimulationController:
             if next_track:
                 # Check signal at entry to next track
                 if current_track.track_type == TrackType.SIGNAL:
-                    if current_track.signal_state == SignalState.RED:
-                        limit_speed = 0
-                    elif current_track.signal_state == SignalState.YELLOW:
-                        limit_speed = 40 # Slow down
+                    signals = self.network.get_signals_at(*current_pos)
+                    if signals:
+                        aligned = None
+                        if train.current_direction:
+                            # Find signal where detection_direction matches train's travel direction
+                            aligned = next((s for s in signals if s.detection_direction.upper() == train.current_direction.name), None)
+                        sig = aligned or signals[0]
+                        if sig.state == SignalState.RED:
+                            limit_speed = 0
+                        elif sig.state == SignalState.YELLOW:
+                            limit_speed = 40 # Slow down
                 
                 # Check if next track is occupied by another train
                 if next_track.is_occupied() and next_track.occupied_by != train.train_id:
@@ -137,10 +147,18 @@ class SimulationController:
             
         # Check signal again (hard stop if red)
         current_track = self.network.get_track(*old_pos)
-        if current_track.track_type == TrackType.SIGNAL and current_track.signal_state == SignalState.RED:
-            train.distance_on_track = current_track.length
-            train.current_speed = 0
-            return
+        if current_track.track_type == TrackType.SIGNAL:
+            signals = self.network.get_signals_at(*old_pos)
+            if signals:
+                aligned = None
+                if train.current_direction:
+                    # Find signal where detection_direction matches train's travel direction
+                    aligned = next((s for s in signals if s.detection_direction.upper() == train.current_direction.name), None)
+                sig = aligned or signals[0]
+                if sig.state == SignalState.RED:
+                    train.distance_on_track = current_track.length
+                    train.current_speed = 0
+                    return
             
         # Update occupancy
         block = self.network.get_block_section((next_x, next_y))

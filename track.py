@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 import warnings
 
-from enums import TrackType, Direction, SignalState, SwitchPosition
+from enums import TrackType, Direction, SwitchPosition
 
 # === Track bit constants ===
 TRACK_NS = 1   # 0b000001 - North to South
@@ -142,19 +142,18 @@ class TrackSegment:
     _switch_state: int = 0
 
     # === FEATURES ===
-    signal_state: Optional[SignalState] = None
-    signal_direction: Optional[Direction] = None
-    station_name: Optional[str] = None
+    signal_ids: List[str] = field(default_factory=list)  # Max 2 signals per tile (one per direction)
+    station_id: Optional[str] = None         # Reference to Station.station_id
     block_section_id: Optional[str] = None
 
     # === OTHER PROPERTIES ===
     length: float = 1.0
+    curve_radius: Optional[float] = None  # Minimum curve radius (None = straight track)
     occupied_by: Optional[str] = None
     reserved_by: Optional[str] = None
     wear_level: float = 0.0
     last_maintenance: Optional[str] = None
     maintenance_count: int = 0
-    curve_radius: Optional[float] = None  # kept for compatibility with callers
 
     def __post_init__(self):
         # Normalize dead-end inputs
@@ -257,9 +256,9 @@ class TrackSegment:
         """
         if self.track_bits in FORBIDDEN_TRACK_BITS:
             return TrackType.FORBIDDEN
-        if self.signal_state is not None:
+        if self.signal_ids:
             return TrackType.SIGNAL
-        if self.station_name is not None:
+        if self.station_id is not None:
             return TrackType.STATION
 
         n = self.num_paths
@@ -291,7 +290,7 @@ class TrackSegment:
 
     @property
     def connections(self) -> Dict[Direction, List[Direction]]:
-        """Legacy-friendly mapping: entry Direction -> possible exit Directions (respects switch state)."""
+        """Get possible exit directions from entry direction (respects switch state)."""
         conn: Dict[Direction, List[Direction]] = {}
         for d in Direction:
             exits = self.get_exit_directions(d)
@@ -359,26 +358,6 @@ class TrackSegment:
         self._switch_state = 0
 
     # === Dead-ends ===
-    def add_dead_end(self, edge: str) -> bool:
-        """
-        DEPRECATED: Use track_bits directly. Dead-ends are auto-detected via propagation.
-
-        Add buffer stop on an edge; fails if that edge already has a path.
-        """
-        warnings.warn(
-            "add_dead_end() is deprecated. Dead-ends are auto-detected by the propagation system. "
-            "Use track_bits directly when creating tracks.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        norm = _normalize_edge(edge)
-        if not norm:
-            return False
-        if self.track_bits & EDGE_MASKS[norm]:
-            return False
-        self.dead_end_ports.add(norm)
-        return True
-
     def remove_dead_end(self, edge: str) -> None:
         norm = _normalize_edge(edge)
         if norm:
@@ -456,76 +435,85 @@ class TrackSegment:
         """Return exit edges for a given entry edge.
 
         Uses global switch_state if this is a switch tile:
-        - 0 (MAIN): returns exit on long path (NS or EW) if available
-        - 1 (DIVERGE): returns exit on short path (diagonals)
+        - 0 (MAIN): only allows entry/exit via long path (NS or EW)
+        - 1 (DIVERGE): only allows entry/exit via short path (diagonals)
+
+        IMPORTANT: When use_switch_state=True and this is a switch, the entry edge
+        must be part of the ACTIVE segment. If a train enters from an edge that's
+        not part of the active segment, it's a derailment scenario (switch set against them).
         """
         entry_norm = _normalize_edge(entry_edge)
         if not entry_norm:
             return []
 
-        exits: List[str] = []
+        # First, find all geometrically possible exits (ignoring switch state)
+        all_exits: List[str] = []
         for bit in range(6):
             if self.track_bits & (1 << bit):
                 e1, e2 = BIT_TO_EDGES[bit]
                 if entry_norm == e1:
-                    exits.append(e2)
+                    all_exits.append(e2)
                 elif entry_norm == e2:
-                    exits.append(e1)
+                    all_exits.append(e1)
 
-        if not exits:
+        if not all_exits:
             return []
 
-        # If not using switch state or only one exit, return all/only exit
-        if not use_switch_state or len(exits) == 1:
-            return sorted(exits)
+        # If not using switch state, return all possible exits
+        if not use_switch_state:
+            return sorted(all_exits)
 
-        # Apply global switch state for multi-exit (switch) scenarios
-        # Check which SEGMENT (entry->exit path) is long vs short:
+        # Check if this is a switch (has multiple track segments that form a junction)
+        # A switch has 3+ edges, meaning at least 2 track bits are set
+        num_bits = bin(self.track_bits).count('1')
+        is_switch = num_bits >= 2 and len(self.edges) >= 3
+
+        # For non-switches, just return the geometrically possible exits
+        if not is_switch:
+            return sorted(all_exits)
+
+        # For switches: categorize exits by segment type (main vs diverge)
+        # AND verify the entry edge is part of an active segment
+        #
         # - Long segments: NS (bit 0), EW (bit 1) - these are the "main" routes
         # - Short segments: NE, NW, SE, SW (bits 2-5) - these are "diverging" routes
-        #
-        # For track_bits=7 (NS+EW+NE), entry from N:
-        #   - Exit S via NS (long) -> MAIN
-        #   - Exit E via NE (short) -> DIVERGE
-        
-        # Determine which exit uses a long segment vs short segment
+
         main_exits = []  # Exits via NS or EW segments
         diverge_exits = []  # Exits via diagonal segments
-        
-        for exit_edge in exits:
+
+        for exit_edge in all_exits:
             # Find which segment connects entry to this exit
             segment_key = (entry_norm, exit_edge)
             bit_idx = EDGES_TO_BIT.get(segment_key)
             if bit_idx is None:
                 continue
-            
+
             # Bits 0 (NS) and 1 (EW) are long/main paths
             # Bits 2-5 (NE, NW, SE, SW) are short/diverge paths
             if bit_idx <= 1:
                 main_exits.append(exit_edge)
             else:
                 diverge_exits.append(exit_edge)
-        
-        # MAIN (0): prefer long path exit, DIVERGE (1): prefer short path exit
-        if self._switch_state == 0 and main_exits:
-            return [main_exits[0]]
-        elif self._switch_state == 1 and diverge_exits:
-            return [diverge_exits[0]]
-        
-        # Fallback if preferred type not available
-        if main_exits and diverge_exits:
-            return [main_exits[0]] if self._switch_state == 0 else [diverge_exits[0]]
 
-        # Edge case: diagonal-only switches (e.g., track_bits=12 = NE+NW)
-        # No long paths exist, so use clockwise ordering: N, E, S, W
-        # MAIN (0) picks first in clockwise order, DIVERGE (1) picks second
-        CLOCKWISE_ORDER = ['N', 'E', 'S', 'W']
-        sorted_exits = sorted(exits, key=lambda e: CLOCKWISE_ORDER.index(e) if e in CLOCKWISE_ORDER else 99)
-        
+        # Apply switch state to determine which exits are ACTIVE
+        # MAIN (0): only main segment exits are valid
+        # DIVERGE (1): only diverge segment exits are valid
+        #
+        # If entry edge is not part of the active segment, return [] (switch set against train)
         if self._switch_state == 0:
-            return [sorted_exits[0]]
+            # MAIN: only allow exits via main (NS/EW) segments
+            if main_exits:
+                return [main_exits[0]]
+            else:
+                # Entry edge is not part of any main segment - switch is set against us
+                return []
         else:
-            return [sorted_exits[1]] if len(sorted_exits) > 1 else [sorted_exits[0]]
+            # DIVERGE: only allow exits via diverge (diagonal) segments
+            if diverge_exits:
+                return [diverge_exits[0]]
+            else:
+                # Entry edge is not part of any diverge segment - switch is set against us
+                return []
 
     def get_exit_directions(self, entry_direction: Direction, use_switch_state: bool = True) -> List[Direction]:
         """Return exit Directions for a given entry Direction."""
@@ -638,27 +626,7 @@ class TrackSegment:
 
         return 'UNKNOWN'
 
-    # === Compatibility helpers (legacy directed-path API) ===
-    def add_path(self, port1: str, port2: str, direction: str = 'both') -> bool:  # direction kept for signature
-        """
-        DEPRECATED: Use track_bits directly via set_track_bits() or constructor.
-
-        Converts port names to track_bits. Kept for backward compatibility.
-        """
-        warnings.warn(
-            "add_path() is deprecated. Use track_bits directly when creating tracks. "
-            "Example: TrackSegment(x, y, track_bits=TRACK_EW)",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        e1, e2 = _normalize_edge(port1), _normalize_edge(port2)
-        if not e1 or not e2 or e1 == e2:
-            return False
-        bit_idx = EDGES_TO_BIT.get((e1, e2))
-        if bit_idx is None:
-            return False
-        return self.add_track_bit(1 << bit_idx)
-
+    # === Path helpers (directed-path API) ===
     def remove_path(self, port1: str, port2: str) -> bool:
         e1, e2 = _normalize_edge(port1), _normalize_edge(port2)
         if not e1 or not e2:
@@ -687,9 +655,8 @@ class TrackSegment:
             "track_bits": self.track_bits,
             "dead_end_ports": sorted(self.dead_end_ports),
             "switch_state": self._switch_state if self.is_switch else None,
-            "signal_state": self.signal_state.value if self.signal_state else None,
-            "signal_direction": self.signal_direction.name if self.signal_direction else None,
-            "station_name": self.station_name,
+            "signal_ids": self.signal_ids,
+            "station_id": self.station_id,
             "block_section_id": self.block_section_id,
             "length": self.length,
             # Computed
@@ -715,11 +682,9 @@ class TrackSegment:
             dead_end_ports=set(data.get("dead_end_ports", [])),
             _switch_state=data.get("switch_state", 0) or 0,
         )
-        if data.get("signal_state"):
-            segment.signal_state = SignalState(data["signal_state"])
-        if data.get("signal_direction"):
-            segment.signal_direction = Direction[data["signal_direction"]]
-        segment.station_name = data.get("station_name")
+        # Load signal_ids list
+        segment.signal_ids = data.get("signal_ids", [])
+        segment.station_id = data.get("station_id")
         segment.block_section_id = data.get("block_section_id")
         segment.length = data.get("length", 1.0)
         return segment

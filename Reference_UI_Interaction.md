@@ -1,8 +1,12 @@
 # Reference: UI Interaction for Building
 
+> **Note:** This document describes design patterns from Simutrans (C++). For actual implementation, see `static/js/editor.js`.
+>
+> **Last Verified:** 2026-01-01
+
 ## Context
-This document explains how user interactions (clicks, drags, dialogs) translate into building actions in Simutrans.
-Key classes are defined in `src/simutrans/tool/simtool.h` and implemented in `simtool.cc`.
+This document explains how user interactions (clicks, drags, dialogs) translate into building actions, based on Simutrans patterns.
+Key classes in Simutrans are defined in `src/simutrans/tool/simtool.h` and implemented in `simtool.cc`.
 
 ## 1. General Tool Architecture
 All tools inherit from `tool_t`.
@@ -50,8 +54,7 @@ All tools inherit from `tool_t`.
 ### Interaction Flow
 1.  **Single Click:**
     *   Places a single signal at `pos`.
-    *   `roadsign_t::set_dir()` is called to align it with the track direction.
-    *   Direction is usually "Forward" relative to the track's default ribi unless the user rotates.
+    *   Direction is determined by the track's valid exits (via `track_bits` and edge masks).
 2.  **Dragging (Signal Spacing):**
     *   User clicks Start and End.
     *   The tool calculates a route between them.

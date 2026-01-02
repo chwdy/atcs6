@@ -85,7 +85,7 @@ class BlockState(Enum):
     FREE = "free"          # 空闲
     OCCUPIED = "occupied"  # 占用
     RESERVED = "reserved"  # 预约
-    LOCKED = "locked"      # 锁定（用于联锁）
+    CAUTION = "caution"    # 警告（列车刚离开，下一区段仍被占用，需减速）
 
 
 class TrainStatus(Enum):
@@ -95,3 +95,10 @@ class TrainStatus(Enum):
     WAITING = "waiting"
     AT_STATION = "at_station"
     DELAYED = "delayed"
+
+
+class PlatformSide(Enum):
+    """Which side(s) of the track have platforms"""
+    LEFT = "left"
+    RIGHT = "right"
+    BOTH = "both"

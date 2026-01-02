@@ -1,40 +1,33 @@
 class App {
     constructor() {
-        console.log('[App] Initializing...');
         this.renderer = new Renderer('rail-canvas');
-        console.log('[App] Renderer created');
         this.editor = new Editor(this.renderer, window.api);
-        console.log('[App] Editor created');
         this.simulationInterval = null;
         this.currentNetwork = null;
+        this.isSimulationRunning = false;
 
         this.setupControls();
-        console.log('[App] Controls setup complete');
         this.setupDebugPanel();
-        console.log('[App] Debug panel setup complete');
         this.refreshNetwork();
 
-        // Start polling loop
-        this.startPolling();
-        console.log('[App] Initialization complete');
+        // No polling by default - refresh is triggered by user interactions
+        // Simulation mode will start polling when needed
     }
 
     setupControls() {
-        console.log('[App] Setting up controls...');
-        
         document.getElementById('btn-play').addEventListener('click', () => {
-            console.log('[App] Play button clicked');
-            window.api.controlSimulation('start').then(r => console.log('[App] Play response:', r)).catch(e => console.error('[App] Play error:', e));
+            window.api.controlSimulation('start').catch(e => console.error('[App] Play error:', e));
+            this.startSimulationPolling();
         });
 
         document.getElementById('btn-pause').addEventListener('click', () => {
-            console.log('[App] Pause button clicked');
-            window.api.controlSimulation('stop').then(r => console.log('[App] Pause response:', r)).catch(e => console.error('[App] Pause error:', e));
+            window.api.controlSimulation('stop').catch(e => console.error('[App] Pause error:', e));
+            this.stopSimulationPolling();
         });
 
         document.getElementById('btn-reset').addEventListener('click', () => {
-            console.log('[App] Reset button clicked');
-            window.api.controlSimulation('reset').then(r => console.log('[App] Reset response:', r)).catch(e => console.error('[App] Reset error:', e));
+            window.api.controlSimulation('reset').catch(e => console.error('[App] Reset error:', e));
+            this.stopSimulationPolling();
             this.refreshNetwork();
         });
 
@@ -66,15 +59,34 @@ class App {
     }
 
     async refreshNetwork() {
-        console.log('[App] Refreshing network...');
+        // Skip refresh if editor is actively using a tool that needs hover preview
+        // This prevents flickering when moving the mouse with signal/station tools
+        if (this.editor && this.editor.isToolActive()) {
+            // Still update the cache and trains panel, but don't redraw directly
+            // The setCachedNetwork call will trigger re-validation of hover state
+            try {
+                const network = await window.api.getNetwork();
+                this.currentNetwork = network;
+                this.editor.setCachedNetwork(network);
+                this.updateTrainsPanel(network.trains);
+                // Validate that the current editor still exists (close if deleted)
+                this.editor.validateCurrentEditor();
+                // Don't call drawWithHoverPreview here - setCachedNetwork triggers updateHoverPreview
+                // which will call drawWithHoverPreview after re-validating the signal state
+            } catch (e) {
+                console.error('[App] Failed to refresh network:', e);
+            }
+            return;
+        }
+
         try {
             const network = await window.api.getNetwork();
-            console.log('[App] Got network:', network);
             this.currentNetwork = network;
             this.editor.setCachedNetwork(network);
             this.renderer.drawNetwork(network);
             this.updateTrainsPanel(network.trains);
-            console.log('[App] Network refresh complete');
+            // Validate that the current editor still exists (close if deleted)
+            this.editor.validateCurrentEditor();
         } catch (e) {
             console.error('[App] Failed to refresh network:', e);
         }
@@ -234,7 +246,7 @@ class App {
         });
 
         // Add change listeners to debug checkboxes to trigger re-render
-        const checkboxIds = ['debug-show-bits', 'debug-show-coords', 'debug-show-switches', 'debug-show-edges'];
+        const checkboxIds = ['debug-show-bits', 'debug-show-coords', 'debug-show-switches', 'debug-show-edges', 'debug-show-blocks', 'debug-show-signals'];
         checkboxIds.forEach(id => {
             const checkbox = document.getElementById(id);
             if (checkbox) {
@@ -329,12 +341,111 @@ class App {
         detailsDiv.innerHTML = html;
     }
 
-    startPolling() {
-        setInterval(async () => {
+    /**
+     * Start polling for simulation updates (train movement, signal changes)
+     * Only runs when simulation is active
+     */
+    startSimulationPolling() {
+        if (this.simulationInterval) return; // Already running
+        this.isSimulationRunning = true;
+        this.simulationInterval = setInterval(async () => {
             await this.refreshNetwork();
-        }, 500); // Poll every 500ms
+        }, 200); // 200ms for smooth train animation
+    }
+
+    /**
+     * Stop simulation polling
+     */
+    stopSimulationPolling() {
+        if (this.simulationInterval) {
+            clearInterval(this.simulationInterval);
+            this.simulationInterval = null;
+        }
+        this.isSimulationRunning = false;
+        // One final refresh to show stopped state
+        this.refreshNetwork();
     }
 }
+
+// Toast Notification System
+(function() {
+    // Ensure container exists
+    let container = document.getElementById('toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        container.className = 'toast-container';
+        document.body.appendChild(container);
+    }
+
+    // Toast icons for each type
+    const ICONS = {
+        error: '❌',
+        success: '✅',
+        warning: '⚠️',
+        info: 'ℹ️'
+    };
+
+    let toastCounter = 0;
+
+    /**
+     * Show a toast notification
+     * @param {string} message - Message to display
+     * @param {string} type - 'error', 'success', 'warning', or 'info'
+     * @param {number} duration - Duration in ms (default: 4000, 0 = no auto-dismiss)
+     * @returns {HTMLElement} - The toast element
+     */
+    function showToast(message, type = 'info', duration = 4000) {
+        const toastId = `toast-${toastCounter++}`;
+
+        // Create toast element
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        toast.id = toastId;
+        toast.innerHTML = `
+            <span class="toast-icon">${ICONS[type] || ICONS.info}</span>
+            <div class="toast-message">${message}</div>
+            <button class="toast-close" aria-label="Close">×</button>
+        `;
+
+        // Add to container
+        container.appendChild(toast);
+
+        // Close button handler
+        const closeBtn = toast.querySelector('.toast-close');
+        closeBtn.onclick = () => dismissToast(toastId);
+
+        // Auto-dismiss after duration (if > 0)
+        if (duration > 0) {
+            setTimeout(() => dismissToast(toastId), duration);
+        }
+
+        return toast;
+    }
+
+    /**
+     * Dismiss a toast by ID
+     * @param {string} toastId - ID of toast to dismiss
+     */
+    function dismissToast(toastId) {
+        const toast = document.getElementById(toastId);
+        if (!toast) return;
+
+        // Add fade-out animation
+        toast.classList.add('toast-fade-out');
+
+        // Remove after animation completes
+        setTimeout(() => {
+            if (toast.parentNode) {
+                toast.parentNode.removeChild(toast);
+            }
+        }, 300);
+    }
+
+    // Expose to global scope
+    window.showToast = showToast;
+    window.dismissToast = dismissToast;
+})();
 
 // Initialize app when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {

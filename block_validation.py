@@ -1,0 +1,324 @@
+"""
+Block validation module for the railway signaling system.
+
+Validates that blocks are created and modified correctly according to
+railway signaling rules.
+"""
+
+from typing import Tuple, List, Optional, Set
+from collections import deque
+
+
+def validate_block_path(path: List[Tuple[int, int]], mode: str, network) -> Tuple[bool, Optional[str]]:
+    """
+    Validate a path for block creation/extension.
+
+    Per spec Section 5.4, validates:
+    1. No switches inside block (switches are block boundaries)
+    2. No platforms inside block (platforms are natural block boundaries)
+    3. No signals crossing (signals create block boundaries)
+    4. Path must be continuous
+    5. For CREATE mode, tiles must not have existing block assignment
+
+    Args:
+        path: List of (x, y) tile positions to form the block
+        mode: 'create' or 'extend'
+        network: RailwayNetwork instance for lookups
+
+    Returns:
+        Tuple of (is_valid, error_message)
+        error_message is None if valid
+    """
+    if not path:
+        return True, None
+
+    for x, y in path:
+        track = network.get_track(x, y)
+        if not track:
+            return False, f"No track at position ({x}, {y})"
+
+        # Rule 1: No switches inside block
+        if track.is_switch:
+            return False, f"Switches cannot be inside blocks: position ({x}, {y})"
+
+        # Rule 2: No platforms inside block
+        if track.station_id is not None:
+            return False, f"Platforms cannot be inside blocks: position ({x}, {y}) belongs to station {track.station_id}"
+
+        # Rule 3: Check for signals (creates boundary)
+        if track.signal_ids:
+            return False, f"Signal at ({x}, {y}) creates block boundary"
+
+        # Rule 4: For CREATE mode, tiles must not have existing block
+        if mode == 'create' and track.block_section_id is not None:
+            return False, f"Tile ({x}, {y}) already assigned to block {track.block_section_id}"
+
+    # Rule 5: Path must be continuous
+    if len(path) > 1:
+        is_continuous, errors = validate_block_assignment_continuity([], path, network)
+        if not is_continuous:
+            return False, f"Path is not continuous: {', '.join(errors)}"
+
+    return True, None
+
+
+def is_crossing(track_bits: int) -> bool:
+    """
+    Check if track_bits represents a crossing (+ shape).
+
+    A crossing is NS + EW combined (track_bits = 3), which creates
+    two isolated paths that cross but don't connect.
+
+    Args:
+        track_bits: 6-bit track configuration
+
+    Returns:
+        True if this is a crossing
+    """
+    # NS (1) + EW (2) = 3 is a standard + crossing
+    # Also check for diagonal crossings: NE+SW (36) and NW+SE (24)
+    return track_bits in (3, 24, 36)
+
+
+def validate_track_for_block(track, network) -> Tuple[bool, str]:
+    """
+    Validate if a track can be added to a block.
+
+    Rules:
+    1. Track must exist
+    2. Track cannot be a switch (switches are block boundaries)
+    3. Track cannot have a signal (signals mark block boundaries)
+    4. Track cannot be a station (stations have their own blocks)
+    5. Track cannot be a crossing (crossings isolate paths, blocks can't cross them)
+
+    Args:
+        track: TrackSegment to validate
+        network: RailwayNetwork instance for lookups
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if not track:
+        return False, "Track does not exist"
+
+    if track.is_switch:
+        return False, "Cannot add switch to block - switches are block boundaries"
+
+    if track.signal_ids:
+        signal_info = f" (signals {', '.join(track.signal_ids)})"
+        return False, f"Cannot add track with signal to block{signal_info} - signals mark boundaries"
+
+    if track.station_id is not None:
+        station_info = f" (station {track.station_id})" if track.station_id else ""
+        return False, f"Cannot add station tile to block{station_info} - stations have their own blocks"
+
+    # Rule 5: Check for crossings (+ shape or X shape)
+    if is_crossing(track.track_bits):
+        return False, "Cannot add crossing to block - crossings isolate paths and blocks cannot span them"
+
+    return True, ""
+
+
+def validate_block_assignment_continuity(
+    existing_positions: List[Tuple[int, int]],
+    new_positions: List[Tuple[int, int]],
+    network
+) -> Tuple[bool, List[str]]:
+    """
+    Validate that adding new positions maintains block continuity.
+
+    Uses BFS to check all positions (existing + new) form a connected path.
+
+    Args:
+        existing_positions: Current block positions
+        new_positions: Positions to add
+        network: RailwayNetwork instance
+
+    Returns:
+        Tuple of (is_continuous, error_messages)
+    """
+    if not new_positions:
+        return True, []
+
+    all_positions = set(existing_positions + new_positions)
+    if not all_positions:
+        return True, []
+
+    # BFS from first position to check connectivity
+    start_pos = list(all_positions)[0]
+    visited = set()
+    queue = deque([start_pos])
+    visited.add(start_pos)
+
+    while queue:
+        current = queue.popleft()
+        x, y = current
+
+        # Check all 4 cardinal neighbors
+        neighbors = [
+            (x + 1, y),
+            (x - 1, y),
+            (x, y + 1),
+            (x, y - 1)
+        ]
+
+        for neighbor in neighbors:
+            if neighbor in all_positions and neighbor not in visited:
+                # Check if there's actually a track connection
+                current_track = network.get_track(x, y)
+                neighbor_track = network.get_track(neighbor[0], neighbor[1])
+
+                if current_track and neighbor_track:
+                    # Check if tracks are connected via their edges
+                    if _tracks_are_connected(current_track, neighbor_track, network):
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+
+    # Check if all positions were reached
+    if len(visited) != len(all_positions):
+        unreached = all_positions - visited
+        errors = [
+            f"Block would be discontinuous. Unreached positions: {list(unreached)[:5]}"
+        ]
+        if len(unreached) > 5:
+            errors.append(f"...and {len(unreached) - 5} more")
+        return False, errors
+
+    return True, []
+
+
+def _tracks_are_connected(track1, track2, network) -> bool:
+    """
+    Check if two adjacent tracks are actually connected via their track geometry.
+
+    Args:
+        track1: First track segment
+        track2: Second track segment (must be adjacent to track1)
+        network: RailwayNetwork instance
+
+    Returns:
+        bool: True if tracks are connected via their edges
+    """
+    # Calculate direction from track1 to track2
+    dx = track2.x - track1.x
+    dy = track2.y - track1.y
+
+    # Must be exactly one tile apart
+    if abs(dx) + abs(dy) != 1:
+        return False
+
+    # Map direction to edge
+    direction_to_edge = {
+        (1, 0): 'east',
+        (-1, 0): 'west',
+        (0, 1): 'north',
+        (0, -1): 'south'
+    }
+
+    edge1 = direction_to_edge.get((dx, dy))
+    edge2 = direction_to_edge.get((-dx, -dy))  # Opposite direction
+
+    if not edge1 or not edge2:
+        return False
+
+    # Get available edges from track bits
+    edges1 = _get_edges_from_track_bits(track1.track_bits)
+    edges2 = _get_edges_from_track_bits(track2.track_bits)
+
+    # Tracks are connected if track1 has an edge toward track2 and vice versa
+    return edge1 in edges1 and edge2 in edges2
+
+
+def _get_edges_from_track_bits(track_bits: int) -> Set[str]:
+    """
+    Extract edge connections from track_bits.
+
+    Track bits encoding: Each bit represents a pair of connected edges
+    - Bit 0 (value 1): North-South connection
+    - Bit 1 (value 2): East-West connection
+    - Bit 2 (value 4): North-East connection
+    - Bit 3 (value 8): North-West connection
+    - Bit 4 (value 16): South-East connection
+    - Bit 5 (value 32): South-West connection
+
+    Args:
+        track_bits: Bitmask representing track connections
+
+    Returns:
+        Set of edge names: {'north', 'south', 'east', 'west'}
+    """
+    # Bit index -> edge pair mapping
+    BIT_TO_EDGES = {
+        0: ('north', 'south'),   # TRACK_NS = 1
+        1: ('east', 'west'),      # TRACK_EW = 2
+        2: ('north', 'east'),     # TRACK_NE = 4
+        3: ('north', 'west'),     # TRACK_NW = 8
+        4: ('south', 'east'),     # TRACK_SE = 16
+        5: ('south', 'west'),     # TRACK_SW = 32
+    }
+
+    edges = set()
+
+    # Check each bit position
+    for bit_index, (edge1, edge2) in BIT_TO_EDGES.items():
+        if track_bits & (1 << bit_index):
+            edges.add(edge1)
+            edges.add(edge2)
+
+    return edges
+
+
+def validate_block_properties(
+    block_id: str,
+    name: str,
+    length_cm: float,
+    max_speed_kmh: Optional[float]
+) -> Tuple[bool, List[str]]:
+    """
+    Validate block properties are reasonable.
+
+    Rules:
+    1. block_id must be non-empty and valid format
+    2. name should be non-empty (warning only)
+    3. length_cm must be >= 0
+    4. max_speed_kmh must be > 0 if provided
+
+    Args:
+        block_id: Block identifier
+        name: Block name
+        length_cm: Physical track length
+        max_speed_kmh: Optional speed limit
+
+    Returns:
+        Tuple of (is_valid, error_messages)
+    """
+    errors = []
+
+    if not block_id or not block_id.strip():
+        errors.append("block_id cannot be empty")
+
+    if length_cm < 0:
+        errors.append(f"length_cm cannot be negative: {length_cm}")
+
+    if max_speed_kmh is not None and max_speed_kmh <= 0:
+        errors.append(f"max_speed_kmh must be positive: {max_speed_kmh}")
+
+    return len(errors) == 0, errors
+
+
+def get_adjacent_positions(x: int, y: int) -> List[Tuple[int, int]]:
+    """
+    Get the 4 cardinal neighbor positions for a tile.
+
+    Args:
+        x, y: Tile position
+
+    Returns:
+        List of (x, y) tuples for adjacent positions
+    """
+    return [
+        (x + 1, y),
+        (x - 1, y),
+        (x, y + 1),
+        (x, y - 1)
+    ]

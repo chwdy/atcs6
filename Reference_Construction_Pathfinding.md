@@ -1,5 +1,9 @@
 # Reference: Construction Pathfinding in Simutrans
 
+> **Note:** This document describes design patterns from Simutrans (C++). For actual implementation, see `static/js/editor.js` (JavaScript construction pathfinder).
+>
+> **Last Verified:** 2026-01-01
+
 ## Context
 This document explains the "Construction Pathfinding" algorithm used in Simutrans (`src/simutrans/builder/wegbauer.cc`).
 **Crucial Distinction:** This is the system used **when the user drags the mouse** to build new tracks or roads. It determines how to connect Point A to Point B by placing *new* tiles.
@@ -102,6 +106,35 @@ The system calls `propagate_from_tile` to update neighbor connectivity:
 *   **Merge:** If a tile has NS track (1) and we build NE across it, the result is `1 | 4 = 5` (a switch).
 *   **Validate:** The 23 forbidden configurations prevent impossible 3-way switches.
 *   **Dead-ends:** Single-segment tiles at route ends become dead-end buffer stops.
+
+---
+
+## 6. JavaScript Implementation Notes
+
+The actual implementation in `static/js/editor.js` differs slightly from Simutrans:
+
+### Diagonal Build Mode (Shift Key)
+- **Shift + Drag**: Activates `diagonalBuildMode`
+- Creates stair-stepped diagonal segments (NW/SE or NE/SW)
+- Uses `pathToDiagonalTracks()` instead of standard `pathToTracks()`
+
+### Cost Factors in JavaScript
+```javascript
+costs = {
+    useExisting: 0.2, // Using existing track is cheapest
+    extend: 0.5,      // Extending existing track direction
+    diagonal: 1,      // Alternating direction (zigzag) is preferred
+    straight: 2,      // Going straight costs more
+    sameTurn: 3,      // Turning same direction twice in a row
+    createSwitch: 5,  // Creating a Y-junction
+    createCrossover: 7, // Creating a crossover
+    reverse: 100      // Going back (180 degree)
+};
+```
+
+### Key Classes
+- `ConstructionPathfinder`: A* pathfinder for building new tracks
+- `ExistingTrackPathfinder`: Follows existing tracks only (for block assignment, eraser)
 
 ---
 

@@ -1,5 +1,7 @@
 # 6-Bit TrackBits System Reference
 
+> **Last Verified:** 2026-01-01
+
 ## 1. Overview
 
 ### Why 6-Bit?
@@ -993,7 +995,7 @@ segment = TrackSegment(
 3. **Edges**: `edges = {edge for edge, mask in EDGE_MASKS.items() if track_bits & mask}`. RIBI is deprecated - use `track_bits` and `EDGE_MASKS` directly.
 4. **Switch points**: For each set bit, add exits to both edges; keep only edges with `len(exits) ≥ 2`.
 5. **Switch state**: Global per-tile `_switch_state: int` (0=MAIN, 1=DIVERGE). MAIN routes to long paths (NS/EW), DIVERGE routes to short paths (diagonals). For diagonal-only switches, uses clockwise ordering.
-6. **Classification**: Use `classify_track_type(track_bits)` table; feature overrides: signals if `signal_state` present, stations if `station_name` present.
+6. **Classification**: Use `classify_track_type(track_bits)` table; feature overrides use `signal_ids` for signals and `station_id` for stations.
 7. **Curve detection**: Curves are orientation changes between traversals, considering the neighbor tile. Orientation groups: NS, EW, NE+SW, NW+SE. A traversal is a turn if the local path's group differs from the connected neighbor path's group; both segments take turn cost when groups differ.
 8. **Pathfinding exits**: `get_exits(track_bits, entry_edge)` returns sorted exits; apply switch state to pick one for movement. Ensure the next tile accepts the incoming edge.
 9. **Serialization**: Persist `track_bits`, `dead_end_ports`, `switch_state`, feature flags; compute the rest (type, edges, switch_points, num_paths, is_valid) on read.
