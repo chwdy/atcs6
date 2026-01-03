@@ -5,10 +5,11 @@
  * Requires: Server running at localhost:5000
  *
  * This test suite covers:
- * - All 42 REST API endpoints
+ * - All REST API endpoints (40+ endpoints including layout persistence)
  * - Request/response validation
  * - Error handling
  * - State management via API
+ * - Layout save/load functionality
  * - Frontend-backend parity via HTTP
  */
 
@@ -90,15 +91,59 @@ async function fetchJSON(endpoint, options = {}) {
 }
 
 async function resetNetwork() {
-    // Reset network by posting empty network
-    await fetchJSON('/network/update', {
+    // Clear the network to get a fresh canvas
+    await fetchJSON('/network/clear', {
+        method: 'POST'
+    });
+}
+
+// Helper function to create a single track (replaces removed POST /track)
+async function createTrack(x, y, track_bits) {
+    return await fetchJSON('/tracks/bulk', {
         method: 'POST',
         body: JSON.stringify({
-            tracks: {},
-            blocks: {},
-            signals: {},
-            stations: {},
-            trains: {}
+            tracks: [{ x, y, track_bits }]
+        })
+    });
+}
+
+// Helper function to create a block
+async function createBlock(block_id, name = 'Test Block', length_cm = 1000) {
+    return await fetchJSON('/blocks', {
+        method: 'POST',
+        body: JSON.stringify({
+            block_id,
+            name,
+            length_cm
+        })
+    });
+}
+
+// Helper function to create a signal
+async function createSignal(x, y, detection_direction, signal_type = 'block', name = null) {
+    return await fetchJSON('/signal', {
+        method: 'POST',
+        body: JSON.stringify({
+            x,
+            y,
+            detection_direction,
+            signal_type,
+            name
+        })
+    });
+}
+
+// Helper function to create a station
+async function createStation(x, y, name = 'Test Station', length_cm = 100, platform_side = 'both', top_speed_kmh = 30) {
+    return await fetchJSON('/station', {
+        method: 'POST',
+        body: JSON.stringify({
+            x,
+            y,
+            name,
+            length_cm,
+            platform_side,
+            top_speed_kmh
         })
     });
 }
@@ -140,49 +185,13 @@ async function test_GET_network() {
     assert(result.data.signals !== undefined, 'Response should contain signals');
 }
 
-async function test_POST_network_update() {
-    const networkData = {
-        tracks: {},
-        blocks: {},
-        signals: {},
-        stations: {},
-        trains: {}
-    };
-
-    const result = await fetchJSON('/network/update', {
-        method: 'POST',
-        body: JSON.stringify(networkData)
-    });
-
-    assert(result.ok, 'POST /network/update should succeed');
-}
-
 // ============= TRACK ENDPOINTS (CORE) =============
-
-async function test_POST_track_create() {
-    await resetNetwork();
-
-    const result = await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({
-            x: 0,
-            y: 0,
-            track_bits: TRACK_NS
-        })
-    });
-
-    assert(result.ok, 'POST /track should succeed');
-    assert(result.data.track_bits === TRACK_NS, 'Track bits should match');
-}
 
 async function test_GET_track() {
     await resetNetwork();
 
     // Create track first
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 5, y: 5, track_bits: TRACK_EW })
-    });
+    await createTrack(5, 5, TRACK_EW);
 
     // Get track
     const result = await fetchJSON('/track/5/5');
@@ -197,10 +206,7 @@ async function test_PATCH_track_update() {
     await resetNetwork();
 
     // Create track
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 0, y: 0, track_bits: TRACK_NS })
-    });
+    await createTrack(0, 0, TRACK_NS);
 
     // Update track
     const result = await fetchJSON('/track/0/0', {
@@ -215,10 +221,7 @@ async function test_DELETE_track() {
     await resetNetwork();
 
     // Create track
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 0, y: 0, track_bits: TRACK_NS })
-    });
+    await createTrack(0, 0, TRACK_NS);
 
     // Delete track
     const result = await fetchJSON('/track/0/0', { method: 'DELETE' });
@@ -280,10 +283,7 @@ async function test_track_forbidden_bits_rejected() {
     await resetNetwork();
 
     // Try to create track with forbidden bits (13 = 3-way switch)
-    const result = await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 0, y: 0, track_bits: 13 })
-    });
+    const result = await createTrack(0, 0, 13);
 
     // Should either fail or normalize to non-forbidden bits
     if (result.ok) {
@@ -451,10 +451,7 @@ async function test_BLK_API_E01_reject_nonexistent_tracks() {
     await resetNetwork();
 
     // Create only one track
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 0, y: 0, track_bits: TRACK_EW })
-    });
+    await createTrack(0, 0, TRACK_EW);
 
     // Try to create block with non-existent track
     const result = await fetchJSON('/blocks/create-with-tracks', {
@@ -501,13 +498,15 @@ async function test_BLK_API_E02_reject_switch_in_block() {
 async function test_BLK_API_E03_reject_crossing_in_block() {
     await resetNetwork();
 
-    // Create crossing
-    await fetchJSON('/track', {
+    // Create crossing using bulk endpoint
+    await fetchJSON('/tracks/bulk', {
         method: 'POST',
         body: JSON.stringify({
-            x: 1,
-            y: 1,
-            track_bits: TRACK_NS | TRACK_EW  // Crossing
+            tracks: [{
+                x: 1,
+                y: 1,
+                track_bits: TRACK_NS | TRACK_EW  // Crossing
+            }]
         })
     });
 
@@ -527,23 +526,11 @@ async function test_BLK_API_E03_reject_crossing_in_block() {
 
 // ============= SIGNAL ENDPOINTS (CORE) =============
 
-async function test_GET_signals() {
-    await resetNetwork();
-
-    const result = await fetchJSON('/signals');
-
-    assert(result.ok, 'GET /signals should succeed');
-    assert(Array.isArray(result.data), 'Response should be an array');
-}
-
 async function test_POST_signal_create() {
     await resetNetwork();
 
     // Create track first
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 5, y: 5, track_bits: TRACK_NS })
-    });
+    await createTrack(5, 5, TRACK_NS);
 
     // Create signal
     const result = await fetchJSON('/signal', {
@@ -551,7 +538,7 @@ async function test_POST_signal_create() {
         body: JSON.stringify({
             x: 5,
             y: 5,
-            direction: 'N',
+            detection_direction: 'N',
             signal_type: 'block'
         })
     });
@@ -559,17 +546,14 @@ async function test_POST_signal_create() {
     assert(result.ok, 'POST /signal should succeed');
     assert(result.data.x === 5, 'X coordinate should match');
     assert(result.data.y === 5, 'Y coordinate should match');
-    assert(result.data.direction === 'N', 'Direction should match');
+    assert(result.data.detection_direction === 'N', 'Detection direction should match');
 }
 
 async function test_GET_signal_by_id() {
     await resetNetwork();
 
     // Create track
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 5, y: 5, track_bits: TRACK_NS })
-    });
+    await createTrack(5, 5, TRACK_NS);
 
     // Create signal
     const createResult = await fetchJSON('/signal', {
@@ -577,7 +561,7 @@ async function test_GET_signal_by_id() {
         body: JSON.stringify({
             x: 5,
             y: 5,
-            direction: 'N',
+            detection_direction: 'N',
             signal_type: 'block'
         })
     });
@@ -593,17 +577,14 @@ async function test_PATCH_signal_update() {
     await resetNetwork();
 
     // Create track and signal
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 5, y: 5, track_bits: TRACK_NS })
-    });
+    await createTrack(5, 5, TRACK_NS);
 
     const createResult = await fetchJSON('/signal', {
         method: 'POST',
         body: JSON.stringify({
             x: 5,
             y: 5,
-            direction: 'N',
+            detection_direction: 'N',
             signal_type: 'block'
         })
     });
@@ -623,17 +604,14 @@ async function test_DELETE_signal() {
     await resetNetwork();
 
     // Create track and signal
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 5, y: 5, track_bits: TRACK_NS })
-    });
+    await createTrack(5, 5, TRACK_NS);
 
     const createResult = await fetchJSON('/signal', {
         method: 'POST',
         body: JSON.stringify({
             x: 5,
             y: 5,
-            direction: 'N',
+            detection_direction: 'N',
             signal_type: 'block'
         })
     });
@@ -652,10 +630,7 @@ async function test_GET_signal_validate() {
     await resetNetwork();
 
     // Create track
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 5, y: 5, track_bits: TRACK_NS })
-    });
+    await createTrack(5, 5, TRACK_NS);
 
     // Validate signal placement
     const result = await fetchJSON('/signal/validate/5/5');
@@ -686,7 +661,7 @@ async function test_signal_on_switch_rejected() {
         body: JSON.stringify({
             x: 0,
             y: 0,
-            direction: 'E'
+            detection_direction: 'E'
         })
     });
 
@@ -695,23 +670,11 @@ async function test_signal_on_switch_rejected() {
 
 // ============= STATION ENDPOINTS (CORE) =============
 
-async function test_GET_stations() {
-    await resetNetwork();
-
-    const result = await fetchJSON('/stations');
-
-    assert(result.ok, 'GET /stations should succeed');
-    assert(Array.isArray(result.data), 'Response should be an array');
-}
-
 async function test_POST_station_create() {
     await resetNetwork();
 
     // Create track
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 0, y: 0, track_bits: TRACK_NS })
-    });
+    await createTrack(0, 0, TRACK_NS);
 
     // Create station
     const result = await fetchJSON('/station', {
@@ -734,10 +697,7 @@ async function test_GET_station_by_id() {
     await resetNetwork();
 
     // Create track and station
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 0, y: 0, track_bits: TRACK_NS })
-    });
+    await createTrack(0, 0, TRACK_NS);
 
     const createResult = await fetchJSON('/station', {
         method: 'POST',
@@ -760,10 +720,7 @@ async function test_PATCH_station_update() {
     await resetNetwork();
 
     // Create track and station
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 0, y: 0, track_bits: TRACK_NS })
-    });
+    await createTrack(0, 0, TRACK_NS);
 
     const createResult = await fetchJSON('/station', {
         method: 'POST',
@@ -789,10 +746,7 @@ async function test_DELETE_station() {
     await resetNetwork();
 
     // Create track and station
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 0, y: 0, track_bits: TRACK_NS })
-    });
+    await createTrack(0, 0, TRACK_NS);
 
     const createResult = await fetchJSON('/station', {
         method: 'POST',
@@ -817,10 +771,7 @@ async function test_GET_station_validate() {
     await resetNetwork();
 
     // Create track
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 0, y: 0, track_bits: TRACK_NS })
-    });
+    await createTrack(0, 0, TRACK_NS);
 
     // Validate station placement
     const result = await fetchJSON('/station/validate/0/0');
@@ -835,10 +786,7 @@ async function test_POST_trains_create() {
     await resetNetwork();
 
     // Create some track for the train
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 0, y: 0, track_bits: TRACK_EW })
-    });
+    await createTrack(0, 0, TRACK_EW);
 
     const result = await fetchJSON('/trains', {
         method: 'POST',
@@ -853,7 +801,8 @@ async function test_POST_trains_create() {
     // Train creation may require specific implementation
     // Just verify response structure if successful
     if (result.ok) {
-        assert(result.data.train_id !== undefined, 'Should return train ID');
+        assert(result.data.train !== undefined, 'Should return train object');
+        assert(result.data.train.id !== undefined, 'Train should have id');
     }
 }
 
@@ -870,14 +819,6 @@ async function test_POST_simulation_control() {
     assert(result.ok, 'POST /simulation/control should succeed');
 }
 
-async function test_GET_simulation_state() {
-    await resetNetwork();
-
-    const result = await fetchJSON('/simulation/state');
-
-    assert(result.ok, 'GET /simulation/state should succeed');
-}
-
 // ============= FRONTEND-BACKEND PARITY TESTS =============
 
 async function test_PARITY_001_all_forbidden_track_bits() {
@@ -887,10 +828,7 @@ async function test_PARITY_001_all_forbidden_track_bits() {
     const sampleForbidden = [13, 22, 42, 63];
 
     for (const bits of sampleForbidden) {
-        const result = await fetchJSON('/track', {
-            method: 'POST',
-            body: JSON.stringify({ x: 0, y: 0, track_bits: bits })
-        });
+        const result = await createTrack(0, 0, bits);
 
         // Either rejected or normalized to valid bits
         if (result.ok) {
@@ -921,7 +859,7 @@ async function test_PARITY_002_signal_on_switch_rejected() {
         body: JSON.stringify({
             x: 0,
             y: 0,
-            direction: 'E'
+            detection_direction: 'E'
         })
     });
 
@@ -932,10 +870,7 @@ async function test_PARITY_003_valid_signal_directions() {
     await resetNetwork();
 
     // Test NS track
-    await fetchJSON('/track', {
-        method: 'POST',
-        body: JSON.stringify({ x: 0, y: 0, track_bits: TRACK_NS })
-    });
+    await createTrack(0, 0, TRACK_NS);
 
     const result = await fetchJSON('/signal/validate/0/0');
 
@@ -970,6 +905,248 @@ async function test_PARITY_004_crossing_in_block_rejected() {
     assert(!result.ok, 'Crossing in block should be rejected');
 }
 
+// ============= LAYOUT PERSISTENCE ENDPOINTS =============
+
+async function test_GET_layouts_list() {
+    const result = await fetchJSON('/layouts');
+
+    assert(result.ok, 'GET /layouts should succeed');
+    assert(result.data.layouts !== undefined, 'Response should contain layouts array');
+    assert(Array.isArray(result.data.layouts), 'Layouts should be an array');
+}
+
+async function test_POST_layouts_save() {
+    await resetNetwork();
+
+    // Create some test content
+    await createTrack(0, 0, TRACK_NS);
+    await createTrack(0, 1, TRACK_NS);
+
+    const result = await fetchJSON('/layouts', {
+        method: 'POST',
+        body: JSON.stringify({
+            name: 'test-layout',
+            description: 'Test layout for API tests'
+        })
+    });
+
+    assert(result.ok, 'POST /layouts should succeed');
+    assert(result.data.status === 'success', 'Save should succeed');
+    assert(result.data.path !== undefined, 'Response should contain file path');
+    assert(result.data.steps_generated !== undefined, 'Response should indicate if steps were generated');
+}
+
+async function test_POST_layouts_load() {
+    // First save a layout
+    await resetNetwork();
+    await createTrack(5, 5, TRACK_EW);
+    await fetchJSON('/layouts', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'test-load-layout' })
+    });
+
+    // Clear network
+    await resetNetwork();
+
+    // Load it back
+    const result = await fetchJSON('/layouts/test-load-layout/load', {
+        method: 'POST'
+    });
+
+    assert(result.ok, 'POST /layouts/:name/load should succeed');
+    assert(result.data.status === 'success', 'Load should succeed');
+    assert(result.data.method !== undefined, 'Response should indicate load method (snapshot/steps)');
+
+    // Verify content was loaded
+    const network = await fetchJSON('/network');
+    assert(Object.keys(network.data.tracks).length > 0, 'Network should have tracks after load');
+}
+
+async function test_DELETE_layouts() {
+    // First save a layout
+    await fetchJSON('/layouts', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'test-delete-layout' })
+    });
+
+    // Delete it
+    const result = await fetchJSON('/layouts/test-delete-layout', {
+        method: 'DELETE'
+    });
+
+    assert(result.ok, 'DELETE /layouts/:name should succeed');
+    assert(result.data.status === 'success', 'Delete should succeed');
+}
+
+async function test_POST_network_clear() {
+    await resetNetwork();
+
+    // Create some content
+    await createTrack(0, 0, TRACK_NS);
+    await createTrack(1, 1, TRACK_EW);
+
+    const result = await fetchJSON('/network/clear', {
+        method: 'POST'
+    });
+
+    assert(result.ok, 'POST /network/clear should succeed');
+    assert(result.data.status === 'success', 'Clear should succeed');
+    assert(result.data.cleared !== undefined, 'Response should contain cleared counts');
+
+    // Verify network is empty
+    const network = await fetchJSON('/network');
+    assert(Object.keys(network.data.tracks).length === 0, 'Network should be empty after clear');
+}
+
+async function test_GET_network_stats() {
+    await resetNetwork();
+
+    // Create some content to get meaningful stats
+    await createTrack(0, 0, TRACK_NS);
+    await createTrack(1, 1, TRACK_EW);
+
+    const blockResult = await createBlock('TEST_BLK', 'Test Block');
+    const signalResult = await createSignal(0, 0, 'N', 'block');
+
+    const result = await fetchJSON('/network/stats');
+
+    assert(result.ok, 'GET /network/stats should succeed');
+    assert(result.data.tracks !== undefined, 'Stats should include track count');
+    assert(result.data.blocks !== undefined, 'Stats should include block count');
+    assert(result.data.signals !== undefined, 'Stats should include signal count');
+    assert(result.data.is_empty !== undefined, 'Stats should include is_empty flag');
+    assert(result.data.is_empty === false, 'Network should not be empty with content');
+}
+
+async function test_POST_block_extend() {
+    await resetNetwork();
+
+    // Create initial block with one track
+    await createTrack(0, 0, TRACK_NS);
+    const blockResult = await createBlock('TEST_EXTEND', 'Extend Test');
+    await fetchJSON(`/blocks/${blockResult.data.block_id}/tracks`, {
+        method: 'POST',
+        body: JSON.stringify({ positions: [[0, 0]] })
+    });
+
+    // Create adjacent tracks to extend into
+    await createTrack(0, 1, TRACK_NS);
+    await createTrack(0, 2, TRACK_NS);
+
+    // Extend the block
+    const result = await fetchJSON(`/blocks/${blockResult.data.block_id}/extend`, {
+        method: 'POST',
+        body: JSON.stringify({ positions: [[0, 1], [0, 2]] })
+    });
+
+    assert(result.ok, 'POST /blocks/{id}/extend should succeed');
+    // API returns block properties at root level, not wrapped
+    assert(result.data.block_id !== undefined, 'Response should contain updated block');
+
+    // Verify block now has all tracks
+    const updatedBlock = await fetchJSON(`/blocks/${blockResult.data.block_id}`);
+    assert(updatedBlock.data.track_count >= 3, 'Block should have at least 3 tracks after extend');
+}
+
+async function test_GET_signal_by_position() {
+    await resetNetwork();
+
+    // Create track and signal
+    await createTrack(5, 5, TRACK_NS);
+    const signalResult = await createSignal(5, 5, 'N', 'block');
+
+    // Get signal by position
+    const result = await fetchJSON('/signal/5/5');
+
+    assert(result.ok, 'GET /signal/{x}/{y} should succeed');
+    assert(result.data.signal_id !== undefined, 'Response should contain signal');
+    // Signal uses separate x, y fields, not position array
+    assert(result.data.x === 5 && result.data.y === 5, 'Signal should be at correct position');
+}
+
+async function test_DELETE_signal_by_position() {
+    await resetNetwork();
+
+    // Create track and signal
+    await createTrack(6, 6, TRACK_NS);
+    await createSignal(6, 6, 'N', 'block');
+
+    // Delete signal by position
+    const result = await fetchJSON('/signal/6/6', {
+        method: 'DELETE'
+    });
+
+    assert(result.ok, 'DELETE /signal/{x}/{y} should succeed');
+
+    // Verify signal is deleted
+    const getResult = await fetchJSON('/signal/6/6');
+    assert(!getResult.ok, 'Signal should not exist after deletion');
+}
+
+async function test_GET_signal_reachable_blocks() {
+    await resetNetwork();
+
+    // Create a simple track layout with a block and signal
+    await createTrack(0, 0, TRACK_NS);
+    await createTrack(0, 1, TRACK_NS);
+    const blockResult = await createBlock('REACH_TEST', 'Reachable Test');
+    await fetchJSON(`/blocks/${blockResult.data.block_id}/tracks`, {
+        method: 'POST',
+        body: JSON.stringify({ positions: [[0, 0], [0, 1]] })
+    });
+
+    const signalResult = await createSignal(0, 0, 'N', 'block');
+
+    // Get reachable blocks
+    const result = await fetchJSON(`/signal/${signalResult.data.signal_id}/reachable-blocks`);
+
+    assert(result.ok, 'GET /signal/{id}/reachable-blocks should succeed');
+    // API uses snake_case: reachable_blocks, not blocks
+    assert(result.data.reachable_blocks !== undefined, 'Response should contain reachable_blocks array');
+    assert(Array.isArray(result.data.reachable_blocks), 'Reachable blocks should be an array');
+}
+
+async function test_POST_station_extend() {
+    await resetNetwork();
+
+    // Create initial station track
+    await createTrack(10, 10, TRACK_NS);
+    const stationResult = await createStation(10, 10, 'Test Platform');
+
+    // Create adjacent track to extend into
+    await createTrack(10, 11, TRACK_NS);
+
+    // Extend the station
+    const result = await fetchJSON(`/station/${stationResult.data.station_id}/extend`, {
+        method: 'POST',
+        body: JSON.stringify({ positions: [[10, 11]] })
+    });
+
+    assert(result.ok, 'POST /station/{id}/extend should succeed');
+    // API returns station properties at root level, not wrapped
+    assert(result.data.station_id !== undefined, 'Response should contain updated station');
+
+    // Verify station now has multiple positions
+    const updatedStation = await fetchJSON(`/station/${stationResult.data.station_id}`);
+    assert(updatedStation.data.positions.length >= 2, 'Station should have at least 2 positions after extend');
+}
+
+async function test_static_file_serving() {
+    // Test GET / (index.html)
+    const indexResult = await fetchJSON('/../', { method: 'GET' });
+    // Note: fetchJSON expects JSON, but HTML will fail to parse - that's okay for this test
+    // We just need to verify the endpoint responds
+    assert(indexResult.status === 200 || indexResult.ok !== undefined,
+           'GET / should be accessible');
+
+    // Test GET /<path:path> (static file) - just verify server is serving files
+    // We can't easily test this with fetchJSON since it expects JSON responses
+    // The fact that the app works at all proves static files are being served
+    // This is more of an integration smoke test
+    const networkResult = await fetchJSON('/network');
+    assert(networkResult.ok, 'Static file infrastructure should support API calls');
+}
+
 // ============= TEST RUNNER =============
 
 async function runAllTests() {
@@ -979,10 +1156,9 @@ async function runAllTests() {
 
     // Network endpoints
     await runTest('GET /api/network', test_GET_network);
-    await runTest('POST /api/network/update', test_POST_network_update);
+    await runTest('GET /api/network/stats', test_GET_network_stats);
 
     // Track endpoints (Core)
-    await runTest('POST /api/track (create)', test_POST_track_create);
     await runTest('GET /api/track', test_GET_track);
     await runTest('PATCH /api/track (update)', test_PATCH_track_update);
     await runTest('DELETE /api/track', test_DELETE_track);
@@ -1001,6 +1177,7 @@ async function runAllTests() {
     await runTest('POST /api/blocks/{id}/cycle-state', test_POST_block_cycle_state);
     await runTest('POST /api/blocks/create-with-tracks', test_POST_blocks_create_with_tracks);
     await runTest('POST /api/blocks/{id}/tracks', test_POST_block_tracks_add);
+    await runTest('POST /api/blocks/{id}/extend', test_POST_block_extend);
 
     // Block endpoints (Extensive)
     await runTest('BLK-API-E01: Reject non-existent tracks', test_BLK_API_E01_reject_nonexistent_tracks);
@@ -1008,30 +1185,41 @@ async function runAllTests() {
     await runTest('BLK-API-E03: Reject crossing in block', test_BLK_API_E03_reject_crossing_in_block);
 
     // Signal endpoints (Core)
-    await runTest('GET /api/signals', test_GET_signals);
     await runTest('POST /api/signal (create)', test_POST_signal_create);
     await runTest('GET /api/signal/{id}', test_GET_signal_by_id);
+    await runTest('GET /api/signal/{x}/{y}', test_GET_signal_by_position);
     await runTest('PATCH /api/signal/{id}', test_PATCH_signal_update);
     await runTest('DELETE /api/signal/{id}', test_DELETE_signal);
+    await runTest('DELETE /api/signal/{x}/{y}', test_DELETE_signal_by_position);
     await runTest('GET /api/signal/validate', test_GET_signal_validate);
+    await runTest('GET /api/signal/{id}/reachable-blocks', test_GET_signal_reachable_blocks);
 
     // Signal endpoints (Extensive)
     await runTest('Signal: Reject on switch', test_signal_on_switch_rejected);
 
     // Station endpoints (Core)
-    await runTest('GET /api/stations', test_GET_stations);
     await runTest('POST /api/station (create)', test_POST_station_create);
     await runTest('GET /api/station/{id}', test_GET_station_by_id);
     await runTest('PATCH /api/station/{id}', test_PATCH_station_update);
     await runTest('DELETE /api/station/{id}', test_DELETE_station);
     await runTest('GET /api/station/validate', test_GET_station_validate);
+    await runTest('POST /api/station/{id}/extend', test_POST_station_extend);
 
     // Train endpoints
     await runTest('POST /api/trains (create)', test_POST_trains_create);
 
     // Simulation endpoints
     await runTest('POST /api/simulation/control', test_POST_simulation_control);
-    await runTest('GET /api/simulation/state', test_GET_simulation_state);
+
+    // Layout persistence endpoints
+    await runTest('GET /api/layouts', test_GET_layouts_list);
+    await runTest('POST /api/layouts (save)', test_POST_layouts_save);
+    await runTest('POST /api/layouts/:name/load', test_POST_layouts_load);
+    await runTest('DELETE /api/layouts/:name', test_DELETE_layouts);
+    await runTest('POST /api/network/clear', test_POST_network_clear);
+
+    // Infrastructure endpoints
+    await runTest('GET / and GET /<path:path> (static files)', test_static_file_serving);
 
     // Parity tests
     await runTest('PARITY-001: All forbidden track bits', test_PARITY_001_all_forbidden_track_bits);

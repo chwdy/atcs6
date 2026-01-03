@@ -1,6 +1,29 @@
 # ATCS6 REST API Documentation
 
-Base URL: `http://localhost:5000`
+Base URL: `http://localhost:5001`
+
+## Infrastructure Endpoints
+
+### GET /
+
+Serves the main application HTML page.
+
+**Response:** `index.html` (Content-Type: text/html)
+
+### GET /<path:path>
+
+Serves static files (CSS, JavaScript, images, etc.) from the `static/` directory.
+
+**Examples:**
+
+- `GET /css/style.css` - Stylesheet
+- `GET /js/app.js` - JavaScript application code
+- `GET /js/api.js` - API client library
+- `GET /images/logo.png` - Images
+
+**Response:** File contents with appropriate Content-Type header
+
+---
 
 ## Network Endpoints
 
@@ -31,58 +54,9 @@ Get complete railway network state.
 }
 ```
 
-### POST /api/network/update
-
-Load/restore network state.
-
-**Request Body:** Same format as GET /api/network response
-
-**Response:**
-
-```json
-{
-  "status": "success",
-  "message": "Network updated"
-}
-```
-
 ---
 
 ## Track Endpoints
-
-### POST /api/track
-
-Create a new track segment.
-
-**Request:**
-
-```json
-{
-  "x": 0,
-  "y": 0,
-  "track_bits": 3,
-  "station_name": "Main Station"
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| x | int | Yes | X coordinate |
-| y | int | Yes | Y coordinate |
-| track_bits | int | No | 6-bit track geometry (0-63) |
-| station_name | string | No | Station name |
-
-Signals are created/updated via the signal endpoints; track creation no longer accepts `signal_state` or `signal_direction` on the track payload.
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "track_bits": 3,
-  "dead_end_ports": ["N", "S"]
-}
-```
 
 ### GET /api/track/{x}/{y}
 
@@ -286,10 +260,6 @@ Control simulation execution.
 }
 ```
 
-### GET /api/simulation/state
-
-Get current simulation state. Returns same format as `/api/network`.
-
 ---
 
 ## Block Endpoints
@@ -427,27 +397,6 @@ Cycle block state through: FREE → RESERVED → OCCUPIED → CAUTION → FREE
 }
 ```
 
-### GET /api/blocks/{block_id}/validate
-
-Validate block continuity (all tracks connected).
-
-**Response:**
-
-```json
-{
-  "valid": true
-}
-```
-
-Or with errors:
-
-```json
-{
-  "valid": false,
-  "error": "Block has disconnected segments"
-}
-```
-
 ### POST /api/blocks/{block_id}/extend
 
 Extend an existing block with new track positions.
@@ -557,27 +506,6 @@ Remove tracks from a block.
 
 Signals control train movements and are associated with blocks.
 
-### GET /api/signals
-
-List all signals.
-
-**Response:**
-
-```json
-[
-  {
-    "signal_id": "SIG_abc123",
-    "x": 0,
-    "y": 0,
-    "direction": "NORTH",
-    "signal_type": "block",
-    "state": "GREEN",
-    "name": "Signal 1",
-    "monitored_block_id": "BLK_001"
-  }
-]
-```
-
 ### POST /api/signal
 
 Create a new signal with validation.
@@ -588,7 +516,7 @@ Create a new signal with validation.
 {
   "x": 0,
   "y": 0,
-  "direction": "NORTH",
+  "detection_direction": "N",
   "signal_type": "block",
   "name": "Home Signal",
   "auto_connect": true
@@ -599,7 +527,7 @@ Create a new signal with validation.
 |-------|------|----------|---------|-------------|
 | x | int | Yes | - | X coordinate |
 | y | int | Yes | - | Y coordinate |
-| direction | string | Yes | - | NORTH, EAST, SOUTH, WEST |
+| detection_direction | string | Yes | - | N, E, S, W (direction the signal detects trains from) |
 | signal_type | string | No | "block" | Signal type |
 | name | string | No | null | Human-readable name |
 | auto_connect | boolean | No | true | Auto-connect to reachable block |
@@ -678,27 +606,6 @@ Check if signal can be placed at position and get valid directions.
 }
 ```
 
-### POST /api/signal/{signal_id}/connect
-
-Manually connect signal to a block.
-
-**Request:**
-
-```json
-{
-  "block_id": "BLK_001"
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "connected_block": "BLK_001"
-}
-```
-
 ### GET /api/signal/{signal_id}/reachable-blocks
 
 Get all blocks reachable from a signal (for manual connection UI).
@@ -739,62 +646,11 @@ Delete multiple tracks at once.
 }
 ```
 
-### POST /api/tracks/assign-block
-
-Assign multiple tracks to a block.
-
-**Request:**
-
-```json
-{
-  "positions": [[0, 0], [0, 1], [0, 2]],
-  "block_id": "BLK_001"
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "assigned": 3
-}
-```
-
 ---
 
 ## Station Endpoints
 
 Stations are multi-tile platform entities with physical properties.
-
-### GET /api/stations
-
-List all stations with orientation data.
-
-**Response:**
-
-```json
-[
-  {
-    "station_id": "STA_abc123",
-    "name": "Central Station",
-    "positions": [[0, 0], [0, 1], [0, 2]],
-    "length_cm": 150.0,
-    "platform_side": "both",
-    "top_speed_kmh": 40.0,
-    "tile_count": 3,
-    "orientation": "NS",
-    "sorted_positions": [[0, 2], [0, 1], [0, 0]],
-    "platform_sides": ["west", "east"]
-  }
-]
-```
-
-| Field | Description |
-|-------|-------------|
-| orientation | Track direction: `NS`, `EW`, `NE_SW`, or `NW_SE` |
-| sorted_positions | Positions sorted along track direction |
-| platform_sides | Absolute compass directions for platforms |
 
 ### POST /api/station
 
@@ -896,6 +752,164 @@ Extend station platform with new tiles.
 
 ---
 
+## Layout Persistence Endpoints
+
+The system automatically saves layouts every 5 minutes to `layouts/_autosave.json`. Layouts are saved as JSON files in the `layouts/` directory. Each file contains both a snapshot (for fast loading) and construction steps (for recovery if the snapshot format changes).
+
+### GET /api/layouts
+
+List all saved layouts.
+
+**Response:**
+
+```json
+{
+  "layouts": [
+    {
+      "name": "My Layout",
+      "filename": "my_layout",
+      "description": "A sample layout",
+      "modified": "2024-01-03T12:00:00",
+      "size_bytes": 12345,
+      "has_snapshot": true,
+      "has_steps": true
+    }
+  ]
+}
+```
+
+### POST /api/layouts
+
+Save the current network state as a layout.
+
+**Request:**
+
+```json
+{
+  "name": "My Layout",
+  "description": "A sample layout"
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Layout 'My Layout' saved successfully",
+  "path": "layouts/my_layout.json",
+  "steps_generated": true,
+  "steps_count": 42
+}
+```
+
+**Response with warning (if steps generation fails):**
+
+```json
+{
+  "status": "success",
+  "message": "Layout 'My Layout' saved successfully",
+  "path": "layouts/my_layout.json",
+  "steps_generated": false,
+  "steps_count": 0,
+  "warning": "Steps could not be generated: error message"
+}
+```
+
+### POST /api/layouts/{name}/load
+
+Load a layout, replacing the current network state.
+
+**Response (snapshot load):**
+
+```json
+{
+  "status": "success",
+  "message": "Layout 'My Layout' loaded successfully",
+  "method": "snapshot"
+}
+```
+
+**Response (recovery mode - when snapshot fails):**
+
+```json
+{
+  "status": "success",
+  "message": "Layout 'My Layout' recovered from steps (snapshot was corrupted)",
+  "method": "steps",
+  "recovery": true
+}
+```
+
+**Error Response:**
+
+```json
+{
+  "error": "Layout not found" | "Failed to load layout",
+  "method": "snapshot" | "steps" | null
+}
+```
+
+### DELETE /api/layouts/{name}
+
+Delete a saved layout.
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Layout 'My Layout' deleted"
+}
+```
+
+**Error (404):**
+
+```json
+{
+  "error": "Layout 'My Layout' not found"
+}
+```
+
+### POST /api/network/clear
+
+Clear the current network (empty canvas).
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Network cleared",
+  "cleared": {
+    "tracks": 100,
+    "blocks": 10,
+    "signals": 20,
+    "stations": 5,
+    "trains": 2
+  }
+}
+```
+
+### GET /api/network/stats
+
+Get counts of items in the current network.
+
+**Response:**
+
+```json
+{
+  "tracks": 100,
+  "blocks": 10,
+  "signals": 20,
+  "stations": 5,
+  "trains": 2,
+  "is_empty": false
+}
+```
+
+---
+
 ## Track Bits Reference
 
 | Bit | Value | Path | Description |
@@ -938,27 +952,3 @@ All errors return JSON with `error` field:
 | 500 | Server error |
 
 ---
-
-## Legacy API (Deprecated)
-
-These endpoints use the old directed_paths system. Use track_bits instead.
-
-### POST /api/track/{x}/{y}/path
-
-Add a single path to track.
-
-```json
-{
-  "path": {"port1": "N", "port2": "S", "direction": "both"}
-}
-```
-
-### DELETE /api/track/{x}/{y}/path
-
-Remove a single path from track.
-
-```json
-{
-  "path": {"port1": "N", "port2": "S"}
-}
-```

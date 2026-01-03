@@ -293,7 +293,7 @@ cd atcs6
 python server.py
 ```
 
-Then open `http://localhost:5000` in your browser.
+Then open `http://localhost:5001` in your browser.
 
 ### Run the Demo Script
 
@@ -301,6 +301,50 @@ Then open `http://localhost:5000` in your browser.
 cd atcs6
 python demo_main.py
 ```
+
+### Save and Load Layouts
+
+The system includes a comprehensive layout persistence feature:
+
+**Auto-Save:**
+- The system automatically saves your work every 5 minutes to `layouts/_autosave.json`
+- This ensures you won't lose progress even if the application crashes
+
+**Manual Save/Load (via Web UI):**
+- **Save**: Click the Save button to save the current network layout with a custom name
+- **Load**: Click the Load Button to browse and load any saved layout
+- **Delete**: Remove unwanted layouts from the list
+
+**File Format:**
+- Layouts are saved as compact JSON files in the `layouts/` directory
+- Each file contains both a **snapshot** (for fast loading) and **construction steps** (for recovery) in a single merged file
+- Snapshot is always used for loading (fast, reliable)
+- Steps serve as a fallback if the snapshot becomes corrupted
+- Compact format reduces file size (no indentation)
+
+**API Endpoints:**
+```bash
+# List all layouts
+GET /api/layouts
+
+# Save current network as a layout
+POST /api/layouts
+Body: {"name": "My Layout", "description": "Optional description"}
+
+# Load a layout
+POST /api/layouts/{name}/load
+
+# Delete a layout
+DELETE /api/layouts/{name}
+
+# Clear the network (start fresh)
+POST /api/network/clear
+
+# Get network statistics
+GET /api/network/stats
+```
+
+See [`docs/API.md`](docs/API.md) for complete API documentation.
 
 ## Key Concepts
 
@@ -326,7 +370,6 @@ See TODO lists in each module for specific improvements. Key areas:
 - Real-time simulation with time-based movement
 - Multi-train coordination and automatic conflict resolution
 - Performance metrics and analytics
-- Network persistence (save/load)
 - Advanced visualization
 - Energy consumption modeling
 - Maintenance scheduling

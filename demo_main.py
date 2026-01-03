@@ -79,7 +79,7 @@ def test_block_validation():
         name="Test Block 1"
     )
     # Add a signal
-    test_network.add_signal(2, 0, "east", signal_type="block", name="Test Signal")
+    test_network.add_signal(2, 0, "E", signal_type="block", name="Test Signal")
     try:
         test_network.create_block_with_tracks(
             block_id="TEST_WITH_SIGNAL",
@@ -300,7 +300,7 @@ def create_comprehensive_demo():
     # Trains travel WEST, look WEST: skip (4,0) own block, (3,0) switch, find (2,0) BLOCK_MAIN_WEST ✓
     signal1 = network.add_signal(
         x=5, y=0,
-        detection_direction="WEST",
+        detection_direction="W",
         signal_type=SignalType.BLOCK,
         name="Westbound Signal",
         auto_connect=True
@@ -313,7 +313,7 @@ def create_comprehensive_demo():
     # Trains travel EAST, look EAST: skip (2,0) own block, (3,0) switch, find (4,0) BLOCK_MAIN_EAST ✓
     signal2 = network.add_signal(
         x=1, y=0,
-        detection_direction="EAST",
+        detection_direction="E",
         signal_type=SignalType.BLOCK,
         name="Eastbound Signal",
         auto_connect=True
@@ -326,7 +326,7 @@ def create_comprehensive_demo():
     # The NW diagonal connects N edge to W edge, so trains can only reach BLOCK_MAIN_WEST
     signal3 = network.add_signal(
         x=3, y=1,
-        detection_direction="SOUTH",
+        detection_direction="S",
         signal_type=SignalType.BLOCK,
         name="Branch Exit Signal",
         auto_connect=False
@@ -357,14 +357,14 @@ def create_comprehensive_demo():
 
     # Test: Try to place signal on switch (should fail)
     try:
-        network.add_signal(x=3, y=0, detection_direction="EAST", name="Invalid Switch Signal")
+        network.add_signal(x=3, y=0, detection_direction="E", name="Invalid Switch Signal")
         print("    ✗ ERROR: Signal on switch should have failed!")
     except ValueError as e:
         print(f"    ✓ Correctly rejected signal on switch: {e}")
 
     # Test: Try invalid direction for track
     try:
-        network.add_signal(x=6, y=0, detection_direction="NORTH", name="Invalid Direction")
+        network.add_signal(x=6, y=0, detection_direction="N", name="Invalid Direction")
         print("    ✗ ERROR: Invalid direction should have failed!")
     except ValueError as e:
         print(f"    ✓ Correctly rejected invalid direction: {e}")
@@ -374,7 +374,7 @@ def create_comprehensive_demo():
     print(f"    ✓ Updated '{signal3.name}' state to YELLOW")
 
     # Test: Delete and recreate signal (use a plain track, not the crossing at 9,0)
-    test_signal = network.add_signal(x=10, y=0, detection_direction="EAST", name="Temp Signal")
+    test_signal = network.add_signal(x=10, y=0, detection_direction="E", name="Temp Signal")
     temp_id = test_signal.signal_id
     network.remove_signal(temp_id)
     print(f"    ✓ Created and deleted temp signal at (10,0)")

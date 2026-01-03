@@ -56,6 +56,318 @@ class App {
                 this.showAddTrainDialog();
             });
         }
+
+        // Layout controls
+        this.setupLayoutControls();
+    }
+
+    setupLayoutControls() {
+        const newBtn = document.getElementById('btn-new-layout');
+        const saveBtn = document.getElementById('btn-save-layout');
+        const loadBtn = document.getElementById('btn-load-layout');
+        const saveModal = document.getElementById('save-layout-modal');
+        const loadModal = document.getElementById('load-layout-modal');
+
+        // New layout button
+        if (newBtn) {
+            newBtn.addEventListener('click', async () => {
+                await this.newLayout();
+            });
+        }
+
+        // Open save modal
+        if (saveBtn) {
+            saveBtn.addEventListener('click', async () => {
+                this.openModal(saveModal);
+                document.getElementById('layout-name').value = '';
+                document.getElementById('layout-description').value = '';
+                document.getElementById('layout-name').focus();
+                // Load existing layouts for overwrite selection
+                await this.loadSaveLayoutsList();
+            });
+        }
+
+        // Open load modal
+        if (loadBtn) {
+            loadBtn.addEventListener('click', async () => {
+                this.openModal(loadModal);
+                await this.loadLayoutsList();
+            });
+        }
+
+        // Save layout confirm
+        const confirmSaveBtn = document.getElementById('btn-confirm-save');
+        if (confirmSaveBtn) {
+            confirmSaveBtn.addEventListener('click', async () => {
+                await this.saveCurrentLayout();
+            });
+        }
+
+        // Allow Enter key to save
+        const layoutNameInput = document.getElementById('layout-name');
+        if (layoutNameInput) {
+            layoutNameInput.addEventListener('keydown', async (e) => {
+                if (e.key === 'Enter') {
+                    await this.saveCurrentLayout();
+                }
+            });
+        }
+
+        // Close modal buttons
+        document.querySelectorAll('[data-close-modal]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const modal = e.target.closest('.modal');
+                if (modal) this.closeModal(modal);
+            });
+        });
+
+        // Close modal on backdrop click
+        document.querySelectorAll('.modal').forEach(modal => {
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    this.closeModal(modal);
+                }
+            });
+        });
+
+        // Close modal on Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                document.querySelectorAll('.modal.active').forEach(modal => {
+                    this.closeModal(modal);
+                });
+            }
+        });
+    }
+
+    openModal(modal) {
+        if (modal) modal.classList.add('active');
+    }
+
+    closeModal(modal) {
+        if (modal) modal.classList.remove('active');
+    }
+
+    async saveCurrentLayout() {
+        const nameInput = document.getElementById('layout-name');
+        const descInput = document.getElementById('layout-description');
+        const name = nameInput.value.trim();
+        const description = descInput.value.trim();
+
+        if (!name) {
+            window.showToast('Please enter a layout name', 'error');
+            nameInput.focus();
+            return;
+        }
+
+        try {
+            const result = await window.api.saveLayout(name, description);
+
+            // Show success message with step count
+            let message = `Layout "${name}" saved`;
+            if (result.steps_count > 0) {
+                message += ` (${result.steps_count} steps)`;
+            }
+            window.showToast(message, 'success');
+
+            // Show warning if steps failed
+            if (result.warning) {
+                window.showToast(`Warning: ${result.warning}`, 'warning');
+            }
+
+            this.closeModal(document.getElementById('save-layout-modal'));
+        } catch (e) {
+            window.showToast(`Failed to save layout: ${e.message}`, 'error');
+        }
+    }
+
+    async loadSaveLayoutsList() {
+        const listEl = document.getElementById('save-layouts-list');
+        listEl.innerHTML = '<p class="loading-text">Loading...</p>';
+
+        try {
+            const layouts = await window.api.getLayouts();
+            // Filter out old _steps suffix files (now merged into main file)
+            const filteredLayouts = layouts.filter(l => !l.name.endsWith('_steps'));
+
+            if (filteredLayouts.length === 0) {
+                listEl.innerHTML = '<p class="empty-text">No existing layouts</p>';
+                return;
+            }
+
+            listEl.innerHTML = filteredLayouts.map(layout => `
+                <div class="layout-item" data-name="${layout.name}">
+                    <div class="layout-item-info">
+                        <span class="layout-item-name">${this.escapeHtml(layout.name)}</span>
+                    </div>
+                </div>
+            `).join('');
+
+            // Click to select and populate name field
+            listEl.querySelectorAll('.layout-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    // Clear previous selection
+                    listEl.querySelectorAll('.layout-item').forEach(el => el.classList.remove('selected'));
+                    // Select this one
+                    item.classList.add('selected');
+                    // Populate name field
+                    document.getElementById('layout-name').value = item.dataset.name;
+                });
+            });
+        } catch (e) {
+            listEl.innerHTML = '<p class="empty-text">Failed to load layouts</p>';
+        }
+    }
+
+    async loadLayoutsList() {
+        const listEl = document.getElementById('layouts-list');
+        listEl.innerHTML = '<p class="loading-text">Loading layouts...</p>';
+
+        try {
+            const layouts = await window.api.getLayouts();
+            // Filter out _steps suffix files (old format, now merged)
+            const filteredLayouts = layouts.filter(l => !l.name.endsWith('_steps'));
+
+            if (filteredLayouts.length === 0) {
+                listEl.innerHTML = '<p class="empty-text">No saved layouts yet</p>';
+                return;
+            }
+
+            listEl.innerHTML = filteredLayouts.map(layout => {
+                const isAutosave = layout.filename === '_autosave';
+                const displayName = isAutosave ? 'Auto-save (Recovery)' : layout.name;
+
+                // Build independent badges for snapshot and steps
+                let badges = '';
+                if (layout.has_snapshot) {
+                    badges += '<span class="layout-format-badge snapshot">snapshot</span>';
+                }
+                if (layout.has_steps) {
+                    badges += '<span class="layout-format-badge steps">steps</span>';
+                }
+
+                const itemClass = isAutosave ? 'layout-item autosave' : 'layout-item';
+
+                return `
+                <div class="${itemClass}" data-filename="${layout.filename}">
+                    <div class="layout-item-info">
+                        <div class="layout-item-name">${this.escapeHtml(displayName)}${badges}</div>
+                        <div class="layout-item-meta">
+                            ${layout.description ? this.escapeHtml(layout.description) + ' · ' : ''}
+                            ${this.formatDate(layout.modified)}
+                        </div>
+                    </div>
+                    <div class="layout-item-actions">
+                        <button class="btn btn-primary btn-load-item">Load</button>
+                        <button class="btn btn-danger btn-delete-item">Delete</button>
+                    </div>
+                </div>
+            `}).join('');
+
+            // Add event listeners
+            listEl.querySelectorAll('.btn-load-item').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    const item = e.target.closest('.layout-item');
+                    const filename = item.dataset.filename;
+                    await this.loadSelectedLayout(filename);
+                });
+            });
+
+            listEl.querySelectorAll('.btn-delete-item').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    const item = e.target.closest('.layout-item');
+                    const filename = item.dataset.filename;
+                    const name = item.querySelector('.layout-item-name').textContent;
+                    await this.deleteSelectedLayout(filename, name);
+                });
+            });
+
+        } catch (e) {
+            listEl.innerHTML = `<p class="empty-text">Error loading layouts: ${e.message}</p>`;
+        }
+    }
+
+    async loadSelectedLayout(filename) {
+        try {
+            await window.api.loadLayout(filename);
+            window.showToast('Layout loaded successfully', 'success');
+            this.closeModal(document.getElementById('load-layout-modal'));
+            await this.refreshNetwork();
+        } catch (e) {
+            window.showToast(`Failed to load layout: ${e.message}`, 'error');
+        }
+    }
+
+    async deleteSelectedLayout(filename, name) {
+        if (!confirm(`Are you sure you want to delete "${name}"?`)) {
+            return;
+        }
+
+        try {
+            await window.api.deleteLayout(filename);
+            window.showToast(`Layout "${name}" deleted`, 'success');
+            await this.loadLayoutsList();
+        } catch (e) {
+            window.showToast(`Failed to delete layout: ${e.message}`, 'error');
+        }
+    }
+
+    async newLayout() {
+        try {
+            // Check if there's anything on the layout
+            const stats = await window.api.getNetworkStats();
+
+            if (!stats.is_empty) {
+                // Build a summary of what will be cleared
+                const items = [];
+                if (stats.tracks > 0) items.push(`${stats.tracks} track(s)`);
+                if (stats.blocks > 0) items.push(`${stats.blocks} block(s)`);
+                if (stats.signals > 0) items.push(`${stats.signals} signal(s)`);
+                if (stats.stations > 0) items.push(`${stats.stations} station(s)`);
+                if (stats.trains > 0) items.push(`${stats.trains} train(s)`);
+
+                const summary = items.join(', ');
+                const confirmed = confirm(
+                    `This will clear the current layout:\n${summary}\n\nAre you sure you want to start fresh?`
+                );
+
+                if (!confirmed) {
+                    return;
+                }
+            }
+
+            // Clear the network
+            await window.api.clearNetwork();
+            window.showToast('New layout created', 'success');
+            await this.refreshNetwork();
+
+        } catch (e) {
+            window.showToast(`Failed to create new layout: ${e.message}`, 'error');
+        }
+    }
+
+    escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    formatDate(isoString) {
+        const date = new Date(isoString);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+
+        if (diffMins < 1) return 'Just now';
+        if (diffMins < 60) return `${diffMins}m ago`;
+        if (diffHours < 24) return `${diffHours}h ago`;
+        if (diffDays < 7) return `${diffDays}d ago`;
+
+        return date.toLocaleDateString();
     }
 
     async refreshNetwork() {

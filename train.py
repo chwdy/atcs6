@@ -324,3 +324,47 @@ class Train:
             data["schedule"]["stops"] = stops
             
         return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'Train':
+        """
+        Create a Train from a dictionary.
+
+        Note: This reconstructs basic train state. Schedule and path
+        will be None and need to be re-established if needed.
+        """
+        from enums import TrainStatus, Direction
+
+        train = cls(
+            train_id=data.get("id", ""),
+            max_speed=data.get("max_speed", 100.0),
+            current_speed=data.get("speed", 0.0),
+        )
+
+        # Position
+        if "position" in data:
+            pos = data["position"]
+            train.current_pos = (pos.get("x", 0), pos.get("y", 0))
+            train.distance_on_track = pos.get("distance", 0.0)
+
+        # Direction
+        if "direction" in data:
+            try:
+                train.current_direction = Direction[data["direction"]]
+            except KeyError:
+                pass
+
+        # Status
+        if "status" in data:
+            try:
+                train.status = TrainStatus[data["status"]]
+            except KeyError:
+                train.status = TrainStatus.IDLE
+
+        # Occupied tracks
+        train.occupied_tracks = [
+            tuple(t) if isinstance(t, list) else t
+            for t in data.get("occupied_tracks", [])
+        ]
+
+        return train

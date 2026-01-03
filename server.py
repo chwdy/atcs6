@@ -17,6 +17,7 @@ from railway_signal import Signal, SignalType, SignalState
 from signal_validation import validate_signal_placement, get_valid_directions
 from datetime import datetime, timedelta
 import demo_main
+from persistence import PersistenceManager
 
 app = Flask(__name__, static_folder='static')
 CORS(app)
@@ -112,6 +113,8 @@ network = demo_main.create_comprehensive_demo()
 network = demo_main.create_track_showcase(network)
 
 sim_controller = SimulationController(network)
+persistence_manager = PersistenceManager()
+simulation_lock = threading.Lock()
 simulation_running = False
 simulation_speed = 1.0
 last_update_time = datetime.now()
@@ -122,17 +125,46 @@ def simulation_loop():
         current_time = datetime.now()
         delta_seconds = (current_time - last_update_time).total_seconds()
         last_update_time = current_time
-        
+
         if simulation_running:
             # Scale delta by simulation speed
             sim_delta = delta_seconds * simulation_speed
-            sim_controller.update(sim_delta)
-            
+            with simulation_lock:
+                sim_controller.update(sim_delta)
+
         time.sleep(0.1)
 
 # Start simulation thread
 sim_thread = threading.Thread(target=simulation_loop, daemon=True)
 sim_thread.start()
+
+# ============================================================================
+# Auto-Save Configuration
+# ============================================================================
+AUTOSAVE_INTERVAL = 300  # 5 minutes in seconds
+AUTOSAVE_FILENAME = "_autosave"
+last_autosave_time = time.time()
+
+def autosave_loop():
+    """Background thread that saves to _autosave every 5 minutes."""
+    global last_autosave_time
+    while True:
+        time.sleep(60)  # Check every minute
+        if time.time() - last_autosave_time >= AUTOSAVE_INTERVAL:
+            with simulation_lock:
+                try:
+                    result = persistence_manager.save_merged_layout(AUTOSAVE_FILENAME, network, "Auto-saved")
+                    last_autosave_time = time.time()
+                    msg = f"[AutoSave] Saved at {datetime.now().isoformat()}"
+                    if result.get("steps_error"):
+                        msg += f" (steps failed: {result['steps_error']})"
+                    print(msg)
+                except Exception as e:
+                    print(f"[AutoSave] Failed: {e}")
+
+# Start autosave thread
+autosave_thread = threading.Thread(target=autosave_loop, daemon=True)
+autosave_thread.start()
 
 @app.route('/')
 def index():
@@ -145,58 +177,6 @@ def static_files(path):
 @app.route('/api/network', methods=['GET'])
 def get_network():
     return jsonify(network.to_dict())
-
-@app.route('/api/network/update', methods=['POST'])
-def update_network():
-    data = request.json
-    network.from_dict(data)
-    return jsonify({"status": "success", "message": "Network updated"})
-
-@app.route('/api/track', methods=['POST'])
-def add_track():
-    """Add a single track segment using track_bits"""
-    data = request.json
-    x = data.get('x')
-    y = data.get('y')
-
-    if x is None or y is None:
-        return jsonify({"error": "Missing x or y coordinate"}), 400
-
-    # Accept track_bits directly
-    track_bits = data.get('track_bits', 0)
-
-    # Validate against forbidden configurations
-    if track_bits in FORBIDDEN_TRACK_BITS:
-        return jsonify({
-            'success': False,
-            'error': f'Forbidden configuration: {track_bits}'
-        }), 400
-
-    # Create or update track
-    existing_track = network.get_track(x, y)
-    if not existing_track:
-        track = TrackSegment(x, y, track_bits=track_bits)
-
-        # Handle additional properties
-        if data.get('station_name'):
-            track.station_name = data['station_name']
-
-        network.add_track(track)  # Triggers propagation
-    else:
-        if not existing_track.set_track_bits(track_bits):  # Validates internally
-            return jsonify({
-                'success': False,
-                'error': f'Invalid track_bits: {track_bits}'
-            }), 400
-        network.propagate_from_tile(x, y)  # Manual propagation
-
-    track = network.get_track(x, y)
-    return jsonify({
-        'success': True,
-        'track_bits': track.track_bits,
-        'dead_end_ports': list(track.dead_end_ports),
-        'switch_states': track.switch_states
-    })
 
 @app.route('/api/track/<sint:x>/<sint:y>', methods=['GET'])
 def get_track(x, y):
@@ -278,67 +258,6 @@ def delete_track(x, y):
     network.remove_track(x, y)
     return jsonify({"status": "success", "message": f"Track at ({x}, {y}) removed"})
 
-@app.route('/api/track/<sint:x>/<sint:y>/path', methods=['POST'])
-def add_path_to_track(x, y):
-    """Add a single path to a track (or create track if doesn't exist).
-
-    Request body: {"path": {"port1": "N", "port2": "S", "direction": "both"}}
-    """
-    data = request.json
-    path = data.get('path')
-    
-    if not path:
-        return jsonify({"error": "Path required"}), 400
-
-    # Parse path - dict format only
-    if not isinstance(path, dict):
-        return jsonify({"error": "Path must be {port1, port2, direction}"}), 400
-
-    port1 = path.get('port1')
-    port2 = path.get('port2')
-    direction = path.get('direction', 'both')
-    
-    track = network.get_track(x, y)
-    if not track:
-        # Create new track
-        track = TrackSegment(x=x, y=y)
-        network.add_track(track)
-    
-    track.add_path(port1, port2, direction)
-    return jsonify({"status": "success", "track": track.to_dict()})
-
-@app.route('/api/track/<sint:x>/<sint:y>/path', methods=['DELETE'])
-def remove_path_from_track(x, y):
-    """Remove a single path from a track.
-    
-    Request body: {"path": {"port1": "N", "port2": "S"}} or {"path": ["PORT1", "PORT2"]}
-    """
-    data = request.json
-    path = data.get('path')
-    
-    if not path:
-        return jsonify({"error": "Path required"}), 400
-
-    # Parse path - dict format only
-    if not isinstance(path, dict):
-        return jsonify({"error": "Path must be {port1, port2}"}), 400
-
-    port1 = path.get('port1')
-    port2 = path.get('port2')
-    
-    track = network.get_track(x, y)
-    if not track:
-        return jsonify({"error": "Track not found"}), 404
-    
-    removed = track.remove_path(port1, port2)
-    
-    # If no paths left, optionally remove the track
-    if len(track.directed_paths) == 0:
-        network.remove_track(x, y)
-        return jsonify({"status": "success", "message": f"Track at ({x}, {y}) removed (no paths left)"})
-    
-    return jsonify({"status": "success", "removed": removed, "track": track.to_dict()})
-
 @app.route('/api/tracks/bulk', methods=['POST'])
 def add_tracks_bulk():
     """Add multiple track segments at once (for drag-to-build).
@@ -415,49 +334,6 @@ def delete_tracks_bulk():
     return jsonify({
         "status": "success",
         "deleted": len(deleted)
-    })
-
-@app.route('/api/tracks/assign-block', methods=['POST'])
-def assign_block():
-    """Assign multiple tracks to a block with validation"""
-    data = request.json
-    positions = data.get('positions', [])
-    block_id = data.get('block_id')  # Can be None to remove assignment
-
-    if not positions:
-        return jsonify({'error': 'No positions provided'}), 400
-
-    updated = []
-    errors = []
-
-    for pos in positions:
-        if not isinstance(pos, (list, tuple)) or len(pos) < 2:
-            errors.append({'position': pos, 'error': 'Invalid position format'})
-            continue
-
-        x, y = pos[0], pos[1]
-        try:
-            network.assign_track_to_block(x, y, block_id, validate_continuity=False)
-            updated.append([x, y])
-        except ValueError as e:
-            errors.append({'position': [x, y], 'error': str(e)})
-
-    # Validate overall continuity for the block
-    if block_id and updated:
-        is_valid, validation_errors = network.validate_block_continuity(block_id)
-        if not is_valid:
-            return jsonify({
-                'error': 'Block assignment would break continuity',
-                'validation_errors': validation_errors,
-                'updated': updated,
-                'failed': errors
-            }), 400
-
-    return jsonify({
-        'status': 'success',
-        'updated': updated,
-        'failed': errors,
-        'block_id': block_id
     })
 
 # === Block Management Endpoints ===
@@ -592,20 +468,6 @@ def cycle_block_state(block_id):
         'block_id': block_id,
         'new_state': new_state.value,
         'block': block.to_dict()
-    })
-
-@app.route('/api/blocks/<block_id>/validate', methods=['GET'])
-def validate_block(block_id):
-    """Validate block continuity"""
-    block = network.get_block(block_id)
-    if not block:
-        return jsonify({'error': 'Block not found'}), 404
-    is_valid, errors = network.validate_block_continuity(block_id)
-    return jsonify({
-        'block_id': block_id,
-        'is_continuous': is_valid,
-        'errors': errors,
-        'track_count': len(network.get_block_tracks(block_id))
     })
 
 @app.route('/api/blocks/create-with-tracks', methods=['POST'])
@@ -758,12 +620,6 @@ def remove_tracks_from_block(block_id):
 
 # === Signal Management Endpoints ===
 
-@app.route('/api/signals', methods=['GET'])
-def get_signals():
-    """List all signals"""
-    signals = network.get_all_signals()
-    return jsonify([s.to_dict() for s in signals])
-
 @app.route('/api/signal', methods=['POST'])
 def create_signal():
     """Create a new signal at specified position with validation"""
@@ -862,29 +718,6 @@ def delete_signal_at(x, y):
         return jsonify({'status': 'success', 'message': f'Signal at ({x}, {y}) deleted'})
     return jsonify({'error': f'No signal at ({x}, {y})'}), 404
 
-@app.route('/api/signal/<signal_id>/connect', methods=['POST'])
-def connect_signal(signal_id):
-    """Manually connect signal to a block"""
-    signal = network.get_signal(signal_id)
-    if not signal:
-        return jsonify({'error': 'Signal not found'}), 404
-
-    data = request.json or {}
-    block_id = data.get('block_id')
-
-    if not block_id:
-        return jsonify({'error': 'Missing block_id'}), 400
-
-    try:
-        network.connect_signal_to_block(signal_id, block_id)
-        return jsonify({
-            'status': 'success',
-            'signal_id': signal_id,
-            'monitored_block_id': block_id
-        })
-    except ValueError as e:
-        return jsonify({'error': str(e)}), 400
-
 @app.route('/api/signal/<signal_id>/reachable-blocks', methods=['GET'])
 def get_reachable_blocks(signal_id):
     """Get all blocks that are reachable from a signal.
@@ -963,12 +796,6 @@ def validate_signal_at(x, y):
     })
 
 # === Station Endpoints ===
-
-@app.route('/api/stations', methods=['GET'])
-def get_stations():
-    """List all stations with orientation data"""
-    stations = [station.to_dict_with_orientation(network) for station in network.stations.values()]
-    return jsonify(stations)
 
 @app.route('/api/station', methods=['POST'])
 def create_station():
@@ -1147,11 +974,176 @@ def control_simulation():
         "speed": simulation_speed
     })
 
-@app.route('/api/simulation/state', methods=['GET'])
-def get_simulation_state():
-    # Return dynamic state (train positions, signal states)
-    # For now, just return the whole network as it contains everything
-    return jsonify(network.to_dict())
+# ============================================================================
+# Layout Persistence API
+# ============================================================================
+
+@app.route('/api/layouts', methods=['GET'])
+def list_layouts():
+    """List all saved layouts."""
+    layouts = persistence_manager.list_layouts()
+    return jsonify({"layouts": layouts})
+
+
+@app.route('/api/layouts', methods=['POST'])
+def save_layout():
+    """Save current network state as a layout.
+
+    Request body:
+        name: Layout name (required)
+        description: Optional description
+
+    Saves both snapshot and steps in a single merged file.
+    """
+    global simulation_running, last_autosave_time
+
+    data = request.get_json() or {}
+    name = data.get("name", "").strip()
+    description = data.get("description", "")
+
+    if not name:
+        return jsonify({"error": "Layout name is required"}), 400
+
+    was_running = simulation_running
+    simulation_running = False
+
+    try:
+        with simulation_lock:
+            result = persistence_manager.save_merged_layout(name, network, description)
+            last_autosave_time = time.time()
+
+        response = {
+            "status": "success",
+            "message": f"Layout '{name}' saved successfully",
+            "path": result["path"],
+            "steps_generated": result["steps_generated"],
+            "steps_count": result["steps_count"]
+        }
+
+        # Notify user if steps failed to generate
+        if result["steps_error"]:
+            response["warning"] = f"Steps could not be generated: {result['steps_error']}"
+
+        return jsonify(response)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except IOError as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        simulation_running = was_running
+
+
+@app.route('/api/layouts/<name>/load', methods=['POST'])
+def load_layout(name):
+    """Load a layout, replacing the current network state.
+
+    Uses snapshot by default, falls back to steps if snapshot fails.
+    """
+    global network, sim_controller, simulation_running, last_autosave_time
+
+    was_running = simulation_running
+    simulation_running = False
+
+    try:
+        with simulation_lock:
+            result = persistence_manager.load_layout_with_fallback(name, network)
+
+            if not result.get("success"):
+                return jsonify({
+                    "error": result.get("error", "Failed to load layout"),
+                    "method": result.get("method")
+                }), 400
+
+            sim_controller.network = network
+            last_autosave_time = time.time()
+
+        response = {
+            "status": "success",
+            "message": f"Layout '{name}' loaded successfully",
+            "method": result.get("method")
+        }
+        if result.get("recovery"):
+            response["recovery"] = True
+            response["message"] = f"Layout '{name}' recovered from steps (snapshot was corrupted)"
+
+        return jsonify(response)
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        simulation_running = was_running
+
+
+@app.route('/api/layouts/<name>', methods=['DELETE'])
+def delete_layout(name):
+    """Delete a saved layout."""
+    if persistence_manager.delete_layout(name):
+        return jsonify({
+            "status": "success",
+            "message": f"Layout '{name}' deleted"
+        })
+    else:
+        return jsonify({"error": f"Layout '{name}' not found"}), 404
+
+
+@app.route('/api/network/clear', methods=['POST'])
+def clear_network():
+    """Clear the current network, giving a fresh canvas.
+
+    Returns counts of what was cleared for confirmation display.
+    """
+    global network, sim_controller, simulation_running
+
+    # Pause simulation
+    was_running = simulation_running
+    simulation_running = False
+
+    try:
+        with simulation_lock:
+            # Count what we're clearing
+            counts = {
+                "tracks": len(network.tracks),
+                "blocks": len(network.blocks),
+                "signals": len(network.signals),
+                "stations": len(network.stations),
+                "trains": len(network.trains)
+            }
+
+            # Clear everything
+            network.tracks.clear()
+            network.blocks.clear()
+            network.signals.clear()
+            network.stations.clear()
+            network.trains.clear()
+            network.interlocking.routes.clear()
+            network.schedules.clear()
+
+            # Update simulation controller reference
+            sim_controller.network = network
+
+        return jsonify({
+            "status": "success",
+            "message": "Network cleared",
+            "cleared": counts
+        })
+    finally:
+        simulation_running = was_running
+
+
+@app.route('/api/network/stats', methods=['GET'])
+def get_network_stats():
+    """Get counts of items in the network (for checking if empty)."""
+    with simulation_lock:
+        return jsonify({
+            "tracks": len(network.tracks),
+            "blocks": len(network.blocks),
+            "signals": len(network.signals),
+            "stations": len(network.stations),
+            "trains": len(network.trains),
+            "is_empty": len(network.tracks) == 0
+        })
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=5001)

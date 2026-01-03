@@ -2347,6 +2347,7 @@ class RailwayNetwork:
         self.trains.clear()
         self.blocks.clear()
         self.signals.clear()
+        self.stations.clear()
         self.interlocking.routes.clear()
         self.schedules.clear()
 
@@ -2367,3 +2368,13 @@ class RailwayNetwork:
             track = self.get_track(*signal.position)
             if track and signal_id not in track.signal_ids:
                 track.signal_ids.append(signal_id)
+
+        # Rebuild stations
+        for station_data in data.get("stations", []):
+            station = Station.from_dict(station_data)
+            self.stations[station.station_id] = station
+
+        # Rebuild trains
+        for train_data in data.get("trains", []):
+            train = Train.from_dict(train_data)
+            self.trains[train.train_id] = train

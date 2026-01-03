@@ -53,31 +53,31 @@ FORBIDDEN_SIGNAL_BITS: Set[int] = {
 # Valid detection directions for each simple track type
 # Key: track_bits, Value: list of valid detection_directions (where trains travel TO)
 VALID_DETECTION_DIRECTIONS: Dict[int, List[str]] = {
-    1:  ['NORTH', 'SOUTH'],      # NS straight track - trains can go N or S
-    2:  ['EAST', 'WEST'],        # EW straight track - trains can go E or W
-    4:  ['NORTH', 'EAST'],       # NE diagonal - trains can go N or E
-    8:  ['NORTH', 'WEST'],       # NW diagonal - trains can go N or W
-    16: ['SOUTH', 'EAST'],       # SE diagonal - trains can go S or E
-    32: ['SOUTH', 'WEST'],       # SW diagonal - trains can go S or W
+    1:  ['N', 'S'],      # NS straight track - trains can go N or S
+    2:  ['E', 'W'],      # EW straight track - trains can go E or W
+    4:  ['N', 'E'],      # NE diagonal - trains can go N or E
+    8:  ['N', 'W'],      # NW diagonal - trains can go N or W
+    16: ['S', 'E'],      # SE diagonal - trains can go S or E
+    32: ['S', 'W'],      # SW diagonal - trains can go S or W
 }
 
 
 # Direction to movement vector mapping
 # Uses isometric grid convention: North = +Y, South = -Y (matches edge_offsets in network.py)
 DIRECTION_VECTORS: Dict[str, Tuple[int, int]] = {
-    'NORTH': (0, 1),
-    'SOUTH': (0, -1),
-    'EAST': (1, 0),
-    'WEST': (-1, 0),
+    'N': (0, 1),
+    'S': (0, -1),
+    'E': (1, 0),
+    'W': (-1, 0),
 }
 
 
 # Opposite directions for determining which way trains approach a signal
 OPPOSITE_DIRECTION: Dict[str, str] = {
-    'NORTH': 'SOUTH',
-    'SOUTH': 'NORTH',
-    'EAST': 'WEST',
-    'WEST': 'EAST',
+    'N': 'S',
+    'S': 'N',
+    'E': 'W',
+    'W': 'E',
 }
 
 

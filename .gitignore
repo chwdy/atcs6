@@ -31,3 +31,6 @@ htmlcov/
 # Project specific
 archived/
 test_connectivity.py
+layouts
+plans
+AGENTS.md

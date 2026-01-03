@@ -12,10 +12,11 @@ from enums import SignalState
 
 class SignalType(Enum):
     """Types of signals in the railway system."""
-    BLOCK = "block"           # Monitors block occupancy
-    SWITCH = "switch"         # Controls turnout position (future)
-    PRE_SIGNAL = "pre_signal" # Shows next signal state (future)
-    ROUTE = "route"           # Combined route/speed (future)
+
+    BLOCK = "block"  # Monitors block occupancy
+    SWITCH = "switch"  # Controls turnout position (future)
+    PRE_SIGNAL = "pre_signal"  # Shows next signal state (future)
+    ROUTE = "route"  # Combined route/speed (future)
 
 
 @dataclass
@@ -41,6 +42,7 @@ class Signal:
         approach_direction: Direction the signal light faces (where trains approach FROM).
             Computed as the opposite of detection_direction.
     """
+
     signal_id: str
     position: Tuple[int, int]
     detection_direction: str  # Direction trains travel TO (stored, required)
@@ -54,15 +56,19 @@ class Signal:
 
     def __post_init__(self):
         """Validate and normalize detection_direction after initialization."""
-        valid_directions = {'NORTH', 'SOUTH', 'EAST', 'WEST'}
+        valid_directions = {"N", "S", "E", "W"}
         if not self.detection_direction:
-            raise ValueError(f"Signal {self.signal_id}: detection_direction is required")
+            raise ValueError(
+                f"Signal {self.signal_id}: detection_direction is required"
+            )
         normalized = self.detection_direction.upper()
         if normalized not in valid_directions:
-            raise ValueError(f"Signal {self.signal_id}: invalid detection_direction '{self.detection_direction}'. "
-                           f"Must be one of {valid_directions}")
+            raise ValueError(
+                f"Signal {self.signal_id}: invalid detection_direction '{self.detection_direction}'. "
+                f"Must be one of {valid_directions}"
+            )
         # Store normalized uppercase version
-        object.__setattr__(self, 'detection_direction', normalized)
+        object.__setattr__(self, "detection_direction", normalized)
 
     @property
     def approach_direction(self) -> str:
@@ -70,40 +76,54 @@ class Signal:
         Direction the signal light faces (where trains approach FROM).
         Computed as the opposite of detection_direction.
         """
-        opposites = {'NORTH': 'SOUTH', 'SOUTH': 'NORTH', 'EAST': 'WEST', 'WEST': 'EAST'}
+        opposites = {"N": "S", "S": "N", "E": "W", "W": "E"}
         return opposites.get(self.detection_direction.upper(), self.detection_direction)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert signal to dictionary for JSON serialization."""
         return {
-            'signal_id': self.signal_id,
-            'x': self.position[0],
-            'y': self.position[1],
-            'detection_direction': self.detection_direction,
-            'approach_direction': self.approach_direction,  # Computed property for frontend
-            'signal_type': self.signal_type.value,
-            'state': self.state.value,
-            'name': self.name,
-            'monitored_block_id': self.monitored_block_id,
-            'monitored_switch_id': self.monitored_switch_id,
-            'monitored_signal_id': self.monitored_signal_id,
-            'approaching_train_id': self.approaching_train_id,
+            "signal_id": self.signal_id,
+            "x": self.position[0],
+            "y": self.position[1],
+            "detection_direction": self.detection_direction,
+            "approach_direction": self.approach_direction,  # Computed property for frontend
+            "signal_type": self.signal_type.value,
+            "state": self.state.value,
+            "name": self.name,
+            "monitored_block_id": self.monitored_block_id,
+            "monitored_switch_id": self.monitored_switch_id,
+            "monitored_signal_id": self.monitored_signal_id,
+            "approaching_train_id": self.approaching_train_id,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'Signal':
+    def from_dict(cls, data: Dict[str, Any]) -> "Signal":
         """Create a Signal from a dictionary."""
+        # Normalize detection_direction: handle both "EAST"/"WEST" and "E"/"W" formats
+        detection_dir = data["detection_direction"]
+        direction_map = {
+            "NORTH": "N",
+            "SOUTH": "S",
+            "EAST": "E",
+            "WEST": "W",
+            "N": "N",
+            "S": "S",
+            "E": "E",
+            "W": "W",
+        }
+        normalized_dir = direction_map.get(detection_dir.upper(), detection_dir)
+
         return cls(
-            signal_id=data['signal_id'],
-            position=(data['x'], data['y']),
-            detection_direction=data['detection_direction'],
-            signal_type=SignalType(data.get('signal_type', 'block')),
-            state=SignalState(data.get('state', 'red')),
-            name=data.get('name'),
-            monitored_block_id=data.get('monitored_block_id'),
-            monitored_switch_id=data.get('monitored_switch_id'),
-            monitored_signal_id=data.get('monitored_signal_id'),
-            approaching_train_id=data.get('approaching_train_id'),
+            signal_id=data["signal_id"],
+            position=(data["x"], data["y"]),
+            detection_direction=normalized_dir,
+            signal_type=SignalType(data.get("signal_type", "block")),
+            state=SignalState(data.get("state", "red")),
+            name=data.get("name"),
+            monitored_block_id=data.get("monitored_block_id"),
+            monitored_switch_id=data.get("monitored_switch_id"),
+            monitored_signal_id=data.get("monitored_signal_id"),
+            approaching_train_id=data.get("approaching_train_id"),
         )
 
     def update_from_block(self, block_occupied: bool) -> None:

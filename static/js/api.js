@@ -17,37 +17,7 @@ class API {
         }
     }
 
-    async updateNetwork(networkData) {
-        const response = await fetch(`${this.baseUrl}/network/update`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(networkData)
-        });
-        return await response.json();
-    }
-
     // Individual track operations
-    async addTrack(trackData) {
-        try {
-            const response = await fetch(`${this.baseUrl}/track`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(trackData)
-            });
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] addTrack failed:', e);
-            throw e;
-        }
-    }
 
     async getTrack(x, y) {
         try {
@@ -128,23 +98,6 @@ class API {
         }
     }
 
-    async assignBlock(positions, blockId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/tracks/assign-block`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ positions, block_id: blockId })
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] assignBlock failed:', e);
-            throw e;
-        }
-    }
-
     async createTrain(trainData) {
         try {
             const response = await fetch(`${this.baseUrl}/trains`, {
@@ -185,11 +138,6 @@ class API {
             console.error('[API] controlSimulation failed:', e);
             throw e;
         }
-    }
-
-    async getSimulationState() {
-        const response = await fetch(`${this.baseUrl}/simulation/state`);
-        return await response.json();
     }
 
     // === Block Management ===
@@ -259,17 +207,6 @@ class API {
             return result;
         } catch (e) {
             console.error('[API] deleteBlock failed:', e);
-            throw e;
-        }
-    }
-
-    async validateBlock(blockId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/blocks/${blockId}/validate`);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] validateBlock failed:', e);
             throw e;
         }
     }
@@ -346,17 +283,6 @@ class API {
     }
 
     // === Signal Management ===
-
-    async getSignals() {
-        try {
-            const response = await fetch(`${this.baseUrl}/signals`);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getSignals failed:', e);
-            throw e;
-        }
-    }
 
     async createSignal(x, y, detectionDirection, signalType = 'block', name = null, autoConnect = true) {
         try {
@@ -476,25 +402,6 @@ class API {
         }
     }
 
-    async connectSignalToBlock(signalId, blockId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/signal/${signalId}/connect`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ block_id: blockId })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                console.error('[API] connectSignalToBlock error:', result);
-                throw new Error(result.error || 'Failed to connect signal');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] connectSignalToBlock failed:', e);
-            throw e;
-        }
-    }
-
     // === Station API Methods ===
 
     async createStation(x, y, name, lengthCm, platformSide, topSpeedKmh, stationId = null) {
@@ -518,17 +425,6 @@ class API {
             return result;
         } catch (e) {
             console.error('[API] createStation failed:', e);
-            throw e;
-        }
-    }
-
-    async getStations() {
-        try {
-            const response = await fetch(`${this.baseUrl}/stations`);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getStations failed:', e);
             throw e;
         }
     }
@@ -605,6 +501,96 @@ class API {
             return result;
         } catch (e) {
             console.error('[API] extendStation failed:', e);
+            throw e;
+        }
+    }
+
+    // === Layout Persistence API ===
+
+    async getLayouts() {
+        try {
+            const response = await fetch(`${this.baseUrl}/layouts`);
+            const result = await response.json();
+            return result.layouts || [];
+        } catch (e) {
+            console.error('[API] getLayouts failed:', e);
+            throw e;
+        }
+    }
+
+    async saveLayout(name, description = '') {
+        try {
+            const response = await fetch(`${this.baseUrl}/layouts`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, description })
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to save layout');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] saveLayout failed:', e);
+            throw e;
+        }
+    }
+
+    async loadLayout(name) {
+        try {
+            const response = await fetch(`${this.baseUrl}/layouts/${encodeURIComponent(name)}/load`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to load layout');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] loadLayout failed:', e);
+            throw e;
+        }
+    }
+
+    async deleteLayout(name) {
+        try {
+            const response = await fetch(`${this.baseUrl}/layouts/${encodeURIComponent(name)}`, {
+                method: 'DELETE'
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to delete layout');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] deleteLayout failed:', e);
+            throw e;
+        }
+    }
+
+    async clearNetwork() {
+        try {
+            const response = await fetch(`${this.baseUrl}/network/clear`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to clear network');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] clearNetwork failed:', e);
+            throw e;
+        }
+    }
+
+    async getNetworkStats() {
+        try {
+            const response = await fetch(`${this.baseUrl}/network/stats`);
+            const result = await response.json();
+            return result;
+        } catch (e) {
+            console.error('[API] getNetworkStats failed:', e);
             throw e;
         }
     }
