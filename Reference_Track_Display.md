@@ -45,19 +45,75 @@ To determine which edges are connected, use these bitmasks:
 
 ## 2. Rendering Implementation
 
-### `drawTrackFromBits(trackBits, half, color)`
-The primary rendering function iterates through all 6 bits and draws active segments:
+### Track Width Constants
+Track rendering uses centralized constants for consistent visual appearance:
 
 ```javascript
-const BIT_TO_EDGES = {
-    0: ['N', 'S'], 1: ['E', 'W'], 2: ['N', 'E'],
-    3: ['N', 'W'], 4: ['S', 'E'], 5: ['S', 'W']
-};
+const TRACK_WIDTH = 4;         // Base track width in pixels (at scale=1)
+const DEBUG_BLOCK_WIDTH = 12;  // Debug block overlay width (at scale=1)
+```
 
-for (let bit = 0; bit < 6; bit++) {
-    if (trackBits & (1 << bit)) {
-        const [e1, e2] = BIT_TO_EDGES[bit];
-        // Draw line from edge e1 to edge e2
+### `drawGridSegment(start, end, width, e1, e2, fillColor)`
+**Core rendering primitive** - draws a filled polygon segment along a track path:
+
+```javascript
+/**
+ * Draw a filled polygon segment along a track path in the isometric grid.
+ * 
+ * Width parameter controls offset along grid lines (perpendicular to edges).
+ * Each edge has its own perpendicular direction (positive = counter-clockwise).
+ */
+drawGridSegment(start, end, width, e1, e2, fillColor) {
+    const halfWidth = width / 2;
+    
+    // Get perpendicular offset for each edge
+    // Positive direction is counter-clockwise around the tile
+    const getEdgeOffset = (edge) => {
+        switch(edge) {
+            case 'N': return {x: -halfWidth, y: -halfWidth};
+            case 'E': return {x: halfWidth, y: -halfWidth};
+            case 'S': return {x: halfWidth, y: halfWidth};
+            case 'W': return {x: -halfWidth, y: halfWidth};
+        }
+    };
+    
+    const offset1 = getEdgeOffset(e1);
+    const offset2 = getEdgeOffset(e2);
+    
+    // Create 4 corner points - alternating pattern around perimeter
+    const p1 = {x: start.x + offset1.x, y: start.y + offset1.y};  // Start + offset
+    const p2 = {x: start.x - offset1.x, y: start.y - offset1.y};  // Start - offset
+    const p3 = {x: end.x + offset2.x, y: end.y + offset2.y};      // End + offset
+    const p4 = {x: end.x - offset2.x, y: end.y - offset2.y};      // End - offset
+    // Draw: p1 → p2 → p3 → p4 → close
+}
+```
+
+**Key features:**
+- **Per-edge offsets**: Each edge (N/E/S/W) has its own perpendicular direction
+- **Counter-clockwise convention**: Positive offset is CCW around tile
+- **Grid-aligned width**: Width parameter is offset along grid lines
+- **Alternating point pattern**: p1(start+), p2(start-), p3(end+), p4(end-) creates proper shape
+
+**Edge Perpendicular Offsets:**
+
+| Edge | Position | Perpendicular Offset (CCW) |
+|------|----------|---------------------------|
+| N | `(h/2, -h/2)` | `(-halfWidth, -halfWidth)` |
+| E | `(h/2, h/2)` | `(+halfWidth, -halfWidth)` |
+| S | `(-h/2, h/2)` | `(+halfWidth, +halfWidth)` |
+| W | `(-h/2, -h/2)` | `(-halfWidth, +halfWidth)` |
+
+### `drawTrackFromBits(trackBits, half, color)`
+Iterates through all 6 bits and draws active segments using `drawGridSegment()`:
+
+```javascript
+const segments = getActiveSegments(trackBits);
+for (const [e1, e2] of segments) {
+    const start = edgePoints[e1];
+    const end = edgePoints[e2];
+    if (start && end) {
+        this.drawGridSegment(start, end, TRACK_WIDTH * this.scale, e1, e2, color);
     }
 }
 ```
@@ -103,9 +159,56 @@ Each edge connects to a neighbor tile in that cardinal direction:
 
 ### Switch Rendering
 When a track has switch points (edge with 2+ exits):
-1. Draw **all segments** as thin grey lines (inactive paths)
-2. Draw **active path** as thick colored line based on `switch_states`
-3. Draw **switch indicator** (M/D) near the diverging exit
+1. **All segments** are drawn using `drawGridSegment()`
+2. **Active path**: Uses `TRACK_WIDTH` with track color
+3. **Inactive paths**: Uses `2px` width with `#444` grey color
+4. **Switch indicator** (M/D) drawn at tile center
+
+```javascript
+const segmentColor = isActive ? color : '#444';
+const segmentWidth = isActive ? TRACK_WIDTH * this.scale : 2 * this.scale;
+this.drawGridSegment(start, end, segmentWidth, e1, e2, segmentColor);
+```
+
+### Block Boundary Markers
+Small 2px segments at block boundaries, extending inward from the edge:
+
+```javascript
+// Create segment extending (TRACK_WIDTH / 2)px inward from boundary edge
+const markerDepth = (TRACK_WIDTH * this.scale) / 2;
+const segmentEnd = {
+    x: edgePoint.x + (dx / length) * markerDepth,
+    y: edgePoint.y + (dy / length) * markerDepth
+};
+this.drawGridSegment(edgePoint, segmentEnd, TRACK_WIDTH * this.scale, edge, segmentPartner, '#666');
+```
+
+### Debug Block Colors
+Thick colored overlays (12px) for visualizing block assignments:
+
+```javascript
+this.drawGridSegment(start, end, DEBUG_BLOCK_WIDTH * this.scale, e1, e2, color);
+```
+
+### Block Boundary Markers
+Small 2px segments at block boundaries, extending inward from the edge:
+
+```javascript
+// Create segment extending (TRACK_WIDTH / 2)px inward from boundary edge
+const markerDepth = (TRACK_WIDTH * this.scale) / 2;
+const segmentEnd = {
+    x: edgePoint.x + (dx / length) * markerDepth,
+    y: edgePoint.y + (dy / length) * markerDepth
+};
+this.drawGridSegment(edgePoint, segmentEnd, TRACK_WIDTH * this.scale, e1, e2, '#666');
+```
+
+### Debug Block Colors
+Thick colored overlays (12px) for visualizing block assignments:
+
+```javascript
+this.drawGridSegment(start, end, DEBUG_BLOCK_WIDTH * this.scale, e1, e2, blockColor);
+```
 
 ---
 

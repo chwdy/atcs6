@@ -29,6 +29,10 @@ const EDGE_MASKS = { N: 13, E: 22, S: 49, W: 42 };
 // Opposite edge lookup
 const OPPOSITE_EDGE = { N: 'S', S: 'N', E: 'W', W: 'E' };
 
+// Track rendering constants
+const TRACK_WIDTH = 4;  // Base track width in pixels (at scale=1)
+const DEBUG_BLOCK_WIDTH = 12;  // Debug block overlay width in pixels (at scale=1)
+
 // Forbidden track_bits configurations (3-way switches and complex crossings)
 const FORBIDDEN_TRACK_BITS = new Set([
     13, 22, 42, 49,        // 3-way switches
@@ -108,6 +112,108 @@ function getOppositeEdge(edge) {
     const e = edge.charAt(0).toUpperCase();
     return OPPOSITE_EDGE[e] || null;
 }
+
+// Get segment group for smart line cap decisions
+// Track segments are grouped by their orientation:
+// - axial-vertical: NS (long vertical path)
+// - axial-horizontal: EW (long horizontal path)
+// - diagonal-nesw: NE/SW diagonal pair
+// - diagonal-nwse: NW/SE diagonal pair
+function getSegmentGroup(e1, e2) {
+    const normalized = [e1, e2].sort().join('');
+    if (normalized === 'NS') return 'axial-vertical';
+    if (normalized === 'EW') return 'axial-horizontal';
+    if (normalized === 'EN' || normalized === 'SW') return 'diagonal-nesw';
+    if (normalized === 'ES' || normalized === 'NW') return 'diagonal-nwse';
+    return 'unknown';
+}
+
+// ============================================================================
+// Isometric Geometry Utility
+// Centralized handling of all track segment and edge rotation math
+// ============================================================================
+
+const IsometricGeometry = {
+    // Track segment orientations in screen space
+    // 
+    // Edge midpoints (from getEdgePoints):
+    //   N: (h/2, -h/2)    E: (h/2, h/2)
+    //   S: (-h/2, h/2)    W: (-h/2, -h/2)
+    //
+    // Segment angles in screen space:
+    //   NS: (h/2,-h/2) → (-h/2,h/2)   slope=-1  angle=-45° (or 135°)
+    //   EW: (h/2,h/2) → (-h/2,-h/2)   slope=1   angle=+45°
+    //   NE: (h/2,-h/2) → (h/2,h/2)    slope=∞   angle=90° (vertical)
+    //   NW: (h/2,-h/2) → (-h/2,-h/2)  slope=0   angle=0° (horizontal)
+    //   SE: (-h/2,h/2) → (h/2,h/2)    slope=0   angle=0° (horizontal)
+    //   SW: (-h/2,h/2) → (-h/2,-h/2)  slope=∞   angle=90° (vertical)
+
+    /**
+     * Get the rotation angle for a track segment in screen space.
+     * @param {string} e1 - First edge ('N', 'E', 'S', 'W')
+     * @param {string} e2 - Second edge ('N', 'E', 'S', 'W')
+     * @returns {number} Rotation angle in radians
+     */
+    getSegmentAngle(e1, e2) {
+        const segment = [e1, e2].sort().join('');
+        const angles = {
+            'NS': -Math.PI / 4,   // -45° (135°)
+            'EW': Math.PI / 4,    // +45°
+            'EN': Math.PI / 2,    // 90° (vertical) - NE
+            'NW': 0,              // 0° (horizontal)
+            'ES': 0,              // 0° (horizontal) - SE
+            'SW': Math.PI / 2     // 90° (vertical)
+        };
+        return angles[segment] || 0;
+    },
+
+    /**
+     * Get the angle perpendicular to an edge grid line (inward toward tile).
+     * For short paths, half-circles should align perpendicular to the edge.
+     * @param {string} edge - Edge name ('N', 'E', 'S', 'W')
+     * @returns {number} Angle in radians pointing inward from edge
+     */
+    getEdgePerpendicularAngle(edge) {
+        // Edge orientations in isometric grid (45° rotated):
+        // N and S edges run diagonally (one orientation)
+        // E and W edges run diagonally (perpendicular orientation)
+        const angles = {
+            'N': -Math.PI / 4,    // N edge: perpendicular points down-left (-45°)
+            'E': Math.PI / 4,     // E edge: perpendicular points up-left (45°)
+            'S': Math.PI * 3 / 4, // S edge: perpendicular points up-right (135°)
+            'W': -Math.PI * 3 / 4 // W edge: perpendicular points down-right (-135° or 225°)
+        };
+        return angles[edge] || 0;
+    },
+
+    /**
+     * Draw a rectangle aligned with a track segment or edge.
+     * The rectangle is rotated to match the segment's orientation in screen space.
+     * 
+     * @param {CanvasRenderingContext2D} ctx - Canvas context
+     * @param {number} cx - Center X in screen coordinates
+     * @param {number} cy - Center Y in screen coordinates
+     * @param {number} width - Width (perpendicular to segment)
+     * @param {number} height - Height (parallel to segment)
+     * @param {string} e1 - First edge of segment ('N', 'E', 'S', or 'W')
+     * @param {string} e2 - Second edge of segment (optional, defaults to opposite of e1)
+     */
+    drawAlignedRect(ctx, cx, cy, width, height, e1, e2 = null) {
+        ctx.save();
+        ctx.translate(cx, cy);
+
+        // If e2 not provided, assume we want alignment perpendicular to the edge
+        // For boundary markers, we need to know the actual segment direction
+        // Use the segment angle to rotate the rectangle
+        const angle = this.getSegmentAngle(e1, e2 || e1);
+        ctx.rotate(angle);
+
+        // Draw rectangle centered at origin (after rotation)
+        ctx.fillRect(-width / 2, -height / 2, width, height);
+
+        ctx.restore();
+    }
+};
 
 class Renderer {
     constructor(canvasId) {
@@ -385,11 +491,6 @@ class Renderer {
             this.trackMap[`${track.x},${track.y}`] = track;
         });
 
-        // Draw block section overlays first (underneath tracks)
-        if (network.block_sections) {
-            this.drawBlockSections(network.block_sections, network.tracks);
-        }
-
         // Draw block ID colors BEFORE tracks (so they appear underneath)
         // Show if: debug checkbox is checked OR showBlockColorsOnly is set (block tool mode)
         const showBlockDebug = document.getElementById('debug-show-blocks')?.checked;
@@ -401,6 +502,12 @@ class Renderer {
         network.tracks.forEach(track => {
             this.drawTrack(track, false); // Skip signals in first pass
         });
+
+        // Draw grey dots at block boundaries AFTER tracks, so they appear on top
+        // This creates visible gaps between different blocks
+        if (network.blocks) {
+            this.drawBlockBoundaryMarkers(network.tracks);
+        }
 
         // Draw stations as spanning platforms (after tracks, so platforms appear on top)
         this.drawStations();
@@ -442,37 +549,6 @@ class Renderer {
                 this.drawTrain(train);
             });
         }
-    }
-
-    drawBlockSections(blockSections, tracks) {
-        // Create a map of track positions to block info
-        const trackBlockMap = new Map();
-
-        for (const [blockId, block] of Object.entries(blockSections)) {
-            if (block.tracks) {
-                for (const trackPos of block.tracks) {
-                    const key = `${trackPos[0]},${trackPos[1]}`;
-                    trackBlockMap.set(key, {
-                        id: blockId,
-                        state: block.state || 'FREE'
-                    });
-                }
-            }
-        }
-
-        // Draw colored overlays for each track in a block
-        tracks.forEach(track => {
-            const key = `${track.x},${track.y}`;
-            const blockInfo = trackBlockMap.get(key);
-            if (blockInfo) {
-                const cellSize = this.gridSize * this.scale;
-                const screenX = this.gridToScreenX(track.x, track.y);
-                const screenY = this.gridToScreenY(track.x, track.y);
-
-                this.ctx.fillStyle = this.blockColors[blockInfo.state] || this.blockColors['FREE'];
-                this.ctx.fillRect(screenX + 2, screenY + 2, cellSize - 4, cellSize - 4);
-            }
-        });
     }
 
     drawTrack(track, drawSignals = true) {
@@ -566,24 +642,69 @@ class Renderer {
         };
     }
 
+    /**
+     * Draw a filled polygon segment along a track path in the isometric grid.
+     * 
+     * Width parameter controls offset along grid lines (perpendicular to edges).
+     * Each edge has its own perpendicular direction (positive = counter-clockwise).
+     * 
+     * @param {Object} start - Start edge midpoint {x, y} in tile-local coords
+     * @param {Object} end - End edge midpoint {x, y} in tile-local coords
+     * @param {number} width - Width along grid lines (perpendicular to edges)
+     * @param {string} e1 - Start edge name ('N', 'E', 'S', 'W')
+     * @param {string} e2 - End edge name ('N', 'E', 'S', 'W')
+     * @param {string} fillColor - Fill color for the polygon
+     */
+    drawGridSegment(start, end, width, e1, e2, fillColor) {
+        const halfWidth = width / 2;
+
+
+        // Get perpendicular offset for each edge
+        // Positive direction is counter-clockwise around the tile
+        const getEdgeOffset = (edge) => {
+            switch (edge) {
+                case 'N': return { x: -halfWidth, y: -halfWidth };
+                case 'E': return { x: halfWidth, y: -halfWidth };
+                case 'S': return { x: halfWidth, y: halfWidth };
+                case 'W': return { x: -halfWidth, y: halfWidth };
+                default: return { x: 0, y: 0 };
+            }
+        };
+
+        const offset1 = getEdgeOffset(e1);
+        const offset2 = getEdgeOffset(e2);
+
+        // Create 4 corner points
+        // p1, p2 on CCW side; p3, p4 on CW side
+        const p1 = { x: start.x + offset1.x, y: start.y + offset1.y };  // Start + offset (CCW)
+        const p2 = { x: start.x - offset1.x, y: start.y - offset1.y };  // Start - offset (CW)
+        const p3 = { x: end.x + offset2.x, y: end.y + offset2.y };      // End + offset (CCW)
+        const p4 = { x: end.x - offset2.x, y: end.y - offset2.y };      // End - offset (CW)
+
+
+
+        // Draw filled polygon in order around perimeter
+        this.ctx.fillStyle = fillColor;
+        this.ctx.beginPath();
+        this.ctx.moveTo(p1.x, p1.y);
+        this.ctx.lineTo(p2.x, p2.y);
+        this.ctx.lineTo(p3.x, p3.y);
+        this.ctx.lineTo(p4.x, p4.y);
+        this.ctx.closePath();
+        this.ctx.fill();
+    }
+
     // Draw track directly from 6-bit track_bits
     drawTrackFromBits(trackBits, half, color, deadEndPorts = []) {
         const edgePoints = this.getEdgePoints(half);
 
-        this.ctx.strokeStyle = color;
-        this.ctx.lineWidth = 4 * this.scale;
-        this.ctx.lineCap = 'round';
-
-        // Draw each active segment
+        // Draw each active segment using filled polygons
         const segments = getActiveSegments(trackBits);
         for (const [e1, e2] of segments) {
             const start = edgePoints[e1];
             const end = edgePoints[e2];
             if (start && end) {
-                this.ctx.beginPath();
-                this.ctx.moveTo(start.x, start.y);
-                this.ctx.lineTo(end.x, end.y);
-                this.ctx.stroke();
+                this.drawGridSegment(start, end, TRACK_WIDTH * this.scale, e1, e2, color);
             }
         }
 
@@ -601,22 +722,16 @@ class Renderer {
 
                     // Check if this is an axial path (crosses center) or diagonal
                     const isAxial = (deadEndEdge === 'N' && otherEdge === 'S') ||
-                                   (deadEndEdge === 'S' && otherEdge === 'N') ||
-                                   (deadEndEdge === 'E' && otherEdge === 'W') ||
-                                   (deadEndEdge === 'W' && otherEdge === 'E');
+                        (deadEndEdge === 'S' && otherEdge === 'N') ||
+                        (deadEndEdge === 'E' && otherEdge === 'W') ||
+                        (deadEndEdge === 'W' && otherEdge === 'E');
 
                     if (isAxial) {
                         // Axial: draw from center to opposite edge only
-                        this.ctx.beginPath();
-                        this.ctx.moveTo(0, 0);
-                        this.ctx.lineTo(otherPoint.x, otherPoint.y);
-                        this.ctx.stroke();
+                        this.drawGridSegment({ x: 0, y: 0 }, otherPoint, TRACK_WIDTH * this.scale, deadEndEdge, otherEdge, color);
                     } else {
                         // Diagonal: draw from one edge to other
-                        this.ctx.beginPath();
-                        this.ctx.moveTo(deadEndPoint.x, deadEndPoint.y);
-                        this.ctx.lineTo(otherPoint.x, otherPoint.y);
-                        this.ctx.stroke();
+                        this.drawGridSegment(deadEndPoint, otherPoint, TRACK_WIDTH * this.scale, e1, e2, color);
                     }
                     break; // Found the segment for this dead-end
                 }
@@ -638,7 +753,7 @@ class Renderer {
         }
 
         // Draw crossing indicator for multi-segment crossings
-        if (isCrossing(trackBits) ) {
+        if (isCrossing(trackBits)) {
             this.ctx.fillStyle = '#8257e5';
             this.ctx.beginPath();
             this.ctx.arc(0, 0, 4 * this.scale, 0, Math.PI * 2);
@@ -652,7 +767,7 @@ class Renderer {
     // switchPoints: {entryEdge: [exit1, exit2, ...]} from backend
     drawTrackWithSwitches(trackBits, half, color, switchState, isDiagonalOnly, switchPoints) {
         const edgePoints = this.getEdgePoints(half);
-        
+
         // Segment definitions
         const SEGMENTS = [
             { bit: 0, edges: ['N', 'S'], name: 'NS' },  // Long
@@ -663,27 +778,25 @@ class Renderer {
             { bit: 5, edges: ['S', 'W'], name: 'SW' },  // Short
         ];
 
-        this.ctx.lineCap = 'round';
-
         // For diagonal-only switches, compute active segments using clockwise ordering
         let activeSegmentBits = new Set();
-        
+
         if (isDiagonalOnly && switchPoints) {
             // Clockwise order: N, E, S, W
             const CLOCKWISE = ['N', 'E', 'S', 'W'];
-            
+
             // For each switch point entry, determine which exit is active
             for (const [entryEdge, exits] of Object.entries(switchPoints)) {
                 if (!exits || exits.length < 2) continue;
-                
+
                 // Sort exits by clockwise order
-                const sortedExits = [...exits].sort((a, b) => 
+                const sortedExits = [...exits].sort((a, b) =>
                     CLOCKWISE.indexOf(a) - CLOCKWISE.indexOf(b)
                 );
-                
+
                 // MAIN (0) picks first clockwise, DIVERGE (1) picks second
                 const activeExit = switchState === 0 ? sortedExits[0] : sortedExits[1];
-                
+
                 // Find the segment connecting entryEdge to activeExit
                 for (const seg of SEGMENTS) {
                     if (!(trackBits & (1 << seg.bit))) continue;
@@ -695,11 +808,16 @@ class Renderer {
                 }
             }
         }
-        
+
+        // Collect all segments present on this tile for smart line cap detection
+        const allSegments = SEGMENTS.filter(seg => trackBits & (1 << seg.bit))
+            .map(seg => seg.edges);
+
         // Draw all segments with appropriate styling
+        // Pass 1: Draw inactive segments
         for (const seg of SEGMENTS) {
             if (!(trackBits & (1 << seg.bit))) continue;  // Skip segments not in track
-            
+
             const [e1, e2] = seg.edges;
             const start = edgePoints[e1];
             const end = edgePoints[e2];
@@ -713,16 +831,43 @@ class Renderer {
                 // Standard logic: long segments (bit 0-1) active on MAIN, short on DIVERGE
                 const isLongSegment = seg.bit <= 1;
                 isActive = (isLongSegment && switchState === 0) ||
-                          (!isLongSegment && switchState === 1);
+                    (!isLongSegment && switchState === 1);
             }
 
-            this.ctx.strokeStyle = isActive ? color : '#444';
-            this.ctx.lineWidth = isActive ? 4 * this.scale : 2 * this.scale;
+            // Draw inactive segments only in first pass
+            if (!isActive) {
+                const segmentColor = '#444';
+                const segmentWidth = 2 * this.scale;
+                this.drawGridSegment(start, end, segmentWidth, e1, e2, segmentColor);
+            }
+        }
 
-            this.ctx.beginPath();
-            this.ctx.moveTo(start.x, start.y);
-            this.ctx.lineTo(end.x, end.y);
-            this.ctx.stroke();
+        // Pass 2: Draw active segments on top
+        for (const seg of SEGMENTS) {
+            if (!(trackBits & (1 << seg.bit))) continue;  // Skip segments not in track
+
+            const [e1, e2] = seg.edges;
+            const start = edgePoints[e1];
+            const end = edgePoints[e2];
+            if (!start || !end) continue;
+
+            let isActive;
+            if (isDiagonalOnly) {
+                // For diagonal-only, use computed active segments
+                isActive = activeSegmentBits.has(seg.bit);
+            } else {
+                // Standard logic: long segments (bit 0-1) active on MAIN, short on DIVERGE
+                const isLongSegment = seg.bit <= 1;
+                isActive = (isLongSegment && switchState === 0) ||
+                    (!isLongSegment && switchState === 1);
+            }
+
+            // Draw active segments only in second pass
+            if (isActive) {
+                const segmentColor = color;
+                const segmentWidth = TRACK_WIDTH * this.scale;
+                this.drawGridSegment(start, end, segmentWidth, e1, e2, segmentColor);
+            }
         }
 
         // Draw switch indicator at tile center
@@ -737,7 +882,7 @@ class Renderer {
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
         this.ctx.fillText(isMain ? 'M' : 'D', 0, 0);
-        
+
         // Add clockwise indicator for diagonal-only switches
         if (isDiagonalOnly) {
             this.ctx.font = `${7 * this.scale}px sans-serif`;
@@ -762,7 +907,6 @@ class Renderer {
         const approachDir = signal.approach_direction;
         const detectionDir = signal.detection_direction;
         const facingEdge = approachDir.charAt(0).toUpperCase();  // Direction train comes from
-        console.log(`[Signal ${signal.signal_id}] det=${detectionDir} app=${approachDir} face=${facingEdge}`);
         const edgePoints = this.getEdgePoints(half);
         const isLongPath = (trackBits === 1 || trackBits === 2);  // NS or EW straight tracks
 
@@ -827,18 +971,18 @@ class Renderer {
             //   SW (32): W(-h/2,-h/2) → S(-h/2, h/2) = (0, h)  → normalized (0, 1)   vertical down
             let diagonalX, diagonalY;
             switch (trackBits) {
-                case 4:  diagonalX = 0;  diagonalY = -1; break;  // NE: vertical up (E→N)
-                case 8:  diagonalX = 1;  diagonalY = 0;  break;  // NW: horizontal right (W→N)
-                case 16: diagonalX = -1; diagonalY = 0;  break;  // SE: horizontal left (E→S)
-                case 32: diagonalX = 0;  diagonalY = 1;  break;  // SW: vertical down (W→S)
-                default: diagonalX = 1;  diagonalY = 0;  break;
+                case 4: diagonalX = 0; diagonalY = -1; break;  // NE: vertical up (E→N)
+                case 8: diagonalX = 1; diagonalY = 0; break;  // NW: horizontal right (W→N)
+                case 16: diagonalX = -1; diagonalY = 0; break;  // SE: horizontal left (E→S)
+                case 32: diagonalX = 0; diagonalY = 1; break;  // SW: vertical down (W→S)
+                default: diagonalX = 1; diagonalY = 0; break;
             }
 
             // Determine the two edges of this diagonal
             let edge1, edge2;
             switch (trackBits) {
-                case 4:  edge1 = 'N'; edge2 = 'E'; break;
-                case 8:  edge1 = 'N'; edge2 = 'W'; break;
+                case 4: edge1 = 'N'; edge2 = 'E'; break;
+                case 8: edge1 = 'N'; edge2 = 'W'; break;
                 case 16: edge1 = 'S'; edge2 = 'E'; break;
                 case 32: edge1 = 'S'; edge2 = 'W'; break;
                 default: edge1 = 'N'; edge2 = 'E'; break;
@@ -864,7 +1008,6 @@ class Renderer {
             dirX = dirPoint.x / len;
             dirY = dirPoint.y / len;
         }
-        console.log(`[Signal ${signal.signal_id}] stick dir: dirX=${dirX.toFixed(2)}, dirY=${dirY.toFixed(2)}`);
 
         // Draw black stick parallel to path direction
         const stickLength = half * 0.4;
@@ -1034,6 +1177,23 @@ class Renderer {
 
             this.ctx.restore();
         }
+    }
+
+    /**
+     * Draw block boundary separators for multi-block stations.
+     * Shows visual dividers between tiles assigned to different blocks.
+     */
+    /**
+     * Get color for block state
+     */
+    getBlockStateColor(state) {
+        const colors = {
+            'free': '#00ff88',
+            'reserved': '#ffd93d',
+            'occupied': '#e83f5b',
+            'caution': '#ff8c42'
+        };
+        return colors[state] || '#888';
     }
 
     /**
@@ -1405,6 +1565,7 @@ class Renderer {
         // Rotate based on direction
         let rotation = 0;
         if (train.direction === 'NORTH') rotation = -Math.PI / 2;
+       
         else if (train.direction === 'SOUTH') rotation = Math.PI / 2;
         else if (train.direction === 'WEST') rotation = Math.PI;
 
@@ -1499,7 +1660,7 @@ class Renderer {
             const edgePoints = this.getEdgePoints(half);
             this.ctx.strokeStyle = previewColor;
             this.ctx.lineWidth = 5 * this.scale; // Slightly thicker for visibility
-            this.ctx.lineCap = 'round';
+            this.ctx.lineCap = 'square';
 
             // Draw each active segment
             const segments = getActiveSegments(trackBits);
@@ -1721,30 +1882,30 @@ class Renderer {
         const screenY = this.gridToScreenY(track.x, track.y);
 
         this.ctx.save();
-        
+
         const stateText = track.switch_state === 0 ? 'MAIN' : 'DIV';
         const isDiagonalOnly = track.is_diagonal_only_switch;
-        
+
         // State indicator
         this.ctx.font = `bold ${11 * this.scale}px sans-serif`;
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
-        
+
         // Background
         const bgColor = track.switch_state === 0 ? '#1a5a2a' : '#5a4a1a';
         const textColor = track.switch_state === 0 ? '#04d361' : '#ffd93d';
-        
+
         this.ctx.fillStyle = bgColor;
         this.ctx.globalAlpha = 0.9;
         this.ctx.beginPath();
         this.ctx.roundRect(screenX - 25 * this.scale, screenY - 18 * this.scale, 50 * this.scale, 16 * this.scale, 3);
         this.ctx.fill();
         this.ctx.globalAlpha = 1;
-        
+
         // State text
         this.ctx.fillStyle = textColor;
         this.ctx.fillText(stateText, screenX, screenY - 10 * this.scale);
-        
+
         // Special indicator for diagonal-only switches
         if (isDiagonalOnly) {
             this.ctx.font = `${8 * this.scale}px sans-serif`;
@@ -1826,7 +1987,7 @@ class Renderer {
         // Golden angle = 360° * (1 - 1/φ) ≈ 137.508°
         const goldenAngle = 137.508;
         const hue = (this.blockColorCounter * goldenAngle) % 360;
-        
+
         // Cache the hue for this block
         this.blockColorCache[blockId] = hue;
         this.blockColorCounter++;
@@ -1846,7 +2007,7 @@ class Renderer {
             const cy = this.gridToScreenY(track.x, track.y);
             const color = this.getBlockColor(track.block_section_id);
 
-            // Draw thicker colored lines along track segments
+            // Draw thicker colored segments along track paths
             this.ctx.save();
             this.ctx.translate(cx, cy);
 
@@ -1854,18 +2015,11 @@ class Renderer {
             const segments = getActiveSegments(trackBits);
             const edgePoints = this.getEdgePoints(halfTile);
 
-            this.ctx.strokeStyle = color;
-            this.ctx.lineWidth = 12 * this.scale; // Thicker than regular track (4)
-            this.ctx.lineCap = 'butt'; // Use butt to avoid overlap with neighboring tiles
-
             for (const [e1, e2] of segments) {
                 const start = edgePoints[e1];
                 const end = edgePoints[e2];
                 if (start && end) {
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(start.x, start.y);
-                    this.ctx.lineTo(end.x, end.y);
-                    this.ctx.stroke();
+                    this.drawGridSegment(start, end, DEBUG_BLOCK_WIDTH * this.scale, e1, e2, color);
                 }
             }
 
@@ -1874,6 +2028,118 @@ class Renderer {
 
         // Block detail labels are now drawn separately after tracks
         // to ensure they appear on top of everything
+    }
+
+    /**
+     * Draw small grey rectangles at track edges where the block changes.
+     * This creates a visible gap between different blocks without needing debug labels.
+     * Rectangles are ROTATED to align with track segments and SIZED based on segment type.
+     * 
+     * For long paths (NS/EW): 2px width × 4px height - stays completely within grid
+     * For short paths (diagonals): 4px width × 4px height - extends slightly beyond grid
+     * 
+     * For each track, check each connected edge. If the neighbor tile exists and has
+     * a different block_section_id, draw a rotated grey rectangle at that edge midpoint.
+     */
+    drawBlockBoundaryMarkers(tracks) {
+        const tileSize = this.gridSize * this.scale;
+        const halfTile = tileSize / 2;
+
+        // Build a lookup map for quick neighbor access
+        const trackMap = {};
+        for (const track of tracks) {
+            trackMap[`${track.x},${track.y}`] = track;
+        }
+
+        // Direction deltas for finding neighbors
+        const neighborDeltas = {
+            'N': { dx: 0, dy: 1 },   // N edge connects to tile at (x, y+1)
+            'E': { dx: 1, dy: 0 },   // E edge connects to tile at (x+1, y)
+            'S': { dx: 0, dy: -1 },  // S edge connects to tile at (x, y-1)
+            'W': { dx: -1, dy: 0 }   // W edge connects to tile at (x-1, y)
+        };
+
+        for (const track of tracks) {
+            if (!track.block_section_id) continue;
+
+            const cx = this.gridToScreenX(track.x, track.y);
+            const cy = this.gridToScreenY(track.x, track.y);
+            const edgePoints = this.getEdgePoints(halfTile);
+
+            // Get which edges this track connects to
+            const trackBits = track.track_bits || 0;
+            const connectedEdges = trackBitsToEdges(trackBits);
+
+            // Get all track segments on this tile for rotation detection
+            const segments = getActiveSegments(trackBits);
+
+            for (const edge of connectedEdges) {
+                const delta = neighborDeltas[edge];
+                if (!delta) continue;
+
+                const neighborX = track.x + delta.dx;
+                const neighborY = track.y + delta.dy;
+                const neighbor = trackMap[`${neighborX},${neighborY}`];
+
+                // Draw boundary marker if:
+                // 1. No neighbor exists (edge of network) - skip, not a block boundary
+                // 2. Neighbor exists but has different block - draw marker
+                // 3. Neighbor exists but has no block - draw marker
+                if (!neighbor) continue;  // Edge of network, not a block boundary
+
+                const neighborBlockId = neighbor.block_section_id;
+                if (neighborBlockId === track.block_section_id) continue;  // Same block
+
+                // Different blocks (or neighbor has no block) - draw grey marker
+                const ep = edgePoints[edge];
+                if (!ep) continue;
+
+                // Find which segment(s) on this tile use this edge
+                // We need to know the OTHER edge to determine path direction
+                const opposites = { 'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E' };
+                let segmentPartner = null;
+                for (const [e1, e2] of segments) {
+                    if (e1 === edge) {
+                        segmentPartner = e2;
+                        break;
+                    } else if (e2 === edge) {
+                        segmentPartner = e1;
+                        break;
+                    }
+                }
+
+                if (!segmentPartner) continue;
+
+                // Calculate path direction from boundary edge toward segment partner
+                const epStart = edgePoints[edge];
+                const epEnd = edgePoints[segmentPartner];
+                const dx = epEnd.x - epStart.x;
+                const dy = epEnd.y - epStart.y;
+                const length = Math.sqrt(dx * dx + dy * dy);
+
+                // Create a segment extending (TRACK_WIDTH / 2)px inward from boundary edge
+                const markerDepth = (TRACK_WIDTH * this.scale) / 2;
+                const segmentStart = epStart;
+                const segmentEnd = {
+                    x: epStart.x + (dx / length) * markerDepth,
+                    y: epStart.y + (dy / length) * markerDepth
+                };
+
+                // Draw marker segment with track width
+                const opposite_edge = { 'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E' }[edge];
+                this.ctx.save();
+                this.ctx.translate(cx, cy);
+                this.drawGridSegment(
+                    segmentStart,
+                    segmentEnd,
+                    TRACK_WIDTH * this.scale,
+                    edge, 
+                    opposite_edge,
+                    '#666'
+                );
+                this.ctx.restore();
+            }
+        }
     }
 
     // Draw block detail labels - multiline text box on top of tracks
@@ -1993,7 +2259,7 @@ class Renderer {
             for (const track of blockTrackList) {
                 const trackCx = this.gridToScreenX(track.x, track.y);
                 const trackCy = this.gridToScreenY(track.x, track.y);
-                
+
                 this.ctx.save();
                 this.ctx.translate(trackCx, trackCy);
 
@@ -2263,18 +2529,18 @@ class Renderer {
                     // See drawSingleSignal for detailed vector calculation documentation
                     let diagonalX, diagonalY;
                     switch (trackBits) {
-                        case 4:  diagonalX = 0;  diagonalY = -1; break;  // NE: vertical up (E→N)
-                        case 8:  diagonalX = 1;  diagonalY = 0;  break;  // NW: horizontal right (W→N)
-                        case 16: diagonalX = -1; diagonalY = 0;  break;  // SE: horizontal left (E→S)
-                        case 32: diagonalX = 0;  diagonalY = 1;  break;  // SW: vertical down (W→S)
-                        default: diagonalX = 1;  diagonalY = 0;  break;
+                        case 4: diagonalX = 0; diagonalY = -1; break;  // NE: vertical up (E→N)
+                        case 8: diagonalX = 1; diagonalY = 0; break;  // NW: horizontal right (W→N)
+                        case 16: diagonalX = -1; diagonalY = 0; break;  // SE: horizontal left (E→S)
+                        case 32: diagonalX = 0; diagonalY = 1; break;  // SW: vertical down (W→S)
+                        default: diagonalX = 1; diagonalY = 0; break;
                     }
 
                     // Determine the two edges of this diagonal
                     let edge1, edge2;
                     switch (trackBits) {
-                        case 4:  edge1 = 'N'; edge2 = 'E'; break;
-                        case 8:  edge1 = 'N'; edge2 = 'W'; break;
+                        case 4: edge1 = 'N'; edge2 = 'E'; break;
+                        case 8: edge1 = 'N'; edge2 = 'W'; break;
                         case 16: edge1 = 'S'; edge2 = 'E'; break;
                         case 32: edge1 = 'S'; edge2 = 'W'; break;
                         default: edge1 = 'N'; edge2 = 'E'; break;
@@ -2294,7 +2560,7 @@ class Renderer {
                 } else {
                     // For straight tracks, stick points in approach direction (where train comes FROM)
                     // Compute approach direction (opposite of detection direction)
-                    const approachEdge = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}[detectionDir] || 'W';
+                    const approachEdge = { 'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E' }[detectionDir] || 'W';
                     const dirPoint = edgePoints[approachEdge] || { x: 1, y: 0 };
                     const len = Math.sqrt(dirPoint.x * dirPoint.x + dirPoint.y * dirPoint.y);
                     dirX = dirPoint.x / len;
@@ -2346,7 +2612,7 @@ class Renderer {
                 const labelX = sx - dirX * half * 0.3;
                 const labelY = sy - dirY * half * 0.3;
                 this.ctx.fillText(signalDirection.charAt(0), labelX, labelY);
-                
+
             } else {
                 // Draw icon
                 this.ctx.font = `${16 * this.scale}px sans-serif`;
