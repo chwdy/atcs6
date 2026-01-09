@@ -622,7 +622,7 @@ A **Block** represents an electrically isolated track section in model railway l
 | Rule | Description | Reason |
 |------|-------------|--------|
 | **No switches inside blocks** | Switches (turnouts) MUST be at block boundaries, not inside | Prevents short circuits when switch points change |
-| **No platforms inside blocks** | Stations/platforms are natural block boundaries | Stations need independent power control |
+| **Block cannot cross station boundaries** | Blocks must be fully inside OR fully outside stations | Maintains clear station/track separation |
 | **Signals create boundaries** | A signal always divides tracks into separate blocks | Signals mark block entry/exit points |
 | **Multiple consecutive blocks OK** | Blocks without signals between them are allowed | For electrical isolation without signaling |
 
@@ -645,7 +645,7 @@ A **Block** represents an electrically isolated track section in model railway l
 │  │ STEP 1: Validate start tile             │                               │
 │  │   • Has track?                          │                               │
 │  │   • Is switch? → WARN                   │                               │
-│  │   • Is platform? → WARN                 │                               │
+│  │   • In station? → OK (blocks allowed)   │                               │
 │  │   • Already has block? → Mode: EXTEND   │                               │
 │  │   • No block? → Mode: CREATE            │                               │
 │  └────────┬────────────────────────────────┘                               │
@@ -662,7 +662,7 @@ A **Block** represents an electrically isolated track section in model railway l
 │  ┌─────────────────────────────────────────┐                               │
 │  │ STEP 3: Validate entire path            │                               │
 │  │   • Check for switches in path          │                               │
-│  │   • Check for platforms in path         │                               │
+│  │   • Check station boundaries            │                               │
 │  │   • Check for signals (boundary!)       │                               │
 │  │   • Check continuity                    │                               │
 │  └────────┬────────────────────────────────┘                               │
@@ -724,17 +724,17 @@ def validate_block_path(path: List[Tile], mode: str) -> Tuple[bool, str]:
         IF tile.is_switch:
             RETURN (False, f"Switches cannot be inside blocks: {tile.position}")
 
-        # Rule 2: No platforms inside block
-        IF tile.is_platform:
-            RETURN (False, f"Platforms cannot be inside blocks: {tile.position}")
-
-        # Rule 3: Check for signals (creates boundary)
+        # Rule 2: Check for signals (creates boundary)
         IF tile.has_signal:
             RETURN (False, f"Signal at {tile.position} creates block boundary")
 
-        # Rule 4: For CREATE mode, tiles must not have existing block
+        # Rule 3: For CREATE mode, tiles must not have existing block
         IF mode == 'create' AND tile.block_section_id is NOT NULL:
             RETURN (False, f"Tile {tile.position} already assigned to block")
+
+    # Rule 4: Validate station boundaries
+    IF NOT validate_station_boundary(path):
+        RETURN (False, "Block cannot cross station boundary")
 
     # Rule 5: Path must be continuous
     IF NOT is_continuous_path(path):
@@ -840,73 +840,51 @@ FREE → RESERVED → OCCUPIED → CAUTION → FREE → ...
 
 This calls `Network.set_block_state()` internally.
 
-### 5.7 Automatic Block Management for Stations
+### 5.7 Station-Block Interaction Rules
 
-When a station is created or extended, the system automatically manages block assignments.
+Blocks and stations interact with clear boundary rules:
 
-#### Station Block Creation
+#### Allowed Configurations
 
-When a station is created at position(s):
+1. **Block Fully Inside Station**
+   * All block tiles belong to the same station
+   * Example: Multi-platform station with separate block per platform
+   * Use case: Independent control of different platform sections
 
-1. **New Station Block Created**
-   * System automatically creates a block named `{station_id}_BLOCK`
-   * All station tiles are assigned to this block
-   * Example: Station `STA_ABC123` gets block `STA_ABC123_BLOCK`
+2. **Block Fully Outside Stations**
+   * No block tiles belong to any station
+   * Standard track blocks on open track
+   * Most common configuration for mainline tracks
 
-2. **Existing Block Handling**
-   * If station tiles were part of an existing block, that block is **automatically split**
-   * Station tiles move to the new station block
-   * Remaining tiles stay in the original block (or original block is deleted if empty)
+#### Prohibited Configurations
 
-#### Example: Station Creation Splits Block
+1. **Block Crossing Station Boundary**
+   * Block has some tiles in station, some outside
+   * **Validation Error:** "Block cannot cross station boundary"
+   * Reason: Maintains clear separation between station and track infrastructure
 
-**Before:**
+2. **Block Spanning Multiple Stations**
+   * Block contains tiles from 2+ different stations
+   * **Validation Error:** "Block cannot span multiple stations"
+   * Reason: Each station must have independent block management
 
-```
-Block "BLK_MAIN" contains tracks at positions:
-[(0,0), (1,0), (2,0), (3,0), (4,0)]
-```
+#### Station Extension Behavior
 
-**Action:**
+When a station extends over existing blocks/signals:
 
-```
-Create station "STA_CENTRAL" at positions [(1,0), (2,0), (3,0)]
-```
+* **Blocks:** If station extends over block tiles, those tiles are removed from the block (may split block into separate blocks)
+* **Signals:** If station extends over signal tiles, signals are automatically removed
+* **Auto-created Block:** When a station is created, an auto-block `{station_id}_BLOCK` is created for convenience
 
-**After:**
-
-```
-Block "BLK_MAIN" → contains [(0,0), (4,0)]  (reduced)
-Block "STA_CENTRAL_BLOCK" → contains [(1,0), (2,0), (3,0)]  (new)
-```
-
-#### Signal Disconnection Warning
-
-⚠️ **Important:** If the original block is deleted (because all its tiles became part of the station), any signals monitoring that block will be **automatically disconnected** (their `monitored_block_id` is set to null).
-
-**Example:**
-
-```
-Before: Signal "SIG_001" monitors block "BLK_TEMP"
-Action: Create station that consumes all tiles in "BLK_TEMP"
-Result: Block "BLK_TEMP" is deleted
-Effect: Signal "SIG_001" no longer monitors any block (must be reconfigured)
-```
-
-#### Station Extension
-
-When extending a station with `extend-station` tool:
-* New tiles must be adjacent to existing station (Manhattan distance = 1)
-* All tiles (existing + new) must form a continuous connected path
-* If new tiles belong to a block, that block is split using the same logic above
+This maintains the rule that blocks cannot cross station boundaries.
 
 #### Best Practice
 
-To avoid unexpected signal disconnection:
+To avoid unexpected block splitting or signal removal:
 
-1. Create stations first, before creating blocks
-2. If adding a station to an existing layout, check which signals monitor affected blocks
-3. Reconfigure signals after station creation if needed
+1. Plan station locations before creating blocks
+2. Create stations first, then add blocks within or outside station boundaries
+3. If extending stations over existing infrastructure, check which blocks/signals will be affected
 
 ---
 
@@ -1480,7 +1458,7 @@ VALID_SIGNAL_DIRECTIONS = {
 | Rule | Check | Error Message |
 |------|-------|---------------|
 | No switches | `tile.is_switch == False` | "Switches cannot be inside blocks" |
-| No platforms | `tile.is_platform == False` | "Platforms cannot be inside blocks" |
+| Station boundaries | `validate_station_boundary(tiles)` | "Block cannot cross station boundary" |
 | No signals crossing | `tile.has_signal == False` | "Signal creates block boundary" |
 | Continuous path | `is_continuous_path(tiles)` | "Path is not continuous" |
 | No existing block (create) | `tile.block_section_id == None` | "Tile already assigned" |

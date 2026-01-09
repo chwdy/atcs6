@@ -949,6 +949,7 @@ function isCrossingForBlock(trackBits) {
 
 // Check if a track tile is valid for block assignment
 // Returns { valid: boolean, reason: string }
+// Note: Stations are now allowed in blocks, but blocks cannot cross station boundaries
 function validateBlockTile(track) {
     if (!track) {
         return { valid: false, reason: 'No track at this position' };
@@ -959,12 +960,7 @@ function validateBlockTile(track) {
         return { valid: false, reason: 'Switches cannot be inside a block' };
     }
 
-    // Rule 2: Blocks MUST NOT include stations
-    if (track.station_name || track.type === 'station') {
-        return { valid: false, reason: 'Stations are block boundaries' };
-    }
-
-    // Rule 3: Blocks MUST NOT include crossings (+ or X shape)
+    // Rule 2: Blocks MUST NOT include crossings (+ or X shape)
     // Crossings have isolated paths that don't connect, so blocks cannot span them
     if (isCrossingForBlock(track.track_bits)) {
         return { valid: false, reason: 'Crossings cannot be inside a block - paths are isolated' };
@@ -1146,6 +1142,24 @@ class Editor {
         this.shiftKeyHeld = false;
         this.diagonalBuildMode = false;  // True when building diagonal/short-path tracks
 
+        // Station extend mode
+        this.stationExtendMode = { active: false };
+        
+        // Block extend mode
+        this.blockExtendMode = { active: false };
+
+        // Route tool state
+        this.pathToolState = {
+            active: false,
+            startBlockId: null,
+            startPosition: null,           // {x, y} of clicked tile
+            reachableEndpoints: [],        // Block IDs from API
+            reachablePositions: new Set(), // Tile positions for quick lookup
+            priority: 5,                   // Default priority (1-10)
+            trainId: null                  // Auto-detected or user-selected
+        };
+        this.cachedPaths = [];            // List of active routes
+
         this.pathfinder = new ConstructionPathfinder();
         this.existingOnlyPathfinder = new ExistingTrackPathfinder();
         this.setupEventListeners();
@@ -1166,6 +1180,96 @@ class Editor {
         }
     }
 
+    // === Collapsible Tool Categories ===
+    
+    setupCollapsibleCategories() {
+        const categories = document.querySelectorAll('.tool-category');
+        
+        categories.forEach(category => {
+            const label = category.querySelector('.tool-category-label');
+            if (!label) return;
+            
+            // Make label clickable to toggle collapse
+            label.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.toggleCategory(category);
+            });
+        });
+        
+        // Load saved collapse states from localStorage
+        this.loadCategoryStates();
+        
+        // Ensure the category containing the currently selected tool is expanded
+        this.expandCategoryForTool(this.selectedTool);
+    }
+    
+    toggleCategory(category) {
+        const wasCollapsed = category.classList.contains('collapsed');
+        
+        if (wasCollapsed) {
+            // Expand this category
+            category.classList.remove('collapsed');
+        } else {
+            // Collapse this category
+            category.classList.add('collapsed');
+        }
+        
+        // Save state to localStorage
+        this.saveCategoryStates();
+    }
+    
+    expandCategoryForTool(toolName) {
+        if (!toolName) return;
+        
+        // Find the category containing this tool
+        const toolBtn = document.querySelector(`.tool-btn[data-tool="${toolName}"]`);
+        if (!toolBtn) return;
+        
+        const category = toolBtn.closest('.tool-category');
+        if (category && category.classList.contains('collapsed')) {
+            category.classList.remove('collapsed');
+            this.saveCategoryStates();
+        }
+    }
+    
+    saveCategoryStates() {
+        const categories = document.querySelectorAll('.tool-category');
+        const states = {};
+        
+        categories.forEach((category, index) => {
+            const label = category.querySelector('.tool-category-label');
+            const categoryName = label ? label.textContent.trim() : `category-${index}`;
+            states[categoryName] = category.classList.contains('collapsed');
+        });
+        
+        try {
+            localStorage.setItem('toolCategoryStates', JSON.stringify(states));
+        } catch (e) {
+            // localStorage not available, silently ignore
+        }
+    }
+    
+    loadCategoryStates() {
+        try {
+            const saved = localStorage.getItem('toolCategoryStates');
+            if (!saved) return;
+            
+            const states = JSON.parse(saved);
+            const categories = document.querySelectorAll('.tool-category');
+            
+            categories.forEach((category, index) => {
+                const label = category.querySelector('.tool-category-label');
+                const categoryName = label ? label.textContent.trim() : `category-${index}`;
+                
+                if (states[categoryName] === true) {
+                    category.classList.add('collapsed');
+                }
+            });
+        } catch (e) {
+            // localStorage not available or invalid data, silently ignore
+        }
+    }
+
     showSecondarySidebar(title, content) {
         const sidebar = document.getElementById('secondary-sidebar');
         const titleEl = document.getElementById('secondary-sidebar-title');
@@ -1174,6 +1278,16 @@ class Editor {
         if (sidebar && titleEl && contentEl) {
             titleEl.textContent = title;
             contentEl.innerHTML = content;
+            
+            // Remove compact class by default (specific panels can add it after)
+            sidebar.classList.remove('compact');
+            
+            // Position next to main sidebar
+            const mainSidebar = document.querySelector('.sidebar');
+            if (mainSidebar) {
+                sidebar.style.left = mainSidebar.offsetWidth + 'px';
+            }
+            
             sidebar.classList.add('visible');
         }
     }
@@ -1182,10 +1296,89 @@ class Editor {
         const sidebar = document.getElementById('secondary-sidebar');
         if (sidebar) {
             sidebar.classList.remove('visible');
+            sidebar.classList.remove('compact');
         }
         // Clear editor tracking
         this._currentEditorType = null;
         this._currentEditorId = null;
+    }
+
+    // Show full JSON viewer in secondary sidebar
+    showFullJSONViewer(data, title = 'JSON Viewer') {
+        const jsonString = JSON.stringify(data, null, 2);
+        
+        const content = `
+            <div class="json-viewer-panel" style="background: transparent; height: 100%; display: flex; flex-direction: column;">
+                <!-- Copy Button -->
+                <div style="margin-bottom: 12px;">
+                    <button id="copy-json-btn" class="btn btn-primary btn-full text-sm">
+                        📋 Copy to Clipboard
+                    </button>
+                </div>
+
+                <!-- JSON Content (scrollable) -->
+                <div style="flex: 1; overflow: auto; background: #0d1020; border: 1px solid #3a3a4e; border-radius: 6px; padding: 12px;">
+                    <pre id="json-content" style="margin: 0; font-family: 'Courier New', monospace; font-size: 11px; color: #00ff88; line-height: 1.4; white-space: pre-wrap; word-wrap: break-word;">${this.syntaxHighlightJSON(jsonString)}</pre>
+                </div>
+            </div>
+        `;
+
+        this.showSecondarySidebar(title, content);
+
+        // Initialize copy button handler
+        setTimeout(() => {
+            const copyBtn = document.getElementById('copy-json-btn');
+            if (copyBtn) {
+                copyBtn.onclick = () => {
+                    navigator.clipboard.writeText(jsonString).then(() => {
+                        window.showToast('JSON copied to clipboard', 'success', 2000);
+                        copyBtn.textContent = '✓ Copied!';
+                        copyBtn.classList.remove('btn-primary');
+                        copyBtn.classList.add('btn-success');
+                        setTimeout(() => {
+                            copyBtn.textContent = '📋 Copy to Clipboard';
+                            copyBtn.classList.remove('btn-success');
+                            copyBtn.classList.add('btn-primary');
+                        }, 2000);
+                    }).catch(err => {
+                        console.error('Failed to copy JSON:', err);
+                        window.showToast('Failed to copy JSON', 'error', 3000);
+                    });
+                };
+            }
+        }, 0);
+    }
+
+    // Syntax highlight JSON string for display
+    syntaxHighlightJSON(jsonString) {
+        return jsonString
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, (match) => {
+                let cls = 'json-number';
+                if (/^"/.test(match)) {
+                    if (/:$/.test(match)) {
+                        cls = 'json-key';
+                    } else {
+                        cls = 'json-string';
+                    }
+                } else if (/true|false/.test(match)) {
+                    cls = 'json-boolean';
+                } else if (/null/.test(match)) {
+                    cls = 'json-null';
+                }
+                
+                const colors = {
+                    'json-key': '#00d4ff',
+                    'json-string': '#ffd93d',
+                    'json-number': '#ff79c6',
+                    'json-boolean': '#04d361',
+                    'json-null': '#888'
+                };
+                
+                return `<span style="color: ${colors[cls]};">${match}</span>`;
+            });
     }
 
     /**
@@ -1270,26 +1463,8 @@ class Editor {
             signalsContent += `
                 <div class="signal-properties" style="background: #1e2d23; padding: 16px; border-radius: 8px; margin-bottom: 16px; border-left: 4px solid ${stateColor};">
 
-                    <!-- Header with Title and ID -->
-                    <div style="margin-bottom: 16px; border-bottom: 1px solid #3a4a3e; padding-bottom: 12px;">
-                        <div style="font-size: 14px; color: #00ff88; font-weight: bold; margin-bottom: 8px;">
-                            Signal ${i + 1} of ${signals.length}
-                        </div>
-                        <div style="font-family: monospace; font-size: 13px; color: #00d4ff; background: #0d1a12; padding: 6px 10px; border-radius: 4px;">
-                            ${signal.signal_id}
-                        </div>
-                    </div>
-
-                    <!-- Current State Display -->
-                    <div style="margin-bottom: 16px;">
-                        <div style="font-size: 12px; color: #aaa; margin-bottom: 8px;">Current State</div>
-                        <div style="display: flex; align-items: center; gap: 12px; background: #0d1a12; padding: 10px; border-radius: 6px;">
-                            <span style="display: inline-block; width: 20px; height: 20px; border-radius: 50%; background: ${stateColor}; box-shadow: 0 0 8px ${stateColor};"></span>
-                            <span style="font-size: 16px; font-weight: bold; color: ${stateColor};">
-                                ${state}
-                            </span>
-                        </div>
-                    </div>
+                    ${renderMultiSignalHeader(i + 1, signals.length, signal.signal_id, stateColor)}
+                    ${renderSignalStateDisplay(state, stateColor)}
 
                     <!-- Signal Name Input -->
                     <div style="margin-bottom: 16px;">
@@ -1320,8 +1495,7 @@ class Editor {
                     </div>
 
                     <!-- Save Button -->
-                    <button class="save-signal-btn btn-sm" data-signal-id="${signal.signal_id}"
-                            style="width: 100%; padding: 12px; background: linear-gradient(135deg, #8257e5, #6b46c1); border: none; border-radius: 6px; color: white; cursor: pointer; font-size: 14px; font-weight: bold; transition: all 0.2s;">
+                    <button class="save-signal-btn btn btn-primary btn-full text-base" data-signal-id="${signal.signal_id}">
                         Save Signal Properties
                     </button>
                 </div>
@@ -1538,95 +1712,26 @@ class Editor {
         }
 
         const blockColor = this.getBlockColor(blockId);
-        const stateColor = block.state === 'free' ? '#04d361' :
-                           block.state === 'reserved' ? '#ffd93d' :
-                           block.state === 'occupied' ? '#e83f5b' :
-                           block.state === 'caution' ? '#ff9500' : '#888';
 
         const content = `
             <div class="block-editor-panel" data-block-id="${blockId}" style="background: transparent;">
-                <!-- Block ID (read-only) -->
-                <div style="margin-bottom: 16px; padding: 10px 12px; background: #0d1020; border: 1px solid ${blockColor}; border-radius: 6px;">
-                    <div style="font-family: monospace; font-size: 14px; color: #fff; font-weight: bold;">${blockId}</div>
-                </div>
-
-                <!-- Current State Display -->
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 12px; color: #aaa; margin-bottom: 8px;">Current State</label>
-                    <div style="display: flex; align-items: center; gap: 12px; background: #0d1020; padding: 10px; border-radius: 6px;">
-                        <span style="display: inline-block; width: 16px; height: 16px; border-radius: 50%; background: ${stateColor}; box-shadow: 0 0 8px ${stateColor};"></span>
-                        <span id="block-state-display" style="font-size: 14px; font-weight: bold; color: ${stateColor}; text-transform: uppercase;">
-                            ${block.state || 'FREE'}
-                        </span>
-                        <button id="cycle-block-state-btn" style="margin-left: auto; padding: 6px 12px; font-size: 11px; background: #2a2a44; border: 1px solid #4a4a6e; border-radius: 4px; color: #ccc; cursor: pointer;">
-                            Cycle State
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Block Name Input -->
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 12px; color: #aaa; margin-bottom: 8px;">Block Name</label>
-                    <input type="text" id="block-name-input" value="${block.name || ''}" placeholder="Enter block name..."
-                           style="width: 100%; padding: 10px 12px; background: #0d1020; border: 1px solid #3a3a4e; color: #fff; border-radius: 6px; font-size: 13px; box-sizing: border-box;">
-                </div>
-
-                <!-- Track Count (read-only) -->
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 12px; color: #aaa; margin-bottom: 8px;">Track Count</label>
-                    <div style="padding: 10px 12px; background: #0d1020; border: 1px solid #3a3a4e; border-radius: 6px; font-size: 13px; color: #00ff88; font-weight: bold;">
-                        ${block.track_count || 0} tiles
-                    </div>
-                </div>
-
-                <!-- Length Input -->
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 12px; color: #aaa; margin-bottom: 8px;">Length (cm)</label>
-                    <input type="number" id="block-length-input" value="${block.length_cm || 0}" min="0" step="1"
-                           style="width: 100%; padding: 10px 12px; background: #0d1020; border: 1px solid #3a3a4e; color: #fff; border-radius: 6px; font-size: 13px; box-sizing: border-box;">
-                </div>
-
-                <!-- Min Radius Input -->
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 12px; color: #aaa; margin-bottom: 8px;">Min Radius (cm)</label>
-                    <input type="number" id="block-radius-input" value="${block.min_radius_cm || ''}" placeholder="Not set" min="0" step="1"
-                           style="width: 100%; padding: 10px 12px; background: #0d1020; border: 1px solid #3a3a4e; color: #fff; border-radius: 6px; font-size: 13px; box-sizing: border-box;">
-                </div>
-
-                <!-- Max Speed Input -->
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 12px; color: #aaa; margin-bottom: 8px;">Max Speed (km/h)</label>
-                    <input type="number" id="block-speed-input" value="${block.max_speed_kmh || ''}" placeholder="Not set" min="0" step="1"
-                           style="width: 100%; padding: 10px 12px; background: #0d1020; border: 1px solid #3a3a4e; color: #fff; border-radius: 6px; font-size: 13px; box-sizing: border-box;">
-                </div>
-
-                ${block.occupied_by ? `
-                <!-- Occupied By -->
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 12px; color: #aaa; margin-bottom: 8px;">Occupied By</label>
-                    <div style="padding: 10px 12px; background: rgba(232, 63, 91, 0.2); border: 1px solid #e83f5b; border-radius: 6px; font-size: 13px; color: #e83f5b; font-weight: bold;">
-                        🚂 ${block.occupied_by}
-                    </div>
-                </div>
-                ` : ''}
-
-                <!-- Connectivity Status -->
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 12px; color: #aaa; margin-bottom: 8px;">Connectivity</label>
-                    <div style="padding: 10px 12px; background: ${block.is_continuous !== false ? 'rgba(4, 211, 97, 0.1)' : 'rgba(232, 63, 91, 0.1)'}; border: 1px solid ${block.is_continuous !== false ? '#04d361' : '#e83f5b'}; border-radius: 6px; font-size: 13px; color: ${block.is_continuous !== false ? '#04d361' : '#e83f5b'}; font-weight: bold;">
-                        ${block.is_continuous !== false ? '✓ Connected' : '⚠ Disconnected'}
-                    </div>
-                </div>
-
-                <!-- Action Buttons -->
-                <div style="display: flex; gap: 10px; margin-top: 20px;">
-                    <button id="save-block-btn" style="flex: 1; padding: 12px; background: linear-gradient(135deg, #00d4ff, #0099cc); border: none; border-radius: 6px; color: white; cursor: pointer; font-size: 14px; font-weight: bold;">
-                        Save
-                    </button>
-                    <button id="delete-block-btn" style="padding: 12px 16px; background: transparent; border: 1px solid #e83f5b; border-radius: 6px; color: #e83f5b; cursor: pointer; font-size: 14px; font-weight: bold;">
-                        Delete
-                    </button>
-                </div>
+                ${renderHeaderId(blockId, blockColor)}
+                ${renderBlockStateDisplay(block.state || 'free', 'cycle-block-state-btn')}
+                ${renderTextInput('block-name-input', 'Block Name', block.name || '', 'Enter block name...')}
+                ${renderReadOnlyValue('Track Count', `${block.track_count || 0} tiles`, 'text-track font-bold')}
+                ${renderTileList(block.sorted_positions, {
+                    entityType: 'block',
+                    extendStartBtnId: 'extend-block-start-btn',
+                    extendEndBtnId: 'extend-block-end-btn',
+                    removeBtnClass: 'delete-block-tile-btn'
+                })}
+                ${renderNumberInput('block-length-input', 'Length (cm)', block.length_cm || 0, { min: 0, step: 1 })}
+                ${renderNumberInput('block-radius-input', 'Min Radius (cm)', block.min_radius_cm || '', { min: 0, step: 1, placeholder: 'Not set' })}
+                ${renderNumberInput('block-speed-input', 'Max Speed (km/h)', block.max_speed_kmh || '', { min: 0, step: 1, placeholder: 'Not set' })}
+                ${renderConditional(block.occupied_by, 
+                    renderStatusBadge('Occupied By', `🚂 ${block.occupied_by}`, 'status-display-danger')
+                )}
+                ${renderActionButtons('save-block-btn', 'delete-block-btn')}
             </div>
         `;
 
@@ -1765,6 +1870,75 @@ class Editor {
                 }
             };
         }
+
+        // Extend Start button
+        const extendBlockStartBtn = document.getElementById('extend-block-start-btn');
+        if (extendBlockStartBtn) {
+            extendBlockStartBtn.onclick = () => {
+                this.enterBlockExtendMode(blockId, 'start');
+            };
+        }
+
+        // Extend End button
+        const extendBlockEndBtn = document.getElementById('extend-block-end-btn');
+        if (extendBlockEndBtn) {
+            extendBlockEndBtn.onclick = () => {
+                this.enterBlockExtendMode(blockId, 'end');
+            };
+        }
+
+        // Tile delete buttons
+        const deleteBlockTileBtns = document.querySelectorAll('.delete-block-tile-btn');
+        deleteBlockTileBtns.forEach(btn => {
+            const x = parseInt(btn.dataset.x);
+            const y = parseInt(btn.dataset.y);
+            
+            // Add hover effect
+            btn.onmouseenter = () => {
+                btn.style.background = '#e83f5b';
+                btn.style.color = 'white';
+            };
+            btn.onmouseleave = () => {
+                btn.style.background = 'transparent';
+                btn.style.color = '#e83f5b';
+            };
+            
+            // Click handler
+            btn.onclick = async () => {
+                try {
+                    // Call the API to remove the tile (backend validates if it's an edge tile)
+                    await this.api.removeBlockTiles(blockId, [[x, y]]);
+                    await window.app.refreshNetwork();
+                    
+                    // Check if block still exists (might have been auto-deleted if last tile)
+                    try {
+                        const updatedBlock = await this.api.getBlock(blockId);
+                        if (updatedBlock && !updatedBlock.error) {
+                            // Re-open editor to show updated tile list
+                            this.showBlockEditor(blockId);
+                        } else {
+                            // Block was deleted or no longer exists
+                            this.hideSecondarySidebar();
+                            window.showToast('Block deleted (last tile removed)', 'success', 5000);
+                        }
+                    } catch (e) {
+                        // Block doesn't exist anymore
+                        this.hideSecondarySidebar();
+                        window.showToast('Block deleted (last tile removed)', 'success', 5000);
+                    }
+                    
+                    // Refresh main properties panel if it was showing this tile
+                    if (this.selectedElement?.x === x && this.selectedElement?.y === y) {
+                        await this.selectElement({ x, y });
+                    }
+                    
+                    window.showToast(`Tile (${x}, ${y}) removed from block`, 'success', 5000);
+                } catch (err) {
+                    console.error(`Failed to remove tile (${x}, ${y}) from block:`, err);
+                    window.showToast(`Failed to remove tile: ${err.message}`, 'error', 5000);
+                }
+            };
+        });
     }
 
     // Show station editor in secondary sidebar (similar to showBlockEditor)
@@ -1779,72 +1953,32 @@ class Editor {
             return;
         }
 
+        // Get all blocks for dropdown
+        const blocks = this.cachedNetwork?.blocks || [];
+
         const content = `
             <div class="station-editor-panel" data-station-id="${stationId}" style="background: transparent;">
-                <!-- Station ID (read-only) -->
-                <div style="margin-bottom: 16px; padding: 10px 12px; background: #0d1020; border: 1px solid #ffd93d; border-radius: 6px;">
-                    <div style="font-family: monospace; font-size: 14px; color: #fff; font-weight: bold;">${stationId}</div>
-                </div>
-
-                <!-- Station Name Input -->
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 12px; color: #aaa; margin-bottom: 8px;">Station Name</label>
-                    <input type="text" id="station-name-input" value="${station.name || ''}" placeholder="Enter station name..."
-                           style="width: 100%; padding: 10px 12px; background: #0d1020; border: 1px solid #3a3a4e; color: #fff; border-radius: 6px; font-size: 13px; box-sizing: border-box;">
-                </div>
-
-                <!-- Platform Length Input -->
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 12px; color: #aaa; margin-bottom: 8px;">Platform Length (cm)</label>
-                    <input type="number" id="station-length-input" value="${station.length_cm || 0}" min="0" step="10"
-                           style="width: 100%; padding: 10px 12px; background: #0d1020; border: 1px solid #3a3a4e; color: #fff; border-radius: 6px; font-size: 13px; box-sizing: border-box;">
-                </div>
-
-                <!-- Platform Side Dropdown -->
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 12px; color: #aaa; margin-bottom: 8px;">Platform Side</label>
-                    <select id="station-side-input"
-                            style="width: 100%; padding: 10px 12px; background: #0d1020; border: 1px solid #3a3a4e; color: #fff; border-radius: 6px; font-size: 13px; box-sizing: border-box;">
-                        <option value="both" ${station.platform_side === 'both' ? 'selected' : ''}>Both Sides</option>
-                        <option value="left" ${station.platform_side === 'left' ? 'selected' : ''}>Left Side</option>
-                        <option value="right" ${station.platform_side === 'right' ? 'selected' : ''}>Right Side</option>
-                    </select>
-                </div>
-
-                <!-- Top Speed Input -->
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 12px; color: #aaa; margin-bottom: 8px;">Top Speed (km/h)</label>
-                    <input type="number" id="station-speed-input" value="${station.top_speed_kmh || ''}" placeholder="Not set" min="0" step="5"
-                           style="width: 100%; padding: 10px 12px; background: #0d1020; border: 1px solid #3a3a4e; color: #fff; border-radius: 6px; font-size: 13px; box-sizing: border-box;">
-                </div>
-
-                <!-- Track Count (read-only) -->
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 12px; color: #aaa; margin-bottom: 8px;">Track Count</label>
-                    <div style="padding: 10px 12px; background: #0d1020; border: 1px solid #3a3a4e; border-radius: 6px; font-size: 13px; color: #00ff88; font-weight: bold;">
-                        ${station.positions?.length || 0} tiles
-                    </div>
-                </div>
-
-                <!-- Orientation Info (read-only) -->
-                ${station.orientation ? `
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 12px; color: #aaa; margin-bottom: 8px;">Orientation</label>
-                    <div style="padding: 10px 12px; background: #0d1020; border: 1px solid #3a3a4e; border-radius: 6px; font-size: 13px; color: #00d4ff; font-weight: bold;">
-                        ${station.orientation}
-                    </div>
-                </div>
-                ` : ''}
-
-                <!-- Action Buttons -->
-                <div style="display: flex; gap: 10px; margin-top: 20px;">
-                    <button id="save-station-btn" style="flex: 1; padding: 12px; background: linear-gradient(135deg, #00d4ff, #0099cc); border: none; border-radius: 6px; color: white; cursor: pointer; font-size: 14px; font-weight: bold;">
-                        Save
-                    </button>
-                    <button id="delete-station-btn" style="padding: 12px 16px; background: transparent; border: 1px solid #e83f5b; border-radius: 6px; color: #e83f5b; cursor: pointer; font-size: 14px; font-weight: bold;">
-                        Delete
-                    </button>
-                </div>
+                ${renderHeaderId(stationId, '#ffd93d')}
+                ${renderTextInput('station-name-input', 'Station Name', station.name || '', 'Enter station name...')}
+                ${renderNumberInput('station-length-input', 'Platform Length (cm)', station.length_cm || 0, { min: 0, step: 10 })}
+                ${renderDropdown('station-side-input', 'Platform Side', station.platform_side, [
+                    { value: 'both', label: 'Both Sides' },
+                    { value: 'left', label: 'Left Side' },
+                    { value: 'right', label: 'Right Side' }
+                ])}
+                ${renderNumberInput('station-speed-input', 'Top Speed (km/h)', station.top_speed_kmh || '', { min: 0, step: 5, placeholder: 'Not set' })}
+                ${renderReadOnlyValue('Track Count', `${station.positions?.length || 0} tiles`, 'text-track font-bold')}
+                ${renderTileListWithBlocks(station.sorted_positions, station.block_assignments_sorted, blocks, {
+                    entityType: 'station',
+                    extendStartBtnId: 'extend-start-btn',
+                    extendEndBtnId: 'extend-end-btn',
+                    removeBtnClass: 'delete-tile-btn',
+                    assignBtnClass: 'assign-block-btn'
+                })}
+                ${renderConditional(station.orientation, 
+                    renderReadOnlyValue('Orientation', station.orientation, 'text-info font-bold')
+                )}
+                ${renderActionButtons('save-station-btn', 'delete-station-btn')}
             </div>
         `;
 
@@ -1933,6 +2067,772 @@ class Editor {
                 }
             };
         }
+
+        // Extend Start button
+        const extendStartBtn = document.getElementById('extend-start-btn');
+        if (extendStartBtn) {
+            extendStartBtn.onclick = () => {
+                this.enterStationExtendMode(stationId, 'start');
+            };
+        }
+
+        // Extend End button
+        const extendEndBtn = document.getElementById('extend-end-btn');
+        if (extendEndBtn) {
+            extendEndBtn.onclick = () => {
+                this.enterStationExtendMode(stationId, 'end');
+            };
+        }
+
+        // Tile delete buttons
+        const deleteTileBtns = document.querySelectorAll('.delete-tile-btn');
+        deleteTileBtns.forEach(btn => {
+            const x = parseInt(btn.dataset.x);
+            const y = parseInt(btn.dataset.y);
+            
+            // Add hover effect
+            btn.onmouseenter = () => {
+                btn.style.background = '#e83f5b';
+                btn.style.color = 'white';
+            };
+            btn.onmouseleave = () => {
+                btn.style.background = 'transparent';
+                btn.style.color = '#e83f5b';
+            };
+            
+            // Click handler
+            btn.onclick = async () => {
+                try {
+                    // Call the API to remove the tile (backend validates if it's an edge tile)
+                    await this.api.removeStationTile(stationId, x, y);
+                    await window.app.refreshNetwork();
+                    
+                    // Check if station still exists (might have been auto-deleted if last tile)
+                    // Use cached network since refreshNetwork() just updated it
+                    const stationStillExists = this.cachedNetwork?.stations?.some(s => s.station_id === stationId);
+                    
+                    if (stationStillExists) {
+                        // Re-open editor to show updated tile list
+                        this.showStationEditor(stationId);
+                    } else {
+                        // Station was deleted (last tile removed)
+                        this.hideSecondarySidebar();
+                        window.showToast('Station deleted (last tile removed)', 'success', 5000);
+                    }
+                    
+                    // Refresh main properties panel if it was showing this tile
+                    if (this.selectedElement?.x === x && this.selectedElement?.y === y) {
+                        await this.selectElement({ x, y });
+                    }
+                    
+                    window.showToast(`Tile (${x}, ${y}) removed from station`, 'success', 5000);
+                } catch (err) {
+                    console.error(`Failed to remove tile (${x}, ${y}) from station:`, err);
+                    window.showToast(`Failed to remove tile: ${err.message}`, 'error', 5000);
+                }
+            };
+        });
+
+        // Tile assign block buttons
+        const assignBlockBtns = document.querySelectorAll('.assign-block-btn');
+        assignBlockBtns.forEach(btn => {
+            const x = parseInt(btn.dataset.x);
+            const y = parseInt(btn.dataset.y);
+            const index = parseInt(btn.dataset.index);
+            
+            btn.onclick = async () => {
+                await this.showBlockAssignmentDialog(stationId, x, y, index);
+            };
+        });
+    }
+
+    // Show dialog to assign a tile to a block
+    async showBlockAssignmentDialog(stationId, x, y, tileIndex) {
+        const station = this.cachedNetwork?.stations?.find(s => s.station_id === stationId);
+        if (!station) return;
+
+        const blocks = this.cachedNetwork?.blocks || [];
+        const currentBlock = station.block_assignments_sorted?.[tileIndex] || null;
+
+        // Build block options
+        const blockOptions = blocks.map(b => ({
+            value: b.block_id,
+            label: `${b.block_id} (${b.state})`
+        }));
+
+        // Add "None" option
+        blockOptions.unshift({ value: '', label: '-- No Block --' });
+
+        // Create dialog HTML
+        const dialogHtml = `
+            <div style="background: #1a1a2e; border: 2px solid #00d4ff; border-radius: 8px; padding: 20px; max-width: 400px;">
+                <h4 style="color: #00d4ff; margin: 0 0 16px 0;">Assign Tile to Block</h4>
+                <div style="margin-bottom: 16px;">
+                    <div style="color: #aaa; font-size: 14px;">Tile: <span style="color: #fff; font-family: monospace;">(${x}, ${y})</span></div>
+                    ${currentBlock ? `<div style="color: #aaa; font-size: 14px; margin-top: 4px;">Current: <span style="color: #ffd93d;">${currentBlock}</span></div>` : ''}
+                </div>
+                <select id="block-assign-select" style="width: 100%; padding: 8px; background: #2a2a3e; color: #fff; border: 1px solid #3a3a4e; border-radius: 4px; margin-bottom: 16px;">
+                    ${blockOptions.map(opt => 
+                        `<option value="${opt.value}" ${opt.value === currentBlock ? 'selected' : ''}>${opt.label}</option>`
+                    ).join('')}
+                </select>
+                <div style="display: flex; gap: 12px;">
+                    <button id="block-assign-save" style="flex: 1; padding: 10px; background: #00d4ff; color: #0a0a0f; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">
+                        Save
+                    </button>
+                    <button id="block-assign-cancel" style="padding: 10px 20px; background: transparent; color: #e83f5b; border: 1px solid #e83f5b; border-radius: 4px; cursor: pointer;">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        `;
+
+        // Show dialog as overlay
+        const overlay = document.createElement('div');
+        overlay.id = 'block-assign-overlay';
+        overlay.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 10000;';
+        overlay.innerHTML = dialogHtml;
+        document.body.appendChild(overlay);
+
+        // Handle save
+        const saveBtn = overlay.querySelector('#block-assign-save');
+        const cancelBtn = overlay.querySelector('#block-assign-cancel');
+        const select = overlay.querySelector('#block-assign-select');
+
+        saveBtn.onclick = async () => {
+            const selectedBlockId = select.value;
+            
+            try {
+                if (selectedBlockId === '') {
+                    // Unassign
+                    if (currentBlock) {
+                        await this.api.unassignTileFromBlock(stationId, x, y);
+                        window.showToast(`Tile (${x}, ${y}) unassigned from block`, 'success', 5000);
+                    }
+                } else {
+                    // Assign
+                    await this.api.assignTileToBlock(stationId, x, y, selectedBlockId);
+                    window.showToast(`Tile (${x}, ${y}) assigned to ${selectedBlockId}`, 'success', 5000);
+                }
+                
+                // Refresh and re-open editor
+                await window.app.refreshNetwork();
+                this.showStationEditor(stationId);
+                
+                // Remove dialog
+                document.body.removeChild(overlay);
+            } catch (err) {
+                console.error('Failed to assign tile to block:', err);
+                window.showToast(`Failed to assign tile: ${err.message}`, 'error', 5000);
+            }
+        };
+
+        // Handle cancel
+        cancelBtn.onclick = () => {
+            document.body.removeChild(overlay);
+        };
+
+        // Handle overlay click (close)
+        overlay.onclick = (e) => {
+            if (e.target === overlay) {
+                document.body.removeChild(overlay);
+            }
+        };
+    }
+
+    /**
+     * Calculate the next tile position for automatic extension.
+     * Uses the edge tile's track configuration to determine the next position.
+     * Platform tiles have exactly 2 exits - we extend to the exit that's NOT already in the platform.
+     * 
+     * @param {Array<[number, number]>} sortedPositions - Sorted station/block positions
+     * @param {string} orientation - 'NS', 'EW', 'NE_SW', or 'NW_SE' (used for track bits validation)
+     * @param {string} direction - 'start' or 'end'
+     * @returns {{x: number, y: number, trackBits: number}} Next tile position and required track bits
+     */
+    calculateNextTile(sortedPositions, orientation, direction) {
+        if (!sortedPositions || sortedPositions.length === 0) {
+            throw new Error('No positions to extend from');
+        }
+
+        // Get the edge tile to extend from
+        const edgeTile = direction === 'start' ? sortedPositions[0] : sortedPositions[sortedPositions.length - 1];
+        const [edgeX, edgeY] = edgeTile;
+
+        // Find the edge track in the cached network
+        const edgeTrack = this.cachedNetwork.tracks.find(t => t.x === edgeX && t.y === edgeY);
+        if (!edgeTrack) {
+            throw new Error(`No track found at edge position (${edgeX}, ${edgeY})`);
+        }
+
+        // Get the exits of the edge tile
+        const exits = this.getTrackExits(edgeTrack.track_bits);
+        if (exits.length !== 2) {
+            throw new Error(`Edge tile must have exactly 2 exits, found ${exits.length}`);
+        }
+
+        console.log('[Editor] Edge tile:', {x: edgeX, y: edgeY, trackBits: edgeTrack.track_bits, exits});
+
+        // Convert exits to neighbor positions
+        const neighbors = exits.map(exit => this.getNeighborPosition(edgeX, edgeY, exit));
+        
+        console.log('[Editor] Potential neighbors:', neighbors);
+
+        // Check which neighbor is already in the platform
+        const positionSet = new Set(sortedPositions.map(([x, y]) => `${x},${y}`));
+        const availableNeighbors = neighbors.filter(([nx, ny]) => !positionSet.has(`${nx},${ny}`));
+
+        if (availableNeighbors.length === 0) {
+            throw new Error('Both neighbors are already in the platform - cannot extend');
+        }
+
+        // If both neighbors are available (single-tile station), use the direction parameter
+        // and orientation to determine which way to extend
+        let nextX, nextY;
+        if (availableNeighbors.length > 1) {
+            // Single-tile station: use direction and orientation to choose
+            const [n1x, n1y] = availableNeighbors[0];
+            const [n2x, n2y] = availableNeighbors[1];
+            
+            // Determine which neighbor matches the intended direction based on orientation
+            if (orientation === 'NS') {
+                // Start = north (higher Y), End = south (lower Y)
+                nextX = edgeX;
+                nextY = direction === 'start' ? Math.max(n1y, n2y) : Math.min(n1y, n2y);
+            } else if (orientation === 'EW') {
+                // Start = west (lower X), End = east (higher X)
+                nextX = direction === 'start' ? Math.min(n1x, n2x) : Math.max(n1x, n2x);
+                nextY = edgeY;
+            } else if (orientation === 'NE_SW') {
+                // Start = toward NE (higher x-y), End = toward SW (lower x-y)
+                const diff1 = n1x - n1y;
+                const diff2 = n2x - n2y;
+                [nextX, nextY] = direction === 'start' ? 
+                    (diff1 > diff2 ? [n1x, n1y] : [n2x, n2y]) :
+                    (diff1 < diff2 ? [n1x, n1y] : [n2x, n2y]);
+            } else if (orientation === 'NW_SE') {
+                // Start = toward NW (higher x+y), End = toward SE (lower x+y)
+                const sum1 = n1x + n1y;
+                const sum2 = n2x + n2y;
+                [nextX, nextY] = direction === 'start' ? 
+                    (sum1 > sum2 ? [n1x, n1y] : [n2x, n2y]) :
+                    (sum1 < sum2 ? [n1x, n1y] : [n2x, n2y]);
+            }
+            
+            console.log('[Editor] Single-tile station, chose direction:', direction, 'position:', {x: nextX, y: nextY});
+        } else {
+            // Multi-tile station: only one available neighbor
+            [nextX, nextY] = availableNeighbors[0];
+        }
+
+        // Now determine which track bits the next tile should have
+        // It must match the platform's orientation
+        const trackBits = this.getTrackBitsForOrientation(orientation, nextX, nextY, edgeX, edgeY);
+
+        console.log('[Editor] Calculated next tile:', {x: nextX, y: nextY, trackBits});
+
+        return { x: nextX, y: nextY, trackBits };
+    }
+
+    /**
+     * Get track exits from track bits
+     * @param {number} trackBits - Track configuration bits
+     * @returns {Array<string>} Array of exit directions ('N', 'E', 'S', 'W')
+     */
+    getTrackExits(trackBits) {
+        const exits = [];
+        const TRACK_NS = 1, TRACK_EW = 2, TRACK_NE = 4, TRACK_NW = 8, TRACK_SE = 16, TRACK_SW = 32;
+        
+        if (trackBits & TRACK_NS) { exits.push('N', 'S'); }
+        if (trackBits & TRACK_EW) { exits.push('E', 'W'); }
+        if (trackBits & TRACK_NE) { exits.push('N', 'E'); }
+        if (trackBits & TRACK_NW) { exits.push('N', 'W'); }
+        if (trackBits & TRACK_SE) { exits.push('S', 'E'); }
+        if (trackBits & TRACK_SW) { exits.push('S', 'W'); }
+        
+        // Remove duplicates
+        return [...new Set(exits)];
+    }
+
+    /**
+     * Get neighbor position in a given direction
+     * @param {number} x - Current X coordinate
+     * @param {number} y - Current Y coordinate
+     * @param {string} direction - Direction ('N', 'E', 'S', 'W')
+     * @returns {[number, number]} Neighbor position [x, y]
+     */
+    getNeighborPosition(x, y, direction) {
+        const offsets = {
+            'N': [0, 1],
+            'E': [1, 0],
+            'S': [0, -1],
+            'W': [-1, 0]
+        };
+        const [dx, dy] = offsets[direction];
+        return [x + dx, y + dy];
+    }
+
+    /**
+     * Determine track bits for next tile based on orientation and positions
+     * @param {string} orientation - Platform orientation
+     * @param {number} nextX - Next tile X
+     * @param {number} nextY - Next tile Y
+     * @param {number} edgeX - Edge tile X
+     * @param {number} edgeY - Edge tile Y
+     * @returns {number} Track bits for the next tile
+     */
+    getTrackBitsForOrientation(orientation, nextX, nextY, edgeX, edgeY) {
+        const TRACK_NS = 1, TRACK_EW = 2, TRACK_NE = 4, TRACK_NW = 8, TRACK_SE = 16, TRACK_SW = 32;
+        
+        if (orientation === 'NS') {
+            return TRACK_NS;
+        } else if (orientation === 'EW') {
+            return TRACK_EW;
+        } else if (orientation === 'NE_SW') {
+            // Zigzag: determine from direction of movement
+            const dx = nextX - edgeX;
+            const dy = nextY - edgeY;
+            if (dx === 1 && dy === 0) return TRACK_SW; // Moving east
+            if (dx === 0 && dy === 1) return TRACK_NE; // Moving north
+            if (dx === -1 && dy === 0) return TRACK_NE; // Moving west
+            if (dx === 0 && dy === -1) return TRACK_SW; // Moving south
+        } else if (orientation === 'NW_SE') {
+            // Zigzag: determine from direction of movement
+            const dx = nextX - edgeX;
+            const dy = nextY - edgeY;
+            if (dx === 1 && dy === 0) return TRACK_SE; // Moving east
+            if (dx === 0 && dy === 1) return TRACK_SE; // Moving north
+            if (dx === -1 && dy === 0) return TRACK_NW; // Moving west
+            if (dx === 0 && dy === -1) return TRACK_NW; // Moving south
+        }
+        
+        throw new Error(`Cannot determine track bits for orientation ${orientation}`);
+    }
+
+    /**
+     * Detect orientation from sorted positions
+     * @param {Array<[number, number]>} sortedPositions - Sorted positions
+     * @returns {string} Orientation: 'NS', 'EW', 'NE_SW', or 'NW_SE'
+     */
+    detectOrientation(sortedPositions) {
+        if (!sortedPositions || sortedPositions.length < 1) {
+            throw new Error('Need at least 1 position to detect orientation');
+        }
+
+        // For single-tile blocks/stations, detect from track bits
+        if (sortedPositions.length === 1) {
+            const [x, y] = sortedPositions[0];
+            const track = this.cachedNetwork.tracks.find(t => t.x === x && t.y === y);
+            if (!track) {
+                throw new Error(`No track found at position (${x}, ${y})`);
+            }
+
+            // Map track bits to orientation groups
+            const TRACK_NS = 1, TRACK_EW = 2, TRACK_NE = 4, TRACK_NW = 8, TRACK_SE = 16, TRACK_SW = 32;
+            
+            if (track.track_bits & TRACK_NS) return 'NS';
+            if (track.track_bits & TRACK_EW) return 'EW';
+            if (track.track_bits & (TRACK_NE | TRACK_SW)) return 'NE_SW';
+            if (track.track_bits & (TRACK_NW | TRACK_SE)) return 'NW_SE';
+            
+            throw new Error('Cannot determine orientation from track bits');
+        }
+
+        // Check if all positions are on same X (NS) or same Y (EW)
+        const allSameX = sortedPositions.every(([x, _]) => x === sortedPositions[0][0]);
+        const allSameY = sortedPositions.every(([_, y]) => y === sortedPositions[0][1]);
+
+        if (allSameX) return 'NS';
+        if (allSameY) return 'EW';
+
+        // For diagonals, check if positions are sorted by x-y (NE_SW) or x+y (NW_SE)
+        // NE_SW zigzag: x-y increases along the path
+        // NW_SE zigzag: x+y increases along the path
+        
+        const sums = sortedPositions.map(([x, y]) => x + y);
+        const diffs = sortedPositions.map(([x, y]) => x - y);
+
+        // Check if diffs are monotonically increasing (NE_SW)
+        let diffsMonotonic = true;
+        for (let i = 1; i < diffs.length; i++) {
+            if (diffs[i] <= diffs[i-1]) {
+                diffsMonotonic = false;
+                break;
+            }
+        }
+
+        // Check if sums are monotonically increasing (NW_SE)
+        let sumsMonotonic = true;
+        for (let i = 1; i < sums.length; i++) {
+            if (sums[i] <= sums[i-1]) {
+                sumsMonotonic = false;
+                break;
+            }
+        }
+
+        if (diffsMonotonic) {
+            return 'NE_SW';
+        } else if (sumsMonotonic) {
+            return 'NW_SE';
+        }
+
+        // Fallback: use variance to decide
+        const sumVariance = Math.max(...sums) - Math.min(...sums);
+        const diffVariance = Math.max(...diffs) - Math.min(...diffs);
+
+        if (diffVariance > sumVariance) {
+            return 'NE_SW';
+        } else {
+            return 'NW_SE';
+        }
+    }
+
+    // Automatically extend station (no click required)
+    async enterStationExtendMode(stationId, direction) {
+        console.log(`[Editor] Auto-extending station: ${stationId} (${direction})`);
+        
+        try {
+            // Get station data
+            const station = this.cachedNetwork?.stations?.find(s => s.station_id === stationId);
+            if (!station) {
+                throw new Error('Station not found');
+            }
+
+            // Get orientation and sorted positions
+            const orientation = station.orientation || station.initial_orientation;
+            const sortedPositions = station.sorted_positions || station.positions;
+
+            console.log('[Editor] Station data:', {
+                stationId,
+                orientation,
+                sortedPositions: JSON.stringify(sortedPositions),
+                direction
+            });
+            
+            // Log track bits for all positions to understand the pattern
+            sortedPositions.forEach((pos, idx) => {
+                const track = this.cachedNetwork.tracks.find(t => t.x === pos[0] && t.y === pos[1]);
+                console.log(`[Editor] Position ${idx}: (${pos[0]}, ${pos[1]}) x+y=${pos[0]+pos[1]} track_bits=${track?.track_bits}`);
+            });
+
+            if (!orientation) {
+                throw new Error('Cannot determine station orientation');
+            }
+
+            // Calculate next tile automatically
+            const nextTile = this.calculateNextTile(sortedPositions, orientation, direction);
+            console.log(`[Editor] Auto-extending to tile (${nextTile.x}, ${nextTile.y}) with track bits ${nextTile.trackBits}`);
+
+            // Validate the tile can be extended
+            const canExtend = await this.api.canExtendStation(stationId, nextTile.x, nextTile.y);
+            
+            if (!canExtend.can_extend) {
+                window.showToast(`Cannot extend ${direction}: ${canExtend.reason}`, 'error', 5000);
+                return;
+            }
+            
+            // Extend the station
+            await this.api.extendStation(stationId, [[nextTile.x, nextTile.y]]);
+            await window.app.refreshNetwork();
+            
+            // Refresh station editor
+            this.showStationEditor(stationId);
+            
+            // Refresh main properties panel if showing this tile
+            if (this.selectedElement?.x === nextTile.x && this.selectedElement?.y === nextTile.y) {
+                await this.selectElement({ x: nextTile.x, y: nextTile.y });
+            }
+            
+            window.showToast(`Station extended ${direction} to (${nextTile.x}, ${nextTile.y})`, 'success', 3000);
+        } catch (err) {
+            console.error('Failed to auto-extend station:', err);
+            window.showToast(`Failed to extend station: ${err.message}`, 'error', 5000);
+        }
+    }
+
+    // Exit station extend mode
+    exitStationExtendMode() {
+        if (this.stationExtendMode?.active) {
+            console.log('[Editor] Exiting station extend mode');
+            this.stationExtendMode = { active: false };
+            document.body.style.cursor = 'default';
+            
+            // Restore header
+            const secondarySidebar = document.getElementById('secondary-sidebar-content');
+            if (secondarySidebar) {
+                const header = secondarySidebar.closest('.secondary-sidebar')?.querySelector('h3');
+                if (header) {
+                    header.textContent = '🚉 Station Editor';
+                    header.style.color = '';
+                }
+            }
+        }
+    }
+
+    // Handle click in station extend mode
+    async handleStationExtendClick(x, y) {
+        if (!this.stationExtendMode?.active) return false;
+        
+        const { stationId, direction } = this.stationExtendMode;
+        
+        try {
+            // Validate the tile can be extended
+            const canExtend = await this.api.canExtendStation(stationId, x, y);
+            
+            if (!canExtend.can_extend) {
+                window.showToast(`Cannot extend: ${canExtend.reason}`, 'error', 5000);
+                return true; // Handled, but failed
+            }
+            
+            // Extend the station
+            await this.api.extendStation(stationId, [[x, y]]);
+            await window.app.refreshNetwork();
+            
+            // Exit extend mode
+            this.exitStationExtendMode();
+            
+            // Refresh station editor
+            this.showStationEditor(stationId);
+            
+            // Refresh main properties panel if showing this tile
+            if (this.selectedElement?.x === x && this.selectedElement?.y === y) {
+                await this.selectElement({ x, y });
+            }
+            
+            window.showToast(`Tile (${x}, ${y}) added to station`, 'success', 5000);
+            return true;
+        } catch (err) {
+            console.error('Failed to extend station:', err);
+            window.showToast(`Failed to extend station: ${err.message}`, 'error', 5000);
+            return true;
+        }
+    }
+
+    // Automatically extend block (no click required)
+    async enterBlockExtendMode(blockId, direction) {
+        console.log(`[Editor] Auto-extending block: ${blockId} (${direction})`);
+        
+        try {
+            // Get block data
+            const block = await this.api.getBlock(blockId);
+            if (!block || block.error) {
+                throw new Error('Block not found');
+            }
+
+            // Get sorted positions
+            const sortedPositions = block.sorted_positions || block.track_positions;
+
+            if (!sortedPositions || sortedPositions.length === 0) {
+                throw new Error('Block has no positions');
+            }
+
+            // Detect orientation from sorted positions
+            const orientation = this.detectOrientation(sortedPositions);
+            console.log(`[Editor] Detected block orientation: ${orientation}`);
+
+            // Calculate next tile automatically
+            const nextTile = this.calculateNextTile(sortedPositions, orientation, direction);
+            console.log(`[Editor] Auto-extending to tile (${nextTile.x}, ${nextTile.y}) with track bits ${nextTile.trackBits}`);
+
+            // Extend the block (use force=false to let backend validate)
+            await this.api.extendBlock(blockId, [[nextTile.x, nextTile.y]], false);
+            await window.app.refreshNetwork();
+            
+            // Refresh block editor
+            this.showBlockEditor(blockId);
+            
+            // Refresh main properties panel if showing this tile
+            if (this.selectedElement?.x === nextTile.x && this.selectedElement?.y === nextTile.y) {
+                await this.selectElement({ x: nextTile.x, y: nextTile.y });
+            }
+            
+            window.showToast(`Block extended ${direction} to (${nextTile.x}, ${nextTile.y})`, 'success', 3000);
+        } catch (err) {
+            console.error('Failed to auto-extend block:', err);
+            window.showToast(`Failed to extend block: ${err.message}`, 'error', 5000);
+        }
+    }
+
+    // Exit block extend mode
+    exitBlockExtendMode() {
+        if (this.blockExtendMode?.active) {
+            console.log('[Editor] Exiting block extend mode');
+            this.blockExtendMode = { active: false };
+            document.body.style.cursor = 'default';
+            
+            // Restore header
+            const secondarySidebar = document.getElementById('secondary-sidebar-content');
+            if (secondarySidebar) {
+                const header = secondarySidebar.closest('.secondary-sidebar')?.querySelector('h3');
+                if (header) {
+                    header.textContent = '📦 Block Editor';
+                    header.style.color = '';
+                }
+            }
+        }
+    }
+
+    // Handle click in block extend mode
+    async handleBlockExtendClick(x, y) {
+        if (!this.blockExtendMode?.active) return false;
+        
+        const { blockId, direction } = this.blockExtendMode;
+        
+        try {
+            // Validate the tile can be extended
+            const canExtend = await this.api.canExtendBlock(blockId, x, y);
+            
+            if (!canExtend.can_extend) {
+                // Check if it requires force flags
+                if (canExtend.requires_force) {
+                    window.showToast(`Tile has signal - use force mode to extend (not yet implemented)`, 'warning', 5000);
+                } else if (canExtend.requires_force_overwrite) {
+                    window.showToast(`Tile in another block - use force overwrite (not yet implemented)`, 'warning', 5000);
+                } else {
+                    window.showToast(`Cannot extend: ${canExtend.reason}`, 'error', 5000);
+                }
+                return true; // Handled, but failed
+            }
+            
+            // Extend the block
+            await this.api.extendBlock(blockId, [[x, y]]);
+            await window.app.refreshNetwork();
+            
+            // Exit extend mode
+            this.exitBlockExtendMode();
+            
+            // Refresh block editor
+            this.showBlockEditor(blockId);
+            
+            // Refresh main properties panel if showing this tile
+            if (this.selectedElement?.x === x && this.selectedElement?.y === y) {
+                await this.selectElement({ x, y });
+            }
+            
+            window.showToast(`Tile (${x}, ${y}) added to block`, 'success', 5000);
+            return true;
+        } catch (err) {
+            console.error('Failed to extend block:', err);
+            window.showToast(`Failed to extend block: ${err.message}`, 'error', 5000);
+            return true;
+        }
+    }
+
+    // Show train editor in secondary sidebar
+    async showTrainEditor(trainId) {
+        // Track this editor for auto-refresh
+        this._currentEditorType = 'train';
+        this._currentEditorId = trainId;
+
+        // Fetch fresh train data
+        let train;
+        try {
+            train = await this.api.getTrain(trainId);
+        } catch (err) {
+            console.error('[Editor] Failed to fetch train:', err);
+            window.showToast(`Failed to load train: ${err.message}`, 'error', 5000);
+            return;
+        }
+
+        if (!train) {
+            console.warn('[Editor] Train not found:', trainId);
+            window.showToast(`Train ${trainId} not found`, 'error', 5000);
+            return;
+        }
+
+        // Determine status badge CSS class
+        const statusClass = train.status === 'RUNNING' ? 'status-display-success' :
+                           train.status === 'WAITING' ? 'status-display-warning' :
+                           train.status === 'BLOCKED' ? 'status-display-danger' : 'status-display-info';
+
+        const content = `
+            <div class="train-editor-panel" data-train-id="${trainId}" style="background: transparent;">
+                ${renderHeaderId(trainId, '#8257e5')}
+                ${renderStatusBadge('Status', train.status || 'STOPPED', statusClass)}
+                ${renderReadOnlyValue('Position', 
+                    train.position ? `(${train.position.x}, ${train.position.y})` : 'Unknown', 
+                    'text-info', true
+                )}
+                ${renderReadOnlyValue('Direction', train.direction || 'EAST', 'font-bold text-station')}
+                ${renderReadOnlyValue('Current Speed', `${(train.current_speed || 0).toFixed(1)} km/h`, 'font-bold text-track')}
+                ${renderNumberInput('train-max-speed-input', 'Max Speed (km/h)', train.max_speed || 100, { min: 1, max: 500, step: 1 })}
+                ${renderNumberInput('train-length-input', 'Length (cm)', train.length_cm || 0, { min: 0, step: 10 })}
+                ${renderConditional(train.block_section_id,
+                    renderReadOnlyValue('Block Section', train.block_section_id, 'text-block', true)
+                )}
+                ${renderConditional(train.schedule && train.schedule.length > 0, `
+                    <div class="property-item">
+                        <label class="property-label">Schedule</label>
+                        <div class="bg-input rounded-lg text-xs text-muted" style="max-height: 120px; overflow-y: auto; border: 1px solid #3a3a4e; padding: 8px; font-family: monospace;">
+                            ${train.schedule.map((stop, idx) => `${idx + 1}. ${stop}`).join('<br>')}
+                        </div>
+                    </div>
+                `)}
+                ${renderActionButtons('save-train-btn', 'delete-train-btn')}
+            </div>
+        `;
+
+        this.showSecondarySidebar('🚄 Train Editor', content);
+
+        // Initialize event handlers after content is rendered
+        setTimeout(() => this.initTrainEditorHandlers(trainId), 0);
+    }
+
+    // Initialize handlers for train editor in secondary sidebar
+    async initTrainEditorHandlers(trainId) {
+        const saveBtn = document.getElementById('save-train-btn');
+        const deleteBtn = document.getElementById('delete-train-btn');
+        const maxSpeedInput = document.getElementById('train-max-speed-input');
+        const lengthInput = document.getElementById('train-length-input');
+
+        // Save button
+        if (saveBtn) {
+            saveBtn.onclick = async () => {
+                const updates = {};
+
+                if (maxSpeedInput) {
+                    const val = parseFloat(maxSpeedInput.value);
+                    if (!isNaN(val) && val > 0) {
+                        updates.max_speed = val;
+                    }
+                }
+                if (lengthInput) {
+                    const val = parseFloat(lengthInput.value);
+                    if (!isNaN(val) && val >= 0) {
+                        updates.length_cm = val;
+                    }
+                }
+
+                try {
+                    await this.api.updateTrain(trainId, updates);
+                    await window.app.refreshNetwork();
+                    // Re-open to show updated values
+                    this.showTrainEditor(trainId);
+                    window.showToast('Train properties saved', 'success', 5000);
+                } catch (err) {
+                    console.error('Failed to save train properties:', err);
+                    window.showToast('Failed to save train properties: ' + err.message, 'error', 5000);
+                }
+            };
+        }
+
+        // Delete button
+        if (deleteBtn) {
+            deleteBtn.onclick = async () => {
+                if (!confirm(`Delete train "${trainId}"? This action cannot be undone.`)) {
+                    return;
+                }
+                try {
+                    await this.api.deleteTrain(trainId);
+                    await window.app.refreshNetwork();
+                    this.hideSecondarySidebar();
+                    window.showToast('Train deleted', 'success', 5000);
+                } catch (err) {
+                    console.error('Failed to delete train:', err);
+                    window.showToast('Failed to delete train: ' + err.message, 'error', 5000);
+                }
+            };
+        }
     }
 
     setupEventListeners() {
@@ -1961,10 +2861,52 @@ class Editor {
                     window.app.refreshNetwork(); // Refresh to update display
                 }
 
+                // Handle route tool special actions
+                if (newTool === 'path') {
+                    this.enterRouteToolMode();
+                } else if (newTool === 'extend-path') {
+                    this.enterExtendRouteMode();
+                } else if (newTool === 'cancel-path') {
+                    this.enterCancelRouteMode();
+                } else if (newTool === 'paths-panel') {
+                    this.showPathsPanel();
+                    // Don't change selected tool - keep current tool active
+                    e.currentTarget.classList.remove('active');
+                    document.querySelector(`.tool-btn[data-tool="${oldTool}"]`)?.classList.add('active');
+                    return;
+                } else if (newTool === 'add-train') {
+                    this.showAddTrainDialog();
+                    // Don't change selected tool - keep select tool active
+                    e.currentTarget.classList.remove('active');
+                    document.querySelector(`.tool-btn[data-tool="${oldTool}"]`)?.classList.add('active');
+                    return;
+                } else if (newTool === 'train-panel') {
+                    this.showTrainsPanel();
+                    // Don't change selected tool - keep current tool active
+                    e.currentTarget.classList.remove('active');
+                    document.querySelector(`.tool-btn[data-tool="${oldTool}"]`)?.classList.add('active');
+                    return;
+                } else if (oldTool === 'path') {
+                    // Leaving path tool mode
+                    this.exitRouteToolMode();
+                } else if (oldTool === 'extend-path') {
+                    // Leaving extend-path tool mode
+                    this.exitExtendRouteMode();
+                } else if (oldTool === 'cancel-path') {
+                    // Leaving cancel-path tool mode
+                    this.exitCancelRouteMode();
+                }
+
                 this.selectedTool = newTool;
                 this.previewPath = null;
+                
+                // Auto-expand the category containing the selected tool
+                this.expandCategoryForTool(newTool);
             });
         });
+
+        // Collapsible tool categories
+        this.setupCollapsibleCategories();
 
         const canvas = this.renderer.canvas;
 
@@ -1975,14 +2917,19 @@ class Editor {
             const y = e.clientY - rect.top;
             const gridPos = this.renderer.screenToGrid(x, y);
 
-            // Middle mouse or select tool = pan
-            if (e.button === 1 || (e.button === 0 && this.selectedTool === 'select')) {
+            // Middle mouse, select tool, or route-related tools = pan
+            const pathTools = ['path', 'extend-path', 'cancel-path'];
+            if (e.button === 1 || (e.button === 0 && this.selectedTool === 'select') ||
+                (e.button === 0 && pathTools.includes(this.selectedTool))) {
                 this.isPanning = true;
+                this.panStart = { x, y };
+                this.hasPanned = false; // Track if actual panning occurred
+                // Initialize last mouse position for delta calculation
                 this.lastMouseX = e.clientX;
                 this.lastMouseY = e.clientY;
             }
-            // Left click with build tool = start drag build
-            else if (e.button === 0 && ['track', 'block', 'eraser', 'extend-block', 'extend-station'].includes(this.selectedTool)) {
+            // Left mouse + path-based tools = start drag
+            else if (e.button === 0 && ['track', 'block', 'eraser', 'extend-block', 'extend-station', 'remove-station-tile', 'remove-block-tile'].includes(this.selectedTool)) {
                 this.isDraggingBuild = true;
                 this.dragStart = gridPos;
                 this.dragEnd = gridPos;
@@ -2008,6 +2955,12 @@ class Editor {
             if (this.isPanning) {
                 const dx = e.clientX - this.lastMouseX;
                 const dy = e.clientY - this.lastMouseY;
+                
+                // If mouse moved more than a small threshold, mark as actual panning
+                if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+                    this.hasPanned = true;
+                }
+                
                 this.renderer.panX += dx;
                 this.renderer.panY += dy;
                 // Redraw the full network, not just the grid
@@ -2044,8 +2997,11 @@ class Editor {
                 if (this.selectedTool === 'eraser' && isSingleClick) {
                     // Single click eraser: two-stage deletion
                     await this.handleErase(this.dragStart);
-                } else if (this.selectedTool === 'eraser' || this.selectedTool === 'block' || this.selectedTool === 'track' || this.selectedTool === 'extend-block' || this.selectedTool === 'extend-station') {
-                    // Drag operation: commit the build/erase/block path
+                } else if (['remove-station-tile', 'remove-block-tile'].includes(this.selectedTool) && isSingleClick) {
+                    // Single click removal tools
+                    await this.handleRemovalClick(this.dragStart);
+                } else if (['eraser', 'block', 'track', 'extend-block', 'extend-station', 'remove-station-tile', 'remove-block-tile'].includes(this.selectedTool)) {
+                    // Drag operation: commit the build/erase/block/removal path
                     await this.commitDragBuild();
                 }
 
@@ -2117,13 +3073,49 @@ class Editor {
 
         // Click to select element for properties panel
         canvas.addEventListener('click', async (e) => {
-            // Only handle selection with select tool
-            if (this.selectedTool !== 'select') return;
+            // Don't handle click if user was panning
+            if (this.hasPanned) {
+                this.hasPanned = false; // Reset for next interaction
+                return;
+            }
             
             const rect = canvas.getBoundingClientRect();
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
             const gridPos = this.renderer.screenToGrid(x, y);
+            
+            // Check if in station extend mode
+            if (this.stationExtendMode?.active) {
+                const handled = await this.handleStationExtendClick(gridPos.x, gridPos.y);
+                if (handled) return;
+            }
+            
+            // Check if in block extend mode
+            if (this.blockExtendMode?.active) {
+                const handled = await this.handleBlockExtendClick(gridPos.x, gridPos.y);
+                if (handled) return;
+            }
+            
+            // Check if in path tool mode
+            if (this.selectedTool === 'path') {
+                await this.handleRouteToolClick(gridPos);
+                return;
+            }
+            
+            // Check if in extend-path tool mode
+            if (this.selectedTool === 'extend-path') {
+                await this.handleExtendRouteToolClick(gridPos);
+                return;
+            }
+            
+            // Check if in cancel-path tool mode
+            if (this.selectedTool === 'cancel-path') {
+                await this.handleCancelRouteToolClick(gridPos);
+                return;
+            }
+            
+            // Only handle selection with select tool
+            if (this.selectedTool !== 'select') return;
             
             this.selectElement(gridPos);
         });
@@ -2151,7 +3143,7 @@ class Editor {
             }
         });
 
-        // ESC key - return to select tool
+        // ESC key - exit extend mode or return to select tool
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
                 // Check if we're in a modal or input field
@@ -2162,6 +3154,27 @@ class Editor {
 
                 if (inModal || inInput) {
                     return; // Let modal/input handlers deal with it
+                }
+
+                // Exit station extend mode if active
+                if (this.stationExtendMode?.active) {
+                    this.exitStationExtendMode();
+                    window.showToast('Extend mode cancelled', 'info', 3000);
+                    return;
+                }
+
+                // Exit block extend mode if active
+                if (this.blockExtendMode?.active) {
+                    this.exitBlockExtendMode();
+                    window.showToast('Extend mode cancelled', 'info', 3000);
+                    return;
+                }
+
+                // Exit path tool mode if active
+                if (this.pathToolState?.active) {
+                    this.exitRouteToolMode();
+                    window.showToast('Route creation cancelled', 'info', 3000);
+                    return;
                 }
 
                 // Switch to select tool
@@ -2858,8 +3871,8 @@ class Editor {
                 this.previewTracks = this.lastValidPreviewTracks;
             }
         }
-        else if (this.selectedTool === 'block' || this.selectedTool === 'extend-block' || this.selectedTool === 'extend-station' || this.selectedTool === 'eraser') {
-            // Use existing-only pathfinder for block assignment, extend-block, extend-station, and eraser
+        else if (['block', 'extend-block', 'extend-station', 'eraser', 'remove-station-tile', 'remove-block-tile'].includes(this.selectedTool)) {
+            // Use existing-only pathfinder for block assignment, extend-block, extend-station, eraser, and removal tools
             const existingTracks = this.cachedNetwork ? this.cachedNetwork.tracks : [];
             const foundPath = this.existingOnlyPathfinder.findPathOnExistingTracks(
                 this.dragStart.x, this.dragStart.y,
@@ -2888,12 +3901,12 @@ class Editor {
             if (this.previewTracks && this.previewTracks.length > 0) {
                 this.renderer.drawPreviewTracks(this.previewTracks);
             }
-            // Draw eraser preview in red
-            else if (this.selectedTool === 'eraser' && this.previewPath) {
+            // Draw eraser and removal tools preview in red
+            else if (['eraser', 'remove-station-tile', 'remove-block-tile'].includes(this.selectedTool) && this.previewPath) {
                 this.renderer.drawEraserPreviewPath(this.previewPath);
             }
             // Draw block preview in purple (for block, extend-block, and extend-station tools)
-            else if ((this.selectedTool === 'block' || this.selectedTool === 'extend-block' || this.selectedTool === 'extend-station') && this.previewPath) {
+            else if (['block', 'extend-block', 'extend-station'].includes(this.selectedTool) && this.previewPath) {
                 this.renderer.drawBlockPreviewPath(this.previewPath);
             }
             else if (this.previewPath) {
@@ -3116,6 +4129,85 @@ class Editor {
                 const positions = this.previewPath.map(p => [p.x, p.y]);
                 await this.api.deleteTracksBulk(positions);
             }
+            else if (this.selectedTool === 'remove-station-tile') {
+                // Remove station tiles along the path
+                if (!this.previewPath || this.previewPath.length === 0) return;
+
+                const tracks = this.cachedNetwork?.tracks || [];
+                let successCount = 0;
+                let errorCount = 0;
+                let errors = [];
+
+                for (const pos of this.previewPath) {
+                    const track = tracks.find(t => t.x === pos.x && t.y === pos.y);
+                    if (!track || !track.station_id) {
+                        errors.push(`No station at (${pos.x}, ${pos.y})`);
+                        errorCount++;
+                        continue;
+                    }
+
+                    try {
+                        await this.api.removeStationTile(track.station_id, pos.x, pos.y);
+                        successCount++;
+                    } catch (err) {
+                        errors.push(`(${pos.x}, ${pos.y}): ${err.message}`);
+                        errorCount++;
+                    }
+                }
+
+                if (successCount > 0) {
+                    window.showToast(`Removed ${successCount} station tile(s)`, 'success');
+                }
+                if (errorCount > 0) {
+                    window.showToast(`Failed to remove ${errorCount} tile(s):\n${errors.slice(0, 3).join('\n')}`, 'error', 5000);
+                }
+            }
+            else if (this.selectedTool === 'remove-block-tile') {
+                // Remove block tiles along the path
+                if (!this.previewPath || this.previewPath.length === 0) return;
+
+                const tracks = this.cachedNetwork?.tracks || [];
+                
+                // Group positions by block
+                const blockGroups = new Map();
+                for (const pos of this.previewPath) {
+                    const track = tracks.find(t => t.x === pos.x && t.y === pos.y);
+                    if (track && track.block_section_id) {
+                        if (!blockGroups.has(track.block_section_id)) {
+                            blockGroups.set(track.block_section_id, []);
+                        }
+                        blockGroups.get(track.block_section_id).push([pos.x, pos.y]);
+                    }
+                }
+
+                if (blockGroups.size === 0) {
+                    window.showToast('No block tiles in selected path', 'error', 3000);
+                    return;
+                }
+
+                let totalSuccess = 0;
+                let totalErrors = [];
+
+                // Remove tiles from each block
+                for (const [blockId, positions] of blockGroups.entries()) {
+                    try {
+                        const result = await this.api.removeBlockTiles(blockId, positions);
+                        totalSuccess += result.removed || 0;
+                        if (result.errors && result.errors.length > 0) {
+                            totalErrors.push(...result.errors);
+                        }
+                    } catch (err) {
+                        totalErrors.push(`Block ${blockId}: ${err.message}`);
+                    }
+                }
+
+                if (totalSuccess > 0) {
+                    window.showToast(`Removed ${totalSuccess} block tile(s)`, 'success');
+                }
+                if (totalErrors.length > 0) {
+                    window.showToast(`Errors:\n${totalErrors.slice(0, 3).join('\n')}`, 'error', 5000);
+                }
+            }
 
             await this.refreshAndSelect(null);  // Refresh without selecting specific element
         } catch (err) {
@@ -3184,6 +4276,58 @@ class Editor {
             await this.refreshAndSelect(null);  // Refresh without selecting (track may be gone)
         } catch (err) {
             console.error('[Editor] Failed to erase:', err);
+        }
+    }
+
+    async handleRemovalClick(gridPos) {
+        try {
+            const existingTrack = this.cachedNetwork?.tracks?.find(
+                t => t.x === gridPos.x && t.y === gridPos.y
+            );
+
+            if (!existingTrack) {
+                window.showToast('No track at this position', 'error', 3000);
+                return;
+            }
+
+            if (this.selectedTool === 'remove-station-tile') {
+                if (!existingTrack.station_id) {
+                    window.showToast('No station at this position', 'error', 3000);
+                    return;
+                }
+
+                try {
+                    await this.api.removeStationTile(existingTrack.station_id, gridPos.x, gridPos.y);
+                    window.showToast('Station tile removed', 'success');
+                } catch (err) {
+                    window.showToast(`Failed to remove station tile: ${err.message}`, 'error', 5000);
+                }
+            }
+            else if (this.selectedTool === 'remove-block-tile') {
+                if (!existingTrack.block_section_id) {
+                    window.showToast('No block at this position', 'error', 3000);
+                    return;
+                }
+
+                try {
+                    const result = await this.api.removeBlockTiles(
+                        existingTrack.block_section_id,
+                        [[gridPos.x, gridPos.y]]
+                    );
+                    
+                    if (result.removed > 0) {
+                        window.showToast('Block tile removed', 'success');
+                    } else if (result.errors && result.errors.length > 0) {
+                        window.showToast(`Cannot remove: ${result.errors[0]}`, 'error', 5000);
+                    }
+                } catch (err) {
+                    window.showToast(`Failed to remove block tile: ${err.message}`, 'error', 5000);
+                }
+            }
+
+            await this.refreshAndSelect(null);
+        } catch (err) {
+            console.error('[Editor] Failed to handle removal click:', err);
         }
     }
 
@@ -3455,6 +4599,13 @@ class Editor {
     }
 
     async handleRightClick(gridPos) {
+        // Check if we're in path tool mode - cancel path creation
+        if (this.selectedTool === 'path' && this.pathToolState?.active) {
+            this.resetRouteToolState();
+            window.showToast('Route creation cancelled', 'info', 3000);
+            return;
+        }
+
         // Check if we're in signal tool mode - cycle preview direction
         if (this.selectedTool === 'signal' && this.hoverPosition &&
             this.hoverPosition.x === gridPos.x && this.hoverPosition.y === gridPos.y && this.hoverValid) {
@@ -3478,31 +4629,59 @@ class Editor {
             // Check if track has switch points (uses is_switch from simplified global state system)
             if (track.is_switch) {
                 // Toggle global switch state between MAIN (0) and DIVERGE (1)
+                // Backend validates lock status and rejects if switch is locked by a route
                 const newState = track.switch_state === 0 ? 1 : 0;
-                await this.api.updateTrack(gridPos.x, gridPos.y, {
-                    switch_state: newState
-                });
+                try {
+                    await this.api.updateTrack(gridPos.x, gridPos.y, {
+                        switch_state: newState
+                    });
+                } catch (switchErr) {
+                    // Parse error message from API response
+                    const errMsg = this._parseApiError(switchErr, 'Cannot toggle switch');
+                    window.showToast(errMsg, 'error', 5000);
+                }
+                
                 await window.app.refreshNetwork();
                 // Refresh properties panel to show updated switch state
                 await this.selectElement(gridPos);
             }
             else if (track.block_section_id) {
                 // Right-click cycles block state: FREE → RESERVED → OCCUPIED → CAUTION → FREE
-                // Use the new cycle-state API endpoint
+                // Backend validates route reservations and rejects if block is locked by a route
                 try {
-                    const result = await this.api.cycleBlockState(track.block_section_id);
-                    if (result.error) {
-                        console.error('Failed to cycle block state:', result.error);
-                    }
-                    await window.app.refreshNetwork();
-                    // Refresh properties panel to show updated block state
-                    await this.selectElement(gridPos);
+                    await this.api.cycleBlockState(track.block_section_id);
                 } catch (blockErr) {
-                    console.error('Failed to cycle block state:', blockErr);
+                    // Parse error message from API response
+                    const errMsg = this._parseApiError(blockErr, 'Cannot change block state');
+                    window.showToast(errMsg, 'error', 5000);
                 }
+                await window.app.refreshNetwork();
+                // Refresh properties panel to show updated block state
+                await this.selectElement(gridPos);
             }
         } catch (err) {
             console.error('Right-click action failed:', err);
+        }
+    }
+
+    /**
+     * Parse API error message from exception.
+     * Extracts the 'error' field from JSON response if available.
+     */
+    _parseApiError(err, fallbackPrefix) {
+        try {
+            // Error message format: "HTTP 409: {"error": "...", ...}"
+            const msg = err.message || String(err);
+            const jsonMatch = msg.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                const parsed = JSON.parse(jsonMatch[0]);
+                if (parsed.error) {
+                    return `${fallbackPrefix}: ${parsed.error}`;
+                }
+            }
+            return `${fallbackPrefix}: ${msg}`;
+        } catch {
+            return `${fallbackPrefix}: ${err.message || String(err)}`;
         }
     }
 
@@ -3616,112 +4795,96 @@ class Editor {
         // Check if forbidden
         const isForbidden = FORBIDDEN_TRACK_BITS.has(trackBits);
         
+        // Format binary with highlighted 1s
+        const binaryStr = trackBits.toString(2).padStart(6, '0');
+        const binaryHTML = binaryStr.split('').map(bit => 
+            bit === '1' ? `<span style="color: #00d4ff;">${bit}</span>` : bit
+        ).join('');
+        
         // Build the track bits editor canvas
         const editorId = `track-editor-${Date.now()}`;
         
         panel.innerHTML = `
             <h3>Properties</h3>
-            ${track.isVirtual ? `
-            <div class="property-item" style="background: #3a2a1a; padding: 8px; border-radius: 4px; margin-bottom: 8px; border-left: 3px solid #ff9900;">
-                <span style="color: #ff9900; font-weight: bold;">New Tile (not yet saved)</span>
-            </div>
-            ` : ''}
-            <div class="property-item">
-                <label>Position:</label>
-                <span>${track.x}, ${track.y}</span>
-            </div>
-            <div class="property-item">
-                <label>Type:</label>
-                <span>${track.isVirtual ? 'Empty' : track.type}</span>
+            
+            <!-- Compact Header: Position and Type on one line with virtual badge -->
+            <div class="compact-header">
+                <span>(${track.x}, ${track.y}) - ${track.isVirtual ? 'Empty' : track.type}</span>
+                ${track.isVirtual ? '<span class="badge badge-new">NEW</span>' : ''}
             </div>
             
-            <!-- Track Bits Display (Primary) -->
-            <div class="property-item" style="background: #2a3a2e; padding: 12px; border-radius: 4px; margin: 8px 0;">
-                <label style="color: #00ff88; font-weight: bold; display: block; margin-bottom: 8px;">Track Bits:</label>
-                <div style="font-family: monospace; font-size: 16px; margin-bottom: 4px;">${trackBits}</div>
-                <div style="color: #888; font-size: 12px; margin-bottom: 8px;">(0b${trackBits.toString(2).padStart(6, '0')})</div>
-                <div style="font-size: 12px; color: #ffd700; margin-bottom: 6px;">${shapeDesc}</div>
-                <div style="font-size: 11px; color: #ccc; margin-bottom: 6px;">
-                    ${activeSegments.length > 0 ? 'Active: ' + activeSegments.join(', ') : 'No active segments'}
-                </div>
-                <div style="font-size: 10px; color: #888; margin-bottom: 4px;">
-                    Edges: ${edges.length > 0 ? edges.join(', ') : 'None'}
-                </div>
-                <div style="font-size: 10px; color: #888;">
-                    Segments: ${numSegments}
+            <!-- Track Bits Display (Primary) - Larger font, compact layout -->
+            <div class="info-box-track">
+                <label class="text-track font-bold block mb-4">Track Bits</label>
+                <div class="text-2xl font-bold mb-2 text-track" style="font-family: monospace;">${trackBits} <span class="text-lg text-muted">(0b${binaryHTML})</span></div>
+                <div class="text-muted text-base mb-8">
+                    ${shapeDesc} • ${numSegments} segment${numSegments !== 1 ? 's' : ''} • ${activeSegments.length > 0 ? activeSegments.join(', ') : 'No segments'} ${edges.length > 0 ? '• Edges: ' + edges.join(', ') : ''}
                 </div>
                 ${isForbidden ?
-                    '<div style="font-size: 11px; color: #e83f5b; margin-top: 8px; font-weight: bold;">⚠ FORBIDDEN CONFIGURATION</div>'
+                    '<div class="text-xs text-danger mt-8 font-bold">⚠ FORBIDDEN CONFIGURATION</div>'
                     : ''}
             </div>
 
-            <!-- Track Bits Editor -->
-            <div id="bit-editor" style="background: #1a1a2e; padding: 10px; border-radius: 4px; margin: 8px 0;">
-                <h4 style="color: #00ff88; font-size: 12px; margin: 0 0 10px 0;">Track Bits Editor</h4>
-                <div class="bit-toggles" style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0;">
-                    <label style="display: flex; align-items: center; padding: 6px; background: ${trackBits & 1 ? '#2a4a3e' : '#2a2a34'}; border-radius: 4px; cursor: pointer; font-size: 11px; border: 1px solid ${trackBits & 1 ? '#00ff88' : 'transparent'};">
-                        <input type="checkbox" data-bit="1" ${trackBits & 1 ? 'checked' : ''} style="margin-right: 6px;" /> 
-                        <span style="color: ${trackBits & 1 ? '#00ff88' : '#ccc'};">NS (1) ╲</span>
-                    </label>
-                    <label style="display: flex; align-items: center; padding: 6px; background: ${trackBits & 2 ? '#2a4a3e' : '#2a2a34'}; border-radius: 4px; cursor: pointer; font-size: 11px; border: 1px solid ${trackBits & 2 ? '#00ff88' : 'transparent'};">
-                        <input type="checkbox" data-bit="2" ${trackBits & 2 ? 'checked' : ''} style="margin-right: 6px;" />
-                        <span style="color: ${trackBits & 2 ? '#00ff88' : '#ccc'};">EW (2) ╱</span>
-                    </label>
-                    <label style="display: flex; align-items: center; padding: 6px; background: ${trackBits & 4 ? '#2a4a3e' : '#2a2a34'}; border-radius: 4px; cursor: pointer; font-size: 11px; border: 1px solid ${trackBits & 4 ? '#00ff88' : 'transparent'};">
-                        <input type="checkbox" data-bit="4" ${trackBits & 4 ? 'checked' : ''} style="margin-right: 6px;" />
-                        <span style="color: ${trackBits & 4 ? '#00ff88' : '#ccc'};">NE (4) ⌐</span>
-                    </label>
-                    <label style="display: flex; align-items: center; padding: 6px; background: ${trackBits & 8 ? '#2a4a3e' : '#2a2a34'}; border-radius: 4px; cursor: pointer; font-size: 11px; border: 1px solid ${trackBits & 8 ? '#00ff88' : 'transparent'};">
-                        <input type="checkbox" data-bit="8" ${trackBits & 8 ? 'checked' : ''} style="margin-right: 6px;" />
-                        <span style="color: ${trackBits & 8 ? '#00ff88' : '#ccc'};">NW (8) ⌐</span>
-                    </label>
-                    <label style="display: flex; align-items: center; padding: 6px; background: ${trackBits & 16 ? '#2a4a3e' : '#2a2a34'}; border-radius: 4px; cursor: pointer; font-size: 11px; border: 1px solid ${trackBits & 16 ? '#00ff88' : 'transparent'};">
-                        <input type="checkbox" data-bit="16" ${trackBits & 16 ? 'checked' : ''} style="margin-right: 6px;" />
-                        <span style="color: ${trackBits & 16 ? '#00ff88' : '#ccc'};">SE (16) ⌐</span>
-                    </label>
-                    <label style="display: flex; align-items: center; padding: 6px; background: ${trackBits & 32 ? '#2a4a3e' : '#2a2a34'}; border-radius: 4px; cursor: pointer; font-size: 11px; border: 1px solid ${trackBits & 32 ? '#00ff88' : 'transparent'};">
-                        <input type="checkbox" data-bit="32" ${trackBits & 32 ? 'checked' : ''} style="margin-right: 6px;" />
-                        <span style="color: ${trackBits & 32 ? '#00ff88' : '#ccc'};">SW (32) ⌐</span>
-                    </label>
+            <!-- Combined Bit Editor (33%) and Visual Editor (67%) Side-by-Side -->
+            <div class="flex gap-8" style="margin: 8px 0;">
+                <!-- Bit Editor (Left - 33%) -->
+                <div id="bit-editor" class="bg-section p-8 rounded" style="flex: 0 0 33%;">
+                    <h4 class="text-track text-xs mb-8" style="margin: 0 0 8px 0;">Bit Editor</h4>
+                    <div class="flex flex-col gap-4">
+                        ${renderBitToggle(1, 'NS', trackBits)}
+                        ${renderBitToggle(2, 'EW', trackBits)}
+                        ${renderBitToggle(4, 'NE', trackBits)}
+                        ${renderBitToggle(8, 'NW', trackBits)}
+                        ${renderBitToggle(16, 'SE', trackBits)}
+                        ${renderBitToggle(32, 'SW', trackBits)}
+                    </div>
+                    <div class="bit-info bg-hover rounded-sm text-tiny" style="margin: 8px 0 0 0; padding: 4px;">
+                        <p style="margin: 0;"><span id="bit-total" class="font-bold text-track">${trackBits}</span> <span class="text-muted">(0b${binaryHTML})</span></p>
+                        <p class="bit-warning font-bold text-danger mt-2" style="font-size: 8px; display: ${isForbidden ? 'block' : 'none'};">
+                            ⚠ Forbidden
+                        </p>
+                    </div>
+                    <button id="apply-bits" class="btn btn-primary btn-full text-xxs mt-6">Apply</button>
                 </div>
-                <div class="bit-info" style="margin: 10px 0; padding: 6px; background: #2a2a34; border-radius: 4px; font-size: 11px;">
-                    <p style="margin: 0;">Total: <span id="bit-total" style="font-weight: bold; color: #00ff88;">${trackBits}</span> (0b<span id="bit-binary">${trackBits.toString(2).padStart(6, '0')}</span>)</p>
-                    <p class="bit-warning" style="margin: 4px 0 0 0; color: #e83f5b; font-weight: bold; display: ${isForbidden ? 'block' : 'none'};">
-                        ⚠ Warning: This is a forbidden configuration!
-                    </p>
+                
+                <!-- Visual Editor (Right - 67%) -->
+                <div class="visual-editor bg-section p-8 rounded" style="flex: 1;">
+                    <label class="text-track font-bold text-xs mb-6 block">Visual Editor</label>
+                    <canvas id="${editorId}" width="200" height="200" class="block w-full rounded" style="height: auto; cursor: pointer; border: 1px solid #444; background: #0a0a14;"></canvas>
+                    <div class="helper-text text-center">Click segments to toggle</div>
                 </div>
-                <button id="apply-bits" class="btn-primary" style="width: 100%; padding: 8px; background: #8257e5; border: none; border-radius: 4px; color: white; font-weight: bold; cursor: pointer;">Apply</button>
-            </div>
-
-            <!-- Visual Track Editor Canvas -->
-            <div class="property-item" style="background: #1a1a2e; padding: 10px; border-radius: 4px; margin: 8px 0;">
-                <label style="color: #00ff88; font-weight: bold; margin-bottom: 8px; display: block;">Visual Editor: (Click segments to toggle)</label>
-                <canvas id="${editorId}" width="200" height="200" style="display: block; margin: 0 auto; cursor: pointer; border: 1px solid #444; border-radius: 4px; background: #0a0a14;"></canvas>
             </div>
             
             ${track.switch_points && Object.keys(track.switch_points).length > 0 ? `
-            <div class="property-item" style="background: #2a2a3e; padding: 8px; border-radius: 4px; margin: 8px 0;">
-                <label style="color: #00d4ff; font-weight: bold;">Switch State:</label>
+            <div class="info-box-signal">
+                <label class="text-info font-bold">Switch State:</label>
                 ${track.is_diagonal_only_switch ? `
-                <div style="margin: 4px 0; padding: 4px 8px; background: #3a2a1a; border-radius: 4px; border-left: 3px solid #ff9900;">
-                    <span style="font-size: 10px; color: #ff9900;">⟳ Diagonal-only switch (uses clockwise ordering)</span>
+                <div class="info-box-warning text-xxs text-warning" style="margin: 4px 0; padding: 4px 8px;">
+                    ⟳ Diagonal-only switch (uses clockwise ordering)
                 </div>
                 ` : ''}
-                <div style="margin: 6px 0; padding: 8px; background: ${track.switch_state === 0 ? '#1a3a2a' : '#3a3a1a'}; border-radius: 4px; border: 2px solid ${track.switch_state === 0 ? '#04d361' : '#ffd93d'};">
-                    <span style="font-size: 14px; font-weight: bold; color: ${track.switch_state === 0 ? '#04d361' : '#ffd93d'};">
+                <div class="p-8 rounded ${track.switch_state === 0 ? 'border-success' : 'border-warning'}" style="margin: 6px 0; background: ${track.switch_state === 0 ? '#1a3a2a' : '#3a3a1a'};">
+                    <span class="text-lg font-bold" style="color: ${track.switch_state === 0 ? '#04d361' : '#ffd93d'};">
                         ${track.switch_state === 0 ? 'MAIN (0)' : 'DIVERGE (1)'}
+                        ${track.is_locked || track.locked_by_path ? ' 🔒' : ''}
                     </span>
-                    <div style="font-size: 10px; color: #aaa; margin-top: 4px;">
+                    <div class="text-xxs text-secondary mt-4">
                         ${track.is_diagonal_only_switch
                             ? (track.switch_state === 0 ? 'Clockwise first exit' : 'Clockwise second exit')
                             : (track.switch_state === 0 ? 'Long paths active: NS, EW' : 'Short paths active: NE, NW, SE, SW')}
                     </div>
                 </div>
-                <div style="font-size: 9px; color: #666; margin-top: 4px;">Right-click to toggle switch</div>
+                ${track.is_locked || track.locked_by_path ? `
+                <div class="info-box-warning text-xxs text-warning" style="margin: 4px 0; padding: 4px 8px;">
+                    🔒 Locked by path: ${track.locked_by_path || 'Unknown'}
+                </div>
+                ` : `
+                <div class="helper-text text-dim mt-4">Right-click to toggle switch</div>
+                `}
             </div>
-            <div class="property-item" style="background: #2a2a3e; padding: 8px; border-radius: 4px; margin: 8px 0;">
-                <label style="color: #00d4ff; font-weight: bold;">Switch Points:</label>
-                <pre style="font-size: 10px; margin: 4px 0 0 0; color: #ccc;">${
+            <div class="info-box-signal">
+                <label class="text-info font-bold">Switch Points:</label>
+                <pre class="text-xxs mt-4 mb-0" style="color: #ccc;">${
                     Object.entries(track.switch_points).map(([entry, exits]) => 
                         `${entry} -> [${exits.join(', ')}]`
                     ).join('\n')
@@ -3788,23 +4951,20 @@ class Editor {
             ${track.occupied_by ? `
             <div class="property-item">
                 <label>Occupied By:</label>
-                <span style="color: #e83f5b">${track.occupied_by}</span>
+                <span class="text-danger">${track.occupied_by}</span>
             </div>
             ` : ''}
             ${track.dead_end_ports && track.dead_end_ports.length > 0 ? `
             <div class="property-item">
-                <label>Dead Ends:</label>
-                <span>${track.dead_end_ports.join(', ')}</span>
+                <label class="property-label">Dead Ends</label>
+                <div class="value-display text-warning">${track.dead_end_ports.join(', ')}</div>
             </div>
             ` : ''}
             
-            <!-- Raw Properties (Collapsible) -->
-            <details class="raw-properties" style="margin-top: 12px; background: #1a1a1e; border-radius: 4px; padding: 8px;">
-                <summary style="cursor: pointer; color: #888; font-size: 11px; user-select: none;">
-                    ▸ All Properties (JSON)
-                </summary>
-                <pre style="font-size: 10px; color: #aaa; margin: 8px 0 0 0; white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto; background: #0a0a0e; padding: 8px; border-radius: 4px;">${JSON.stringify(track, null, 2)}</pre>
-            </details>
+            <!-- View Full JSON Button -->
+            <button id="view-full-json-btn" class="btn btn-primary btn-full text-sm mt-12">
+                📄 View Full JSON
+            </button>
         `;
         
         // Initialize track bits editor after panel is rendered
@@ -3813,6 +4973,17 @@ class Editor {
         setTimeout(() => this.initSignalEditor(track), 0);
         setTimeout(() => this.initBlockEditor(track), 0);
         setTimeout(() => this.initStationButtonHandlers(), 0);
+        setTimeout(() => this.initViewFullJSONButton(track), 0);
+    }
+
+    // Initialize View Full JSON button handler
+    initViewFullJSONButton(track) {
+        const viewJsonBtn = document.getElementById('view-full-json-btn');
+        if (viewJsonBtn) {
+            viewJsonBtn.onclick = () => {
+                this.showFullJSONViewer(track, `📄 JSON: (${track.x}, ${track.y})`);
+            };
+        }
     }
 
     // Initialize station edit button handler
@@ -3829,14 +5000,12 @@ class Editor {
     }
 
     initSignalEditor(track) {
-        // Updated signal editor logic for multiple signals
+        // Updated signal editor logic - show ALL signals on the tile
         const editSignalBtns = document.querySelectorAll('.edit-signal-btn');
         editSignalBtns.forEach(btn => {
             btn.onclick = () => {
-                const signalId = btn.dataset.signalId;
-                if (signalId) {
-                    this.showSignalEditor(signalId);
-                }
+                // Show all signals on this tile, not just one
+                this.showSignalsEditorForTile(track);
             };
         });
     }
@@ -3906,8 +5075,7 @@ class Editor {
                 </div>
 
                 <!-- Save Button -->
-                <button id="save-signal-btn" class="btn-sm"
-                        style="width: 100%; padding: 12px; background: linear-gradient(135deg, #8257e5, #6b46c1); border: none; border-radius: 6px; color: white; cursor: pointer; font-size: 14px; font-weight: bold; transition: all 0.2s;">
+                <button id="save-signal-btn" class="btn btn-primary btn-full text-base">
                     Save Signal Properties
                 </button>
             </div>
@@ -4330,6 +5498,1157 @@ class Editor {
         if (this.hoverPosition && ['signal', 'station'].includes(this.selectedTool)) {
             // Re-run validation with the new network data
             this.updateHoverPreview(this.hoverPosition);
+        }
+    }
+
+    // === Route Tool Methods ===
+
+    /**
+     * Enter path tool mode - prepare for path creation
+     */
+    enterRouteToolMode() {
+        this.pathToolState = {
+            active: false,  // Not active until first click
+            startBlockId: null,
+            startPosition: null,
+            reachableEndpoints: [],
+            reachablePositions: new Set(),
+            priority: 5,
+            trainId: null
+        };
+        document.getElementById('status-state').textContent = 'Route: Click start block';
+    }
+
+    /**
+     * Exit path tool mode - cleanup
+     */
+    exitRouteToolMode() {
+        this.resetRouteToolState();
+        document.getElementById('status-state').textContent = 'Ready';
+    }
+
+    /**
+     * Reset route tool state without exiting the tool
+     */
+    resetRouteToolState() {
+        this.pathToolState = {
+            active: false,
+            startBlockId: null,
+            startPosition: null,
+            reachableEndpoints: [],
+            reachablePositions: new Set(),
+            priority: 5,
+            trainId: null
+        };
+        // Clear renderer highlights
+        if (this.renderer.setReachableHighlights) {
+            this.renderer.setReachableHighlights(new Set());
+        }
+        if (this.renderer.clearRoutePreview) {
+            this.renderer.clearRoutePreview();
+        }
+        // Hide secondary sidebar if showing route setup
+        if (this._currentEditorType === 'path-setup') {
+            this.hideSecondarySidebar();
+        }
+        // Redraw
+        if (this.cachedNetwork) {
+            this.renderer.drawNetwork(this.cachedNetwork);
+        }
+        document.getElementById('status-state').textContent = 'Route: Click start block';
+    }
+
+    /**
+     * Handle click in path tool mode
+     */
+    async handleRouteToolClick(gridPos) {
+        // Find the track at this position
+        const track = this.cachedNetwork?.tracks?.find(t => t.x === gridPos.x && t.y === gridPos.y);
+        
+        if (!this.pathToolState.active) {
+            // First click - select start block
+            await this.handleRouteFirstClick(gridPos, track);
+        } else {
+            // Second click - select end block
+            await this.handleRouteSecondClick(gridPos, track);
+        }
+    }
+
+    /**
+     * Handle first click in route tool - select start block
+     */
+    async handleRouteFirstClick(gridPos, track) {
+        if (!track) {
+            window.showToast('No track at this position', 'warning', 3000);
+            return;
+        }
+
+        const blockId = track.block_section_id;
+        if (!blockId) {
+            window.showToast('Must start path from a block', 'warning', 3000);
+            return;
+        }
+
+        // Store start info
+        this.pathToolState.startBlockId = blockId;
+        this.pathToolState.startPosition = { x: gridPos.x, y: gridPos.y };
+        this.pathToolState.active = true;
+
+        // Check if block has a train
+        const block = this.cachedNetwork?.blocks?.[blockId];
+        if (block?.occupied_by) {
+            this.pathToolState.trainId = block.occupied_by;
+
+            // Get train priority as default
+            const trains = this.cachedNetwork?.trains || [];
+            const train = trains.find(t => t.train_id === block.occupied_by);
+            if (train?.priority) {
+                this.pathToolState.priority = train.priority;
+            }
+        }
+
+        // Fetch reachable endpoints
+        try {
+            document.getElementById('status-state').textContent = 'Route: Loading destinations...';
+            const result = await this.api.getReachableEndpoints(blockId);
+            this.pathToolState.reachableEndpoints = result.reachable_endpoints || [];
+
+            // Build set of reachable tile positions for rendering
+            this.buildReachablePositionsSet();
+
+            // Update status
+            const count = this.pathToolState.reachableEndpoints.length;
+            document.getElementById('status-state').textContent = `Route: Click destination (${count} reachable)`;
+
+            // Set renderer highlights
+            if (this.renderer.setReachableHighlights) {
+                this.renderer.setReachableHighlights(this.pathToolState.reachablePositions);
+            }
+
+            // Show priority selector panel
+            this.showRoutePrioritySelector();
+
+            // Redraw to show highlights
+            if (this.cachedNetwork) {
+                this.renderer.drawNetwork(this.cachedNetwork);
+            }
+        } catch (err) {
+            console.error('[Editor] Failed to get reachable destinations:', err);
+            window.showToast('Failed to get reachable destinations: ' + err.message, 'error', 5000);
+            this.resetRouteToolState();
+        }
+    }
+
+    /**
+     * Build set of tile positions for reachable blocks (for rendering highlights)
+     */
+    buildReachablePositionsSet() {
+        const positions = new Set();
+        const tracks = this.cachedNetwork?.tracks || [];
+
+        for (const endpoint of this.pathToolState.reachableEndpoints) {
+            // Find all tracks belonging to this block
+            for (const track of tracks) {
+                if (track.block_section_id === endpoint) {
+                    positions.add(`${track.x},${track.y}`);
+                }
+            }
+        }
+
+        this.pathToolState.reachablePositions = positions;
+    }
+
+    /**
+     * Handle second click in route tool - select end block and create route
+     */
+    async handleRouteSecondClick(gridPos, track) {
+        if (!track) {
+            window.showToast('No track at this position', 'warning', 3000);
+            return;
+        }
+
+        const endBlockId = track.block_section_id;
+        if (!endBlockId) {
+            window.showToast('Must end path on a block', 'warning', 3000);
+            return;
+        }
+
+        // Check if endpoint is reachable
+        if (!this.pathToolState.reachableEndpoints.includes(endBlockId)) {
+            window.showToast('Cannot reach this block from start', 'warning', 3000);
+            return;
+        }
+
+        // Create route
+        try {
+            document.getElementById('status-state').textContent = 'Route: Creating...';
+            
+            const options = {
+                priority: this.pathToolState.priority
+            };
+            
+            // Only include train_id if we have one
+            if (this.pathToolState.trainId) {
+                options.train_id = this.pathToolState.trainId;
+            }
+
+            const result = await this.api.createRoute(
+                this.pathToolState.startBlockId,
+                endBlockId,
+                options
+            );
+
+            if (result.success) {
+                window.showToast(`Route ${result.path.path_id} created`, 'success', 5000);
+                await window.app.refreshNetwork();
+                this.resetRouteToolState();
+            } else {
+                window.showToast(`Route failed: ${result.error}`, 'error', 5000);
+
+                // Flash conflict tiles if any
+                if (result.conflict_tiles && this.renderer.flashConflictTiles) {
+                    this.renderer.flashConflictTiles(result.conflict_tiles, 2000);
+                }
+            }
+        } catch (err) {
+            console.error('[Editor] Failed to create path:', err);
+            window.showToast('Failed to create path: ' + err.message, 'error', 5000);
+        }
+    }
+
+    /**
+     * Show priority selector panel during path creation
+     */
+    showRoutePrioritySelector() {
+        this._currentEditorType = 'path-setup';
+        this._currentEditorId = null;
+
+        const trainInfo = this.pathToolState.trainId
+            ? renderReadOnlyValue('Train', `🚂 ${this.pathToolState.trainId}`, 'text-info font-bold')
+            : '<div class="text-muted text-sm" style="padding: 8px 0;">No train at start block</div>';
+
+        const content = `
+            <div class="path-setup-panel">
+                ${renderHeaderId(this.pathToolState.startBlockId, '#00d4ff')}
+                
+                <div class="property-item">
+                    <label class="property-label">Priority (1-10)</label>
+                    <div class="flex items-center gap-12">
+                        <input type="range" id="path-priority-slider" 
+                               min="1" max="10" value="${this.pathToolState.priority}"
+                               class="property-input" style="flex: 1;">
+                        <span id="path-priority-value" class="text-lg font-bold text-track" style="min-width: 30px; text-align: center;">
+                            ${this.pathToolState.priority}
+                        </span>
+                    </div>
+                    <div class="text-xxs text-muted" style="margin-top: 4px;">
+                        5 = Normal, 10 = Critical
+                    </div>
+                </div>
+                
+                ${trainInfo}
+                
+                <div class="info-box text-sm" style="margin-top: 16px;">
+                    Click on an <span style="color: #ff9500;">orange</span> destination block to create path.
+                    <br><br>
+                    Right-click or press ESC to cancel.
+                </div>
+            </div>
+        `;
+
+        this.showSecondarySidebar('🛤️ Create Route', content);
+        
+        // Add compact class for minimal width
+        const sidebar = document.getElementById('secondary-sidebar');
+        if (sidebar) {
+            sidebar.classList.add('compact');
+        }
+
+        // Wire up slider
+        setTimeout(() => {
+            const slider = document.getElementById('path-priority-slider');
+            const valueDisplay = document.getElementById('path-priority-value');
+            if (slider && valueDisplay) {
+                slider.addEventListener('input', (e) => {
+                    this.pathToolState.priority = parseInt(e.target.value);
+                    valueDisplay.textContent = e.target.value;
+                });
+            }
+        }, 0);
+    }
+
+    // === Routes Panel Methods ===
+
+    /**
+     * Show list of active routes in secondary sidebar
+     */
+    async showPathsPanel() {
+        this._currentEditorType = 'paths-list';
+        this._currentEditorId = null;
+
+        try {
+            const result = await this.api.getPaths();
+            this.cachedPaths = result.paths || [];
+        } catch (err) {
+            console.error('[Editor] Failed to load paths:', err);
+            window.showToast('Failed to load paths: ' + err.message, 'error', 5000);
+            return;
+        }
+
+        let content = `
+            <div class="paths-panel">
+                <button id="refresh-paths-btn" class="btn btn-secondary btn-full text-sm mb-8">
+                    🔄 Refresh Routes
+                </button>
+        `;
+
+        if (this.cachedPaths.length === 0) {
+            content += '<div class="text-muted text-center" style="padding: 32px 16px;">No active paths</div>';
+        } else {
+            content += '<div class="paths-list">';
+            for (const path of this.cachedPaths) {
+                content += this.renderPathListItem(path);
+            }
+            content += '</div>';
+        }
+
+        content += '</div>';
+
+        this.showSecondarySidebar('📋 Active Routes', content);
+        
+        // Initialize handlers after content is rendered
+        setTimeout(() => this.initRoutesPanelHandlers(), 0);
+    }
+
+    /**
+     * Render a single route list item
+     */
+    renderPathListItem(path) {
+        const statusColor = this.getPathStatusColor(path.status);
+        const progress = path.block_sequence?.length > 0
+            ? Math.round((path.current_block_index / path.block_sequence.length) * 100)
+            : 0;
+
+        return `
+            <div class="path-item" data-path-id="${path.path_id}">
+                <div class="path-header">
+                    <span class="path-status" style="color: ${statusColor}">
+                        ● ${path.status.toUpperCase()}
+                    </span>
+                    <span class="path-priority">P${path.priority}</span>
+                </div>
+                <div class="path-id text-sm value-display-mono">${path.path_id}</div>
+                <div class="path-endpoints text-xs text-muted">
+                    ${path.start_block_id} → ${path.end_block_id}
+                </div>
+                ${path.train_id ? `<div class="path-train text-xs">🚂 ${path.train_id}</div>` : ''}
+                ${path.status === 'active' ? `
+                    <div class="progress-container">
+                        <div class="progress-bar" style="width: ${progress}%"></div>
+                        <span class="progress-text">${progress}%</span>
+                    </div>
+                ` : ''}
+                <div class="path-actions">
+                    <button class="btn btn-sm btn-info view-path-btn" data-path-id="${path.path_id}">View</button>
+                    <button class="btn btn-sm btn-danger cancel-path-btn" data-path-id="${path.path_id}">Cancel</button>
+                </div>
+            </div>
+        `;
+    }
+
+    /**
+     * Get color for route status
+     */
+    getPathStatusColor(status) {
+        const colors = {
+            'pending': '#888',
+            'setting': '#ffd93d',
+            'set': '#04d361',
+            'active': '#00ff88',
+            'clearing': '#ff9500',
+            'completed': '#666',
+            'cancelled': '#e83f5b'
+        };
+        return colors[status] || '#888';
+    }
+
+    /**
+     * Initialize handlers for routes panel
+     */
+    initRoutesPanelHandlers() {
+        // Refresh button
+        const refreshBtn = document.getElementById('refresh-paths-btn');
+        if (refreshBtn) {
+            refreshBtn.onclick = async () => {
+                await this.showPathsPanel();
+            };
+        }
+
+        // View buttons
+        const viewBtns = document.querySelectorAll('.view-path-btn');
+        viewBtns.forEach(btn => {
+            btn.onclick = async () => {
+                const pathId = btn.dataset.pathId;
+                await this.showPathEditor(pathId);
+            };
+        });
+
+        // Cancel buttons
+        const cancelBtns = document.querySelectorAll('.cancel-path-btn');
+        cancelBtns.forEach(btn => {
+            btn.onclick = async () => {
+                const pathId = btn.dataset.pathId;
+                if (!confirm(`Cancel path "${pathId}"?`)) return;
+                
+                try {
+                    const result = await this.api.cancelRoute(pathId);
+                    if (result.success) {
+                        window.showToast(`Route ${pathId} cancelled`, 'success', 5000);
+                        await window.app.refreshNetwork();
+                        await this.showPathsPanel();
+                    } else {
+                        window.showToast(`Failed to cancel: ${result.message || result.error}`, 'error', 5000);
+                    }
+                } catch (err) {
+                    console.error('[Editor] Failed to cancel path:', err);
+                    window.showToast('Failed to cancel path: ' + err.message, 'error', 5000);
+                }
+            };
+        });
+    }
+
+    /**
+     * Show add train dialog
+     */
+    showAddTrainDialog() {
+        const content = `
+            <div class="add-train-panel">
+                <div class="form-group">
+                    <label for="train-id-input">Train ID</label>
+                    <input type="text" id="train-id-input" placeholder="e.g., TRAIN_01" style="width: 100%; padding: 10px; background: #0d1a12; border: 1px solid #3a4a3e; color: #fff; border-radius: 6px;">
+                </div>
+                <div class="form-group">
+                    <label for="train-position-x">Position X</label>
+                    <input type="number" id="train-position-x" value="0" style="width: 100%; padding: 10px; background: #0d1a12; border: 1px solid #3a4a3e; color: #fff; border-radius: 6px;">
+                </div>
+                <div class="form-group">
+                    <label for="train-position-y">Position Y</label>
+                    <input type="number" id="train-position-y" value="0" style="width: 100%; padding: 10px; background: #0d1a12; border: 1px solid #3a4a3e; color: #fff; border-radius: 6px;">
+                </div>
+                <div class="form-group">
+                    <label for="train-direction">Direction</label>
+                    <select id="train-direction" style="width: 100%; padding: 10px; background: #0d1a12; border: 1px solid #3a4a3e; color: #fff; border-radius: 6px;">
+                        <option value="NORTH">North</option>
+                        <option value="EAST" selected>East</option>
+                        <option value="SOUTH">South</option>
+                        <option value="WEST">West</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="train-max-speed">Max Speed (km/h)</label>
+                    <input type="number" id="train-max-speed" value="100" min="1" max="200" style="width: 100%; padding: 10px; background: #0d1a12; border: 1px solid #3a4a3e; color: #fff; border-radius: 6px;">
+                </div>
+                <div class="form-group">
+                    <label for="train-length">Length (units)</label>
+                    <input type="number" id="train-length" value="1" min="1" max="10" style="width: 100%; padding: 10px; background: #0d1a12; border: 1px solid #3a4a3e; color: #fff; border-radius: 6px;">
+                </div>
+                <button id="btn-confirm-add-train" class="btn btn-primary btn-full mt-16">🚂 Add Train</button>
+            </div>
+        `;
+
+        this.showSecondarySidebar('🚂 Add Train', content);
+
+        // Initialize handlers after content is rendered
+        setTimeout(() => {
+            const addBtn = document.getElementById('btn-confirm-add-train');
+            if (addBtn) {
+                addBtn.onclick = async () => {
+                    const trainId = document.getElementById('train-id-input').value.trim();
+                    const posX = parseInt(document.getElementById('train-position-x').value) || 0;
+                    const posY = parseInt(document.getElementById('train-position-y').value) || 0;
+                    const direction = document.getElementById('train-direction').value;
+                    const maxSpeed = parseInt(document.getElementById('train-max-speed').value) || 100;
+                    const length = parseFloat(document.getElementById('train-length').value) || 1;
+
+                    if (!trainId) {
+                        window.showToast('Please enter a train ID', 'error', 3000);
+                        return;
+                    }
+
+                    try {
+                        await window.api.createTrain({
+                            id: trainId,
+                            position: { x: posX, y: posY },
+                            direction: direction,
+                            max_speed: maxSpeed,
+                            length: length
+                        });
+                        window.showToast(`Train "${trainId}" created successfully`, 'success', 3000);
+                        this.hideSecondarySidebar();
+                        window.app.refreshNetwork();
+                    } catch (err) {
+                        console.error('[Editor] Failed to create train:', err);
+                        window.showToast('Failed to create train: ' + err.message, 'error', 5000);
+                    }
+                };
+            }
+
+            // Auto-generate train ID
+            const idInput = document.getElementById('train-id-input');
+            if (idInput && !idInput.value) {
+                idInput.value = `TRAIN_${Date.now().toString().slice(-4)}`;
+            }
+        }, 0);
+    }
+
+    /**
+     * Show trains management panel
+     */
+    async showTrainsPanel() {
+        this._currentEditorType = 'trains-list';
+        this._currentEditorId = null;
+
+        let trains = [];
+        try {
+            const result = await this.api.getTrains();
+            trains = result.trains || [];
+        } catch (err) {
+            console.error('[Editor] Failed to load trains:', err);
+            window.showToast('Failed to load trains: ' + err.message, 'error', 5000);
+            return;
+        }
+
+        let content = `
+            <div class="trains-panel">
+                <button id="refresh-trains-btn" class="btn btn-secondary btn-full text-sm mb-8">
+                    🔄 Refresh Trains
+                </button>
+                <button id="add-new-train-btn" class="btn btn-primary btn-full text-sm mb-16">
+                    🚂 Add New Train
+                </button>
+        `;
+
+        if (trains.length === 0) {
+            content += '<div class="text-muted text-center" style="padding: 32px 16px;">No trains in network</div>';
+        } else {
+            content += '<div class="trains-list">';
+            for (const train of trains) {
+                content += this.renderTrainListItem(train);
+            }
+            content += '</div>';
+        }
+
+        content += '</div>';
+
+        this.showSecondarySidebar('🚂 Trains', content);
+
+        // Initialize handlers after content is rendered
+        setTimeout(() => this.initTrainsPanelHandlers(), 0);
+    }
+
+    /**
+     * Render a single train list item
+     */
+    renderTrainListItem(train) {
+        const state = train.state || 'off';
+        const stateColor = state === 'running_moving' ? '#04d361' : (state === 'off' ? '#e83f5b' : '#ffd93d');
+        const position = train.position || train.current_pos || { x: 0, y: 0 };
+
+        return `
+            <div class="train-item" data-train-id="${train.id}">
+                <div class="train-header">
+                    <span class="train-status" style="color: ${stateColor}">
+                        ● ${state.toUpperCase().replace('_', ' ')}
+                    </span>
+                </div>
+                <div class="train-id text-sm value-display-mono">${train.id}</div>
+                <div class="train-position text-xs text-muted">
+                    📍 (${position.x}, ${position.y})
+                </div>
+                <div class="train-speed text-xs">
+                    🚄 ${(train.current_speed || 0).toFixed(1)} / ${train.max_speed || 100} km/h
+                </div>
+                ${train.facing_direction ? `
+                <div class="train-direction text-xs">
+                    Facing: ${train.facing_direction}
+                </div>
+                ` : ''}
+                <div class="train-actions mt-8">
+                    <button class="btn btn-sm btn-info select-train-btn" data-train-id="${train.id}">Select</button>
+                    <button class="btn btn-sm btn-danger delete-train-btn" data-train-id="${train.id}">Delete</button>
+                </div>
+            </div>
+        `;
+    }
+
+    /**
+     * Initialize handlers for trains panel
+     */
+    initTrainsPanelHandlers() {
+        // Refresh button
+        const refreshBtn = document.getElementById('refresh-trains-btn');
+        if (refreshBtn) {
+            refreshBtn.onclick = async () => {
+                await this.showTrainsPanel();
+            };
+        }
+
+        // Add new train button
+        const addBtn = document.getElementById('add-new-train-btn');
+        if (addBtn) {
+            addBtn.onclick = () => {
+                this.showAddTrainDialog();
+            };
+        }
+
+        // Select buttons
+        const selectBtns = document.querySelectorAll('.select-train-btn');
+        selectBtns.forEach(btn => {
+            btn.onclick = () => {
+                const trainId = btn.dataset.trainId;
+                window.app.selectTrain(trainId);
+                this.hideSecondarySidebar();
+            };
+        });
+
+        // Delete buttons
+        const deleteBtns = document.querySelectorAll('.delete-train-btn');
+        deleteBtns.forEach(btn => {
+            btn.onclick = async () => {
+                const trainId = btn.dataset.trainId;
+                if (!confirm(`Delete train "${trainId}"?`)) return;
+
+                try {
+                    await window.api.deleteTrain(trainId);
+                    window.showToast(`Train "${trainId}" deleted`, 'success', 3000);
+                    await this.showTrainsPanel();
+                    window.app.refreshNetwork();
+                } catch (err) {
+                    console.error('[Editor] Failed to delete train:', err);
+                    window.showToast('Failed to delete train: ' + err.message, 'error', 5000);
+                }
+            };
+        });
+    }
+
+    /**
+     * Show single route editor/details
+     */
+    async showPathEditor(pathId) {
+        this._currentEditorType = 'path';
+        this._currentEditorId = pathId;
+
+        let path;
+        try {
+            path = await this.api.getPath(pathId);
+            if (path.error) throw new Error(path.error);
+        } catch (err) {
+            window.showToast('Path not found', 'error', 5000);
+            return;
+        }
+
+        const statusColor = this.getPathStatusColor(path.status);
+        const progress = path.block_sequence?.length > 0
+            ? Math.round((path.current_block_index / path.block_sequence.length) * 100)
+            : 0;
+
+        // Build blocks list HTML
+        const blocksListHtml = (path.block_sequence || []).map((blockId, i) => {
+            const isCurrent = i === path.current_block_index;
+            const isCleared = path.blocks_cleared?.includes(blockId);
+            let cssClass = 'text-muted';
+            if (isCurrent) cssClass = 'text-success font-bold';
+            else if (isCleared) cssClass = 'text-muted';
+            
+            return `<div class="block-item text-xs ${cssClass}">
+                ${isCurrent ? '▶ ' : '  '}${blockId}${isCleared ? ' ✓' : ''}
+            </div>`;
+        }).join('');
+
+        const content = `
+            <div class="path-editor-panel" data-path-id="${pathId}">
+                ${renderHeaderId(path.path_id, statusColor)}
+                
+                ${renderPropertyItem('Status', `
+                    <div class="value-display flex items-center gap-8">
+                        <span class="status-dot" style="background: ${statusColor}; width: 12px; height: 12px; border-radius: 50%; display: inline-block;"></span>
+                        <span class="font-bold" style="color: ${statusColor}">${path.status.toUpperCase()}</span>
+                    </div>
+                `)}
+                
+                ${renderReadOnlyValue('Priority', `${path.priority} / 10`, 'font-bold')}
+                
+                ${path.train_id
+                    ? renderReadOnlyValue('Train', `🚂 ${path.train_id}`, 'text-info font-bold')
+                    : renderReadOnlyValue('Train', 'None assigned', 'text-muted')
+                }
+                
+                ${renderReadOnlyValue('Start Block', path.start_block_id, 'value-display-mono text-sm')}
+                ${renderReadOnlyValue('End Block', path.end_block_id, 'value-display-mono text-sm')}
+                
+                ${path.status === 'active' ? `
+                    <div class="property-item">
+                        <label class="property-label">Progress</label>
+                        <div class="progress-container">
+                            <div class="progress-bar" style="width: ${progress}%"></div>
+                            <span class="progress-text">${progress}%</span>
+                        </div>
+                    </div>
+                ` : ''}
+                
+                <div class="property-item">
+                    <label class="property-label">Blocks (${path.block_sequence?.length || 0})</label>
+                    <div class="bg-input rounded-lg" style="max-height: 150px; overflow-y: auto; padding: 8px; border: 1px solid #3a3a4e;">
+                        ${blocksListHtml || '<div class="text-muted text-xs">No blocks</div>'}
+                    </div>
+                </div>
+                
+                ${path.approach_locked_blocks?.length > 0 ? `
+                    <div class="info-box-warning text-xs text-warning">
+                        ⚠️ ${path.approach_locked_blocks.length} blocks approach-locked
+                    </div>
+                ` : ''}
+                
+                <div class="property-item-row" style="margin-top: 16px;">
+                    ${(path.status === 'set' || path.status === 'active') ? `
+                        <button id="extend-path-btn" class="btn btn-primary text-sm" style="flex: 1;">
+                            Extend Route
+                        </button>
+                    ` : ''}
+                    <button id="cancel-path-btn" class="btn btn-danger text-sm" style="flex: 1;">
+                        Cancel Route
+                    </button>
+                </div>
+                
+                <button id="back-to-paths-btn" class="btn btn-secondary btn-full text-sm" style="margin-top: 8px;">
+                    ← Back to Routes List
+                </button>
+            </div>
+        `;
+
+        this.showSecondarySidebar('🛤️ Path Details', content);
+
+        // Initialize handlers
+        setTimeout(() => this.initPathEditorHandlers(pathId, path), 0);
+
+        // Highlight path on canvas
+        if (this.renderer.highlightPath) {
+            this.renderer.highlightPath(path);
+        }
+    }
+
+    /**
+     * Initialize handlers for path editor
+     */
+    initPathEditorHandlers(pathId, path) {
+        // Back button
+        const backBtn = document.getElementById('back-to-paths-btn');
+        if (backBtn) {
+            backBtn.onclick = async () => {
+                if (this.renderer.clearPathHighlight) {
+                    this.renderer.clearPathHighlight();
+                }
+                await this.showPathsPanel();
+            };
+        }
+
+        // Cancel button
+        const cancelBtn = document.getElementById('cancel-path-btn');
+        if (cancelBtn) {
+            cancelBtn.onclick = async () => {
+                const hasApproachLocked = path.approach_locked_blocks?.length > 0;
+                const msg = hasApproachLocked
+                    ? `Cancel path "${pathId}"?\n\nNote: ${path.approach_locked_blocks.length} blocks are approach-locked and will be released when train stops.`
+                    : `Cancel path "${pathId}"?`;
+                
+                if (!confirm(msg)) return;
+
+                try {
+                    const result = await this.api.cancelPath(pathId);
+                    if (result.success) {
+                        window.showToast(`Path ${pathId} cancelled`, 'success', 5000);
+                        await window.app.refreshNetwork();
+                        if (this.renderer.clearPathHighlight) {
+                            this.renderer.clearPathHighlight();
+                        }
+                        await this.showPathsPanel();
+                    } else {
+                        window.showToast(`Failed to cancel: ${result.message || result.error}`, 'error', 5000);
+                    }
+                } catch (err) {
+                    console.error('[Editor] Failed to cancel path:', err);
+                    window.showToast('Failed to cancel path: ' + err.message, 'error', 5000);
+                }
+            };
+        }
+
+        // Extend button
+        const extendBtn = document.getElementById('extend-path-btn');
+        if (extendBtn) {
+            extendBtn.onclick = async () => {
+                // TODO: Implement path extension UI
+                window.showToast('Path extension not yet implemented', 'info', 3000);
+            };
+        }
+    }
+
+    // === Extend Path Tool Methods ===
+
+    /**
+     * Enter extend-path tool mode - prepare for route extension
+     */
+    enterExtendRouteMode() {
+        this.extendPathState = {
+            active: false,  // Not active until a route is selected
+            selectedPathId: null,
+            selectedPath: null,
+            reachableEndpoints: [],
+            reachablePositions: new Set()
+        };
+        document.getElementById('status-state').textContent = 'Extend Path: Click on a path to extend';
+    }
+
+    /**
+     * Exit extend-path tool mode - cleanup
+     */
+    exitExtendRouteMode() {
+        this.resetExtendRouteState();
+        document.getElementById('status-state').textContent = 'Ready';
+    }
+
+    /**
+     * Reset extend-route tool state
+     */
+    resetExtendRouteState() {
+        this.extendPathState = {
+            active: false,
+            selectedPathId: null,
+            selectedPath: null,
+            reachableEndpoints: [],
+            reachablePositions: new Set()
+        };
+        // Clear renderer highlights
+        if (this.renderer.setReachableHighlights) {
+            this.renderer.setReachableHighlights(new Set());
+        }
+        if (this.renderer.clearPathHighlight) {
+            this.renderer.clearPathHighlight();
+        }
+        // Hide secondary sidebar if showing extend route setup
+        if (this._currentEditorType === 'extend-path-setup') {
+            this.hideSecondarySidebar();
+        }
+        // Redraw
+        if (this.cachedNetwork) {
+            this.renderer.drawNetwork(this.cachedNetwork);
+        }
+    }
+
+    /**
+     * Handle click in extend-path tool mode
+     */
+    async handleExtendRouteToolClick(gridPos) {
+        // Find the track at this position
+        const track = this.cachedNetwork?.tracks?.find(t => t.x === gridPos.x && t.y === gridPos.y);
+
+        if (!this.extendPathState?.active) {
+            // First click - select a route by clicking on a tile that's part of it
+            await this.handleExtendRouteFirstClick(gridPos, track);
+        } else {
+            // Second click - select new destination
+            await this.handleExtendRouteSecondClick(gridPos, track);
+        }
+    }
+
+    /**
+     * Handle first click in extend-route tool - select a route to extend
+     * The route can only be extended from its END block (following direction)
+     */
+    async handleExtendRouteFirstClick(gridPos, track) {
+        if (!track) {
+            window.showToast('No track at this position', 'warning', 3000);
+            return;
+        }
+
+        const blockId = track.block_section_id;
+        if (!blockId) {
+            window.showToast('No block at this position', 'warning', 3000);
+            return;
+        }
+
+        // Find active routes where this block is the END block (can only extend from end)
+        try {
+            const result = await this.api.getPaths();
+            const paths = result.paths || [];
+            
+            // Find paths where this block is the END block (direction constraint)
+            const matchingPaths = paths.filter(p => 
+                p.end_block_id === blockId && 
+                ['pending', 'setting', 'set', 'active'].includes(p.status)
+            );
+
+            if (matchingPaths.length === 0) {
+                // Check if this block is part of a path but not the end
+                const partOfPath = paths.find(p => 
+                    p.block_sequence?.includes(blockId) && 
+                    ['pending', 'setting', 'set', 'active'].includes(p.status)
+                );
+                
+                if (partOfPath) {
+                    window.showToast('Can only extend from the END of a path. Click on the end block.', 'warning', 4000);
+                } else {
+                    window.showToast('No active path ends at this block', 'warning', 3000);
+                }
+                return;
+            }
+
+            // For simplicity, select the first matching path
+            const selectedPath = matchingPaths[0];
+            
+            this.extendPathState.selectedPathId = selectedPath.path_id;
+            this.extendPathState.selectedPath = selectedPath;
+            this.extendPathState.active = true;
+
+            // Highlight the selected route
+            if (this.renderer.highlightPath) {
+                this.renderer.highlightPath(selectedPath);
+            }
+
+            // Fetch reachable endpoints in the FORWARD direction only using route-specific API
+            document.getElementById('status-state').textContent = 'Extend Path: Loading destinations...';
+            const endpointsResult = await this.api.getPathReachableExtensions(selectedPath.path_id);
+            
+            // Check for API error
+            if (endpointsResult.error) {
+                window.showToast('Cannot extend path: ' + endpointsResult.error, 'error', 5000);
+                this.resetExtendRouteState();
+                return;
+            }
+            
+            this.extendPathState.reachableEndpoints = endpointsResult.reachable_endpoints || [];
+            this.extendPathState.exitDirection = endpointsResult.exit_direction;
+
+            // Build set of reachable tile positions for rendering
+            this.buildExtendRoutePositionsSet();
+
+            // Update status
+            const count = this.extendPathState.reachableEndpoints.length;
+            document.getElementById('status-state').textContent = `Extend Path: Click new destination (${count} reachable)`;
+
+            // Set renderer highlights
+            if (this.renderer.setReachableHighlights) {
+                this.renderer.setReachableHighlights(this.extendPathState.reachablePositions);
+            }
+
+            // Show extend route panel
+            this.showExtendRoutePanel();
+
+            // Redraw to show highlights
+            if (this.cachedNetwork) {
+                this.renderer.drawNetwork(this.cachedNetwork);
+            }
+        } catch (err) {
+            console.error('[Editor] Failed to get paths for extend:', err);
+            window.showToast('Failed to load paths: ' + err.message, 'error', 5000);
+            this.resetExtendRouteState();
+        }
+    }
+
+    /**
+     * Build set of tile positions for reachable blocks (for extend route)
+     */
+    buildExtendRoutePositionsSet() {
+        const positions = new Set();
+        const tracks = this.cachedNetwork?.tracks || [];
+
+        for (const endpoint of this.extendPathState.reachableEndpoints) {
+            for (const track of tracks) {
+                if (track.block_section_id === endpoint) {
+                    positions.add(`${track.x},${track.y}`);
+                }
+            }
+        }
+
+        this.extendPathState.reachablePositions = positions;
+    }
+
+    /**
+     * Handle second click in extend-route tool - select new destination
+     */
+    async handleExtendRouteSecondClick(gridPos, track) {
+        if (!track) {
+            window.showToast('No track at this position', 'warning', 3000);
+            return;
+        }
+
+        const newEndBlockId = track.block_section_id;
+        if (!newEndBlockId) {
+            window.showToast('Must select a block as destination', 'warning', 3000);
+            return;
+        }
+
+        // Check if endpoint is reachable
+        if (!this.extendPathState.reachableEndpoints.includes(newEndBlockId)) {
+            window.showToast('Cannot extend to this block', 'warning', 3000);
+            return;
+        }
+
+        // Extend the route
+        try {
+            document.getElementById('status-state').textContent = 'Extend Path: Extending...';
+            
+            const result = await this.api.extendRoute(
+                this.extendPathState.selectedPathId,
+                newEndBlockId
+            );
+
+            if (result.success) {
+                window.showToast(`Route extended to ${newEndBlockId}`, 'success', 5000);
+                await window.app.refreshNetwork();
+                this.resetExtendRouteState();
+                document.getElementById('status-state').textContent = 'Extend Path: Click on a path to extend';
+            } else {
+                window.showToast(`Extend failed: ${result.error || result.message}`, 'error', 5000);
+            }
+        } catch (err) {
+            console.error('[Editor] Failed to extend route:', err);
+            window.showToast('Failed to extend route: ' + err.message, 'error', 5000);
+        }
+    }
+
+    /**
+     * Show extend route panel in secondary sidebar
+     */
+    showExtendRoutePanel() {
+        this._currentEditorType = 'extend-path-setup';
+        this._currentEditorId = this.extendPathState.selectedPathId;
+
+        const route = this.extendPathState.selectedPath;
+        const statusColor = this.getPathStatusColor(path.status);
+        const exitDir = this.extendPathState.exitDirection;
+        const exitDirText = exitDir ? this.getDirectionName(exitDir) : 'Unknown';
+        const reachableCount = this.extendPathState.reachableEndpoints.length;
+
+        const content = `
+            <div class="extend-route-panel">
+                ${renderHeaderId(path.path_id, statusColor)}
+                
+                ${renderReadOnlyValue('Current End', path.end_block_id, 'value-display-mono text-sm')}
+                ${renderReadOnlyValue('Direction', `${exitDirText} (${exitDir || '?'})`, 'text-info font-bold')}
+                ${renderReadOnlyValue('Status', path.status.toUpperCase(), `font-bold`)}
+                ${path.train_id
+                    ? renderReadOnlyValue('Train', `${path.train_id}`, 'text-info font-bold')
+                    : ''
+                }
+                
+                <div class="info-box text-sm" style="margin-top: 16px;">
+                    ${reachableCount > 0 
+                        ? `Click on an <span style="color: #ff9500;">orange</span> destination block to extend the route ${exitDirText.toLowerCase()}.`
+                        : `<span style="color: #ff6b6b;">No forward destinations available.</span> The route may be at a dead end or all forward blocks are occupied.`
+                    }
+                    <br><br>
+                    Right-click or press ESC to cancel.
+                </div>
+            </div>
+        `;
+
+        this.showSecondarySidebar('+ Extend Route', content);
+        
+        // Add compact class
+        const sidebar = document.getElementById('secondary-sidebar');
+        if (sidebar) {
+            sidebar.classList.add('compact');
+        }
+    }
+
+    /**
+     * Get human-readable direction name
+     */
+    getDirectionName(dir) {
+        const names = { 'N': 'North', 'S': 'South', 'E': 'East', 'W': 'West' };
+        return names[dir] || dir || 'Unknown';
+    }
+
+    // === Cancel Route Tool Methods ===
+
+    /**
+     * Enter cancel-path tool mode
+     */
+    enterCancelRouteMode() {
+        document.getElementById('status-state').textContent = 'Cancel Route: Click on a route to cancel';
+    }
+
+    /**
+     * Exit cancel-path tool mode
+     */
+    exitCancelRouteMode() {
+        document.getElementById('status-state').textContent = 'Ready';
+    }
+
+    /**
+     * Handle click in cancel-path tool mode
+     */
+    async handleCancelRouteToolClick(gridPos) {
+        // Find the track at this position
+        const track = this.cachedNetwork?.tracks?.find(t => t.x === gridPos.x && t.y === gridPos.y);
+        
+        if (!track) {
+            window.showToast('No track at this position', 'warning', 3000);
+            return;
+        }
+
+        const blockId = track.block_section_id;
+        if (!blockId) {
+            window.showToast('No block at this position', 'warning', 3000);
+            return;
+        }
+
+        // Find active paths that contain this block
+        try {
+            const result = await this.api.getPaths();
+            const paths = result.paths || [];
+            
+            // Find paths where this block is in the block_sequence
+            const matchingPaths = paths.filter(p => 
+                p.block_sequence?.includes(blockId) && 
+                ['pending', 'setting', 'set', 'active'].includes(p.status)
+            );
+
+            if (matchingPaths.length === 0) {
+                window.showToast('No active path found at this block', 'warning', 3000);
+                return;
+            }
+
+            // For simplicity, select the first matching path
+            const pathToCancel = matchingPaths[0];
+            
+            // Show confirmation
+            const msg = `Cancel path "${pathToCancel.path_id}"?\n\n` +
+                `From: ${pathToCancel.start_block_id}\n` +
+                `To: ${pathToCancel.end_block_id}` +
+                (pathToCancel.train_id ? `\nTrain: ${pathToCancel.train_id}` : '');
+            
+            if (!confirm(msg)) {
+                return;
+            }
+
+            // Cancel the path
+            document.getElementById('status-state').textContent = 'Cancel Path: Cancelling...';
+            
+            const cancelResult = await this.api.cancelPath(pathToCancel.path_id);
+            
+            if (cancelResult.success) {
+                window.showToast(`Path ${pathToCancel.path_id} cancelled`, 'success', 5000);
+                await window.app.refreshNetwork();
+            } else {
+                window.showToast(`Failed to cancel: ${cancelResult.message || cancelResult.error}`, 'error', 5000);
+            }
+            
+            document.getElementById('status-state').textContent = 'Cancel Path: Click on a path to cancel';
+        } catch (err) {
+            console.error('[Editor] Failed to cancel path:', err);
+            window.showToast('Failed to cancel path: ' + err.message, 'error', 5000);
+            document.getElementById('status-state').textContent = 'Cancel Path: Click on a path to cancel';
         }
     }
 }

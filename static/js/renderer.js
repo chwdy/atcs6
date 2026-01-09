@@ -264,6 +264,13 @@ class Renderer {
         // Store current network for redraws
         this.currentNetwork = null;
 
+        // Route overlay state
+        this.reachableHighlights = new Set();  // Tile position strings "x,y" to highlight as reachable
+        this.activeRoutes = [];                 // Route objects for visualization
+        this.highlightedRouteId = null;         // Currently selected route for emphasis
+        this.conflictFlashTiles = [];           // Tiles to flash red [[x,y], ...]
+        this.conflictFlashEnd = 0;              // Timestamp when to stop flashing
+
         // Set up mouse tracking for hover effects
         this.canvas.addEventListener('mousemove', (e) => {
             const rect = this.canvas.getBoundingClientRect();
@@ -543,6 +550,9 @@ class Renderer {
             this.drawBlockDetailLabels(network.tracks);
         }
 
+        // Draw route overlays (reachable highlights, active routes, conflicts)
+        this.drawRouteOverlays();
+
         // Draw trains
         if (network.trains) {
             network.trains.forEach(train => {
@@ -599,6 +609,15 @@ class Renderer {
         if (isSwitch) {
             // Track has switch points - render with active/inactive paths
             this.drawTrackWithSwitches(trackBits, half, trackColor, switchState, isDiagonalOnly, switchPoints);
+            
+            // Draw brown ring around switch indicator if locked by a route
+            if (track.locked_by_route) {
+                this.ctx.strokeStyle = '#8B4513';  // SaddleBrown
+                this.ctx.lineWidth = 2 * this.scale;
+                this.ctx.beginPath();
+                this.ctx.arc(0, 0, 7 * this.scale, 0, Math.PI * 2);
+                this.ctx.stroke();
+            }
         } else {
             // Simple track - render all segments
             this.drawTrackFromBits(trackBits, half, trackColor, track.dead_end_ports || []);
@@ -2731,5 +2750,379 @@ class Renderer {
         this.ctx.stroke();
 
         this.ctx.restore();
+    }
+
+    // === Route Overlay Methods ===
+
+    /**
+     * Set the reachable highlights for route creation mode
+     * @param {Set<string>} positionsSet - Set of "x,y" strings
+     */
+    setReachableHighlights(positionsSet) {
+        this.reachableHighlights = positionsSet || new Set();
+    }
+
+    /**
+     * Set active routes for visualization
+     * @param {Array} routes - Route objects from API
+     */
+    setRoutes(routes) {
+        this.activeRoutes = routes || [];
+    }
+
+    /**
+     * Highlight a specific route
+     * @param {Object} route - Route object to highlight
+     */
+    highlightRoute(route) {
+        this.highlightedRouteId = route?.route_id || null;
+        if (this.currentNetwork) {
+            this.drawNetwork(this.currentNetwork);
+        }
+    }
+
+    /**
+     * Clear route highlight
+     */
+    clearRouteHighlight() {
+        this.highlightedRouteId = null;
+        if (this.currentNetwork) {
+            this.drawNetwork(this.currentNetwork);
+        }
+    }
+
+    /**
+     * Clear route preview (for route tool)
+     */
+    clearRoutePreview() {
+        this.reachableHighlights = new Set();
+    }
+
+    /**
+     * Flash conflict tiles for a duration
+     * @param {Array} tiles - Array of [x, y] tuples
+     * @param {number} durationMs - Flash duration in milliseconds
+     */
+    flashConflictTiles(tiles, durationMs = 2000) {
+        this.conflictFlashTiles = tiles || [];
+        this.conflictFlashEnd = Date.now() + durationMs;
+        
+        // Start animation loop if we have tiles to flash
+        if (this.conflictFlashTiles.length > 0) {
+            this._animateConflictFlash();
+        }
+    }
+
+    /**
+     * Animate conflict flash effect
+     */
+    _animateConflictFlash() {
+        if (Date.now() >= this.conflictFlashEnd) {
+            this.conflictFlashTiles = [];
+            if (this.currentNetwork) {
+                this.drawNetwork(this.currentNetwork);
+            }
+            return;
+        }
+
+        // Redraw with flash
+        if (this.currentNetwork) {
+            this.drawNetwork(this.currentNetwork);
+        }
+
+        // Continue animation
+        requestAnimationFrame(() => this._animateConflictFlash());
+    }
+
+    /**
+     * Draw all route overlays
+     */
+    drawRouteOverlays() {
+        this.ctx.save();
+
+        // 1. Draw reachable endpoint highlights (for route creation)
+        if (this.reachableHighlights.size > 0) {
+            this.drawReachableHighlights();
+        }
+
+        // 2. Draw active routes
+        if (this.activeRoutes.length > 0) {
+            for (const route of this.activeRoutes) {
+                const isHighlighted = route.route_id === this.highlightedRouteId;
+                this.drawRoutePath(route, isHighlighted);
+            }
+        }
+
+        // 3. Draw highlighted route (if from a route not in activeRoutes, e.g., viewing details)
+        if (this.highlightedRouteId && !this.activeRoutes.some(r => r.route_id === this.highlightedRouteId)) {
+            // The route might be passed to highlightRoute directly, find it in network data
+            // For now, just rely on activeRoutes having the data
+        }
+
+        // 4. Draw conflict flash
+        if (Date.now() < this.conflictFlashEnd && this.conflictFlashTiles.length > 0) {
+            this.drawConflictFlash();
+        }
+
+        this.ctx.restore();
+    }
+
+    /**
+     * Draw reachable endpoint highlights (orange glow for route tool)
+     */
+    drawReachableHighlights() {
+        const cellSize = this.gridSize * this.scale;
+        const halfTile = cellSize / 2;
+
+        this.ctx.fillStyle = 'rgba(255, 157, 0, 0.25)';  // Orange, 25% opacity
+
+        for (const key of this.reachableHighlights) {
+            const [x, y] = key.split(',').map(Number);
+            const cx = this.gridToScreenX(x, y);
+            const cy = this.gridToScreenY(x, y);
+
+            // Draw diamond shape
+            this.ctx.beginPath();
+            this.ctx.moveTo(cx, cy - halfTile);
+            this.ctx.lineTo(cx + halfTile, cy);
+            this.ctx.lineTo(cx, cy + halfTile);
+            this.ctx.lineTo(cx - halfTile, cy);
+            this.ctx.closePath();
+            this.ctx.fill();
+        }
+
+        // Draw border on reachable tiles
+        this.ctx.strokeStyle = 'rgba(255, 157, 0, 0.6)';
+        this.ctx.lineWidth = 2 * this.scale;
+
+        for (const key of this.reachableHighlights) {
+            const [x, y] = key.split(',').map(Number);
+            const cx = this.gridToScreenX(x, y);
+            const cy = this.gridToScreenY(x, y);
+
+            this.ctx.beginPath();
+            this.ctx.moveTo(cx, cy - halfTile);
+            this.ctx.lineTo(cx + halfTile, cy);
+            this.ctx.lineTo(cx, cy + halfTile);
+            this.ctx.lineTo(cx - halfTile, cy);
+            this.ctx.closePath();
+            this.ctx.stroke();
+        }
+    }
+
+    /**
+     * Draw a route path overlay
+     * @param {Object} route - Route object
+     * @param {boolean} emphasized - Whether to draw with emphasis
+     */
+    drawRoutePath(route, emphasized = false) {
+        if (!route.path_tiles || route.path_tiles.length === 0) return;
+
+        const cellSize = this.gridSize * this.scale;
+        const halfTile = cellSize / 2;
+
+        // Get color based on status
+        const statusColors = {
+            'pending': 'rgba(136, 136, 136, 0.3)',
+            'setting': 'rgba(255, 217, 61, 0.3)',
+            'set': 'rgba(4, 211, 97, 0.3)',
+            'active': 'rgba(0, 255, 136, 0.4)',
+            'clearing': 'rgba(255, 149, 0, 0.3)',
+            'completed': 'rgba(102, 102, 102, 0.2)',
+            'cancelled': 'rgba(232, 63, 91, 0.2)'
+        };
+
+        const fillOpacity = emphasized ? 0.4 : 0.2;
+        const baseColor = statusColors[route.status] || 'rgba(100, 100, 100, 0.2)';
+        
+        // Adjust opacity for emphasis
+        let fillColor = baseColor;
+        if (emphasized) {
+            fillColor = baseColor.replace(/[\d.]+\)$/, `${fillOpacity})`);
+        }
+
+        // Draw path tiles
+        this.ctx.fillStyle = fillColor;
+        for (const tile of route.path_tiles) {
+            const [x, y] = tile;
+            const cx = this.gridToScreenX(x, y);
+            const cy = this.gridToScreenY(x, y);
+
+            this.ctx.beginPath();
+            this.ctx.moveTo(cx, cy - halfTile);
+            this.ctx.lineTo(cx + halfTile, cy);
+            this.ctx.lineTo(cx, cy + halfTile);
+            this.ctx.lineTo(cx - halfTile, cy);
+            this.ctx.closePath();
+            this.ctx.fill();
+        }
+
+        // Draw border if emphasized
+        if (emphasized) {
+            const borderColors = {
+                'pending': '#888',
+                'setting': '#ffd93d',
+                'set': '#04d361',
+                'active': '#00ff88',
+                'clearing': '#ff9500',
+                'completed': '#666',
+                'cancelled': '#e83f5b'
+            };
+
+            this.ctx.strokeStyle = borderColors[route.status] || '#888';
+            this.ctx.lineWidth = 2 * this.scale;
+
+            for (const tile of route.path_tiles) {
+                const [x, y] = tile;
+                const cx = this.gridToScreenX(x, y);
+                const cy = this.gridToScreenY(x, y);
+
+                this.ctx.beginPath();
+                this.ctx.moveTo(cx, cy - halfTile);
+                this.ctx.lineTo(cx + halfTile, cy);
+                this.ctx.lineTo(cx, cy + halfTile);
+                this.ctx.lineTo(cx - halfTile, cy);
+                this.ctx.closePath();
+                this.ctx.stroke();
+            }
+        }
+
+        // Draw direction triangles on route tiles
+        if (route.tile_directions) {
+            this.drawRouteDirectionArrows(route, halfTile);
+        }
+
+        // Draw locked switch indicators (small lock icon)
+        if (route.switch_positions && emphasized) {
+            this.ctx.fillStyle = '#8B4513';  // Brown
+            for (const key of Object.keys(route.switch_positions)) {
+                const [x, y] = key.split(',').map(Number);
+                const cx = this.gridToScreenX(x, y);
+                const cy = this.gridToScreenY(x, y);
+
+                // Draw small lock symbol
+                const lockSize = 6 * this.scale;
+                this.ctx.beginPath();
+                this.ctx.arc(cx, cy - lockSize, lockSize * 0.6, 0, Math.PI * 2);
+                this.ctx.fill();
+                this.ctx.fillRect(cx - lockSize * 0.5, cy - lockSize * 0.5, lockSize, lockSize);
+            }
+        }
+    }
+
+    /**
+     * Draw small direction triangles on route path tiles
+     * @param {Object} route - Route object with tile_directions
+     * @param {number} halfTile - Half tile size in pixels
+     */
+    drawRouteDirectionArrows(route, halfTile) {
+        if (!route.tile_directions || !route.path_tiles) return;
+
+        // Get color based on status (use lighter version for arrows)
+        const arrowColors = {
+            'pending': 'rgba(136, 136, 136, 0.8)',
+            'setting': 'rgba(255, 217, 61, 0.9)',
+            'set': 'rgba(4, 211, 97, 0.9)',
+            'active': 'rgba(0, 255, 136, 0.9)',
+            'clearing': 'rgba(255, 149, 0, 0.9)',
+            'completed': 'rgba(102, 102, 102, 0.6)',
+            'cancelled': 'rgba(232, 63, 91, 0.6)'
+        };
+
+        const arrowColor = arrowColors[route.status] || 'rgba(100, 100, 100, 0.8)';
+        const arrowSize = halfTile * 0.3;  // Small triangle
+
+        this.ctx.fillStyle = arrowColor;
+
+        for (const tile of route.path_tiles) {
+            const [x, y] = tile;
+            const key = `${x},${y}`;
+            const direction = route.tile_directions[key];
+            
+            if (!direction) continue;
+
+            const cx = this.gridToScreenX(x, y);
+            const cy = this.gridToScreenY(x, y);
+
+            // Draw triangle pointing in the direction of travel
+            // In isometric view:
+            // N (Y+) -> up-left in screen space
+            // S (Y-) -> down-right in screen space
+            // E (X+) -> up-right in screen space
+            // W (X-) -> down-left in screen space
+            this.ctx.beginPath();
+            
+            switch (direction) {
+                case 'N':  // Up-left in isometric
+                    this.ctx.moveTo(cx - arrowSize * 0.8, cy - arrowSize * 0.4);
+                    this.ctx.lineTo(cx + arrowSize * 0.4, cy + arrowSize * 0.2);
+                    this.ctx.lineTo(cx + arrowSize * 0.2, cy - arrowSize * 0.6);
+                    break;
+                case 'S':  // Down-right in isometric
+                    this.ctx.moveTo(cx + arrowSize * 0.8, cy + arrowSize * 0.4);
+                    this.ctx.lineTo(cx - arrowSize * 0.4, cy - arrowSize * 0.2);
+                    this.ctx.lineTo(cx - arrowSize * 0.2, cy + arrowSize * 0.6);
+                    break;
+                case 'E':  // Up-right in isometric
+                    this.ctx.moveTo(cx + arrowSize * 0.8, cy - arrowSize * 0.4);
+                    this.ctx.lineTo(cx - arrowSize * 0.4, cy + arrowSize * 0.2);
+                    this.ctx.lineTo(cx - arrowSize * 0.2, cy - arrowSize * 0.6);
+                    break;
+                case 'W':  // Down-left in isometric
+                    this.ctx.moveTo(cx - arrowSize * 0.8, cy + arrowSize * 0.4);
+                    this.ctx.lineTo(cx + arrowSize * 0.4, cy - arrowSize * 0.2);
+                    this.ctx.lineTo(cx + arrowSize * 0.2, cy + arrowSize * 0.6);
+                    break;
+            }
+            
+            this.ctx.closePath();
+            this.ctx.fill();
+        }
+    }
+
+    /**
+     * Draw conflict flash overlay (red pulsing)
+     */
+    drawConflictFlash() {
+        const cellSize = this.gridSize * this.scale;
+        const halfTile = cellSize / 2;
+
+        // Pulsing effect: toggle every 200ms
+        const flash = Math.floor(Date.now() / 200) % 2 === 0;
+        if (!flash) return;
+
+        this.ctx.fillStyle = 'rgba(232, 63, 91, 0.5)';  // Red, 50% opacity
+
+        for (const tile of this.conflictFlashTiles) {
+            const [x, y] = tile;
+            const cx = this.gridToScreenX(x, y);
+            const cy = this.gridToScreenY(x, y);
+
+            this.ctx.beginPath();
+            this.ctx.moveTo(cx, cy - halfTile);
+            this.ctx.lineTo(cx + halfTile, cy);
+            this.ctx.lineTo(cx, cy + halfTile);
+            this.ctx.lineTo(cx - halfTile, cy);
+            this.ctx.closePath();
+            this.ctx.fill();
+        }
+
+        // Draw X mark on conflict tiles
+        this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+        this.ctx.lineWidth = 3 * this.scale;
+
+        for (const tile of this.conflictFlashTiles) {
+            const [x, y] = tile;
+            const cx = this.gridToScreenX(x, y);
+            const cy = this.gridToScreenY(x, y);
+            const size = halfTile * 0.4;
+
+            this.ctx.beginPath();
+            this.ctx.moveTo(cx - size, cy - size);
+            this.ctx.lineTo(cx + size, cy + size);
+            this.ctx.moveTo(cx + size, cy - size);
+            this.ctx.lineTo(cx - size, cy + size);
+            this.ctx.stroke();
+        }
     }
 }

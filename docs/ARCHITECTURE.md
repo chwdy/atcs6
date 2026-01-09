@@ -62,10 +62,11 @@
 | `signal_validation.py` | Signal placement validation rules |
 | `simulation.py` | Background thread running simulation loop |
 | `dispatcher.py` | Train routing and scheduling |
-| `dispatcher_interface.py` | **ACTIVE** Route dispatcher with block reservation and switch locking |
+| `route_dispatcher.py` | **ACTIVE** Route dispatcher with block reservation and switch locking |
+| `route.py` | Route entity class for route lifecycle management |
 | `pathfinder.py` | A* pathfinding for train movement |
-| `blocking.py` | Block section safety system (legacy wrapper) |
-| `interlocking.py` | **ALTERNATIVE** Route locking implementation (not currently active, see dispatcher_interface.py) |
+| `interlocking.py` | Alternative route locking implementation (not currently active) |
+| `dispatcher_interface.py` | Legacy route dispatcher interface (not currently active) |
 | `enums.py` | Shared enumerations (Direction, SignalState, BlockState, etc.) |
 
 ## Frontend Architecture
@@ -239,6 +240,27 @@ Station ──contains──▶ Track positions
    │
    ├── positions: [(x,y), ...]
    ├── orientation: NS/EW/NE_SW/NW_SE
-   └── platform_sides: [west, east] / [north, south] / etc.
+   ├── platform_sides: [west, east] / [north, south] / etc.
+   └── block_assignments: {(x,y): block_id, ...}  # Multi-block support
 ```
+
+### Station-Block Relationship
+
+Stations and blocks interact with the following rules:
+
+1. **Auto-created Station Block**: When a station is created, an auto-created block (`{station_id}_BLOCK`) is created for convenience
+2. **Blocks Can Exist Within Stations**: Users can create custom blocks within stations for multi-block platforms
+3. **Station Boundary Enforcement**: Blocks cannot cross station boundaries:
+   - Blocks fully inside a station can only contain tiles from that station
+   - Blocks fully outside stations cannot extend into any station
+   - A single block cannot span both inside and outside a station
+4. **Platform Shrink/Extend Behavior**:
+   - When a station tile is removed, it's automatically removed from any block (with proper splitting/deletion)
+   - When a station extends, existing non-station blocks must give up those tiles
+5. **Station Deletion**: Deleting a station automatically deletes all blocks that are fully contained within it
+
+This design allows:
+- Simple single-block stations (auto-created `{station_id}_BLOCK`)
+- Complex multi-block stations (e.g., different platform sections with separate signal control)
+- Clear separation between station infrastructure and regular track blocks
 

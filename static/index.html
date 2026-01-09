@@ -11,8 +11,8 @@
     <div class="app-container">
         <header class="app-header">
             <div class="logo">
-                <span class="icon">🚂</span>
-                <h1>Rail Control</h1>
+                <span class="icon">🚅</span>
+                <h1>Rail</h1>
             </div>
             <div class="controls">
                 <div class="simulation-controls">
@@ -39,79 +39,135 @@
 
         <main class="main-content">
             <aside class="sidebar">
-                <div class="sidebar-section" id="tools-panel">
+                <div class="sidebar-tools-section" id="tools-panel">
                     <h3>Tools</h3>
-                    <div class="tool-grid">
-                        <button class="tool-btn active" data-tool="select" title="Select">
-                            <span class="tool-icon">↖</span> Select
-                        </button>
-                        <button class="tool-btn" data-tool="track" title="Track">
-                            <span class="tool-icon">═</span> Track
-                        </button>
-                        <button class="tool-btn" data-tool="signal" title="Signal">
-                            <span class="tool-icon">🚦</span> Signal
-                        </button>
-                        <button class="tool-btn" data-tool="station" title="Station">
-                            <span class="tool-icon">🚉</span> Station
-                        </button>
-                        <button class="tool-btn" data-tool="extend-station" title="Extend Existing Station">
-                            <span class="tool-icon">🚉+</span> Extend
-                        </button>
-                        <button class="tool-btn" data-tool="eraser" title="Eraser">
-                            <span class="tool-icon">⌫</span> Eraser
-                        </button>
-                        <button class="tool-btn" data-tool="block" title="Create New Block">
-                            <span class="tool-icon">▣</span> Block
-                        </button>
-                        <button class="tool-btn" data-tool="extend-block" title="Extend Existing Block">
-                            <span class="tool-icon">▣+</span> Extend</button>
+                    
+                    <!-- Row 1: General -->
+                    <div class="tool-category">
+                        <div class="tool-category-label">General</div>
+                        <div class="tool-row">
+                            <button class="tool-btn active" data-tool="select" title="Select">
+                                <span class="tool-icon">↖</span> Select
+                            </button>
+                            <button class="tool-btn" data-tool="eraser" title="Eraser">
+                                <span class="tool-icon">⌫</span> Eraser
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Row 2: Track -->
+                    <div class="tool-category">
+                        <div class="tool-category-label">Track</div>
+                        <div class="tool-row">
+                            <button class="tool-btn" data-tool="track" title="Track">
+                                <span class="tool-icon">═</span> Track
+                            </button>
+                            <button class="tool-btn" data-tool="signal" title="Signal">
+                                <span class="tool-icon">🚦</span> Signal
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Row 3: Platform -->
+                    <div class="tool-category">
+                        <div class="tool-category-label">Platform</div>
+                        <div class="tool-row">
+                            <button class="tool-btn" data-tool="station" title="Station">
+                                <span class="tool-icon">🚉</span> Station
+                            </button>
+                            <button class="tool-btn" data-tool="extend-station" title="Extend Existing Station">
+                                <span class="tool-icon">🚉+</span> Extend
+                            </button>
+                            <button class="tool-btn" data-tool="remove-station-tile" title="Remove Station Tile">
+                                <span class="tool-icon">➖🚉</span> Remove
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Row 4: Block -->
+                    <div class="tool-category">
+                        <div class="tool-category-label">Block</div>
+                        <div class="tool-row">
+                            <button class="tool-btn" data-tool="block" title="Create New Block">
+                                <span class="tool-icon">▣</span> Block
+                            </button>
+                            <button class="tool-btn" data-tool="extend-block" title="Extend Existing Block">
+                                <span class="tool-icon">▣+</span> Extend
+                            </button>
+                            <button class="tool-btn" data-tool="remove-block-tile" title="Remove Block Tile">
+                                <span class="tool-icon">➖▣</span> Remove
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Row 5: Dispatch -->
+                    <div class="tool-category">
+                        <div class="tool-category-label">Dispatch</div>
+                        <div class="tool-row">
+                            <button class="tool-btn" data-tool="route" title="Create Route Between Blocks">
+                                <span class="tool-icon">🛤️</span> Route
+                            </button>
+                            <button class="tool-btn" data-tool="extend-route" title="Extend Existing Route">
+                                <span class="tool-icon">🛤️+</span> Extend
+                            </button>
+                            <button class="tool-btn" data-tool="cancel-route" title="Cancel Route">
+                                <span class="tool-icon">🛤️✕</span> Cancel
+                            </button>
+                            <button class="tool-btn" data-tool="routes-panel" title="View Active Routes">
+                                <span class="tool-icon">📋</span> Routes
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Row 6: Train -->
+                    <div class="tool-category">
+                        <div class="tool-category-label">Train</div>
+                        <div class="tool-row">
+                            <button class="tool-btn" data-tool="add-train" title="Add New Train">
+                                <span class="tool-icon">🚂</span> Add
+                            </button>
+                            <button class="tool-btn" data-tool="train-panel" title="Train Management">
+                                <span class="tool-icon">📋</span> Trains
+                            </button>
+                        </div>
                     </div>
                 </div>
 
-                <div class="sidebar-section properties-panel" id="properties-panel">
-                    <h3>Properties</h3>
-                    <p style="color: #666; font-size: 12px;">Select an element to view properties</p>
-                </div>
-
-                <div class="sidebar-section trains-panel" id="trains-panel">
-                    <h3>Trains</h3>
-                    <div class="trains-list" id="trains-list">
-                        <!-- Train list items will be injected here -->
-                    </div>
-                    <button id="btn-add-train" class="btn btn-sm btn-outline">+ Add Train</button>
-                </div>
-
-                <div class="sidebar-section debug-panel" id="debug-panel">
-                    <h3>Debug Info</h3>
-                    <div class="debug-controls">
-                        <label>
-                            <input type="checkbox" id="debug-show-bits" />
-                            <span>Show Track Bits</span>
-                        </label>
-                        <label>
-                            <input type="checkbox" id="debug-show-coords" />
-                            <span>Show Coordinates</span>
-                        </label>
-                        <label>
-                            <input type="checkbox" id="debug-show-switches" />
-                            <span>Show Switch States</span>
-                        </label>
-                        <label>
-                            <input type="checkbox" id="debug-show-edges" />
-                            <span>Show Edge Labels (N/E/S/W)</span>
-                        </label>
-                        <label>
-                            <input type="checkbox" id="debug-show-blocks" />
-                            <span>Show Block Details</span>
-                        </label>
-                        <label>
-                            <input type="checkbox" id="debug-show-signals" />
-                            <span>Show Signal Details</span>
-                        </label>
+                <div class="sidebar-content-section">
+                    <div class="sidebar-section properties-panel" id="properties-panel">
+                        <h3>Properties</h3>
+                        <p style="color: #666; font-size: 12px;">Select an element to view properties</p>
                     </div>
 
-                    <div id="tile-details" class="tile-details">
-                        <p class="debug-hint">Hover over a tile to see details</p>
+                    <div class="sidebar-section debug-panel" id="debug-panel">
+                        <h3>Debug Info</h3>
+                        <div class="debug-controls">
+                            <label>
+                                <input type="checkbox" id="debug-show-bits" />
+                                <span>Show Track Bits</span>
+                            </label>
+                            <label>
+                                <input type="checkbox" id="debug-show-coords" />
+                                <span>Show Coordinates</span>
+                            </label>
+                            <label>
+                                <input type="checkbox" id="debug-show-switches" />
+                                <span>Show Switch States</span>
+                            </label>
+                            <label>
+                                <input type="checkbox" id="debug-show-edges" />
+                                <span>Show Edge Labels (N/E/S/W)</span>
+                            </label>
+                            <label>
+                                <input type="checkbox" id="debug-show-blocks" />
+                                <span>Show Block Details</span>
+                            </label>
+                            <label>
+                                <input type="checkbox" id="debug-show-signals" />
+                                <span>Show Signal Details</span>
+                            </label>
+
+                        </div>
                     </div>
                 </div>
             </aside>
@@ -191,9 +247,10 @@
     <!-- Toast Notification Container -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="js/api.js?v=2"></script>
-    <script src="js/renderer.js?v=2"></script>
-    <script src="js/editor.js?v=2"></script>
-    <script src="js/app.js?v=2"></script>
+    <script src="js/api.js?v=5"></script>
+    <script src="js/helpers.js?v=5"></script>
+    <script src="js/renderer.js?v=5"></script>
+    <script src="js/editor.js?v=5"></script>
+    <script src="js/app.js?v=5"></script>
 </body>
 </html>

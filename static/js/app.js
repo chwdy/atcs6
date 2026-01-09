@@ -49,14 +49,6 @@ class App {
             // Disable editor tools
         });
 
-        // Add train button
-        const addTrainBtn = document.getElementById('btn-add-train');
-        if (addTrainBtn) {
-            addTrainBtn.addEventListener('click', () => {
-                this.showAddTrainDialog();
-            });
-        }
-
         // Layout controls
         this.setupLayoutControls();
     }
@@ -380,7 +372,6 @@ class App {
                 const network = await window.api.getNetwork();
                 this.currentNetwork = network;
                 this.editor.setCachedNetwork(network);
-                this.updateTrainsPanel(network.trains);
                 // Validate that the current editor still exists (close if deleted)
                 this.editor.validateCurrentEditor();
                 // Don't call drawWithHoverPreview here - setCachedNetwork triggers updateHoverPreview
@@ -396,67 +387,11 @@ class App {
             this.currentNetwork = network;
             this.editor.setCachedNetwork(network);
             this.renderer.drawNetwork(network);
-            this.updateTrainsPanel(network.trains);
             // Validate that the current editor still exists (close if deleted)
             this.editor.validateCurrentEditor();
         } catch (e) {
             console.error('[App] Failed to refresh network:', e);
         }
-    }
-
-    updateTrainsPanel(trains) {
-        const panel = document.querySelector('.trains-panel .trains-list');
-        if (!panel) return;
-        
-        if (!trains || trains.length === 0) {
-            panel.innerHTML = '<p style="color: #666; font-size: 12px; padding: 8px;">No trains</p>';
-            return;
-        }
-        
-        panel.innerHTML = trains.map(train => {
-            const statusColor = {
-                'STOPPED': '#666',
-                'RUNNING': '#04d361',
-                'WAITING': '#ffcd1e',
-                'BLOCKED': '#e83f5b'
-            }[train.status] || '#666';
-            
-            const pos = train.position ? `(${train.position.x}, ${train.position.y})` : 'Unknown';
-            
-            return `
-                <div class="train-item" data-train-id="${train.id}" style="
-                    padding: 8px;
-                    border-bottom: 1px solid #2a2a3a;
-                    cursor: pointer;
-                ">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span style="font-weight: bold; color: #8257e5;">${train.id}</span>
-                        <span style="
-                            color: ${statusColor};
-                            font-size: 10px;
-                            padding: 2px 6px;
-                            background: ${statusColor}22;
-                            border-radius: 3px;
-                        ">${train.status || 'STOPPED'}</span>
-                    </div>
-                    <div style="font-size: 11px; color: #888; margin-top: 4px;">
-                        <span>📍 ${pos}</span>
-                        <span style="margin-left: 8px;">→ ${train.direction || 'EAST'}</span>
-                    </div>
-                    <div style="font-size: 11px; color: #888;">
-                        <span>🚄 ${(train.current_speed || 0).toFixed(1)} / ${train.max_speed || 100} km/h</span>
-                    </div>
-                </div>
-            `;
-        }).join('');
-        
-        // Add click handlers for train selection
-        panel.querySelectorAll('.train-item').forEach(item => {
-            item.addEventListener('click', () => {
-                const trainId = item.dataset.trainId;
-                this.selectTrain(trainId);
-            });
-        });
     }
 
     selectTrain(trainId) {
@@ -485,36 +420,186 @@ class App {
     updateTrainPropertiesPanel(train) {
         const panel = document.querySelector('.properties-panel');
         if (!panel) return;
-        
+
+        const state = train.state || 'off';
+        const stateDisplay = state.toUpperCase().replace('_', ' ');
+        const stateClass = state === 'off' ? 'text-danger' : (state === 'running_moving' ? 'text-success' : 'text-warning');
+        const facingDir = train.facing_direction || train.direction || null;
+        const travelDir = train.travel_direction || 'forward';
+        const manualSpeed = train.manual_target_speed || 0;
+        const targetSpeed = train.target_speed || 0;
+
         panel.innerHTML = `
-            <h3>Train: ${train.id}</h3>
+            <h3>🚂 Train: ${train.id}</h3>
             <div class="property-item">
-                <label>Status:</label>
-                <span>${train.status || 'STOPPED'}</span>
-            </div>
-            <div class="property-item">
-                <label>Position:</label>
-                <span>${train.position ? `(${train.position.x}, ${train.position.y})` : 'Unknown'}</span>
-            </div>
-            <div class="property-item">
-                <label>Direction:</label>
-                <span>${train.direction || 'EAST'}</span>
+                <label>State:</label>
+                <span class="${stateClass}">${stateDisplay}</span>
             </div>
             <div class="property-item">
                 <label>Speed:</label>
                 <span>${(train.current_speed || 0).toFixed(1)} / ${train.max_speed || 100} km/h</span>
             </div>
             <div class="property-item">
+                <label>Target:</label>
+                <span>${targetSpeed.toFixed(1)} km/h</span>
+            </div>
+            <div class="property-item">
+                <label>Position:</label>
+                <span>${train.position ? `(${train.position.x}, ${train.position.y})` : 'Unknown'}</span>
+            </div>
+            <div class="property-item">
+                <label>Facing:</label>
+                <span>${facingDir || 'Not set'}</span>
+            </div>
+            <div class="property-item">
+                <label>Travel:</label>
+                <span>${travelDir}</span>
+            </div>
+            <div class="property-item">
                 <label>Length:</label>
                 <span>${train.length || 1} units</span>
             </div>
+
+            <!-- Train Control Buttons -->
+            <div class="train-controls mt-16" data-train-id="${train.id}">
+                <h4 class="text-xs text-muted mb-8">Controls</h4>
+
+                <!-- Power Controls -->
+                <div class="control-group mb-12">
+                    <button class="btn btn-sm btn-success train-power-on" ${state !== 'off' ? 'disabled' : ''}>Power On</button>
+                    <button class="btn btn-sm btn-danger train-power-off" ${state === 'off' ? 'disabled' : ''}>Power Off</button>
+                </div>
+
+                <!-- Direction Controls (when in IDLE or STANDBY) -->
+                <div class="control-group mb-12" id="train-direction-controls">
+                    <label class="text-xs text-muted block mb-4">Direction</label>
+                    <button class="btn btn-sm train-set-dir" data-dir="NORTH" ${state !== 'idle' ? 'disabled' : ''}>N</button>
+                    <button class="btn btn-sm train-set-dir" data-dir="EAST" ${state !== 'idle' ? 'disabled' : ''}>E</button>
+                    <button class="btn btn-sm train-set-dir" data-dir="SOUTH" ${state !== 'idle' ? 'disabled' : ''}>S</button>
+                    <button class="btn btn-sm train-set-dir" data-dir="WEST" ${state !== 'idle' ? 'disabled' : ''}>W</button>
+                </div>
+
+                <!-- Movement Controls -->
+                <div class="control-group mb-12">
+                    <button class="btn btn-sm btn-primary train-depart" ${state !== 'standby' ? 'disabled' : ''}>Depart</button>
+                    <button class="btn btn-sm train-turn-around" ${state !== 'standby' ? 'disabled' : ''}>Turn Around</button>
+                </div>
+
+                <!-- MANUAL Mode Controls -->
+                <div class="control-group mb-12" id="train-manual-controls">
+                    <label class="text-xs text-muted block mb-4">Manual Mode</label>
+                    <button class="btn btn-sm btn-warning train-enable-manual" ${state === 'off' || !train.is_stopped ? 'disabled' : ''}>Enable</button>
+                    <button class="btn btn-sm train-disable-manual" ${state !== 'manual' ? 'disabled' : ''}>Disable</button>
+
+                    <div class="manual-speed-control mt-8" ${state !== 'manual' ? 'style="opacity: 0.5; pointer-events: none;"' : ''}>
+                        <label class="text-xs text-muted block mb-4">Speed: <span id="manual-speed-value">${manualSpeed.toFixed(0)}</span> km/h</label>
+                        <input type="range" class="train-manual-speed" min="0" max="${train.max_speed || 100}" value="${manualSpeed}" step="1">
+                        <div class="mt-4">
+                            <label class="text-xs text-muted">Travel:</label>
+                            <button class="btn btn-xs train-travel-dir ${travelDir === 'forward' ? 'btn-primary' : ''}" data-travel="forward">Forward</button>
+                            <button class="btn btn-xs train-travel-dir ${travelDir === 'reverse' ? 'btn-primary' : ''}" data-travel="reverse">Reverse</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Emergency Stop -->
+                <div class="control-group">
+                    <button class="btn btn-sm btn-danger train-emergency-stop" ${state !== 'running_moving' ? 'disabled' : ''}>Emergency Stop</button>
+                </div>
+            </div>
+
+            ${train.assigned_route_id ? `
+            <div class="train-route-info mt-16">
+                <h4 class="text-xs text-muted mb-8">Assigned Route</h4>
+                <div class="property-item">
+                    <label>Route ID:</label>
+                    <span>${train.assigned_route_id}</span>
+                </div>
+            </div>
+            ` : ''}
+
             ${train.schedule ? `
-            <div class="property-item">
-                <label>Schedule:</label>
-                <span>${train.schedule.stops ? train.schedule.stops.length + ' stops' : 'None'}</span>
+            <div class="train-schedule-info mt-16">
+                <h4 class="text-xs text-muted mb-8">Schedule</h4>
+                <div class="property-item">
+                    <label>Stops:</label>
+                    <span>${train.schedule.stops ? train.schedule.stops.length + ' stops' : 'None'}</span>
+                </div>
             </div>
             ` : ''}
         `;
+
+        // Attach event listeners
+        this.attachTrainControlListeners(train.id);
+    }
+
+    attachTrainControlListeners(trainId) {
+        const container = document.querySelector(`.train-controls[data-train-id="${trainId}"]`);
+        if (!container) return;
+
+        // Power On
+        container.querySelector('.train-power-on')?.addEventListener('click', () => {
+            window.api.trainPowerOn(trainId).then(() => this.refreshNetwork()).catch(this.showError);
+        });
+
+        // Power Off
+        container.querySelector('.train-power-off')?.addEventListener('click', () => {
+            window.api.trainPowerOff(trainId).then(() => this.refreshNetwork()).catch(this.showError);
+        });
+
+        // Set Direction
+        container.querySelectorAll('.train-set-dir').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const dir = e.target.dataset.dir;
+                window.api.trainSetDirection(trainId, dir).then(() => this.refreshNetwork()).catch(this.showError);
+            });
+        });
+
+        // Depart
+        container.querySelector('.train-depart')?.addEventListener('click', () => {
+            window.api.trainDepart(trainId).then(() => this.refreshNetwork()).catch(this.showError);
+        });
+
+        // Turn Around
+        container.querySelector('.train-turn-around')?.addEventListener('click', () => {
+            window.api.trainTurnAround(trainId).then(() => this.refreshNetwork()).catch(this.showError);
+        });
+
+        // Enable Manual
+        container.querySelector('.train-enable-manual')?.addEventListener('click', () => {
+            window.api.trainEnableManual(trainId).then(() => this.refreshNetwork()).catch(this.showError);
+        });
+
+        // Disable Manual
+        container.querySelector('.train-disable-manual')?.addEventListener('click', () => {
+            window.api.trainDisableManual(trainId).then(() => this.refreshNetwork()).catch(this.showError);
+        });
+
+        // Manual Speed
+        const speedInput = container.querySelector('.train-manual-speed');
+        const speedValue = container.querySelector('#manual-speed-value');
+        if (speedInput) {
+            speedInput.addEventListener('input', (e) => {
+                if (speedValue) speedValue.textContent = parseFloat(e.target.value).toFixed(0);
+            });
+            speedInput.addEventListener('change', (e) => {
+                const speed = parseFloat(e.target.value);
+                window.api.trainSetManualSpeed(trainId, speed).then(() => this.refreshNetwork()).catch(this.showError);
+            });
+        }
+
+        // Travel Direction
+        container.querySelectorAll('.train-travel-dir').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const dir = e.target.dataset.travel;
+                window.api.trainSetTravelDirection(trainId, dir).then(() => this.refreshNetwork()).catch(this.showError);
+            });
+        });
+
+        // Emergency Stop
+        container.querySelector('.train-emergency-stop')?.addEventListener('click', () => {
+            window.api.trainEmergencyStop(trainId).then(() => this.refreshNetwork()).catch(this.showError);
+        });
     }
 
     showAddTrainDialog() {
@@ -558,7 +643,7 @@ class App {
         });
 
         // Add change listeners to debug checkboxes to trigger re-render
-        const checkboxIds = ['debug-show-bits', 'debug-show-coords', 'debug-show-switches', 'debug-show-edges', 'debug-show-blocks', 'debug-show-signals'];
+        const checkboxIds = ['debug-show-bits', 'debug-show-coords', 'debug-show-switches', 'debug-show-edges', 'debug-show-blocks', 'debug-show-signals', 'debug-show-block-boundaries'];
         checkboxIds.forEach(id => {
             const checkbox = document.getElementById(id);
             if (checkbox) {
@@ -757,6 +842,87 @@ class App {
     // Expose to global scope
     window.showToast = showToast;
     window.dismissToast = dismissToast;
+})();
+
+// Sidebar resize functionality
+(function() {
+    let isResizing = false;
+    let currentSidebar = null;
+    
+    function initSidebarResize(sidebar, minWidth, maxWidth) {
+        if (!sidebar) return;
+        
+        const isSecondarySidebar = sidebar.id === 'secondary-sidebar';
+        
+        sidebar.addEventListener('mousedown', (e) => {
+            const rect = sidebar.getBoundingClientRect();
+            const isNearRightEdge = e.clientX > rect.right - 8;
+            
+            // Both sidebars: resize on right edge
+            if (isNearRightEdge) {
+                isResizing = true;
+                currentSidebar = sidebar;
+                sidebar.classList.add('resizing');
+                document.body.style.cursor = 'ew-resize';
+                document.body.style.userSelect = 'none';
+                e.preventDefault();
+            }
+        });
+    }
+    
+    document.addEventListener('mousemove', (e) => {
+        if (!isResizing || !currentSidebar) return;
+        
+        const rect = currentSidebar.getBoundingClientRect();
+        const isSecondarySidebar = currentSidebar.id === 'secondary-sidebar';
+        
+        let newWidth;
+        if (isSecondarySidebar) {
+            // For secondary sidebar, resize from right edge (normal behavior)
+            newWidth = e.clientX - rect.left;
+        } else {
+            // For main sidebar, resize from right edge
+            newWidth = e.clientX - rect.left;
+        }
+        
+        const minWidth = parseInt(getComputedStyle(currentSidebar).minWidth) || 200;
+        const maxWidth = parseInt(getComputedStyle(currentSidebar).maxWidth) || 600;
+        
+        if (newWidth >= minWidth && newWidth <= maxWidth) {
+            currentSidebar.style.width = newWidth + 'px';
+            
+            // Update secondary sidebar position when main sidebar resizes
+            if (currentSidebar.classList.contains('sidebar')) {
+                const secondary = document.getElementById('secondary-sidebar');
+                if (secondary) {
+                    secondary.style.left = newWidth + 'px';
+                }
+            }
+        }
+    });
+    
+    document.addEventListener('mouseup', () => {
+        if (isResizing && currentSidebar) {
+            currentSidebar.classList.remove('resizing');
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            isResizing = false;
+            currentSidebar = null;
+        }
+    });
+    
+    // Initialize both sidebars
+    document.addEventListener('DOMContentLoaded', () => {
+        const mainSidebar = document.querySelector('.sidebar');
+        const secondarySidebar = document.getElementById('secondary-sidebar');
+        
+        if (mainSidebar) {
+            initSidebarResize(mainSidebar, 200, 600);
+        }
+        if (secondarySidebar) {
+            initSidebarResize(secondarySidebar, 280, 500);
+        }
+    });
 })();
 
 // Initialize app when DOM is ready

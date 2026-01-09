@@ -31,38 +31,49 @@ import warnings
 from enums import TrackType, Direction, SwitchPosition
 
 # === Track bit constants ===
-TRACK_NS = 1   # 0b000001 - North to South
-TRACK_EW = 2   # 0b000010 - East to West
-TRACK_NE = 4   # 0b000100 - North to East
-TRACK_NW = 8   # 0b001000 - North to West
+TRACK_NS = 1  # 0b000001 - North to South
+TRACK_EW = 2  # 0b000010 - East to West
+TRACK_NE = 4  # 0b000100 - North to East
+TRACK_NW = 8  # 0b001000 - North to West
 TRACK_SE = 16  # 0b010000 - South to East
 TRACK_SW = 32  # 0b100000 - South to West
 
 # Edge masks - which bits touch each edge
-EDGE_MASKS: Dict[str, int] = {'N': 13, 'E': 22, 'S': 49, 'W': 42}
+EDGE_MASKS: Dict[str, int] = {"N": 13, "E": 22, "S": 49, "W": 42}
 
 # Bit index -> edge pair
 BIT_TO_EDGES: Dict[int, tuple] = {
-    0: ('N', 'S'),  # TRACK_NS
-    1: ('E', 'W'),  # TRACK_EW
-    2: ('N', 'E'),  # TRACK_NE
-    3: ('N', 'W'),  # TRACK_NW
-    4: ('S', 'E'),  # TRACK_SE
-    5: ('S', 'W'),  # TRACK_SW
+    0: ("N", "S"),  # TRACK_NS
+    1: ("E", "W"),  # TRACK_EW
+    2: ("N", "E"),  # TRACK_NE
+    3: ("N", "W"),  # TRACK_NW
+    4: ("S", "E"),  # TRACK_SE
+    5: ("S", "W"),  # TRACK_SW
 }
 
 # Edge pair -> bit index (supports either ordering)
 EDGES_TO_BIT: Dict[tuple, int] = {
-    ('N', 'S'): 0, ('S', 'N'): 0,
-    ('E', 'W'): 1, ('W', 'E'): 1,
-    ('N', 'E'): 2, ('E', 'N'): 2,
-    ('N', 'W'): 3, ('W', 'N'): 3,
-    ('S', 'E'): 4, ('E', 'S'): 4,
-    ('S', 'W'): 5, ('W', 'S'): 5,
+    ("N", "S"): 0,
+    ("S", "N"): 0,
+    ("E", "W"): 1,
+    ("W", "E"): 1,
+    ("N", "E"): 2,
+    ("E", "N"): 2,
+    ("N", "W"): 3,
+    ("W", "N"): 3,
+    ("S", "E"): 4,
+    ("E", "S"): 4,
+    ("S", "W"): 5,
+    ("W", "S"): 5,
 }
 
 # Direction <-> edge helpers
-EDGE_TO_DIR = {'N': Direction.NORTH, 'E': Direction.EAST, 'S': Direction.SOUTH, 'W': Direction.WEST}
+EDGE_TO_DIR = {
+    "N": Direction.NORTH,
+    "E": Direction.EAST,
+    "S": Direction.SOUTH,
+    "W": Direction.WEST,
+}
 DIR_TO_EDGE = {v: k for k, v in EDGE_TO_DIR.items()}
 
 # Orientation groups for curve detection
@@ -74,36 +85,60 @@ DIR_TO_EDGE = {v: k for k, v in EDGE_TO_DIR.items()}
 #   - 'NE_SW': North-East and South-West paths (same diagonal orientation)
 #   - 'NW_SE': North-West and South-East paths (same diagonal orientation)
 ORIENTATION_GROUPS = {
-    frozenset({'N', 'S'}): 'NS',
-    frozenset({'E', 'W'}): 'EW',
-    frozenset({'N', 'E'}): 'NE_SW',
-    frozenset({'S', 'W'}): 'NE_SW',
-    frozenset({'N', 'W'}): 'NW_SE',
-    frozenset({'S', 'E'}): 'NW_SE',
+    frozenset({"N", "S"}): "NS",
+    frozenset({"E", "W"}): "EW",
+    frozenset({"N", "E"}): "NE_SW",
+    frozenset({"S", "W"}): "NE_SW",
+    frozenset({"N", "W"}): "NW_SE",
+    frozenset({"S", "E"}): "NW_SE",
 }
 
 # Bit index -> orientation group
 BIT_TO_GROUP = {
-    0: 'NS',     # TRACK_NS
-    1: 'EW',     # TRACK_EW
-    2: 'NE_SW',  # TRACK_NE
-    3: 'NW_SE',  # TRACK_NW
-    4: 'NW_SE',  # TRACK_SE (same group as NW)
-    5: 'NE_SW',  # TRACK_SW (same group as NE)
+    0: "NS",  # TRACK_NS
+    1: "EW",  # TRACK_EW
+    2: "NE_SW",  # TRACK_NE
+    3: "NW_SE",  # TRACK_NW
+    4: "NW_SE",  # TRACK_SE (same group as NW)
+    5: "NE_SW",  # TRACK_SW (same group as NE)
 }
 
 # Opposite edges for neighbor lookup
-OPPOSITE_EDGE = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}
+OPPOSITE_EDGE = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
 # Forbidden combinations (see Reference_6Bit_Track_System.md)
-FORBIDDEN_TRACK_BITS = frozenset({
-    13, 22, 42, 49,           # 3-way switches
-    15, 23, 43, 51,           # Double slips with 3-way
-    29, 30, 45, 46, 53, 54, 57, 58,  # Complex 4-path with 3-way
-    31, 47, 55, 59, 61, 62,   # 5-path
-    63,                       # 6-path (full)
-    28, 44, 52, 56, 60,           # Multi-diagonal without through route
-})
+FORBIDDEN_TRACK_BITS = frozenset(
+    {
+        13,
+        22,
+        42,
+        49,  # 3-way switches
+        15,
+        23,
+        43,
+        51,  # Double slips with 3-way
+        29,
+        30,
+        45,
+        46,
+        53,
+        54,
+        57,
+        58,  # Complex 4-path with 3-way
+        31,
+        47,
+        55,
+        59,
+        61,
+        62,  # 5-path
+        63,  # 6-path (full)
+        28,
+        44,
+        52,
+        56,
+        60,  # Multi-diagonal without through route
+    }
+)
 
 
 def _normalize_edge(edge: str) -> Optional[str]:
@@ -111,14 +146,14 @@ def _normalize_edge(edge: str) -> Optional[str]:
     if not edge:
         return None
     upper = edge.upper()
-    if upper in {'N', 'NORTH'}:
-        return 'N'
-    if upper in {'E', 'EAST'}:
-        return 'E'
-    if upper in {'S', 'SOUTH'}:
-        return 'S'
-    if upper in {'W', 'WEST'}:
-        return 'W'
+    if upper in {"N", "NORTH"}:
+        return "N"
+    if upper in {"E", "EAST"}:
+        return "E"
+    if upper in {"S", "SOUTH"}:
+        return "S"
+    if upper in {"W", "WEST"}:
+        return "W"
     return None
 
 
@@ -142,8 +177,10 @@ class TrackSegment:
     _switch_state: int = 0
 
     # === FEATURES ===
-    signal_ids: List[str] = field(default_factory=list)  # Max 2 signals per tile (one per direction)
-    station_id: Optional[str] = None         # Reference to Station.station_id
+    signal_ids: List[str] = field(
+        default_factory=list
+    )  # Max 2 signals per tile (one per direction)
+    station_id: Optional[str] = None  # Reference to Station.station_id
     block_section_id: Optional[str] = None
 
     # === OTHER PROPERTIES ===
@@ -155,9 +192,19 @@ class TrackSegment:
     last_maintenance: Optional[str] = None
     maintenance_count: int = 0
 
+    # === PATH LOCKING (Dispatcher System) ===
+    # Note: "path" = dispatcher's reserved route; "route" = train's travel plan
+    locked_by_path: Optional[str] = None  # Path ID that locked this switch
+    locked_state: Optional[int] = None  # The state the switch is locked to (0 or 1)
+    path_direction: Optional[str] = (
+        None  # Direction the path is traveling at this tile (N/E/S/W)
+    )
+
     def __post_init__(self):
         # Normalize dead-end inputs
-        self.dead_end_ports = {e for e in ( _normalize_edge(p) for p in self.dead_end_ports ) if e}
+        self.dead_end_ports = {
+            e for e in (_normalize_edge(p) for p in self.dead_end_ports) if e
+        }
         # Ensure switch state is valid (0 or 1)
         self._switch_state = 0 if self._switch_state == 0 else 1
 
@@ -165,24 +212,28 @@ class TrackSegment:
     @property
     def edges(self) -> Set[str]:
         """Edges that are connected by either track paths or dead-ends."""
-        connected = {edge for edge, mask in EDGE_MASKS.items() if self.track_bits & mask}
+        connected = {
+            edge for edge, mask in EDGE_MASKS.items() if self.track_bits & mask
+        }
         return connected | self.dead_end_ports
 
     @property
     def num_paths(self) -> int:
         """Number of physical rail segments (popcount)."""
-        return bin(self.track_bits).count('1')
+        return bin(self.track_bits).count("1")
 
     @property
     def switch_points(self) -> Dict[str, List[str]]:
         """Map of switch edges -> sorted exits (only edges with 2+ exits)."""
-        edge_exits: Dict[str, List[str]] = {e: [] for e in 'NESW'}
+        edge_exits: Dict[str, List[str]] = {e: [] for e in "NESW"}
         for bit in range(6):
             if self.track_bits & (1 << bit):
                 e1, e2 = BIT_TO_EDGES[bit]
                 edge_exits[e1].append(e2)
                 edge_exits[e2].append(e1)
-        return {edge: sorted(exits) for edge, exits in edge_exits.items() if len(exits) >= 2}
+        return {
+            edge: sorted(exits) for edge, exits in edge_exits.items() if len(exits) >= 2
+        }
 
     @property
     def is_switch(self) -> bool:
@@ -202,7 +253,7 @@ class TrackSegment:
     @property
     def is_diagonal_only_switch(self) -> bool:
         """Returns True if this is a switch with only diagonal paths.
-        
+
         For diagonal-only switches, MAIN/DIVERGE uses clockwise ordering
         (N, E, S, W) instead of long/short path distinction.
         """
@@ -212,9 +263,9 @@ class TrackSegment:
     def long_path_type(self) -> Optional[str]:
         """Returns 'NS', 'EW', or None."""
         if self.track_bits & 1:
-            return 'NS'
+            return "NS"
         if self.track_bits & 2:
-            return 'EW'
+            return "EW"
         return None
 
     @property
@@ -229,7 +280,7 @@ class TrackSegment:
     @property
     def switch_states(self) -> Dict[str, int]:
         """Per-entry-port switch states for display/debugging.
-        
+
         Maps each switch point entry edge to its active exit.
         All switches share the same global state (MAIN=0, DIVERGE=1).
         """
@@ -341,12 +392,12 @@ class TrackSegment:
 
     def _sync_switch_states(self) -> None:
         """Reset switch_state to MAIN (0) when track_bits change.
-        
+
         This ensures all switches on the tile are synchronized:
         - MAIN (0): All switches point to long paths (NS or EW) if available,
                     or form a crossing pattern
         - DIVERGE (1): All switches point to short paths (diagonals)
-        
+
         Called automatically when track_bits are modified via:
         - set_track_bits()
         - add_track_bit()
@@ -382,7 +433,7 @@ class TrackSegment:
         self._switch_state = 0 if state == 0 else 1
         return True
 
-    def propagate_update(self, network: 'RailwayNetwork') -> None:
+    def propagate_update(self, network: "RailwayNetwork") -> None:
         """Update derived data after topology change.
 
         Called by network.propagate_from_tile() when:
@@ -396,7 +447,7 @@ class TrackSegment:
         # Recompute dead-ends based on neighbor connectivity
         self._update_dead_ends(network)
 
-    def _update_dead_ends(self, network: 'RailwayNetwork') -> None:
+    def _update_dead_ends(self, network: "RailwayNetwork") -> None:
         """Recompute dead-ends based on neighbor connectivity.
 
         An edge is a dead-end if:
@@ -463,13 +514,9 @@ class TrackSegment:
         if not use_switch_state:
             return sorted(all_exits)
 
-        # Check if this is a switch (has multiple track segments that form a junction)
-        # A switch has 3+ edges, meaning at least 2 track bits are set
-        num_bits = bin(self.track_bits).count('1')
-        is_switch = num_bits >= 2 and len(self.edges) >= 3
-
-        # For non-switches, just return the geometrically possible exits
-        if not is_switch:
+        # Check if this is a switch using the proper property
+        # (which checks for switch_points, not just edge count)
+        if not self.is_switch:
             return sorted(all_exits)
 
         # For switches: categorize exits by segment type (main vs diverge)
@@ -496,26 +543,80 @@ class TrackSegment:
                 diverge_exits.append(exit_edge)
 
         # Apply switch state to determine which exits are ACTIVE
-        # MAIN (0): only main segment exits are valid
-        # DIVERGE (1): only diverge segment exits are valid
         #
-        # If entry edge is not part of the active segment, return [] (switch set against train)
+        # Special case: DIVERGE-ONLY SWITCHES
+        # If there are NO main paths in the entire track (bits 0-1 not set),
+        # this is a diverge-only switch like bits 12, 20, 24, 36, 40, 48.
+        # These have two diagonal segments sharing one edge.
+        #
+        # For these switches:
+        # - State 0 activates the FIRST diverge segment (by bit order)
+        # - State 1 activates the SECOND diverge segment
+        # - Entry edge must be part of the active segment, otherwise return []
+
+        has_main_paths = (self.track_bits & 0b11) != 0  # bits 0 (NS) or 1 (EW)
+
+        if not has_main_paths:
+            # This is a diverge-only switch - find which segments exist
+            # Get all diverge segments present in this track
+            diverge_segments = []  # List of (bit_index, edge1, edge2)
+            for bit in range(2, 6):  # bits 2-5 are diverge segments
+                if self.track_bits & (1 << bit):
+                    e1, e2 = BIT_TO_EDGES[bit]
+                    diverge_segments.append((bit, e1, e2))
+
+            if len(diverge_segments) >= 2:
+                # Sort by bit index for consistent ordering
+                diverge_segments.sort(key=lambda x: x[0])
+
+                # Determine which segment is active based on switch state
+                active_segment = (
+                    diverge_segments[0]
+                    if self._switch_state == 0
+                    else diverge_segments[1]
+                )
+                active_bit, active_e1, active_e2 = active_segment
+
+                # Check if entry edge is part of the active segment
+                if entry_norm not in (active_e1, active_e2):
+                    # Entry edge is NOT part of the active segment - switch is set against us
+                    return []
+
+                # Entry is valid - return the other edge of the active segment
+                if entry_norm == active_e1:
+                    return [active_e2]
+                else:
+                    return [active_e1]
+
+        # Standard switch logic: main vs diverge
+        # MAIN (0): only main segment exits are valid - entry from diverge path is BLOCKED
+        # DIVERGE (1): only diverge segment exits are valid - entry from main path is BLOCKED
+        #
+        # The key insight: if entering from the WRONG path type, return [] (blocked)
         if self._switch_state == 0:
-            # MAIN: only allow exits via main (NS/EW) segments
+            # MAIN state: only allow exits via main (NS/EW) segments
+            # If there are no main_exits, it means entry is from diverge path -> blocked
             if main_exits:
                 return [main_exits[0]]
             else:
-                # Entry edge is not part of any main segment - switch is set against us
+                # Entry is via diverge path, but switch is set to MAIN -> blocked
                 return []
         else:
-            # DIVERGE: only allow exits via diverge (diagonal) segments
+            # DIVERGE state: only allow exits via diverge (diagonal) segments
+            # If there are no diverge_exits, it means entry is from main path -> blocked
             if diverge_exits:
-                return [diverge_exits[0]]
+                # If there are multiple diverge exits, pick the appropriate one
+                if len(diverge_exits) >= 2:
+                    return [sorted(diverge_exits)[1]]  # Second diverge path
+                else:
+                    return [diverge_exits[0]]  # Only one diverge path
             else:
-                # Entry edge is not part of any diverge segment - switch is set against us
+                # Entry is via main path, but switch is set to DIVERGE -> blocked
                 return []
 
-    def get_exit_directions(self, entry_direction: Direction, use_switch_state: bool = True) -> List[Direction]:
+    def get_exit_directions(
+        self, entry_direction: Direction, use_switch_state: bool = True
+    ) -> List[Direction]:
         """Return exit Directions for a given entry Direction."""
         entry_edge = DIR_TO_EDGE.get(entry_direction)
         if not entry_edge:
@@ -528,7 +629,9 @@ class TrackSegment:
         return exits[0] if exits else None
 
     # === Traversal helpers ===
-    def get_traversal_group(self, entry_direction: Direction, exit_direction: Direction) -> Optional[str]:
+    def get_traversal_group(
+        self, entry_direction: Direction, exit_direction: Direction
+    ) -> Optional[str]:
         """Return orientation group for a traversal through this tile."""
         entry_edge = DIR_TO_EDGE.get(entry_direction)
         exit_edge = DIR_TO_EDGE.get(exit_direction)
@@ -539,7 +642,7 @@ class TrackSegment:
     def is_turn(self, entry_direction: Direction, exit_direction: Direction) -> bool:
         """True if traversal uses a diagonal group (i.e., orientation changes)."""
         group = self.get_traversal_group(entry_direction, exit_direction)
-        return group in {'NE_SW', 'NW_SE'}
+        return group in {"NE_SW", "NW_SE"}
 
     # === Curve detection (connection-based) ===
     def get_path_group(self, edge1: str, edge2: str) -> Optional[str]:
@@ -563,7 +666,9 @@ class TrackSegment:
             return (edge_norm, exits[0])
         return None
 
-    def is_curve_connection(self, exit_edge: str, neighbor_segment: 'TrackSegment') -> bool:
+    def is_curve_connection(
+        self, exit_edge: str, neighbor_segment: "TrackSegment"
+    ) -> bool:
         """Check if connection to neighbor at exit_edge is a curve.
 
         A curve occurs when the current path and the neighbor's connected path
@@ -604,7 +709,9 @@ class TrackSegment:
 
         return current_group != neighbor_group
 
-    def get_curve_type_at_edge(self, exit_edge: str, neighbor_segment: 'TrackSegment') -> str:
+    def get_curve_type_at_edge(
+        self, exit_edge: str, neighbor_segment: "TrackSegment"
+    ) -> str:
         """Get the curve type for connection at the given edge.
 
         Returns:
@@ -613,7 +720,7 @@ class TrackSegment:
             'UNKNOWN' if cannot determine (missing path data)
         """
         if self.is_curve_connection(exit_edge, neighbor_segment):
-            return 'CURVE'
+            return "CURVE"
 
         exit_norm = _normalize_edge(exit_edge)
         if exit_norm:
@@ -622,9 +729,9 @@ class TrackSegment:
             if neighbor_entry:
                 neighbor_path = neighbor_segment.get_path_at_edge(neighbor_entry)
                 if current_path and neighbor_path:
-                    return 'STRAIGHT'
+                    return "STRAIGHT"
 
-        return 'UNKNOWN'
+        return "UNKNOWN"
 
     # === Path helpers (directed-path API) ===
     def remove_path(self, port1: str, port2: str) -> bool:
@@ -659,6 +766,10 @@ class TrackSegment:
             "station_id": self.station_id,
             "block_section_id": self.block_section_id,
             "length": self.length,
+            # Path locking
+            "locked_by_path": self.locked_by_path,
+            "locked_state": self.locked_state,
+            "path_direction": self.path_direction,
             # Computed
             "type": self.track_type.value,
             "edges": sorted(self.edges),
@@ -671,6 +782,7 @@ class TrackSegment:
             "num_paths": self.num_paths,
             "is_valid": self.is_valid,
             "switch_states": self.switch_states if self.is_switch else None,
+            "is_locked": self.is_locked_by_path(),
         }
 
     @classmethod
@@ -687,42 +799,45 @@ class TrackSegment:
         segment.station_id = data.get("station_id")
         segment.block_section_id = data.get("block_section_id")
         segment.length = data.get("length", 1.0)
+        # Path locking
+        segment.locked_by_path = data.get("locked_by_path")
+        segment.locked_state = data.get("locked_state")
         return segment
 
     # ========== Utility ==========
     def get_display_symbol(self) -> str:
         """Basic ASCII symbol for console visualization using track_bits."""
         if self.track_type == TrackType.STATION:
-            return '🚉'
+            return "🚉"
         if self.track_type == TrackType.SIGNAL:
-            return '🚦'
+            return "🚦"
         if self.track_type == TrackType.FORBIDDEN:
-            return '✗'
-        
+            return "✗"
+
         # Map track_bits to symbols (single segments)
         bit_symbols = {
-            0: '•',      # Empty
-            1: '│',      # NS
-            2: '─',      # EW
-            4: '╰',      # NE
-            8: '╯',      # NW
-            16: '╭',     # SE
-            32: '╮',     # SW
+            0: "•",  # Empty
+            1: "│",  # NS
+            2: "─",  # EW
+            4: "╰",  # NE
+            8: "╯",  # NW
+            16: "╭",  # SE
+            32: "╮",  # SW
         }
-        
+
         # Common multi-segment combinations
         if self.track_bits == 3:  # NS + EW
-            return '┼'
+            return "┼"
         if self.track_bits in bit_symbols:
             return bit_symbols[self.track_bits]
-        
+
         # Multi-segment: show path count
         n = self.num_paths
         if n == 2:
-            return '⊕'  # Junction
+            return "⊕"  # Junction
         if n >= 3:
-            return '✦'  # Complex
-        return '?'
+            return "✦"  # Complex
+        return "?"
 
     def degrade(self, amount: float):
         self.wear_level = min(1.0, self.wear_level + amount)
@@ -731,6 +846,7 @@ class TrackSegment:
         self.wear_level = 0.0
         self.maintenance_count += 1
         from datetime import datetime
+
         self.last_maintenance = datetime.now().isoformat()
 
     def is_occupied(self) -> bool:
@@ -745,3 +861,140 @@ class TrackSegment:
         if self.reserved_by and self.reserved_by != train_id:
             return False
         return True
+
+    # ========================================================================
+    # Path Locking Methods (Dispatcher System)
+    # ========================================================================
+
+    def lock_for_path(self, path_id: str, state: int) -> bool:
+        """
+        Lock this switch in a specific state for a path.
+
+        Only switches can be locked. The switch will be set to the specified
+        state and locked so it cannot be changed until unlocked.
+
+        Note: "path" = dispatcher's reserved route; "route" = train's travel plan
+
+        Args:
+            path_id: The path ID locking this switch
+            state: The switch state to lock to (0=MAIN, 1=DIVERGE)
+
+        Returns:
+            True if lock successful, False if already locked by different path
+        """
+        if not self.is_switch:
+            return False  # Only switches can be locked
+
+        # Already locked by same path in same state - OK
+        if self.locked_by_path == path_id and self.locked_state == state:
+            return True
+
+        # Already locked by different path
+        if self.locked_by_path is not None and self.locked_by_path != path_id:
+            return False
+
+        # Lock the switch
+        self.set_switch_state(state)
+        self.locked_by_path = path_id
+        self.locked_state = state
+        return True
+
+    def unlock_for_path(self, path_id: str) -> bool:
+        """
+        Unlock this switch if it was locked by the specified path.
+
+        Args:
+            path_id: The path ID that should own the lock
+
+        Returns:
+            True if unlocked, False if not locked by this path
+        """
+        if self.locked_by_path == path_id:
+            self.locked_by_path = None
+            self.locked_state = None
+            return True
+        return False
+
+    def is_locked_by_path(self) -> bool:
+        """Check if this switch is locked by any path."""
+        return self.locked_by_path is not None
+
+    def is_locked_by(self, path_id: str) -> bool:
+        """Check if this switch is locked by a specific path."""
+        return self.locked_by_path == path_id
+
+    def get_lock_info(self) -> Optional[Dict[str, any]]:
+        """
+        Get information about the current lock.
+
+        Returns:
+            Dictionary with lock info, or None if not locked
+        """
+        if not self.locked_by_path:
+            return None
+        return {
+            "path_id": self.locked_by_path,
+            "locked_state": self.locked_state,
+            "position": (self.x, self.y),
+        }
+
+    def can_lock_for_path(self, path_id: str, state: int) -> bool:
+        """
+        Check if this switch can be locked for a path without actually locking.
+
+        Args:
+            path_id: Path ID that would lock
+            state: State that would be locked to
+
+        Returns:
+            True if locking would succeed
+        """
+        if not self.is_switch:
+            return False
+
+        # Not locked - can lock
+        if self.locked_by_path is None:
+            return True
+
+        # Already locked by same path in same state
+        if self.locked_by_path == path_id and self.locked_state == state:
+            return True
+
+        # Already locked by same path in different state - conflict
+        if self.locked_by_path == path_id and self.locked_state != state:
+            return False
+
+        # Locked by different path
+        return False
+
+    def get_required_switch_state(
+        self, entry_edge: str, exit_edge: str
+    ) -> Optional[int]:
+        """
+        Determine the required switch state for a given entry→exit traversal.
+
+        This is used by route pathfinding to determine which switch state is
+        needed to traverse this switch tile in a particular direction.
+
+        Args:
+            entry_edge: Edge where the path enters (N, E, S, W)
+            exit_edge: Edge where the path exits (N, E, S, W)
+
+        Returns:
+            0 (MAIN) or 1 (DIVERGE) if this is a switch and the path exists,
+            None if not a switch or the path doesn't exist
+        """
+        if not self.is_switch:
+            return None
+
+        # Check if this entry→exit path exists at each state
+        for state in [0, 1]:
+            old_state = self.switch_state
+            self.switch_state = state
+            exits = self.get_exits(entry_edge, use_switch_state=True)
+            self.switch_state = old_state
+
+            if exit_edge in exits:
+                return state
+
+        return None  # Path doesn't exist at any state

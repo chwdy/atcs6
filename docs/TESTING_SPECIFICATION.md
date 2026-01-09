@@ -548,7 +548,7 @@ assert signal.monitored_block_id == "BLK_A"
 |-------|-------|
 | **Test ID** | STA-005 |
 | **Scenario** | Create station on tile that belongs to an existing block |
-| **Expected Behavior** | Original block is split, station gets its own block |
+| **Expected Behavior** | Tile is removed from original block (may split block), auto-block created for station |
 | **Automatable** | Yes |
 
 **Steps:**
@@ -557,9 +557,10 @@ assert signal.monitored_block_id == "BLK_A"
 3. Create station at (2,0)
 
 **Assertions:**
-- Station gets block "STA_{id}_BLOCK"
+- Station gets auto-created block "STA_{id}_BLOCK"
 - Original block "BLK_MAIN" no longer contains (2,0)
-- If needed, original block is split or shrunk
+- If block connectivity is broken, block is split into separate blocks
+- Blocks cannot cross station boundaries (fully inside or fully outside)
 
 ---
 
@@ -988,8 +989,8 @@ This section covers comprehensive API testing for methods that accept tile lists
 
 | File | Language | Purpose |
 |------|----------|---------|
-| `tests/test_api_backend.py` | Python | Direct class method testing via `RailwayNetwork` |
-| `tests/test_api_rest.js` | JavaScript | REST API endpoint testing via fetch |
+| `tests/test_backend.py` | Python | Direct class method testing via `RailwayNetwork` |
+| `tests/test_api.js` | JavaScript | REST API endpoint testing via fetch |
 
 ### Orientation Groups (Key Concept)
 
@@ -1928,26 +1929,41 @@ def test_backend_rejects_crossing_in_block():
 |-------|-------|
 | **Test ID** | PARITY-005 |
 | **Tier** | Extensive |
-| **Scenario** | Frontend shows "Stations are block boundaries" |
-| **Expected** | Block rejects tiles that are part of stations |
+| **Scenario** | Blocks respect station boundaries |
+| **Expected** | Blocks can be fully inside OR fully outside stations, but cannot cross boundaries |
 
 **Python Test:**
 ```python
-def test_backend_rejects_station_tile_in_block():
+def test_backend_validates_station_block_boundaries():
     network = RailwayNetwork()
-    for x in range(3):
+    for x in range(5):
         network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
     
-    # Create station in middle
-    network.add_station(x=1, y=0, name="Test Station")
+    # Create station at tiles (1,0) and (2,0)
+    station = network.add_station(x=1, y=0, station_id="STA_001", name="Test Station")
+    network.extend_station("STA_001", [(2, 0)])
     
+    # Test 1: Block fully inside station should PASS
+    block_inside = network.create_block_with_tracks(
+        block_id="BLK_INSIDE",
+        positions=[(1,0), (2,0)]
+    )
+    assert block_inside is not None
+    
+    # Test 2: Block fully outside station should PASS
+    block_outside = network.create_block_with_tracks(
+        block_id="BLK_OUTSIDE",
+        positions=[(3,0), (4,0)]
+    )
+    assert block_outside is not None
+    
+    # Test 3: Block crossing station boundary should FAIL
     with pytest.raises(ValueError) as exc:
         network.create_block_with_tracks(
             block_id="BLK_FAIL",
-            positions=[(0,0), (1,0), (2,0)]  # (1,0) is station
+            positions=[(0,0), (1,0), (2,0)]  # crosses boundary
         )
-    # Should mention station or platform
-    assert "station" in str(exc.value).lower() or "platform" in str(exc.value).lower()
+    assert "station boundary" in str(exc.value).lower()
 ```
 
 ---
@@ -2040,13 +2056,13 @@ def test_backend_rejects_station_on_signal_tile():
 
 ## Appendix B: Test File Structure
 
-### Python Backend Tests (`tests/test_api_backend.py`)
+### Python Backend Tests (`tests/test_backend.py`)
 
 ```python
 """
 Backend API Tests - Direct class method testing
 
-Run with: pytest tests/test_api_backend.py -v
+Run with: pytest tests/test_backend.py -v
 """
 import pytest
 from network import RailwayNetwork
@@ -2177,13 +2193,13 @@ class TestFrontendBackendParity:
 
 ---
 
-### JavaScript REST API Tests (`tests/test_api_rest.js`)
+### JavaScript REST API Tests (`tests/test_api.js`)
 
 ```javascript
 /**
  * REST API Tests - HTTP endpoint testing
  * 
- * Run with: node tests/test_api_rest.js
+ * Run with: node tests/test_api.js
  * Requires: Server running at localhost:5000
  */
 

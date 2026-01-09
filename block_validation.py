@@ -9,16 +9,67 @@ from typing import Tuple, List, Optional, Set
 from collections import deque
 
 
-def validate_block_path(path: List[Tuple[int, int]], mode: str, network) -> Tuple[bool, Optional[str]]:
+def validate_station_boundary(
+    path: List[Tuple[int, int]], network
+) -> Tuple[bool, Optional[str]]:
+    """
+    Validate that a block path respects station boundaries.
+
+    Rules:
+    1. A block cannot span station boundaries (partially in, partially out)
+    2. A block can be fully inside a station
+    3. A block can be fully outside all stations
+
+    Args:
+        path: List of (x, y) tile positions
+        network: RailwayNetwork instance for lookups
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if not path:
+        return True, None
+
+    # Collect station_ids for all tiles in the path
+    station_ids = set()
+    for x, y in path:
+        track = network.get_track(x, y)
+        if track and track.station_id:
+            station_ids.add(track.station_id)
+
+    # If no stations involved, block is outside all stations - OK
+    if len(station_ids) == 0:
+        return True, None
+
+    # If exactly one station, all tiles must belong to that station
+    if len(station_ids) == 1:
+        station_id = list(station_ids)[0]
+        # Verify ALL tiles belong to this station
+        for x, y in path:
+            track = network.get_track(x, y)
+            if not track or track.station_id != station_id:
+                return (
+                    False,
+                    f"Block cannot cross station boundary - tile ({x}, {y}) is outside station {station_id}",
+                )
+        return True, None
+
+    # Multiple stations - this is not allowed
+    station_list = ", ".join(sorted(station_ids))
+    return False, f"Block cannot span multiple stations: {station_list}"
+
+
+def validate_block_path(
+    path: List[Tuple[int, int]], mode: str, network
+) -> Tuple[bool, Optional[str]]:
     """
     Validate a path for block creation/extension.
 
-    Per spec Section 5.4, validates:
+    Validates:
     1. No switches inside block (switches are block boundaries)
-    2. No platforms inside block (platforms are natural block boundaries)
-    3. No signals crossing (signals create block boundaries)
-    4. Path must be continuous
-    5. For CREATE mode, tiles must not have existing block assignment
+    2. Path must be continuous
+    3. For CREATE mode, tiles must not have existing block assignment
+    4. Block must respect station boundaries (cannot cross station boundaries)
 
     Args:
         path: List of (x, y) tile positions to form the block
@@ -32,6 +83,11 @@ def validate_block_path(path: List[Tuple[int, int]], mode: str, network) -> Tupl
     if not path:
         return True, None
 
+    # Rule 0: Validate station boundaries
+    valid, error = validate_station_boundary(path, network)
+    if not valid:
+        return False, error
+
     for x, y in path:
         track = network.get_track(x, y)
         if not track:
@@ -41,19 +97,14 @@ def validate_block_path(path: List[Tuple[int, int]], mode: str, network) -> Tupl
         if track.is_switch:
             return False, f"Switches cannot be inside blocks: position ({x}, {y})"
 
-        # Rule 2: No platforms inside block
-        if track.station_id is not None:
-            return False, f"Platforms cannot be inside blocks: position ({x}, {y}) belongs to station {track.station_id}"
+        # Rule 2: For CREATE mode, tiles must not have existing block
+        if mode == "create" and track.block_section_id is not None:
+            return (
+                False,
+                f"Tile ({x}, {y}) already assigned to block {track.block_section_id}",
+            )
 
-        # Rule 3: Check for signals (creates boundary)
-        if track.signal_ids:
-            return False, f"Signal at ({x}, {y}) creates block boundary"
-
-        # Rule 4: For CREATE mode, tiles must not have existing block
-        if mode == 'create' and track.block_section_id is not None:
-            return False, f"Tile ({x}, {y}) already assigned to block {track.block_section_id}"
-
-    # Rule 5: Path must be continuous
+    # Rule 4: Path must be continuous
     if len(path) > 1:
         is_continuous, errors = validate_block_assignment_continuity([], path, network)
         if not is_continuous:
@@ -87,9 +138,13 @@ def validate_track_for_block(track, network) -> Tuple[bool, str]:
     Rules:
     1. Track must exist
     2. Track cannot be a switch (switches are block boundaries)
-    3. Track cannot have a signal (signals mark block boundaries)
-    4. Track cannot be a station (stations have their own blocks)
-    5. Track cannot be a crossing (crossings isolate paths, blocks can't cross them)
+    3. Track cannot be a crossing (crossings isolate paths, blocks can't cross them)
+
+    Note: This function does NOT validate station boundaries. Station boundary
+    validation is performed separately by validate_station_boundary(), which
+    ensures blocks are fully inside OR fully outside stations.
+
+    Stations are allowed in blocks - a block can exist fully within a station.
 
     Args:
         track: TrackSegment to validate
@@ -104,17 +159,12 @@ def validate_track_for_block(track, network) -> Tuple[bool, str]:
     if track.is_switch:
         return False, "Cannot add switch to block - switches are block boundaries"
 
-    if track.signal_ids:
-        signal_info = f" (signals {', '.join(track.signal_ids)})"
-        return False, f"Cannot add track with signal to block{signal_info} - signals mark boundaries"
-
-    if track.station_id is not None:
-        station_info = f" (station {track.station_id})" if track.station_id else ""
-        return False, f"Cannot add station tile to block{station_info} - stations have their own blocks"
-
-    # Rule 5: Check for crossings (+ shape or X shape)
+    # Rule 3: Check for crossings (+ shape or X shape)
     if is_crossing(track.track_bits):
-        return False, "Cannot add crossing to block - crossings isolate paths and blocks cannot span them"
+        return (
+            False,
+            "Cannot add crossing to block - crossings isolate paths and blocks cannot span them",
+        )
 
     return True, ""
 
@@ -122,7 +172,7 @@ def validate_track_for_block(track, network) -> Tuple[bool, str]:
 def validate_block_assignment_continuity(
     existing_positions: List[Tuple[int, int]],
     new_positions: List[Tuple[int, int]],
-    network
+    network,
 ) -> Tuple[bool, List[str]]:
     """
     Validate that adding new positions maintains block continuity.
@@ -155,12 +205,7 @@ def validate_block_assignment_continuity(
         x, y = current
 
         # Check all 4 cardinal neighbors
-        neighbors = [
-            (x + 1, y),
-            (x - 1, y),
-            (x, y + 1),
-            (x, y - 1)
-        ]
+        neighbors = [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
 
         for neighbor in neighbors:
             if neighbor in all_positions and neighbor not in visited:
@@ -209,10 +254,10 @@ def _tracks_are_connected(track1, track2, network) -> bool:
 
     # Map direction to edge
     direction_to_edge = {
-        (1, 0): 'east',
-        (-1, 0): 'west',
-        (0, 1): 'north',
-        (0, -1): 'south'
+        (1, 0): "east",
+        (-1, 0): "west",
+        (0, 1): "north",
+        (0, -1): "south",
     }
 
     edge1 = direction_to_edge.get((dx, dy))
@@ -249,12 +294,12 @@ def _get_edges_from_track_bits(track_bits: int) -> Set[str]:
     """
     # Bit index -> edge pair mapping
     BIT_TO_EDGES = {
-        0: ('north', 'south'),   # TRACK_NS = 1
-        1: ('east', 'west'),      # TRACK_EW = 2
-        2: ('north', 'east'),     # TRACK_NE = 4
-        3: ('north', 'west'),     # TRACK_NW = 8
-        4: ('south', 'east'),     # TRACK_SE = 16
-        5: ('south', 'west'),     # TRACK_SW = 32
+        0: ("north", "south"),  # TRACK_NS = 1
+        1: ("east", "west"),  # TRACK_EW = 2
+        2: ("north", "east"),  # TRACK_NE = 4
+        3: ("north", "west"),  # TRACK_NW = 8
+        4: ("south", "east"),  # TRACK_SE = 16
+        5: ("south", "west"),  # TRACK_SW = 32
     }
 
     edges = set()
@@ -269,10 +314,7 @@ def _get_edges_from_track_bits(track_bits: int) -> Set[str]:
 
 
 def validate_block_properties(
-    block_id: str,
-    name: str,
-    length_cm: float,
-    max_speed_kmh: Optional[float]
+    block_id: str, name: str, length_cm: float, max_speed_kmh: Optional[float]
 ) -> Tuple[bool, List[str]]:
     """
     Validate block properties are reasonable.
@@ -316,9 +358,4 @@ def get_adjacent_positions(x: int, y: int) -> List[Tuple[int, int]]:
     Returns:
         List of (x, y) tuples for adjacent positions
     """
-    return [
-        (x + 1, y),
-        (x - 1, y),
-        (x, y + 1),
-        (x, y - 1)
-    ]
+    return [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]

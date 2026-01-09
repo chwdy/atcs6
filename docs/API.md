@@ -1,6 +1,6 @@
 # ATCS6 REST API Documentation
 
-Base URL: `http://localhost:5001`
+Base URL: `http://localhost:5000`
 
 ## Infrastructure Endpoints
 
@@ -16,10 +16,10 @@ Serves static files (CSS, JavaScript, images, etc.) from the `static/` directory
 
 **Examples:**
 
-- `GET /css/style.css` - Stylesheet
-- `GET /js/app.js` - JavaScript application code
-- `GET /js/api.js` - API client library
-- `GET /images/logo.png` - Images
+- `GET /static/css/style.css` - Stylesheet
+- `GET /static/js/app.js` - JavaScript application code
+- `GET /static/js/api.js` - API client library
+- `GET /static/images/logo.png` - Images
 
 **Response:** File contents with appropriate Content-Type header
 
@@ -420,8 +420,8 @@ Extend an existing block with new track positions.
 - All positions must have tracks
 - Tracks cannot be switches (switches are block boundaries)
 - Tracks cannot be crossings (+ or X shape - crossings isolate paths)
-- Tracks cannot be station tiles
-- Tracks with signals require `force: true` to proceed (signals will be removed)
+- **Block cannot cross station boundaries** (blocks must be fully inside or fully outside stations)
+- Tracks with signals require `force: true` to proceed (signals will be invalidated)
 - New positions must be adjacent to existing block
 - Extended block must remain continuous
 
@@ -499,6 +499,51 @@ Remove tracks from a block.
 ```
 
 **Response:** `{"success": true, "removed": 2}`
+
+### GET /api/blocks/{block_id}/end_tiles
+
+Get the start and end tiles of a block sorted by orientation.
+
+**Response:**
+
+```json
+{
+  "start_tile": [0, 0],
+  "end_tile": [0, 4],
+  "orientation": "NS"
+}
+```
+
+### POST /api/blocks/{block_id}/can_extend
+
+Check if a position can be added to extend a block.
+
+**Request:**
+
+```json
+{
+  "x": 0,
+  "y": 5
+}
+```
+
+**Response:**
+
+```json
+{
+  "can_extend": true,
+  "reason": null
+}
+```
+
+**Error Response:**
+
+```json
+{
+  "can_extend": false,
+  "reason": "Track is a switch - switches are block boundaries"
+}
+```
 
 ---
 
@@ -749,6 +794,265 @@ Extend station platform with new tiles.
 **Validation:**
 - New tiles must be adjacent to existing station
 - All tiles must form continuous path
+
+### POST /api/station/{station_id}/remove_tile
+
+Remove an edge tile from a station.
+
+**Request:**
+
+```json
+{
+  "x": 0,
+  "y": 4
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "message": "Tile (0, 4) removed from station"
+}
+```
+
+### GET /api/station/{station_id}/end_tiles
+
+Get the start and end tiles of a station sorted by orientation.
+
+**Response:**
+
+```json
+{
+  "start_tile": [0, 0],
+  "end_tile": [0, 4],
+  "orientation": "NS"
+}
+```
+
+### POST /api/station/{station_id}/can_extend
+
+Check if a position can be added to extend a station.
+
+**Request:**
+
+```json
+{
+  "x": 0,
+  "y": 5
+}
+```
+
+**Response:**
+
+```json
+{
+  "can_extend": true,
+  "reason": null
+}
+```
+
+### POST /api/station/{station_id}/assign_tile
+
+Assign a station tile to a block.
+
+**Request:**
+
+```json
+{
+  "x": 0,
+  "y": 0,
+  "block_id": "BLK_001"
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "message": "Tile (0, 0) assigned to block BLK_001"
+}
+```
+
+### POST /api/station/{station_id}/unassign_tile
+
+Remove block assignment from a station tile.
+
+**Request:**
+
+```json
+{
+  "x": 0,
+  "y": 0
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "message": "Block assignment removed from tile (0, 0)"
+}
+```
+
+### GET /api/station/{station_id}/block_assignments
+
+Get all block assignments for a station.
+
+**Response:**
+
+```json
+{
+  "assignments": {
+    "(0, 0)": "BLK_001",
+    "(0, 1)": "BLK_001",
+    "(0, 2)": "BLK_002"
+  }
+}
+```
+
+---
+
+## Route and Dispatcher Endpoints
+
+Routes are interlocking paths through the network with block reservations and switch locking.
+
+### GET /api/routes
+
+List all active routes.
+
+**Response:**
+
+```json
+{
+  "routes": [
+    {
+      "route_id": "RTE_abc123",
+      "train_id": "train_1",
+      "status": "ACTIVE",
+      "block_sequence": ["BLK_001", "BLK_002", "BLK_003"],
+      "current_block_index": 1
+    }
+  ]
+}
+```
+
+### POST /api/routes
+
+Create a new route between two blocks.
+
+**Request:**
+
+```json
+{
+  "start_block_id": "BLK_001",
+  "end_block_id": "BLK_003",
+  "train_id": "train_1"
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "route": {
+    "route_id": "RTE_abc123",
+    "status": "SETTING",
+    "block_sequence": ["BLK_001", "BLK_002", "BLK_003"]
+  }
+}
+```
+
+### GET /api/routes/{route_id}
+
+Get route details.
+
+**Response:** Route object
+
+### DELETE /api/routes/{route_id}
+
+Cancel and release a route.
+
+**Response:** `{"success": true}`
+
+### POST /api/routes/{route_id}/complete
+
+Manually complete a route and release all resources.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "message": "Route completed"
+}
+```
+
+### GET /api/routes/{route_id}/reachable-extensions
+
+Get blocks reachable for extending a route (direction-aware).
+
+**Response:**
+
+```json
+{
+  "reachable_blocks": [
+    {
+      "block_id": "BLK_004",
+      "distance": 1,
+      "direction": "N"
+    }
+  ],
+  "exit_direction": "N"
+}
+```
+
+### GET /api/dispatcher/reachable/{block_id}
+
+Get all endpoint blocks reachable from a given block.
+
+**Response:**
+
+```json
+{
+  "reachable": [
+    {
+      "block_id": "BLK_002",
+      "distance": 3
+    }
+  ]
+}
+```
+
+### POST /api/dispatcher/paths
+
+Get all possible paths between two blocks.
+
+**Request:**
+
+```json
+{
+  "start_block_id": "BLK_001",
+  "end_block_id": "BLK_003"
+}
+```
+
+**Response:**
+
+```json
+{
+  "paths": [
+    {
+      "block_sequence": ["BLK_001", "BLK_002", "BLK_003"],
+      "distance": 5
+    }
+  ]
+}
+```
 
 ---
 

@@ -5,41 +5,40 @@ Definition:
 This module provides the RailwayNetwork class which manages the complete railway infrastructure
 including tracks, trains, block sections, interlocking routes, and schedules. It serves as the
 central repository and coordinator for all railway system components.
-
-TODO List:
-- [ ] Add network validation and integrity checking
-- [ ] Implement network serialization for save/load
-- [ ] Add network visualization export (to SVG, JSON, etc.)
-- [ ] Implement network statistics and analytics
-- [ ] Add support for multiple disconnected track sections
-- [ ] Implement automatic signal placement
 """
 
+from collections import deque
 from typing import Dict, List, Optional, Tuple, Any, Union
 import uuid
 from track import TrackSegment
 from train import Train, TrainSchedule
 from block import Block
 from interlocking import InterlockingSystem
-from enums import TrackType, Direction, SignalState as EnumSignalState, SwitchPosition, BlockState
+from enums import (
+    TrackType,
+    Direction,
+    SignalState as EnumSignalState,
+    SwitchPosition,
+    BlockState,
+)
 from railway_signal import Signal, SignalType, SignalState
 from station import Station
 from signal_validation import (
     validate_signal_placement,
     get_valid_directions,
     get_direction_vector,
-    DIRECTION_VECTORS
+    DIRECTION_VECTORS,
 )
 
 
 class RailwayNetwork:
     """
     Central railway network management system.
-    
+
     Manages all railway infrastructure components including tracks, trains,
     block sections, interlocking, and schedules.
     """
-    
+
     def __init__(self):
         self.tracks: Dict[Tuple[int, int], TrackSegment] = {}
         self.trains: Dict[str, Train] = {}
@@ -48,7 +47,11 @@ class RailwayNetwork:
         self.stations: Dict[str, Station] = {}  # Centralized station storage
         self.interlocking: InterlockingSystem = InterlockingSystem()
         self.schedules: Dict[str, TrainSchedule] = {}
-    
+
+        # Phase 1-4: Train System additions
+        self.speed_profiles: Dict[str, "SpeedProfile"] = {}  # Speed profiles for trains
+        self.routes: Dict[str, "Route"] = {}  # Train routes (travel plans)
+
     def add_track(self, track: TrackSegment):
         """Add a track segment to the network and propagate updates"""
         key = (track.x, track.y)
@@ -56,12 +59,12 @@ class RailwayNetwork:
 
         # Propagate to this tile and neighbors
         self.propagate_from_tile(track.x, track.y)
-    
+
     def add_stub_track(self, x: int, y: int, block_id: Optional[str] = None):
         """
         Add a stub/isolated track point (no connections).
         track_bits = 0, displays as a dot on the map.
-        
+
         Args:
             x, y: Track position
             block_id: Optional block section ID
@@ -70,12 +73,6 @@ class RailwayNetwork:
         # No paths - track_bits = 0
         track.block_section_id = block_id
         self.add_track(track)
-    
-    # Legacy helper functions removed - use track_bits directly
-    # For straight tracks: TrackSegment(x, y, track_bits=TRACK_EW or TRACK_NS)
-    # For curves: TrackSegment(x, y, track_bits=TRACK_NE, TRACK_NW, TRACK_SE, or TRACK_SW)
-    # For switches: TrackSegment(x, y, track_bits=TRACK_NS | TRACK_NE, etc.)
-    # Dead-ends are auto-detected by propagation system
 
     def get_track(self, x: int, y: int) -> Optional[TrackSegment]:
         """Get track segment at specified position"""
@@ -98,10 +95,10 @@ class RailwayNetwork:
             W (West)  = X- direction (-1, 0)
         """
         offsets = {
-            'N': (0, 1),   # North neighbor is at y+1
-            'E': (1, 0),   # East neighbor is at x+1
-            'S': (0, -1),  # South neighbor is at y-1
-            'W': (-1, 0)   # West neighbor is at x-1
+            "N": (0, 1),  # North neighbor is at y+1
+            "E": (1, 0),  # East neighbor is at x+1
+            "S": (0, -1),  # South neighbor is at y-1
+            "W": (-1, 0),  # West neighbor is at x-1
         }
 
         if edge not in offsets:
@@ -110,6 +107,31 @@ class RailwayNetwork:
         dx, dy = offsets[edge]
         neighbor_key = (x + dx, y + dy)
         return self.tracks.get(neighbor_key)
+
+    def _get_neighbor_coords(
+        self, x: int, y: int, edge: str
+    ) -> Optional[Tuple[int, int]]:
+        """Get neighbor coordinates in the specified direction.
+
+        Args:
+            x, y: Current tile coordinates
+            edge: Direction to look ('N', 'E', 'S', 'W')
+
+        Returns:
+            (nx, ny) tuple if valid direction, None otherwise
+        """
+        offsets = {
+            "N": (0, 1),
+            "E": (1, 0),
+            "S": (0, -1),
+            "W": (-1, 0),
+        }
+
+        if edge not in offsets:
+            return None
+
+        dx, dy = offsets[edge]
+        return (x + dx, y + dy)
 
     def propagate_from_tile(self, x: int, y: int) -> None:
         """Propagate updates from a tile using BFS wave.
@@ -121,8 +143,6 @@ class RailwayNetwork:
 
         The wave visits each affected tile once and calls propagate_update().
         """
-        from collections import deque
-
         queue = deque([(x, y)])
         visited = set()
 
@@ -141,14 +161,14 @@ class RailwayNetwork:
             tile.propagate_update(self)
 
             # Enqueue all neighbors for update
-            for edge in ['N', 'E', 'S', 'W']:
+            for edge in ["N", "E", "S", "W"]:
                 neighbor = self.get_neighbor(tx, ty, edge)
                 if neighbor and (neighbor.x, neighbor.y) not in visited:
                     queue.append((neighbor.x, neighbor.y))
 
     def remove_track(self, x: int, y: int) -> bool:
         """Remove track segment and propagate updates to neighbors.
-        
+
         Also handles block lifecycle - if track was part of a block,
         checks connectivity and splits if needed.
         """
@@ -157,7 +177,7 @@ class RailwayNetwork:
             return False
 
         track = self.tracks[key]
-        
+
         # Handle block lifecycle before deletion
         if track.block_section_id:
             # This will check connectivity and split if needed
@@ -167,14 +187,14 @@ class RailwayNetwork:
 
         # Propagate to neighbors (this tile is gone, so check each neighbor)
         # N=Y+, E=X+, S=Y-, W=X-
-        offsets = {'N': (0, 1), 'E': (1, 0), 'S': (0, -1), 'W': (-1, 0)}
+        offsets = {"N": (0, 1), "E": (1, 0), "S": (0, -1), "W": (-1, 0)}
         for edge, (dx, dy) in offsets.items():
             neighbor_key = (x + dx, y + dy)
             if neighbor_key in self.tracks:
                 self.propagate_from_tile(x + dx, y + dy)
 
         return True
-    
+
     def is_track_available(self, x: int, y: int, train_id: str) -> bool:
         """Check if track is available for specified train"""
         track = self.get_track(x, y)
@@ -211,7 +231,7 @@ class RailwayNetwork:
         name: str = "",
         length_cm: float = 0.0,
         max_speed_kmh: Optional[float] = None,
-        validate: bool = True
+        validate: bool = True,
     ) -> Block:
         """
         Create a new block and assign tracks to it with full validation.
@@ -248,7 +268,12 @@ class RailwayNetwork:
                 max_speed_kmh=80.0
             )
         """
-        from block_validation import validate_block_properties, validate_track_for_block, validate_block_assignment_continuity
+        from block_validation import (
+            validate_block_properties,
+            validate_track_for_block,
+            validate_block_assignment_continuity,
+            validate_station_boundary,
+        )
 
         # Validate block properties
         if validate:
@@ -257,6 +282,11 @@ class RailwayNetwork:
             )
             if not is_valid:
                 raise ValueError(f"Invalid block properties: {', '.join(errors)}")
+
+            # Validate station boundaries - blocks cannot cross station boundaries
+            valid, error = validate_station_boundary(positions, self)
+            if not valid:
+                raise ValueError(f"Station boundary violation: {error}")
 
         # Check block doesn't already exist
         if block_id in self.blocks:
@@ -277,7 +307,9 @@ class RailwayNetwork:
                     )
 
             # Validate continuity
-            is_continuous, errors = validate_block_assignment_continuity([], positions, self)
+            is_continuous, errors = validate_block_assignment_continuity(
+                [], positions, self
+            )
             if not is_continuous:
                 raise ValueError(f"Block tracks not continuous: {', '.join(errors)}")
 
@@ -300,7 +332,7 @@ class RailwayNetwork:
         block_id: str,
         new_positions: List[Tuple[int, int]],
         force: bool = False,
-        force_overwrite: bool = False
+        force_overwrite: bool = False,
     ) -> Block:
         """
         Extend an existing block with new track positions.
@@ -325,7 +357,12 @@ class RailwayNetwork:
         Raises:
             ValueError: If validation fails
         """
-        from block_validation import validate_track_for_block, validate_block_assignment_continuity, get_adjacent_positions, is_crossing
+        from block_validation import (
+            validate_track_for_block,
+            validate_block_assignment_continuity,
+            get_adjacent_positions,
+            is_crossing,
+        )
 
         if block_id not in self.blocks:
             raise ValueError(f"Block {block_id} not found")
@@ -346,15 +383,15 @@ class RailwayNetwork:
 
             # Check for crossings (never allowed, even with force)
             if is_crossing(track.track_bits):
-                raise ValueError(f"Track at ({x}, {y}): Cannot add crossing to block - crossings isolate paths")
+                raise ValueError(
+                    f"Track at ({x}, {y}): Cannot add crossing to block - crossings isolate paths"
+                )
 
             # Check for switches (never allowed, even with force)
             if track.is_switch:
-                raise ValueError(f"Track at ({x}, {y}): Cannot add switch to block - switches are block boundaries")
-
-            # Check for stations (never allowed, even with force)
-            if track.station_id is not None:
-                raise ValueError(f"Track at ({x}, {y}): Cannot add station tile to block - stations have their own blocks")
+                raise ValueError(
+                    f"Track at ({x}, {y}): Cannot add switch to block - switches are block boundaries"
+                )
 
             # Check for signals - can be overridden with force
             # When force=True, we clear the signal's monitored block (shows warning triangle)
@@ -369,7 +406,9 @@ class RailwayNetwork:
                         if signal and signal.monitored_block_id == block_id:
                             signals_to_remove.append((signal_id, x, y))
                 else:
-                    raise ValueError(f"Track at ({x}, {y}): Has signal(s) - use force=true to extend past signal")
+                    raise ValueError(
+                        f"Track at ({x}, {y}): Has signal(s) - use force=true to extend past signal"
+                    )
 
             if track.block_section_id and track.block_section_id != block_id:
                 if force_overwrite:
@@ -393,6 +432,14 @@ class RailwayNetwork:
         if not is_adjacent and len(existing_positions) > 0:
             raise ValueError("New positions must be adjacent to existing block")
 
+        # Validate station boundaries - block cannot cross station boundaries
+        from block_validation import validate_station_boundary
+
+        all_positions = existing_positions + new_positions
+        valid, error = validate_station_boundary(all_positions, self)
+        if not valid:
+            raise ValueError(f"Station boundary violation: {error}")
+
         # Invalidate signals in force mode - clear their monitored block
         # This causes them to show an orange warning triangle (signal needs reconfiguration)
         invalidated_signals = []
@@ -401,15 +448,17 @@ class RailwayNetwork:
                 signal = self.signals[signal_id]
                 # detection_direction can be either a string or an enum, handle both
                 detection_direction = signal.detection_direction
-                if hasattr(detection_direction, 'name'):
+                if hasattr(detection_direction, "name"):
                     detection_direction = detection_direction.name
-                invalidated_signals.append({
-                    'signal_id': signal_id,
-                    'position': [x, y],
-                    'detection_direction': detection_direction,
-                    'approach_direction': signal.approach_direction,
-                    'previous_block': signal.monitored_block_id
-                })
+                invalidated_signals.append(
+                    {
+                        "signal_id": signal_id,
+                        "position": [x, y],
+                        "detection_direction": detection_direction,
+                        "approach_direction": signal.approach_direction,
+                        "previous_block": signal.monitored_block_id,
+                    }
+                )
                 # Clear the monitored block - signal will show warning triangle
                 signal.monitored_block_id = None
                 # Set signal to RED since it's no longer monitoring a block
@@ -513,7 +562,7 @@ class RailwayNetwork:
             BlockState.FREE,
             BlockState.RESERVED,
             BlockState.OCCUPIED,
-            BlockState.CAUTION
+            BlockState.CAUTION,
         ]
 
         # Find current state index and advance
@@ -541,11 +590,7 @@ class RailwayNetwork:
         return [(t.x, t.y) for t in self.get_block_tracks(block_id)]
 
     def assign_track_to_block(
-        self,
-        x: int,
-        y: int,
-        block_id: Optional[str],
-        validate_continuity: bool = True
+        self, x: int, y: int, block_id: Optional[str], validate_continuity: bool = True
     ) -> None:
         """
         Assign a track to a block with comprehensive validation.
@@ -558,7 +603,10 @@ class RailwayNetwork:
         Raises:
             ValueError: If validation fails with detailed error message
         """
-        from block_validation import validate_track_for_block, validate_block_assignment_continuity
+        from block_validation import (
+            validate_track_for_block,
+            validate_block_assignment_continuity,
+        )
 
         track = self.get_track(x, y)
         if not track:
@@ -645,7 +693,9 @@ class RailwayNetwork:
 
         return True, []
 
-    def _get_block_connected_neighbors(self, track: TrackSegment) -> List[Tuple[int, int]]:
+    def _get_block_connected_neighbors(
+        self, track: TrackSegment
+    ) -> List[Tuple[int, int]]:
         """
         Get positions of tracks connected via edges.
 
@@ -653,8 +703,8 @@ class RailwayNetwork:
         and the neighbor has the opposite edge pointing back.
         """
         neighbors = []
-        edge_offsets = {'N': (0, 1), 'S': (0, -1), 'E': (1, 0), 'W': (-1, 0)}
-        opposite_edge = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}
+        edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
+        opposite_edge = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
         for edge in track.edges:
             if edge not in edge_offsets:
@@ -678,7 +728,7 @@ class RailwayNetwork:
         signal_type: Union[SignalType, str] = SignalType.BLOCK,
         name: Optional[str] = None,
         auto_connect: bool = True,
-        signal_id: Optional[str] = None
+        signal_id: Optional[str] = None,
     ) -> Signal:
         """
         Create and add a signal at the specified position.
@@ -708,18 +758,24 @@ class RailwayNetwork:
 
         # Check if tile is part of a station (signals not allowed on platform tiles)
         if track.station_id is not None:
-            raise ValueError(f"Cannot place signal on station tile at ({x}, {y}). "
-                             f"Tile belongs to station {track.station_id}")
+            raise ValueError(
+                f"Cannot place signal on station tile at ({x}, {y}). "
+                f"Tile belongs to station {track.station_id}"
+            )
 
         # Validate signal placement
-        is_valid, error_msg = validate_signal_placement(track.track_bits, detection_direction.upper())
+        is_valid, error_msg = validate_signal_placement(
+            track.track_bits, detection_direction.upper()
+        )
         if not is_valid:
             raise ValueError(error_msg)
 
         # Check for existing signal in this detection direction
         existing = self.get_signal_at_direction(x, y, detection_direction.upper())
         if existing:
-            raise ValueError(f"Signal already exists at ({x}, {y}) with detection direction {detection_direction}: {existing.signal_id}")
+            raise ValueError(
+                f"Signal already exists at ({x}, {y}) with detection direction {detection_direction}: {existing.signal_id}"
+            )
 
         # Determine max signals based on track type:
         # - Diagonal tracks (NE=4, NW=8, SE=16, SW=32): 1 signal max (single position at center)
@@ -729,20 +785,23 @@ class RailwayNetwork:
 
         if len(track.signal_ids) >= max_signals:
             if is_diagonal:
-                raise ValueError(f"Diagonal track at ({x}, {y}) can only have 1 signal (center position)")
+                raise ValueError(
+                    f"Diagonal track at ({x}, {y}) can only have 1 signal (center position)"
+                )
             else:
-                raise ValueError(f"Cannot add more than 2 signals per tile at ({x}, {y})")
+                raise ValueError(
+                    f"Cannot add more than 2 signals per tile at ({x}, {y})"
+                )
 
         # Generate signal ID if not provided
         if signal_id is None:
             signal_id = f"SIG_{x}_{y}_{uuid.uuid4().hex[:6]}"
 
-        # Handle block splitting if track belongs to a block
-        # Signals mark block boundaries, so placing a signal may split the block
-        original_block_id = track.block_section_id
-        if original_block_id:
-            # Remove this tile from its block (triggers connectivity check/split)
-            self.remove_tile_from_block(x, y)
+        # NOTE: Signals CAN be placed on tiles that belong to blocks.
+        # The signal tile remains in its block. The signal can monitor:
+        # - Any block AHEAD (normal case)
+        # - Its OWN block, but ONLY if positioned on the entry tile
+        # (The entry tile validation is enforced in get_reachable_blocks and connect_signal_to_block)
 
         # Create signal
         signal = Signal(
@@ -751,7 +810,7 @@ class RailwayNetwork:
             detection_direction=detection_direction.upper(),
             signal_type=signal_type,
             state=SignalState.RED,
-            name=name
+            name=name,
         )
 
         # Store signal first (required for get_reachable_blocks to work)
@@ -790,10 +849,15 @@ class RailwayNetwork:
         """Get all signals at the specified position."""
         return [s for s in self.signals.values() if s.position == (x, y)]
 
-    def get_signal_at_direction(self, x: int, y: int, detection_direction: str) -> Optional[Signal]:
+    def get_signal_at_direction(
+        self, x: int, y: int, detection_direction: str
+    ) -> Optional[Signal]:
         """Get signal at position with a specific detection direction."""
         for signal in self.signals.values():
-            if signal.position == (x, y) and signal.detection_direction == detection_direction.upper():
+            if (
+                signal.position == (x, y)
+                and signal.detection_direction == detection_direction.upper()
+            ):
                 return signal
         return None
 
@@ -854,23 +918,35 @@ class RailwayNetwork:
             return None
 
         # Prevent changing immutable properties
-        immutable = {'signal_id', 'position', 'direction'}
+        immutable = {"signal_id", "position", "direction"}
         for key in kwargs:
             if key in immutable:
                 raise ValueError(f"Cannot change immutable property: {key}")
 
         # Update allowed properties
-        if 'state' in kwargs:
-            state_val = kwargs['state']
+        if "state" in kwargs:
+            state_val = kwargs["state"]
             if isinstance(state_val, str):
                 state_val = SignalState(state_val.lower())
             signal.state = state_val
 
-        if 'name' in kwargs:
-            signal.name = kwargs['name']
+        if "name" in kwargs:
+            signal.name = kwargs["name"]
 
-        if 'monitored_block_id' in kwargs:
-            signal.monitored_block_id = kwargs['monitored_block_id']
+        if "monitored_block_id" in kwargs:
+            new_block_id = kwargs["monitored_block_id"]
+
+            # Validate: If monitoring own block, signal MUST be on entry tile
+            if new_block_id:
+                signal_track = self.get_track(*signal.position)
+                if signal_track and signal_track.block_section_id == new_block_id:
+                    if not self.is_signal_on_entry_tile(signal):
+                        raise ValueError(
+                            f"Signal cannot monitor block '{new_block_id}' from the middle. "
+                            f"Signal at {signal.position} must be on the entry tile of the block to monitor it."
+                        )
+
+            signal.monitored_block_id = new_block_id
 
             # Recalculate signal state based on new monitored block
             if signal.signal_type == SignalType.BLOCK:
@@ -882,11 +958,11 @@ class RailwayNetwork:
                     new_state = SignalState.RED
                 signal.state = new_state
 
-        if 'monitored_switch_id' in kwargs:
-            signal.monitored_switch_id = kwargs['monitored_switch_id']
+        if "monitored_switch_id" in kwargs:
+            signal.monitored_switch_id = kwargs["monitored_switch_id"]
 
-        if 'monitored_signal_id' in kwargs:
-            signal.monitored_signal_id = kwargs['monitored_signal_id']
+        if "monitored_signal_id" in kwargs:
+            signal.monitored_signal_id = kwargs["monitored_signal_id"]
 
         return signal
 
@@ -902,7 +978,8 @@ class RailwayNetwork:
             True if successful
 
         Raises:
-            ValueError: If signal/block not found, same block, or no valid path exists
+            ValueError: If signal/block not found, or no valid path exists, or
+                       signal is in the middle of its own block (not on entry tile)
         """
         signal = self.signals.get(signal_id)
         if not signal:
@@ -915,17 +992,24 @@ class RailwayNetwork:
         signal_track = self.get_track(*signal.position)
         signal_own_block = signal_track.block_section_id if signal_track else None
 
-        # Cannot monitor the block the signal is sitting on
+        # Check if trying to monitor own block
         if signal_own_block and block_id == signal_own_block:
-            raise ValueError(f"Signal cannot monitor its own block '{block_id}'")
-
-        # Validate that a path exists from signal to target block
-        if not self._can_reach_block(signal, block_id):
-            raise ValueError(
-                f"No valid path exists from signal at {signal.position} "
-                f"(facing {signal.approach_direction}, trains travel {signal.detection_direction}) to block '{block_id}'. "
-                f"Check track connectivity and switch geometry."
-            )
+            # Can only monitor own block if on entry tile
+            if not self.is_signal_on_entry_tile(signal):
+                raise ValueError(
+                    f"Signal cannot monitor block '{block_id}' from the middle. "
+                    f"Signal at {signal.position} must be on the entry tile of the block to monitor it."
+                )
+            # Signal is on entry tile - allowed to monitor own block
+            # Skip the path validation since we're already in the block
+        else:
+            # Validate that a path exists from signal to target block
+            if not self._can_reach_block(signal, block_id):
+                raise ValueError(
+                    f"No valid path exists from signal at {signal.position} "
+                    f"(facing {signal.approach_direction}, trains travel {signal.detection_direction}) to block '{block_id}'. "
+                    f"Check track connectivity and switch geometry."
+                )
 
         signal.monitored_block_id = block_id
 
@@ -962,24 +1046,19 @@ class RailwayNetwork:
         approach_dir = signal.approach_direction.upper()
 
         # Edge offsets: edge letter -> (dx, dy) to move to adjacent tile
-        edge_offsets = {
-            'N': (0, 1),
-            'S': (0, -1),
-            'E': (1, 0),
-            'W': (-1, 0)
-        }
+        edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
 
         # Opposite edges for determining entry edge
-        opposite_edges = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}
+        opposite_edges = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
         # Convert travel direction to initial exit edge
-        initial_exit = {'NORTH': 'N', 'SOUTH': 'S', 'EAST': 'E', 'WEST': 'W'}.get(travel_dir.upper())
+        # detection_direction is already single letter (N/S/E/W)
+        initial_exit = travel_dir[0] if travel_dir else None
         if not initial_exit:
             return False
 
         # BFS: queue of (x, y, exit_edge)
         # We use exit_edge to track which direction we're leaving each tile
-        from collections import deque
         queue = deque([(x, y, initial_exit)])
         visited = set()
 
@@ -1034,7 +1113,9 @@ class RailwayNetwork:
 
         return False  # No path found
 
-    def _get_distance_to_block(self, signal: Signal, target_block_id: str) -> Optional[int]:
+    def _get_distance_to_block(
+        self, signal: Signal, target_block_id: str
+    ) -> Optional[int]:
         """
         Get the shortest path distance from signal to target block.
 
@@ -1072,20 +1153,20 @@ class RailwayNetwork:
         if is_diagonal:
             # For diagonal tracks, determine the two edges from track_bits
             diagonal_edges = {
-                4: ('N', 'E'),   # NE
-                8: ('N', 'W'),   # NW
-                16: ('S', 'E'),  # SE
-                32: ('S', 'W'),  # SW
+                4: ("N", "E"),  # NE
+                8: ("N", "W"),  # NW
+                16: ("S", "E"),  # SE
+                32: ("S", "W"),  # SW
             }
-            edge1, edge2 = diagonal_edges.get(track_bits, ('N', 'E'))
+            edge1, edge2 = diagonal_edges.get(track_bits, ("N", "E"))
 
             # Detection direction tells us which edge the train exits from
             # Entry edge is the OTHER edge of the diagonal
             detection_edge = detection_dir[0]  # 'N', 'S', 'E', or 'W'
             entry_edge = edge2 if detection_edge == edge1 else edge1
         else:
-            # For straight tracks, use approach_direction (geometric opposite works here)
-            entry_edge = {'NORTH': 'N', 'SOUTH': 'S', 'EAST': 'E', 'WEST': 'W'}.get(approach_dir)
+            # For straight tracks, approach_direction is already single letter (N/S/E/W)
+            entry_edge = approach_dir[0] if approach_dir else None
             if not entry_edge:
                 return None
 
@@ -1096,18 +1177,12 @@ class RailwayNetwork:
             return None
 
         # Edge offsets: edge letter -> (dx, dy) to move to adjacent tile
-        edge_offsets = {
-            'N': (0, 1),
-            'S': (0, -1),
-            'E': (1, 0),
-            'W': (-1, 0)
-        }
+        edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
 
         # Opposite edges for determining entry edge
-        opposite_edges = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}
+        opposite_edges = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
         # BFS: queue of (x, y, exit_edge, distance)
-        from collections import deque
         queue = deque()
 
         # Start with all possible exits from the signal tile
@@ -1173,6 +1248,9 @@ class RailwayNetwork:
         This is used by the UI to populate the "block to monitor" dropdown
         with only valid options. Blocks are sorted from nearest to farthest.
 
+        Note: A signal's own block is only included if the signal is on the
+        entry tile of that block (first tile trains encounter when approaching).
+
         Args:
             signal_id: The signal ID
 
@@ -1190,9 +1268,15 @@ class RailwayNetwork:
 
         reachable_with_distance = []
         for block_id in self.blocks:
-            # Skip the signal's own block
+            # Check if this is the signal's own block
             if block_id == own_block:
+                # Only include own block if signal is on the entry tile
+                if not self.is_signal_on_entry_tile(signal):
+                    continue  # Skip - signal is in the middle of this block
+                # Signal is on entry tile - include own block with distance 0
+                reachable_with_distance.append((0, block_id))
                 continue
+
             # Get distance to block (None if not reachable)
             distance = self._get_distance_to_block(signal, block_id)
             if distance is not None:
@@ -1203,7 +1287,69 @@ class RailwayNetwork:
 
         return [block_id for _, block_id in reachable_with_distance]
 
-    def _find_block_ahead(self, x: int, y: int, direction: str, exclude_block: Optional[str] = None) -> Optional[str]:
+    def is_signal_on_entry_tile(self, signal: Signal) -> bool:
+        """
+        Check if signal is on the entry tile of its own block.
+
+        The entry tile is the FIRST tile of the block that trains would encounter
+        when approaching in the signal's detection direction. This is determined
+        by the track geometry (track_bits), not simple offsets.
+
+        Logic:
+        1. Get the track's path at the detection edge
+        2. The OTHER edge of this path is where trains approach FROM
+        3. Check the neighbor tile in that approach direction
+        4. If neighbor is NOT in the same block, this is the entry tile
+
+        A signal on the entry tile of its block CAN monitor that block.
+        A signal NOT on the entry tile (in the middle) CANNOT monitor that block.
+
+        Args:
+            signal: The Signal to check
+
+        Returns:
+            True if signal is on entry tile of its block, False otherwise
+        """
+        x, y = signal.position
+        track = self.get_track(x, y)
+        if not track or not track.block_section_id:
+            return False  # Not in any block
+
+        block_id = track.block_section_id
+        detection_dir = signal.detection_direction.upper()
+
+        # Get the path at the detection edge using track geometry
+        # For simple tracks (signals can only be on simple tracks), this gives us
+        # (detection_edge, approach_edge) where approach_edge is where trains come FROM
+        path = track.get_path_at_edge(detection_dir)
+        if not path:
+            return (
+                False  # No path at detection edge (shouldn't happen for valid signal)
+            )
+
+        # path = (entry_edge, exit_edge) - for our purposes, the other edge is approach edge
+        # If detection_dir is the first element, the second is approach
+        # If detection_dir is the second element, the first is approach
+        if path[0] == detection_dir:
+            approach_edge = path[1]
+        else:
+            approach_edge = path[0]
+
+        # Get the neighbor tile in the approach direction
+        edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
+        offset = edge_offsets.get(approach_edge)
+        if not offset:
+            return False
+
+        dx, dy = offset
+        neighbor = self.get_track(x + dx, y + dy)
+
+        # This is the entry tile if the neighbor is NOT in the same block
+        return neighbor is None or neighbor.block_section_id != block_id
+
+    def _find_block_ahead(
+        self, x: int, y: int, direction: str, exclude_block: Optional[str] = None
+    ) -> Optional[str]:
         """
         Find the block ahead of a signal position in the direction of train travel.
 
@@ -1224,10 +1370,10 @@ class RailwayNetwork:
         # Signal faces DIRECTION, trains come FROM that direction and travel OPPOSITE
         # So we look in the OPPOSITE direction for the block ahead
         opposite_directions = {
-            'NORTH': 'SOUTH',
-            'SOUTH': 'NORTH',
-            'EAST': 'WEST',
-            'WEST': 'EAST'
+            "NORTH": "SOUTH",
+            "SOUTH": "NORTH",
+            "EAST": "WEST",
+            "WEST": "EAST",
         }
         travel_direction = opposite_directions.get(direction.upper(), direction)
         vector = get_direction_vector(travel_direction)
@@ -1310,13 +1456,62 @@ class RailwayNetwork:
             return SignalState.RED
 
         if first_block.state == BlockState.RESERVED:
-            # Check if reserved for THIS signal's approaching train
-            if (signal.approaching_train_id and 
-                first_block.occupied_by == signal.approaching_train_id):
-                # Block is reserved for our train - treat as GREEN (proceed to Block B check)
-                pass  # Continue to Block B evaluation
+            # Check if signal is on the SAME path as the monitored block
+            # If so, the path is set up for the train to pass through - show GREEN
+            # BUT: also verify that the path direction matches the signal's detection direction
+            signal_track = self.get_track(*signal.position)
+            if signal_track and signal_track.block_section_id:
+                signal_block = self.blocks.get(signal_track.block_section_id)
+                if (
+                    signal_block
+                    and signal_block.reserved_by_path
+                    and signal_block.reserved_by_path == first_block.reserved_by_path
+                ):
+                    # Same path! But check if path direction matches signal direction
+                    # A signal facing N should only show GREEN if path is going N at that tile
+                    if signal_track.path_direction:
+                        signal_dir = signal.detection_direction.upper()
+                        path_dir = signal_track.path_direction.upper()
+                        if signal_dir != path_dir:
+                            # Path is going opposite direction to signal
+                            return SignalState.RED
+                    # Direction matches (or no direction set) - proceed to Block B check
+                    pass  # Continue to Block B evaluation
+                else:
+                    # Different path or signal's block not reserved
+                    # Check direction and train assignment
+                    if first_block.reserved_direction:
+                        signal_dir = signal.detection_direction.upper()
+                        block_dir = first_block.reserved_direction.upper()
+                        if signal_dir != block_dir:
+                            return (
+                                SignalState.RED
+                            )  # Block reserved for opposite direction path
+
+                    # Check if reserved for THIS signal's approaching train
+                    if (
+                        signal.approaching_train_id
+                        and first_block.occupied_by == signal.approaching_train_id
+                    ):
+                        # Block is reserved for our train in same direction
+                        pass  # Continue to Block B evaluation
+                    else:
+                        return SignalState.RED  # RESERVED for different train
             else:
-                return SignalState.RED  # RESERVED for different train
+                # Signal not on a block - use existing logic
+                if first_block.reserved_direction:
+                    signal_dir = signal.detection_direction.upper()
+                    block_dir = first_block.reserved_direction.upper()
+                    if signal_dir != block_dir:
+                        return SignalState.RED
+
+                if (
+                    signal.approaching_train_id
+                    and first_block.occupied_by == signal.approaching_train_id
+                ):
+                    pass  # Continue to Block B evaluation
+                else:
+                    return SignalState.RED
 
         elif first_block.state == BlockState.CAUTION:
             return SignalState.YELLOW  # CAUTION = train just left, proceed with caution
@@ -1324,7 +1519,9 @@ class RailwayNetwork:
         # Block A is FREE or RESERVED for our train - check Block B (two-block lookahead)
 
         # Step 4: Find Block B
-        second_block_id = self._find_next_block_after(signal.monitored_block_id, signal.detection_direction)
+        second_block_id = self._find_next_block_after(
+            signal.monitored_block_id, signal.detection_direction
+        )
 
         if not second_block_id:
             return SignalState.GREEN  # No second block exists
@@ -1336,9 +1533,11 @@ class RailwayNetwork:
         # Step 5: Evaluate Block B state
         if second_block.state == BlockState.FREE:
             return SignalState.GREEN
-        elif (second_block.state == BlockState.RESERVED and 
-              signal.approaching_train_id and 
-              second_block.occupied_by == signal.approaching_train_id):
+        elif (
+            second_block.state == BlockState.RESERVED
+            and signal.approaching_train_id
+            and second_block.occupied_by == signal.approaching_train_id
+        ):
             # Block B is also reserved for our train
             return SignalState.GREEN
         else:
@@ -1351,6 +1550,8 @@ class RailwayNetwork:
 
         This function traces the actual track connectivity (following switch states)
         rather than assuming a straight-line path.
+
+        CRITICAL: Also checks if approach tile (switch) allows routing TO the signal.
 
         Returns True if route is clear, False if blocked by switch position or no path exists.
         """
@@ -1367,6 +1568,12 @@ class RailwayNetwork:
         if not signal_track:
             return False  # No track at signal position
 
+        # EARLY CHECK: If signal is already ON its monitored block, return True
+        # This handles the case where a signal monitors its own block (common for
+        # signals placed at block entry points looking in the direction of travel)
+        if signal_track.block_section_id == signal.monitored_block_id:
+            return True  # Signal is on the monitored block, no path tracing needed
+
         # Determine entry edge - trains enter from the approach direction
         # IMPORTANT: For diagonal tracks, approach_direction (geometric opposite) is wrong!
         # Diagonal tracks only connect two adjacent edges, not opposite edges.
@@ -1378,12 +1585,12 @@ class RailwayNetwork:
         if is_diagonal:
             # For diagonal tracks, determine the two edges from track_bits
             diagonal_edges = {
-                4: ('N', 'E'),   # NE
-                8: ('N', 'W'),   # NW
-                16: ('S', 'E'),  # SE
-                32: ('S', 'W'),  # SW
+                4: ("N", "E"),  # NE
+                8: ("N", "W"),  # NW
+                16: ("S", "E"),  # SE
+                32: ("S", "W"),  # SW
             }
-            edge1, edge2 = diagonal_edges.get(track_bits, ('N', 'E'))
+            edge1, edge2 = diagonal_edges.get(track_bits, ("N", "E"))
 
             # Detection direction tells us which edge the train exits from
             # Entry edge is the OTHER edge of the diagonal
@@ -1391,9 +1598,21 @@ class RailwayNetwork:
             entry_edge = edge2 if detection_edge == edge1 else edge1
         else:
             # For straight tracks, use approach_direction (geometric opposite works here)
-            entry_edge = {'NORTH': 'N', 'SOUTH': 'S', 'EAST': 'E', 'WEST': 'W'}.get(approach_dir)
+            # approach_dir is already a single letter ('N', 'S', 'E', 'W')
+            entry_edge = approach_dir
             if not entry_edge:
                 return True  # Can't determine, assume OK
+
+        # NOTE: We intentionally do NOT check the approach switch here.
+        # The approach switch is BEHIND the signal and doesn't affect whether
+        # the signal can see its monitored block (which is in the DETECTION direction).
+        #
+        # A signal's state is determined by:
+        # 1. The state of its monitored block (free/occupied/reserved)
+        # 2. Whether there's a valid path from the signal to its monitored block
+        #
+        # The approach switch affects train ROUTING (whether trains can reach
+        # the signal), but not the signal's indication of block status ahead.
 
         # Get actual exit edges from the signal's tile based on track geometry
         # This is crucial for diagonal tracks
@@ -1402,12 +1621,7 @@ class RailwayNetwork:
             return False  # Can't exit the signal tile
 
         # Edge offsets: direction -> (dx, dy)
-        edge_offsets = {
-            'N': (0, 1),
-            'S': (0, -1),
-            'E': (1, 0),
-            'W': (-1, 0)
-        }
+        edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
 
         # Try all possible initial exits
         for initial_exit in initial_exits:
@@ -1440,7 +1654,9 @@ class RailwayNetwork:
                     return True  # Path found!
 
                 # Determine entry edge (opposite of how we exited previous tile)
-                entry_edge = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}.get(current_exit_edge)
+                entry_edge = {"N": "S", "S": "N", "E": "W", "W": "E"}.get(
+                    current_exit_edge
+                )
                 if not entry_edge:
                     break
 
@@ -1456,12 +1672,16 @@ class RailwayNetwork:
                     break  # No exit from this entry - dead end or blocked
 
                 # Use the first available exit (switch state determines which one)
-                current_exit_edge = exits[0] if isinstance(exits, list) else list(exits)[0]
+                current_exit_edge = (
+                    exits[0] if isinstance(exits, list) else list(exits)[0]
+                )
                 current_x, current_y = next_x, next_y
 
         return False  # Couldn't find block via any path
 
-    def _find_next_block_after(self, block_id: str, detection_direction: str) -> Optional[str]:
+    def _find_next_block_after(
+        self, block_id: str, detection_direction: str
+    ) -> Optional[str]:
         """
         Find the block after the given block (for two-block lookahead).
 
@@ -1479,20 +1699,22 @@ class RailwayNetwork:
         travel_dir = detection_direction.upper()
 
         # Edge offsets: edge -> (dx, dy)
-        edge_offsets = {
-            'N': (0, 1),
-            'S': (0, -1),
-            'E': (1, 0),
-            'W': (-1, 0)
-        }
+        edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
 
         # Find all tracks in the given block
-        block_tracks = [(pos, t) for pos, t in self.tracks.items() if t.block_section_id == block_id]
+        block_tracks = [
+            (pos, t) for pos, t in self.tracks.items() if t.block_section_id == block_id
+        ]
         if not block_tracks:
             return None
 
         # Convert travel direction to exit edge
-        exit_edge_for_travel = {'NORTH': 'N', 'SOUTH': 'S', 'EAST': 'E', 'WEST': 'W'}.get(travel_dir.upper())
+        exit_edge_for_travel = {
+            "NORTH": "N",
+            "SOUTH": "S",
+            "EAST": "E",
+            "WEST": "W",
+        }.get(travel_dir.upper())
         if not exit_edge_for_travel:
             return None
 
@@ -1515,7 +1737,9 @@ class RailwayNetwork:
             if not vector:
                 return None
             dx, dy = vector
-            furthest_pos = max(block_tracks, key=lambda pt: pt[0][0] * dx + pt[0][1] * dy)[0]
+            furthest_pos = max(
+                block_tracks, key=lambda pt: pt[0][0] * dx + pt[0][1] * dy
+            )[0]
             furthest_track = self.get_track(*furthest_pos)
             if furthest_track:
                 edge_tracks = [(furthest_pos, furthest_track)]
@@ -1547,11 +1771,16 @@ class RailwayNetwork:
                     break  # End of line
 
                 # Found a different block!
-                if next_track.block_section_id and next_track.block_section_id != block_id:
+                if (
+                    next_track.block_section_id
+                    and next_track.block_section_id != block_id
+                ):
                     return next_track.block_section_id
 
                 # Determine entry edge
-                entry_edge = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}.get(current_exit_edge)
+                entry_edge = {"N": "S", "S": "N", "E": "W", "W": "E"}.get(
+                    current_exit_edge
+                )
                 if not entry_edge:
                     break
 
@@ -1565,7 +1794,9 @@ class RailwayNetwork:
                     break
 
                 # Use the first available exit
-                current_exit_edge = exits[0] if isinstance(exits, list) else list(exits)[0]
+                current_exit_edge = (
+                    exits[0] if isinstance(exits, list) else list(exits)[0]
+                )
                 current_x, current_y = next_x, next_y
 
         return None  # No next block found
@@ -1573,26 +1804,26 @@ class RailwayNetwork:
     def add_train(self, train: Train):
         """Add a train to the network"""
         self.trains[train.train_id] = train
-    
+
     def get_train(self, train_id: str) -> Optional[Train]:
         """Get train by ID"""
         return self.trains.get(train_id)
-    
+
     def add_schedule(self, schedule: TrainSchedule):
         """Add a train schedule to the network"""
         self.schedules[schedule.schedule_id] = schedule
-    
+
     def visualization(self):
         """Simple text-based visualization of the network"""
         if not self.tracks:
             print("Empty network")
             return
-        
+
         min_x = min(pos[0] for pos in self.tracks.keys())
         max_x = max(pos[0] for pos in self.tracks.keys())
         min_y = min(pos[1] for pos in self.tracks.keys())
         max_y = max(pos[1] for pos in self.tracks.keys())
-        
+
         print(f"\nNetwork Layout ({max_x - min_x + 1} x {max_y - min_y + 1}):")
         for y in range(max_y, min_y - 1, -1):
             row = ""
@@ -1614,7 +1845,7 @@ class RailwayNetwork:
                 else:
                     row += " "
             print(row)
-    
+
     def get_network_stats(self) -> dict:
         """Get network statistics"""
         return {
@@ -1622,7 +1853,7 @@ class RailwayNetwork:
             "total_trains": len(self.trains),
             "total_blocks": len(self.blocks),
             "total_routes": len(self.interlocking.routes),
-            "total_schedules": len(self.schedules)
+            "total_schedules": len(self.schedules),
         }
 
     # === Centralized Station Management ===
@@ -1667,7 +1898,7 @@ class RailwayNetwork:
         name: str = "",
         length_cm: float = 0.0,
         platform_side: str = "both",
-        top_speed_kmh: Optional[float] = None
+        top_speed_kmh: Optional[float] = None,
     ) -> Station:
         """
         Create and add a station at the specified position.
@@ -1687,7 +1918,7 @@ class RailwayNetwork:
             ValueError: If position invalid, track is not straight, switch, signal exists, or station exists
         """
         from track import TRACK_NS, TRACK_EW
-        
+
         # Check if track exists
         track = self.get_track(x, y)
         if not track:
@@ -1699,7 +1930,9 @@ class RailwayNetwork:
 
         # Stations can only be placed on straight paths (pure NS/EW or zigzag forming a straight line)
         if not self._is_track_on_straight_path(x, y):
-            raise ValueError(f"Cannot place station at ({x}, {y}). Stations require tracks on straight paths (pure NS/EW or zigzag patterns forming straight lines).")
+            raise ValueError(
+                f"Cannot place station at ({x}, {y}). Stations require tracks on straight paths (pure NS/EW or zigzag patterns forming straight lines)."
+            )
 
         # Cannot place station on tile with signal
         if track.signal_ids:
@@ -1707,7 +1940,9 @@ class RailwayNetwork:
 
         # Check if tile is already part of another station
         if track.station_id is not None:
-            raise ValueError(f"Tile ({x}, {y}) already belongs to station {track.station_id}")
+            raise ValueError(
+                f"Tile ({x}, {y}) already belongs to station {track.station_id}"
+            )
 
         # Generate station ID if not provided
         if station_id is None:
@@ -1723,8 +1958,7 @@ class RailwayNetwork:
         # Create station block for this station
         station_block_id = f"{station_id}_BLOCK"
         station_block = self.create_block(
-            block_id=station_block_id,
-            name=f"Station Block - {station_id}"
+            block_id=station_block_id, name=f"Station Block - {station_id}"
         )
 
         # Assign station tile to station block
@@ -1732,10 +1966,12 @@ class RailwayNetwork:
 
         # Create station
         from enums import PlatformSide
+
         platform_enum = PlatformSide(platform_side.lower())
 
         # Compute initial orientation from the first tile's track_bits
         from track import BIT_TO_GROUP
+
         initial_orientation = None
         for bit_idx, group in BIT_TO_GROUP.items():
             if track.track_bits & (1 << bit_idx):
@@ -1749,7 +1985,7 @@ class RailwayNetwork:
             length_cm=length_cm,
             platform_side=platform_enum,
             top_speed_kmh=top_speed_kmh,
-            initial_orientation=initial_orientation
+            initial_orientation=initial_orientation,
         )
 
         # Store station
@@ -1767,6 +2003,7 @@ class RailwayNetwork:
     def delete_station(self, station_id: str) -> bool:
         """
         Delete station and clear references from tracks.
+        Also deletes all blocks that are fully contained within this station.
 
         Args:
             station_id: ID of station to delete
@@ -1779,6 +2016,35 @@ class RailwayNetwork:
 
         station = self.stations[station_id]
 
+        # Collect all blocks that are fully within this station
+        # A block is "within the station" if ALL its tiles have station_id matching this station
+        blocks_to_delete = set()
+
+        # Check all blocks to see if they're fully within this station
+        for block_id in list(self.blocks.keys()):
+            block_positions = self.get_block_positions(block_id)
+            if not block_positions:
+                continue
+
+            # Check if ALL tiles in this block belong to this station
+            all_in_station = True
+            for bx, by in block_positions:
+                track = self.get_track(bx, by)
+                if not track or track.station_id != station_id:
+                    all_in_station = False
+                    break
+
+            if all_in_station:
+                blocks_to_delete.add(block_id)
+                print(
+                    f"[Station Delete] Block {block_id} is fully within station {station_id}, will be deleted"
+                )
+
+        # Delete all blocks that are fully within the station
+        for block_id in blocks_to_delete:
+            self.delete_block(block_id)
+            print(f"[Station Delete] Deleted block {block_id}")
+
         # Clear station_id from all tracks in this station
         for x, y in station.positions:
             track = self.get_track(x, y)
@@ -1790,9 +2056,7 @@ class RailwayNetwork:
         return True
 
     def extend_station(
-        self,
-        station_id: str,
-        new_positions: List[Tuple[int, int]]
+        self, station_id: str, new_positions: List[Tuple[int, int]]
     ) -> Station:
         """
         Add adjacent continuous tiles to existing station.
@@ -1823,17 +2087,23 @@ class RailwayNetwork:
 
             # Use same validation as add_station: straight or simple diagonal tracks
             if not self._is_track_on_straight_path(x, y):
-                raise ValueError(f"Cannot add track at ({x}, {y}) to station. Stations require tracks on straight paths (pure NS/EW or simple diagonal tracks).")
+                raise ValueError(
+                    f"Cannot add track at ({x}, {y}) to station. Stations require tracks on straight paths (pure NS/EW or simple diagonal tracks)."
+                )
 
             # Check orientation matches station's initial_orientation exactly
             from track import BIT_TO_GROUP
+
             new_tile_orientation = None
             for bit_idx, group in BIT_TO_GROUP.items():
                 if track.track_bits & (1 << bit_idx):
                     new_tile_orientation = group
                     break
 
-            if station.initial_orientation and new_tile_orientation != station.initial_orientation:
+            if (
+                station.initial_orientation
+                and new_tile_orientation != station.initial_orientation
+            ):
                 raise ValueError(
                     f"Cannot extend {station.initial_orientation} station to tile at ({x}, {y}). "
                     f"Tile has {new_tile_orientation} orientation. "
@@ -1841,10 +2111,14 @@ class RailwayNetwork:
                 )
 
             if track.signal_ids:
-                raise ValueError(f"Cannot add tile with signal at ({x}, {y}) to station")
+                raise ValueError(
+                    f"Cannot add tile with signal at ({x}, {y}) to station"
+                )
 
             if track.station_id is not None and track.station_id != station_id:
-                raise ValueError(f"Tile ({x}, {y}) already belongs to station {track.station_id}")
+                raise ValueError(
+                    f"Tile ({x}, {y}) already belongs to station {track.station_id}"
+                )
 
         # Check if new positions are adjacent to existing station
         # (simplified check - at least one new position must be adjacent to existing)
@@ -1884,8 +2158,7 @@ class RailwayNetwork:
         return station
 
     def _validate_station_continuity(
-        self,
-        positions: List[Tuple[int, int]]
+        self, positions: List[Tuple[int, int]]
     ) -> Tuple[bool, List[str]]:
         """
         Validate that station positions form a continuous path.
@@ -2055,7 +2328,8 @@ class RailwayNetwork:
         # Case 3: Multiple components - split into child blocks
         # Get signals monitoring this block before deletion
         orphaned_signals = [
-            signal for signal in self.signals.values()
+            signal
+            for signal in self.signals.values()
             if signal.monitored_block_id == block_id
         ]
 
@@ -2072,8 +2346,7 @@ class RailwayNetwork:
         return [block_id] + new_block_ids
 
     def _find_connected_components(
-        self,
-        positions: List[Tuple[int, int]]
+        self, positions: List[Tuple[int, int]]
     ) -> List[List[Tuple[int, int]]]:
         """
         Find connected components among tile positions using track connectivity.
@@ -2121,8 +2394,7 @@ class RailwayNetwork:
         return components
 
     def _get_track_connected_neighbors(
-        self,
-        pos: Tuple[int, int]
+        self, pos: Tuple[int, int]
     ) -> List[Tuple[int, int]]:
         """
         Get positions of tracks connected via edges (track_bits connectivity).
@@ -2142,8 +2414,8 @@ class RailwayNetwork:
             return []
 
         neighbors = []
-        edge_offsets = {'N': (0, 1), 'S': (0, -1), 'E': (1, 0), 'W': (-1, 0)}
-        opposite_edge = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}
+        edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
+        opposite_edge = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
         for edge in track.edges:
             if edge not in edge_offsets:
@@ -2159,9 +2431,7 @@ class RailwayNetwork:
         return neighbors
 
     def _create_child_blocks(
-        self,
-        parent_block: Block,
-        components: List[List[Tuple[int, int]]]
+        self, parent_block: Block, components: List[List[Tuple[int, int]]]
     ) -> List[str]:
         """
         Create child blocks from connected components, inheriting parent properties.
@@ -2194,7 +2464,7 @@ class RailwayNetwork:
                 min_radius_cm=parent_block.min_radius_cm,
                 max_speed_kmh=parent_block.max_speed_kmh,
                 state=BlockState.FREE,  # Reset state
-                occupied_by=None
+                occupied_by=None,
             )
 
             self.blocks[child_id] = child_block
@@ -2210,9 +2480,7 @@ class RailwayNetwork:
         return new_block_ids
 
     def _remap_orphaned_signals(
-        self,
-        orphaned_signals: List[Signal],
-        new_block_ids: List[str]
+        self, orphaned_signals: List[Signal], new_block_ids: List[str]
     ) -> None:
         """
         Remap signals that monitored a deleted block to nearest reachable child block.
@@ -2243,7 +2511,9 @@ class RailwayNetwork:
                     signal.state = SignalState.RED
 
     # === Helper methods for track_bits-based construction ===
-    def add_simple_straight_track(self, x: int, y: int, orientation: str) -> TrackSegment:
+    def add_simple_straight_track(
+        self, x: int, y: int, orientation: str
+    ) -> TrackSegment:
         """Create straight track (NS or EW) using track_bits.
 
         Args:
@@ -2255,7 +2525,7 @@ class RailwayNetwork:
         """
         from track import TRACK_NS, TRACK_EW
 
-        track_bits = TRACK_NS if orientation == 'NS' else TRACK_EW
+        track_bits = TRACK_NS if orientation == "NS" else TRACK_EW
         track = TrackSegment(x, y, track_bits=track_bits)
         self.add_track(track)
         return track
@@ -2272,12 +2542,7 @@ class RailwayNetwork:
         """
         from track import TRACK_NE, TRACK_NW, TRACK_SE, TRACK_SW
 
-        curve_map = {
-            'NE': TRACK_NE,
-            'NW': TRACK_NW,
-            'SE': TRACK_SE,
-            'SW': TRACK_SW
-        }
+        curve_map = {"NE": TRACK_NE, "NW": TRACK_NW, "SE": TRACK_SE, "SW": TRACK_SW}
         track_bits = curve_map.get(curve, 0)
         track = TrackSegment(x, y, track_bits=track_bits)
         self.add_track(track)
@@ -2296,15 +2561,23 @@ class RailwayNetwork:
         Raises:
             ValueError if combination is forbidden
         """
-        from track import TRACK_NS, TRACK_EW, TRACK_NE, TRACK_NW, TRACK_SE, TRACK_SW, FORBIDDEN_TRACK_BITS
+        from track import (
+            TRACK_NS,
+            TRACK_EW,
+            TRACK_NE,
+            TRACK_NW,
+            TRACK_SE,
+            TRACK_SW,
+            FORBIDDEN_TRACK_BITS,
+        )
 
         path_map = {
-            'NS': TRACK_NS,
-            'EW': TRACK_EW,
-            'NE': TRACK_NE,
-            'NW': TRACK_NW,
-            'SE': TRACK_SE,
-            'SW': TRACK_SW
+            "NS": TRACK_NS,
+            "EW": TRACK_EW,
+            "NE": TRACK_NE,
+            "NW": TRACK_NW,
+            "SE": TRACK_SE,
+            "SW": TRACK_SW,
         }
 
         track_bits = 0
@@ -2337,7 +2610,9 @@ class RailwayNetwork:
             "trains": [t.to_dict() for t in self.trains.values()],
             "blocks": {k: v.to_dict() for k, v in self.blocks.items()},
             "signals": {k: v.to_dict() for k, v in self.signals.items()},
-            "stations": [s.to_dict_with_orientation(self) for s in self.stations.values()]
+            "stations": [
+                s.to_dict_with_orientation(self) for s in self.stations.values()
+            ],
         }
 
     def from_dict(self, data: dict):

@@ -15,7 +15,7 @@
 
 // ============= CONFIGURATION =============
 
-const BASE_URL = 'http://localhost:5001/api';
+const BASE_URL = 'http://localhost:5000/api';
 
 // Track bit constants (matching Python)
 const TRACK_NS = 1;      // Bit 0
