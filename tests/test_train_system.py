@@ -11,7 +11,7 @@ import pytest
 from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
 from train_route import Route, Waypoint, TimingMode, RouteMode
 from train import Train, TrainCar
-from enums import Direction, TrainState, TrainStatus, BlockState
+from enums import Direction, TrainState, BlockState
 
 
 # =============================================================================
@@ -1108,6 +1108,7 @@ class TestTrainStateManager:
     def test_state_manager_import(self):
         """Test that state manager can be imported."""
         from train_state_manager import TrainStateManager, StateTransitionResult
+
         assert TrainStateManager is not None
         assert StateTransitionResult is not None
 
@@ -1163,7 +1164,9 @@ class TestTrainStateManager:
         result = TrainStateManager.can_transition(test_train, TrainState.RUNNING_MOVING)
         assert result.success is True
 
-    def test_cannot_transition_standby_to_running_without_direction(self, test_train: Train):
+    def test_cannot_transition_standby_to_running_without_direction(
+        self, test_train: Train
+    ):
         """Test STANDBY -> RUNNING_MOVING fails without direction."""
         from train_state_manager import TrainStateManager
 
@@ -1562,7 +1565,7 @@ class TestStateBasedVoltageOutput:
         profile = SpeedProfile(
             profile_id="test",
             name="Test",
-            speed_voltage_curve=[(0, 0), (60, 8), (120, 12)]
+            speed_voltage_curve=[(0, 0), (60, 8), (120, 12)],
         )
 
         controller = BlockPowerController()
@@ -1582,7 +1585,7 @@ class TestStateBasedVoltageOutput:
         profile = SpeedProfile(
             profile_id="test",
             name="Test",
-            speed_voltage_curve=[(0, 0), (40, 6), (120, 12)]
+            speed_voltage_curve=[(0, 0), (40, 6), (120, 12)],
         )
 
         controller = BlockPowerController()

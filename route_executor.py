@@ -139,23 +139,13 @@ class RouteExecutor:
     def _try_depart_to_waypoint(
         self, train: "Train", route: "Route", exec_state: RouteExecutionState
     ) -> None:
-        """
-        Try to request path and depart to next waypoint.
-
-        Args:
-            train: Train to depart
-            route: Route being executed
-            exec_state: Execution state
-        """
         waypoint = route.get_current_waypoint()
         if not waypoint:
-            # No more waypoints
             logger.info(
                 f"Train {train.train_id}: Route {route.route_id} has no more waypoints"
             )
             return
 
-        # Get target station
         station = self.network.stations.get(waypoint.station_id)
         if not station:
             error_msg = f"Station {waypoint.station_id} not found"
@@ -165,35 +155,75 @@ class RouteExecutor:
             exec_state.waiting_for_path = True
             return
 
-        # Check if we need to turn around
         if self._should_turn_around(train, station):
             logger.info(
                 f"Train {train.train_id}: Turning around for waypoint {waypoint.station_id}"
             )
             train.turn_around()
 
-        # Request path via dispatcher (if available)
         if self.path_dispatcher and train.current_pos:
-            # This would integrate with the PathDispatcher to request a path
-            # For now, we'll simulate path availability
-            logger.info(
-                f"Train {train.train_id}: Requesting path to {waypoint.station_id}"
-            )
-            exec_state.waiting_for_path = False
-            route.clear_error()
+            current_track = self.network.get_track(*train.current_pos)
+            if not current_track or not current_track.block_section_id:
+                exec_state.waiting_for_path = True
+                return
 
-            # Depart
-            if train.state == TrainState.STANDBY:
-                train.depart()
-                logger.info(
-                    f"Train {train.train_id}: Departed to {waypoint.station_id}"
-                )
+            target_block_id = self._get_station_block_id(station)
+            if not target_block_id:
+                error_msg = f"Station {waypoint.station_id} has no associated block"
+                logger.error(f"Train {train.train_id}: {error_msg}")
+                route.set_error(error_msg, self.simulation_time)
+                train.wait_for_path()
+                exec_state.waiting_for_path = True
+                return
+
+            start_block_id = current_track.block_section_id
+
+            if start_block_id == target_block_id:
+                exec_state.waiting_for_path = False
+                route.clear_error()
+                if train.state == TrainState.STANDBY:
+                    train.depart()
+                    logger.info(
+                        f"Train {train.train_id}: Already at target block, departed"
+                    )
+                return
+
+            path_result = self.path_dispatcher.create_path(
+                start_block_id=start_block_id,
+                end_block_id=target_block_id,
+                train_id=train.train_id,
+            )
+
+            if path_result.success and path_result.path:
+                exec_state.waiting_for_path = False
+                route.clear_error()
+
+                train.current_path = self._convert_path_to_train_path(path_result.path)
+                train.path_index = 0
+                train.assigned_path_id = path_result.path.path_id
+
+                if train.state == TrainState.STANDBY:
+                    train.depart()
+                    logger.info(
+                        f"Train {train.train_id}: Path acquired, departed to {waypoint.station_id}"
+                    )
+            else:
+                error_msg = path_result.error or "Path unavailable"
+                logger.info(f"Train {train.train_id}: {error_msg}")
+                route.set_error(error_msg, self.simulation_time)
+
+                if train.state == TrainState.RUNNING_WAITING:
+                    pass
+                elif train.state == TrainState.STANDBY:
+                    pass
+                else:
+                    train.wait_for_path()
+                exec_state.waiting_for_path = True
         else:
-            # No dispatcher - just depart
             if train.state == TrainState.STANDBY:
                 train.depart()
                 logger.info(
-                    f"Train {train.train_id}: Departed to {waypoint.station_id}"
+                    f"Train {train.train_id}: No dispatcher, departed to {waypoint.station_id}"
                 )
 
     def _should_turn_around(self, train: "Train", target_station) -> bool:
@@ -339,16 +369,6 @@ class RouteExecutor:
                 del self.execution_states[train.train_id]
 
     def _is_train_at_station(self, train: "Train", station_id: str) -> bool:
-        """
-        Check if train is at a specific station.
-
-        Args:
-            train: Train to check
-            station_id: Station ID to check
-
-        Returns:
-            True if train is at station
-        """
         if not train.current_pos:
             return False
 
@@ -356,13 +376,50 @@ class RouteExecutor:
         if not station:
             return False
 
-        # Check if train position matches any station position
         if hasattr(station, "positions"):
             return train.current_pos in station.positions
         elif hasattr(station, "position"):
             return train.current_pos == station.position
 
         return False
+
+    def _get_station_block_id(self, station) -> Optional[str]:
+        if hasattr(station, "positions") and station.positions:
+            track = self.network.get_track(*station.positions[0])
+            if track:
+                return track.block_section_id
+        elif hasattr(station, "position"):
+            track = self.network.get_track(*station.position)
+            if track:
+                return track.block_section_id
+        return None
+
+    def _convert_path_to_train_path(self, path) -> list:
+        from enums import Direction
+
+        result = []
+        tiles = path.path_tiles if hasattr(path, "path_tiles") else []
+
+        for i, tile in enumerate(tiles):
+            if i + 1 < len(tiles):
+                next_tile = tiles[i + 1]
+                dx = next_tile[0] - tile[0]
+                dy = next_tile[1] - tile[1]
+
+                if dy > 0:
+                    direction = Direction.NORTH
+                elif dy < 0:
+                    direction = Direction.SOUTH
+                elif dx > 0:
+                    direction = Direction.EAST
+                else:
+                    direction = Direction.WEST
+            else:
+                direction = Direction.EAST
+
+            result.append((tile[0], tile[1], direction))
+
+        return result
 
     def activate_route(self, train: "Train", route: "Route") -> bool:
         """

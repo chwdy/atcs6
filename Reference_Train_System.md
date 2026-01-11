@@ -3,7 +3,7 @@
 > **Document Type:** Technical Implementation Specification
 > **Version:** 1.0
 > **Created:** January 2026
-> **Status:** Draft - Planning Phase
+> **Status:** Implemented
 
 ## Table of Contents
 
@@ -77,15 +77,16 @@ This document specifies the Train System for the railway management platform, en
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Control Mode | DC Analog | Each block has independent voltage |
-| Naming | Route = train's plan, Path = dispatcher's reservation | Clear separation of concepts |
+| Control Model | DC Analog | Each block has independent voltage |
+| Naming | Path = infrastructure reservation, Route = train's travel plan | Clear separation of infrastructure vs operation |
 | Turn-around | Automatic at waypoints | Model trains run both directions |
-| Consist | Single locomotive | Simplified for initial implementation |
-| Conflict Resolution | First-come-first-served via PathDispatcher | Existing system handles this |
-| Train Placement | Support both tile (x,y) and station placement | Flexibility for user |
-| Block Occupancy | Full length (all blocks train spans) | Realistic simulation |
-| Facing Direction | User picks on placement (from track-valid options), then system manages | Clear initial state, automatic updates |
-| Default SpeedProfile | Auto-created on system startup | Trains work immediately |
+| Consist | Multi-car supports | Realistic length-based occupancy |
+| Conflict Resolution | First-come-first-served via PathDispatcher | Proven interlocking logic |
+| Train Placement | Tile (x,y) or Station placement | User flexibility |
+| Block Occupancy | Multi-block (head to tail) | Safety for long trains |
+| Facing Direction | Set on placement, system managed | Deterministic movement |
+| Default SpeedProfile | Auto-created on startup | Ready-to-run experience |
+
 
 ---
 
@@ -726,17 +727,46 @@ class BlockPowerController:
 
 ### 8.1 Train State Enum
 
-```python
-class TrainState(Enum):
-    """Train power and operational states."""
-    OFF = "off"                           # 0V, no lights
-    IDLE = "idle"                         # Lighting V, red both ends if safe
-    STANDBY = "standby"                   # Lighting V, headlight/taillight, ready
-    RUNNING_MOVING = "running_moving"     # Speed-based V, actively moving
-    RUNNING_WAITING = "running_waiting"   # Lighting V, waiting for path/signal
-    RUNNING_AT_STATION = "running_at_station"  # Lighting V, dwelling at station
-    MANUAL = "manual"                     # User-controlled speed, ATC protected
+The `TrainState` enum is the primary state for DC analog control, providing granular control over voltage and lighting.
+
+| State | Internal Value | Voltage | Polarity | Lights | Description |
+|-------|----------------|---------|----------|--------|-------------|
+| **off** | `off` | 0V | None | None | Train shut off |
+| **idle** | `idle` | Lighting | Opposite* | Red Ends | Powered, no direction |
+| **standby** | `standby` | Lighting | Normal | H+T | Direction set, ready |
+| **running_moving** | `running_moving` | Speed-based | Normal | H+T | Actively moving |
+| **running_waiting** | `running_waiting` | Lighting | Normal | H+T | Stopped waiting for path/signal |
+| **running_at_station** | `running_at_station` | Lighting | Normal | H+T | Dwelling at station |
+| **manual** | `manual` | Manual | Normal | Directional| User controlled speed |
+
+*\*Opposite polarity for red lights both ends is only applied if multi-block occupancy safety checks pass.*
+
+### 8.2 State Transitions
+
+```mermaid
+stateDiagram-v2
+    [*] --> off
+    off --> idle : power_on()
+    idle --> off : power_off()
+    idle --> standby : set_direction()
+    standby --> idle : clear_direction()
+    standby --> running_moving : depart()
+    running_moving --> running_waiting : wait_for_path()
+    running_waiting --> running_moving : clear_to_move()
+    running_moving --> running_at_station : arrive()
+    running_at_station --> standby : dwell_complete() (more waypoints)
+    running_at_station --> idle : dwell_complete() (route done)
+    
+    running_moving --> running_waiting : emergency_stop()
+    
+    idle --> manual : enable_manual()
+    standby --> manual : enable_manual()
+    running_waiting --> manual : enable_manual()
+    running_at_station --> manual : enable_manual()
+    manual --> standby : disable_manual() (if direction)
+    manual --> idle : disable_manual() (no direction)
 ```
+
 
 ### 8.2 State Definitions
 
@@ -1014,7 +1044,7 @@ When a train's Route cannot find a Path to the next waypoint:
 
 1. **Train stops** at current position (target_speed = 0)
 2. **Error is logged** with details (train_id, current position, target station)
-3. **Train status** set to `WAITING` (waiting for manual intervention)
+3. **Train state** set to `RUNNING_WAITING` (waiting for manual intervention)
 4. **Route remains active** but paused - can retry when path becomes available
 5. **UI displays error** to operator
 
@@ -1036,11 +1066,11 @@ def _dispatch_to_station(self, train: Train, station_id: str) -> bool:
     if not result.success:
         self._set_route_error(train, f"No path to {station_id}: {result.error}")
         train.target_speed = 0
-        train.status = TrainStatus.WAITING
+        train.state = TrainState.RUNNING_WAITING
         return False
     
     train.assigned_path_id = result.path.path_id
-    train.status = TrainStatus.RUNNING
+    train.state = TrainState.RUNNING_MOVING
     return True
 
 def _set_route_error(self, train: Train, message: str):
@@ -1079,13 +1109,13 @@ The `Block` class stores `current_voltage` for reference/display, but the actual
 
 ```python
 class SimulationController:
-    def __init__(self, network: RailwayNetwork):
+    def __init__(self, network: RailwayNetwork, path_dispatcher: Optional["PathDispatcher"] = None):
         self.network = network
-        self.dispatcher = TrainDispatcher(network)
+        self.path_dispatcher = path_dispatcher
         self.power_controller = BlockPowerController(network)
-        self.train_atcs: Dict[str, TrainATC] = {}  # train_id → ATC
-        self.speed_profiles: Dict[str, SpeedProfile] = {}  # profile_id → profile
-        self.routes: Dict[str, Route] = {}  # route_id → route
+        self.route_executor = RouteExecutor(network, path_dispatcher)
+        self.atc_instances: Dict[str, TrainATC] = {}  # train_id → ATC
+        self.speed_profile_registry = SpeedProfileRegistry()
         
         # Timing
         self.simulation_time: float = 0.0  # Seconds since start
@@ -1096,137 +1126,85 @@ class SimulationController:
 ```python
 def update(self, delta_seconds: float):
     """Main simulation tick."""
-    
     self.simulation_time += delta_seconds
     
-    # 1. Update signal states from block occupancy
-    self._update_signals()
+    # 1. Execute routes/waypoints
+    self.route_executor.update(delta_seconds)
     
-    # 2. For each train
+    # 2. For each train, update physics and power
     for train in self.network.trains.values():
-        
-        # 2a. Execute route if assigned
-        if train.assigned_route_id:
-            self._execute_route(train, delta_seconds)
-        
-        # 2b. Get ATC speed limit
-        atc = self._get_or_create_atc(train)
-        atc_limit = atc.get_speed_limit()
-        
-        # 2c. Calculate target speed
-        train.target_speed = min(train.max_speed, atc_limit)
-        
-        # 2d. Update train physics (speed ramping)
-        profile = self._get_speed_profile(train)
-        train.current_speed = profile.calculate_new_speed(
-            train.current_speed,
-            train.target_speed,
-            delta_seconds
-        )
-        
-        # 2e. Update block voltages for this train
+        self._update_train(train, delta_seconds)
+
+def _update_train(self, train: Train, delta_seconds: float):
+    """Update individual train based on its state."""
+    if train.state == TrainState.OFF:
+        train.current_speed = 0.0
+        train.target_speed = 0.0
+        return
+
+    if train.state in (TrainState.IDLE, TrainState.STANDBY, 
+                       TrainState.RUNNING_WAITING, TrainState.RUNNING_AT_STATION):
+        self._decelerate_to_stop(train, delta_seconds)
         self.power_controller.update_for_train(train)
-        
-        # 2f. Update train position
-        self._update_train_position(train, delta_seconds)
-        
-        # 2g. Update block occupancy (based on train length)
-        train.update_block_occupancy(self.network)
+        return
 
-def _execute_route(self, train: Train, delta_seconds: float):
-    """Execute route logic - dispatch to next waypoint, handle dwell, etc."""
-    route = self.routes.get(train.assigned_route_id)
-    if not route or not route.is_active:
+    if train.state == TrainState.RUNNING_MOVING:
+        self._update_moving_train(train, delta_seconds)
         return
-    
-    waypoint = route.get_current_waypoint()
-    if not waypoint:
-        return
-    
-    # Check if train is at current waypoint's station
-    if self._is_train_at_station(train, waypoint.station_id):
-        # Handle dwell time / timing
-        if waypoint.should_depart(
-            self._get_time_at_station(train),
-            route.started_at,
-            self.simulation_time
-        ):
-            next_waypoint = route.advance_to_next_waypoint()
-            if next_waypoint:
-                # Check if turn-around needed
-                self._handle_auto_turnaround(train, next_waypoint.station_id)
-                
-                # Request path to next station
-                self._dispatch_to_station(train, next_waypoint.station_id)
-            else:
-                # Route complete (ONE_WAY only)
-                train.assigned_route_id = None
-                train.status = TrainStatus.IDLE
-    else:
-        # Not at station yet - ensure we have a path
-        if not train.current_path:
-            self._dispatch_to_station(train, waypoint.station_id)
 
-def _handle_auto_turnaround(self, train: Train, next_station_id: str):
-    """Check if train needs to turn around to reach next station."""
-    # Get direction to next station
-    next_station = self.network.stations.get(next_station_id)
-    if not next_station:
+    if train.state == TrainState.MANUAL:
+        self._update_manual_train(train, delta_seconds)
         return
+
+def _update_moving_train(self, train: Train, delta_seconds: float):
+    """Handle movement for trains in RUNNING_MOVING state."""
+    # 1. Get ATC speed limit
+    atc = self._get_or_create_atc(train)
+    atc_limit = atc.get_speed_limit()
     
-    # Calculate required direction
-    required_direction = self._calculate_direction_to(
-        train.current_pos, 
-        next_station.positions[0]
+    # 2. Calculate target speed
+    train.target_speed = min(train.max_speed, atc_limit)
+    
+    # 3. Update train physics (speed ramping)
+    profile = self._get_speed_profile(train)
+    train.current_speed = profile.calculate_new_speed(
+        train.current_speed,
+        train.target_speed,
+        delta_seconds
     )
     
-    # If opposite to current effective direction, turn around
-    if required_direction == OPPOSITE_DIRECTIONS.get(train.get_effective_direction()):
-        train.turn_around()
+    # 4. Update block voltages for this train
+    self.power_controller.update_for_train(train)
+    
+    # 5. Update train position
+    self._update_train_position(train, delta_seconds)
+    
+    # 6. Update block occupancy (based on train length)
+    train.update_occupancy(self.network)
 ```
 
 ---
 
-## 11. Renaming Plan (Route → Path)
+### 11. Renaming Completed (Route → Path)
 
-### 11.1 Files to Rename
+The transition from "Route" to "Path" for the dispatcher system is complete to avoid confusion with train travel plans.
 
-| Current | New |
-|---------|-----|
-| `route.py` | `path.py` |
-| `route_dispatcher.py` | `path_dispatcher.py` |
+#### 11.1 Renamed Entities
 
-### 11.2 Classes/Enums to Rename
+| Old Term | New Term | Purpose |
+|----------|----------|---------|
+| `Route` (dispatcher) | `Path` | Infrastructure reservation between blocks |
+| `RouteStatus` | `PathStatus` | State of a reserved path |
+| `RouteDispatcher` | `PathDispatcher` | Logic for finding and reserving paths |
 
-| Current | New |
-|---------|-----|
-| `Route` | `Path` |
-| `RouteStatus` | `PathStatus` |
-| `RouteDispatcher` | `PathDispatcher` |
-| `RoutePath` | `PathSegment` |
-| `RouteResult` | `PathResult` |
-| `ExtensionResult` | `PathExtensionResult` |
-| `CancellationResult` | `PathCancellationResult` |
-| `RouteMode` (dispatcher) | `PathMode` |
+#### 11.2 API Changes
 
-### 11.3 Variables/Properties to Update
+All dispatcher endpoints now use the `/api/paths` prefix.
 
-| Current | New | Location |
-|---------|-----|----------|
-| `route_id` | `path_id` | Path class, all references |
-| `active_routes` | `active_paths` | Network, Dispatcher |
-| `assigned_route_id` (dispatcher) | `assigned_path_id` | Train class (for dispatcher path) |
-| `reserved_by_route` | `reserved_by_path` | Block class |
-
-### 11.4 API Endpoints to Update
-
-| Current | New |
-|---------|-----|
-| `POST /api/routes` | `POST /api/paths` |
-| `GET /api/routes` | `GET /api/paths` |
-| `GET /api/routes/<id>` | `GET /api/paths/<id>` |
-| `DELETE /api/routes/<id>` | `DELETE /api/paths/<id>` |
-| `PUT /api/routes/<id>/extend` | `PUT /api/paths/<id>/extend` |
+| Old Endpoint | New Endpoint |
+|--------------|--------------|
+| `/api/paths` | Dispatcher paths (interlocking) |
+| `/api/train-routes` | Train travel plans |
 
 ### 11.5 New Route Endpoints (Train Travel Plans)
 
@@ -1499,9 +1477,9 @@ POST   /api/blocks/emergency-stop
 4. System requests Path from A to B via PathDispatcher
 5. Train starts moving, ATC controls speed based on clearance
 6. Block voltages updated based on train's target speed
-7. Train arrives at B, status → AT_STATION, dwells for 30 seconds
+7. Train arrives at B, state → RUNNING_AT_STATION, dwells for 30 seconds
 8. Dwell complete, system requests Path from B to C
-9. Train arrives at C, Route complete, Train status → IDLE
+9. Train arrives at C, Route complete, Train state → IDLE
 
 ### 14.2 Round Trip with Auto Turn-Around (Cab Switch)
 
@@ -1543,7 +1521,7 @@ POST   /api/blocks/emergency-stop
 - [ ] Rename `route_dispatcher.py` → `path_dispatcher.py`
 - [ ] Rename all classes: Route → Path, RouteStatus → PathStatus, etc.
 - [ ] Update all variable names and references
-- [ ] Update API endpoints `/api/routes` → `/api/paths`
+- [x] Update API endpoints `/api/routes` → `/api/paths`
 - [ ] Update documentation references
 - [ ] Update frontend references
 - [ ] Run all tests, ensure no regressions
@@ -1746,5 +1724,5 @@ def cm_per_sec_to_kmh(cm_s: float) -> float:
 | **ATC** | Automatic Train Control - limits speed based on clearance |
 | **Clearance** | Available distance ahead before obstruction |
 | **Dwell Time** | Time train waits at a station before departing |
-| **Turn-Around** | Flipping travel direction (train runs in reverse) |
+| **Turn-Around** | Flipping facing direction (cab switch) |
 | **Block Voltage** | DC voltage output to a track block section |

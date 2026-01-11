@@ -104,17 +104,17 @@
                     <div class="tool-category">
                         <div class="tool-category-label">Dispatch</div>
                         <div class="tool-row">
-                            <button class="tool-btn" data-tool="route" title="Create Route Between Blocks">
-                                <span class="tool-icon">🛤️</span> Route
+                            <button class="tool-btn" data-tool="path" title="Create Path Between Blocks">
+                                <span class="tool-icon">🛤️</span> Path
                             </button>
-                            <button class="tool-btn" data-tool="extend-route" title="Extend Existing Route">
+                            <button class="tool-btn" data-tool="extend-path" title="Extend Existing Path">
                                 <span class="tool-icon">🛤️+</span> Extend
                             </button>
-                            <button class="tool-btn" data-tool="cancel-route" title="Cancel Route">
+                            <button class="tool-btn" data-tool="cancel-path" title="Cancel Path">
                                 <span class="tool-icon">🛤️✕</span> Cancel
                             </button>
-                            <button class="tool-btn" data-tool="routes-panel" title="View Active Routes">
-                                <span class="tool-icon">📋</span> Routes
+                            <button class="tool-btn" data-tool="paths-panel" title="View Active Paths">
+                                <span class="tool-icon">📋</span> Paths
                             </button>
                         </div>
                     </div>
@@ -128,6 +128,9 @@
                             </button>
                             <button class="tool-btn" data-tool="train-panel" title="Train Management">
                                 <span class="tool-icon">📋</span> Trains
+                            </button>
+                            <button class="tool-btn" data-tool="schedules-panel" title="View Schedules">
+                                <span class="tool-icon">📅</span> Schedules
                             </button>
                         </div>
                     </div>
@@ -247,10 +250,48 @@
     <!-- Toast Notification Container -->
     <div id="toast-container" class="toast-container"></div>
 
-    <script src="js/api.js?v=5"></script>
-    <script src="js/helpers.js?v=5"></script>
-    <script src="js/renderer.js?v=5"></script>
-    <script src="js/editor.js?v=5"></script>
-    <script src="js/app.js?v=5"></script>
+    <!-- Train Monitor Bar (bottom of screen, visible when train selected) -->
+    <div id="train-monitor-bar" class="train-monitor-bar hidden">
+        <div class="train-monitor-header">
+            <span class="train-monitor-title" id="train-monitor-title">Train Monitor</span>
+            <button class="train-monitor-close" id="train-monitor-close" title="Close">×</button>
+        </div>
+        <div class="train-monitor-content">
+            <div class="train-monitor-info" id="train-monitor-info">
+                <div class="train-speed-display">
+                    <span class="speed-value" id="monitor-current-speed">0</span>
+                    <span class="speed-unit">km/h</span>
+                </div>
+                <div class="train-target-speed">
+                    <span class="label">Target:</span>
+                    <span class="value" id="monitor-target-speed">0</span>
+                    <span class="unit">km/h</span>
+                </div>
+            </div>
+            <canvas id="train-monitor-canvas" class="train-monitor-canvas"></canvas>
+        </div>
+    </div>
+
+    <script src="js/constants.js?v=14"></script>
+    <script src="js/api.js?v=14"></script>
+    <script src="js/helpers.js?v=14"></script>
+    <script src="js/pathfinders.js?v=14"></script>
+    <script src="js/renderer-tracks.js?v=14"></script>
+    <script src="js/renderer-signals.js?v=14"></script>
+    <script src="js/renderer-stations.js?v=14"></script>
+    <script src="js/renderer-blocks.js?v=14"></script>
+    <script src="js/renderer-debug.js?v=14"></script>
+    <script src="js/renderer-routes.js?v=14"></script>
+    <script src="js/renderer-trains.js?v=14"></script>
+    <script src="js/renderer.js?v=14"></script>
+    <script src="js/editor-blocks.js?v=14"></script>
+    <script src="js/editor-stations.js?v=14"></script>
+    <script src="js/editor-signals.js?v=14"></script>
+    <script src="js/editor-trains.js?v=14"></script>
+    <script src="js/editor-routes.js?v=14"></script>
+    <script src="js/editor-ui.js?v=14"></script>
+    <script src="js/editor.js?v=14"></script>
+    <script src="js/train-monitor.js?v=14"></script>
+    <script src="js/app.js?v=14"></script>
 </body>
 </html>

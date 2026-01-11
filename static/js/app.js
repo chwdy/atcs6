@@ -2,16 +2,17 @@ class App {
     constructor() {
         this.renderer = new Renderer('rail-canvas');
         this.editor = new Editor(this.renderer, window.api);
+        this.trainMonitor = new TrainMonitor();
         this.simulationInterval = null;
         this.currentNetwork = null;
         this.isSimulationRunning = false;
+        this.selectedTrainId = null;
+        this.lastLookaheadFetch = 0;
+        this.lookaheadThrottleMs = 500;
 
         this.setupControls();
         this.setupDebugPanel();
         this.refreshNetwork();
-
-        // No polling by default - refresh is triggered by user interactions
-        // Simulation mode will start polling when needed
     }
 
     setupControls() {
@@ -399,207 +400,38 @@ class App {
         
         const train = this.currentNetwork.trains.find(t => t.id === trainId);
         if (train) {
-            this.updateTrainPropertiesPanel(train);
-            
-            // Pan to train location - adjust panX/panY to center on the train
+            this.selectedTrainId = trainId;
             if (train.position) {
-                // Calculate how far from center the train is in screen space
-                // We want the train's grid position to be at screen center
-                // gridToScreenX(x) = centerX + panX + x * gridSize * scale
-                // We want gridToScreenX(x) = canvas.width/2, so:
-                // panX = canvas.width/2 - centerX - x * gridSize * scale
-                // Since centerX = canvas.width/2, this simplifies to:
-                // panX = -x * gridSize * scale
                 this.renderer.panX = -train.position.x * this.renderer.gridSize * this.renderer.scale;
-                this.renderer.panY = train.position.y * this.renderer.gridSize * this.renderer.scale; // +Y because screen Y is inverted
+                this.renderer.panY = train.position.y * this.renderer.gridSize * this.renderer.scale;
                 this.renderer.draw();
             }
+            this.editor.showTrainControlPanel(trainId);
+            this.trainMonitor.show(trainId, train.name || trainId);
+            this.fetchTrainLookahead(trainId);
         }
     }
-
-    updateTrainPropertiesPanel(train) {
-        const panel = document.querySelector('.properties-panel');
-        if (!panel) return;
-
-        const state = train.state || 'off';
-        const stateDisplay = state.toUpperCase().replace('_', ' ');
-        const stateClass = state === 'off' ? 'text-danger' : (state === 'running_moving' ? 'text-success' : 'text-warning');
-        const facingDir = train.facing_direction || train.direction || null;
-        const travelDir = train.travel_direction || 'forward';
-        const manualSpeed = train.manual_target_speed || 0;
-        const targetSpeed = train.target_speed || 0;
-
-        panel.innerHTML = `
-            <h3>🚂 Train: ${train.id}</h3>
-            <div class="property-item">
-                <label>State:</label>
-                <span class="${stateClass}">${stateDisplay}</span>
-            </div>
-            <div class="property-item">
-                <label>Speed:</label>
-                <span>${(train.current_speed || 0).toFixed(1)} / ${train.max_speed || 100} km/h</span>
-            </div>
-            <div class="property-item">
-                <label>Target:</label>
-                <span>${targetSpeed.toFixed(1)} km/h</span>
-            </div>
-            <div class="property-item">
-                <label>Position:</label>
-                <span>${train.position ? `(${train.position.x}, ${train.position.y})` : 'Unknown'}</span>
-            </div>
-            <div class="property-item">
-                <label>Facing:</label>
-                <span>${facingDir || 'Not set'}</span>
-            </div>
-            <div class="property-item">
-                <label>Travel:</label>
-                <span>${travelDir}</span>
-            </div>
-            <div class="property-item">
-                <label>Length:</label>
-                <span>${train.length || 1} units</span>
-            </div>
-
-            <!-- Train Control Buttons -->
-            <div class="train-controls mt-16" data-train-id="${train.id}">
-                <h4 class="text-xs text-muted mb-8">Controls</h4>
-
-                <!-- Power Controls -->
-                <div class="control-group mb-12">
-                    <button class="btn btn-sm btn-success train-power-on" ${state !== 'off' ? 'disabled' : ''}>Power On</button>
-                    <button class="btn btn-sm btn-danger train-power-off" ${state === 'off' ? 'disabled' : ''}>Power Off</button>
-                </div>
-
-                <!-- Direction Controls (when in IDLE or STANDBY) -->
-                <div class="control-group mb-12" id="train-direction-controls">
-                    <label class="text-xs text-muted block mb-4">Direction</label>
-                    <button class="btn btn-sm train-set-dir" data-dir="NORTH" ${state !== 'idle' ? 'disabled' : ''}>N</button>
-                    <button class="btn btn-sm train-set-dir" data-dir="EAST" ${state !== 'idle' ? 'disabled' : ''}>E</button>
-                    <button class="btn btn-sm train-set-dir" data-dir="SOUTH" ${state !== 'idle' ? 'disabled' : ''}>S</button>
-                    <button class="btn btn-sm train-set-dir" data-dir="WEST" ${state !== 'idle' ? 'disabled' : ''}>W</button>
-                </div>
-
-                <!-- Movement Controls -->
-                <div class="control-group mb-12">
-                    <button class="btn btn-sm btn-primary train-depart" ${state !== 'standby' ? 'disabled' : ''}>Depart</button>
-                    <button class="btn btn-sm train-turn-around" ${state !== 'standby' ? 'disabled' : ''}>Turn Around</button>
-                </div>
-
-                <!-- MANUAL Mode Controls -->
-                <div class="control-group mb-12" id="train-manual-controls">
-                    <label class="text-xs text-muted block mb-4">Manual Mode</label>
-                    <button class="btn btn-sm btn-warning train-enable-manual" ${state === 'off' || !train.is_stopped ? 'disabled' : ''}>Enable</button>
-                    <button class="btn btn-sm train-disable-manual" ${state !== 'manual' ? 'disabled' : ''}>Disable</button>
-
-                    <div class="manual-speed-control mt-8" ${state !== 'manual' ? 'style="opacity: 0.5; pointer-events: none;"' : ''}>
-                        <label class="text-xs text-muted block mb-4">Speed: <span id="manual-speed-value">${manualSpeed.toFixed(0)}</span> km/h</label>
-                        <input type="range" class="train-manual-speed" min="0" max="${train.max_speed || 100}" value="${manualSpeed}" step="1">
-                        <div class="mt-4">
-                            <label class="text-xs text-muted">Travel:</label>
-                            <button class="btn btn-xs train-travel-dir ${travelDir === 'forward' ? 'btn-primary' : ''}" data-travel="forward">Forward</button>
-                            <button class="btn btn-xs train-travel-dir ${travelDir === 'reverse' ? 'btn-primary' : ''}" data-travel="reverse">Reverse</button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Emergency Stop -->
-                <div class="control-group">
-                    <button class="btn btn-sm btn-danger train-emergency-stop" ${state !== 'running_moving' ? 'disabled' : ''}>Emergency Stop</button>
-                </div>
-            </div>
-
-            ${train.assigned_route_id ? `
-            <div class="train-route-info mt-16">
-                <h4 class="text-xs text-muted mb-8">Assigned Route</h4>
-                <div class="property-item">
-                    <label>Route ID:</label>
-                    <span>${train.assigned_route_id}</span>
-                </div>
-            </div>
-            ` : ''}
-
-            ${train.schedule ? `
-            <div class="train-schedule-info mt-16">
-                <h4 class="text-xs text-muted mb-8">Schedule</h4>
-                <div class="property-item">
-                    <label>Stops:</label>
-                    <span>${train.schedule.stops ? train.schedule.stops.length + ' stops' : 'None'}</span>
-                </div>
-            </div>
-            ` : ''}
-        `;
-
-        // Attach event listeners
-        this.attachTrainControlListeners(train.id);
+    
+    deselectTrain() {
+        this.selectedTrainId = null;
+        this.trainMonitor.hide();
     }
-
-    attachTrainControlListeners(trainId) {
-        const container = document.querySelector(`.train-controls[data-train-id="${trainId}"]`);
-        if (!container) return;
-
-        // Power On
-        container.querySelector('.train-power-on')?.addEventListener('click', () => {
-            window.api.trainPowerOn(trainId).then(() => this.refreshNetwork()).catch(this.showError);
-        });
-
-        // Power Off
-        container.querySelector('.train-power-off')?.addEventListener('click', () => {
-            window.api.trainPowerOff(trainId).then(() => this.refreshNetwork()).catch(this.showError);
-        });
-
-        // Set Direction
-        container.querySelectorAll('.train-set-dir').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const dir = e.target.dataset.dir;
-                window.api.trainSetDirection(trainId, dir).then(() => this.refreshNetwork()).catch(this.showError);
-            });
-        });
-
-        // Depart
-        container.querySelector('.train-depart')?.addEventListener('click', () => {
-            window.api.trainDepart(trainId).then(() => this.refreshNetwork()).catch(this.showError);
-        });
-
-        // Turn Around
-        container.querySelector('.train-turn-around')?.addEventListener('click', () => {
-            window.api.trainTurnAround(trainId).then(() => this.refreshNetwork()).catch(this.showError);
-        });
-
-        // Enable Manual
-        container.querySelector('.train-enable-manual')?.addEventListener('click', () => {
-            window.api.trainEnableManual(trainId).then(() => this.refreshNetwork()).catch(this.showError);
-        });
-
-        // Disable Manual
-        container.querySelector('.train-disable-manual')?.addEventListener('click', () => {
-            window.api.trainDisableManual(trainId).then(() => this.refreshNetwork()).catch(this.showError);
-        });
-
-        // Manual Speed
-        const speedInput = container.querySelector('.train-manual-speed');
-        const speedValue = container.querySelector('#manual-speed-value');
-        if (speedInput) {
-            speedInput.addEventListener('input', (e) => {
-                if (speedValue) speedValue.textContent = parseFloat(e.target.value).toFixed(0);
-            });
-            speedInput.addEventListener('change', (e) => {
-                const speed = parseFloat(e.target.value);
-                window.api.trainSetManualSpeed(trainId, speed).then(() => this.refreshNetwork()).catch(this.showError);
-            });
+    
+    async fetchTrainLookahead(trainId) {
+        if (!trainId) return;
+        
+        const now = Date.now();
+        if (now - this.lastLookaheadFetch < this.lookaheadThrottleMs) return;
+        this.lastLookaheadFetch = now;
+        
+        try {
+            const lookahead = await window.api.getTrainLookahead(trainId);
+            if (this.selectedTrainId === trainId && this.trainMonitor.isVisible()) {
+                this.trainMonitor.update(lookahead);
+            }
+        } catch (e) {
+            console.error('[App] fetchTrainLookahead failed:', e);
         }
-
-        // Travel Direction
-        container.querySelectorAll('.train-travel-dir').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const dir = e.target.dataset.travel;
-                window.api.trainSetTravelDirection(trainId, dir).then(() => this.refreshNetwork()).catch(this.showError);
-            });
-        });
-
-        // Emergency Stop
-        container.querySelector('.train-emergency-stop')?.addEventListener('click', () => {
-            window.api.trainEmergencyStop(trainId).then(() => this.refreshNetwork()).catch(this.showError);
-        });
     }
 
     showAddTrainDialog() {
@@ -743,11 +575,17 @@ class App {
      * Only runs when simulation is active
      */
     startSimulationPolling() {
-        if (this.simulationInterval) return; // Already running
+        if (this.simulationInterval) return;
         this.isSimulationRunning = true;
         this.simulationInterval = setInterval(async () => {
             await this.refreshNetwork();
-        }, 200); // 200ms for smooth train animation
+            if (this.editor) {
+                this.editor.refreshCurrentEditor();
+            }
+            if (this.selectedTrainId && this.trainMonitor.isVisible()) {
+                await this.fetchTrainLookahead(this.selectedTrainId);
+            }
+        }, 200);
     }
 
     /**

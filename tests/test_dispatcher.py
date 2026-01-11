@@ -43,7 +43,7 @@ from track import (
 )
 from block import Block
 from train import Train, TrainCar
-from enums import BlockState, Direction, TrainStatus
+from enums import BlockState, Direction, TrainState
 
 
 # ============================================================================
@@ -983,10 +983,11 @@ class TestTrainPriorityAndEmergencyStop:
     def test_emergency_stop(self, train):
         """Test initiating emergency stop."""
         train.current_speed = 100.0
+        train.state = TrainState.RUNNING_MOVING
         train.initiate_emergency_stop()
 
         assert train.is_emergency_braking
-        assert train.status == TrainStatus.WAITING
+        assert train.state == TrainState.RUNNING_WAITING
 
     def test_braking_distance_calculation(self, train):
         """Test braking distance calculation."""
@@ -1033,7 +1034,7 @@ class TestTrainPriorityAndEmergencyStop:
 
         assert train.current_speed == 0.0
         assert not train.is_emergency_braking
-        assert train.status == TrainStatus.IDLE
+        assert train.state == TrainState.IDLE
 
 
 # ============================================================================

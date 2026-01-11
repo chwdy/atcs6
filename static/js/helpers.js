@@ -8,6 +8,194 @@
  * Use CSS classes instead of inline styles whenever possible.
  */
 
+function getTrackExits(trackBits) {
+    const exits = [];
+
+    if (trackBits & TRACK_NS) { exits.push('N', 'S'); }
+    if (trackBits & TRACK_EW) { exits.push('E', 'W'); }
+    if (trackBits & TRACK_NE) { exits.push('N', 'E'); }
+    if (trackBits & TRACK_NW) { exits.push('N', 'W'); }
+    if (trackBits & TRACK_SE) { exits.push('S', 'E'); }
+    if (trackBits & TRACK_SW) { exits.push('S', 'W'); }
+
+    return [...new Set(exits)];
+}
+
+function getNeighborPosition(x, y, direction) {
+    const offsets = {
+        'N': [0, 1],
+        'E': [1, 0],
+        'S': [0, -1],
+        'W': [-1, 0]
+    };
+    const [dx, dy] = offsets[direction];
+    return [x + dx, y + dy];
+}
+
+function getTrackBitsForOrientation(orientation, nextX, nextY, edgeX, edgeY) {
+    if (orientation === 'NS') {
+        return TRACK_NS;
+    }
+    if (orientation === 'EW') {
+        return TRACK_EW;
+    }
+    if (orientation === 'NE_SW') {
+        const dx = nextX - edgeX;
+        const dy = nextY - edgeY;
+        if (dx === 1 && dy === 0) return TRACK_SW;
+        if (dx === 0 && dy === 1) return TRACK_NE;
+        if (dx === -1 && dy === 0) return TRACK_NE;
+        if (dx === 0 && dy === -1) return TRACK_SW;
+    }
+    if (orientation === 'NW_SE') {
+        const dx = nextX - edgeX;
+        const dy = nextY - edgeY;
+        if (dx === 1 && dy === 0) return TRACK_SE;
+        if (dx === 0 && dy === 1) return TRACK_SE;
+        if (dx === -1 && dy === 0) return TRACK_NW;
+        if (dx === 0 && dy === -1) return TRACK_NW;
+    }
+
+    throw new Error(`Cannot determine track bits for orientation ${orientation}`);
+}
+
+function detectOrientation(sortedPositions, tracks) {
+    if (!sortedPositions || sortedPositions.length < 1) {
+        throw new Error('Need at least 1 position to detect orientation');
+    }
+
+    if (!Array.isArray(tracks)) {
+        throw new Error('Track data is required to detect orientation');
+    }
+
+    if (sortedPositions.length === 1) {
+        const [x, y] = sortedPositions[0];
+        const track = tracks.find(t => t.x === x && t.y === y);
+        if (!track) {
+            throw new Error(`No track found at position (${x}, ${y})`);
+        }
+
+        if (track.track_bits & TRACK_NS) return 'NS';
+        if (track.track_bits & TRACK_EW) return 'EW';
+        if (track.track_bits & (TRACK_NE | TRACK_SW)) return 'NE_SW';
+        if (track.track_bits & (TRACK_NW | TRACK_SE)) return 'NW_SE';
+
+        throw new Error('Cannot determine orientation from track bits');
+    }
+
+    const allSameX = sortedPositions.every(([x, _]) => x === sortedPositions[0][0]);
+    const allSameY = sortedPositions.every(([_, y]) => y === sortedPositions[0][1]);
+
+    if (allSameX) return 'NS';
+    if (allSameY) return 'EW';
+
+    const sums = sortedPositions.map(([x, y]) => x + y);
+    const diffs = sortedPositions.map(([x, y]) => x - y);
+
+    let diffsMonotonic = true;
+    for (let i = 1; i < diffs.length; i++) {
+        if (diffs[i] <= diffs[i - 1]) {
+            diffsMonotonic = false;
+            break;
+        }
+    }
+
+    let sumsMonotonic = true;
+    for (let i = 1; i < sums.length; i++) {
+        if (sums[i] <= sums[i - 1]) {
+            sumsMonotonic = false;
+            break;
+        }
+    }
+
+    if (diffsMonotonic) {
+        return 'NE_SW';
+    }
+    if (sumsMonotonic) {
+        return 'NW_SE';
+    }
+
+    const sumVariance = Math.max(...sums) - Math.min(...sums);
+    const diffVariance = Math.max(...diffs) - Math.min(...diffs);
+
+    if (diffVariance > sumVariance) {
+        return 'NE_SW';
+    }
+    return 'NW_SE';
+}
+
+function calculateNextTile(sortedPositions, orientation, direction, tracks) {
+    if (!sortedPositions || sortedPositions.length === 0) {
+        throw new Error('No positions to extend from');
+    }
+
+    if (!Array.isArray(tracks)) {
+        throw new Error('Track data is required to extend');
+    }
+
+    const edgeTile = direction === 'start' ? sortedPositions[0] : sortedPositions[sortedPositions.length - 1];
+    const [edgeX, edgeY] = edgeTile;
+
+    const edgeTrack = tracks.find(t => t.x === edgeX && t.y === edgeY);
+    if (!edgeTrack) {
+        throw new Error(`No track found at edge position (${edgeX}, ${edgeY})`);
+    }
+
+    const exits = getTrackExits(edgeTrack.track_bits);
+    if (exits.length !== 2) {
+        throw new Error(`Edge tile must have exactly 2 exits, found ${exits.length}`);
+    }
+
+    console.log('[Editor] Edge tile:', {x: edgeX, y: edgeY, trackBits: edgeTrack.track_bits, exits});
+
+    const neighbors = exits.map(exit => getNeighborPosition(edgeX, edgeY, exit));
+
+    console.log('[Editor] Potential neighbors:', neighbors);
+
+    const positionSet = new Set(sortedPositions.map(([x, y]) => `${x},${y}`));
+    const availableNeighbors = neighbors.filter(([nx, ny]) => !positionSet.has(`${nx},${ny}`));
+
+    if (availableNeighbors.length === 0) {
+        throw new Error('Both neighbors are already in the platform - cannot extend');
+    }
+
+    let nextX, nextY;
+    if (availableNeighbors.length > 1) {
+        const [n1x, n1y] = availableNeighbors[0];
+        const [n2x, n2y] = availableNeighbors[1];
+
+        if (orientation === 'NS') {
+            nextX = edgeX;
+            nextY = direction === 'start' ? Math.max(n1y, n2y) : Math.min(n1y, n2y);
+        } else if (orientation === 'EW') {
+            nextX = direction === 'start' ? Math.min(n1x, n2x) : Math.max(n1x, n2x);
+            nextY = edgeY;
+        } else if (orientation === 'NE_SW') {
+            const diff1 = n1x - n1y;
+            const diff2 = n2x - n2y;
+            [nextX, nextY] = direction === 'start' ?
+                (diff1 > diff2 ? [n1x, n1y] : [n2x, n2y]) :
+                (diff1 < diff2 ? [n1x, n1y] : [n2x, n2y]);
+        } else if (orientation === 'NW_SE') {
+            const sum1 = n1x + n1y;
+            const sum2 = n2x + n2y;
+            [nextX, nextY] = direction === 'start' ?
+                (sum1 > sum2 ? [n1x, n1y] : [n2x, n2y]) :
+                (sum1 < sum2 ? [n1x, n1y] : [n2x, n2y]);
+        }
+
+        console.log('[Editor] Single-tile station, chose direction:', direction, 'position:', {x: nextX, y: nextY});
+    } else {
+        [nextX, nextY] = availableNeighbors[0];
+    }
+
+    const trackBits = getTrackBitsForOrientation(orientation, nextX, nextY, edgeX, edgeY);
+
+    console.log('[Editor] Calculated next tile:', {x: nextX, y: nextY, trackBits});
+
+    return { x: nextX, y: nextY, trackBits };
+}
+
 // ============================================================================
 // PROPERTY RENDERING FUNCTIONS
 // ============================================================================
@@ -365,7 +553,9 @@ function renderTileListWithBlocks(sortedPositions, blockAssignmentsSorted, block
         const isFirst = index === 0;
         const isLast = index === sortedPositions.length - 1;
         const isEdge = isFirst || isLast;
-        const assignedBlock = blockAssignmentsSorted?.[index] || null;
+        const assignedBlock = blockAssignmentsSorted && blockAssignmentsSorted[index]
+            ? blockAssignmentsSorted[index]
+            : null;
         
         // Get block color if assigned
         let blockBadge = '';
@@ -441,7 +631,11 @@ function getBlockStateColor(state) {
         'occupied': '#e83f5b',
         'caution': '#ff9500'
     };
-    return colors[state?.toLowerCase()] || '#888';
+    if (!state) {
+        return '#888';
+    }
+    const normalizedState = String(state).toLowerCase();
+    return colors[normalizedState] || '#888';
 }
 
 /**
@@ -455,5 +649,9 @@ function getSignalStateColor(state) {
         'yellow': '#ffd93d',
         'red': '#e83f5b'
     };
-    return colors[state?.toLowerCase()] || '#888';
+    if (!state) {
+        return '#888';
+    }
+    const normalizedState = String(state).toLowerCase();
+    return colors[normalizedState] || '#888';
 }

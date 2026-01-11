@@ -7,6 +7,11 @@ These values can be adjusted to tune the system behavior.
 """
 
 # =============================================================================
+# Track Layout Configuration
+# =============================================================================
+DEFAULT_TILE_LENGTH_CM = 1000.0  # 10m per tile (scale: 1:87 HO = 115mm real = ~10m)
+
+# =============================================================================
 # Speed Limits
 # =============================================================================
 DEFAULT_MAX_SPEED_KMH = 100.0
@@ -19,6 +24,7 @@ STOPPED_SPEED_THRESHOLD_KMH = 0.5  # Below this = considered stopped
 ATC_SAFETY_MARGIN_CM = 50.0  # Buffer distance before obstruction
 ATC_SIGNAL_LOOKAHEAD_BLOCKS = 3  # How many blocks ahead to check signals
 ATC_MIN_CLEARANCE_CM = 10.0  # Minimum clearance to allow any movement
+ATC_NO_BLOCK_FALLBACK_CM = 100000.0  # 1km - clearance when no block is configured
 
 # =============================================================================
 # Voltage Configuration

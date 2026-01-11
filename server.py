@@ -17,10 +17,11 @@ from track import (
     TRACK_SW,
 )
 from train import Train, TrainSchedule, ScheduleStop, TrainCar
+from train_route import Route, Waypoint, TimingMode, RouteMode
 from enums import (
     Direction,
     TrackType,
-    TrainStatus,
+    TrainState,
     SignalState as EnumSignalState,
     SwitchPosition,
 )
@@ -30,6 +31,7 @@ from datetime import datetime, timedelta
 import demo_main
 from persistence import PersistenceManager
 from path_dispatcher import PathDispatcher
+from train_lookahead import build_lookahead
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
@@ -132,8 +134,8 @@ run_startup_tests()
 network = demo_main.create_comprehensive_demo()
 network = demo_main.create_track_showcase(network)
 
-sim_controller = SimulationController(network)
 path_dispatcher = PathDispatcher(network)
+sim_controller = SimulationController(network, path_dispatcher)
 persistence_manager = PersistenceManager()
 simulation_lock = threading.Lock()
 simulation_running = False
@@ -1622,6 +1624,9 @@ def create_train():
         train.set_position((pos["x"], pos["y"]), direction)
 
     network.add_train(train)
+    train.update_occupancy(network)
+    network.update_signals_from_blocks()
+
     return jsonify({"status": "success", "train": train.to_dict()})
 
 
@@ -1678,6 +1683,20 @@ def train_set_direction(train_id):
     if train.set_direction_and_standby(direction):
         return jsonify({"status": "success", "train": train.to_dict()})
     return jsonify({"error": "Cannot set direction (train not in IDLE state)"}), 400
+
+
+@app.route("/api/trains/<train_id>/clear-direction", methods=["POST"])
+def train_clear_direction(train_id):
+    """Clear direction and transition back to IDLE (STANDBY -> IDLE)"""
+    train = network.trains.get(train_id)
+    if not train:
+        return jsonify({"error": "Train not found"}), 404
+
+    if train.clear_direction():
+        return jsonify({"status": "success", "train": train.to_dict()})
+    return jsonify(
+        {"error": "Cannot clear direction (train not in STANDBY state)"}
+    ), 400
 
 
 @app.route("/api/trains/<train_id>/depart", methods=["POST"])
@@ -1800,6 +1819,19 @@ def train_emergency_stop(train_id):
     ), 400
 
 
+@app.route("/api/trains/<train_id>/lookahead", methods=["GET"])
+def train_lookahead(train_id):
+    """Get lookahead data for train monitor visualization."""
+    train = network.trains.get(train_id)
+    if not train:
+        return jsonify({"error": "Train not found"}), 404
+
+    distance_cm = request.args.get("distance_cm", 100000.0, type=float)
+
+    result = build_lookahead(train, network, max_distance_cm=distance_cm)
+    return jsonify(result.to_dict())
+
+
 @app.route("/api/trains", methods=["GET"])
 def list_trains():
     """List all trains in the network."""
@@ -1817,6 +1849,313 @@ def delete_train(train_id):
 
     del network.trains[train_id]
     return jsonify({"status": "success", "message": f"Train {train_id} deleted"})
+
+
+@app.route("/api/trains/<train_id>", methods=["PATCH"])
+def update_train(train_id: str):
+    """Update train properties (name, max_speed, length, etc.)."""
+    if train_id not in network.trains:
+        return jsonify({"error": "Train not found"}), 404
+
+    train = network.trains[train_id]
+    data = request.get_json() or {}
+
+    if "name" in data:
+        train.name = str(data["name"])
+    if "max_speed" in data:
+        train.max_speed = float(data["max_speed"])
+    if "length_cm" in data:
+        train.length_cm = float(data["length_cm"])
+    if "min_curve_radius_cm" in data:
+        train.min_curve_radius_cm = float(data["min_curve_radius_cm"])
+
+    return jsonify({"status": "success", "train": train.to_dict()})
+
+
+# ============================================================================
+# Train Routes API (Route = train's travel plan with waypoints)
+# ============================================================================
+
+
+@app.route("/api/train-routes", methods=["GET"])
+def list_train_routes():
+    routes = []
+    for route in network.routes.values():
+        routes.append(route.to_dict())
+    return jsonify({"routes": routes})
+
+
+@app.route("/api/train-routes", methods=["POST"])
+def create_train_route():
+    data = request.get_json() or {}
+
+    route_id = data.get("route_id") or f"ROUTE-{uuid.uuid4().hex[:6].upper()}"
+    name = data.get("name", "")
+    mode_str = data.get("mode", "one_way")
+
+    try:
+        mode = RouteMode(mode_str)
+    except ValueError:
+        mode = RouteMode.ONE_WAY
+
+    route = Route(route_id=route_id, name=name, mode=mode)
+
+    waypoints_data = data.get("waypoints", [])
+    for wp_data in waypoints_data:
+        station_id = wp_data.get("station_id", "")
+        dwell_time = float(wp_data.get("dwell_time_sec", 30.0))
+
+        timing_mode_str = wp_data.get("timing_mode", "none")
+        try:
+            timing_mode = TimingMode(timing_mode_str)
+        except ValueError:
+            timing_mode = TimingMode.NONE
+
+        target_time = wp_data.get("target_time")
+
+        waypoint = Waypoint(
+            station_id=station_id,
+            dwell_time_sec=dwell_time,
+            timing_mode=timing_mode,
+            target_time=target_time,
+        )
+        route.add_waypoint(waypoint)
+
+    network.routes[route_id] = route
+
+    return jsonify({"status": "success", "route": route.to_dict()})
+
+
+@app.route("/api/train-routes/<route_id>", methods=["GET"])
+def get_train_route(route_id):
+    route = network.routes.get(route_id)
+    if not route:
+        return jsonify({"error": "Route not found"}), 404
+    return jsonify(route.to_dict())
+
+
+@app.route("/api/train-routes/<route_id>", methods=["DELETE"])
+def delete_train_route(route_id):
+    if route_id not in network.routes:
+        return jsonify({"error": "Route not found"}), 404
+
+    for train in network.trains.values():
+        if train.assigned_route_id == route_id:
+            train.assigned_route_id = None
+
+    del network.routes[route_id]
+    return jsonify({"status": "success", "message": f"Route {route_id} deleted"})
+
+
+@app.route("/api/trains/<train_id>/assign-route", methods=["PUT"])
+def assign_route_to_train(train_id):
+    train = network.trains.get(train_id)
+    if not train:
+        return jsonify({"error": "Train not found"}), 404
+
+    data = request.get_json() or {}
+    route_id = data.get("route_id")
+
+    if route_id is None:
+        train.assigned_route_id = None
+        return jsonify({"status": "success", "train": train.to_dict()})
+
+    route = network.routes.get(route_id)
+    if not route:
+        return jsonify({"error": "Route not found"}), 404
+
+    train.assigned_route_id = route_id
+    return jsonify({"status": "success", "train": train.to_dict()})
+
+
+@app.route("/api/train-routes/<route_id>/activate", methods=["POST"])
+def activate_train_route(route_id):
+    route = network.routes.get(route_id)
+    if not route:
+        return jsonify({"error": "Route not found"}), 404
+
+    route.activate(sim_controller.simulation_time)
+    return jsonify({"status": "success", "route": route.to_dict()})
+
+
+@app.route("/api/train-routes/<route_id>/deactivate", methods=["POST"])
+def deactivate_train_route(route_id):
+    route = network.routes.get(route_id)
+    if not route:
+        return jsonify({"error": "Route not found"}), 404
+
+    route.deactivate()
+    return jsonify({"status": "success", "route": route.to_dict()})
+
+
+# ============================================================================
+# Schedule Management API
+# ============================================================================
+
+
+@app.route("/api/schedules", methods=["GET"])
+def list_schedules():
+    """List all train schedules."""
+    schedules = []
+    for schedule in network.schedules.values():
+        stops_data = []
+        for stop in schedule.stops:
+            stops_data.append(
+                {
+                    "station_pos": list(stop.station_pos),
+                    "station_name": stop.station_name,
+                    "arrival_time": stop.arrival_time.isoformat()
+                    if stop.arrival_time
+                    else None,
+                    "departure_time": stop.departure_time.isoformat()
+                    if stop.departure_time
+                    else None,
+                    "platform": stop.platform,
+                }
+            )
+        schedules.append(
+            {
+                "schedule_id": schedule.schedule_id,
+                "train_id": schedule.train_id,
+                "stops": stops_data,
+                "start_time": schedule.start_time.isoformat()
+                if schedule.start_time
+                else None,
+                "end_time": schedule.end_time.isoformat()
+                if schedule.end_time
+                else None,
+                "priority": schedule.priority,
+            }
+        )
+    return jsonify({"schedules": schedules})
+
+
+@app.route("/api/schedules", methods=["POST"])
+def create_schedule():
+    """Create a new train schedule.
+
+    Request body:
+        train_id: Train to assign schedule to (required)
+        stops: List of stops with station_name, arrival_time, departure_time
+        priority: Schedule priority (optional, default 0)
+    """
+    data = request.get_json() or {}
+
+    train_id = data.get("train_id")
+    if not train_id:
+        return jsonify({"error": "train_id is required"}), 400
+
+    if train_id not in network.trains:
+        return jsonify({"error": f"Train '{train_id}' not found"}), 404
+
+    schedule_id = data.get("schedule_id") or f"SCH-{uuid.uuid4().hex[:6].upper()}"
+    priority = data.get("priority", 0)
+
+    schedule = TrainSchedule(
+        train_id=train_id, schedule_id=schedule_id, priority=priority
+    )
+
+    stops_data = data.get("stops", [])
+    for stop_data in stops_data:
+        station_name = stop_data.get("station_name", "Unknown")
+        station_pos = tuple(stop_data.get("station_pos", [0, 0]))
+
+        arrival_str = stop_data.get("arrival_time")
+        departure_str = stop_data.get("departure_time")
+
+        try:
+            arrival_time = (
+                datetime.fromisoformat(arrival_str) if arrival_str else datetime.now()
+            )
+            departure_time = (
+                datetime.fromisoformat(departure_str)
+                if departure_str
+                else arrival_time + timedelta(minutes=2)
+            )
+        except ValueError:
+            arrival_time = datetime.now()
+            departure_time = arrival_time + timedelta(minutes=2)
+
+        stop = ScheduleStop(
+            station_pos=station_pos,
+            station_name=station_name,
+            arrival_time=arrival_time,
+            departure_time=departure_time,
+            platform=stop_data.get("platform"),
+        )
+        schedule.add_stop(stop)
+
+    if schedule.stops:
+        schedule.start_time = schedule.stops[0].arrival_time
+        schedule.end_time = schedule.stops[-1].departure_time
+
+    network.add_schedule(schedule)
+
+    train = network.trains[train_id]
+    train.schedule = schedule
+
+    return jsonify(
+        {
+            "status": "success",
+            "schedule_id": schedule_id,
+            "message": f"Schedule created and assigned to train {train_id}",
+        }
+    )
+
+
+@app.route("/api/schedules/<schedule_id>", methods=["GET"])
+def get_schedule(schedule_id):
+    """Get a specific schedule by ID."""
+    if schedule_id not in network.schedules:
+        return jsonify({"error": "Schedule not found"}), 404
+
+    schedule = network.schedules[schedule_id]
+    stops_data = []
+    for stop in schedule.stops:
+        stops_data.append(
+            {
+                "station_pos": list(stop.station_pos),
+                "station_name": stop.station_name,
+                "arrival_time": stop.arrival_time.isoformat()
+                if stop.arrival_time
+                else None,
+                "departure_time": stop.departure_time.isoformat()
+                if stop.departure_time
+                else None,
+                "platform": stop.platform,
+            }
+        )
+
+    return jsonify(
+        {
+            "schedule_id": schedule.schedule_id,
+            "train_id": schedule.train_id,
+            "stops": stops_data,
+            "start_time": schedule.start_time.isoformat()
+            if schedule.start_time
+            else None,
+            "end_time": schedule.end_time.isoformat() if schedule.end_time else None,
+            "priority": schedule.priority,
+        }
+    )
+
+
+@app.route("/api/schedules/<schedule_id>", methods=["DELETE"])
+def delete_schedule(schedule_id):
+    """Delete a schedule."""
+    if schedule_id not in network.schedules:
+        return jsonify({"error": "Schedule not found"}), 404
+
+    schedule = network.schedules[schedule_id]
+
+    if schedule.train_id in network.trains:
+        train = network.trains[schedule.train_id]
+        if train.schedule and train.schedule.schedule_id == schedule_id:
+            train.schedule = None
+
+    del network.schedules[schedule_id]
+
+    return jsonify({"status": "success", "message": f"Schedule {schedule_id} deleted"})
 
 
 @app.route("/api/simulation/control", methods=["POST"])

@@ -41,7 +41,7 @@ This document provides the complete technical specification for implementing sig
 |---------|------------|
 | **Signal** | A directional marker that monitors block occupancy and displays state (RED/YELLOW/GREEN) to approaching trains |
 | **Block** | An electrically isolated track section where all tracks share voltage/current; the minimum control unit for train movement |
-| **Vehicle-Driven Reservation** | Trains actively check signal states and reserve blocks ahead; signals are passive indicators |
+| **Vehicle-Driven Reservation** | Trains actively check signal states and reserve paths ahead; signals are passive indicators |
 
 ### 1.3 Data Architecture
 
@@ -190,26 +190,25 @@ def _calculate_signal_state(signal):
         return SignalState.YELLOW
 ```
 
-**Integration with RouteDispatcher:**
+**Integration with PathDispatcher:**
 
-The `approaching_train_id` is set automatically by the `RouteDispatcher.set_route()` method:
+The `approaching_train_id` is set automatically by the `PathDispatcher.create_path()` method:
 
 ```python
-# When setting a route
-dispatcher.set_route(
+# When setting a path
+dispatcher.create_path(
     train_id="TRAIN_001",
-    signal_ids=["SIG_1", "SIG_2"],  # These signals get approaching_train_id set
-    block_ids=["BLK_A", "BLK_B"],
-    switch_positions={(3, 0): 0}
+    start_block_id="BLK_A",
+    end_block_id="BLK_C"
 )
 
-# Internally: signal.approaching_train_id = train_id for each signal_id
+# Internally: signal.approaching_train_id = train_id for each signal in the path
 ```
 
 **Lifecycle:**
-1. **Route Set:** `approaching_train_id` assigned to signals in route
+1. **Path Set:** `approaching_train_id` assigned to signals in path
 2. **Train Progresses:** Signal continues showing GREEN as train approaches
-3. **Route Complete/Cancelled:** `approaching_train_id` cleared to `null`
+3. **Path Complete/Cancelled:** `approaching_train_id` cleared to `null`
 
 ---
 
@@ -986,7 +985,7 @@ When calculating signal state:
 | Block A | Block B | Switch Status | Signal Color |
 |---------|---------|---------------|--------------|
 | (not assigned) | - | - | **RED** |
-| - | - | Blocking route | **RED** |
+| - | - | Path blocked | **RED** |
 | OCCUPIED | (any) | Aligned | **RED** |
 | RESERVED | (any) | Aligned | **RED** |
 | CAUTION | (any) | Aligned | **YELLOW** |

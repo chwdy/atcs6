@@ -88,16 +88,6 @@ class BlockState(Enum):
     CAUTION = "caution"  # 警告（列车刚离开，下一区段仍被占用，需减速）
 
 
-class TrainStatus(Enum):
-    """Train operational status (legacy - use TrainState for new code)"""
-
-    IDLE = "idle"
-    RUNNING = "running"
-    WAITING = "waiting"
-    AT_STATION = "at_station"
-    DELAYED = "delayed"
-
-
 class TrainState(Enum):
     """
     Train power and operational states for DC analog control.

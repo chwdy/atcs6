@@ -145,6 +145,24 @@ class API {
         }
     }
 
+    async updateTrain(trainId, updates) {
+        try {
+            const response = await fetch(`${this.baseUrl}/trains/${trainId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updates)
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to update train');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] updateTrain failed:', e);
+            throw e;
+        }
+    }
+
     async controlSimulation(action, speed = null) {
         const data = { action };
         if (speed !== null) {
@@ -731,6 +749,22 @@ class API {
         }
     }
 
+    async trainClearDirection(trainId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/trains/${trainId}/clear-direction`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to clear train direction');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] trainClearDirection failed:', e);
+            throw e;
+        }
+    }
+
     async trainDepart(trainId) {
         try {
             const response = await fetch(`${this.baseUrl}/trains/${trainId}/depart`, {
@@ -859,6 +893,91 @@ class API {
             return result;
         } catch (e) {
             console.error('[API] trainEmergencyStop failed:', e);
+            throw e;
+        }
+    }
+
+    /**
+     * Get lookahead data for train monitor display
+     * @param {string} trainId - Train ID
+     * @param {number} maxDistanceCm - Maximum lookahead distance in cm (default: 100000)
+     * @returns {Object} Lookahead data with signals, blocks, stations ahead
+     */
+    async getTrainLookahead(trainId, maxDistanceCm = 100000) {
+        try {
+            const url = new URL(`${this.baseUrl}/trains/${trainId}/lookahead`, window.location.origin);
+            if (maxDistanceCm !== 100000) {
+                url.searchParams.set('max_distance_cm', maxDistanceCm);
+            }
+            const response = await fetch(url);
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to get train lookahead');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] getTrainLookahead failed:', e);
+            throw e;
+        }
+    }
+
+    // === Schedule API ===
+
+    async getSchedules() {
+        try {
+            const response = await fetch(`${this.baseUrl}/schedules`);
+            const result = await response.json();
+            return result.schedules || [];
+        } catch (e) {
+            console.error('[API] getSchedules failed:', e);
+            throw e;
+        }
+    }
+
+    async getSchedule(scheduleId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/schedules/${encodeURIComponent(scheduleId)}`);
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to get schedule');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] getSchedule failed:', e);
+            throw e;
+        }
+    }
+
+    async createSchedule(trainId, stops, priority = 0) {
+        try {
+            const response = await fetch(`${this.baseUrl}/schedules`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ train_id: trainId, stops, priority })
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to create schedule');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] createSchedule failed:', e);
+            throw e;
+        }
+    }
+
+    async deleteSchedule(scheduleId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/schedules/${encodeURIComponent(scheduleId)}`, {
+                method: 'DELETE'
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to delete schedule');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] deleteSchedule failed:', e);
             throw e;
         }
     }
@@ -1016,7 +1135,7 @@ class API {
             const result = await response.json();
             return result;
         } catch (e) {
-            console.error('[API] getRoute failed:', e);
+            console.error('[API] getPath failed:', e);
             throw e;
         }
     }

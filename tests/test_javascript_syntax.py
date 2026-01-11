@@ -7,6 +7,7 @@ without errors. This catches issues before they reach the browser.
 Critical: These tests MUST pass before any commit.
 """
 
+import os
 import subprocess
 import pytest
 from pathlib import Path
@@ -15,6 +16,9 @@ from pathlib import Path
 # Get the project root directory
 PROJECT_ROOT = Path(__file__).parent.parent
 JS_DIR = PROJECT_ROOT / "static" / "js"
+
+# Node.js path - use Node 22 from nvm which supports ES2020+ syntax
+NODE_PATH = os.path.expanduser("~/.nvm/versions/node/v22.18.0/bin/node")
 
 
 def get_all_js_files():
@@ -29,7 +33,7 @@ class TestJavaScriptSyntax:
     def test_javascript_syntax_valid(self, js_file):
         """Test that JavaScript file has valid syntax using Node.js"""
         result = subprocess.run(
-            ["node", "--check", str(js_file)], capture_output=True, text=True
+            [NODE_PATH, "--check", str(js_file)], capture_output=True, text=True
         )
 
         assert result.returncode == 0, (

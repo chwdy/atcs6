@@ -62,11 +62,11 @@
 | `signal_validation.py` | Signal placement validation rules |
 | `simulation.py` | Background thread running simulation loop |
 | `dispatcher.py` | Train routing and scheduling |
-| `route_dispatcher.py` | **ACTIVE** Route dispatcher with block reservation and switch locking |
-| `route.py` | Route entity class for route lifecycle management |
+| `path_dispatcher.py` | **ACTIVE** Path dispatcher with block reservation and switch locking |
+| `path.py` | Path entity class for dispatcher reservation management |
 | `pathfinder.py` | A* pathfinding for train movement |
 | `interlocking.py` | Alternative route locking implementation (not currently active) |
-| `dispatcher_interface.py` | Legacy route dispatcher interface (not currently active) |
+| `dispatcher_interface.py` | Legacy path dispatcher interface (not currently active) |
 | `enums.py` | Shared enumerations (Direction, SignalState, BlockState, etc.) |
 
 ## Frontend Architecture
@@ -215,7 +215,7 @@ Train(
     consist: List[TrainCar] = [],  # List of cars making up the train
     max_speed: float = 100.0,      # Operational max speed
     current_speed: float = 0.0,    # Current speed in km/h
-    # ... position, status, schedule, etc.
+    # ... position, state, schedule, etc.
 )
 ```
 

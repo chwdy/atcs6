@@ -17,7 +17,6 @@ from interlocking import InterlockingSystem
 from enums import (
     TrackType,
     Direction,
-    SignalState as EnumSignalState,
     SwitchPosition,
     BlockState,
 )
@@ -59,20 +58,6 @@ class RailwayNetwork:
 
         # Propagate to this tile and neighbors
         self.propagate_from_tile(track.x, track.y)
-
-    def add_stub_track(self, x: int, y: int, block_id: Optional[str] = None):
-        """
-        Add a stub/isolated track point (no connections).
-        track_bits = 0, displays as a dot on the map.
-
-        Args:
-            x, y: Track position
-            block_id: Optional block section ID
-        """
-        track = TrackSegment(x, y)
-        # No paths - track_bits = 0
-        track.block_section_id = block_id
-        self.add_track(track)
 
     def get_track(self, x: int, y: int) -> Optional[TrackSegment]:
         """Get track segment at specified position"""

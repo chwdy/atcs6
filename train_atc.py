@@ -19,6 +19,7 @@ from train_config import (
     ATC_SAFETY_MARGIN_CM,
     ATC_SIGNAL_LOOKAHEAD_BLOCKS,
     ATC_MIN_CLEARANCE_CM,
+    ATC_NO_BLOCK_FALLBACK_CM,
     YELLOW_SIGNAL_SPEED_KMH,
     DEFAULT_DECELERATION_RATE,
     kmh_to_cm_per_sec,
@@ -123,7 +124,7 @@ class TrainATC:
         # Get train's current block
         current_block_id = self._get_current_block_id()
         if not current_block_id:
-            return ATC_MIN_CLEARANCE_CM  # Minimal clearance if no block
+            return ATC_NO_BLOCK_FALLBACK_CM
 
         # Add remaining distance in current block
         clearance += self._get_remaining_distance_in_current_block()
@@ -257,7 +258,7 @@ class TrainATC:
         # Find signals associated with this block
         for signal_id, signal in self.network.signals.items():
             # Check if signal protects entry to this block
-            if hasattr(signal, "block_id") and signal.block_id == block_id:
+            if hasattr(signal, "monitored_block_id") and signal.monitored_block_id == block_id:
                 if signal.state == SignalState.RED:
                     return True
 
@@ -278,7 +279,7 @@ class TrainATC:
 
             # Check for yellow signal at this block
             for signal_id, signal in self.network.signals.items():
-                if hasattr(signal, "block_id") and signal.block_id == block_id:
+                if hasattr(signal, "monitored_block_id") and signal.monitored_block_id == block_id:
                     if signal.state in (SignalState.YELLOW, SignalState.DOUBLE_YELLOW):
                         return True
 

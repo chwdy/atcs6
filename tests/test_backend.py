@@ -35,7 +35,7 @@ from network import RailwayNetwork
 # Block and signal
 from block import Block
 from railway_signal import Signal, SignalType, SignalState
-from enums import BlockState, PlatformSide, Direction
+from enums import BlockState, PlatformSide, Direction, TrainState
 
 # Station
 from station import Station
@@ -67,6 +67,9 @@ from interlocking import InterlockingSystem, InterlockingRoute
 
 # Train
 from train import Train, TrainCar
+from train_atc import create_atc_for_train
+from train_config import ATC_NO_BLOCK_FALLBACK_CM, DEFAULT_TILE_LENGTH_CM
+from train_lookahead import build_lookahead, LookaheadItemType
 
 
 # ============= PYTEST FIXTURES =============
@@ -1005,10 +1008,33 @@ class TestRailwayNetwork:
         assert neighbor.y == 0
 
     # Extensive tests
-    def test_track_removal_with_blocks(self):
+    def test_track_removal_with_blocks(self, network):
         """Ensure blocks are updated when track is removed"""
-        # This test requires block functionality to be integrated
-        pass  # TODO: Implement when block lifecycle is clear
+        # Create tracks
+        track1 = TrackSegment(0, 0, TRACK_NS)
+        track2 = TrackSegment(0, 1, TRACK_NS)
+        network.add_track(track1)
+        network.add_track(track2)
+
+        # Create block with tracks
+        block = Block(block_id="BLK_REMOVAL_TEST")
+        network.blocks["BLK_REMOVAL_TEST"] = block
+        network.assign_track_to_block(0, 0, "BLK_REMOVAL_TEST")
+        network.assign_track_to_block(0, 1, "BLK_REMOVAL_TEST")
+
+        # Track should have block_section_id set
+        assert track1.block_section_id == "BLK_REMOVAL_TEST"
+
+        # Remove track - block assignment should be cleared
+        network.remove_track(0, 0)
+
+        # Track is gone
+        assert network.get_track(0, 0) is None
+
+        # Other track still has assignment
+        remaining = network.get_track(0, 1)
+        assert remaining is not None
+        assert remaining.block_section_id == "BLK_REMOVAL_TEST"
 
 
 # ============= BLOCK & SIGNAL TESTS =============
@@ -3307,7 +3333,10 @@ class TestSimulationController:
         simulation = SimulationController(network)
         assert simulation is not None
         assert simulation.network == network
-        assert simulation.dispatcher is not None
+        # SimulationController now uses DC analog control model with these components:
+        assert simulation.power_controller is not None
+        assert simulation.route_executor is not None
+        assert simulation.speed_profile_registry is not None
 
 
 class TestInterlockingSystem:
@@ -3516,7 +3545,7 @@ class TestLayoutPersistence:
             network.blocks[block.block_id] = block
             for y in range(3):
                 track = network.get_track(0, y)
-                track.block_id = "BLK1"
+                track.block_section_id = "BLK1"
 
             # Create signal
             signal = Signal(
@@ -4231,6 +4260,275 @@ class TestSignalDirectionAwareness:
         )
 
         print("✓ Signal correctly shows GREEN when on same route as monitored block")
+
+
+class TestTrainManualControlBugFixes:
+    """
+    Comprehensive tests for train manual control and ATC fallback fixes (Jan 2026).
+
+    BUG: Manual speed was effectively zero when trains were on tracks without
+    block_section_id, because ATC returned ATC_MIN_CLEARANCE_CM (10cm), which
+    limited speed to near 0 km/h.
+    FIX: Use ATC_NO_BLOCK_FALLBACK_CM clearance when no block is configured.
+    """
+
+    def test_clear_direction_from_standby(self):
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        train.state = TrainState.STANDBY
+        train.facing_direction = Direction.EAST
+        train.travel_direction = "reverse"
+        train.manual_target_speed = 20.0
+        train.target_speed = 15.0
+
+        assert train.clear_direction() is True
+        assert train.state == TrainState.IDLE
+        assert train.facing_direction is None
+        assert train.travel_direction == "forward"
+        assert train.manual_target_speed == 0.0
+        assert train.target_speed == 0.0
+
+    def test_clear_direction_rejects_moving(self):
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_02", consist=[car], max_speed=60.0)
+        train.state = TrainState.STANDBY
+        train.facing_direction = Direction.NORTH
+        train.current_speed = 5.0
+
+        assert train.clear_direction() is False
+        assert train.state == TrainState.STANDBY
+        assert train.facing_direction == Direction.NORTH
+
+    def test_manual_speed_requires_manual_and_clamps(self):
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_03", consist=[car], max_speed=40.0)
+
+        assert train.set_manual_speed(30.0) is False
+        train.state = TrainState.MANUAL
+        assert train.set_manual_speed(60.0) is True
+        assert train.manual_target_speed == 40.0
+
+    def test_travel_direction_requires_manual(self):
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_04", consist=[car], max_speed=60.0)
+
+        assert train.set_travel_direction("reverse") is False
+        train.state = TrainState.MANUAL
+        assert train.set_travel_direction("reverse") is True
+        assert train.travel_direction == "reverse"
+        assert train.set_travel_direction("forward") is True
+        assert train.travel_direction == "forward"
+        assert train.set_travel_direction("invalid") is False
+
+    def test_atc_fallback_clearance_no_block_allows_movement(self, network):
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        network.add_track(track)
+        network.propagate_from_tile(0, 0)
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_05", consist=[car], max_speed=50.0)
+        train.current_pos = (0, 0)
+
+        atc = create_atc_for_train(train, network)
+        clearance = atc.get_clearance_ahead()
+        assert clearance == ATC_NO_BLOCK_FALLBACK_CM
+        assert atc.get_target_speed() == train.max_speed
+
+
+class TestTrainLookahead:
+    def test_lookahead_returns_basic_result(self, network):
+        for x in range(5):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        train.current_pos = (0, 0)
+        train.facing_direction = Direction.EAST
+        train.travel_direction = "forward"
+        train.state = TrainState.STANDBY
+
+        result = build_lookahead(train, network)
+
+        assert result.train_id == "TRAIN_01"
+        assert result.max_speed_kmh == 60.0
+        assert result.facing_direction == "EAST"
+        assert result.travel_direction == "forward"
+        assert result.clearance_cm > 0
+
+    def test_lookahead_traverses_tiles(self, network):
+        for x in range(5):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_02", consist=[car], max_speed=80.0)
+        train.current_pos = (0, 0)
+        train.facing_direction = Direction.EAST
+        train.travel_direction = "forward"
+
+        result = build_lookahead(train, network)
+
+        expected_clearance = 5 * DEFAULT_TILE_LENGTH_CM
+        assert result.clearance_cm == expected_clearance
+
+    def test_lookahead_with_no_position_returns_empty(self, network):
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_03", consist=[car], max_speed=60.0)
+        train.current_pos = None
+        train.facing_direction = None
+
+        result = build_lookahead(train, network)
+
+        assert result.train_id == "TRAIN_03"
+        assert result.clearance_cm == 0
+        assert len(result.lookahead_items) == 0
+
+    def test_lookahead_reverse_direction(self, network):
+        for x in range(5):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_04", consist=[car], max_speed=60.0)
+        train.current_pos = (2, 0)
+        train.facing_direction = Direction.EAST
+        train.travel_direction = "reverse"
+
+        result = build_lookahead(train, network)
+
+        assert result.clearance_cm == 3 * DEFAULT_TILE_LENGTH_CM
+
+    def test_lookahead_to_dict(self, network):
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        network.add_track(track)
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_05", consist=[car], max_speed=60.0)
+        train.current_pos = (0, 0)
+        train.facing_direction = Direction.EAST
+
+        result = build_lookahead(train, network)
+        result_dict = result.to_dict()
+
+        assert "train_id" in result_dict
+        assert "current_speed_kmh" in result_dict
+        assert "lookahead_items" in result_dict
+        assert "clearance_cm" in result_dict
+        assert isinstance(result_dict["lookahead_items"], list)
+
+
+class TestTrainPlacementOccupancy:
+    def test_train_update_occupancy_sets_block_occupied(self, network):
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        network.add_track(track)
+
+        block = Block(block_id="BLK_001", name="Test Block")
+        network.blocks["BLK_001"] = block
+        block.tiles = [(0, 0)]
+        track.block_section_id = "BLK_001"
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        train.set_position((0, 0), Direction.EAST)
+
+        assert block.state == BlockState.FREE
+        network.add_train(train)
+        train.update_occupancy(network)
+
+        assert block.state == BlockState.OCCUPIED
+        assert block.occupied_by == "TRAIN_01"
+
+    def test_train_update_occupancy_without_block(self, network):
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        network.add_track(track)
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_02", consist=[car], max_speed=60.0)
+        train.set_position((0, 0), Direction.EAST)
+
+        network.add_train(train)
+        train.update_occupancy(network)
+
+    def test_train_update_occupancy_with_multiple_tiles(self, network):
+        for x in range(3):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+            track.block_section_id = "BLK_001"
+
+        block = Block(block_id="BLK_001", name="Long Block")
+        network.blocks["BLK_001"] = block
+        block.tiles = [(0, 0), (1, 0), (2, 0)]
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_03", consist=[car], max_speed=60.0)
+        train.set_position((1, 0), Direction.EAST)
+
+        network.add_train(train)
+        train.update_occupancy(network)
+
+        assert block.state == BlockState.OCCUPIED
+        assert block.occupied_by == "TRAIN_03"
+
+
+class TestTrainPropertyUpdate:
+    def test_train_name_update(self, network):
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        train.name = "Original Name"
+        network.add_train(train)
+
+        train.name = "Updated Name"
+        assert network.trains["TRAIN_01"].name == "Updated Name"
+
+    def test_train_max_speed_update(self, network):
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        network.add_train(train)
+
+        train.max_speed = 120.0
+        assert network.trains["TRAIN_01"].max_speed == 120.0
+
+    def test_train_length_update(self, network):
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        train.length_cm = 2000.0
+        network.add_train(train)
+
+        train.length_cm = 3000.0
+        assert network.trains["TRAIN_01"].length_cm == 3000.0
 
 
 if __name__ == "__main__":

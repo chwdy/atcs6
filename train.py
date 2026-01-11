@@ -9,7 +9,7 @@ operational status, and time-based scheduling with stops and routing information
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Literal
 from datetime import datetime
-from enums import TrainStatus, TrainState, Direction, OPPOSITE_DIRECTIONS
+from enums import TrainState, Direction, OPPOSITE_DIRECTIONS
 
 
 @dataclass
@@ -62,18 +62,6 @@ class TrainSchedule:
                 return stop
         return None
 
-    def get_next_stop_after(
-        self, station_pos: Tuple[int, int]
-    ) -> Optional[ScheduleStop]:
-        """Get the next stop after a given station position"""
-        found_current = False
-        for stop in self.stops:
-            if found_current:
-                return stop
-            if stop.station_pos == station_pos:
-                found_current = True
-        return None
-
     def is_delayed(self, current_time: datetime, current_pos: Tuple[int, int]) -> bool:
         """Check if train is currently delayed"""
         target = self.get_current_target(current_time)
@@ -94,16 +82,6 @@ class TrainSchedule:
         """Add a new stop to the schedule"""
         self.stops.append(stop)
         self.stops.sort(key=lambda s: s.arrival_time)
-
-    def get_total_journey_time(self) -> float:
-        """Get total journey time in minutes"""
-        if self.stops:
-            first_stop = min(self.stops, key=lambda s: s.arrival_time)
-            last_stop = max(self.stops, key=lambda s: s.departure_time)
-            return (
-                last_stop.departure_time - first_stop.arrival_time
-            ).total_seconds() / 60
-        return 0
 
 
 @dataclass
@@ -165,9 +143,6 @@ class Train:
     current_direction: Optional[Direction] = None
     distance_on_track: float = 0.0  # Distance traveled on current track segment
     occupied_tracks: List[Tuple[int, int]] = field(default_factory=list)
-
-    # Operational status (legacy)
-    status: TrainStatus = TrainStatus.IDLE
 
     # Schedule management
     schedule: Optional[TrainSchedule] = None
@@ -289,11 +264,17 @@ class Train:
 
     def is_at_station(self, station_pos: Tuple[int, int]) -> bool:
         """Check if train is currently at a specific station"""
-        return self.current_pos == station_pos and self.status == TrainStatus.AT_STATION
+        return (
+            self.current_pos == station_pos
+            and self.state == TrainState.RUNNING_AT_STATION
+        )
 
     def is_moving(self) -> bool:
         """Check if train is currently in motion"""
-        return self.status == TrainStatus.RUNNING and self.current_speed > 0
+        return (
+            self.state in (TrainState.RUNNING_MOVING, TrainState.MANUAL)
+            and self.current_speed > 0
+        )
 
     def is_delayed(self, current_time: datetime) -> bool:
         """Check if train is delayed according to its schedule"""
@@ -349,7 +330,8 @@ class Train:
         status becomes IDLE.
         """
         self.is_emergency_braking = True
-        self.status = TrainStatus.WAITING  # Will become IDLE when stopped
+        if self.state == TrainState.RUNNING_MOVING:
+            self.state = TrainState.RUNNING_WAITING
 
     def get_braking_distance(self) -> float:
         """
@@ -402,7 +384,7 @@ class Train:
         if self.current_speed <= 0:
             self.current_speed = 0.0
             self.is_emergency_braking = False
-            self.status = TrainStatus.IDLE
+            self.state = TrainState.IDLE
             return False
 
         return True
@@ -503,6 +485,30 @@ class Train:
             return False
         self.facing_direction = direction
         self.state = TrainState.STANDBY
+        return True
+
+    def clear_direction(self) -> bool:
+        """
+        Clear facing direction and return to IDLE state (STANDBY -> IDLE).
+
+        Allowed only when stopped and in STANDBY (or MANUAL when stopped).
+        Resets facing_direction to None, travel_direction to 'forward',
+        and speed targets to 0.
+
+        Returns:
+            True if successful, False if not allowed
+        """
+        if not self.is_stopped():
+            return False
+
+        if self.state not in (TrainState.STANDBY, TrainState.MANUAL):
+            return False
+
+        self.facing_direction = None
+        self.travel_direction = "forward"
+        self.manual_target_speed = 0.0
+        self.target_speed = 0.0
+        self.state = TrainState.IDLE
         return True
 
     def enable_manual(self) -> bool:
@@ -867,9 +873,7 @@ class Train:
             "length": self.length,
             "speed": self.current_speed,
             "max_speed": self.max_speed,
-            "status": self.status.name,
             "occupied_tracks": self.occupied_tracks,
-            # New Phase 1 properties
             "model": self.model,
             "min_radius_cm": self.min_radius_cm,
             "facing_direction": self.facing_direction.name
@@ -920,7 +924,7 @@ class Train:
         Note: This reconstructs basic train state. Schedule and path
         will be None and need to be re-established if needed.
         """
-        from enums import TrainStatus, TrainState, Direction
+        from enums import TrainState, Direction
 
         train = cls(
             train_id=data.get("id", ""),
@@ -940,13 +944,6 @@ class Train:
                 train.current_direction = Direction[data["direction"]]
             except KeyError:
                 pass
-
-        # Status (legacy)
-        if "status" in data:
-            try:
-                train.status = TrainStatus[data["status"]]
-            except KeyError:
-                train.status = TrainStatus.IDLE
 
         # Occupied tracks
         train.occupied_tracks = [

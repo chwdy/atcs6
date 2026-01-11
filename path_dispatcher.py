@@ -1527,9 +1527,9 @@ class PathDispatcher:
             train = self.network.trains.get(path.train_id)
             if train:
                 # Train will need new path after stopping
-                train.status = (
-                    train.status
-                )  # Keep current status, train will handle stopping
+                train.state = (
+                    train.state
+                )  # Keep current state, train will handle stopping
 
         # Release non-approach-locked blocks
         for block_id in path.block_sequence:

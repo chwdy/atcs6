@@ -119,7 +119,7 @@ atcs6/
 - `SignalState`: Railway signal states (GREEN, RED, YELLOW, DOUBLE_YELLOW)
 - `SwitchPosition`: Switch/turnout positions (MAIN, DIVERGING, LOCKED)
 - `BlockState`: Block section states (FREE, OCCUPIED, RESERVED, CAUTION)
-- `TrainStatus`: Train operational status (IDLE, RUNNING, WAITING, AT_STATION, DELAYED)
+- `TrainState`: Train operational state for DC analog control (off, idle, standby, running_moving, running_waiting, running_at_station, manual)
 
 **TODO:**
 - Add validation methods for enum combinations

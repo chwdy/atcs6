@@ -1,6 +1,6 @@
 # ATCS6 REST API Documentation
 
-Base URL: `http://localhost:5000`
+Base URL: `http://localhost:5001`
 
 ## Infrastructure Endpoints
 
@@ -172,6 +172,20 @@ Add multiple tracks at once (used for drag-to-build).
 
 ## Train Endpoints
 
+Trains use a DC analog control model with a state machine for realistic operation.
+
+### Train States
+
+| State | Description |
+|-------|-------------|
+| `off` | Train is powered off |
+| `idle` | Powered on but no direction set |
+| `standby` | Direction set, ready to depart |
+| `running_moving` | Currently moving under ATC control |
+| `running_waiting` | Stopped waiting for path/signal |
+| `running_at_station` | Stopped at a station platform |
+| `manual` | Manual control mode (direct speed control) |
+
 ### POST /api/trains
 
 Create a new train. Trains use a consist model where the train is composed of individual cars.
@@ -196,19 +210,6 @@ Create a new train. Trains use a consist model where the train is composed of in
 | position | object | null | Initial {x, y} position |
 | direction | string | null | NORTH, EAST, SOUTH, WEST |
 
-**Note:** The `length` parameter creates a single LOCOMOTIVE car with that length. For more complex consists, use the internal TrainCar model:
-
-```python
-# TrainCar model (internal)
-TrainCar(
-    car_id: str,
-    car_type: str,    # "LOCOMOTIVE", "PASSENGER", "FREIGHT"
-    length: float,    # Length in meters
-    mass: float,      # Mass in kg
-    max_speed: float  # Max speed for this car
-)
-```
-
 **Response:**
 
 ```json
@@ -219,12 +220,625 @@ TrainCar(
     "length": 1.0,
     "speed": 0,
     "max_speed": 100.0,
-    "status": "IDLE",
+    "state": "off",
     "position": {"x": 0, "y": 0},
-    "direction": "NORTH"
+    "direction": "NORTH",
+    "facing_direction": "NORTH",
+    "travel_direction": "forward",
+    "manual_target_speed": 0
   }
 }
 ```
+
+### GET /api/trains
+
+List all trains in the network.
+
+**Response:**
+
+```json
+{
+  "trains": [
+    {
+      "id": "train_1",
+      "state": "idle",
+      "position": {"x": 0, "y": 0},
+      "facing_direction": "NORTH"
+    }
+  ]
+}
+```
+
+### GET /api/trains/{train_id}
+
+Get detailed information about a specific train.
+
+**Response:** Train object with all properties
+
+**Error (404):** `{"error": "Train not found"}`
+
+### DELETE /api/trains/{train_id}
+
+Delete a train from the network.
+
+**Response:** `{"success": true}`
+
+### POST /api/trains/{train_id}/power-on
+
+Power on a train. Transitions from `off` to `idle` state.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "state": "idle",
+  "message": "Train powered on"
+}
+```
+
+### POST /api/trains/{train_id}/power-off
+
+Power off a train. Only works when train is stopped.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "state": "off",
+  "message": "Train powered off"
+}
+```
+
+**Error (400):** `{"error": "Cannot power off while moving"}`
+
+### POST /api/trains/{train_id}/set-direction
+
+Set train facing direction. Transitions from `idle` to `standby` state.
+
+**Request:**
+
+```json
+{
+  "direction": "N"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| direction | string | N, E, S, W (or NORTH, EAST, SOUTH, WEST) |
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "state": "standby",
+  "facing_direction": "N"
+}
+```
+
+### POST /api/trains/{train_id}/depart
+
+Start train moving. Transitions from `standby` to `running_moving` state.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "state": "running_moving",
+  "message": "Train departing"
+}
+```
+
+### POST /api/trains/{train_id}/arrive
+
+Signal that train is arriving at station. Transitions to `running_at_station` state.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "state": "running_at_station",
+  "message": "Train arrived at station"
+}
+```
+
+### POST /api/trains/{train_id}/turn-around
+
+Flip the train's facing direction 180 degrees. Only works in `standby` state.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "facing_direction": "S",
+  "message": "Train turned around"
+}
+```
+
+### POST /api/trains/{train_id}/enable-manual
+
+Enable manual control mode. Bypasses ATC for direct speed control.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "state": "manual",
+  "message": "Manual mode enabled"
+}
+```
+
+### POST /api/trains/{train_id}/disable-manual
+
+Disable manual control mode. Returns to `idle` state.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "state": "idle",
+  "message": "Manual mode disabled"
+}
+```
+
+### POST /api/trains/{train_id}/manual-speed
+
+Set target speed in manual mode.
+
+**Request:**
+
+```json
+{
+  "speed": 50.0
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| speed | float | Target speed in km/h (0 to max_speed) |
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "manual_target_speed": 50.0
+}
+```
+
+### POST /api/trains/{train_id}/travel-direction
+
+Set travel direction in manual mode (forward or reverse relative to facing direction).
+
+**Request:**
+
+```json
+{
+  "direction": "forward"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| direction | string | `forward` or `reverse` |
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "travel_direction": "forward"
+}
+```
+
+### POST /api/trains/{train_id}/emergency-stop
+
+Activate emergency stop. Immediately stops the train.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "state": "running_waiting",
+  "message": "Emergency stop activated"
+}
+```
+
+### GET /api/trains/{train_id}/lookahead
+
+Get lookahead data for train monitor visualization. Returns blocks, signals, stations, and speed limits ahead of the train up to a specified distance.
+
+**Query Parameters:**
+- `distance_cm` (optional): Maximum lookahead distance in cm (default: 100000 = 1km)
+
+**Response:**
+
+```json
+{
+  "train_id": "TRAIN_01",
+  "current_speed_kmh": 45.5,
+  "target_speed_kmh": 60.0,
+  "max_speed_kmh": 100.0,
+  "facing_direction": "EAST",
+  "travel_direction": "forward",
+  "state": "running_moving",
+  "lookahead_items": [
+    {
+      "type": "signal",
+      "id": "SIG_001",
+      "distance_cm": 500.0,
+      "aspect": "green",
+      "direction": "E"
+    },
+    {
+      "type": "block",
+      "id": "BLK_A",
+      "distance_cm": 1000.0,
+      "state": "free",
+      "length_cm": 5000.0
+    },
+    {
+      "type": "station",
+      "id": "STA_MAIN",
+      "distance_cm": 3500.0,
+      "name": "Main Station",
+      "platform_side": "right"
+    },
+    {
+      "type": "speed_limit",
+      "distance_cm": 2000.0,
+      "speed_kmh": 40.0,
+      "reason": "curve"
+    }
+  ],
+  "clearance_cm": 8500.0,
+  "atc_target_speed_kmh": 60.0
+}
+```
+
+**Lookahead Item Types:**
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `signal` | id, distance_cm, aspect, direction | Signal ahead with current aspect |
+| `block` | id, distance_cm, state, length_cm | Block section with occupancy state |
+| `station` | id, distance_cm, name, platform_side | Station platform ahead |
+| `speed_limit` | distance_cm, speed_kmh, reason | Speed restriction (curve, signal, etc.) |
+
+**Error (404):**
+
+```json
+{
+  "error": "Train not found"
+}
+```
+
+---
+
+## Train Routes Endpoints
+
+Train routes are travel plans for trains, consisting of multiple waypoints (stations) with specific timing and dwell instructions. This is distinct from dispatcher paths, which are interlocking routes.
+
+### GET /api/train-routes
+
+List all defined train routes in the network.
+
+**Response:**
+
+```json
+{
+  "routes": [
+    {
+      "route_id": "ROUTE-ABC123",
+      "name": "Main Line Express",
+      "waypoints": [
+        {
+          "station_id": "STA_A",
+          "dwell_time_sec": 30.0,
+          "timing_mode": "none",
+          "target_time": null
+        }
+      ],
+      "mode": "loop",
+      "is_active": true,
+      "current_waypoint_index": 0
+    }
+  ]
+}
+```
+
+### POST /api/train-routes
+
+Create a new train route travel plan.
+
+**Request:**
+
+```json
+{
+  "name": "Morning Commuter",
+  "mode": "loop",
+  "waypoints": [
+    {
+      "station_id": "STA_A",
+      "dwell_time_sec": 30.0,
+      "timing_mode": "none"
+    },
+    {
+      "station_id": "STA_B",
+      "dwell_time_sec": 45.0,
+      "timing_mode": "relative",
+      "target_time": 300
+    }
+  ]
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| name | string | Yes | "" | Name of the route |
+| mode | string | No | "one_way" | `one_way`, `loop`, or `round_trip` |
+| waypoints | array | Yes | [] | List of waypoint objects |
+| route_id | string | No | Auto | Custom route identifier |
+
+**Waypoint Object:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| station_id | string | Yes | - | Station identifier |
+| dwell_time_sec | float | No | 30.0 | Stop duration at station |
+| timing_mode | string | No | "none" | `none`, `relative`, or `absolute` |
+| target_time | float | No | null | Target arrival/departure time |
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "route": { ... }
+}
+```
+
+### GET /api/train-routes/{route_id}
+
+Get detailed information about a specific route.
+
+**Response:** Route object (JSON)
+
+**Error (404):** `{"error": "Route not found"}`
+
+### DELETE /api/train-routes/{route_id}
+
+Delete a train route and unassign it from any trains.
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Route ROUTE-ABC123 deleted"
+}
+```
+
+**Error (404):** `{"error": "Route not found"}`
+
+### PUT /api/trains/{train_id}/assign-route
+
+Assign a travel plan route to a specific train.
+
+**Request:**
+
+```json
+{
+  "route_id": "ROUTE-ABC123"
+}
+```
+
+**Note:** Set `route_id` to `null` to unassign the current route.
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "train": { ... }
+}
+```
+
+**Error (404):** `{"error": "Train not found"}` or `{"error": "Route not found"}`
+
+### POST /api/train-routes/{route_id}/activate
+
+Start or resume route execution for any trains assigned to this route.
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "route": {
+    "route_id": "ROUTE-ABC123",
+    "is_active": true,
+    ...
+  }
+}
+```
+
+### POST /api/train-routes/{route_id}/deactivate
+
+Pause route execution.
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "route": {
+    "route_id": "ROUTE-ABC123",
+    "is_active": false,
+    ...
+  }
+}
+```
+
+---
+
+## Schedule Endpoints
+
+Schedules define time-based plans for trains, consisting of a list of station stops with arrival/departure times. Schedules are stored in the network and can be assigned to a train.
+
+### Schedule Object Format
+
+Schedules are returned in the following JSON format:
+
+```json
+{
+  "schedule_id": "SCH-ABC123",
+  "train_id": "train_1",
+  "stops": [
+    {
+      "station_pos": [0, 0],
+      "station_name": "Station A",
+      "arrival_time": "2024-01-03T12:00:00",
+      "departure_time": "2024-01-03T12:02:00",
+      "platform": null
+    }
+  ],
+  "start_time": "2024-01-03T12:00:00",
+  "end_time": "2024-01-03T14:00:00",
+  "priority": 0
+}
+```
+
+**Stop Object:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| station_pos | array | `[x, y]` coordinates of the station tile |
+| station_name | string | Human-readable station name |
+| arrival_time | string \| null | ISO 8601 arrival timestamp |
+| departure_time | string \| null | ISO 8601 departure timestamp |
+| platform | string \| null | Optional platform identifier |
+
+**Notes:**
+- Timestamps use ISO 8601 strings (parsed by Python `datetime.fromisoformat()`).
+- If `arrival_time`/`departure_time` are omitted or invalid when creating a schedule, the server assigns defaults (current time for arrival, and +2 minutes for departure).
+
+### GET /api/schedules
+
+List all train schedules.
+
+**Response:**
+
+```json
+{
+  "schedules": [
+    {
+      "schedule_id": "SCH-ABC123",
+      "train_id": "train_1",
+      "stops": [
+        {
+          "station_pos": [0, 0],
+          "station_name": "Station A",
+          "arrival_time": "2024-01-03T12:00:00",
+          "departure_time": "2024-01-03T12:02:00",
+          "platform": null
+        }
+      ],
+      "start_time": "2024-01-03T12:00:00",
+      "end_time": "2024-01-03T14:00:00",
+      "priority": 0
+    }
+  ]
+}
+```
+
+### POST /api/schedules
+
+Create a new schedule and assign it to a train.
+
+**Request:**
+
+```json
+{
+  "train_id": "train_1",
+  "schedule_id": "SCH-ABC123",
+  "priority": 0,
+  "stops": [
+    {
+      "station_name": "Station A",
+      "station_pos": [0, 0],
+      "arrival_time": "2024-01-03T12:00:00",
+      "departure_time": "2024-01-03T12:02:00",
+      "platform": null
+    }
+  ]
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| train_id | string | Yes | - | Train to assign the schedule to |
+| schedule_id | string | No | Auto | Custom schedule identifier (e.g., `SCH-ABC123`) |
+| priority | int | No | 0 | Schedule priority |
+| stops | array | No | [] | List of stop objects |
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "schedule_id": "SCH-ABC123",
+  "message": "Schedule created and assigned to train train_1"
+}
+```
+
+**Error (400):**
+
+```json
+{
+  "error": "train_id is required"
+}
+```
+
+**Error (404):**
+
+```json
+{
+  "error": "Train 'train_1' not found"
+}
+```
+
+### GET /api/schedules/{schedule_id}
+
+Get a specific schedule by ID.
+
+**Response:** Schedule object (JSON)
+
+**Error (404):** `{"error": "Schedule not found"}`
+
+### DELETE /api/schedules/{schedule_id}
+
+Delete a schedule. If the schedule is currently assigned to its train, the train's schedule assignment is cleared.
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Schedule SCH-ABC123 deleted"
+}
+```
+
+**Error (404):** `{"error": "Schedule not found"}`
 
 ---
 
@@ -916,21 +1530,23 @@ Get all block assignments for a station.
 
 ---
 
-## Route and Dispatcher Endpoints
+## Path and Dispatcher Endpoints
 
-Routes are interlocking paths through the network with block reservations and switch locking.
+Paths are interlocking routes through the network with block reservations and switch locking.
 
-### GET /api/routes
+**Note:** The API uses `/api/paths` for dispatcher paths (interlocking routes). Train travel plans use `/api/train-routes`.
 
-List all active routes.
+### GET /api/paths
+
+List all active paths.
 
 **Response:**
 
 ```json
 {
-  "routes": [
+  "paths": [
     {
-      "route_id": "RTE_abc123",
+      "path_id": "PATH_abc123",
       "train_id": "train_1",
       "status": "ACTIVE",
       "block_sequence": ["BLK_001", "BLK_002", "BLK_003"],
@@ -940,9 +1556,9 @@ List all active routes.
 }
 ```
 
-### POST /api/routes
+### POST /api/paths
 
-Create a new route between two blocks.
+Create a new path between two blocks.
 
 **Request:**
 
@@ -959,42 +1575,43 @@ Create a new route between two blocks.
 ```json
 {
   "success": true,
-  "route": {
-    "route_id": "RTE_abc123",
+  "path": {
+    "path_id": "PATH_abc123",
     "status": "SETTING",
     "block_sequence": ["BLK_001", "BLK_002", "BLK_003"]
   }
 }
 ```
 
-### GET /api/routes/{route_id}
+### GET /api/paths/{path_id}
 
-Get route details.
+Get path details.
 
-**Response:** Route object
+**Response:** Path object
 
-### DELETE /api/routes/{route_id}
+### DELETE /api/paths/{path_id}
 
-Cancel and release a route.
+Cancel and release a path.
 
 **Response:** `{"success": true}`
 
-### POST /api/routes/{route_id}/complete
+### PUT /api/paths/{path_id}/extend
 
-Manually complete a route and release all resources.
+Extend an existing path with additional blocks.
 
-**Response:**
+**Request:**
 
 ```json
 {
-  "success": true,
-  "message": "Route completed"
+  "block_id": "BLK_004"
 }
 ```
 
-### GET /api/routes/{route_id}/reachable-extensions
+**Response:** Updated path object
 
-Get blocks reachable for extending a route (direction-aware).
+### GET /api/paths/{path_id}/reachable-extensions
+
+Get blocks reachable for extending a path (direction-aware).
 
 **Response:**
 
@@ -1008,6 +1625,19 @@ Get blocks reachable for extending a route (direction-aware).
     }
   ],
   "exit_direction": "N"
+}
+```
+
+### POST /api/paths/{path_id}/complete
+
+Manually complete a path and release all resources.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "message": "Path completed"
 }
 ```
 

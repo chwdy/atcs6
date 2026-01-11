@@ -287,17 +287,16 @@ class SpeedProfile:
         )
 
 
-# Default speed profile for trains without custom calibration
 DEFAULT_SPEED_PROFILE = SpeedProfile(
     profile_id="default",
     name="Default HO Scale",
     speed_voltage_curve=[
-        (0.0, 0.0),  # Stopped
-        (10.0, 3.0),  # 10 km/h requires 3V
-        (30.0, 5.0),  # 30 km/h requires 5V
-        (60.0, 8.0),  # 60 km/h requires 8V
-        (100.0, 11.0),  # 100 km/h requires 11V
-        (120.0, 12.0),  # Max speed at max voltage
+        (0.0, 0.0),
+        (10.0, 3.0),
+        (30.0, 5.0),
+        (60.0, 8.0),
+        (100.0, 11.0),
+        (120.0, 12.0),
     ],
     min_start_voltage=2.0,
     lighting_voltage=2.5,
@@ -305,3 +304,29 @@ DEFAULT_SPEED_PROFILE = SpeedProfile(
     deceleration_rate=15.0,
     emergency_brake_rate=30.0,
 )
+
+
+class SpeedProfileRegistry:
+    def __init__(self):
+        self._profiles: Dict[str, SpeedProfile] = {}
+        self._profiles["default"] = DEFAULT_SPEED_PROFILE
+
+    def register(self, profile: SpeedProfile) -> None:
+        self._profiles[profile.profile_id] = profile
+
+    def get(self, profile_id: str) -> Optional[SpeedProfile]:
+        return self._profiles.get(profile_id)
+
+    def get_default(self) -> SpeedProfile:
+        return DEFAULT_SPEED_PROFILE
+
+    def list_profiles(self) -> List[str]:
+        return list(self._profiles.keys())
+
+    def remove(self, profile_id: str) -> bool:
+        if profile_id == "default":
+            return False
+        if profile_id in self._profiles:
+            del self._profiles[profile_id]
+            return True
+        return False

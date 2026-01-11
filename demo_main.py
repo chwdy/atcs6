@@ -30,7 +30,6 @@ from track import (
     FORBIDDEN_TRACK_BITS,
 )
 from train import Train, TrainSchedule, ScheduleStop
-from interlocking import InterlockingRoute
 from dispatcher import TrainDispatcher
 from railway_signal import SignalType
 
