@@ -214,6 +214,8 @@ dispatcher.create_path(
 
 ## 3. Block Class Specification
 
+**IMPORTANT:** Use `network.block_manager` for all block state changes in production code. This ensures atomic transitions and avoids race conditions between the dispatcher and simulation loop.
+
 ### 3.1 Block Definition
 
 A **Block** is an electrically isolated track section representing the minimum control unit for train movement. All tracks within a block share the same voltage/current.
@@ -293,7 +295,7 @@ Reserve block for specified train.
 
 #### `Block.occupy(train_id: str) -> bool`
 
-Mark block as occupied by specified train.
+Mark block as occupied by specified train. **For testing/backward compatibility only.** Use `BlockManager.occupy_block()` in production.
 
 **Precondition:** `can_enter(train_id)` returns `True`  
 **Postcondition:** Block state becomes `OCCUPIED`, `occupied_by` set to `train_id`  

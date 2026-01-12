@@ -13,7 +13,7 @@ The module includes:
 
 import math
 from dataclasses import dataclass, field
-from typing import Optional, List, TYPE_CHECKING
+from typing import Optional, List, Tuple, TYPE_CHECKING
 
 from train_config import (
     ATC_SAFETY_MARGIN_CM,
@@ -62,10 +62,9 @@ def calculate_max_safe_speed(
     if deceleration_rate <= 0:
         return 0.0
 
-    # Convert deceleration from km/h/s to cm/s²
-    # 1 km/h = 100000/3600 cm/s ≈ 27.78 cm/s
-    # So km/h/s to cm/s² = multiply by 27.78
-    km_h_to_cm_s = 100000.0 / 3600.0
+    from train_config import get_speed_conversion_factor
+
+    km_h_to_cm_s = get_speed_conversion_factor()
     decel_cm_s2 = deceleration_rate * km_h_to_cm_s
 
     # v² = 2 * a * d
@@ -104,6 +103,7 @@ class TrainATC:
     # Cached values (updated per tick)
     _cached_clearance: float = field(default=0.0, init=False)
     _cached_speed_limit: float = field(default=0.0, init=False)
+    _cached_speed_limit_reason: Optional[str] = field(default=None, init=False)
 
     def get_clearance_ahead(self) -> float:
         """
@@ -167,43 +167,61 @@ class TrainATC:
         Get remaining distance in the current block.
 
         This is the distance from train's head to the block boundary.
+        Calculates based on actual train position within the block.
         """
         current_block_id = self._get_current_block_id()
         if not current_block_id:
             return 0.0
 
         block = self.network.blocks.get(current_block_id)
-        if not block:
+        if not block or not block.length_cm:
             return 0.0
 
-        # Estimate: assume train is at the start of the block
-        # In a more detailed implementation, this would consider
-        # actual train position within the block
-        return block.length_cm
+        if not self.train.current_pos or not self.train.current_path:
+            return block.length_cm
+
+        block_positions = self.network.get_block_positions(current_block_id)
+        if not block_positions:
+            return block.length_cm
+
+        tile_count = len(block_positions)
+        if tile_count <= 0:
+            return block.length_cm
+
+        per_tile_length = block.length_cm / tile_count
+
+        current_tile_index = -1
+        for i, (bx, by) in enumerate(block_positions):
+            if (bx, by) == self.train.current_pos:
+                current_tile_index = i
+                break
+
+        if current_tile_index < 0:
+            return block.length_cm
+
+        remaining_tiles_after_current = tile_count - current_tile_index - 1
+
+        current_track = self.network.get_track(*self.train.current_pos)
+        fraction_through_tile = 0.0
+        if current_track:
+            track_length_cm = self.network._get_tile_length_cm(*self.train.current_pos)
+            if track_length_cm > 0:
+                fraction_through_tile = self.train.distance_on_track / track_length_cm
+                fraction_through_tile = max(0.0, min(1.0, fraction_through_tile))
+
+        remaining_in_current_tile = (1.0 - fraction_through_tile) * per_tile_length
+        remaining_in_later_tiles = remaining_tiles_after_current * per_tile_length
+
+        return remaining_in_current_tile + remaining_in_later_tiles
 
     def _get_blocks_ahead(self) -> List[str]:
         """
         Get list of block IDs ahead of the train.
 
-        Uses the train's assigned path or current path to determine
-        which blocks are ahead.
+        Uses the train's reserved blocks to determine which blocks are ahead.
         """
         blocks = []
 
-        # If train has an assigned path from dispatcher, use that
-        if self.train.assigned_path_id:
-            path = (
-                self.network.paths.get(self.train.assigned_path_id)
-                if hasattr(self.network, "paths")
-                else None
-            )
-            if path:
-                # Get blocks from path that are ahead of current position
-                # This is a simplified version - would need more detail
-                # for actual path segment tracking
-                pass
-
-        # Fallback: use reserved blocks if available
         if self.train.reserved_blocks:
             current_block_id = self._get_current_block_id()
             if current_block_id:
@@ -258,7 +276,10 @@ class TrainATC:
         # Find signals associated with this block
         for signal_id, signal in self.network.signals.items():
             # Check if signal protects entry to this block
-            if hasattr(signal, "monitored_block_id") and signal.monitored_block_id == block_id:
+            if (
+                hasattr(signal, "monitored_block_id")
+                and signal.monitored_block_id == block_id
+            ):
                 if signal.state == SignalState.RED:
                     return True
 
@@ -279,7 +300,10 @@ class TrainATC:
 
             # Check for yellow signal at this block
             for signal_id, signal in self.network.signals.items():
-                if hasattr(signal, "monitored_block_id") and signal.monitored_block_id == block_id:
+                if (
+                    hasattr(signal, "monitored_block_id")
+                    and signal.monitored_block_id == block_id
+                ):
                     if signal.state in (SignalState.YELLOW, SignalState.DOUBLE_YELLOW):
                         return True
 
@@ -293,20 +317,31 @@ class TrainATC:
 
         Returns the block's max_speed_kmh if set, otherwise returns
         a high value (effectively no limit).
+
+        NOTE: Switches (tracks without block_section_id) are treated as
+        having no speed limit when the route is properly set.
         """
-        current_block_id = self._get_current_block_id()
-        if not current_block_id:
+        if not self.train.current_pos:
             return float("inf")
 
-        block = self.network.blocks.get(current_block_id)
+        track = self.network.tracks.get(self.train.current_pos)
+        if not track:
+            return float("inf")
+
+        if not track.block_section_id:
+            return float("inf")
+
+        block = self.network.blocks.get(track.block_section_id)
         if block and block.max_speed_kmh:
             return block.max_speed_kmh
 
         return float("inf")
 
-    def get_speed_limit(self, speed_profile: Optional["SpeedProfile"] = None) -> float:
+    def get_speed_limit(
+        self, speed_profile: Optional["SpeedProfile"] = None
+    ) -> Tuple[float, Optional[str]]:
         """
-        Get the current ATC speed limit.
+        Get the current ATC speed limit with reason.
 
         Considers:
         - Clearance ahead (braking curve)
@@ -317,31 +352,48 @@ class TrainATC:
             speed_profile: Optional speed profile for deceleration rate
 
         Returns:
-            Maximum allowed speed in km/h
+            Tuple of (speed_limit_kmh, reason_string)
         """
-        # Get deceleration rate
         decel_rate = DEFAULT_DECELERATION_RATE
         if speed_profile:
             decel_rate = speed_profile.deceleration_rate
 
-        # Calculate clearance
         clearance = self.get_clearance_ahead()
 
-        # Calculate max speed for braking curve
         safe_speed = calculate_max_safe_speed(
             clearance, decel_rate, self.safety_margin_cm
         )
 
-        # Check for yellow signals (caution speed)
+        reasons = []
+        limiting_speed = safe_speed
+        limiting_reason = None
+
+        if clearance < float("inf"):
+            if clearance < 1000:
+                limiting_reason = f"Braking: {clearance / 100:.0f}m ahead"
+            else:
+                limiting_reason = f"Clearance: {clearance / 100:.0f}m"
+
         if self._is_approaching_yellow_signal():
-            safe_speed = min(safe_speed, YELLOW_SIGNAL_SPEED_KMH)
+            if YELLOW_SIGNAL_SPEED_KMH < limiting_speed:
+                limiting_speed = YELLOW_SIGNAL_SPEED_KMH
+                limiting_reason = "Yellow signal ahead"
+            elif limiting_reason:
+                limiting_reason = f"{limiting_reason}; Yellow signal"
 
-        # Check block speed limits
         block_limit = self._get_current_block_speed_limit()
+        if block_limit < float("inf"):
+            if block_limit < limiting_speed:
+                limiting_speed = block_limit
+                limiting_reason = f"Block limit: {block_limit:.0f} km/h"
+            elif limiting_reason and block_limit < self.train.max_speed:
+                limiting_reason = (
+                    f"{limiting_reason}; Block limit: {block_limit:.0f} km/h"
+                )
 
-        # Cache and return
-        self._cached_speed_limit = min(safe_speed, block_limit)
-        return self._cached_speed_limit
+        self._cached_speed_limit = limiting_speed
+        self._cached_speed_limit_reason = limiting_reason
+        return limiting_speed, limiting_reason
 
     def get_target_speed(self, speed_profile: Optional["SpeedProfile"] = None) -> float:
         """
@@ -358,7 +410,7 @@ class TrainATC:
         Returns:
             Target speed in km/h
         """
-        atc_limit = self.get_speed_limit(speed_profile)
+        atc_limit, _ = self.get_speed_limit(speed_profile)
         return min(self.train.max_speed, atc_limit)
 
     def is_safe_to_move(self) -> bool:

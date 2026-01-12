@@ -1825,46 +1825,54 @@ Clear the current network (empty canvas).
 }
 ```
 
-### GET /api/network/stats
+---
 
-Get counts of items in the current network.
+## Scale Configuration Endpoints
+
+### GET /api/scale
+
+Get current model scale configuration.
 
 **Response:**
 
 ```json
 {
-  "tracks": 100,
-  "blocks": 10,
-  "signals": 20,
-  "stations": 5,
-  "trains": 2,
-  "is_empty": false
+  "scale": 160.0,
+  "presets": {
+    "1:1": 1.0,
+    "1:87": 87.0,
+    "1:160": 160.0,
+    ...
+  }
 }
 ```
 
----
+### PUT /api/scale
 
-## Track Bits Reference
+Set model scale or use a preset.
 
-| Bit | Value | Path | Description |
-|-----|-------|------|-------------|
-| 0 | 1 | NS | North-South (vertical) |
-| 1 | 2 | EW | East-West (horizontal) |
-| 2 | 4 | NE | North-East diagonal |
-| 3 | 8 | NW | North-West diagonal |
-| 4 | 16 | SE | South-East diagonal |
-| 5 | 32 | SW | South-West diagonal |
+**Request:**
 
-**Examples:**
-- `track_bits: 1` = NS path only (vertical track)
-- `track_bits: 3` = NS + EW (crossover)
-- `track_bits: 5` = NS + NE (Y-junction)
-- `track_bits: 36` = NE + SW (diagonal crossing)
+```json
+{
+  "scale": 87.0
+}
+```
+OR
+```json
+{
+  "preset": "1:87"
+}
+```
 
-**Forbidden Configurations:**
-- 3-way switches (e.g., NS + NE + NW)
-- Invalid diagonal combinations
-- See `Reference_6Bit_Track_System.md` for complete list
+**Response:**
+
+```json
+{
+  "scale": 87.0,
+  "status": "success"
+}
+```
 
 ---
 

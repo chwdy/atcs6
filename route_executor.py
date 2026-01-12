@@ -14,7 +14,7 @@ The executor integrates with:
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Optional, TYPE_CHECKING
+from typing import Dict, Optional, Tuple, TYPE_CHECKING
 from enums import TrainState, Direction, OPPOSITE_DIRECTIONS
 
 if TYPE_CHECKING:
@@ -151,7 +151,7 @@ class RouteExecutor:
             error_msg = f"Station {waypoint.station_id} not found"
             logger.error(f"Train {train.train_id}: {error_msg}")
             route.set_error(error_msg, self.simulation_time)
-            train.wait_for_path()
+            train.wait_for_path(error_msg)
             exec_state.waiting_for_path = True
             return
 
@@ -164,6 +164,8 @@ class RouteExecutor:
         if self.path_dispatcher and train.current_pos:
             current_track = self.network.get_track(*train.current_pos)
             if not current_track or not current_track.block_section_id:
+                if train.state == TrainState.RUNNING_WAITING:
+                    train.wait_reason = "Train is not in a block"
                 exec_state.waiting_for_path = True
                 return
 
@@ -172,7 +174,7 @@ class RouteExecutor:
                 error_msg = f"Station {waypoint.station_id} has no associated block"
                 logger.error(f"Train {train.train_id}: {error_msg}")
                 route.set_error(error_msg, self.simulation_time)
-                train.wait_for_path()
+                train.wait_for_path(error_msg)
                 exec_state.waiting_for_path = True
                 return
 
@@ -213,11 +215,11 @@ class RouteExecutor:
                 route.set_error(error_msg, self.simulation_time)
 
                 if train.state == TrainState.RUNNING_WAITING:
-                    pass
+                    train.wait_reason = error_msg
                 elif train.state == TrainState.STANDBY:
-                    pass
+                    train.wait_reason = error_msg
                 else:
-                    train.wait_for_path()
+                    train.wait_for_path(error_msg)
                 exec_state.waiting_for_path = True
         else:
             if train.state == TrainState.STANDBY:
@@ -368,7 +370,71 @@ class RouteExecutor:
                 # Clean up execution state
                 del self.execution_states[train.train_id]
 
+    def _get_target_station_tile(
+        self, train: "Train", station: "Station"
+    ) -> Optional[Tuple[int, int]]:
+        """
+        Determine which tile the train should stop at within the station.
+
+        The target tile is the furthest tile in the train's travel direction.
+        For example, if train is traveling east, it should stop at the easternmost tile.
+
+        Args:
+            train: Train approaching/at the station
+            station: Target station
+
+        Returns:
+            Target (x, y) position, or first position if direction unknown
+        """
+        if not hasattr(station, "positions") or not station.positions:
+            # Fallback for old-style single-position stations
+            return getattr(station, "position", None)
+
+        if len(station.positions) == 1:
+            # Single-tile station - only one option
+            return station.positions[0]
+
+        # Get train's effective travel direction
+        travel_direction = train.get_effective_direction()
+        if not travel_direction:
+            # No direction set - use first position as fallback
+            return station.positions[0]
+
+        # Sort positions based on travel direction to find the "last" tile
+        # The train should aim for the furthest tile in its direction of travel
+        def sort_key(pos: Tuple[int, int]) -> float:
+            x, y = pos
+            # Return negative to get furthest (max) tile as first element when sorting
+            if travel_direction.name == "NORTH":
+                return -y  # Highest Y
+            elif travel_direction.name == "SOUTH":
+                return y  # Lowest Y
+            elif travel_direction.name == "EAST":
+                return -x  # Highest X
+            elif travel_direction.name == "WEST":
+                return x  # Lowest X
+            else:
+                return 0
+
+        sorted_positions = sorted(station.positions, key=sort_key)
+        return sorted_positions[
+            0
+        ]  # First element is the target (furthest in direction)
+
     def _is_train_at_station(self, train: "Train", station_id: str) -> bool:
+        """
+        Check if train has arrived at the target tile of the station.
+
+        The train is considered "at station" only when it reaches the last tile
+        in its direction of travel within the station.
+
+        Args:
+            train: Train to check
+            station_id: Station ID
+
+        Returns:
+            True if train is at the correct target tile
+        """
         if not train.current_pos:
             return False
 
@@ -376,12 +442,11 @@ class RouteExecutor:
         if not station:
             return False
 
-        if hasattr(station, "positions"):
-            return train.current_pos in station.positions
-        elif hasattr(station, "position"):
-            return train.current_pos == station.position
+        target_tile = self._get_target_station_tile(train, station)
+        if not target_tile:
+            return False
 
-        return False
+        return train.current_pos == target_tile
 
     def _get_station_block_id(self, station) -> Optional[str]:
         if hasattr(station, "positions") and station.positions:

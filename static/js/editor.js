@@ -146,6 +146,15 @@ class Editor {
                 itemExists = Array.isArray(this.cachedNetwork?.stations) &&
                              this.cachedNetwork.stations.some(s => s.station_id === id);
                 break;
+            case 'train':
+            case 'train-control':
+                itemExists = Array.isArray(this.cachedNetwork?.trains) &&
+                             this.cachedNetwork.trains.some(t => t.id === id);
+                break;
+            case 'trains-list':
+            case 'schedules-list':
+                itemExists = true;
+                break;
         }
 
         if (!itemExists) {
@@ -194,9 +203,19 @@ class Editor {
             return;
         }
 
-        // Don't refresh if user is actively editing an input field
+        // Don't refresh if user is actively editing an input field or interacting with slider
         const activeElement = document.activeElement;
-        if (activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA' || activeElement.tagName === 'SELECT')) {
+        if (activeElement && (
+            activeElement.tagName === 'INPUT' || 
+            activeElement.tagName === 'TEXTAREA' || 
+            activeElement.tagName === 'SELECT'
+        )) {
+            return;
+        }
+
+        // For train control panel, do incremental update instead of full re-render
+        if (this._currentEditorType === 'train-control') {
+            this.trainHandler.updateTrainControlPanelValues(this._currentEditorId);
             return;
         }
 
@@ -1654,7 +1673,7 @@ class Editor {
         // Format binary with highlighted 1s
         const binaryStr = trackBits.toString(2).padStart(6, '0');
         const binaryHTML = binaryStr.split('').map(bit => 
-            bit === '1' ? `<span style="color: #00d4ff;">${bit}</span>` : bit
+            bit === '1' ? `<span class="text-track-bit-active">${bit}</span>` : bit
         ).join('');
         
         // Build the track bits editor canvas
@@ -1672,7 +1691,7 @@ class Editor {
             <!-- Track Bits Display (Primary) - Larger font, compact layout -->
             <div class="info-box-track">
                 <label class="text-track font-bold block mb-4">Track Bits</label>
-                <div class="text-2xl font-bold mb-2 text-track" style="font-family: monospace;">${trackBits} <span class="text-lg text-muted">(0b${binaryHTML})</span></div>
+                <div class="text-2xl font-bold mb-2 text-track font-mono">${trackBits} <span class="text-lg text-muted">(0b${binaryHTML})</span></div>
                 <div class="text-muted text-base mb-8">
                     ${shapeDesc} • ${numSegments} segment${numSegments !== 1 ? 's' : ''} • ${activeSegments.length > 0 ? activeSegments.join(', ') : 'No segments'} ${edges.length > 0 ? '• Edges: ' + edges.join(', ') : ''}
                 </div>
@@ -1685,12 +1704,12 @@ class Editor {
             <div class="info-box-signal">
                 <label class="text-info font-bold">Switch State:</label>
                 ${track.is_diagonal_only_switch ? `
-                <div class="info-box-warning text-xxs text-warning" style="margin: 4px 0; padding: 4px 8px;">
+                <div class="info-box-warning text-xxs text-warning info-box-warning-container">
                     ⟳ Diagonal-only switch (uses clockwise ordering)
                 </div>
                 ` : ''}
-                <div class="p-8 rounded ${track.switch_state === 0 ? 'border-success' : 'border-warning'}" style="margin: 6px 0; background: ${track.switch_state === 0 ? '#1a3a2a' : '#3a3a1a'};">
-                    <span class="text-lg font-bold" style="color: ${track.switch_state === 0 ? '#04d361' : '#ffd93d'};">
+                <div class="p-8 rounded switch-state-box ${track.switch_state === 0 ? 'border-success' : 'border-warning'}" style="background: ${track.switch_state === 0 ? '#1a3a2a' : '#3a3a1a'};">
+                    <span class="switch-state-text" style="color: ${track.switch_state === 0 ? '#04d361' : '#ffd93d'};">
                         ${track.switch_state === 0 ? 'MAIN (0)' : 'DIVERGE (1)'}
                         ${track.is_locked || track.locked_by_path ? ' 🔒' : ''}
                     </span>
@@ -1701,7 +1720,7 @@ class Editor {
                     </div>
                 </div>
                 ${track.is_locked || track.locked_by_path ? `
-                <div class="info-box-warning text-xxs text-warning" style="margin: 4px 0; padding: 4px 8px;">
+                <div class="info-box-warning text-xxs text-warning info-box-warning-container">
                     🔒 Locked by path: ${track.locked_by_path || 'Unknown'}
                 </div>
                 ` : `
@@ -1710,7 +1729,7 @@ class Editor {
             </div>
             <div class="info-box-signal">
                 <label class="text-info font-bold">Switch Points:</label>
-                <pre class="text-xxs mt-4 mb-0" style="color: #ccc;">${
+                <pre class="switch-points-pre">${
                     Object.entries(track.switch_points).map(([entry, exits]) => 
                         `${entry} -> [${exits.join(', ')}]`
                     ).join('\n')
@@ -1720,7 +1739,7 @@ class Editor {
             ${track.signals && track.signals.length > 0 ? `
             <div class="property-group-header">Signals</div>
             ${track.signals.map(signal => `
-            <div class="property-item-row" style="margin-bottom: 8px;">
+            <div class="property-item-row">
                 <div class="signal-summary-row">
                     <div class="signal-status-dot" style="background-color: ${
                         signal.signal_state === 'green' || signal.signal_state === 'GREEN' ? '#04d361' :
@@ -1788,7 +1807,7 @@ class Editor {
                 return `
                 <div class="property-group-header">Train</div>
                 ${trainsAtTile.map(train => `
-                <div class="property-item-row" style="margin-bottom: 8px;">
+                <div class="property-item-row">
                     <div class="train-summary-row">
                         <div class="train-status-dot" style="background-color: ${
                             train.state === 'running_moving' ? '#04d361' :
@@ -1821,10 +1840,10 @@ class Editor {
             ` : ''}
 
             <!-- Combined Bit Editor (33%) and Visual Editor (67%) Side-by-Side -->
-            <div class="flex gap-8" style="margin: 8px 0;">
+            <div class="combined-editor">
                 <!-- Bit Editor (Left - 33%) -->
-                <div id="bit-editor" class="bg-section p-8 rounded" style="flex: 0 0 33%;">
-                    <h4 class="text-track text-xs mb-8" style="margin: 0 0 8px 0;">Bit Editor</h4>
+                <div id="bit-editor" class="bg-section p-8 rounded">
+                    <h4 class="text-track text-xs mb-8">Bit Editor</h4>
                     <div class="flex flex-col gap-4">
                         ${renderBitToggle(1, 'NS', trackBits)}
                         ${renderBitToggle(2, 'EW', trackBits)}
@@ -1833,9 +1852,9 @@ class Editor {
                         ${renderBitToggle(16, 'SE', trackBits)}
                         ${renderBitToggle(32, 'SW', trackBits)}
                     </div>
-                    <div class="bit-info bg-hover rounded-sm text-tiny" style="margin: 8px 0 0 0; padding: 4px;">
-                        <p style="margin: 0;"><span id="bit-total" class="font-bold text-track">${trackBits}</span> <span class="text-muted">(0b${binaryHTML})</span></p>
-                        <p class="bit-warning font-bold text-danger mt-2" style="font-size: 8px; display: ${isForbidden ? 'block' : 'none'};">
+                    <div class="bit-info bg-hover rounded-sm text-tiny">
+                        <p><span id="bit-total" class="font-bold text-track">${trackBits}</span> <span class="text-muted">(0b${binaryHTML})</span></p>
+                        <p class="bit-warning font-bold text-danger mt-2" style="display: ${isForbidden ? 'block' : 'none'};">
                             ⚠ Forbidden
                         </p>
                     </div>
@@ -1843,9 +1862,9 @@ class Editor {
                 </div>
                 
                 <!-- Visual Editor (Right - 67%) -->
-                <div class="visual-editor bg-section p-8 rounded" style="flex: 1;">
+                <div class="visual-editor bg-section p-8 rounded">
                     <label class="text-track font-bold text-xs mb-6 block">Visual Editor</label>
-                    <canvas id="${editorId}" width="200" height="200" class="block w-full rounded" style="height: auto; cursor: pointer; border: 1px solid #444; background: #0a0a14;"></canvas>
+                    <canvas id="${editorId}" width="200" height="200" class="block w-full rounded"></canvas>
                     <div class="helper-text text-center">Click segments to toggle</div>
                 </div>
             </div>

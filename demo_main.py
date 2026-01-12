@@ -29,8 +29,10 @@ from track import (
     TRACK_SW,
     FORBIDDEN_TRACK_BITS,
 )
-from train import Train, TrainSchedule, ScheduleStop
+from train import Train, TrainCar, TrainSchedule, ScheduleStop
 from dispatcher import TrainDispatcher
+from path_dispatcher import PathDispatcher
+from route_executor import RouteExecutor
 from railway_signal import SignalType
 
 # ============= Demo Functions =============
@@ -295,27 +297,36 @@ def create_comprehensive_demo():
     network.add_track(TrackSegment(11, 8, track_bits=TRACK_SE))
     network.add_track(TrackSegment(12, 8, track_bits=TRACK_NW))
 
+    network.create_block_with_tracks(
+        block_id="BLOCK_EAST_BRANCH",
+        positions=[(9, y) for y in range(1, 6)] + [(9, 6)],
+        name="East Vertical Branch",
+        length_cm=240.0,
+        max_speed_kmh=50.0,
+    )
+
+    network.create_block_with_tracks(
+        block_id="BLOCK_EAST_DIAGONAL",
+        positions=[(11, 8), (12, 8)],
+        name="East Diagonal Approach",
+        length_cm=80.0,
+        max_speed_kmh=30.0,
+    )
+
     east_branch_station = network.add_station(
         x=10,
         y=7,
         name="east branch Station",
-        length_cm=80.0,  # Smaller platform
+        length_cm=80.0,
         platform_side="right",
-        top_speed_kmh=30.0,  # Lower speed for branch station
+        top_speed_kmh=30.0,
     )
     network.extend_station(east_branch_station.station_id, [(11, 7)])
     network.extend_station(east_branch_station.station_id, [(10, 6)])
 
-    # Create block for vertical branch (not including switch)
-    network.create_block_with_tracks(
-        block_id="BLOCK_EAST_BRANCH",
-        positions=[(9, y) for y in range(1, 6)],
-        name="East Vertical Branch",
-        length_cm=200.0,  # 5 tiles
-        max_speed_kmh=50.0,
+    print(
+        f"  ✓ Created vertical east branch (6 tiles), station with auto-block (3 tiles), and diagonal approach (2 tiles)"
     )
-
-    print(f"  ✓ Created vertical east branch with 4 tiles")
 
     # === Multi-tile Station on East Branch ===
     # Add station at top of east branch - spans 2 tiles
@@ -411,7 +422,7 @@ def create_comprehensive_demo():
     # Connect to a reachable block (valid path via NW diagonal at switch)
     # Note: Original BLOCK_MAIN_WEST may have been split into child blocks
     if reachable:
-        target_block = reachable[0]  # Pick first reachable block
+        target_block = reachable[0]
         network.connect_signal_to_block(signal3.signal_id, target_block)
         print(
             f"    ✓ Created signal '{signal3.name}' at (3,1) facing NORTH, monitors: {signal3.monitored_block_id}"
@@ -494,6 +505,55 @@ def create_comprehensive_demo():
     print(f"  Signals: {len(network.signals)}")
 
     return network
+
+
+def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
+    """Set up the demo train with a path. Called after global path_dispatcher is created."""
+    from route_executor import RouteExecutor
+    from train import TrainCar, Train
+    from enums import Direction
+
+    executor = RouteExecutor(network, path_dispatcher)
+
+    start_track = network.get_track(0, 0)
+    east_terminal = next(
+        station
+        for station in network.stations.values()
+        if station.name == "East Terminal"
+    )
+    target_block_id = executor._get_station_block_id(east_terminal)
+
+    car = TrainCar(
+        car_id="DEMO_CAR_01",
+        car_type="LOCOMOTIVE",
+        length=40.0,
+        mass=50000.0,
+    )
+    demo_train = Train(train_id="DEMO_TRAIN", consist=[car], max_speed=60.0)
+    network.add_train(demo_train)
+    network.place_train(demo_train, 0, 0, Direction.EAST)
+    if start_track and start_track.block_section_id and network.block_manager:
+        network.block_manager.occupy_block(
+            start_track.block_section_id, demo_train.train_id
+        )
+    network.update_signals_from_blocks()
+
+    if start_track and start_track.block_section_id and target_block_id:
+        path_result = path_dispatcher.create_path(
+            start_block_id=start_track.block_section_id,
+            end_block_id=target_block_id,
+            train_id=demo_train.train_id,
+        )
+        if path_result.success and path_result.path:
+            demo_train.current_path = executor._convert_path_to_train_path(
+                path_result.path
+            )
+            demo_train.path_index = 0
+            demo_train.assigned_path_id = path_result.path.path_id
+
+    demo_train.power_on()
+    demo_train.set_direction_and_standby(Direction.EAST)
+    demo_train.depart()
 
 
 def create_track_showcase(network: RailwayNetwork):

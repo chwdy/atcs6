@@ -205,7 +205,7 @@ Trains are composed of individual cars:
 TrainCar(
     car_id: str,
     car_type: str,     # "LOCOMOTIVE", "PASSENGER", "FREIGHT"
-    length: float,     # Length in meters
+    length: float,     # Length in centimeters (cm)
     mass: float,       # Mass in kg
     max_speed: float   # Max speed for this car
 )
@@ -220,9 +220,9 @@ Train(
 ```
 
 Train properties derived from consist:
-- `train.length` → Sum of car lengths / 100 (in track units)
+- `train.length` → Sum of car lengths (converted to cm for occupancy)
 - `train.total_mass` → Sum of car masses
-- `train.braking_distance` → Calculated from speed and deceleration
+- `train.braking_distance` → Calculated from speed and deceleration (in cm)
 
 #### Entity Relationships
 
@@ -264,3 +264,97 @@ This design allows:
 - Complex multi-block stations (e.g., different platform sections with separate signal control)
 - Clear separation between station infrastructure and regular track blocks
 
+
+## Train Control Architecture (2026)
+
+### Overview
+The train control refactor centralized block occupancy in `block_manager.py` to eliminate race conditions from the previous three-way updates (PathDispatcher reservations, `train.update_occupancy`, and manual block updates). This architecture fixed train teleporting, random slowdowns from block thrashing, and trains getting stuck on switches by enforcing a single state machine for blocks.
+
+### Architecture Summary
+```
+SimulationController (simulation.py)
+    ├─ TrainMover (train_movement.py)
+    ├─ BlockManager (block_manager.py)
+    └─ PathDispatcher (path_dispatcher.py)
+RailwayNetwork (network.py) owns registries + BlockManager
+Block (block.py) stores state only
+```
+
+### Component Responsibilities
+- **RailwayNetwork** initializes `BlockManager` and holds tracks, blocks, trains, and paths.
+- **BlockManager** enforces `FREE → RESERVED → OCCUPIED → CAUTION → FREE` and provides atomic `occupy_block`/`release_block` operations.
+- **PathDispatcher** reserves blocks and locks switches for a path; it does not mark blocks `OCCUPIED`.
+- **SimulationController** runs the tick loop, delegates geometry to `TrainMover`, and triggers block transitions through `BlockManager`.
+- **TrainMover** handles track geometry, direction math, and distance calculations for tile advancement.
+- **Train** stores `current_pos`, `current_direction`, and `distance_on_track` for interpolation.
+
+### Block State Management Workflow
+
+**State Machine:**
+```
+FREE → RESERVED → OCCUPIED → CAUTION → FREE
+     ↑______________|
+```
+
+States:
+- **FREE**: No train reservation or occupation
+- **RESERVED**: Reserved for train's planned path (interlocking locked)
+- **OCCUPIED**: Physical train presence detected  
+- **CAUTION**: Train recently cleared, safety margin maintained
+
+**Workflow Steps:**
+1. `PathDispatcher` reserves path blocks, setting them to `RESERVED`.
+2. `SimulationController` advances the train via `TrainMover` until it crosses a tile boundary.
+3. When the head enters a new block, `BlockManager.occupy_block()` transitions it to `OCCUPIED`.
+4. When the train clears a block, `BlockManager.release_block()` moves it to `CAUTION`, then to `FREE` on the next release.
+5. `CAUTION` keeps a safety buffer behind the train for signals and following traffic.
+
+**Sequence (tick-level):**
+```
+PathDispatcher → reserve blocks (RESERVED)
+    ↓
+SimulationController → TrainMover.advance()
+    ↓ (crossed boundary)
+SimulationController → BlockManager.occupy_block(new_block, train_id)
+SimulationController → BlockManager.release_block(old_block, train_id)
+```
+
+### Deprecated `train.update_occupancy()`
+`train.update_occupancy()` remains for backward compatibility only. It can race with dispatcher reservations and manual block updates, causing out-of-order transitions and block thrashing. Production code should route all occupancy changes through `BlockManager`.
+
+**Correct usage:**
+```python
+# When train enters block
+network.block_manager.occupy_block(block_id, train_id)
+
+# When train leaves block  
+network.block_manager.release_block(block_id, train_id)
+```
+
+**Incorrect (deprecated):**
+```python
+train.update_occupancy(network)  # DO NOT USE in new code
+```
+
+### Train Movement and Rendering
+- `Train.distance_on_track` is the distance in **centimeters (cm)** from the entry edge.
+- `TrainMover.calculate_distance_to_advance()` updates this value based on speed and tick duration.
+- Scale is applied via `MODEL_SCALE` configuration in `train_config.py`.
+- When `distance_on_track >= track.length_cm`, the train advances one tile and resets `distance_on_track`.
+- The frontend renderer receives a normalized 0.0–1.0 position for smooth interpolation between tile centers.
+- Because position advances only when the distance threshold is met and block updates are atomic, trains no longer teleport or stall on switches.
+
+### Design Principles
+1. **Single Authority:** Only `BlockManager` modifies block states.
+2. **Atomic Operations:** All transitions use `BlockManager` methods.
+3. **State Machine Enforcement:** Illegal transitions are rejected.
+4. **Separation of Concerns:** `Block` stores state, `BlockManager` manages transitions, `TrainMover` handles geometry.
+
+### Module References
+- `block_manager.py` - Centralized block state manager
+- `train_movement.py` - Train movement calculations
+- `simulation.py` - Simulation tick loop
+- `path_dispatcher.py` - Path reservation and switch locking
+- `network.py` - Infrastructure registry
+- `train.py` - Train entity
+- `static/js/renderer-trains.js` - Frontend interpolation

@@ -45,6 +45,7 @@ from path import (
 )
 from enums import BlockState, Direction, direction_from_delta, DIRECTION_OFFSETS
 from track import OPPOSITE_EDGE, EDGE_MASKS, BIT_TO_EDGES
+from train_config import kmh_to_cm_per_sec
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -812,6 +813,12 @@ class PathDispatcher:
                     # Store path
                     self.active_paths[path_id] = path
 
+                    # Populate train.reserved_blocks if train_id provided
+                    if train_id:
+                        train = self.network.trains.get(train_id)
+                        if train:
+                            train.reserved_blocks = path.block_sequence.copy()
+
                     return PathResult(success=True, path=path)
             else:
                 # Collect conflict tiles for UI feedback
@@ -1047,10 +1054,14 @@ class PathDispatcher:
             # Wrong train!
             return False
 
-        # Update block state
-        block = self.network.blocks.get(block_id)
-        if block:
-            block.occupy(train_id)
+        # Update block state using BlockManager
+        if self.network.block_manager:
+            self.network.block_manager.occupy_block(block_id, train_id)
+        else:
+            # Fallback for tests without block_manager
+            block = self.network.blocks.get(block_id)
+            if block:
+                block.occupy(train_id)
 
         # Update path position
         if block_id in path.block_sequence:
@@ -1078,10 +1089,12 @@ class PathDispatcher:
             new_index = path.block_sequence.index(entered_block_id)
             path.current_block_index = new_index
 
-        # Occupy new block
-        block = self.network.blocks.get(entered_block_id)
-        if block:
-            block.occupy(path.train_id)
+        if self.network.block_manager:
+            self.network.block_manager.occupy_block(entered_block_id, path.train_id)
+        else:
+            block = self.network.blocks.get(entered_block_id)
+            if block:
+                block.occupy(path.train_id)
 
         # Release blocks behind train
         self._release_blocks_behind_train(path)
@@ -1107,18 +1120,24 @@ class PathDispatcher:
             if not block:
                 continue
 
-            # Check if safe to release (at least 1 block behind)
             blocks_behind = path.current_block_index - i
             if blocks_behind >= 1:
-                if block.state == BlockState.OCCUPIED:
-                    block.set_to_caution()
-                elif block.state == BlockState.CAUTION:
-                    block.clear()
-                    block.reserved_by_path = None
-                    path.blocks_cleared.add(block_id)
-
-                    # Release switches in this block
-                    self._release_switches_for_block(path, block_id)
+                if self.network.block_manager:
+                    if block.state == BlockState.OCCUPIED:
+                        self.network.block_manager.set_block_to_caution(block_id)
+                    elif block.state == BlockState.CAUTION:
+                        self.network.block_manager.clear_block(block_id)
+                        block.reserved_by_path = None
+                        path.blocks_cleared.add(block_id)
+                        self._release_switches_for_block(path, block_id)
+                else:
+                    if block.state == BlockState.OCCUPIED:
+                        block.set_to_caution()
+                    elif block.state == BlockState.CAUTION:
+                        block.clear()
+                        block.reserved_by_path = None
+                        path.blocks_cleared.add(block_id)
+                        self._release_switches_for_block(path, block_id)
 
     def _release_switches_for_block(self, path: Path, block_id: str) -> None:
         """Release switches that are only associated with a cleared block."""
@@ -1157,19 +1176,35 @@ class PathDispatcher:
         path.status = PathStatus.COMPLETED
         path.completed_at = datetime.now()
 
-        # Release all blocks
+        # Release all blocks using BlockManager
         for block_id in path.block_sequence:
             block = self.network.blocks.get(block_id)
-            if block:
-                block.release()
-                block.reserved_by_path = None
+            if not block:
+                continue
+
+            # Only clear blocks that are not currently occupied by a train
+            if block.state != BlockState.OCCUPIED:
+                if self.network.block_manager:
+                    self.network.block_manager.clear_block(block_id)
+                else:
+                    block.release()
+
+            block.reserved_by_path = None
 
         # Release overlap blocks
         for block_id in path.overlap_blocks:
             block = self.network.blocks.get(block_id)
-            if block:
-                block.release()
-                block.reserved_by_path = None
+            if not block:
+                continue
+
+            # Only clear blocks that are not currently occupied by a train
+            if block.state != BlockState.OCCUPIED:
+                if self.network.block_manager:
+                    self.network.block_manager.clear_block(block_id)
+                else:
+                    block.release()
+
+            block.reserved_by_path = None
 
         # Clear path direction on all path tiles
         for pos in path.path_tiles:
@@ -1535,10 +1570,18 @@ class PathDispatcher:
         for block_id in path.block_sequence:
             if block_id not in path.approach_locked_blocks or force:
                 block = self.network.blocks.get(block_id)
-                if block:
-                    block.release()
-                    block.reserved_by_path = None
-                    blocks_released.append(block_id)
+                if not block:
+                    continue
+
+                # Only clear blocks that are not currently occupied by a train
+                if block.state != BlockState.OCCUPIED:
+                    if self.network.block_manager:
+                        self.network.block_manager.clear_block(block_id)
+                    else:
+                        block.release()
+
+                block.reserved_by_path = None
+                blocks_released.append(block_id)
 
         # Release switches
         for pos in path.switch_positions:
@@ -1626,7 +1669,7 @@ class PathDispatcher:
     def _calculate_braking_distance(self, train) -> float:
         """Calculate braking distance for a train."""
         if hasattr(train, "current_speed") and hasattr(train, "acceleration"):
-            speed_cm_s = train.current_speed * 100000 / 3600  # km/h to cm/s
+            speed_cm_s = kmh_to_cm_per_sec(train.current_speed)
             deceleration = train.acceleration * 100  # m/s^2 to cm/s^2
             if deceleration > 0:
                 return (speed_cm_s**2) / (2 * deceleration)

@@ -14,16 +14,36 @@ class RendererTrainHandler {
     drawTrain(train) {
         if (!train.position) return;
 
-        const cx = this.gridToScreenX(train.position.x, train.position.y);
-        const cy = this.gridToScreenY(train.position.x, train.position.y);
+        const baseX = train.position.x;
+        const baseY = train.position.y;
+        const distance = train.position.distance || 0.0;
+        const direction = train.direction || 'EAST';
+        
+        const positionOffset = distance - 0.5;
+        
+        let interpX = baseX;
+        let interpY = baseY;
+        
+        if (direction === 'NORTH') {
+            interpY = baseY + positionOffset;
+        } else if (direction === 'SOUTH') {
+            interpY = baseY - positionOffset;
+        } else if (direction === 'EAST') {
+            interpX = baseX + positionOffset;
+        } else if (direction === 'WEST') {
+            interpX = baseX - positionOffset;
+        }
+
+        const cx = this.gridToScreenX(interpX, interpY);
+        const cy = this.gridToScreenY(interpX, interpY);
         const s = this.scale;
         const tileSize = this.gridSize * s;
 
         let rotation = 0;
-        if (train.direction === 'NORTH') rotation = -Math.PI / 4;
-        else if (train.direction === 'EAST') rotation = Math.PI / 4;
-        else if (train.direction === 'SOUTH') rotation = Math.PI * 3 / 4;
-        else if (train.direction === 'WEST') rotation = -Math.PI * 3 / 4;
+        if (direction === 'NORTH') rotation = -Math.PI / 4;
+        else if (direction === 'EAST') rotation = Math.PI / 4;
+        else if (direction === 'SOUTH') rotation = Math.PI * 3 / 4;
+        else if (direction === 'WEST') rotation = -Math.PI * 3 / 4;
 
         this.ctx.save();
         this.ctx.translate(cx, cy);
@@ -47,7 +67,7 @@ class RendererTrainHandler {
         const tracks = this.currentNetwork && this.currentNetwork.tracks
             ? this.currentNetwork.tracks
             : [];
-        const track = tracks.find(t => t.x === train.position.x && t.y === train.position.y);
+        const track = tracks.find(t => t.x === baseX && t.y === baseY);
         const trackBits = track ? track.track_bits : 0;
         const quadrant = getBestLabelQuadrant(trackBits, train.direction || 'EAST');
         const offset = QUADRANT_OFFSETS[quadrant];

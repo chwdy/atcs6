@@ -8,6 +8,13 @@
 // Centralized handling of all track segment and edge rotation math
 // ============================================================================
 
+const COLORS = {
+    BACKGROUND: '#0a0a0c',
+    GRID_LINES: '#2a2a34',
+    AXIS_LINES: '#4a4a5a',
+    ORIGIN_MARKER: '#8257e5'
+};
+
 const IsometricGeometry = {
     // Track segment orientations in screen space
     // 
@@ -219,7 +226,7 @@ class Renderer {
     }
 
     clear() {
-        this.ctx.fillStyle = '#0a0a0c';
+        this.ctx.fillStyle = COLORS.BACKGROUND;
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
 
@@ -249,7 +256,7 @@ class Renderer {
         const maxGY = Math.max(topLeft.y, topRight.y, bottomLeft.y, bottomRight.y) + 2;
 
         // Draw diamond grid lines
-        this.ctx.strokeStyle = '#2a2a34';
+        this.ctx.strokeStyle = COLORS.GRID_LINES;
         this.ctx.lineWidth = 1;
         this.ctx.beginPath();
 
@@ -292,7 +299,7 @@ class Renderer {
         // Calculate extended range for axes (they should extend beyond visible area)
         const axisRange = Math.max(maxGX - minGX, maxGY - minGY) + 10;
 
-        this.ctx.strokeStyle = '#4a4a5a';
+        this.ctx.strokeStyle = COLORS.AXIS_LINES;
         this.ctx.lineWidth = 2;
 
         // X-axis (Y=0 line) - goes from top-left to bottom-right on screen
@@ -312,7 +319,7 @@ class Renderer {
         // Use the original formula without +1 offset to get the corner position
         const originX = this.centerX + this.panX;  // (0+0) * tileSize/2 = 0
         const originY = this.centerY + this.panY;  // (0-0) * tileSize/2 = 0
-        this.ctx.fillStyle = '#8257e5';
+        this.ctx.fillStyle = COLORS.ORIGIN_MARKER;
         this.ctx.beginPath();
         this.ctx.arc(originX, originY, 4, 0, Math.PI * 2);
         this.ctx.fill();

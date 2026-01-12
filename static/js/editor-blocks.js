@@ -645,39 +645,45 @@ class BlockEditorHandler {
             modal.className = 'modal';
             modal.innerHTML = `
                 <h3>Edit Block Properties</h3>
-                <div class="form-group">
-                    <label>Block ID</label>
-                    <input type="text" id="modal-block-id" value="${blockId}" readonly
-                           style="background: #1a1a2e; color: #888; cursor: not-allowed;">
+                
+                <!-- Info Display Group -->
+                <div class="info-display-group">
+                    <div class="info-display-header">Block Information</div>
+                    <div class="info-display-item">
+                        <span class="info-display-label">Block ID</span>
+                        <span class="info-display-value">${blockId}</span>
+                    </div>
+                    <div class="info-display-item">
+                        <span class="info-display-label">Current State</span>
+                        <span class="info-badge state-${blockData.state || 'free'}">
+                            ${(blockData.state || 'free').toUpperCase()}
+                        </span>
+                    </div>
+                    ${blockData.monitoring_signals && blockData.monitoring_signals.length > 0 ? `
+                    <div class="info-display-item" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+                        <span class="info-display-label">Monitoring Signals</span>
+                        <div class="signal-list" id="monitoring-signals-list" style="width: 100%; max-height: 80px;">
+                            ${this.editor.renderSignalList ? this.editor.renderSignalList(blockData.monitoring_signals) : ''}
+                        </div>
+                    </div>
+                    ` : ''}
                 </div>
-                <div class="form-group">
-                    <label>Name</label>
+
+                <!-- User Input Fields (Horizontal Layout) -->
+                <div class="form-row-horizontal">
+                    <label for="modal-block-name">Name</label>
                     <input type="text" id="modal-block-name" value="${blockData.name || ''}"
                            placeholder="Block name">
                 </div>
-                <div class="form-group">
-                    <label>Length (cm)</label>
+                <div class="form-row-horizontal">
+                    <label for="modal-block-length">Length (cm)</label>
                     <input type="number" id="modal-block-length" value="${blockData.length_cm || 0}"
                            min="0" step="0.1" placeholder="0.0">
                 </div>
-                <div class="form-group">
-                    <label>Max Speed (km/h) <span style="color: #888;">(optional)</span></label>
+                <div class="form-row-horizontal">
+                    <label for="modal-block-speed">Max Speed (km/h)</label>
                     <input type="number" id="modal-block-speed" value="${blockData.max_speed_kmh || ''}"
-                           min="0" step="1" placeholder="Leave empty for no limit">
-                </div>
-
-                <div class="form-group">
-                    <label>Current State</label>
-                    <div class="state-indicator state-${blockData.state || 'free'}">
-                        ${(blockData.state || 'free').toUpperCase()}
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label>Monitoring Signals</label>
-                    <div class="signal-list" id="monitoring-signals-list">
-                        ${this.editor.renderSignalList ? this.editor.renderSignalList(blockData.monitoring_signals || []) : ''}
-                    </div>
+                           min="0" step="1" placeholder="Optional">
                 </div>
 
                 <div class="button-group">

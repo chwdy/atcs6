@@ -120,7 +120,7 @@ body {
     overflow: hidden;
     position: absolute;
     top: 0;
-    bottom: 0;
+    bottom: 240px;  /* Give room to bottom panel (train monitor bar) */
     left: 400px;  /* Position next to main sidebar (default 400px width) */
     z-index: 100;
     box-shadow: 4px 0 20px rgba(0, 0, 0, 0.5);
@@ -776,6 +776,67 @@ input[type="range"] {
 
 .debug-controls span {
     color: var(--text-primary);
+}
+
+/* ============= Settings Panel Styles ============= */
+.settings-panel {
+    background: var(--bg-panel);
+    border-radius: 8px;
+    padding: 16px;
+    margin-top: 12px;
+}
+
+.settings-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.setting-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.setting-item label {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.setting-select,
+.setting-input {
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 8px 10px;
+    color: var(--text-primary);
+    font-size: 13px;
+    width: 100%;
+}
+
+.setting-select:focus,
+.setting-input:focus {
+    outline: none;
+    border-color: var(--accent-color);
+}
+
+.setting-item .btn-sm {
+    padding: 6px 12px;
+    font-size: 12px;
+    margin-top: 4px;
+}
+
+.setting-info {
+    font-size: 12px;
+    color: var(--text-secondary);
+    padding: 8px;
+    background: var(--bg-dark);
+    border-radius: 4px;
+}
+
+#scale-current-display {
+    font-family: var(--font-mono);
+    color: var(--accent-color);
 }
 
 .tile-details {
@@ -3103,9 +3164,9 @@ input[type="range"] {
 .train-monitor-bar {
     position: fixed;
     bottom: 0;
-    left: 280px;
+    left: 400px;
     right: 0;
-    height: 120px;
+    height: 240px;
     background: var(--bg-panel);
     border-top: 1px solid var(--border-color);
     display: flex;
@@ -3155,7 +3216,7 @@ input[type="range"] {
 }
 
 .train-monitor-info {
-    width: 100px;
+    width: 200px;
     padding: 8px 12px;
     display: flex;
     flex-direction: column;
@@ -3202,9 +3263,339 @@ input[type="range"] {
     margin-left: 2px;
 }
 
+.train-debug-info {
+    color: var(--text-secondary);
+    font-size: 9px;
+    font-family: var(--font-mono);
+    padding: 2px 4px;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    max-width: 100px;
+}
+
+.train-debug-info .debug-label {
+    color: var(--text-muted);
+}
+
+.train-debug-info .debug-value {
+    color: var(--info-color);
+    font-weight: 600;
+}
+
+.train-debug-info .debug-unit {
+    color: var(--text-muted);
+}
+
+.train-debug-info .debug-separator {
+    color: var(--text-muted);
+    margin: 0 2px;
+}
+
+.train-speed-limit-reason {
+    color: var(--warning-color);
+    font-size: 10px;
+    padding: 2px 4px;
+    background: rgba(255, 205, 30, 0.15);
+    border-radius: 3px;
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .train-monitor-canvas {
     flex: 1;
     min-width: 0;
     height: 100%;
 }
 
+.train-monitor-upcoming {
+    width: 160px;
+    padding: 6px 10px;
+    border-left: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.upcoming-header {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.upcoming-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 10px;
+}
+
+.upcoming-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px;
+    background: var(--bg-hover);
+    border-radius: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.upcoming-icon {
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
+.upcoming-name {
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+}
+
+.upcoming-dist {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.upcoming-len {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    font-size: 9px;
+    flex-shrink: 0;
+}
+
+.upcoming-item.state-free {
+    border-left: 2px solid var(--success-color);
+}
+
+.upcoming-item.state-reserved {
+    border-left: 2px solid #8257e5;
+}
+
+.upcoming-item.state-occupied {
+    border-left: 2px solid var(--danger-color);
+}
+
+.upcoming-item.state-caution {
+    border-left: 2px solid var(--warning-color);
+}
+
+/* ============================================================================
+   COMPACT FORM LAYOUTS - Horizontal input fields and grouped info displays
+   ============================================================================ */
+
+/* Horizontal form layout: label and input on same line */
+.form-row-horizontal {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.form-row-horizontal label {
+    flex: 0 0 120px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-align: right;
+    margin: 0;
+}
+
+.form-row-horizontal input,
+.form-row-horizontal select {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 12px;
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 13px;
+    box-sizing: border-box;
+}
+
+.form-row-horizontal input:focus,
+.form-row-horizontal select:focus {
+    outline: none;
+    border-color: var(--accent-color);
+}
+
+/* Info display group: compact style like track bits */
+.info-display-group {
+    background: var(--bg-section);
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 16px;
+    border: 1px solid var(--border-color);
+}
+
+.info-display-header {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
+}
+
+.info-display-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.info-display-item:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.info-display-item:first-child {
+    padding-top: 0;
+}
+
+.info-display-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.info-display-value {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+/* Compact badge for info displays */
+.info-badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.info-badge.state-free {
+    background: rgba(4, 211, 97, 0.15);
+    color: var(--success-color);
+}
+
+.info-badge.state-occupied {
+    background: rgba(232, 63, 91, 0.15);
+    color: var(--danger-color);
+}
+
+.info-badge.state-reserved {
+    background: rgba(255, 205, 30, 0.15);
+    color: var(--warning-color);
+}
+
+.info-badge.state-caution {
+    background: rgba(255, 149, 0, 0.15);
+    color: #ff9500;
+}
+
+/* ============= Helper Classes ============= */
+.font-mono {
+    font-family: var(--font-mono);
+}
+
+.text-light-gray {
+    color: #ccc;
+}
+
+/* ============= App Debug Panel Styles ============= */
+.debug-tile-header {
+    margin: 0 0 8px 0;
+    color: #00ff88;
+}
+
+.debug-label {
+    color: var(--accent-color);
+    font-weight: bold;
+    padding-right: 8px;
+}
+
+.debug-value {
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+}
+
+.debug-value-valid {
+    color: var(--success-color);
+    font-weight: bold;
+}
+
+.debug-value-invalid {
+    color: var(--danger-color);
+    font-weight: bold;
+}
+
+.debug-value-occupied {
+    color: var(--danger-color);
+    font-family: var(--font-mono);
+}
+
+.debug-value-reserved {
+    color: var(--warning-color);
+    font-family: var(--font-mono);
+}
+
+.debug-value-deadend {
+    color: #ff9900;
+    font-family: var(--font-mono);
+}
+
+.debug-value-switches {
+    color: var(--warning-color);
+    font-family: var(--font-mono);
+}
+
+/* ============= Editor Panel Styles ============= */
+.text-track-bit-active {
+    color: #00d4ff;
+}
+
+.info-box-warning-container {
+    margin: 4px 0;
+    padding: 4px 8px;
+}
+
+.switch-state-box {
+    margin: 6px 0;
+    /* background is dynamic */
+}
+
+.switch-state-text {
+    font-size: 1.125rem;
+    font-weight: bold;
+    /* color is dynamic */
+}
+
+.switch-helper-text {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}
+
+.switch-points-pre {
+    font-size: 0.65rem;
+    margin-top: 4px;
+    margin-bottom: 0;
+    color: #ccc;
+}

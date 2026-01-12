@@ -12,6 +12,7 @@ class App {
 
         this.setupControls();
         this.setupDebugPanel();
+        this.setupSettingsPanel();
         this.refreshNetwork();
     }
 
@@ -489,6 +490,91 @@ class App {
         });
     }
 
+    setupSettingsPanel() {
+        const scaleSelect = document.getElementById('scale-select');
+        const scaleCustomInput = document.getElementById('scale-custom');
+        const scaleApplyBtn = document.getElementById('scale-apply-custom');
+        const scaleDisplay = document.getElementById('scale-current-display');
+
+        if (!scaleSelect || !scaleCustomInput || !scaleApplyBtn || !scaleDisplay) {
+            console.warn('[App] Settings panel elements not found');
+            return;
+        }
+
+        // Load current scale on init
+        this.loadCurrentScale();
+
+        // Handle preset selection
+        scaleSelect.addEventListener('change', async () => {
+            const preset = scaleSelect.value;
+            if (!preset) return;
+
+            try {
+                await window.api.setScalePreset(preset);
+                await this.loadCurrentScale();
+                window.showToast(`Scale set to ${preset}`, 'success');
+            } catch (e) {
+                console.error('[App] Failed to set scale preset:', e);
+                window.showToast('Failed to set scale', 'error');
+            }
+        });
+
+        // Handle custom scale input
+        scaleApplyBtn.addEventListener('click', async () => {
+            const customScale = parseFloat(scaleCustomInput.value);
+            if (isNaN(customScale) || customScale <= 0) {
+                window.showToast('Invalid scale value', 'error');
+                return;
+            }
+
+            try {
+                await window.api.setScale(customScale);
+                await this.loadCurrentScale();
+                scaleSelect.value = ''; // Clear preset selection
+                window.showToast(`Scale set to 1:${customScale}`, 'success');
+            } catch (e) {
+                console.error('[App] Failed to set custom scale:', e);
+                window.showToast('Failed to set scale', 'error');
+            }
+        });
+
+        // Allow Enter key to apply custom scale
+        scaleCustomInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                scaleApplyBtn.click();
+            }
+        });
+    }
+
+    async loadCurrentScale() {
+        const scaleDisplay = document.getElementById('scale-current-display');
+        const scaleSelect = document.getElementById('scale-select');
+
+        try {
+            const data = await window.api.getScale();
+            const scale = data.scale;
+            const presets = data.presets || {};
+
+            // Update display
+            if (scale === 1.0) {
+                scaleDisplay.textContent = 'Current: 1:1 (Full scale)';
+            } else {
+                scaleDisplay.textContent = `Current: 1:${scale}`;
+            }
+
+            // Find matching preset
+            const matchingPreset = Object.entries(presets).find(([name, val]) => val === scale);
+            if (matchingPreset) {
+                scaleSelect.value = matchingPreset[0];
+            } else {
+                scaleSelect.value = '';
+            }
+        } catch (e) {
+            console.error('[App] Failed to load scale:', e);
+            scaleDisplay.textContent = 'Current: Unknown';
+        }
+    }
+
     updateTileDetails(gridX, gridY) {
         const detailsDiv = document.getElementById('tile-details');
         if (!detailsDiv) return;
@@ -518,11 +604,11 @@ class App {
         }
 
         let html = `
-            <h4 style="margin: 0 0 8px 0; color: #00ff88;">Tile (${gridX}, ${gridY})</h4>
-            <table class="debug-table" style="width: 100%; font-size: 11px;">
-                <tr><td style="color: #8257e5; font-weight: bold; padding-right: 8px;">Type:</td><td style="color: #e1e1e6; font-family: monospace;">${track.type || 'TRACK'}</td></tr>
-                <tr><td style="color: #8257e5; font-weight: bold;">Track Bits:</td><td style="color: #e1e1e6; font-family: monospace;">${track.track_bits || 0} (0b${(track.track_bits || 0).toString(2).padStart(6, '0')})</td></tr>
-                <tr><td style="color: #8257e5; font-weight: bold;">Ribi:</td><td style="color: #e1e1e6; font-family: monospace;">${ribi}</td></tr>
+            <h4 class="debug-tile-header">Tile (${gridX}, ${gridY})</h4>
+            <table class="debug-table">
+                <tr><td class="debug-label">Type:</td><td class="debug-value">${track.type || 'TRACK'}</td></tr>
+                <tr><td class="debug-label">Track Bits:</td><td class="debug-value">${track.track_bits || 0} (0b${(track.track_bits || 0).toString(2).padStart(6, '0')})</td></tr>
+                <tr><td class="debug-label">Ribi:</td><td class="debug-value">${ribi}</td></tr>
         `;
 
         // Show active bits
@@ -534,12 +620,12 @@ class App {
             if (track.track_bits & 8) bits.push('NW');
             if (track.track_bits & 16) bits.push('SE');
             if (track.track_bits & 32) bits.push('SW');
-            html += `<tr><td style="color: #8257e5; font-weight: bold;">Active:</td><td style="color: #e1e1e6; font-family: monospace;">${bits.join(', ') || 'None'}</td></tr>`;
+            html += `<tr><td class="debug-label">Active:</td><td class="debug-value">${bits.join(', ') || 'None'}</td></tr>`;
         }
 
         // Dead-ends
         if (track.dead_end_ports && track.dead_end_ports.length > 0) {
-            html += `<tr><td style="color: #8257e5; font-weight: bold;">Dead-Ends:</td><td style="color: #ff9900; font-family: monospace;">${track.dead_end_ports.join(', ')}</td></tr>`;
+            html += `<tr><td class="debug-label">Dead-Ends:</td><td class="debug-value-deadend">${track.dead_end_ports.join(', ')}</td></tr>`;
         }
 
         // Switch states
@@ -547,7 +633,7 @@ class App {
             const switches = Object.entries(track.switch_states)
                 .map(([edge, pos]) => `${edge}:${pos}`)
                 .join(', ');
-            html += `<tr><td style="color: #8257e5; font-weight: bold;">Switches:</td><td style="color: #ffcd1e; font-family: monospace;">${switches}</td></tr>`;
+            html += `<tr><td class="debug-label">Switches:</td><td class="debug-value-switches">${switches}</td></tr>`;
         }
 
         // Validation - check if forbidden
@@ -556,14 +642,14 @@ class App {
             31, 47, 55, 59, 61, 62, 63
         ]);
         const isForbidden = FORBIDDEN_TRACK_BITS.has(track.track_bits);
-        html += `<tr><td style="color: #8257e5; font-weight: bold;">Valid:</td><td style="color: ${isForbidden ? '#e83f5b' : '#04d361'}; font-weight: bold;">${isForbidden ? 'FORBIDDEN' : 'Valid'}</td></tr>`;
+        html += `<tr><td class="debug-label">Valid:</td><td class="${isForbidden ? 'debug-value-invalid' : 'debug-value-valid'}">${isForbidden ? 'FORBIDDEN' : 'Valid'}</td></tr>`;
 
         // Occupation
         if (track.occupied_by) {
-            html += `<tr><td style="color: #8257e5; font-weight: bold;">Occupied:</td><td style="color: #e83f5b; font-family: monospace;">${track.occupied_by}</td></tr>`;
+            html += `<tr><td class="debug-label">Occupied:</td><td class="debug-value-occupied">${track.occupied_by}</td></tr>`;
         }
         if (track.reserved_by) {
-            html += `<tr><td style="color: #8257e5; font-weight: bold;">Reserved:</td><td style="color: #ffcd1e; font-family: monospace;">${track.reserved_by}</td></tr>`;
+            html += `<tr><td class="debug-label">Reserved:</td><td class="debug-value-reserved">${track.reserved_by}</td></tr>`;
         }
 
         html += '</table>';

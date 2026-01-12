@@ -39,6 +39,8 @@ The Dispatcher System enables path-based train control, allowing operators to:
 - Handle multiple concurrent paths with conflict resolution
 - Manage train priorities for resource allocation
 
+**Note:** The `BlockManager` class (in `block_manager.py`) is the authoritative source for all block state changes. All dispatcher operations must use `network.block_manager` to modify block occupancy and reservation states to ensure atomic transitions and avoid race conditions.
+
 ### 1.1 Design Principles
 
 1. **Safety First:** Approach locking, flank protection, and overlap ensure safe operations
@@ -429,8 +431,7 @@ def on_train_enters_path(path: Path, train_id: str, block_id: str):
         raise PathViolationError(f"Train {train_id} entered path owned by {path.train_id}")
     
     # Update block state
-    block = network.blocks[block_id]
-    block.occupy(train_id)
+    network.block_manager.occupy_block(block_id, train_id)
     
     path.current_block_index = path.block_sequence.index(block_id)
 ```
@@ -448,7 +449,7 @@ def on_train_advances(path: Path, entered_block_id: str):
     path.current_block_index = new_index
     
     # Occupy new block
-    network.blocks[entered_block_id].occupy(path.train_id)
+    network.block_manager.occupy_block(entered_block_id, path.train_id)
     
     # Release blocks behind train (respecting safety distance)
     release_blocks_behind_train(path)
@@ -525,11 +526,11 @@ def complete_path(path: Path):
     # Release all remaining blocks
     for block_id in path.block_sequence:
         if block_id not in path.blocks_cleared:
-            network.blocks[block_id].release()
+            network.block_manager.clear_block(block_id)
     
     # Release overlap blocks
     for block_id in path.overlap_blocks:
-        network.blocks[block_id].release()
+        network.block_manager.clear_block(block_id)
     
     # Unlock all switches
     for pos in path.switch_positions:
@@ -721,7 +722,7 @@ def on_train_stopped_after_cancellation(path: Path):
     
     # Release remaining approach-locked blocks
     for block_id in path.approach_locked_blocks:
-        network.blocks[block_id].release()
+        network.block_manager.clear_block(block_id)
     
     # Release remaining switches
     for pos in path.switch_positions:

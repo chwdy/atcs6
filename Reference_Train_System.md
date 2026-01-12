@@ -983,25 +983,21 @@ def update_block_occupancy(self, network: 'RailwayNetwork') -> None:
     
     # Occupy new blocks
     for block_id in new_occupied - old_occupied:
-        block = network.blocks.get(block_id)
-        if block:
-            block.occupy(self.train_id)
+        network.block_manager.occupy_block(block_id, self.train_id)
     
     # Release old blocks
     for block_id in old_occupied - new_occupied:
-        block = network.blocks.get(block_id)
-        if block:
-            block.release()
+        network.block_manager.clear_block(block_id)
     
     self.occupied_blocks = list(new_occupied)
 ```
 
-### 8.8 Updated to_dict/from_dict
+### 8.8 Updated to_dict
 
-Add serialization for new properties:
+Add serialization for new properties. `to_dict` requires the `network` object to calculate distance ratios for the frontend:
 
 ```python
-def to_dict(self) -> dict:
+def to_dict(self, network=None) -> dict:
     data = {
         # ... existing fields ...
         "model": self.model,
@@ -1014,31 +1010,27 @@ def to_dict(self) -> dict:
         "target_speed": self.target_speed,
         "manual_target_speed": self.manual_target_speed,
     }
+    
+    # Calculate distance ratio (0.0-1.0) for frontend
+    if self.current_pos:
+        tile_length_cm = network._get_tile_length_cm(*self.current_pos) if network else 1000.0
+        data["position"] = {
+            "x": self.current_pos[0],
+            "y": self.current_pos[1],
+            "distance": self.distance_on_track / tile_length_cm
+        }
+        
     return data
-
-@classmethod
-def from_dict(cls, data: dict) -> 'Train':
-    train = cls(
-        # ... existing fields ...
-    )
-    train.model = data.get("model", "")
-    train.min_radius_cm = data.get("min_radius_cm", 30.0)
-    train.travel_direction = data.get("travel_direction", "forward")
-    train.speed_profile_id = data.get("speed_profile_id")
-    train.assigned_route_id = data.get("assigned_route_id")
-    train.target_speed = data.get("target_speed", 0.0)
-    train.manual_target_speed = data.get("manual_target_speed", 0.0)
-    
-    if data.get("facing_direction"):
-        train.facing_direction = Direction[data["facing_direction"]]
-    
-    if data.get("state"):
-        train.state = TrainState(data["state"])
-    
-    return train
 ```
 
-### 8.9 Error Handling: Path Not Found
+### 8.9 Notes on Units
+
+- `distance_on_track` is stored in **centimeters (cm)** from the entry edge.
+- `length` is defined in meters, but occupancy calculation converts it to cm.
+- The frontend receives a `distance` ratio (0.0 to 1.0) for smooth interpolation between tiles.
+- Use `train_config.kmh_to_cm_per_sec()` for physics calculations.
+
+### 8.10 Error Handling: Path Not Found
 
 When a train's Route cannot find a Path to the next waypoint:
 
@@ -1179,8 +1171,10 @@ def _update_moving_train(self, train: Train, delta_seconds: float):
     # 5. Update train position
     self._update_train_position(train, delta_seconds)
     
-    # 6. Update block occupancy (based on train length)
-    train.update_occupancy(self.network)
+    # 6. Update block occupancy (DEPRECATED - handled by BlockManager)
+    # DO NOT USE: train.update_occupancy(self.network)
+    # Block occupancy is now managed centrally by BlockManager in block_manager.py
+    # to prevent race conditions with PathDispatcher reservations.
 ```
 
 ---

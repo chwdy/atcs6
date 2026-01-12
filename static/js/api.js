@@ -1072,6 +1072,55 @@ class API {
         }
     }
 
+    // === Scale Configuration API ===
+
+    async getScale() {
+        try {
+            const response = await fetch(`${this.baseUrl}/scale`);
+            const result = await response.json();
+            return result;
+        } catch (e) {
+            console.error('[API] getScale failed:', e);
+            throw e;
+        }
+    }
+
+    async setScale(scale) {
+        try {
+            const response = await fetch(`${this.baseUrl}/scale`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ scale })
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to set scale');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] setScale failed:', e);
+            throw e;
+        }
+    }
+
+    async setScalePreset(preset) {
+        try {
+            const response = await fetch(`${this.baseUrl}/scale`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ preset })
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to set scale preset');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] setScalePreset failed:', e);
+            throw e;
+        }
+    }
+
     // === Path Dispatcher API ===
 
     /**

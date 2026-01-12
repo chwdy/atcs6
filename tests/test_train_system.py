@@ -1027,8 +1027,7 @@ class TestTrainATC:
 
     def test_get_speed_limit(self, atc: TrainATC):
         """Test speed limit calculation."""
-        limit = atc.get_speed_limit()
-        # Should be positive with free blocks ahead
+        limit, reason = atc.get_speed_limit()
         assert limit > 0
 
     def test_get_target_speed(self, atc: TrainATC):
@@ -1392,10 +1391,12 @@ class TestTrainStateTransitions:
         assert test_train.is_emergency_braking is True
 
     def test_emergency_stop_from_non_running(self, test_train: Train):
-        """Test emergency_stop() returns False from non-RUNNING_MOVING state."""
+        """Test emergency_stop() works from non-RUNNING_MOVING state."""
         test_train.state = TrainState.IDLE
         result = test_train.emergency_stop()
-        assert result is False
+        assert result is True
+        assert test_train.state == TrainState.RUNNING_WAITING
+        assert test_train.wait_reason == "Emergency stop"
 
     def test_enable_manual_from_idle(self, test_train: Train):
         """Test enable_manual() from IDLE when stopped."""

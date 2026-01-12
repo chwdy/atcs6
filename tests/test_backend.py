@@ -69,7 +69,7 @@ from interlocking import InterlockingSystem, InterlockingRoute
 from train import Train, TrainCar
 from train_atc import create_atc_for_train
 from train_config import ATC_NO_BLOCK_FALLBACK_CM, DEFAULT_TILE_LENGTH_CM
-from train_lookahead import build_lookahead, LookaheadItemType
+from train_lookahead import build_lookahead, build_lookahead_response, LookaheadItemType
 
 
 # ============= PYTEST FIXTURES =============
@@ -4438,6 +4438,226 @@ class TestTrainLookahead:
         assert isinstance(result_dict["lookahead_items"], list)
 
 
+class TestTrainLookaheadVisualizationBugFix:
+    """
+    Comprehensive tests for Train Monitor lookahead visualization fix (2026-01-10).
+
+    BUG: Lookahead API responses omitted blocks/signals/stations, leaving the monitor blank.
+    FIX: Visualization payload now exposes blocks, signals, stations, and max distance.
+    """
+
+    def test_visualization_includes_blocks_signals_stations(self, network):
+        for x in range(3):
+            network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
+
+        network.create_block_with_tracks(
+            block_id="BLOCK_A",
+            positions=[(0, 0), (1, 0), (2, 0)],
+            length_cm=120.0,
+        )
+
+        station = network.add_station(2, 0, station_id="STA_001", name="Station A")
+        signal = network.add_signal(0, 0, "E", auto_connect=False)
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_VIS_01", consist=[car], max_speed=60.0)
+        train.current_pos = (0, 0)
+        train.facing_direction = Direction.EAST
+        train.travel_direction = "forward"
+
+        response = build_lookahead_response(train, network)
+
+        block_ids = {block["id"] for block in response["blocks"]}
+        signal_ids = {signal_item["id"] for signal_item in response["signals"]}
+        station_ids = {
+            station_item["station_id"] for station_item in response["stations"]
+        }
+
+        assert "BLOCK_A" in block_ids
+        assert signal.signal_id in signal_ids
+        assert station.station_id in station_ids
+        assert response["max_distance_cm"] > 0
+
+    def test_visualization_wait_reason_and_progress(self, network):
+        for x in range(2):
+            network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_VIS_REASON", consist=[car], max_speed=60.0)
+        train.current_pos = (0, 0)
+        train.current_path = [(0, 0, Direction.EAST), (1, 0, Direction.EAST)]
+        train.path_index = 0
+        train.distance_on_track = DEFAULT_TILE_LENGTH_CM * 0.5
+        train.facing_direction = Direction.EAST
+        train.wait_reason = "Signal SIG_TEST is red"
+
+        response = build_lookahead_response(train, network)
+
+        assert response["wait_reason"] == "Signal SIG_TEST is red"
+        assert response["distance_into_path_cm"] == DEFAULT_TILE_LENGTH_CM * 0.5
+        assert response["distance_to_next_tile_cm"] == DEFAULT_TILE_LENGTH_CM * 0.5
+
+    def test_wait_reason_when_block_occupied(self, network):
+        network.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_EW))
+        network.add_track(TrackSegment(x=1, y=0, track_bits=TRACK_EW))
+
+        network.create_block_with_tracks(
+            block_id="BLOCK_A",
+            positions=[(0, 0)],
+            length_cm=100.0,
+        )
+        network.create_block_with_tracks(
+            block_id="BLOCK_B",
+            positions=[(1, 0)],
+            length_cm=100.0,
+        )
+
+        block_b = network.blocks["BLOCK_B"]
+        block_b.state = BlockState.OCCUPIED
+        block_b.occupied_by = "TRAIN_OTHER"
+        network.tracks[(1, 0)].occupied_by = "TRAIN_OTHER"
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_WAIT", consist=[car], max_speed=60.0)
+        train.current_pos = (0, 0)
+        train.facing_direction = Direction.EAST
+        train.current_path = [(0, 0, Direction.EAST), (1, 0, Direction.EAST)]
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 0.0
+        network.trains[train.train_id] = train
+
+        controller = SimulationController(network)
+        controller.update(0.1)
+
+        assert train.state == TrainState.RUNNING_WAITING
+        assert train.wait_reason == "Block BLOCK_B occupied by TRAIN_OTHER"
+
+    def test_demo_signals_red_with_main_switch(self):
+        import demo_main
+        from path_dispatcher import PathDispatcher
+
+        network = demo_main.create_comprehensive_demo()
+        path_dispatcher = PathDispatcher(network)
+        demo_main.setup_demo_train(network, path_dispatcher)
+
+        westbound_signal = next(
+            signal
+            for signal in network.signals.values()
+            if signal.name == "Westbound Signal"
+        )
+        branch_exit_signal = next(
+            signal
+            for signal in network.signals.values()
+            if signal.name == "Branch Exit Signal"
+        )
+
+        network.update_signals_from_blocks()
+
+        assert branch_exit_signal.state == SignalState.RED
+
+        demo_train = network.trains.get("DEMO_TRAIN")
+        assert demo_train is not None
+
+        network.update_signals_from_blocks()
+
+        assert westbound_signal.state == SignalState.RED
+
+    def test_delete_train_releases_block(self, network):
+        network.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_EW))
+        network.create_block_with_tracks("BLOCK_A", [(0, 0)])
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_DEL", consist=[car], max_speed=60.0)
+        train.current_pos = (0, 0)
+        network.trains[train.train_id] = train
+        train.update_occupancy(network)
+        network.update_signals_from_blocks()
+
+        assert network.blocks["BLOCK_A"].occupied_by == train.train_id
+
+        assert network.remove_train(train.train_id) is True
+        assert network.blocks["BLOCK_A"].occupied_by is None
+
+    def test_visualization_respects_zero_length_block(self, network):
+        """
+        Test that blocks with length_cm=0 are respected as 0, not fallback to DEFAULT_TILE_LENGTH_CM.
+
+        BUG FIX: Previously, length_cm=0 would incorrectly fall back to DEFAULT_TILE_LENGTH_CM (1000cm).
+        FIX: Now respects 0 as 0cm.
+        """
+        network.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_EW))
+
+        network.create_block_with_tracks(
+            block_id="BLOCK_ZERO",
+            positions=[(0, 0)],
+            length_cm=0.0,
+        )
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_VIS_02", consist=[car], max_speed=60.0)
+        train.current_pos = (0, 0)
+        train.facing_direction = Direction.EAST
+
+        response = build_lookahead_response(train, network)
+
+        block = response["blocks"][0]
+        assert block["length_cm"] == 0.0, (
+            "Block with length_cm=0 should be respected as 0"
+        )
+        assert block["end_cm"] - block["start_cm"] == 0.0, "Block span should be 0cm"
+
+    def test_visualization_orders_blocks_by_distance(self, network):
+        for x in range(4):
+            network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
+
+        network.create_block_with_tracks(
+            block_id="BLOCK_A",
+            positions=[(0, 0), (1, 0)],
+            length_cm=80.0,
+        )
+        network.create_block_with_tracks(
+            block_id="BLOCK_B",
+            positions=[(2, 0), (3, 0)],
+            length_cm=90.0,
+        )
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_VIS_03", consist=[car], max_speed=60.0)
+        train.current_pos = (0, 0)
+        train.facing_direction = Direction.EAST
+
+        response = build_lookahead_response(train, network)
+
+        block_starts = [block["start_cm"] for block in response["blocks"]]
+        assert block_starts == sorted(block_starts)
+
+    def test_visualization_empty_when_train_has_no_position(self, network):
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_VIS_04", consist=[car], max_speed=60.0)
+        train.current_pos = None
+        train.facing_direction = None
+
+        response = build_lookahead_response(train, network)
+
+        assert response["blocks"] == []
+        assert response["signals"] == []
+        assert response["stations"] == []
+
+
 class TestTrainPlacementOccupancy:
     def test_train_update_occupancy_sets_block_occupied(self, network):
         track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
@@ -4531,6 +4751,203 @@ class TestTrainPropertyUpdate:
         assert network.trains["TRAIN_01"].length_cm == 3000.0
 
 
+class TestStationStoppingBehavior:
+    def test_single_tile_station_stops_at_only_tile(self, network):
+        network.add_track(TrackSegment(0, 0, TRACK_EW))
+        network.add_track(TrackSegment(1, 0, TRACK_EW))
+        network.add_track(TrackSegment(2, 0, TRACK_EW))
+
+        station = network.add_station(
+            1, 0, station_id="STA_SINGLE", name="Single Tile Station", length_cm=1500.0
+        )
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        train.current_pos = (1, 0)
+        train.facing_direction = Direction.EAST
+
+        from route_executor import RouteExecutor
+
+        executor = RouteExecutor(network)
+        target_tile = executor._get_target_station_tile(train, station)
+
+        assert target_tile == (1, 0)
+
+    def test_multi_tile_station_traveling_east_stops_at_easternmost(self, network):
+        for x in range(5):
+            network.add_track(TrackSegment(x, 0, TRACK_EW))
+
+        station = network.add_station(
+            1,
+            0,
+            station_id="STA_MULTI_EW",
+            name="Multi-tile EW Station",
+            length_cm=4500.0,
+        )
+        network.extend_station("STA_MULTI_EW", [(2, 0), (3, 0)])
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        train.facing_direction = Direction.EAST
+
+        from route_executor import RouteExecutor
+
+        executor = RouteExecutor(network)
+        target_tile = executor._get_target_station_tile(train, station)
+
+        assert target_tile == (3, 0)
+
+    def test_multi_tile_station_traveling_west_stops_at_westernmost(self, network):
+        for x in range(5):
+            network.add_track(TrackSegment(x, 0, TRACK_EW))
+
+        station = network.add_station(
+            1,
+            0,
+            station_id="STA_MULTI_EW",
+            name="Multi-tile EW Station",
+            length_cm=4500.0,
+        )
+        network.extend_station("STA_MULTI_EW", [(2, 0), (3, 0)])
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        train.facing_direction = Direction.WEST
+
+        from route_executor import RouteExecutor
+
+        executor = RouteExecutor(network)
+        target_tile = executor._get_target_station_tile(train, station)
+
+        assert target_tile == (1, 0)
+
+    def test_multi_tile_station_traveling_north_stops_at_northernmost(self, network):
+        for y in range(5):
+            network.add_track(TrackSegment(0, y, TRACK_NS))
+
+        station = network.add_station(
+            0,
+            1,
+            station_id="STA_MULTI_NS",
+            name="Multi-tile NS Station",
+            length_cm=4500.0,
+        )
+        network.extend_station("STA_MULTI_NS", [(0, 2), (0, 3)])
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        train.facing_direction = Direction.NORTH
+
+        from route_executor import RouteExecutor
+
+        executor = RouteExecutor(network)
+        target_tile = executor._get_target_station_tile(train, station)
+
+        assert target_tile == (0, 3)
+
+    def test_multi_tile_station_traveling_south_stops_at_southernmost(self, network):
+        for y in range(5):
+            network.add_track(TrackSegment(0, y, TRACK_NS))
+
+        station = network.add_station(
+            0,
+            1,
+            station_id="STA_MULTI_NS",
+            name="Multi-tile NS Station",
+            length_cm=4500.0,
+        )
+        network.extend_station("STA_MULTI_NS", [(0, 2), (0, 3)])
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        train.facing_direction = Direction.SOUTH
+
+        from route_executor import RouteExecutor
+
+        executor = RouteExecutor(network)
+        target_tile = executor._get_target_station_tile(train, station)
+
+        assert target_tile == (0, 1)
+
+    def test_train_not_at_station_when_at_wrong_tile(self, network):
+        for x in range(5):
+            network.add_track(TrackSegment(x, 0, TRACK_EW))
+
+        station = network.add_station(
+            1, 0, station_id="STA_MULTI", name="Multi-tile Station", length_cm=4500.0
+        )
+        network.extend_station("STA_MULTI", [(2, 0), (3, 0)])
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        train.current_pos = (1, 0)
+        train.facing_direction = Direction.EAST
+
+        from route_executor import RouteExecutor
+
+        executor = RouteExecutor(network)
+        is_at_station = executor._is_train_at_station(train, "STA_MULTI")
+
+        assert not is_at_station
+
+    def test_train_at_station_when_at_correct_target_tile(self, network):
+        for x in range(5):
+            network.add_track(TrackSegment(x, 0, TRACK_EW))
+
+        station = network.add_station(
+            1, 0, station_id="STA_MULTI", name="Multi-tile Station", length_cm=4500.0
+        )
+        network.extend_station("STA_MULTI", [(2, 0), (3, 0)])
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        train.current_pos = (3, 0)
+        train.facing_direction = Direction.EAST
+
+        from route_executor import RouteExecutor
+
+        executor = RouteExecutor(network)
+        is_at_station = executor._is_train_at_station(train, "STA_MULTI")
+
+        assert is_at_station
+
+    def test_train_without_facing_direction_uses_first_tile(self, network):
+        for x in range(5):
+            network.add_track(TrackSegment(x, 0, TRACK_EW))
+
+        station = network.add_station(
+            1, 0, station_id="STA_MULTI", name="Multi-tile Station", length_cm=4500.0
+        )
+        network.extend_station("STA_MULTI", [(2, 0), (3, 0)])
+
+        car = TrainCar(
+            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
+        )
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        train.facing_direction = None
+
+        from route_executor import RouteExecutor
+
+        executor = RouteExecutor(network)
+        target_tile = executor._get_target_station_tile(train, station)
+
+        assert target_tile in station.positions
+
+
 if __name__ == "__main__":
     print("Run tests with: pytest tests/test_backend.py -v")
     print("\nTest coverage:")
@@ -4545,3 +4962,628 @@ if __name__ == "__main__":
     print("- Switch locking in routes")
     print("- Signal direction awareness with routes")
     print("- Signal same-route GREEN behavior")
+    print("- Station stopping position logic (last tile in travel direction)")
+
+
+class TestMultiBlockOccupancy:
+    """
+    Comprehensive tests for multi-block occupancy implementation (HIGH-2).
+
+    These tests ensure long trains properly occupy multiple blocks by tracing
+    backward along their path until the full train length is covered.
+
+    Bug Fixed: Train.get_occupied_blocks() was stubbed at line 796 with 'break'.
+    Fix: Implemented full backward path tracing using train.current_path and path_index.
+    """
+
+    def test_short_train_single_block(self):
+        """5m train on 10m block = occupies 1 block only"""
+        network = RailwayNetwork()
+
+        track1 = TrackSegment(0, 0, track_bits=TRACK_EW, length=1.0)
+        track1.block_section_id = "BLOCK_1"
+        network.add_track(track1)
+
+        block1 = Block(block_id="BLOCK_1", length_cm=1000.0)
+        network.blocks["BLOCK_1"] = block1
+
+        train = Train(
+            train_id="T1",
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 5.0, 50000.0)],
+            current_pos=(0, 0),
+            current_path=[(0, 0, Direction.EAST)],
+            path_index=0,
+            distance_on_track=0.5,
+        )
+
+        occupied = train.get_occupied_blocks(network)
+
+        assert len(occupied) == 1
+        assert occupied[0] == "BLOCK_1"
+
+    def test_long_train_two_blocks(self):
+        """15m train spanning block boundary occupies 2 blocks"""
+        network = RailwayNetwork()
+
+        track1 = TrackSegment(0, 0, track_bits=TRACK_EW, length=1.0)
+        track1.block_section_id = "BLOCK_1"
+        network.add_track(track1)
+
+        track2 = TrackSegment(1, 0, track_bits=TRACK_EW, length=1.0)
+        track2.block_section_id = "BLOCK_2"
+        network.add_track(track2)
+
+        block1 = Block(block_id="BLOCK_1", length_cm=10000.0)
+        block2 = Block(block_id="BLOCK_2", length_cm=10000.0)
+        network.blocks["BLOCK_1"] = block1
+        network.blocks["BLOCK_2"] = block2
+
+        train = Train(
+            train_id="T1",
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 15.0, 100000.0)],
+            current_pos=(1, 0),
+            current_path=[(0, 0, Direction.EAST), (1, 0, Direction.EAST)],
+            path_index=1,
+            distance_on_track=0.1,
+        )
+
+        occupied = train.get_occupied_blocks(network)
+
+        assert len(occupied) == 2
+        assert "BLOCK_1" in occupied
+        assert "BLOCK_2" in occupied
+
+    def test_very_long_train_three_blocks(self):
+        """250m train spanning 3 blocks occupies all 3"""
+        network = RailwayNetwork()
+
+        for i in range(3):
+            track = TrackSegment(i, 0, track_bits=TRACK_EW, length=1.0)
+            track.block_section_id = f"BLOCK_{i + 1}"
+            network.add_track(track)
+
+            block = Block(block_id=f"BLOCK_{i + 1}", length_cm=10000.0)
+            network.blocks[f"BLOCK_{i + 1}"] = block
+
+        train = Train(
+            train_id="T1",
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 250.0, 150000.0)],
+            current_pos=(2, 0),
+            current_path=[
+                (0, 0, Direction.EAST),
+                (1, 0, Direction.EAST),
+                (2, 0, Direction.EAST),
+            ],
+            path_index=2,
+            distance_on_track=0.5,
+        )
+
+        occupied = train.get_occupied_blocks(network)
+
+        assert len(occupied) == 3
+        assert "BLOCK_1" in occupied
+        assert "BLOCK_2" in occupied
+        assert "BLOCK_3" in occupied
+
+    def test_train_exactly_block_length(self):
+        """10m train on 10m block = occupies 1 block exactly"""
+        network = RailwayNetwork()
+
+        track1 = TrackSegment(0, 0, track_bits=TRACK_EW, length=1.0)
+        track1.block_section_id = "BLOCK_1"
+        network.add_track(track1)
+
+        block1 = Block(block_id="BLOCK_1", length_cm=1000.0)
+        network.blocks["BLOCK_1"] = block1
+
+        train = Train(
+            train_id="T1",
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 10.0, 80000.0)],
+            current_pos=(0, 0),
+            current_path=[(0, 0, Direction.EAST)],
+            path_index=0,
+            distance_on_track=1.0,
+        )
+
+        occupied = train.get_occupied_blocks(network)
+
+        assert len(occupied) == 1
+        assert occupied[0] == "BLOCK_1"
+
+    def test_train_spanning_boundary(self):
+        """Train with tail in previous block occupies both blocks"""
+        network = RailwayNetwork()
+
+        track1 = TrackSegment(0, 0, track_bits=TRACK_EW, length=1.0)
+        track1.block_section_id = "BLOCK_1"
+        network.add_track(track1)
+
+        track2 = TrackSegment(1, 0, track_bits=TRACK_EW, length=1.0)
+        track2.block_section_id = "BLOCK_2"
+        network.add_track(track2)
+
+        block1 = Block(block_id="BLOCK_1", length_cm=10000.0)
+        block2 = Block(block_id="BLOCK_2", length_cm=10000.0)
+        network.blocks["BLOCK_1"] = block1
+        network.blocks["BLOCK_2"] = block2
+
+        train = Train(
+            train_id="T1",
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 12.0, 90000.0)],
+            current_pos=(1, 0),
+            current_path=[(0, 0, Direction.EAST), (1, 0, Direction.EAST)],
+            path_index=1,
+            distance_on_track=0.05,
+        )
+
+        occupied = train.get_occupied_blocks(network)
+
+        assert len(occupied) == 2
+        assert "BLOCK_1" in occupied
+        assert "BLOCK_2" in occupied
+
+    def test_occupancy_updates_as_train_moves(self):
+        """As train advances forward, blocks behind get released"""
+        network = RailwayNetwork()
+
+        for i in range(3):
+            track = TrackSegment(i, 0, track_bits=TRACK_EW, length=1.0)
+            track.block_section_id = f"BLOCK_{i + 1}"
+            network.add_track(track)
+
+            block = Block(block_id=f"BLOCK_{i + 1}", length_cm=10000.0)
+            network.blocks[f"BLOCK_{i + 1}"] = block
+
+        train = Train(
+            train_id="T1",
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 15.0, 100000.0)],
+            current_pos=(1, 0),
+            current_path=[
+                (0, 0, Direction.EAST),
+                (1, 0, Direction.EAST),
+                (2, 0, Direction.EAST),
+            ],
+            path_index=1,
+            distance_on_track=333.0,
+        )
+
+        occupied_before = train.get_occupied_blocks(network)
+        assert len(occupied_before) == 2
+        assert "BLOCK_1" in occupied_before
+        assert "BLOCK_2" in occupied_before
+
+        train.path_index = 1
+        train.current_pos = (1, 0)
+        train.distance_on_track = 3000.0
+
+        occupied_after = train.get_occupied_blocks(network)
+        assert len(occupied_after) == 1
+        assert "BLOCK_1" not in occupied_after
+        assert "BLOCK_2" in occupied_after
+        assert "BLOCK_3" not in occupied_after
+
+    def test_path_exhausted_before_length(self):
+        """Very long train occupies all available blocks when path ends"""
+        network = RailwayNetwork()
+
+        track1 = TrackSegment(0, 0, track_bits=TRACK_EW, length=1.0)
+        track1.block_section_id = "BLOCK_1"
+        network.add_track(track1)
+
+        track2 = TrackSegment(1, 0, track_bits=TRACK_EW, length=0.5)
+        track2.block_section_id = "BLOCK_2"
+        network.add_track(track2)
+
+        block1 = Block(block_id="BLOCK_1", length_cm=10000.0)
+        block2 = Block(block_id="BLOCK_2", length_cm=5000.0)
+        network.blocks["BLOCK_1"] = block1
+        network.blocks["BLOCK_2"] = block2
+
+        train = Train(
+            train_id="T1",
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 200.0, 120000.0)],
+            current_pos=(1, 0),
+            current_path=[(0, 0, Direction.EAST), (1, 0, Direction.EAST)],
+            path_index=1,
+            distance_on_track=2500.0,
+        )
+
+        occupied = train.get_occupied_blocks(network)
+
+        assert len(occupied) == 2
+        assert "BLOCK_1" in occupied
+        assert "BLOCK_2" in occupied
+
+    def test_train_without_path(self):
+        """Train without path falls back to current position block only"""
+        network = RailwayNetwork()
+
+        track1 = TrackSegment(0, 0, track_bits=TRACK_EW, length=1.0)
+        track1.block_section_id = "BLOCK_1"
+        network.add_track(track1)
+
+        block1 = Block(block_id="BLOCK_1", length_cm=1000.0)
+        network.blocks["BLOCK_1"] = block1
+
+        train = Train(
+            train_id="T1",
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 15.0, 100000.0)],
+            current_pos=(0, 0),
+            current_path=None,
+            distance_on_track=500.0,
+        )
+
+        occupied = train.get_occupied_blocks(network)
+
+        assert len(occupied) == 1
+        assert occupied[0] == "BLOCK_1"
+
+    def test_train_at_path_start(self):
+        """Train at path_index=0 still traces backward correctly"""
+        network = RailwayNetwork()
+
+        track1 = TrackSegment(0, 0, track_bits=TRACK_EW, length=1.0)
+        track1.block_section_id = "BLOCK_1"
+        network.add_track(track1)
+
+        block1 = Block(block_id="BLOCK_1", length_cm=1000.0)
+        network.blocks["BLOCK_1"] = block1
+
+        train = Train(
+            train_id="T1",
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 5.0, 50000.0)],
+            current_pos=(0, 0),
+            current_path=[(0, 0, Direction.EAST)],
+            path_index=0,
+            distance_on_track=0.3,
+        )
+
+        occupied = train.get_occupied_blocks(network)
+
+        assert len(occupied) == 1
+        assert occupied[0] == "BLOCK_1"
+
+    def test_update_occupancy_marks_blocks_correctly(self):
+        """update_occupancy() properly marks/unmarks blocks"""
+        network = RailwayNetwork()
+
+        for i in range(3):
+            track = TrackSegment(i, 0, track_bits=TRACK_EW, length=1.0)
+            track.block_section_id = f"BLOCK_{i + 1}"
+            network.add_track(track)
+
+            block = Block(block_id=f"BLOCK_{i + 1}", length_cm=10000.0)
+            network.blocks[f"BLOCK_{i + 1}"] = block
+
+        train = Train(
+            train_id="T1",
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 15.0, 100000.0)],
+            current_pos=(1, 0),
+            current_path=[
+                (0, 0, Direction.EAST),
+                (1, 0, Direction.EAST),
+                (2, 0, Direction.EAST),
+            ],
+            path_index=1,
+            distance_on_track=333.0,
+        )
+
+        train.update_occupancy(network)
+
+        assert network.blocks["BLOCK_1"].state == BlockState.OCCUPIED
+        assert network.blocks["BLOCK_1"].occupied_by == "T1"
+        assert network.blocks["BLOCK_2"].state == BlockState.OCCUPIED
+        assert network.blocks["BLOCK_2"].occupied_by == "T1"
+        assert network.blocks["BLOCK_3"].state == BlockState.FREE
+
+        train.path_index = 1
+        train.current_pos = (1, 0)
+        train.distance_on_track = 3000.0
+        train.update_occupancy(network)
+
+        assert network.blocks["BLOCK_1"].state == BlockState.FREE
+        assert network.blocks["BLOCK_1"].occupied_by is None
+        assert network.blocks["BLOCK_2"].state == BlockState.OCCUPIED
+        assert network.blocks["BLOCK_2"].occupied_by == "T1"
+        assert network.blocks["BLOCK_3"].state == BlockState.FREE
+        assert network.blocks["BLOCK_3"].occupied_by is None
+
+
+class TestBlockManager:
+    def test_block_manager_initialization(self):
+        from block_manager import BlockManager
+        from block import Block, BlockState
+
+        blocks = {
+            "B1": Block("B1", "Block 1"),
+            "B2": Block("B2", "Block 2"),
+        }
+
+        manager = BlockManager(blocks)
+
+        assert manager.blocks is blocks
+        assert manager.get_block_state("B1") == BlockState.FREE
+        assert manager.get_block_state("B2") == BlockState.FREE
+
+    def test_occupy_block_from_free(self):
+        from block_manager import BlockManager
+        from block import Block, BlockState
+
+        blocks = {"B1": Block("B1")}
+        manager = BlockManager(blocks)
+
+        result = manager.occupy_block("B1", "TRAIN_1")
+
+        assert result == True
+        assert blocks["B1"].state == BlockState.OCCUPIED
+        assert blocks["B1"].occupied_by == "TRAIN_1"
+
+    def test_occupy_block_from_reserved(self):
+        from block_manager import BlockManager
+        from block import Block, BlockState
+
+        blocks = {"B1": Block("B1")}
+        blocks["B1"].state = BlockState.RESERVED
+        blocks["B1"].occupied_by = "TRAIN_1"
+        manager = BlockManager(blocks)
+
+        result = manager.occupy_block("B1", "TRAIN_1")
+
+        assert result == True
+        assert blocks["B1"].state == BlockState.OCCUPIED
+
+    def test_occupy_block_idempotent(self):
+        from block_manager import BlockManager
+        from block import Block, BlockState
+
+        blocks = {"B1": Block("B1")}
+        manager = BlockManager(blocks)
+
+        manager.occupy_block("B1", "TRAIN_1")
+        result = manager.occupy_block("B1", "TRAIN_1")
+
+        assert result == True
+        assert blocks["B1"].state == BlockState.OCCUPIED
+
+    def test_set_block_to_caution(self):
+        from block_manager import BlockManager
+        from block import Block, BlockState
+
+        blocks = {"B1": Block("B1")}
+        manager = BlockManager(blocks)
+
+        blocks["B1"].state = BlockState.OCCUPIED
+        blocks["B1"].occupied_by = "TRAIN_1"
+
+        result = manager.set_block_to_caution("B1")
+
+        assert result == True
+        assert blocks["B1"].state == BlockState.CAUTION
+        assert blocks["B1"].occupied_by == "TRAIN_1"
+
+    def test_clear_block_from_caution(self):
+        from block_manager import BlockManager
+        from block import Block, BlockState
+
+        blocks = {"B1": Block("B1")}
+        manager = BlockManager(blocks)
+
+        blocks["B1"].state = BlockState.CAUTION
+        blocks["B1"].occupied_by = "TRAIN_1"
+
+        result = manager.clear_block("B1")
+
+        assert result == True
+        assert blocks["B1"].state == BlockState.FREE
+        assert blocks["B1"].occupied_by is None
+
+    def test_release_block_full_cycle(self):
+        from block_manager import BlockManager
+        from block import Block, BlockState
+
+        blocks = {"B1": Block("B1")}
+        manager = BlockManager(blocks)
+
+        manager.occupy_block("B1", "TRAIN_1")
+
+        result1 = manager.release_block("B1", "TRAIN_1")
+        assert result1 == True
+        assert blocks["B1"].state == BlockState.CAUTION
+
+        result2 = manager.release_block("B1", "TRAIN_1")
+        assert result2 == True
+        assert blocks["B1"].state == BlockState.FREE
+        assert blocks["B1"].occupied_by is None
+
+    def test_is_block_available(self):
+        from block_manager import BlockManager
+        from block import Block, BlockState
+
+        blocks = {
+            "B1": Block("B1"),
+            "B2": Block("B2"),
+        }
+        manager = BlockManager(blocks)
+
+        assert manager.is_block_available("B1") == True
+
+        manager.occupy_block("B2", "TRAIN_1")
+        assert manager.is_block_available("B2") == False
+        assert manager.is_block_available("B2", "TRAIN_1") == True
+        assert manager.is_block_available("B2", "TRAIN_2") == False
+
+    def test_block_manager_integration_with_network(self):
+        from network import RailwayNetwork
+        from block import BlockState
+
+        network = RailwayNetwork()
+
+        assert network.block_manager is None
+
+        block = network.create_block("B1", "Block 1")
+
+        assert network.block_manager is not None
+        assert network.block_manager.get_block_state("B1") == BlockState.FREE
+
+        network.block_manager.occupy_block("B1", "TRAIN_1")
+        assert block.state == BlockState.OCCUPIED
+        assert block.occupied_by == "TRAIN_1"
+
+
+class TestRaceConditionFix:
+    def test_block_manager_prevents_premature_release(self):
+        from network import RailwayNetwork
+        from block import Block, BlockState
+
+        network = RailwayNetwork()
+        block = network.create_block("B1", "Block 1")
+
+        network.block_manager.occupy_block("B1", "TRAIN_1")
+        assert block.state == BlockState.OCCUPIED
+
+        network.block_manager.set_block_to_caution("B1")
+        assert block.state == BlockState.CAUTION
+
+        assert block.state != BlockState.FREE
+
+    def test_simulation_no_longer_calls_update_occupancy(self):
+        import simulation
+        import inspect
+
+        source = inspect.getsource(simulation.SimulationController._advance_train_track)
+        assert "update_occupancy" not in source
+
+        source2 = inspect.getsource(
+            simulation.SimulationController._advance_manual_train_no_path
+        )
+        assert "update_occupancy" not in source2
+
+    def test_path_dispatcher_uses_block_manager(self):
+        from path_dispatcher import PathDispatcher
+        from network import RailwayNetwork
+        from block import Block, BlockState
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        for i in range(3):
+            from track import TrackSegment, TRACK_EW
+
+            track = TrackSegment(i, 0, track_bits=TRACK_EW, length=100.0)
+            track.block_section_id = f"B{i + 1}"
+            network.add_track(track)
+
+        for i in range(3):
+            network.create_block(f"B{i + 1}", f"Block {i + 1}")
+
+        dispatcher = PathDispatcher(network)
+
+        from path_dispatcher import Path, PathStatus
+
+        path = Path(
+            path_id="PATH_1",
+            train_id="TRAIN_1",
+            block_sequence=["B1", "B2", "B3"],
+            status=PathStatus.ACTIVE,
+        )
+        dispatcher.active_paths["PATH_1"] = path
+
+        dispatcher.on_train_advances("PATH_1", "B2")
+
+        assert network.blocks["B2"].state == BlockState.OCCUPIED
+        assert network.blocks["B2"].occupied_by == "TRAIN_1"
+
+
+class TestTrainPlacement:
+    """Tests for proper train placement based on direction and length."""
+
+    def test_place_train_head_at_exit_edge(self):
+        """Train head should be at exit edge (distance_on_track=1.0)."""
+        from network import RailwayNetwork
+        from train import Train, TrainCar
+        from track import TrackSegment, TRACK_EW
+        from enums import Direction
+
+        network = RailwayNetwork()
+        for x in range(3):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+
+        network.create_block_with_tracks(
+            "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
+        )
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=30.0, mass=1000.0)
+        train = Train(train_id="T1", consist=[car])
+        network.add_train(train)
+
+        final_pos = network.place_train(train, 0, 0, Direction.EAST)
+
+        assert train.current_pos == (0, 0)
+        assert train.current_direction == Direction.EAST
+        tile_length_cm = network._get_tile_length_cm(0, 0)
+        assert train.distance_on_track == tile_length_cm
+
+    def test_place_train_longer_than_tile_with_space_behind(self):
+        """Train longer than tile should still be at exit edge if space behind exists."""
+        from network import RailwayNetwork
+        from train import Train, TrainCar
+        from track import TrackSegment, TRACK_EW
+        from enums import Direction
+
+        network = RailwayNetwork()
+        for x in range(5):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+
+        network.create_block_with_tracks(
+            "BLOCK_1", [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)], length_cm=250.0
+        )
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=60.0, mass=1000.0)
+        train = Train(train_id="T1", consist=[car])
+        network.add_train(train)
+
+        network.place_train(train, 2, 0, Direction.EAST)
+
+        assert train.current_pos == (2, 0)
+        tile_length_cm = network._get_tile_length_cm(2, 0)
+        assert train.distance_on_track == tile_length_cm
+
+    def test_place_train_at_end_of_line_pushes_forward(self):
+        """Train at end of line should be pushed forward."""
+        from network import RailwayNetwork
+        from train import Train, TrainCar
+        from track import TrackSegment, TRACK_EW
+        from enums import Direction
+
+        network = RailwayNetwork()
+        for x in range(3):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+
+        network.create_block_with_tracks(
+            "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
+        )
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=60.0, mass=1000.0)
+        train = Train(train_id="T1", consist=[car])
+        network.add_train(train)
+
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        assert train.current_pos == (1, 0)
+        tile_length_cm = network._get_tile_length_cm(1, 0)
+        assert train.distance_on_track < tile_length_cm
+
+    def test_place_train_no_track_raises_error(self):
+        """Placing train on non-existent track should raise error."""
+        from network import RailwayNetwork
+        from train import Train, TrainCar
+        from enums import Direction
+        import pytest
+
+        network = RailwayNetwork()
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=30.0, mass=1000.0)
+        train = Train(train_id="T1", consist=[car])
+        network.add_train(train)
+
+        with pytest.raises(ValueError):
+            network.place_train(train, 0, 0, Direction.EAST)

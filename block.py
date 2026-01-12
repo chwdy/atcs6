@@ -202,10 +202,17 @@ class Block:
             self.state = BlockState.RESERVED
             self.reserved_by_path = path_id
             self.reserved_direction = direction.upper() if direction else None
-            self.occupied_by = train_id  # May be None initially
+            self.occupied_by = train_id
             return True
-        # Allow reservation if already reserved by same path
         if self.state == BlockState.RESERVED and self.reserved_by_path == path_id:
+            return True
+        if (
+            self.state == BlockState.OCCUPIED
+            and train_id
+            and self.occupied_by == train_id
+        ):
+            self.reserved_by_path = path_id
+            self.reserved_direction = direction.upper() if direction else None
             return True
         return False
 

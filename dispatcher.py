@@ -163,9 +163,12 @@ class TrainDispatcher:
                 )
                 # Rollback reservations
                 for prev_block_id in reserved:
-                    prev_block = self.network.blocks.get(prev_block_id)
-                    if prev_block:
-                        prev_block.release()
+                    if self.network.block_manager:
+                        self.network.block_manager.clear_block(prev_block_id)
+                    else:
+                        prev_block = self.network.blocks.get(prev_block_id)
+                        if prev_block:
+                            prev_block.release()
                 return False
             reserved.append(block_id)
             logger.debug("    Block section %s reserved", block_id)
@@ -176,9 +179,12 @@ class TrainDispatcher:
     def _release_blocks(self, train: Train):
         """Release train's reserved block sections"""
         for block_id in train.reserved_blocks:
-            block = self.network.blocks.get(block_id)
-            if block:
-                block.release()
+            if self.network.block_manager:
+                self.network.block_manager.clear_block(block_id)
+            else:
+                block = self.network.blocks.get(block_id)
+                if block:
+                    block.release()
         train.reserved_blocks.clear()
 
     def _lock_interlocking_routes(
@@ -234,14 +240,20 @@ class TrainDispatcher:
                     "Train %s waiting at red signal (%d,%d)", train.train_id, x, y
                 )
                 train.state = TrainState.RUNNING_WAITING
+                train.wait_reason = f"Signal {blocking.signal_id} is red"
                 return False
 
         # Occupy new track
         track = self.network.get_track(x, y)
         if track and track.block_section_id:
-            block = self.network.blocks.get(track.block_section_id)
-            if block:
-                block.occupy(train.train_id)
+            if self.network.block_manager:
+                self.network.block_manager.occupy_block(
+                    track.block_section_id, train.train_id
+                )
+            else:
+                block = self.network.blocks.get(track.block_section_id)
+                if block:
+                    block.occupy(train.train_id)
 
         # Release old track
         if train.current_pos:
@@ -249,7 +261,12 @@ class TrainDispatcher:
             if old_track and old_track.block_section_id:
                 old_block = self.network.blocks.get(old_track.block_section_id)
                 if old_block and old_block.block_id not in train.reserved_blocks[1:]:
-                    old_block.release()
+                    if self.network.block_manager:
+                        self.network.block_manager.clear_block(
+                            old_track.block_section_id
+                        )
+                    else:
+                        old_block.release()
 
         train.current_pos = (x, y)
         train.current_direction = exit_dir

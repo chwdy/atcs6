@@ -13,6 +13,7 @@ import uuid
 from track import TrackSegment
 from train import Train, TrainSchedule
 from block import Block
+from block_manager import BlockManager
 from interlocking import InterlockingSystem
 from enums import (
     TrackType,
@@ -41,15 +42,20 @@ class RailwayNetwork:
     def __init__(self):
         self.tracks: Dict[Tuple[int, int], TrackSegment] = {}
         self.trains: Dict[str, Train] = {}
-        self.blocks: Dict[str, Block] = {}  # Centralized block storage
-        self.signals: Dict[str, Signal] = {}  # Centralized signal storage
-        self.stations: Dict[str, Station] = {}  # Centralized station storage
+        self.blocks: Dict[str, Block] = {}
+        self.signals: Dict[str, Signal] = {}
+        self.stations: Dict[str, Station] = {}
         self.interlocking: InterlockingSystem = InterlockingSystem()
         self.schedules: Dict[str, TrainSchedule] = {}
 
-        # Phase 1-4: Train System additions
-        self.speed_profiles: Dict[str, "SpeedProfile"] = {}  # Speed profiles for trains
-        self.routes: Dict[str, "Route"] = {}  # Train routes (travel plans)
+        self.speed_profiles: Dict[str, "SpeedProfile"] = {}
+        self.routes: Dict[str, "Route"] = {}
+
+        self.block_manager: Optional[BlockManager] = None
+
+    def _ensure_block_manager(self):
+        if self.block_manager is None:
+            self.block_manager = BlockManager(self.blocks)
 
     def add_track(self, track: TrackSegment):
         """Add a track segment to the network and propagate updates"""
@@ -207,6 +213,7 @@ class RailwayNetwork:
             raise ValueError(f"Block {block_id} already exists")
         block = Block(block_id=block_id, name=name)
         self.blocks[block_id] = block
+        self._ensure_block_manager()
         return block
 
     def create_block_with_tracks(
@@ -1329,7 +1336,14 @@ class RailwayNetwork:
         dx, dy = offset
         neighbor = self.get_track(x + dx, y + dy)
 
-        # This is the entry tile if the neighbor is NOT in the same block
+        detect_offset = edge_offsets.get(detection_dir)
+        if not detect_offset:
+            return False
+        detect_dx, detect_dy = detect_offset
+        detect_neighbor = self.get_track(x + detect_dx, y + detect_dy)
+        if not detect_neighbor or detect_neighbor.block_section_id != block_id:
+            return False
+
         return neighbor is None or neighbor.block_section_id != block_id
 
     def _find_block_ahead(
@@ -1789,6 +1803,134 @@ class RailwayNetwork:
     def add_train(self, train: Train):
         """Add a train to the network"""
         self.trains[train.train_id] = train
+
+    def place_train(
+        self,
+        train: Train,
+        tile_x: int,
+        tile_y: int,
+        direction: Direction,
+    ) -> Tuple[int, int, float]:
+        """
+        Place a train on a tile with proper positioning based on direction and length.
+
+        Train placement rules:
+        1. Train head is placed at the EXIT edge of the tile (in direction of travel)
+        2. If train is longer than tile, check for space behind for the tail
+        3. If no space behind (end of line), push train forward so tail is at entry edge
+
+        Args:
+            train: Train to place
+            tile_x, tile_y: Target tile coordinates
+            direction: Direction the train will be heading
+
+        Returns:
+            Tuple of (final_tile_x, final_tile_y, distance_on_track in cm)
+        """
+        track = self.get_track(tile_x, tile_y)
+        if not track:
+            raise ValueError(f"No track at ({tile_x}, {tile_y})")
+
+        train_length_cm = self._get_train_length_cm(train)
+        tile_length_cm = self._get_tile_length_cm(tile_x, tile_y)
+
+        if train_length_cm <= tile_length_cm:
+            train.current_pos = (tile_x, tile_y)
+            train.current_direction = direction
+            train.distance_on_track = tile_length_cm
+            return (tile_x, tile_y, tile_length_cm)
+
+        entry_edge = direction.opposite().name[0]
+        behind_x, behind_y = self._get_neighbor_coords(tile_x, tile_y, entry_edge)
+        behind_track = self.get_track(behind_x, behind_y)
+
+        if behind_track and self._is_connected(track, behind_track, entry_edge):
+            train.current_pos = (tile_x, tile_y)
+            train.current_direction = direction
+            train.distance_on_track = tile_length_cm
+            return (tile_x, tile_y, tile_length_cm)
+
+        overflow_cm = train_length_cm - tile_length_cm
+        exit_edge = direction.name[0]
+        next_x, next_y = self._get_neighbor_coords(tile_x, tile_y, exit_edge)
+        next_track = self.get_track(next_x, next_y)
+
+        if next_track and self._is_connected(track, next_track, exit_edge):
+            next_tile_length_cm = self._get_tile_length_cm(next_x, next_y)
+            distance_cm = min(overflow_cm, next_tile_length_cm)
+
+            train.current_pos = (next_x, next_y)
+            train.current_direction = direction
+            train.distance_on_track = distance_cm
+            return (next_x, next_y, distance_cm)
+
+        train.current_pos = (tile_x, tile_y)
+        train.current_direction = direction
+        train.distance_on_track = 0.0
+        return (tile_x, tile_y, 0.0)
+
+    def _get_train_length_cm(self, train: Train) -> float:
+        """Get train length in cm."""
+        from train_config import DEFAULT_TRAIN_LENGTH_CM
+
+        if train.consist:
+            total_length = sum(car.length for car in train.consist)
+            return total_length
+        return DEFAULT_TRAIN_LENGTH_CM
+
+    def _get_tile_length_cm(self, x: int, y: int) -> float:
+        """Get physical length of a tile in cm."""
+        from train_config import DEFAULT_TILE_LENGTH_CM
+
+        track = self.get_track(x, y)
+        if not track:
+            return DEFAULT_TILE_LENGTH_CM
+
+        if track.block_section_id:
+            block = self.blocks.get(track.block_section_id)
+            if block and block.length_cm:
+                positions = self.get_block_positions(track.block_section_id)
+                tile_count = len(positions) if positions else 1
+                return block.length_cm / tile_count
+
+        return DEFAULT_TILE_LENGTH_CM
+
+    def _get_neighbor_coords(self, x: int, y: int, edge: str) -> Tuple[int, int]:
+        """Get coordinates of neighbor tile in given direction."""
+        offsets = {"N": (0, 1), "E": (1, 0), "S": (0, -1), "W": (-1, 0)}
+        dx, dy = offsets.get(edge, (0, 0))
+        return (x + dx, y + dy)
+
+    def _is_connected(
+        self, track1: TrackSegment, track2: TrackSegment, edge: str
+    ) -> bool:
+        """Check if two adjacent tracks are connected via the given edge."""
+        if not track1 or not track2:
+            return False
+        opposite = {"N": "S", "E": "W", "S": "N", "W": "E"}
+        return edge in track1.edges and opposite[edge] in track2.edges
+
+    def remove_train(self, train_id: str) -> bool:
+        train = self.trains.get(train_id)
+        if not train:
+            return False
+
+        if train.current_pos:
+            track = self.get_track(*train.current_pos)
+            if track:
+                if track.occupied_by == train.train_id:
+                    track.occupied_by = None
+                if track.block_section_id:
+                    block = self.blocks.get(track.block_section_id)
+                    if block and block.occupied_by == train.train_id:
+                        if self.block_manager:
+                            self.block_manager.clear_block(track.block_section_id)
+                        else:
+                            block.release()
+
+        self.trains.pop(train_id, None)
+        self.update_signals_from_blocks()
+        return True
 
     def get_train(self, train_id: str) -> Optional[Train]:
         """Get train by ID"""
@@ -2453,8 +2595,8 @@ class RailwayNetwork:
             )
 
             self.blocks[child_id] = child_block
+            self._ensure_block_manager()
 
-            # Assign tiles to child block
             for x, y in component_positions:
                 track = self.get_track(x, y)
                 if track:
@@ -2592,7 +2734,7 @@ class RailwayNetwork:
 
         return {
             "tracks": enriched_tracks,
-            "trains": [t.to_dict() for t in self.trains.values()],
+            "trains": [t.to_dict(self) for t in self.trains.values()],
             "blocks": {k: v.to_dict() for k, v in self.blocks.items()},
             "signals": {k: v.to_dict() for k, v in self.signals.items()},
             "stations": [
@@ -2611,11 +2753,11 @@ class RailwayNetwork:
         self.interlocking.routes.clear()
         self.schedules.clear()
 
-        # Rebuild blocks first (so tracks can reference them)
         for block_id, block_data in data.get("blocks", {}).items():
             self.blocks[block_id] = Block.from_dict(block_data)
 
-        # Rebuild tracks using TrackSegment.from_dict
+        self._ensure_block_manager()
+
         for t_data in data.get("tracks", []):
             track = TrackSegment.from_dict(t_data)
             self.add_track(track)

@@ -31,7 +31,8 @@ from datetime import datetime, timedelta
 import demo_main
 from persistence import PersistenceManager
 from path_dispatcher import PathDispatcher
-from train_lookahead import build_lookahead
+from train_lookahead import build_lookahead_response
+from speed_profile import SpeedProfile, SpeedProfileRegistry
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
@@ -48,6 +49,7 @@ from simulation import SimulationController
 
 # Global state
 network = RailwayNetwork()
+speed_profile_registry = SpeedProfileRegistry()
 # Initialize with demo data for now so it's not empty
 # In a real app, we might want to start empty or load from save
 
@@ -135,6 +137,7 @@ network = demo_main.create_comprehensive_demo()
 network = demo_main.create_track_showcase(network)
 
 path_dispatcher = PathDispatcher(network)
+demo_main.setup_demo_train(network, path_dispatcher)
 sim_controller = SimulationController(network, path_dispatcher)
 persistence_manager = PersistenceManager()
 simulation_lock = threading.Lock()
@@ -199,6 +202,30 @@ autosave_thread.start()
 # ============================================================================
 # Helper Functions
 # ============================================================================
+
+
+def _convert_path_tiles_to_train_path(tiles):
+    result = []
+    for i, tile in enumerate(tiles):
+        if i + 1 < len(tiles):
+            next_tile = tiles[i + 1]
+            dx = next_tile[0] - tile[0]
+            dy = next_tile[1] - tile[1]
+
+            if dy > 0:
+                direction = Direction.NORTH
+            elif dy < 0:
+                direction = Direction.SOUTH
+            elif dx > 0:
+                direction = Direction.EAST
+            else:
+                direction = Direction.WEST
+        else:
+            direction = Direction.EAST
+
+        result.append((tile[0], tile[1], direction))
+
+    return result
 
 
 def _sort_block_positions(positions, network):
@@ -850,6 +877,35 @@ def remove_tracks_from_block(block_id):
             "positions": removed,
             "errors": errors,
             "block_deleted": block_deleted,
+        }
+    )
+
+
+@app.route("/api/blocks/<block_id>/voltage", methods=["GET"])
+def get_block_voltage(block_id: str):
+    """Get current voltage for a block.
+
+    Returns:
+        200 OK with voltage data:
+        {
+            "block_id": str,
+            "voltage": float,
+            "timestamp": str (ISO format)
+        }
+        404 Not Found if block doesn't exist
+    """
+    with simulation_lock:
+        block = network.get_block(block_id)
+        if not block:
+            return jsonify({"error": f"Block '{block_id}' not found"}), 404
+
+        voltage = sim_controller.power_controller.get_block_voltage(block_id)
+
+    return jsonify(
+        {
+            "block_id": block_id,
+            "voltage": voltage,
+            "timestamp": datetime.now().isoformat(),
         }
     )
 
@@ -1617,17 +1673,22 @@ def create_train():
         train_id=train_id, consist=[car], max_speed=data.get("max_speed", 100.0)
     )
 
-    # Set initial position if provided
     if "position" in data:
         pos = data["position"]
         direction = Direction[data.get("direction", "EAST")]
-        train.set_position((pos["x"], pos["y"]), direction)
+        network.add_train(train)
+        try:
+            network.place_train(train, pos["x"], pos["y"], direction)
+        except ValueError as e:
+            network.remove_train(train_id)
+            return jsonify({"error": str(e)}), 400
+    else:
+        network.add_train(train)
 
-    network.add_train(train)
     train.update_occupancy(network)
     network.update_signals_from_blocks()
 
-    return jsonify({"status": "success", "train": train.to_dict()})
+    return jsonify({"status": "success", "train": train.to_dict(network)})
 
 
 @app.route("/api/trains/<train_id>", methods=["GET"])
@@ -1636,7 +1697,7 @@ def get_train(train_id):
     train = network.trains.get(train_id)
     if not train:
         return jsonify({"error": "Train not found"}), 404
-    return jsonify(train.to_dict())
+    return jsonify(train.to_dict(network))
 
 
 @app.route("/api/trains/<train_id>/power-on", methods=["POST"])
@@ -1647,7 +1708,7 @@ def train_power_on(train_id):
         return jsonify({"error": "Train not found"}), 404
 
     if train.power_on():
-        return jsonify({"status": "success", "train": train.to_dict()})
+        return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify({"error": "Failed to power on train"}), 400
 
 
@@ -1659,7 +1720,7 @@ def train_power_off(train_id):
         return jsonify({"error": "Train not found"}), 404
 
     if train.power_off():
-        return jsonify({"status": "success", "train": train.to_dict()})
+        return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify({"error": "Cannot power off while train is moving"}), 400
 
 
@@ -1681,7 +1742,7 @@ def train_set_direction(train_id):
         return jsonify({"error": f"Invalid direction: {direction_str}"}), 400
 
     if train.set_direction_and_standby(direction):
-        return jsonify({"status": "success", "train": train.to_dict()})
+        return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify({"error": "Cannot set direction (train not in IDLE state)"}), 400
 
 
@@ -1693,7 +1754,7 @@ def train_clear_direction(train_id):
         return jsonify({"error": "Train not found"}), 404
 
     if train.clear_direction():
-        return jsonify({"status": "success", "train": train.to_dict()})
+        return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify(
         {"error": "Cannot clear direction (train not in STANDBY state)"}
     ), 400
@@ -1701,13 +1762,20 @@ def train_clear_direction(train_id):
 
 @app.route("/api/trains/<train_id>/depart", methods=["POST"])
 def train_depart(train_id):
-    """Start moving (STANDBY -> RUNNING_MOVING)"""
     train = network.trains.get(train_id)
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
+    if train.state == TrainState.RUNNING_WAITING:
+        if train.clear_to_move():
+            return jsonify({"status": "success", "train": train.to_dict(network)})
+
+    if train.state == TrainState.RUNNING_AT_STATION:
+        if train.depart_from_station(has_more_waypoints=True):
+            return jsonify({"status": "success", "train": train.to_dict(network)})
+
     if train.depart():
-        return jsonify({"status": "success", "train": train.to_dict()})
+        return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify({"error": "Cannot depart (train not in STANDBY state)"}), 400
 
 
@@ -1719,7 +1787,7 @@ def train_arrive(train_id):
         return jsonify({"error": "Train not found"}), 404
 
     if train.arrive_at_station():
-        return jsonify({"status": "success", "train": train.to_dict()})
+        return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify({"error": "Cannot arrive (train not in RUNNING_MOVING state)"}), 400
 
 
@@ -1731,7 +1799,7 @@ def train_turn_around(train_id):
         return jsonify({"error": "Train not found"}), 404
 
     if train.turn_around():
-        return jsonify({"status": "success", "train": train.to_dict()})
+        return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify(
         {"error": "Cannot turn around (train is moving or no direction set)"}
     ), 400
@@ -1745,7 +1813,7 @@ def train_enable_manual(train_id):
         return jsonify({"error": "Train not found"}), 404
 
     if train.enable_manual():
-        return jsonify({"status": "success", "train": train.to_dict()})
+        return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify(
         {"error": "Cannot enable manual mode (train must be stopped and not OFF)"}
     ), 400
@@ -1759,7 +1827,7 @@ def train_disable_manual(train_id):
         return jsonify({"error": "Train not found"}), 404
 
     if train.disable_manual():
-        return jsonify({"status": "success", "train": train.to_dict()})
+        return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify(
         {
             "error": "Cannot disable manual mode (train must be stopped and in MANUAL state)"
@@ -1780,7 +1848,7 @@ def train_set_manual_speed(train_id):
         return jsonify({"error": "Invalid speed value"}), 400
 
     if train.set_manual_speed(float(speed)):
-        return jsonify({"status": "success", "train": train.to_dict()})
+        return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify({"error": "Cannot set manual speed (train not in MANUAL mode)"}), 400
 
 
@@ -1799,7 +1867,7 @@ def train_set_travel_direction(train_id):
         ), 400
 
     if train.set_travel_direction(direction):
-        return jsonify({"status": "success", "train": train.to_dict()})
+        return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify(
         {"error": "Cannot set travel direction (train not in MANUAL mode)"}
     ), 400
@@ -1807,29 +1875,25 @@ def train_set_travel_direction(train_id):
 
 @app.route("/api/trains/<train_id>/emergency-stop", methods=["POST"])
 def train_emergency_stop(train_id):
-    """Emergency stop from RUNNING_MOVING state."""
+    """Emergency stop from any operational state."""
     train = network.trains.get(train_id)
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
-    if train.emergency_stop():
-        return jsonify({"status": "success", "train": train.to_dict()})
-    return jsonify(
-        {"error": "Cannot emergency stop (train not in RUNNING_MOVING state)"}
-    ), 400
+    train.emergency_stop()
+    return jsonify({"status": "success", "train": train.to_dict(network)})
 
 
 @app.route("/api/trains/<train_id>/lookahead", methods=["GET"])
 def train_lookahead(train_id):
-    """Get lookahead data for train monitor visualization."""
     train = network.trains.get(train_id)
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
     distance_cm = request.args.get("distance_cm", 100000.0, type=float)
 
-    result = build_lookahead(train, network, max_distance_cm=distance_cm)
-    return jsonify(result.to_dict())
+    response = build_lookahead_response(train, network, max_distance_cm=distance_cm)
+    return jsonify(response)
 
 
 @app.route("/api/trains", methods=["GET"])
@@ -1837,44 +1901,121 @@ def list_trains():
     """List all trains in the network."""
     trains = []
     for train in network.trains.values():
-        trains.append(train.to_dict())
+        trains.append(train.to_dict(network))
     return jsonify({"trains": trains})
 
 
 @app.route("/api/trains/<train_id>", methods=["DELETE"])
 def delete_train(train_id):
     """Delete a train from the network."""
-    if train_id not in network.trains:
+    if not network.remove_train(train_id):
         return jsonify({"error": "Train not found"}), 404
 
-    del network.trains[train_id]
     return jsonify({"status": "success", "message": f"Train {train_id} deleted"})
 
 
 @app.route("/api/trains/<train_id>", methods=["PATCH"])
-def update_train(train_id: str):
-    """Update train properties (name, max_speed, length, etc.)."""
-    if train_id not in network.trains:
+def update_train(train_id):
+    """Update train properties (deprecated - use specific endpoints instead)"""
+    train = network.trains.get(train_id)
+    if not train:
         return jsonify({"error": "Train not found"}), 404
 
-    train = network.trains[train_id]
-    data = request.get_json() or {}
+    data = request.json or {}
+    # Allow updates to properties
+    if "current_speed" in data:
+        train.current_speed = float(data["current_speed"])
+    if "target_speed" in data:
+        train.target_speed = float(data["target_speed"])
 
-    if "name" in data:
-        train.name = str(data["name"])
-    if "max_speed" in data:
-        train.max_speed = float(data["max_speed"])
-    if "length_cm" in data:
-        train.length_cm = float(data["length_cm"])
-    if "min_curve_radius_cm" in data:
-        train.min_curve_radius_cm = float(data["min_curve_radius_cm"])
-
-    return jsonify({"status": "success", "train": train.to_dict()})
+    return jsonify(train.to_dict(network))
 
 
-# ============================================================================
-# Train Routes API (Route = train's travel plan with waypoints)
-# ============================================================================
+@app.route("/api/trains/<train_id>/position", methods=["PUT"])
+def update_train_position(train_id: str):
+    """Update train position.
+
+    Request body:
+    {
+        "current_pos": [x, y] (required),
+        "path_index": int (optional),
+        "distance_on_track": float (optional, 0.0-1.0)
+    }
+
+    Returns:
+        200 OK with updated train data
+        400 Bad Request if validation fails
+        404 Not Found if train doesn't exist
+    """
+    data = request.json or {}
+
+    with simulation_lock:
+        train = network.trains.get(train_id)
+        if not train:
+            return jsonify({"error": f"Train '{train_id}' not found"}), 404
+
+        current_pos = data.get("current_pos")
+        if not current_pos:
+            return jsonify({"error": "current_pos is required"}), 400
+
+        if not isinstance(current_pos, list) or len(current_pos) != 2:
+            return jsonify({"error": "current_pos must be [x, y] array"}), 400
+
+        x, y = int(current_pos[0]), int(current_pos[1])
+
+        track = network.tracks.get((x, y))
+        if not track:
+            return jsonify({"error": f"No track at position ({x}, {y})"}), 400
+
+        train.current_pos = (x, y)
+
+        if "path_index" in data:
+            train.path_index = int(data["path_index"])
+
+        if "distance_on_track" in data:
+            distance_ratio = float(data["distance_on_track"])
+            if distance_ratio < 0.0 or distance_ratio > 1.0:
+                return jsonify({"error": "distance_on_track must be 0.0-1.0"}), 400
+            tile_length_cm = network._get_tile_length_cm(x, y)
+            train.distance_on_track = distance_ratio * tile_length_cm
+
+        train.update_occupancy(network)
+
+    return jsonify(train.to_dict(network))
+
+
+@app.route("/api/trains/<train_id>/speed-profile", methods=["PUT"])
+def assign_train_speed_profile(train_id: str):
+    """Assign speed profile to a train.
+
+    Request body:
+    {
+        "profile_id": str (required)
+    }
+
+    Returns:
+        200 OK with updated train data
+        400 Bad Request if validation fails
+        404 Not Found if train or profile doesn't exist
+    """
+    data = request.json or {}
+
+    profile_id = data.get("profile_id")
+    if not profile_id:
+        return jsonify({"error": "profile_id is required"}), 400
+
+    with simulation_lock:
+        train = network.trains.get(train_id)
+        if not train:
+            return jsonify({"error": f"Train '{train_id}' not found"}), 404
+
+        profile = speed_profile_registry.get(profile_id)
+        if not profile:
+            return jsonify({"error": f"Speed profile '{profile_id}' not found"}), 404
+
+        train.speed_profile_id = profile_id
+
+    return jsonify(train.to_dict(network))
 
 
 @app.route("/api/train-routes", methods=["GET"])
@@ -1934,6 +2075,84 @@ def get_train_route(route_id):
     return jsonify(route.to_dict())
 
 
+@app.route("/api/train-routes/<route_id>", methods=["PUT"])
+def update_train_route(route_id: str):
+    """Update an existing train route.
+
+    Request body:
+    {
+        "name": str (optional),
+        "mode": str (optional, "one_way"|"loop"|"round_trip"),
+        "waypoints": [
+            {
+                "station_id": str,
+                "dwell_time_sec": float,
+                "timing_mode": str ("none"|"relative"|"absolute"),
+                "target_time": float (optional)
+            },
+            ...
+        ] (optional, replaces all waypoints)
+    }
+
+    Returns:
+        200 OK with updated route data
+        400 Bad Request if validation fails
+        404 Not Found if route doesn't exist
+    """
+    with simulation_lock:
+        route = network.routes.get(route_id)
+        if not route:
+            return jsonify({"error": f"Route '{route_id}' not found"}), 404
+
+        data = request.json or {}
+
+        if "name" in data:
+            route.name = data["name"]
+
+        if "mode" in data:
+            mode_str = data["mode"]
+            try:
+                route.mode = RouteMode(mode_str)
+            except ValueError:
+                return jsonify({"error": f"Invalid mode '{mode_str}'"}), 400
+
+        if "waypoints" in data:
+            waypoints_data = data["waypoints"]
+            route.waypoints.clear()
+
+            for wp_data in waypoints_data:
+                station_id = wp_data.get("station_id")
+                if not station_id:
+                    return jsonify(
+                        {"error": "station_id required for each waypoint"}
+                    ), 400
+
+                dwell_time = float(wp_data.get("dwell_time_sec", 30.0))
+
+                timing_mode_str = wp_data.get("timing_mode", "none")
+                try:
+                    timing_mode = TimingMode(timing_mode_str)
+                except ValueError:
+                    timing_mode = TimingMode.NONE
+
+                target_time = wp_data.get("target_time")
+
+                waypoint = Waypoint(
+                    station_id=station_id,
+                    dwell_time_sec=dwell_time,
+                    timing_mode=timing_mode,
+                    target_time=target_time,
+                )
+                route.add_waypoint(waypoint)
+
+            if route.is_active:
+                route.current_waypoint_index = min(
+                    route.current_waypoint_index, max(0, len(route.waypoints) - 1)
+                )
+
+    return jsonify(route.to_dict())
+
+
 @app.route("/api/train-routes/<route_id>", methods=["DELETE"])
 def delete_train_route(route_id):
     if route_id not in network.routes:
@@ -1958,14 +2177,14 @@ def assign_route_to_train(train_id):
 
     if route_id is None:
         train.assigned_route_id = None
-        return jsonify({"status": "success", "train": train.to_dict()})
+        return jsonify({"status": "success", "train": train.to_dict(network)})
 
     route = network.routes.get(route_id)
     if not route:
         return jsonify({"error": "Route not found"}), 404
 
     train.assigned_route_id = route_id
-    return jsonify({"status": "success", "train": train.to_dict()})
+    return jsonify({"status": "success", "train": train.to_dict(network)})
 
 
 @app.route("/api/train-routes/<route_id>/activate", methods=["POST"])
@@ -2399,9 +2618,15 @@ def create_path():
                 priority=priority,
                 train_id=train_id,
             )
-            # Update signal states after path creation (blocks are now reserved)
-            if result.success:
+            if result.success and result.path:
                 network.update_signals_from_blocks()
+                if train_id and train_id in network.trains:
+                    train = network.trains[train_id]
+                    train.current_path = _convert_path_tiles_to_train_path(
+                        result.path.path_tiles
+                    )
+                    train.path_index = 0
+                    train.assigned_path_id = result.path.path_id
         return jsonify(result.to_dict()), 200 if result.success else 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2646,6 +2871,270 @@ def find_dispatcher_paths():
             "end_block_id": end_block_id,
         }
     )
+
+
+# ============================================================
+# SpeedProfile CRUD Endpoints
+# ============================================================
+
+
+@app.route("/api/speed-profiles", methods=["GET"])
+def get_speed_profiles():
+    """List all speed profiles.
+
+    Returns:
+        {
+            "profiles": [
+                {
+                    "profile_id": str,
+                    "name": str,
+                    "speed_voltage_curve": [[speed, voltage], ...],
+                    "min_start_voltage": float,
+                    "lighting_voltage": float,
+                    "acceleration_rate": float,
+                    "deceleration_rate": float,
+                    "emergency_brake_rate": float
+                },
+                ...
+            ],
+            "count": int
+        }
+    """
+    with simulation_lock:
+        profile_ids = speed_profile_registry.list_profiles()
+        profiles = []
+        for profile_id in profile_ids:
+            profile = speed_profile_registry.get(profile_id)
+            if profile:
+                profiles.append(profile.to_dict())
+
+    return jsonify({"profiles": profiles, "count": len(profiles)})
+
+
+@app.route("/api/speed-profiles", methods=["POST"])
+def create_speed_profile():
+    """Create a new speed profile.
+
+    Request body:
+    {
+        "profile_id": str (required, unique),
+        "name": str (required),
+        "speed_voltage_curve": [[speed, voltage], ...] (optional),
+        "min_start_voltage": float (optional, default 2.0),
+        "lighting_voltage": float (optional, default 2.5),
+        "acceleration_rate": float (optional, default 10.0),
+        "deceleration_rate": float (optional, default 15.0),
+        "emergency_brake_rate": float (optional, default 30.0)
+    }
+
+    Returns:
+        201 Created with profile data
+        400 Bad Request if validation fails
+        409 Conflict if profile_id already exists
+    """
+    data = request.json or {}
+
+    profile_id = data.get("profile_id")
+    name = data.get("name")
+
+    if not profile_id:
+        return jsonify({"error": "profile_id is required"}), 400
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+
+    with simulation_lock:
+        # Check for duplicate
+        if speed_profile_registry.get(profile_id):
+            return (
+                jsonify(
+                    {
+                        "error": f"Speed profile with profile_id '{profile_id}' already exists"
+                    }
+                ),
+                409,
+            )
+
+        # Create profile from data
+        try:
+            profile = SpeedProfile.from_dict(data)
+            speed_profile_registry.register(profile)
+        except (ValueError, KeyError, TypeError) as e:
+            return jsonify({"error": f"Invalid profile data: {str(e)}"}), 400
+
+    return jsonify(profile.to_dict()), 201
+
+
+@app.route("/api/speed-profiles/<profile_id>", methods=["GET"])
+def get_speed_profile(profile_id: str):
+    """Get a single speed profile by ID.
+
+    Returns:
+        200 OK with profile data
+        404 Not Found if profile_id doesn't exist
+    """
+    with simulation_lock:
+        profile = speed_profile_registry.get(profile_id)
+
+    if not profile:
+        return jsonify({"error": f"Speed profile '{profile_id}' not found"}), 404
+
+    return jsonify(profile.to_dict())
+
+
+@app.route("/api/speed-profiles/<profile_id>", methods=["PUT"])
+def update_speed_profile(profile_id: str):
+    """Update an existing speed profile.
+
+    Request body: Same as POST (all fields optional except profile_id must match)
+
+    Returns:
+        200 OK with updated profile data
+        400 Bad Request if validation fails
+        404 Not Found if profile_id doesn't exist
+    """
+    data = request.json or {}
+
+    # Ensure profile_id in body matches URL (if provided)
+    if "profile_id" in data and data["profile_id"] != profile_id:
+        return (
+            jsonify(
+                {"error": "profile_id in body must match URL parameter or be omitted"}
+            ),
+            400,
+        )
+
+    with simulation_lock:
+        # Check if exists
+        existing_profile = speed_profile_registry.get(profile_id)
+        if not existing_profile:
+            return jsonify({"error": f"Speed profile '{profile_id}' not found"}), 404
+
+        # Merge data with profile_id from URL
+        data["profile_id"] = profile_id
+
+        # If name not provided, keep existing
+        if "name" not in data:
+            data["name"] = existing_profile.name
+
+        # Create updated profile
+        try:
+            updated_profile = SpeedProfile.from_dict(data)
+            speed_profile_registry.register(updated_profile)
+        except (ValueError, KeyError, TypeError) as e:
+            return jsonify({"error": f"Invalid profile data: {str(e)}"}), 400
+
+    return jsonify(updated_profile.to_dict())
+
+
+@app.route("/api/speed-profiles/<profile_id>", methods=["DELETE"])
+def delete_speed_profile(profile_id: str):
+    """Delete a speed profile.
+
+    Cannot delete if:
+    - profile_id is "default"
+    - Profile is currently assigned to any train
+
+    Returns:
+        204 No Content on success
+        404 Not Found if profile_id doesn't exist
+        409 Conflict if profile is in use or is default
+    """
+    with simulation_lock:
+        # Check if profile exists
+        profile = speed_profile_registry.get(profile_id)
+        if not profile:
+            return jsonify({"error": f"Speed profile '{profile_id}' not found"}), 404
+
+        # Check if it's the default profile
+        if profile_id == "default":
+            return jsonify({"error": "Cannot delete default speed profile"}), 409
+
+        # Check if any train is using this profile
+        trains_using = []
+        for train in network.trains.values():
+            if (
+                hasattr(train, "speed_profile_id")
+                and train.speed_profile_id == profile_id
+            ):
+                trains_using.append(train.train_id)
+
+        if trains_using:
+            return (
+                jsonify(
+                    {
+                        "error": f"Cannot delete speed profile in use by trains: {', '.join(trains_using)}"
+                    }
+                ),
+                409,
+            )
+
+        # Delete profile
+        success = speed_profile_registry.remove(profile_id)
+        if not success:
+            return (
+                jsonify({"error": f"Failed to delete speed profile '{profile_id}'"}),
+                500,
+            )
+
+    return "", 204
+
+
+# =============================================================================
+# Scale Configuration Endpoints
+# =============================================================================
+
+
+@app.route("/api/scale", methods=["GET"])
+def get_scale():
+    """Get current model scale configuration.
+
+    Returns:
+        JSON with current scale value and available presets
+    """
+    from train_config import get_model_scale, SCALE_PRESETS
+
+    return jsonify({"scale": get_model_scale(), "presets": SCALE_PRESETS})
+
+
+@app.route("/api/scale", methods=["PUT"])
+def set_scale():
+    """Set model scale.
+
+    Request Body:
+        {"scale": 160.0}  - Direct scale value
+        OR
+        {"preset": "1:160"}  - Use a preset
+
+    Returns:
+        JSON with new scale value
+    """
+    from train_config import get_model_scale, set_model_scale, SCALE_PRESETS
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    with simulation_lock:
+        try:
+            if "preset" in data:
+                preset_name = data["preset"]
+                if preset_name not in SCALE_PRESETS:
+                    return jsonify(
+                        {
+                            "error": f"Unknown preset '{preset_name}'",
+                            "available_presets": list(SCALE_PRESETS.keys()),
+                        }
+                    ), 400
+                set_model_scale(SCALE_PRESETS[preset_name])
+            elif "scale" in data:
+                scale = float(data["scale"])
+                set_model_scale(scale)
+            else:
+                return jsonify({"error": "Must provide 'scale' or 'preset'"}), 400
+
+            return jsonify({"scale": get_model_scale(), "status": "success"})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
 
 
 if __name__ == "__main__":

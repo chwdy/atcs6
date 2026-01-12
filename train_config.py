@@ -4,12 +4,54 @@ Train System Configuration Constants
 Definition:
 This module contains all configuration constants for the train control system.
 These values can be adjusted to tune the system behavior.
+
+Model Scale:
+The MODEL_SCALE setting determines the ratio between prototype (real-world) and model.
+- 1:160 (N scale): MODEL_SCALE = 160
+- 1:87 (HO scale): MODEL_SCALE = 87
+- 1:1 (full scale simulation): MODEL_SCALE = 1
+
+When scale is applied:
+- Speeds are divided by scale (60 km/h prototype = 0.375 km/h model at N scale)
+- This affects how fast trains appear to move on the layout
 """
+
+# =============================================================================
+# Model Scale Configuration
+# =============================================================================
+_MODEL_SCALE = 1.0  # Default: full scale (1:1), change to 160 for N, 87 for HO
+
+
+def get_model_scale() -> float:
+    """Get the current model scale ratio."""
+    return _MODEL_SCALE
+
+
+def set_model_scale(scale: float) -> None:
+    """Set the model scale ratio (e.g., 160 for N scale, 87 for HO)."""
+    global _MODEL_SCALE
+    if scale <= 0:
+        raise ValueError("Scale must be positive")
+    _MODEL_SCALE = scale
+
+
+# Common scale presets
+SCALE_PRESETS = {
+    "1:1": 1.0,
+    "1:22.5": 22.5,  # G scale
+    "1:43.5": 43.5,  # O scale
+    "1:64": 64.0,  # S scale
+    "1:87": 87.0,  # HO scale
+    "1:120": 120.0,  # TT scale
+    "1:148": 148.0,  # N scale (UK)
+    "1:160": 160.0,  # N scale
+    "1:220": 220.0,  # Z scale
+}
 
 # =============================================================================
 # Track Layout Configuration
 # =============================================================================
-DEFAULT_TILE_LENGTH_CM = 1000.0  # 10m per tile (scale: 1:87 HO = 115mm real = ~10m)
+DEFAULT_TILE_LENGTH_CM = 1000.0  # 10m per tile (abstract grid unit, scale-agnostic)
 
 # =============================================================================
 # Speed Limits
@@ -42,9 +84,9 @@ DEFAULT_DWELL_TIME_SEC = 30.0  # Default station stop duration
 # =============================================================================
 # Physics Defaults
 # =============================================================================
-DEFAULT_ACCELERATION_RATE = 10.0  # km/h per second
-DEFAULT_DECELERATION_RATE = 15.0  # km/h per second (service brake)
-DEFAULT_EMERGENCY_BRAKE_RATE = 30.0  # km/h per second
+DEFAULT_ACCELERATION_RATE = 20.0  # km/h per second (0-60 km/h in 3 seconds)
+DEFAULT_DECELERATION_RATE = 30.0  # km/h per second (60-0 km/h in 2 seconds)
+DEFAULT_EMERGENCY_BRAKE_RATE = 50.0  # km/h per second (60-0 km/h in 1.2 seconds)
 
 # =============================================================================
 # Train Defaults
@@ -72,11 +114,32 @@ DEFAULT_SPEED_VOLTAGE_CURVE = [
 # =============================================================================
 
 
-def kmh_to_cm_per_sec(kmh: float) -> float:
-    """Convert km/h to cm/s."""
-    return kmh * 100000 / 3600  # ≈ kmh * 27.78
+def kmh_to_cm_per_sec(kmh: float, apply_scale: bool = True) -> float:
+    """Convert km/h to cm/s, optionally applying model scale.
+
+    Args:
+        kmh: Speed in km/h (prototype scale)
+        apply_scale: If True, divide by model scale for scaled speed
+    """
+    base_cm_s = kmh * 100000 / 3600
+    if apply_scale:
+        return base_cm_s / _MODEL_SCALE
+    return base_cm_s
 
 
-def cm_per_sec_to_kmh(cm_s: float) -> float:
-    """Convert cm/s to km/h."""
-    return cm_s * 3600 / 100000
+def cm_per_sec_to_kmh(cm_s: float, apply_scale: bool = True) -> float:
+    """Convert cm/s to km/h, optionally applying model scale.
+
+    Args:
+        cm_s: Speed in cm/s (at model scale if apply_scale was used)
+        apply_scale: If True, multiply by model scale to get prototype speed
+    """
+    base_kmh = cm_s * 3600 / 100000
+    if apply_scale:
+        return base_kmh * _MODEL_SCALE
+    return base_kmh
+
+
+def get_speed_conversion_factor() -> float:
+    """Get the km/h to cm/s conversion factor including scale."""
+    return 100000 / 3600 / _MODEL_SCALE

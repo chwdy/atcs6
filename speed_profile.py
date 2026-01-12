@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Any, Optional
 import math
 
+from train_config import get_speed_conversion_factor
+
 
 @dataclass
 class SpeedProfile:
@@ -204,8 +206,7 @@ class SpeedProfile:
         if rate <= 0:
             return float("inf")
 
-        # Convert km/h to cm/s: 1 km/h = 100000/3600 cm/s ≈ 27.78 cm/s
-        km_h_to_cm_s = 100000.0 / 3600.0
+        km_h_to_cm_s = get_speed_conversion_factor()
 
         v_initial_cm_s = current_speed * km_h_to_cm_s
         v_final_cm_s = target_speed * km_h_to_cm_s

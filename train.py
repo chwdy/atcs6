@@ -141,7 +141,7 @@ class Train:
     # Position and movement
     current_pos: Optional[Tuple[int, int]] = None
     current_direction: Optional[Direction] = None
-    distance_on_track: float = 0.0  # Distance traveled on current track segment
+    distance_on_track: float = 0.0  # Distance from entry edge to train head (cm)
     occupied_tracks: List[Tuple[int, int]] = field(default_factory=list)
 
     # Schedule management
@@ -172,6 +172,7 @@ class Train:
 
     # DC analog control state
     state: TrainState = TrainState.OFF  # Current power/operational state
+    wait_reason: Optional[str] = None
 
     # Speed profile and route
     speed_profile_id: Optional[str] = None  # SpeedProfile for this train
@@ -180,6 +181,10 @@ class Train:
     # Speed targets
     target_speed: float = 0.0  # ATC-limited target speed
     manual_target_speed: float = 0.0  # User-set speed in MANUAL mode
+    speed_limit_reason: Optional[str] = None  # Reason for current speed limit
+
+    # Emergency control
+    emergency_brake: bool = False  # Emergency braking active
 
     @property
     def length(self) -> float:
@@ -332,6 +337,9 @@ class Train:
         self.is_emergency_braking = True
         if self.state == TrainState.RUNNING_MOVING:
             self.state = TrainState.RUNNING_WAITING
+            self.wait_reason = "Emergency stop"
+        else:
+            self.wait_reason = "Emergency stop"
 
     def get_braking_distance(self) -> float:
         """
@@ -603,9 +611,10 @@ class Train:
         if self.facing_direction is None:
             return False
         self.state = TrainState.RUNNING_MOVING
+        self.wait_reason = None
         return True
 
-    def wait_for_path(self) -> bool:
+    def wait_for_path(self, reason: Optional[str] = None) -> bool:
         """
         Stop and wait for path/signal (RUNNING_MOVING -> RUNNING_WAITING).
 
@@ -617,7 +626,8 @@ class Train:
         if self.state != TrainState.RUNNING_MOVING:
             return False
         self.state = TrainState.RUNNING_WAITING
-        self.target_speed = 0.0  # Stop the train
+        self.target_speed = 0.0
+        self.wait_reason = reason
         return True
 
     def clear_to_move(self) -> bool:
@@ -632,6 +642,7 @@ class Train:
         if self.state != TrainState.RUNNING_WAITING:
             return False
         self.state = TrainState.RUNNING_MOVING
+        self.wait_reason = None
         return True
 
     def arrive_at_station(self) -> bool:
@@ -647,6 +658,7 @@ class Train:
             return False
         self.state = TrainState.RUNNING_AT_STATION
         self.target_speed = 0.0  # Stop at station
+        self.wait_reason = None
         return True
 
     def depart_from_station(self, has_more_waypoints: bool = True) -> bool:
@@ -673,23 +685,23 @@ class Train:
             self.assigned_route_id = None
             self.target_speed = 0.0
 
+        self.wait_reason = None
         return True
 
     def emergency_stop(self) -> bool:
         """
-        Emergency stop from any RUNNING state.
+        Emergency stop from any operational state.
 
-        Transitions RUNNING_MOVING -> RUNNING_WAITING and sets speed to 0.
+        Transitions to RUNNING_WAITING and sets speed to 0.
 
         Returns:
             True if successful
         """
-        if self.state == TrainState.RUNNING_MOVING:
-            self.state = TrainState.RUNNING_WAITING
-            self.target_speed = 0.0
-            self.is_emergency_braking = True
-            return True
-        return False
+        self.state = TrainState.RUNNING_WAITING
+        self.target_speed = 0.0
+        self.is_emergency_braking = True
+        self.wait_reason = "Emergency stop"
+        return True
 
     def set_direction_and_standby(self, direction: Direction) -> bool:
         """
@@ -732,32 +744,47 @@ class Train:
                 return self.reserved_blocks
             return []
 
-        # If no network provided or train is short, just return current block
-        if not network or self.length <= 1.0:
-            # Simple case: train fits in one block
-            if hasattr(network, "tracks") and network:
-                track = network.tracks.get(self.current_pos)
-                if track and track.block_section_id:
-                    return [track.block_section_id]
-            # Fallback to reserved_blocks
+        # If no network provided, can't calculate occupancy
+        if not network:
             if self.reserved_blocks:
                 return self.reserved_blocks
             return []
 
         # Multi-block case: calculate based on length and path
         occupied = []
-        remaining_length_cm = self.length * 100  # Convert meters to cm
+        remaining_length_cm = self.length * 10000
 
-        # Start at head position
-        current_pos = self.current_pos
-        distance_in_current_block = self.distance_on_track * 100  # Convert to cm
+        # Find current position in path
+        if not self.current_path:
+            # No path - can't trace backward, use current block only
+            if self.current_pos:
+                track = network.tracks.get(self.current_pos)
+                if track and track.block_section_id:
+                    return [track.block_section_id]
+            return []
 
-        # Add blocks as we trace back
+        # Determine current path index
+        current_path_idx = self.path_index if hasattr(self, "path_index") else 0
+
+        # distance_on_track is already in cm
+        distance_in_current_tile_cm = self.distance_on_track
+
+        # Trace backward through path positions until train length is covered
         visited_positions = set()
 
-        while remaining_length_cm > 0 and current_pos:
+        for i in range(current_path_idx, -1, -1):
+            if remaining_length_cm <= 0:
+                break
+
+            # Get position from path
+            if i >= len(self.current_path):
+                break
+
+            pos_x, pos_y, _ = self.current_path[i]
+            current_pos = (pos_x, pos_y)
+
             if current_pos in visited_positions:
-                # Avoid infinite loop
+                # Avoid infinite loop on circular paths
                 break
             visited_positions.add(current_pos)
 
@@ -765,30 +792,22 @@ class Train:
             if not track:
                 break
 
-            # Add this block if it has one
+            # Add this block if it has one and not already in list
             if track.block_section_id and track.block_section_id not in occupied:
                 occupied.append(track.block_section_id)
 
-            # Calculate how much of train is in this block
-            if current_pos == self.current_pos:
-                # Head position - use distance_on_track
-                block_coverage = min(remaining_length_cm, distance_in_current_block)
+            # Get actual tile length from network
+            tile_length_cm = network._get_tile_length_cm(pos_x, pos_y)
+
+            # Calculate how much of train is in this track segment
+            if i == current_path_idx:
+                # Current position - train has traveled distance_on_track cm
+                block_coverage = min(remaining_length_cm, distance_in_current_tile_cm)
             else:
-                # Previous blocks - use full block length
-                block_length_cm = (
-                    track.length * 100 if hasattr(track, "length") else 100.0
-                )
-                block_coverage = min(remaining_length_cm, block_length_cm)
+                # Previous track segments - train occupies full tile length
+                block_coverage = min(remaining_length_cm, tile_length_cm)
 
             remaining_length_cm -= block_coverage
-
-            if remaining_length_cm <= 0:
-                break
-
-            # Move to previous track in path
-            # This is simplified - ideally would follow the actual path backwards
-            # For now, just stop if train is longer than current block
-            break
 
         # If we got blocks from calculation, return them
         if occupied:
@@ -804,7 +823,11 @@ class Train:
         """
         Update which blocks this train occupies based on position and length.
 
-        Occupies new blocks as head enters, releases old blocks as tail exits.
+        DEPRECATED: This method creates race conditions when called alongside
+        PathDispatcher. Use BlockManager directly for production code.
+
+        This method is kept for backward compatibility. It delegates to BlockManager
+        when available. Avoid using in new production code.
 
         Args:
             network: Railway network
@@ -815,19 +838,23 @@ class Train:
         new_occupied = set(self.get_occupied_blocks(network))
         old_occupied = set(self.reserved_blocks) if self.reserved_blocks else set()
 
-        # Occupy new blocks
-        for block_id in new_occupied - old_occupied:
-            block = network.blocks.get(block_id)
-            if block and hasattr(block, "occupy"):
-                block.occupy(self.train_id)
+        if hasattr(network, "block_manager") and network.block_manager:
+            for block_id in new_occupied - old_occupied:
+                network.block_manager.occupy_block(block_id, self.train_id)
 
-        # Release old blocks (tail has exited)
-        for block_id in old_occupied - new_occupied:
-            block = network.blocks.get(block_id)
-            if block and hasattr(block, "release"):
-                block.release()
+            for block_id in old_occupied - new_occupied:
+                network.block_manager.release_block(block_id, self.train_id)
+        else:
+            for block_id in new_occupied - old_occupied:
+                block = network.blocks.get(block_id)
+                if block and hasattr(block, "occupy"):
+                    block.occupy(self.train_id)
 
-        # Update reserved blocks list
+            for block_id in old_occupied - new_occupied:
+                block = network.blocks.get(block_id)
+                if block and hasattr(block, "release"):
+                    block.release()
+
         self.reserved_blocks = list(new_occupied)
 
     def is_opposite_polarity_safe(self, network=None) -> bool:
@@ -866,8 +893,12 @@ class Train:
         # TODO: Implement detailed car position checking
         return len(self.consist) == 1
 
-    def to_dict(self) -> dict:
-        """Convert train to dictionary for serialization"""
+    def to_dict(self, network=None) -> dict:
+        """Convert train to dictionary for serialization.
+
+        Args:
+            network: Optional RailwayNetwork to calculate tile length for distance ratio
+        """
         data = {
             "id": self.train_id,
             "length": self.length,
@@ -885,13 +916,27 @@ class Train:
             "assigned_route_id": self.assigned_route_id,
             "target_speed": self.target_speed,
             "manual_target_speed": self.manual_target_speed,
+            "wait_reason": self.wait_reason,
+            "speed_limit_reason": self.speed_limit_reason,
         }
 
         if self.current_pos:
+            from train_config import DEFAULT_TILE_LENGTH_CM
+
+            tile_length_cm = DEFAULT_TILE_LENGTH_CM
+            if network and hasattr(network, "_get_tile_length_cm"):
+                tile_length_cm = network._get_tile_length_cm(*self.current_pos)
+
+            distance_ratio = (
+                self.distance_on_track / tile_length_cm if tile_length_cm > 0 else 0.0
+            )
+            distance_ratio = max(0.0, min(1.0, distance_ratio))
+
             data["position"] = {
                 "x": self.current_pos[0],
                 "y": self.current_pos[1],
-                "distance": self.distance_on_track,
+                "distance": distance_ratio,
+                "tile_length_cm": tile_length_cm,
             }
 
         if self.current_direction:
@@ -934,9 +979,13 @@ class Train:
 
         # Position
         if "position" in data:
+            from train_config import DEFAULT_TILE_LENGTH_CM
+
             pos = data["position"]
             train.current_pos = (pos.get("x", 0), pos.get("y", 0))
-            train.distance_on_track = pos.get("distance", 0.0)
+            distance_ratio = pos.get("distance", 0.0)
+            tile_length_cm = pos.get("tile_length_cm", DEFAULT_TILE_LENGTH_CM)
+            train.distance_on_track = distance_ratio * tile_length_cm
 
         # Direction (current movement direction)
         if "direction" in data:
@@ -987,5 +1036,7 @@ class Train:
         # Speed targets
         train.target_speed = float(data.get("target_speed", 0.0))
         train.manual_target_speed = float(data.get("manual_target_speed", 0.0))
+        train.wait_reason = data.get("wait_reason")
+        train.speed_limit_reason = data.get("speed_limit_reason")
 
         return train

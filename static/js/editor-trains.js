@@ -434,7 +434,10 @@ class TrainEditorHandler {
                 
                 <div class="property-item">
                     <label class="property-label">State</label>
-                    <div class="value-display font-bold" style="color: ${stateColor}">${(train.state || 'off').toUpperCase().replace('_', ' ')}</div>
+                    <div class="value-display font-bold" style="color: ${stateColor}">
+                        ${(train.state || 'off').toUpperCase().replace('_', ' ')}
+                        ${train.state === 'running_waiting' && train.wait_reason ? `<div class="text-xs mt-2 text-secondary font-normal">${train.wait_reason}</div>` : ''}
+                    </div>
                 </div>
                 
                 <div class="property-item">
@@ -517,6 +520,10 @@ class TrainEditorHandler {
                 
                 <div class="mt-12">
                     <button id="train-edit-btn" class="btn btn-secondary btn-full btn-sm">✏️ Edit Train Properties</button>
+                </div>
+                
+                <div class="mt-8">
+                    <button id="train-monitor-btn" class="btn btn-info btn-full btn-sm">📊 Open Train Monitor</button>
                 </div>
             </div>
         `;
@@ -713,6 +720,110 @@ class TrainEditorHandler {
             editBtn.onclick = () => {
                 this.showTrainEditor(trainId);
             };
+        }
+
+        const monitorBtn = document.getElementById('train-monitor-btn');
+        if (monitorBtn) {
+            monitorBtn.onclick = () => {
+                window.app.selectTrain(trainId);
+            };
+        }
+    }
+
+    async updateTrainControlPanelValues(trainId) {
+        const panel = document.querySelector(`.train-control-panel[data-train-id="${trainId}"]`);
+        if (!panel) return;
+
+        let train;
+        try {
+            train = await this.api.getTrain(trainId);
+        } catch (err) {
+            return;
+        }
+        if (!train) return;
+
+        const stateColors = {
+            'off': '#888',
+            'idle': '#ffd93d',
+            'standby': '#00d4ff',
+            'running_moving': '#04d361',
+            'running_waiting': '#ff9500',
+            'running_at_station': '#8257e5',
+            'manual': '#e83f5b'
+        };
+
+        const stateEl = panel.querySelector('.property-item .value-display.font-bold');
+        if (stateEl) {
+            stateEl.style.color = stateColors[train.state] || '#888';
+            stateEl.innerHTML = `
+                ${(train.state || 'off').toUpperCase().replace('_', ' ')}
+                ${train.state === 'running_waiting' && train.wait_reason ? `<div class="text-xs mt-2 text-secondary font-normal">${train.wait_reason}</div>` : ''}
+            `;
+        }
+
+        const positionEl = panel.querySelector('.property-item .value-display.text-info');
+        if (positionEl && train.position) {
+            positionEl.textContent = `(${train.position.x}, ${train.position.y})`;
+        }
+
+        const directionEl = panel.querySelector('.property-item .value-display.text-station');
+        if (directionEl) {
+            directionEl.textContent = train.direction || train.facing_direction || 'Unknown';
+        }
+
+        const speedEl = panel.querySelector('.property-item .value-display.text-track');
+        if (speedEl) {
+            speedEl.textContent = `${(train.current_speed || 0).toFixed(1)} / ${train.max_speed || 100} km/h`;
+        }
+
+        const speedLabel = document.getElementById('manual-speed-label');
+        const speedSlider = document.getElementById('train-manual-speed-slider');
+        if (speedLabel && speedSlider && document.activeElement !== speedSlider) {
+            speedLabel.textContent = train.manual_target_speed || 0;
+            speedSlider.value = train.manual_target_speed || 0;
+        }
+
+        this.updateButtonStates(train);
+    }
+
+    updateButtonStates(train) {
+        const state = train.state;
+        
+        const powerOnBtn = document.getElementById('train-power-on-btn');
+        const powerOffBtn = document.getElementById('train-power-off-btn');
+        if (powerOnBtn) powerOnBtn.disabled = state !== 'off';
+        if (powerOffBtn) powerOffBtn.disabled = state === 'off';
+
+        ['north', 'east', 'south', 'west'].forEach(dir => {
+            const btn = document.getElementById(`train-dir-${dir}-btn`);
+            if (btn) btn.disabled = state !== 'idle';
+        });
+
+        const clearDirBtn = document.getElementById('train-clear-dir-btn');
+        if (clearDirBtn) clearDirBtn.disabled = state !== 'standby';
+
+        const departBtn = document.getElementById('train-depart-btn');
+        const stopBtn = document.getElementById('train-stop-btn');
+        if (departBtn) departBtn.disabled = state !== 'standby';
+        if (stopBtn) stopBtn.disabled = !(state && state.startsWith('running'));
+
+        const manualOnBtn = document.getElementById('train-manual-on-btn');
+        const manualOffBtn = document.getElementById('train-manual-off-btn');
+        if (manualOnBtn) manualOnBtn.disabled = state === 'manual';
+        if (manualOffBtn) manualOffBtn.disabled = state !== 'manual';
+
+        const travelFwdBtn = document.getElementById('train-travel-fwd-btn');
+        const travelRevBtn = document.getElementById('train-travel-rev-btn');
+        const speedSlider = document.getElementById('train-manual-speed-slider');
+        if (travelFwdBtn) travelFwdBtn.disabled = state !== 'manual';
+        if (travelRevBtn) travelRevBtn.disabled = state !== 'manual';
+        if (speedSlider) speedSlider.disabled = state !== 'manual';
+
+        if (travelFwdBtn) {
+            travelFwdBtn.classList.toggle('btn-active', train.travel_direction === 'forward');
+        }
+        if (travelRevBtn) {
+            travelRevBtn.classList.toggle('btn-active', train.travel_direction === 'reverse');
         }
     }
 }
