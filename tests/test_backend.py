@@ -5759,3 +5759,30 @@ class TestTrainPathQueue:
 
         assert result is False
         assert train.end_b_index == 1  # Index unchanged
+
+
+class TestTrainPathSerialization:
+    """Tests for train path serialization."""
+
+    def test_to_dict_includes_path_fields(self, network):
+        """to_dict should include all path-related fields."""
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0)]
+        train.end_a_index = 1
+        train.end_a_distance_cm = 25.0
+        train.end_a_entry_edge = "W"
+        train.end_b_index = 0
+        train.end_b_distance_cm = 10.0
+        train.end_b_entry_edge = "W"
+        train.leading_end = "a"
+
+        data = train.to_dict(network)
+
+        assert data["path_tiles"] == [(0, 0), (1, 0)]
+        assert data["end_a_index"] == 1
+        assert data["end_a_distance_cm"] == 25.0
+        assert data["end_a_entry_edge"] == "W"
+        assert data["end_b_index"] == 0
+        assert data["end_b_distance_cm"] == 10.0
+        assert data["end_b_entry_edge"] == "W"
+        assert data["leading_end"] == "a"

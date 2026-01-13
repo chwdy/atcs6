@@ -1089,6 +1089,15 @@ class Train:
             "manual_target_speed": self.manual_target_speed,
             "wait_reason": self.wait_reason,
             "speed_limit_reason": self.speed_limit_reason,
+            # === NEW PATH FIELDS ===
+            "path_tiles": self.path_tiles,
+            "end_a_index": self.end_a_index,
+            "end_a_distance_cm": self.end_a_distance_cm,
+            "end_a_entry_edge": self.end_a_entry_edge,
+            "end_b_index": self.end_b_index,
+            "end_b_distance_cm": self.end_b_distance_cm,
+            "end_b_entry_edge": self.end_b_entry_edge,
+            "leading_end": self.leading_end,
         }
 
         if self.current_pos:
@@ -1129,6 +1138,39 @@ class Train:
                     }
                 )
             data["schedule"]["stops"] = stops
+
+        # Add path_tile_info if network available
+        if network and self.path_tiles:
+            path_tile_info = []
+            for tile in self.path_tiles:
+                x, y = tile
+                track = network.get_track(x, y)
+                tile_info = {
+                    "tile": [x, y],
+                    "length_cm": network._get_tile_length_cm(x, y) if track else 50.0,
+                    "block_id": track.block_section_id if track else None,
+                }
+                # Add signal info if present
+                if track and track.signal_ids:
+                    tile_info["signals"] = []
+                    for sig_id in track.signal_ids:
+                        signal = network.signals.get(sig_id)
+                        if signal:
+                            tile_info["signals"].append(
+                                {
+                                    "id": sig_id,
+                                    "state": signal.state.value
+                                    if signal.state
+                                    else "unknown",
+                                    "direction": signal.detection_direction,
+                                }
+                            )
+                # Add switch info if present
+                if track and track.is_switch:
+                    tile_info["is_switch"] = True
+                    tile_info["switch_state"] = track.switch_state
+                path_tile_info.append(tile_info)
+            data["path_tile_info"] = path_tile_info
 
         return data
 
