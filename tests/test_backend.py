@@ -5587,3 +5587,69 @@ class TestTrainPlacement:
 
         with pytest.raises(ValueError):
             network.place_train(train, 0, 0, Direction.EAST)
+
+
+# ============= TRAIN PATH TILES (Task 1.1) =============
+
+
+class TestTrainPathTiles:
+    """Tests for new path-based train position system."""
+
+    def test_train_path_tiles_initialization(self):
+        """Train should initialize with empty path_tiles."""
+        train = Train(train_id="T1")
+        assert train.path_tiles == []
+        assert train.end_a_index == 0
+        assert train.end_b_index == 0
+        assert train.end_a_distance_cm == 0.0
+        assert train.end_b_distance_cm == 0.0
+        assert train.end_a_entry_edge is None
+        assert train.end_b_entry_edge is None
+        assert train.leading_end == "a"
+
+    def test_train_head_tail_properties(self):
+        """Head/tail properties should delegate to correct end based on leading_end."""
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.end_a_index = 2
+        train.end_a_distance_cm = 25.0
+        train.end_a_entry_edge = "W"
+        train.end_b_index = 0
+        train.end_b_distance_cm = 10.0
+        train.end_b_entry_edge = "W"
+        train.leading_end = "a"
+
+        # With leading_end='a', head is end_a, tail is end_b
+        assert train.head_index == 2
+        assert train.tail_index == 0
+        assert train.head_distance_cm == 25.0
+        assert train.tail_distance_cm == 10.0
+
+    def test_train_reverse_flips_leading_end(self):
+        """Reverse should flip leading_end without changing positions."""
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0)]
+        train.end_a_index = 1
+        train.end_b_index = 0
+        train.leading_end = "a"
+
+        train.reverse_direction()
+
+        assert train.leading_end == "b"
+        # Indices unchanged
+        assert train.end_a_index == 1
+        assert train.end_b_index == 0
+        # But head/tail swap
+        assert train.head_index == 0
+        assert train.tail_index == 1
+
+    def test_train_occupied_tiles_property(self):
+        """occupied_tiles should return tiles between tail and head."""
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)]
+        train.end_a_index = 3  # head at (3, 0)
+        train.end_b_index = 1  # tail at (1, 0)
+        train.leading_end = "a"
+
+        occupied = train.occupied_tiles
+        assert occupied == [(1, 0), (2, 0), (3, 0)]

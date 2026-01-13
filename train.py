@@ -159,6 +159,24 @@ class Train:
     assigned_path_id: Optional[str] = None
 
     # ========================================================================
+    # PATH-BASED POSITION SYSTEM (Task 1.1)
+    # ========================================================================
+    # Full path: passed tiles + occupied tiles + ahead tiles
+    path_tiles: List[Tuple[int, int]] = field(default_factory=list)
+
+    # Two physical ends (don't change on reverse)
+    end_a_index: int = 0  # Index into path_tiles
+    end_a_distance_cm: float = 0.0  # Distance from entry edge on this tile
+    end_a_entry_edge: Optional[str] = None  # 'N', 'E', 'S', 'W'
+
+    end_b_index: int = 0
+    end_b_distance_cm: float = 0.0
+    end_b_entry_edge: Optional[str] = None
+
+    # Which end is currently leading (flip on reverse)
+    leading_end: str = "a"  # 'a' or 'b'
+
+    # ========================================================================
     # NEW PROPERTIES (Phase 1 - Train System)
     # ========================================================================
 
@@ -208,6 +226,93 @@ class Train:
         if self.acceleration == 0:
             return 0
         return (v_ms * v_ms) / (2 * self.acceleration)
+
+    # ========================================================================
+    # PATH POSITION PROPERTIES (Task 1.1)
+    # ========================================================================
+
+    @property
+    def head_index(self) -> int:
+        """Index of head tile in path_tiles."""
+        return self.end_a_index if self.leading_end == "a" else self.end_b_index
+
+    @property
+    def tail_index(self) -> int:
+        """Index of tail tile in path_tiles."""
+        return self.end_b_index if self.leading_end == "a" else self.end_a_index
+
+    @property
+    def head_distance_cm(self) -> float:
+        """Distance from entry edge on head tile."""
+        return (
+            self.end_a_distance_cm
+            if self.leading_end == "a"
+            else self.end_b_distance_cm
+        )
+
+    @head_distance_cm.setter
+    def head_distance_cm(self, value: float) -> None:
+        if self.leading_end == "a":
+            self.end_a_distance_cm = value
+        else:
+            self.end_b_distance_cm = value
+
+    @property
+    def tail_distance_cm(self) -> float:
+        """Distance from entry edge on tail tile."""
+        return (
+            self.end_b_distance_cm
+            if self.leading_end == "a"
+            else self.end_a_distance_cm
+        )
+
+    @tail_distance_cm.setter
+    def tail_distance_cm(self, value: float) -> None:
+        if self.leading_end == "a":
+            self.end_b_distance_cm = value
+        else:
+            self.end_a_distance_cm = value
+
+    @property
+    def head_entry_edge(self) -> Optional[str]:
+        """Entry edge for head tile."""
+        return (
+            self.end_a_entry_edge if self.leading_end == "a" else self.end_b_entry_edge
+        )
+
+    @head_entry_edge.setter
+    def head_entry_edge(self, value: Optional[str]) -> None:
+        if self.leading_end == "a":
+            self.end_a_entry_edge = value
+        else:
+            self.end_b_entry_edge = value
+
+    @property
+    def tail_entry_edge(self) -> Optional[str]:
+        """Entry edge for tail tile."""
+        return (
+            self.end_b_entry_edge if self.leading_end == "a" else self.end_a_entry_edge
+        )
+
+    @tail_entry_edge.setter
+    def tail_entry_edge(self, value: Optional[str]) -> None:
+        if self.leading_end == "a":
+            self.end_b_entry_edge = value
+        else:
+            self.end_a_entry_edge = value
+
+    @property
+    def occupied_tiles(self) -> List[Tuple[int, int]]:
+        """Tiles currently occupied by train (tail to head)."""
+        if not self.path_tiles:
+            return []
+        start = min(self.tail_index, self.head_index)
+        end = max(self.tail_index, self.head_index)
+        return self.path_tiles[start : end + 1]
+
+    def reverse_direction(self) -> None:
+        """Flip which end is the head (no position recalculation needed)."""
+        self.leading_end = "b" if self.leading_end == "a" else "a"
 
     def update_physics(
         self, delta_time: float, target_speed: float, track_length: float
