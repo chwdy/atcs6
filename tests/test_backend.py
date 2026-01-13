@@ -5711,3 +5711,51 @@ class TestTrainPathQueue:
         assert train.path_tiles == []
         assert train.end_a_index == 0
         assert train.end_b_index == 0
+
+    def test_advance_head_returns_true_on_success(self):
+        """advance_head should return True when successfully advancing."""
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.end_a_index = 0
+        train.leading_end = "a"
+
+        result = train.advance_head("W")
+
+        assert result is True
+
+    def test_advance_head_returns_false_at_end(self):
+        """advance_head should return False when at end of path."""
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0)]
+        train.end_a_index = 1  # Already at last tile
+        train.leading_end = "a"
+
+        result = train.advance_head("W")
+
+        assert result is False
+        assert train.end_a_index == 1  # Index unchanged
+
+    def test_advance_tail_returns_true_on_success(self):
+        """advance_tail should return True when successfully advancing."""
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.end_a_index = 2
+        train.end_b_index = 0
+        train.leading_end = "a"
+
+        result = train.advance_tail("W")
+
+        assert result is True
+
+    def test_advance_tail_returns_false_when_would_pass_head(self):
+        """advance_tail should return False when tail would pass head."""
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0)]
+        train.end_a_index = 1
+        train.end_b_index = 1  # Tail already at head
+        train.leading_end = "a"
+
+        result = train.advance_tail("W")
+
+        assert result is False
+        assert train.end_b_index == 1  # Index unchanged
