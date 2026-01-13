@@ -5653,3 +5653,61 @@ class TestTrainPathTiles:
 
         occupied = train.occupied_tiles
         assert occupied == [(1, 0), (2, 0), (3, 0)]
+
+
+# ============= TRAIN PATH QUEUE METHODS (Task 1.2) =============
+
+
+class TestTrainPathQueue:
+    """Tests for train path queue operations."""
+
+    def test_advance_head_increments_index(self):
+        """advance_head should move to next tile in path."""
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.end_a_index = 1
+        train.end_a_entry_edge = "W"
+        train.end_b_index = 0
+        train.leading_end = "a"
+
+        train.advance_head("W")
+
+        assert train.end_a_index == 2
+        assert train.end_a_entry_edge == "W"
+        assert train.end_a_distance_cm == 0.0
+
+    def test_advance_tail_increments_index(self):
+        """advance_tail should move tail to next tile."""
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.end_a_index = 2
+        train.end_b_index = 0
+        train.end_b_entry_edge = "W"
+        train.leading_end = "a"
+
+        train.advance_tail("W")
+
+        assert train.end_b_index == 1
+        assert train.end_b_entry_edge == "W"
+
+    def test_extend_path_appends_tiles(self):
+        """extend_path should append new tiles to path_tiles."""
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0)]
+
+        train.extend_path([(2, 0), (3, 0)])
+
+        assert train.path_tiles == [(0, 0), (1, 0), (2, 0), (3, 0)]
+
+    def test_clear_path_resets_all(self):
+        """clear_path should reset path and indices."""
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.end_a_index = 2
+        train.end_b_index = 0
+
+        train.clear_path()
+
+        assert train.path_tiles == []
+        assert train.end_a_index == 0
+        assert train.end_b_index == 0

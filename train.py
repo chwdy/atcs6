@@ -314,6 +314,72 @@ class Train:
         """Flip which end is the head (no position recalculation needed)."""
         self.leading_end = "b" if self.leading_end == "a" else "a"
 
+    # === PATH QUEUE METHODS ===
+
+    def advance_head(self, new_entry_edge: str) -> bool:
+        """Move head to next tile in path.
+
+        Args:
+            new_entry_edge: Entry edge for the new tile ('N', 'E', 'S', 'W')
+
+        Returns:
+            True if advanced, False if at end of path
+        """
+        if self.leading_end == "a":
+            if self.end_a_index + 1 >= len(self.path_tiles):
+                return False
+            self.end_a_index += 1
+            self.end_a_entry_edge = new_entry_edge
+            self.end_a_distance_cm = 0.0
+        else:
+            if self.end_b_index + 1 >= len(self.path_tiles):
+                return False
+            self.end_b_index += 1
+            self.end_b_entry_edge = new_entry_edge
+            self.end_b_distance_cm = 0.0
+        return True
+
+    def advance_tail(self, new_entry_edge: str) -> bool:
+        """Move tail to next tile (called when tail leaves a tile).
+
+        Args:
+            new_entry_edge: Entry edge for the new tile
+
+        Returns:
+            True if advanced, False if tail would pass head
+        """
+        if self.leading_end == "a":
+            if self.end_b_index + 1 > self.end_a_index:
+                return False
+            self.end_b_index += 1
+            self.end_b_entry_edge = new_entry_edge
+            self.end_b_distance_cm = 0.0
+        else:
+            if self.end_a_index + 1 > self.end_b_index:
+                return False
+            self.end_a_index += 1
+            self.end_a_entry_edge = new_entry_edge
+            self.end_a_distance_cm = 0.0
+        return True
+
+    def extend_path(self, tiles: List[Tuple[int, int]]) -> None:
+        """Append tiles to the path (when path is extended).
+
+        Args:
+            tiles: List of (x, y) positions to append
+        """
+        self.path_tiles.extend(tiles)
+
+    def clear_path(self) -> None:
+        """Clear path and reset all position data (when path is cancelled)."""
+        self.path_tiles = []
+        self.end_a_index = 0
+        self.end_b_index = 0
+        self.end_a_distance_cm = 0.0
+        self.end_b_distance_cm = 0.0
+        self.end_a_entry_edge = None
+        self.end_b_entry_edge = None
+
     def update_physics(
         self, delta_time: float, target_speed: float, track_length: float
     ):
