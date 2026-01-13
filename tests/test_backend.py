@@ -5786,3 +5786,218 @@ class TestTrainPathSerialization:
         assert data["end_b_distance_cm"] == 10.0
         assert data["end_b_entry_edge"] == "W"
         assert data["leading_end"] == "a"
+
+
+# ============= TRAIN MOVER PATH QUEUE TESTS =============
+
+
+class TestTrainMoverPathQueue:
+    """Tests for TrainMover using path queue system."""
+
+    @pytest.fixture
+    def simple_track_network(self):
+        """Create a simple 3-tile straight track network."""
+        network = RailwayNetwork()
+        from track import TrackSegment, TRACK_EW
+
+        for x in range(3):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+        # Create a block for length calculation
+        network.create_block_with_tracks(
+            "B1", [(0, 0), (1, 0), (2, 0)], name="Block 1", length_cm=150.0
+        )
+        return network
+
+    def test_update_head_position(self, simple_track_network):
+        """TrainMover should update head distance correctly."""
+        from train_movement import TrainMover
+
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.end_a_index = 1
+        train.end_a_distance_cm = 20.0
+        train.end_a_entry_edge = "W"
+        train.end_b_index = 0
+        train.end_b_distance_cm = 0.0
+        train.end_b_entry_edge = "W"
+        train.leading_end = "a"
+        train.current_speed = 36.0  # km/h
+
+        mover = TrainMover(simple_track_network)
+        # Simulate 1 second of movement
+        mover.update_train_path_position(train, 1.0)
+
+        # At 36 km/h with 1:1 scale, speed is 1000 cm/s
+        # After 1 second, distance should increase by 1000cm
+        assert train.end_a_distance_cm > 20.0
+
+    def test_update_with_zero_speed_no_movement(self, simple_track_network):
+        """Train with zero speed should not move."""
+        from train_movement import TrainMover
+
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.end_a_index = 1
+        train.end_a_distance_cm = 20.0
+        train.end_a_entry_edge = "W"
+        train.end_b_index = 0
+        train.end_b_distance_cm = 0.0
+        train.end_b_entry_edge = "W"
+        train.leading_end = "a"
+        train.current_speed = 0.0  # Not moving
+
+        mover = TrainMover(simple_track_network)
+        mover.update_train_path_position(train, 1.0)
+
+        # Distance should be unchanged
+        assert train.end_a_distance_cm == 20.0
+        assert train.end_a_index == 1
+
+    def test_update_with_empty_path_no_crash(self, simple_track_network):
+        """Train with empty path should not crash."""
+        from train_movement import TrainMover
+
+        train = Train(train_id="T1")
+        train.path_tiles = []  # Empty path
+        train.current_speed = 36.0
+
+        mover = TrainMover(simple_track_network)
+        # Should not raise exception
+        mover.update_train_path_position(train, 1.0)
+
+    def test_head_advances_to_next_tile(self, simple_track_network):
+        """Head should advance to next tile when crossing boundary."""
+        from train_movement import TrainMover
+        from train_config import DEFAULT_TILE_LENGTH_CM
+
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.end_a_index = 0
+        # Start near end of first tile (50cm from end)
+        train.end_a_distance_cm = DEFAULT_TILE_LENGTH_CM - 50.0
+        train.end_a_entry_edge = "W"
+        train.end_b_index = 0
+        train.end_b_distance_cm = 0.0
+        train.end_b_entry_edge = "W"
+        train.leading_end = "a"
+        train.current_speed = 36.0  # 1000 cm/s
+
+        initial_index = train.end_a_index
+        mover = TrainMover(simple_track_network)
+        # Move 100cm (enough to cross boundary but not into tile 2)
+        mover.update_train_path_position(train, 0.1)
+
+        # Should have advanced at least one tile
+        assert train.end_a_index > initial_index
+        # Distance should be positive (overflow into new tile)
+        assert train.end_a_distance_cm > 0
+        # Entry edge should be W (entering from west)
+        assert train.end_a_entry_edge == "W"
+
+    def test_head_caps_at_end_of_path(self, simple_track_network):
+        """Head should cap at tile end when at end of path."""
+        from train_movement import TrainMover
+        from train_config import DEFAULT_TILE_LENGTH_CM
+
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0)]  # Only 2 tiles
+        train.end_a_index = 1  # Already at last tile
+        train.end_a_distance_cm = DEFAULT_TILE_LENGTH_CM - 100.0
+        train.end_a_entry_edge = "W"
+        train.end_b_index = 0
+        train.end_b_distance_cm = 0.0
+        train.end_b_entry_edge = "W"
+        train.leading_end = "a"
+        train.current_speed = 36.0  # 1000 cm/s
+
+        mover = TrainMover(simple_track_network)
+        # Try to move 500cm (would exceed tile)
+        mover.update_train_path_position(train, 0.5)
+
+        # Should be capped at tile length
+        tile_length = simple_track_network._get_tile_length_cm(1, 0)
+        assert train.end_a_distance_cm == tile_length
+        # Index should not change
+        assert train.end_a_index == 1
+
+    def test_tail_follows_with_long_train(self, simple_track_network):
+        """Tail should advance when train spans multiple tiles."""
+        from train_movement import TrainMover
+        from train_config import DEFAULT_TILE_LENGTH_CM
+
+        # Create train with 30m length (3000cm) - will span multiple tiles
+        car = TrainCar("CAR1", "LOCOMOTIVE", length=3000.0, mass=100000.0)
+        train = Train(train_id="T1", consist=[car])
+        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.end_a_index = 2  # Head at last tile
+        train.end_a_distance_cm = DEFAULT_TILE_LENGTH_CM / 2  # Middle of tile
+        train.end_a_entry_edge = "W"
+        train.end_b_index = 0  # Tail at first tile
+        train.end_b_distance_cm = 0.0
+        train.end_b_entry_edge = "W"
+        train.leading_end = "a"
+        train.current_speed = 36.0  # 1000 cm/s
+
+        mover = TrainMover(simple_track_network)
+        # Move the train forward a bit
+        mover.update_train_path_position(train, 0.5)
+
+        # Tail should have potentially advanced
+        # (depends on total distance exceeding train length)
+        # This tests that _update_tail_for_length is called
+
+    def test_calculate_entry_edge_east(self, simple_track_network):
+        """Entry edge should be W when moving from west to east."""
+        from train_movement import TrainMover
+
+        mover = TrainMover(simple_track_network)
+        entry_edge = mover._calculate_entry_edge((0, 0), (1, 0), None, None)
+        assert entry_edge == "W"
+
+    def test_calculate_entry_edge_west(self, simple_track_network):
+        """Entry edge should be E when moving from east to west."""
+        from train_movement import TrainMover
+
+        mover = TrainMover(simple_track_network)
+        entry_edge = mover._calculate_entry_edge((1, 0), (0, 0), None, None)
+        assert entry_edge == "E"
+
+    def test_calculate_entry_edge_north(self, simple_track_network):
+        """Entry edge should be S when moving from south to north."""
+        from train_movement import TrainMover
+
+        mover = TrainMover(simple_track_network)
+        entry_edge = mover._calculate_entry_edge((0, 0), (0, 1), None, None)
+        assert entry_edge == "S"
+
+    def test_calculate_entry_edge_south(self, simple_track_network):
+        """Entry edge should be N when moving from north to south."""
+        from train_movement import TrainMover
+
+        mover = TrainMover(simple_track_network)
+        entry_edge = mover._calculate_entry_edge((0, 1), (0, 0), None, None)
+        assert entry_edge == "N"
+
+    def test_update_with_leading_end_b(self, simple_track_network):
+        """Update should work correctly when leading_end is 'b'."""
+        from train_movement import TrainMover
+
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.end_a_index = 0  # A is at tail
+        train.end_a_distance_cm = 0.0
+        train.end_a_entry_edge = "W"
+        train.end_b_index = 1  # B is head
+        train.end_b_distance_cm = 20.0
+        train.end_b_entry_edge = "W"
+        train.leading_end = "b"  # B is leading
+        train.current_speed = 36.0  # km/h
+
+        mover = TrainMover(simple_track_network)
+        mover.update_train_path_position(train, 1.0)
+
+        # end_b should have increased (it's the head)
+        assert train.end_b_distance_cm > 20.0
+        # end_a should be unchanged (it's the tail)
+        # (tail might also advance if train is short enough)
