@@ -30,6 +30,7 @@ htmlcov/
 
 # Project specific
 archived/
+.worktrees/
 test_connectivity.py
 layouts
 plans
