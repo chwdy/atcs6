@@ -263,18 +263,29 @@ class RendererTrainHandler {
         
         const headTile = pathTiles[headIndex];
         const tailTile = pathTiles[tailIndex];
-        const headInfo = pathInfo[headIndex] || { length_cm: 50 };
-        const tailInfo = pathInfo[tailIndex] || { length_cm: 50 };
+        const headInfo = pathInfo[headIndex];
+        const tailInfo = pathInfo[tailIndex];
+        
+        // Warn if using fallback values (helps debug missing path_tile_info)
+        if (!headInfo) {
+            console.warn(`[RendererTrainHandler] Missing path_tile_info for head tile index ${headIndex}, using fallback`);
+        }
+        if (!tailInfo) {
+            console.warn(`[RendererTrainHandler] Missing path_tile_info for tail tile index ${tailIndex}, using fallback`);
+        }
+        
+        const headInfoWithFallback = headInfo || { length_cm: 50 };
+        const tailInfoWithFallback = tailInfo || { length_cm: 50 };
         
         // Calculate head and tail screen positions
         const headPos = this.getTilePathPosition(
             headTile, headEntryEdge, headDistanceCm, 
-            headInfo.length_cm, getTrackBits(headTile)
+            headInfoWithFallback.length_cm, getTrackBits(headTile)
         );
         
         const tailPos = this.getTilePathPosition(
             tailTile, tailEntryEdge, tailDistanceCm,
-            tailInfo.length_cm, getTrackBits(tailTile)
+            tailInfoWithFallback.length_cm, getTrackBits(tailTile)
         );
         
         // Draw path line from tail to head
@@ -316,7 +327,6 @@ class RendererTrainHandler {
             if (nextIdx < 0 || nextIdx >= pathTiles.length) break;
             
             const currentTile = pathTiles[i];
-            const currentInfo = pathInfo[i] || { length_cm: 50 };
             const trackBits = getTrackBits(currentTile);
             
             // Get entry edge for current tile
@@ -371,6 +381,10 @@ class RendererTrainHandler {
             const tile = pathTiles[i];
             const trackBits = getTrackBits(tile);
             const exitEdge = this.getExitEdge(trackBits, currentEntry);
+            if (!exitEdge) {
+                console.warn(`[RendererTrainHandler] No exit edge for tile ${tile}, entry ${currentEntry}`);
+                return currentEntry;  // Return last known entry edge
+            }
             currentEntry = this.getOppositeEdge(exitEdge);
         }
         return currentEntry;
