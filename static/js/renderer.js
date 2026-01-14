@@ -452,6 +452,7 @@ class Renderer {
             network.trains.forEach(train => {
                 this.trainHandler.drawTrain(train);
             });
+            this.debugHandler.drawTrainPathDebug(network.trains);
         }
     }
 

@@ -460,31 +460,16 @@ class RouteExecutor:
         return None
 
     def _convert_path_to_train_path(self, path) -> list:
-        from enums import Direction
+        from path_utils import convert_tiles_to_train_path
 
-        result = []
         tiles = path.path_tiles if hasattr(path, "path_tiles") else []
 
-        for i, tile in enumerate(tiles):
-            if i + 1 < len(tiles):
-                next_tile = tiles[i + 1]
-                dx = next_tile[0] - tile[0]
-                dy = next_tile[1] - tile[1]
+        if len(tiles) == 0:
+            return []
+        if len(tiles) == 1:
+            raise ValueError("Cannot determine train direction for single-tile path")
 
-                if dy > 0:
-                    direction = Direction.NORTH
-                elif dy < 0:
-                    direction = Direction.SOUTH
-                elif dx > 0:
-                    direction = Direction.EAST
-                else:
-                    direction = Direction.WEST
-            else:
-                direction = Direction.EAST
-
-            result.append((tile[0], tile[1], direction))
-
-        return result
+        return convert_tiles_to_train_path(tiles)
 
     def activate_route(self, train: "Train", route: "Route") -> bool:
         """

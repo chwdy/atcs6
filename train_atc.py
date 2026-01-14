@@ -17,6 +17,7 @@ from typing import Optional, List, Tuple, TYPE_CHECKING
 
 from train_config import (
     ATC_SAFETY_MARGIN_CM,
+    ATC_PLATFORM_SAFETY_MARGIN_CM,
     ATC_SIGNAL_LOOKAHEAD_BLOCKS,
     ATC_MIN_CLEARANCE_CM,
     ATC_NO_BLOCK_FALLBACK_CM,
@@ -359,9 +360,13 @@ class TrainATC:
             decel_rate = speed_profile.deceleration_rate
 
         clearance = self.get_clearance_ahead()
+        
+        # Determine safety margin based on destination type
+        # Use smaller margin (5cm) for platform stops, larger (25cm) otherwise
+        safety_margin = self._get_effective_safety_margin()
 
         safe_speed = calculate_max_safe_speed(
-            clearance, decel_rate, self.safety_margin_cm
+            clearance, decel_rate, safety_margin
         )
 
         reasons = []
@@ -394,6 +399,26 @@ class TrainATC:
         self._cached_speed_limit = limiting_speed
         self._cached_speed_limit_reason = limiting_reason
         return limiting_speed, limiting_reason
+    
+    def _get_effective_safety_margin(self) -> float:
+        """
+        Get the effective safety margin based on destination type.
+        
+        Returns:
+            5cm if approaching a platform/station, 25cm otherwise
+        """
+        # Check if we're in the last block and it contains a station
+        blocks_ahead = self._get_blocks_ahead()
+        if not blocks_ahead:
+            # No blocks ahead - we're in the last block
+            # Check if this block (or the destination) has a station
+            if self.train.current_path and len(self.train.current_path) > 0:
+                last_tile = self.train.current_path[-1]
+                last_track = self.network.tracks.get((last_tile[0], last_tile[1]))
+                if last_track and last_track.station_id:
+                    return ATC_PLATFORM_SAFETY_MARGIN_CM
+        
+        return self.safety_margin_cm  # Default margin
 
     def get_target_speed(self, speed_profile: Optional["SpeedProfile"] = None) -> float:
         """

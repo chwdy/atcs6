@@ -274,6 +274,23 @@ class SimulationController:
                             return f"Block {block.block_id} reserved by path {block.reserved_by_path}"
                         return f"Block {block.block_id} is reserved"
 
+        # Check if approaching end of path (destination)
+        remaining_tiles = len(train.current_path) - train.path_index - 1
+        if remaining_tiles <= 2:  # Near end of path
+            # Check if destination has a station
+            last_tile = train.current_path[-1]
+            last_track = self.network.get_track(last_tile[0], last_tile[1])
+            if last_track and last_track.station_id:
+                station = self.network.stations.get(last_track.station_id)
+                if station:
+                    station_name = (
+                        station.name
+                        if hasattr(station, "name") and station.name
+                        else last_track.station_id
+                    )
+                    return f"Arriving at {station_name}"
+            return "Approaching destination"
+
         return "Waiting for clearance"
 
     def _decelerate_to_stop(self, train: Train, delta_seconds: float) -> None:
@@ -297,15 +314,39 @@ class SimulationController:
         if not current_track:
             return
 
+        # Ensure current tile's block is occupied before any movement
+        # This handles zero-length tiles that might otherwise be skipped
+        if current_track.block_section_id:
+            current_block = self.network.blocks.get(current_track.block_section_id)
+            if current_block and current_block.occupied_by != train.train_id:
+                if self.network.block_manager:
+                    self.network.block_manager.occupy_block(
+                        current_track.block_section_id, train.train_id
+                    )
+                else:
+                    current_block.occupy(train.train_id)
+
         tile_length_cm = self.network._get_tile_length_cm(*train.current_pos)
         speed_cm_per_sec = kmh_to_cm_per_sec(train.current_speed)
         dist_cm = speed_cm_per_sec * delta_seconds
 
         train.distance_on_track += dist_cm
 
-        if train.distance_on_track >= tile_length_cm:
+        MAX_HOPS = 10
+        hops = 0
+        while train.distance_on_track >= tile_length_cm and hops < MAX_HOPS:
             overflow_cm = train.distance_on_track - tile_length_cm
+            old_pos = train.current_pos
             self._advance_train_track(train, overflow_cm)
+            if train.current_pos == old_pos:
+                break
+            tile_length_cm = self.network._get_tile_length_cm(*train.current_pos)
+            hops += 1
+
+        # Recalculate full TrainPosition (end_b, occupied_tiles, occupied_blocks)
+        # This keeps the TrainPosition in sync as the train moves
+        if train.position:
+            self.network.recalculate_train_position(train)
 
     def _advance_train_track(self, train: Train, overflow_cm: float = 0.0) -> None:
         if not train.current_pos:

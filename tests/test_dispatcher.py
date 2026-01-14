@@ -148,8 +148,8 @@ def train():
         priority=5,
     )
     train.consist = [
-        TrainCar(car_id="CAR1", car_type="LOCOMOTIVE", length=20.0, mass=80000),
-        TrainCar(car_id="CAR2", car_type="PASSENGER", length=25.0, mass=40000),
+        TrainCar(car_id="CAR1", car_type="LOCOMOTIVE", length=20.0),
+        TrainCar(car_id="CAR2", car_type="PASSENGER", length=25.0),
     ]
     return train
 

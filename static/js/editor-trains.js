@@ -33,7 +33,7 @@ class TrainEditorHandler {
                 ${renderHeaderId(trainId, '#8257e5')}
                 ${renderStatusBadge('Status', train.state || 'off', statusClass)}
                 ${renderReadOnlyValue('Position', 
-                    train.position ? `(${train.position.x}, ${train.position.y})` : 'Unknown', 
+                    train.position_legacy ? `(${train.position_legacy.x}, ${train.position_legacy.y})` : 'Unknown', 
                     'text-info', true
                 )}
                 ${renderReadOnlyValue('Direction', train.direction || 'EAST', 'font-bold text-station')}
@@ -236,7 +236,12 @@ class TrainEditorHandler {
     renderTrainListItem(train) {
         const state = train.state || 'off';
         const stateColor = state === 'running_moving' ? '#04d361' : (state === 'off' ? '#e83f5b' : '#ffd93d');
-        const position = train.position || train.current_pos || { x: 0, y: 0 };
+        // Get head position from new TrainPosition format
+        let position = { x: 0, y: 0 };
+        if (train.position && train.position.end_a) {
+            const headEnd = train.position.leading_end === 'a' ? train.position.end_a : train.position.end_b;
+            position = { x: headEnd.tile[0], y: headEnd.tile[1] };
+        }
 
         return `
             <div class="train-item" data-train-id="${train.id}">
@@ -442,7 +447,7 @@ class TrainEditorHandler {
                 
                 <div class="property-item">
                     <label class="property-label">Position</label>
-                    <div class="value-display text-info">${train.position ? `(${train.position.x}, ${train.position.y})` : 'Unknown'}</div>
+                    <div class="value-display text-info">${train.position && train.position.end_a ? `(${train.position.leading_end === 'a' ? train.position.end_a.tile[0] : train.position.end_b.tile[0]}, ${train.position.leading_end === 'a' ? train.position.end_a.tile[1] : train.position.end_b.tile[1]})` : 'Unknown'}</div>
                 </div>
                 
                 <div class="property-item">
@@ -762,8 +767,8 @@ class TrainEditorHandler {
         }
 
         const positionEl = panel.querySelector('.property-item .value-display.text-info');
-        if (positionEl && train.position) {
-            positionEl.textContent = `(${train.position.x}, ${train.position.y})`;
+        if (positionEl && train.position_legacy) {
+            positionEl.textContent = `(${train.position_legacy.x}, ${train.position_legacy.y})`;
         }
 
         const directionEl = panel.querySelector('.property-item .value-display.text-station');

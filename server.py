@@ -18,6 +18,7 @@ from track import (
 )
 from train import Train, TrainSchedule, ScheduleStop, TrainCar
 from train_route import Route, Waypoint, TimingMode, RouteMode
+from path_utils import assign_path_to_train_with_prepend, assign_complete_path_to_train
 from enums import (
     Direction,
     TrackType,
@@ -205,27 +206,9 @@ autosave_thread.start()
 
 
 def _convert_path_tiles_to_train_path(tiles):
-    result = []
-    for i, tile in enumerate(tiles):
-        if i + 1 < len(tiles):
-            next_tile = tiles[i + 1]
-            dx = next_tile[0] - tile[0]
-            dy = next_tile[1] - tile[1]
+    from path_utils import convert_tiles_to_train_path
 
-            if dy > 0:
-                direction = Direction.NORTH
-            elif dy < 0:
-                direction = Direction.SOUTH
-            elif dx > 0:
-                direction = Direction.EAST
-            else:
-                direction = Direction.WEST
-        else:
-            direction = Direction.EAST
-
-        result.append((tile[0], tile[1], direction))
-
-    return result
+    return convert_tiles_to_train_path(tiles)
 
 
 def _sort_block_positions(positions, network):
@@ -1665,7 +1648,6 @@ def create_train():
         car_id=f"{train_id}_loco",
         car_type="LOCOMOTIVE",
         length=length_meters,
-        mass=100000.0,  # default mass
         max_speed=data.get("max_speed", 100.0),
     )
 
@@ -2622,10 +2604,13 @@ def create_path():
                 network.update_signals_from_blocks()
                 if train_id and train_id in network.trains:
                     train = network.trains[train_id]
-                    train.current_path = _convert_path_tiles_to_train_path(
-                        result.path.path_tiles
+                    raw_path = _convert_path_tiles_to_train_path(result.path.path_tiles)
+                    success, error = assign_complete_path_to_train(
+                        network, train, raw_path
                     )
-                    train.path_index = 0
+                    if not success:
+                        train.current_path = raw_path
+                        train.path_index = 0
                     train.assigned_path_id = result.path.path_id
         return jsonify(result.to_dict()), 200 if result.success else 400
     except Exception as e:
@@ -3135,6 +3120,248 @@ def set_scale():
             return jsonify({"scale": get_model_scale(), "status": "success"})
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
+
+
+# =============================================================================
+# Switch Configuration API
+# =============================================================================
+
+
+@app.route("/api/switches", methods=["GET"])
+def get_switches():
+    """Get all switch configurations."""
+    return jsonify([s.to_dict() for s in network.switches.values()])
+
+
+@app.route("/api/switches/<switch_id>", methods=["GET"])
+def get_switch(switch_id: str):
+    """Get specific switch configuration."""
+    switch = network.get_switch(switch_id)
+    if not switch:
+        return jsonify({"error": "Switch not found"}), 404
+    return jsonify(switch.to_dict())
+
+
+@app.route("/api/tracks/<int:x>/<int:y>/switch", methods=["POST"])
+def create_switch_at_track(x: int, y: int):
+    """
+    Create a switch configuration for a track tile.
+
+    User requirement: Auto-created when switch track is placed.
+    This endpoint is called automatically by the frontend.
+    """
+    try:
+        track = network.get_track(x, y)
+        if not track:
+            return jsonify({"error": "No track at position"}), 404
+        if not track.is_switch:
+            return jsonify({"error": "Track is not a switch"}), 400
+
+        # Check if switch already exists
+        existing = network.get_switch_at(x, y)
+        if existing:
+            # Return existing switch (idempotent)
+            return jsonify(existing.to_dict()), 200
+
+        # Generate switch ID
+        switch_id = f"SW_{x}_{y}"
+
+        from switch import Switch
+
+        data = request.json if request.json else {}
+
+        # User requirement: Default to 0.0 cm for both branches
+        switch = Switch(
+            switch_id=switch_id,
+            x=x,
+            y=y,
+            main_length_cm=data.get("main_length_cm", 0.0),
+            diverge_length_cm=data.get("diverge_length_cm", 0.0),
+            main_radius_cm=data.get("main_radius_cm"),
+            diverge_radius_cm=data.get("diverge_radius_cm"),
+            name=data.get("name", ""),
+            switch_type=data.get("switch_type", "standard"),
+            notes=data.get("notes", ""),
+        )
+
+        network.add_switch(switch)
+
+        return jsonify(switch.to_dict()), 201
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/switches/<switch_id>", methods=["PUT"])
+def update_switch(switch_id: str):
+    """Update switch configuration."""
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        switch = network.update_switch(switch_id, **data)
+        if not switch:
+            return jsonify({"error": "Switch not found"}), 404
+
+        return jsonify(switch.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/switches/<switch_id>", methods=["DELETE"])
+def delete_switch(switch_id: str):
+    """Remove switch configuration."""
+    try:
+        success = network.remove_switch(switch_id)
+        if not success:
+            return jsonify({"error": "Switch not found"}), 404
+
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/switches/<switch_id>/state", methods=["PUT"])
+def change_switch_state(switch_id: str):
+    """
+    Change switch state (MAIN=0, DIVERGE=1).
+
+    Fails with 409 Conflict if switch is locked by a path.
+    Use lock field to check if switch is locked before calling.
+
+    Request body:
+        {"state": 0 or 1}
+
+    Returns:
+        200: {"success": true, "message": "..."}
+        404: {"error": "Switch not found"}
+        409: {"error": "Switch locked by path ..."}
+        400: {"error": "Invalid state value"}
+    """
+    try:
+        data = request.json
+        if not data or "state" not in data:
+            return jsonify({"error": "Missing 'state' in request body"}), 400
+
+        new_state = data["state"]
+        if new_state not in (0, 1):
+            return jsonify(
+                {"error": "Invalid state value. Must be 0 (MAIN) or 1 (DIVERGE)"}
+            ), 400
+
+        switch = network.switches.get(switch_id)
+        if not switch:
+            return jsonify({"error": f"Switch {switch_id} not found"}), 404
+
+        # Use request_state_change which checks lock status
+        success, message = switch.request_state_change(new_state, network)
+
+        if success:
+            return jsonify(
+                {"success": True, "message": message, "switch": switch.to_dict()}
+            )
+        else:
+            # Switch is locked - return 409 Conflict
+            return jsonify({"error": message}), 409
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/switches/<switch_id>/lock", methods=["POST"])
+def lock_switch(switch_id: str):
+    """
+    Lock a switch for a path.
+
+    Request body:
+        {"path_id": "PATH_123", "state": 0 or 1}
+
+    Returns:
+        200: {"success": true, "switch": {...}}
+        404: {"error": "Switch not found"}
+        409: {"error": "Switch already locked by different path"}
+    """
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        path_id = data.get("path_id")
+        state = data.get("state")
+
+        if not path_id:
+            return jsonify({"error": "Missing 'path_id' in request body"}), 400
+        if state not in (0, 1):
+            return jsonify(
+                {"error": "Invalid state value. Must be 0 (MAIN) or 1 (DIVERGE)"}
+            ), 400
+
+        switch = network.switches.get(switch_id)
+        if not switch:
+            return jsonify({"error": f"Switch {switch_id} not found"}), 404
+
+        # First change state, then lock
+        track = network.get_track(switch.x, switch.y)
+        if track:
+            track.set_switch_state(state)
+
+        success = switch.lock(path_id, state)
+
+        if success:
+            return jsonify({"success": True, "switch": switch.to_dict()})
+        else:
+            return jsonify(
+                {"error": f"Switch already locked by path {switch.locked_by_path}"}
+            ), 409
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/switches/<switch_id>/unlock", methods=["POST"])
+def unlock_switch(switch_id: str):
+    """
+    Unlock a switch.
+
+    Request body:
+        {"path_id": "PATH_123"}
+
+    Returns:
+        200: {"success": true, "switch": {...}}
+        404: {"error": "Switch not found"}
+        403: {"error": "Switch not locked by this path"}
+    """
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        path_id = data.get("path_id")
+        if not path_id:
+            return jsonify({"error": "Missing 'path_id' in request body"}), 400
+
+        switch = network.switches.get(switch_id)
+        if not switch:
+            return jsonify({"error": f"Switch {switch_id} not found"}), 404
+
+        success = switch.unlock(path_id)
+
+        if success:
+            return jsonify({"success": True, "switch": switch.to_dict()})
+        else:
+            if switch.is_locked():
+                return jsonify(
+                    {
+                        "error": f"Switch locked by different path: {switch.locked_by_path}"
+                    }
+                ), 403
+            else:
+                return jsonify({"error": "Switch is not locked"}), 400
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":

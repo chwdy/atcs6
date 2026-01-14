@@ -10,6 +10,50 @@ class RendererDebugHandler {
     gridToScreenX(x, y) { return this.renderer.gridToScreenX(x, y); }
     gridToScreenY(x, y) { return this.renderer.gridToScreenY(x, y); }
 
+    /**
+     * Get possible exit edges for a track given an entry edge.
+     * Mirrors the backend TrackSegment.get_exits() logic.
+     */
+    getTrackExits(track, entryEdge) {
+        if (!track || !entryEdge) return [];
+        
+        const bits = track.track_bits || 0;
+        const TRACK_NS = 1, TRACK_EW = 2, TRACK_NE = 4, TRACK_NW = 8, TRACK_SE = 16, TRACK_SW = 32;
+        
+        const exits = [];
+        
+        if (bits & TRACK_NS) {
+            if (entryEdge === 'N') exits.push('S');
+            if (entryEdge === 'S') exits.push('N');
+        }
+        if (bits & TRACK_EW) {
+            if (entryEdge === 'E') exits.push('W');
+            if (entryEdge === 'W') exits.push('E');
+        }
+        if (bits & TRACK_NE) {
+            if (entryEdge === 'N') exits.push('E');
+            if (entryEdge === 'E') exits.push('N');
+        }
+        if (bits & TRACK_NW) {
+            if (entryEdge === 'N') exits.push('W');
+            if (entryEdge === 'W') exits.push('N');
+        }
+        if (bits & TRACK_SE) {
+            if (entryEdge === 'S') exits.push('E');
+            if (entryEdge === 'E') exits.push('S');
+        }
+        if (bits & TRACK_SW) {
+            if (entryEdge === 'S') exits.push('W');
+            if (entryEdge === 'W') exits.push('S');
+        }
+        
+        if (track.is_switch && track.switch_state !== undefined && exits.length > 1) {
+            return [exits[track.switch_state] || exits[0]];
+        }
+        
+        return exits;
+    }
+
     drawSelection(gridX, gridY) {
         this.ctx.save();
 
@@ -229,6 +273,81 @@ class RendererDebugHandler {
         this.ctx.fillText('W', screenX - quarterTile - 8, screenY - quarterTile - 8);
 
         this.ctx.restore();
+    }
+
+    drawTrainPathDebug(trains) {
+        const showTrainPathElement = document.getElementById('debug-show-train-path');
+        if (!showTrainPathElement || !showTrainPathElement.checked) return;
+
+        for (const train of trains) {
+            // Use new TrainPosition format
+            if (!train.position || !train.position.end_a) continue;
+
+            const headEnd = train.position.leading_end === 'a' ? train.position.end_a : train.position.end_b;
+            const x = headEnd.tile[0];
+            const y = headEnd.tile[1];
+            const entry_edge = headEnd.entry_edge;
+            if (!entry_edge) continue;
+
+            // Get track to find exit edge
+            const tracks = this.currentNetwork?.tracks || [];
+            const track = tracks.find(t => t.x === x && t.y === y);
+            if (!track) continue;
+            
+            const exits = this.getTrackExits(track, entry_edge);
+            const exit_edge = exits && exits.length > 0 ? exits[0] : null;
+            if (!exit_edge) continue;
+            
+            const tileLengthCm = track?.tile_length_cm || 250.0;
+            const distance = Math.min(1.0, Math.max(0.0, headEnd.distance_cm / tileLengthCm));
+
+            const screenX = this.gridToScreenX(x, y);
+            const screenY = this.gridToScreenY(x, y);
+            const tileSize = this.gridSize * this.scale;
+            const half = tileSize / 2;
+
+            const edgePoints = {
+                'N': { x: half / 2, y: -half / 2 },
+                'E': { x: half / 2, y: half / 2 },
+                'S': { x: -half / 2, y: half / 2 },
+                'W': { x: -half / 2, y: -half / 2 }
+            };
+
+            const startPt = edgePoints[entry_edge];
+            const endPt = edgePoints[exit_edge];
+
+            if (startPt && endPt) {
+                this.ctx.save();
+                this.ctx.strokeStyle = '#ff00ff';
+                this.ctx.lineWidth = 2 * this.scale;
+                this.ctx.setLineDash([3, 3]);
+                this.ctx.beginPath();
+                this.ctx.moveTo(screenX + startPt.x, screenY + startPt.y);
+                this.ctx.lineTo(screenX + endPt.x, screenY + endPt.y);
+                this.ctx.stroke();
+
+                this.ctx.fillStyle = '#00ff00';
+                this.ctx.beginPath();
+                this.ctx.arc(screenX + startPt.x, screenY + startPt.y, 4 * this.scale, 0, Math.PI * 2);
+                this.ctx.fill();
+
+                this.ctx.fillStyle = '#ff0000';
+                this.ctx.beginPath();
+                this.ctx.arc(screenX + endPt.x, screenY + endPt.y, 4 * this.scale, 0, Math.PI * 2);
+                this.ctx.fill();
+
+                this.ctx.restore();
+
+                this.ctx.save();
+                this.ctx.font = `${8 * this.scale}px monospace`;
+                this.ctx.fillStyle = '#ffffff';
+                this.ctx.textAlign = 'left';
+                this.ctx.textBaseline = 'top';
+                const debugText = `${entry_edge}→${exit_edge} d:${(distance * 100).toFixed(0)}%`;
+                this.ctx.fillText(debugText, screenX + half * 0.6, screenY - half * 0.8);
+                this.ctx.restore();
+            }
+        }
     }
 
     drawDebugOverlays(tracks) {

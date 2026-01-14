@@ -944,7 +944,148 @@ def get_effective_direction(self) -> Direction:
         return self.facing_direction
     else:
         return OPPOSITE_DIRECTIONS[self.facing_direction]
+```
 
+### 8.7.1 TrainPosition System (New)
+
+The `TrainPosition` dataclass tracks both ends of a train independently for accurate visualization and multi-tile occupancy:
+
+```python
+@dataclass
+class TrainPosition:
+    """
+    Precise position tracking for both ends of a train.
+    
+    Design Goals:
+    - Track head (end_a) and tail (end_b) independently
+    - Support trains spanning multiple tiles
+    - Enable accurate visualization on each occupied tile
+    - Handle reversal by swapping leading_end
+    """
+    # End A position (typically the head when moving forward)
+    end_a_tile: Tuple[int, int]        # (x, y) tile coordinates
+    end_a_distance_cm: float           # Distance from entry edge (cm)
+    end_a_entry_edge: str              # Edge where this end entered ('N','E','S','W')
+    
+    # End B position (typically the tail when moving forward)
+    end_b_tile: Tuple[int, int]
+    end_b_distance_cm: float
+    end_b_entry_edge: str
+    
+    # Which end is leading (swaps on reverse)
+    leading_end: str = "a"             # "a" or "b"
+    
+    # Direction train is facing
+    facing_direction: Direction = None
+    
+    # Computed from position
+    occupied_tiles: List[Tuple[int, int]] = None
+    occupied_blocks: List[str] = None
+```
+
+**Key Concepts:**
+
+1. **Head/Tail vs End A/B**: 
+   - `head_tile` and `tail_tile` are properties that delegate to the appropriate end based on `leading_end`
+   - When train reverses, `leading_end` swaps from "a" to "b" - the physical positions don't change
+
+2. **Entry Edge**:
+   - Each end has an `entry_edge` indicating which edge of the tile it entered from
+   - Used to calculate exit edge and draw the train correctly along track geometry
+
+3. **Distance from Entry**:
+   - `distance_cm` is measured from the entry edge of that tile
+   - For head: typically near tile_length (at exit edge)
+   - For tail: distance from entry edge to where tail stops
+
+**Backward Compatibility:**
+
+The Train class provides legacy properties that auto-sync with TrainPosition:
+
+```python
+@property
+def current_pos(self) -> Optional[Tuple[int, int]]:
+    """Get current head position (tile coordinates)."""
+    if self.position:
+        return self.position.head_tile
+    return self._current_pos
+
+@current_pos.setter
+def current_pos(self, value: Optional[Tuple[int, int]]):
+    """Set current position (updates both legacy and new position system)."""
+    self._current_pos = value
+    if self.position and value:
+        self.position.end_a_tile = value
+```
+
+**Frontend Data Format:**
+
+The `to_dict()` method outputs two position formats:
+
+```python
+{
+    # New format - full TrainPosition data
+    "position": {
+        "end_a": {"tile": [0, 0], "distance_cm": 50.0, "entry_edge": "W"},
+        "end_b": {"tile": [0, 0], "distance_cm": 10.0, "entry_edge": "W"},
+        "leading_end": "a",
+        "facing_direction": "EAST",
+        "occupied_tiles": [[0, 0]],
+        "occupied_blocks": ["BLOCK_1"]
+    },
+    
+    # Legacy format - for backward compatible frontend
+    "position_legacy": {
+        "x": 0, "y": 0,
+        "distance": 1.0,  # 0-1 ratio for frontend interpolation
+        "tile_length_cm": 50.0,
+        "entry_edge": "W",
+        "exit_edge": "E"
+    },
+    
+    # Rich tile data for rendering train on each occupied tile
+    "occupied_tiles_rich": [
+        {
+            "tile": [0, 0],
+            "block_id": "BLOCK_1",
+            "segment_start_cm": 10.0,
+            "segment_end_cm": 50.0,
+            "tile_length_cm": 50.0
+        }
+    ]
+}
+```
+
+**Usage in place_train:**
+
+```python
+def place_train(self, train, tile_x, tile_y, direction):
+    """Place train with full TrainPosition tracking."""
+    # Calculate where tail ends up by tracing backward
+    (occupied_tiles, tail_tile, tail_distance, tail_entry) = \
+        self._calculate_occupied_tiles(
+            head_tile=(tile_x, tile_y),
+            head_distance_cm=tile_length_cm,  # Head at exit edge
+            head_entry_edge=entry_edge,
+            train_length_cm=train.length_cm
+        )
+    
+    # Create TrainPosition with both ends tracked
+    train.position = TrainPosition(
+        end_a_tile=(tile_x, tile_y),
+        end_a_distance_cm=tile_length_cm,
+        end_a_entry_edge=entry_edge,
+        end_b_tile=tail_tile,
+        end_b_distance_cm=tail_distance,
+        end_b_entry_edge=tail_entry,
+        leading_end="a",
+        facing_direction=direction,
+        occupied_tiles=occupied_tiles,
+        occupied_blocks=occupied_blocks
+    )
+```
+
+```python
 def get_occupied_blocks(self) -> List[str]:
     """
     Get all blocks this train occupies based on its length.
@@ -1011,13 +1152,23 @@ def to_dict(self, network=None) -> dict:
         "manual_target_speed": self.manual_target_speed,
     }
     
-    # Calculate distance ratio (0.0-1.0) for frontend
+    # New TrainPosition format (contains both ends)
+    if self.position:
+        data["position"] = self.position.to_dict()
+        if network and hasattr(network, "get_occupied_tiles_rich"):
+            data["occupied_tiles_rich"] = network.get_occupied_tiles_rich(self)
+    
+    # Legacy position format (for backward compatible frontends)
     if self.current_pos:
-        tile_length_cm = network._get_tile_length_cm(*self.current_pos) if network else 1000.0
-        data["position"] = {
+        tile_length_cm = network._get_tile_length_cm(*self.current_pos) if network else 0.0
+        distance_ratio = self.distance_on_track / tile_length_cm if tile_length_cm > 0 else 0.0
+        data["position_legacy"] = {
             "x": self.current_pos[0],
             "y": self.current_pos[1],
-            "distance": self.distance_on_track / tile_length_cm
+            "distance": distance_ratio,  # 0.0-1.0 for frontend interpolation
+            "tile_length_cm": tile_length_cm,
+            "entry_edge": ...,  # Calculated from direction
+            "exit_edge": ...
         }
         
     return data

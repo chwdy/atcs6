@@ -169,7 +169,23 @@
                                 <input type="checkbox" id="debug-show-signals" />
                                 <span>Show Signal Details</span>
                             </label>
+                            <label>
+                                <input type="checkbox" id="debug-show-train-path" />
+                                <span>Show Train Path (entry→exit)</span>
+                            </label>
+                            <label>
+                                <input type="checkbox" id="debug-show-train-position" checked />
+                                <span>Show Train Position Details</span>
+                            </label>
 
+                        </div>
+                        
+                        <!-- Train Position Debug Panel (visible when train selected) -->
+                        <div id="train-debug-panel" class="train-debug-panel hidden">
+                            <h4 class="debug-section-header">🚂 Train Position Debug</h4>
+                            <div id="train-debug-content">
+                                <p class="text-muted text-xs">Select a train to see position details</p>
+                            </div>
                         </div>
                     </div>
 
@@ -282,6 +298,15 @@
     <div id="train-monitor-bar" class="train-monitor-bar hidden">
         <div class="train-monitor-header">
             <span class="train-monitor-title" id="train-monitor-title">Train Monitor</span>
+            
+            <div class="view-distance-controls">
+                <button class="view-dist-btn" data-distance="100">1m</button>
+                <button class="view-dist-btn" data-distance="500">5m</button>
+                <button class="view-dist-btn" data-distance="1000">10m</button>
+                <button class="view-dist-btn active" data-distance="0">All</button>
+            </div>
+            <button class="view-lookahead-btn" id="view-lookahead-btn" title="View raw lookahead data">📋</button>
+            
             <button class="train-monitor-close" id="train-monitor-close" title="Close">×</button>
         </div>
         <div class="train-monitor-content">

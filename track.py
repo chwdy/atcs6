@@ -182,6 +182,7 @@ class TrackSegment:
     )  # Max 2 signals per tile (one per direction)
     station_id: Optional[str] = None  # Reference to Station.station_id
     block_section_id: Optional[str] = None
+    switch_id: Optional[str] = None  # Reference to Switch.switch_id (if is_switch)
 
     # === OTHER PROPERTIES ===
     length: float = 1.0
@@ -628,6 +629,38 @@ class TrackSegment:
         exits = self.get_exits(entry_edge, use_switch_state=True)
         return exits[0] if exits else None
 
+    def get_entry_for_exit(
+        self, exit_edge: str, use_switch_state: bool = True
+    ) -> Optional[str]:
+        """Get the entry edge for a given exit edge (inverse of get_exits).
+
+        For switches, this respects the switch state: given the exit edge,
+        determine which entry edge would lead to that exit through the active path.
+
+        This is used for backward tracing: if a train exited through edge X,
+        which edge did it enter from?
+
+        Args:
+            exit_edge: The edge the train exited through (N/E/S/W)
+            use_switch_state: If True, only consider active path based on switch state
+
+        Returns:
+            Entry edge (N/E/S/W) or None if no valid path exists
+        """
+        exit_norm = _normalize_edge(exit_edge)
+        if not exit_norm:
+            return None
+
+        # Try each possible entry edge and see which one has exit_norm as its exit
+        for candidate_entry in "NESW":
+            if candidate_entry == exit_norm:
+                continue  # Can't enter and exit same edge
+            exits = self.get_exits(candidate_entry, use_switch_state=use_switch_state)
+            if exit_norm in exits:
+                return candidate_entry
+
+        return None
+
     # === Traversal helpers ===
     def get_traversal_group(
         self, entry_direction: Direction, exit_direction: Direction
@@ -765,6 +798,7 @@ class TrackSegment:
             "signal_ids": self.signal_ids,
             "station_id": self.station_id,
             "block_section_id": self.block_section_id,
+            "switch_id": self.switch_id,  # NEW: Reference to Switch entity
             "length": self.length,
             # Path locking
             "locked_by_path": self.locked_by_path,
@@ -798,6 +832,7 @@ class TrackSegment:
         segment.signal_ids = data.get("signal_ids", [])
         segment.station_id = data.get("station_id")
         segment.block_section_id = data.get("block_section_id")
+        segment.switch_id = data.get("switch_id")  # NEW: Load switch reference
         segment.length = data.get("length", 1.0)
         # Path locking
         segment.locked_by_path = data.get("locked_by_path")

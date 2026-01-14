@@ -4,12 +4,146 @@ Train and Schedule Management
 Definition:
 This module defines train entities and their scheduling system. It includes train properties,
 operational status, and time-based scheduling with stops and routing information.
+
+Train Position System:
+- TrainPosition tracks both ends of train with precise tile + distance_cm
+- end_a and end_b are independent physical endpoints
+- leading_end indicates which end is currently "front" (swaps on reverse)
+- occupied_tiles lists all tiles the train covers from end_a to end_b
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, Literal
+from typing import List, Optional, Tuple, Literal, Dict, Any
 from datetime import datetime
 from enums import TrainState, Direction, OPPOSITE_DIRECTIONS
+
+
+@dataclass
+class TrainPosition:
+    """
+    Complete train position tracking with both ends and occupied tiles.
+    
+    Both ends (end_a and end_b) have independent, precise positions.
+    When train reverses, positions don't move - only leading_end swaps.
+    
+    Attributes:
+        end_a_tile: One end of train (x, y) coordinates
+        end_a_distance_cm: Distance from entry edge to end_a on that tile
+        end_a_entry_edge: Which edge end_a entered from (N/E/S/W)
+        end_b_tile: Other end of train (x, y) coordinates  
+        end_b_distance_cm: Distance from entry edge to end_b on that tile
+        end_b_entry_edge: Which edge end_b entered from (N/E/S/W)
+        leading_end: Which end is currently front ("a" or "b")
+        facing_direction: Direction the train is facing
+        occupied_tiles: Ordered list of tiles from end_a to end_b
+        occupied_blocks: List of block IDs the train occupies
+    """
+    
+    # End A position (precise)
+    end_a_tile: Tuple[int, int]
+    end_a_distance_cm: float
+    end_a_entry_edge: str
+    
+    # End B position (precise)
+    end_b_tile: Tuple[int, int]
+    end_b_distance_cm: float
+    end_b_entry_edge: str
+    
+    # Which end is leading (front of travel direction)
+    leading_end: str = "a"  # "a" or "b"
+    
+    # Direction train is facing
+    facing_direction: Optional[Direction] = None
+    
+    # Tiles occupied (ordered from end_a to end_b)
+    occupied_tiles: List[Tuple[int, int]] = field(default_factory=list)
+    
+    # Blocks occupied
+    occupied_blocks: List[str] = field(default_factory=list)
+    
+    @property
+    def head_tile(self) -> Tuple[int, int]:
+        """Get tile of leading end (head)."""
+        return self.end_a_tile if self.leading_end == "a" else self.end_b_tile
+    
+    @property
+    def head_distance_cm(self) -> float:
+        """Get distance on tile for leading end (head)."""
+        return self.end_a_distance_cm if self.leading_end == "a" else self.end_b_distance_cm
+    
+    @property
+    def head_entry_edge(self) -> str:
+        """Get entry edge for leading end (head)."""
+        return self.end_a_entry_edge if self.leading_end == "a" else self.end_b_entry_edge
+    
+    @property
+    def tail_tile(self) -> Tuple[int, int]:
+        """Get tile of trailing end (tail)."""
+        return self.end_b_tile if self.leading_end == "a" else self.end_a_tile
+    
+    @property
+    def tail_distance_cm(self) -> float:
+        """Get distance on tile for trailing end (tail)."""
+        return self.end_b_distance_cm if self.leading_end == "a" else self.end_a_distance_cm
+    
+    @property
+    def tail_entry_edge(self) -> str:
+        """Get entry edge for trailing end (tail)."""
+        return self.end_b_entry_edge if self.leading_end == "a" else self.end_a_entry_edge
+    
+    def reverse(self) -> None:
+        """Swap leading end (train reverses direction)."""
+        self.leading_end = "b" if self.leading_end == "a" else "a"
+        if self.facing_direction:
+            self.facing_direction = self.facing_direction.opposite()
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "end_a": {
+                "tile": list(self.end_a_tile),
+                "distance_cm": self.end_a_distance_cm,
+                "entry_edge": self.end_a_entry_edge,
+            },
+            "end_b": {
+                "tile": list(self.end_b_tile),
+                "distance_cm": self.end_b_distance_cm,
+                "entry_edge": self.end_b_entry_edge,
+            },
+            "leading_end": self.leading_end,
+            "facing_direction": self.facing_direction.name if self.facing_direction else None,
+            "occupied_tiles": [list(t) for t in self.occupied_tiles],
+            "occupied_blocks": self.occupied_blocks.copy(),
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> Optional["TrainPosition"]:
+        """Reconstruct from dictionary. Returns None if data is invalid/incompatible."""
+        try:
+            if not isinstance(data, dict):
+                return None
+                
+            end_a = data.get("end_a", {})
+            end_b = data.get("end_b", {})
+            
+            facing_dir = None
+            if data.get("facing_direction"):
+                facing_dir = Direction[data["facing_direction"]]
+            
+            return cls(
+                end_a_tile=tuple(end_a.get("tile", [0, 0])),
+                end_a_distance_cm=float(end_a.get("distance_cm", 0.0)),
+                end_a_entry_edge=end_a.get("entry_edge", "W"),
+                end_b_tile=tuple(end_b.get("tile", [0, 0])),
+                end_b_distance_cm=float(end_b.get("distance_cm", 0.0)),
+                end_b_entry_edge=end_b.get("entry_edge", "W"),
+                leading_end=data.get("leading_end", "a"),
+                facing_direction=facing_dir,
+                occupied_tiles=[tuple(t) for t in data.get("occupied_tiles", [])],
+                occupied_blocks=data.get("occupied_blocks", []),
+            )
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None  # Incompatible format - discard train position
 
 
 @dataclass
@@ -92,8 +226,7 @@ class TrainCar:
 
     car_id: str
     car_type: str  # "LOCOMOTIVE", "PASSENGER", "FREIGHT"
-    length: float  # Length in meters
-    mass: float  # Mass in kg
+    length: float  # Length in cm
     max_speed: float = 120.0  # Max speed for this car
 
 
@@ -105,6 +238,10 @@ class Train:
     Represents a complete train with its current position, movement capabilities,
     operational status, and assigned schedule.
 
+    Position System:
+    - position: TrainPosition with both ends tracked precisely
+    - current_pos, distance_on_track: Legacy properties for backward compatibility
+    
     New in Phase 1:
     - model: Train model name (e.g., "BR 218", "Shinkansen E5")
     - min_radius_cm: Minimum curve radius train can navigate
@@ -138,10 +275,16 @@ class Train:
     energy_consumed: float = 0.0  # kWh
     efficiency: float = 0.85  # Motor efficiency
 
-    # Position and movement
-    current_pos: Optional[Tuple[int, int]] = None
-    current_direction: Optional[Direction] = None
-    distance_on_track: float = 0.0  # Distance from entry edge to train head (cm)
+    # ========================================================================
+    # NEW POSITION SYSTEM - TrainPosition with both ends tracked
+    # ========================================================================
+    position: Optional[TrainPosition] = None
+
+    # Legacy position fields (deprecated - use position property)
+    # These are kept for backward compatibility during migration
+    _current_pos: Optional[Tuple[int, int]] = field(default=None, repr=False)
+    _current_direction: Optional[Direction] = field(default=None, repr=False)
+    _distance_on_track: float = field(default=0.0, repr=False)
     occupied_tracks: List[Tuple[int, int]] = field(default_factory=list)
 
     # Schedule management
@@ -194,9 +337,61 @@ class Train:
         return total_meters / 100.0 if self.consist else 1.0
 
     @property
-    def total_mass(self) -> float:
-        """Total mass of train in kg"""
-        return sum(car.mass for car in self.consist) if self.consist else 100000.0
+    def length_cm(self) -> float:
+        """Total length of train in centimeters."""
+        return sum(car.length for car in self.consist) if self.consist else 50.0
+
+    # ========================================================================
+    # Backward Compatibility Properties for Position
+    # These delegate to TrainPosition when available, fall back to legacy fields
+    # ========================================================================
+
+    @property
+    def current_pos(self) -> Optional[Tuple[int, int]]:
+        """Get current head position (tile coordinates)."""
+        if self.position:
+            return self.position.head_tile
+        return self._current_pos
+
+    @current_pos.setter
+    def current_pos(self, value: Optional[Tuple[int, int]]):
+        """Set current position (updates both legacy and new position system)."""
+        self._current_pos = value
+        # Also update TrainPosition if it exists
+        if self.position and value:
+            self.position.end_a_tile = value
+
+    @property
+    def current_direction(self) -> Optional[Direction]:
+        """Get current direction of travel."""
+        if self.position:
+            return self.position.facing_direction
+        return self._current_direction
+
+    @current_direction.setter
+    def current_direction(self, value: Optional[Direction]):
+        """Set current direction (updates both legacy and new position system)."""
+        self._current_direction = value
+        # Also update TrainPosition if it exists
+        if self.position and value:
+            self.position.facing_direction = value
+
+    @property
+    def distance_on_track(self) -> float:
+        """Get distance from entry edge to train head (cm)."""
+        if self.position:
+            return self.position.head_distance_cm
+        return self._distance_on_track
+
+    @distance_on_track.setter
+    def distance_on_track(self, value: float):
+        """Set distance on track (updates both legacy and new position system)."""
+        self._distance_on_track = value
+        # Also update TrainPosition if it exists
+        if self.position:
+            self.position.end_a_distance_cm = value
+
+    # Note: Mass-based calculations removed - using simplified physics model
 
     @property
     def braking_distance(self) -> float:
@@ -246,17 +441,16 @@ class Train:
 
         self.distance_on_track += dist_units
 
-        # Calculate energy consumption
-        # Power (W) = Force (N) * Velocity (m/s)
-        # Force = mass * acceleration + resistance
-        # Resistance approx = 0.002 * mass * g (rolling resistance) + air drag
-        mass = self.total_mass
+        # Calculate energy consumption (simplified model without mass)
+        # Power (W) = Resistance * Velocity + Acceleration force * Velocity
         g = 9.81
-        resistance = 0.002 * mass * g + 0.5 * 1.2 * 10 * speed_ms**2  # Simplified drag
+        # Simplified resistance model without mass
+        resistance = 100.0 + 0.5 * 1.2 * 10 * speed_ms**2  # Base resistance + air drag
 
         force = resistance
         if self.current_speed < target_speed:
-            force += mass * self.acceleration
+            # Add simplified acceleration force (without mass dependency)
+            force += 1000.0 * self.acceleration  # Constant force factor
 
         power_watts = force * speed_ms
         if power_watts < 0:
@@ -902,6 +1096,7 @@ class Train:
         data = {
             "id": self.train_id,
             "length": self.length,
+            "length_cm": self.length_cm,
             "speed": self.current_speed,
             "max_speed": self.max_speed,
             "occupied_tracks": self.occupied_tracks,
@@ -918,26 +1113,24 @@ class Train:
             "manual_target_speed": self.manual_target_speed,
             "wait_reason": self.wait_reason,
             "speed_limit_reason": self.speed_limit_reason,
+            # Path info for debug
+            "path_index": self.path_index,
+            "path_length": len(self.current_path) if self.current_path else 0,
+            "distance_on_track_cm": self.distance_on_track,
+            # Current path as list of tiles with direction
+            "current_path": [
+                {"x": x, "y": y, "dir": d.name if d else None}
+                for x, y, d in (self.current_path or [])
+            ],
         }
 
-        if self.current_pos:
-            from train_config import DEFAULT_TILE_LENGTH_CM
-
-            tile_length_cm = DEFAULT_TILE_LENGTH_CM
-            if network and hasattr(network, "_get_tile_length_cm"):
-                tile_length_cm = network._get_tile_length_cm(*self.current_pos)
-
-            distance_ratio = (
-                self.distance_on_track / tile_length_cm if tile_length_cm > 0 else 0.0
-            )
-            distance_ratio = max(0.0, min(1.0, distance_ratio))
-
-            data["position"] = {
-                "x": self.current_pos[0],
-                "y": self.current_pos[1],
-                "distance": distance_ratio,
-                "tile_length_cm": tile_length_cm,
-            }
+        # New position system (TrainPosition)
+        if self.position:
+            data["position"] = self.position.to_dict()
+            
+            # Also include rich tile data if network available
+            if network and hasattr(network, "get_occupied_tiles_rich"):
+                data["occupied_tiles_rich"] = network.get_occupied_tiles_rich(self)
 
         if self.current_direction:
             data["direction"] = self.current_direction.name
@@ -968,6 +1161,10 @@ class Train:
 
         Note: This reconstructs basic train state. Schedule and path
         will be None and need to be re-established if needed.
+        
+        Position handling:
+        - Uses TrainPosition format (requires 'end_a' in position dict)
+        - If position format is incompatible, train position is discarded
         """
         from enums import TrainState, Direction
 
@@ -977,20 +1174,18 @@ class Train:
             current_speed=data.get("speed", 0.0),
         )
 
-        # Position
-        if "position" in data:
-            from train_config import DEFAULT_TILE_LENGTH_CM
-
-            pos = data["position"]
-            train.current_pos = (pos.get("x", 0), pos.get("y", 0))
-            distance_ratio = pos.get("distance", 0.0)
-            tile_length_cm = pos.get("tile_length_cm", DEFAULT_TILE_LENGTH_CM)
-            train.distance_on_track = distance_ratio * tile_length_cm
+        # Use new TrainPosition format only
+        if "position" in data and isinstance(data["position"], dict):
+            pos_data = data["position"]
+            if "end_a" in pos_data:
+                # New TrainPosition format
+                train.position = TrainPosition.from_dict(pos_data)
+                # If parsing failed, position will be None (incompatible format)
 
         # Direction (current movement direction)
         if "direction" in data:
             try:
-                train.current_direction = Direction[data["direction"]]
+                train._current_direction = Direction[data["direction"]]
             except KeyError:
                 pass
 

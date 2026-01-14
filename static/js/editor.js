@@ -1799,9 +1799,23 @@ class Editor {
             <!-- Train Info Display (if train is at this tile) -->
             ${(() => {
                 const trainsAtTile = this.cachedNetwork && this.cachedNetwork.trains
-                    ? this.cachedNetwork.trains.filter(t => 
-                        t.position && t.position.x === track.x && t.position.y === track.y
-                    )
+                    ? this.cachedNetwork.trains.filter(t => {
+                        // Check new TrainPosition format: occupied_tiles array
+                        const pos = t.position;
+                        if (pos && pos.occupied_tiles) {
+                            return pos.occupied_tiles.some(tile => 
+                                tile[0] === track.x && tile[1] === track.y
+                            );
+                        }
+                        // Fallback: check head tile from end_a/end_b
+                        if (pos && pos.end_a && pos.end_b) {
+                            const headEnd = pos.leading_end === 'a' ? pos.end_a : pos.end_b;
+                            if (headEnd.tile) {
+                                return headEnd.tile[0] === track.x && headEnd.tile[1] === track.y;
+                            }
+                        }
+                        return false;
+                    })
                     : [];
                 if (trainsAtTile.length === 0) return '';
                 return `
@@ -1918,9 +1932,10 @@ class Editor {
     initTrainEditor(track) {
         // Find all trains at this tile
         const trainsAtTile = this.cachedNetwork && this.cachedNetwork.trains
-            ? this.cachedNetwork.trains.filter(t => 
-                t.position && t.position.x === track.x && t.position.y === track.y
-            )
+            ? this.cachedNetwork.trains.filter(t => {
+                const pos = t.position_legacy || t.position;
+                return pos && pos.x === track.x && pos.y === track.y;
+            })
             : [];
         
         if (trainsAtTile.length === 0) return;

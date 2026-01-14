@@ -31,6 +31,9 @@ from signal_validation import (
 )
 
 
+DEFAULT_TILE_LENGTH_CM = 50.0
+
+
 class RailwayNetwork:
     """
     Central railway network management system.
@@ -45,6 +48,7 @@ class RailwayNetwork:
         self.blocks: Dict[str, Block] = {}
         self.signals: Dict[str, Signal] = {}
         self.stations: Dict[str, Station] = {}
+        self.switches: Dict[str, "Switch"] = {}  # NEW: Switch entity management
         self.interlocking: InterlockingSystem = InterlockingSystem()
         self.schedules: Dict[str, TrainSchedule] = {}
 
@@ -1809,65 +1813,127 @@ class RailwayNetwork:
         train: Train,
         tile_x: int,
         tile_y: int,
-        direction: Direction,
+        direction: Optional[Direction] = None,
     ) -> Tuple[int, int, float]:
         """
         Place a train on a tile with proper positioning based on direction and length.
 
         Train placement rules:
-        1. Train head is placed at the EXIT edge of the tile (in direction of travel)
-        2. If train is longer than tile, check for space behind for the tail
-        3. If no space behind (end of line), push train forward so tail is at entry edge
+        1. Train HEAD (end_a) is always placed at the EXIT edge of the specified tile
+        2. distance_on_track = tile_length_cm (head at exit edge)
+        3. Train tail (end_b) extends backward - MUST fit on available track
+        4. Creates TrainPosition with both ends tracked precisely
+        5. Occupies all blocks the train covers
 
         Args:
             train: Train to place
             tile_x, tile_y: Target tile coordinates
-            direction: Direction the train will be heading
+            direction: Direction the train will be heading (random if None)
 
         Returns:
             Tuple of (final_tile_x, final_tile_y, distance_on_track in cm)
+
+        Raises:
+            ValueError: If no track at position, or train doesn't fit on available track
         """
+        from train import TrainPosition
+        import random
+
         track = self.get_track(tile_x, tile_y)
         if not track:
             raise ValueError(f"No track at ({tile_x}, {tile_y})")
 
+        # If no direction provided, pick one from available edges
+        if direction is None:
+            available_edges = list(track.edges)
+            if not available_edges:
+                raise ValueError(f"Track at ({tile_x}, {tile_y}) has no edges")
+            edge = random.choice(available_edges)
+            DIR_FROM_EDGE = {
+                "N": Direction.NORTH,
+                "E": Direction.EAST,
+                "S": Direction.SOUTH,
+                "W": Direction.WEST,
+            }
+            direction = DIR_FROM_EDGE[edge]
+
+        DIR_TO_EDGE = {"NORTH": "N", "SOUTH": "S", "EAST": "E", "WEST": "W"}
+        OPPOSITE_EDGE = {"N": "S", "S": "N", "E": "W", "W": "E"}
+        exit_edge = DIR_TO_EDGE.get(direction.name, "E")
+
+        if exit_edge not in track.edges:
+            raise ValueError(
+                f"Track at ({tile_x}, {tile_y}) does not support direction {direction.name}"
+            )
+
+        neighbor_coords = self._get_neighbor_coords(tile_x, tile_y, exit_edge)
+        neighbor = self.get_track(*neighbor_coords)
+        if not neighbor:
+            raise ValueError(
+                f"Cannot place train facing {direction.name}: no track at ({neighbor_coords[0]}, {neighbor_coords[1]}) "
+                f"to connect to"
+            )
+
         train_length_cm = self._get_train_length_cm(train)
         tile_length_cm = self._get_tile_length_cm(tile_x, tile_y)
 
-        if train_length_cm <= tile_length_cm:
-            train.current_pos = (tile_x, tile_y)
-            train.current_direction = direction
-            train.distance_on_track = tile_length_cm
-            return (tile_x, tile_y, tile_length_cm)
+        entry_edge = OPPOSITE_EDGE[exit_edge]
 
-        entry_edge = direction.opposite().name[0]
-        behind_x, behind_y = self._get_neighbor_coords(tile_x, tile_y, entry_edge)
-        behind_track = self.get_track(behind_x, behind_y)
+        # Head is at exit edge, so head_distance = tile_length
+        head_tile = (tile_x, tile_y)
+        head_distance_cm = tile_length_cm
+        head_entry_edge = entry_edge
 
-        if behind_track and self._is_connected(track, behind_track, entry_edge):
-            train.current_pos = (tile_x, tile_y)
-            train.current_direction = direction
-            train.distance_on_track = tile_length_cm
-            return (tile_x, tile_y, tile_length_cm)
+        # Calculate occupied tiles and tail position
+        # This will raise ValueError if train doesn't fit
+        (occupied_tiles, tail_tile, tail_distance_cm, tail_entry_edge) = (
+            self._calculate_occupied_tiles(
+                head_tile, head_distance_cm, head_entry_edge, train_length_cm
+            )
+        )
 
-        overflow_cm = train_length_cm - tile_length_cm
-        exit_edge = direction.name[0]
-        next_x, next_y = self._get_neighbor_coords(tile_x, tile_y, exit_edge)
-        next_track = self.get_track(next_x, next_y)
+        # Calculate occupied blocks from occupied tiles
+        occupied_blocks = []
+        seen_blocks = set()
+        for tile in occupied_tiles:
+            tile_track = self.get_track(*tile)
+            if tile_track and tile_track.block_section_id:
+                block_id = tile_track.block_section_id
+                if block_id not in seen_blocks:
+                    occupied_blocks.append(block_id)
+                    seen_blocks.add(block_id)
 
-        if next_track and self._is_connected(track, next_track, exit_edge):
-            next_tile_length_cm = self._get_tile_length_cm(next_x, next_y)
-            distance_cm = min(overflow_cm, next_tile_length_cm)
+        # Create TrainPosition
+        train.position = TrainPosition(
+            end_a_tile=head_tile,
+            end_a_distance_cm=head_distance_cm,
+            end_a_entry_edge=head_entry_edge,
+            end_b_tile=tail_tile,
+            end_b_distance_cm=tail_distance_cm,
+            end_b_entry_edge=tail_entry_edge,
+            leading_end="a",  # end_a is head
+            facing_direction=direction,
+            occupied_tiles=occupied_tiles,
+            occupied_blocks=occupied_blocks,
+        )
 
-            train.current_pos = (next_x, next_y)
-            train.current_direction = direction
-            train.distance_on_track = distance_cm
-            return (next_x, next_y, distance_cm)
+        # Also set legacy fields for backward compatibility
+        train._current_pos = head_tile
+        train._current_direction = direction
+        train._distance_on_track = head_distance_cm
+        train.occupied_tracks = occupied_tiles.copy()
+        train.facing_direction = direction
 
-        train.current_pos = (tile_x, tile_y)
-        train.current_direction = direction
-        train.distance_on_track = 0.0
-        return (tile_x, tile_y, 0.0)
+        # Occupy all blocks the train covers
+        if self.block_manager and occupied_blocks:
+            self.block_manager.occupy_blocks(occupied_blocks, train.train_id)
+        else:
+            for block_id in occupied_blocks:
+                block = self.blocks.get(block_id)
+                if block:
+                    block.occupy(train.train_id)
+
+        return (tile_x, tile_y, head_distance_cm)
 
     def _get_train_length_cm(self, train: Train) -> float:
         """Get train length in cm."""
@@ -1879,19 +1945,32 @@ class RailwayNetwork:
         return DEFAULT_TRAIN_LENGTH_CM
 
     def _get_tile_length_cm(self, x: int, y: int) -> float:
-        """Get physical length of a tile in cm."""
-        from train_config import DEFAULT_TILE_LENGTH_CM
+        """
+        Get physical length of a tile in cm.
 
+        Returns DEFAULT_TILE_LENGTH_CM if track is unconfigured.
+        """
         track = self.get_track(x, y)
         if not track:
             return DEFAULT_TILE_LENGTH_CM
 
+        if track.is_switch:
+            switch_config = (
+                self.get_switch_at(x, y) if hasattr(self, "get_switch_at") else None
+            )
+            if switch_config:
+                return switch_config.get_active_length(track.switch_state)
+            # Switches without entity should have 0 length by design
+            # Do NOT fall back to DEFAULT_TILE_LENGTH_CM
+            return 0.0
+
         if track.block_section_id:
             block = self.blocks.get(track.block_section_id)
-            if block and block.length_cm:
+            if block and block.length_cm > 0:
                 positions = self.get_block_positions(track.block_section_id)
                 tile_count = len(positions) if positions else 1
                 return block.length_cm / tile_count
+            return DEFAULT_TILE_LENGTH_CM
 
         return DEFAULT_TILE_LENGTH_CM
 
@@ -1909,6 +1988,359 @@ class RailwayNetwork:
             return False
         opposite = {"N": "S", "E": "W", "S": "N", "W": "E"}
         return edge in track1.edges and opposite[edge] in track2.edges
+
+    def _calculate_occupied_tiles(
+        self,
+        head_tile: Tuple[int, int],
+        head_distance_cm: float,
+        head_entry_edge: str,
+        train_length_cm: float,
+        path: Optional[List[Tuple[int, int, Direction]]] = None,
+        path_index: int = 0,
+    ) -> Tuple[List[Tuple[int, int]], Tuple[int, int], float, str]:
+        """
+        Calculate all tiles occupied by a train given its head position and length.
+
+        Traces backward from head position through connected tiles to find where
+        the tail (end_b) is located.
+
+        Args:
+            head_tile: (x, y) coordinates of tile where head is located
+            head_distance_cm: Distance from entry edge to head on that tile (cm)
+            head_entry_edge: Edge where head entered the tile (N/E/S/W)
+            train_length_cm: Total train length (cm)
+            path: Optional train path for correct backward tracing through switches
+            path_index: Current index in path (head position)
+
+        Returns:
+            Tuple of:
+            - occupied_tiles: List of (x, y) from tail to head
+            - tail_tile: (x, y) coordinates where tail is located
+            - tail_distance_cm: Distance from entry edge to tail on tail tile
+            - tail_entry_edge: Edge where tail tile was entered from
+
+        Raises:
+            ValueError: If train is too long for available track
+        """
+        OPPOSITE_EDGE = {"N": "S", "E": "W", "S": "N", "W": "E"}
+        DIR_TO_EDGE = {
+            Direction.NORTH: "N",
+            Direction.SOUTH: "S",
+            Direction.EAST: "E",
+            Direction.WEST: "W",
+        }
+
+        # Build path lookup: tile -> (entry_edge, exit_direction)
+        # This helps us trace backward correctly through switches
+        path_lookup: Dict[Tuple[int, int], str] = {}
+        if path:
+            for i, (px, py, pdir) in enumerate(path):
+                if pdir and i <= path_index:
+                    # Exit direction -> entry is opposite
+                    exit_edge = DIR_TO_EDGE.get(pdir, "N")
+                    entry_edge = OPPOSITE_EDGE.get(exit_edge, "S")
+                    path_lookup[(px, py)] = entry_edge
+
+        occupied = []
+        accumulated_length = 0.0
+
+        current_tile = head_tile
+        current_distance = head_distance_cm
+        current_entry_edge = head_entry_edge
+
+        # First, account for the portion of the head tile behind the head
+        head_tile_length = self._get_tile_length_cm(*head_tile)
+        length_behind_head = current_distance  # Distance from entry to head
+
+        occupied.append(current_tile)
+        accumulated_length += length_behind_head
+
+        if accumulated_length >= train_length_cm:
+            # Tail is on same tile as head
+            tail_distance = current_distance - train_length_cm
+            return (occupied, current_tile, tail_distance, current_entry_edge)
+
+        # Trace backward through tiles
+        visited = {current_tile}
+        max_iterations = 1000  # Safety limit
+
+        for _ in range(max_iterations):
+            # Get previous tile (in direction opposite to entry)
+            backward_edge = current_entry_edge
+            prev_coords = self._get_neighbor_coords(*current_tile, backward_edge)
+            prev_track = self.get_track(*prev_coords)
+
+            if not prev_track:
+                # No track behind - train extends off layout
+                available = accumulated_length
+                raise ValueError(
+                    f"Train length {train_length_cm}cm exceeds available track {available}cm. "
+                    f"No track at {prev_coords} behind {current_tile}."
+                )
+
+            # Check connectivity
+            opposite_edge = OPPOSITE_EDGE[backward_edge]
+            current_track = self.get_track(*current_tile)
+            if not (
+                backward_edge in current_track.edges
+                and opposite_edge in prev_track.edges
+            ):
+                available = accumulated_length
+                raise ValueError(
+                    f"Train length {train_length_cm}cm exceeds available track {available}cm. "
+                    f"Tiles {current_tile} and {prev_coords} are not connected."
+                )
+
+            if prev_coords in visited:
+                # Circular track - train wraps around
+                available = accumulated_length
+                raise ValueError(
+                    f"Train length {train_length_cm}cm exceeds available track {available}cm. "
+                    f"Circular track detected at {prev_coords}."
+                )
+
+            visited.add(prev_coords)
+
+            # Get length of previous tile
+            prev_tile_length = self._get_tile_length_cm(*prev_coords)
+
+            # Check if tail is in this previous tile
+            remaining_length = train_length_cm - accumulated_length
+
+            if remaining_length <= prev_tile_length:
+                # Tail is in this tile
+                # Entry edge is where the train entered this tile when moving forward.
+                # We traced backward from head through backward_edge to reach prev_tile.
+                # So the train entered prev_tile from the same direction as backward_edge
+                # (e.g., if we went back through W, train entered prev_tile from W)
+                tail_entry_edge = backward_edge
+                tail_distance = prev_tile_length - remaining_length
+
+                # Insert at beginning (we're building tail-to-head list)
+                occupied.insert(0, prev_coords)
+
+                return (occupied, prev_coords, tail_distance, tail_entry_edge)
+
+            # Continue to next previous tile
+            accumulated_length += prev_tile_length
+            occupied.insert(0, prev_coords)
+
+            # Update for next iteration
+            current_tile = prev_coords
+
+            # Determine entry edge for prev_tile
+            # The train exited prev_tile through opposite_edge to reach current_tile.
+            # We need to find: which edge did the train ENTER prev_tile from?
+            #
+            # For switches: use get_entry_for_exit() which respects switch state
+            # For simple track: use get_entry_for_exit() as well (works for all tracks)
+            #
+            # First try path lookup (most accurate for switches with path info)
+            if prev_coords in path_lookup:
+                current_entry_edge = path_lookup[prev_coords]
+            else:
+                # Use the track's get_entry_for_exit method which respects switch state
+                entry_edge = prev_track.get_entry_for_exit(
+                    opposite_edge, use_switch_state=True
+                )
+                if entry_edge:
+                    current_entry_edge = entry_edge
+                else:
+                    # Fallback: if no valid entry found (shouldn't happen for valid paths)
+                    current_entry_edge = opposite_edge
+
+        # Should never reach here
+        raise ValueError(
+            f"Unable to calculate tail position after {max_iterations} iterations"
+        )
+
+    def recalculate_train_position(self, train: Train) -> bool:
+        """
+        Recalculate a train's full TrainPosition (end_b, occupied_tiles, occupied_blocks).
+
+        Call this after updating train.current_pos or train.distance_on_track to keep
+        the TrainPosition object in sync with the train's actual position.
+
+        Args:
+            train: Train to recalculate position for
+
+        Returns:
+            True if successful, False if unable to calculate (e.g., train too long)
+        """
+        if not train.position:
+            return False
+
+        if not train.current_pos:
+            return False
+
+        pos = train.position
+
+        # Get train length
+        train_length_cm = self._get_train_length_cm(train)
+
+        # Head position (end_a when leading_end='a')
+        head_tile = train.current_pos
+        head_distance_cm = train.distance_on_track
+
+        # Determine head entry edge from path or current direction
+        head_entry_edge = pos.end_a_entry_edge  # Keep existing if available
+
+        if train.current_path and train.path_index < len(train.current_path):
+            # Get entry edge from path direction
+            _, _, path_dir = train.current_path[train.path_index]
+            if path_dir:
+                # Direction is exit direction, entry is opposite
+                OPPOSITE_EDGE = {"N": "S", "S": "N", "E": "W", "W": "E"}
+                DIR_TO_EDGE = {
+                    Direction.NORTH: "N",
+                    Direction.SOUTH: "S",
+                    Direction.EAST: "E",
+                    Direction.WEST: "W",
+                }
+                if isinstance(path_dir, Direction):
+                    exit_edge = DIR_TO_EDGE.get(path_dir, "N")
+                else:
+                    exit_edge = str(path_dir).upper()[0]
+                head_entry_edge = OPPOSITE_EDGE.get(exit_edge, head_entry_edge)
+        elif train.current_direction:
+            # Use current direction - entry is opposite of facing
+            OPPOSITE_EDGE = {"N": "S", "S": "N", "E": "W", "W": "E"}
+            DIR_TO_EDGE = {
+                Direction.NORTH: "N",
+                Direction.SOUTH: "S",
+                Direction.EAST: "E",
+                Direction.WEST: "W",
+            }
+            facing_edge = DIR_TO_EDGE.get(train.current_direction, "N")
+            head_entry_edge = OPPOSITE_EDGE.get(facing_edge, head_entry_edge)
+
+        try:
+            # Calculate occupied tiles and tail position
+            (occupied_tiles, tail_tile, tail_distance_cm, tail_entry_edge) = (
+                self._calculate_occupied_tiles(
+                    head_tile, head_distance_cm, head_entry_edge, train_length_cm
+                )
+            )
+
+            # Calculate occupied blocks from occupied tiles
+            occupied_blocks = []
+            seen_blocks = set()
+            for tile in occupied_tiles:
+                tile_track = self.get_track(*tile)
+                if tile_track and tile_track.block_section_id:
+                    block_id = tile_track.block_section_id
+                    if block_id not in seen_blocks:
+                        occupied_blocks.append(block_id)
+                        seen_blocks.add(block_id)
+
+            # Occupy any newly entered blocks via BlockManager
+            if hasattr(self, "block_manager") and self.block_manager:
+                for block_id in occupied_blocks:
+                    block = self.blocks.get(block_id)
+                    if block and block.state == BlockState.FREE:
+                        self.block_manager.occupy_block(block_id, train.train_id)
+
+            # Update TrainPosition
+            pos.end_a_tile = head_tile
+            pos.end_a_distance_cm = head_distance_cm
+            pos.end_a_entry_edge = head_entry_edge
+            pos.end_b_tile = tail_tile
+            pos.end_b_distance_cm = tail_distance_cm
+            pos.end_b_entry_edge = tail_entry_edge
+            pos.occupied_tiles = occupied_tiles
+            pos.occupied_blocks = occupied_blocks
+
+            # Also update legacy fields
+            train.occupied_tracks = occupied_tiles.copy()
+
+            return True
+
+        except ValueError:
+            # Train doesn't fit - keep existing position
+            return False
+
+    def get_occupied_tiles_rich(self, train: Train) -> List[Dict[str, Any]]:
+        """
+        Get rich information about all tiles occupied by a train.
+
+        Returns detailed data for each tile the train occupies, useful for
+        rendering train segments with correct proportions and block colors.
+
+        Args:
+            train: Train to get occupied tiles for
+
+        Returns:
+            List of dicts (ordered tail to head), each containing:
+            - tile: (x, y) coordinates
+            - block_id: Block ID if tile is in a block, else None
+            - segment_start_cm: Distance from entry edge where train starts on this tile
+            - segment_end_cm: Distance from entry edge where train ends on this tile
+            - tile_length_cm: Total length of this tile
+        """
+        if not train.position:
+            return []
+
+        pos = train.position
+        occupied_tiles = pos.occupied_tiles
+
+        if not occupied_tiles:
+            return []
+
+        result = []
+        num_tiles = len(occupied_tiles)
+
+        for i, tile in enumerate(occupied_tiles):
+            tile_track = self.get_track(*tile)
+            tile_length = self._get_tile_length_cm(*tile)
+
+            block_id = tile_track.block_section_id if tile_track else None
+
+            # Determine segment boundaries
+            if i == 0:
+                # First tile (tail tile)
+                segment_start = pos.tail_distance_cm
+                segment_end = tile_length
+            elif i == num_tiles - 1:
+                # Last tile (head tile)
+                segment_start = 0.0
+                segment_end = pos.head_distance_cm
+            else:
+                # Middle tile - train occupies entire tile
+                segment_start = 0.0
+                segment_end = tile_length
+
+            result.append(
+                {
+                    "tile": tile,
+                    "block_id": block_id,
+                    "segment_start_cm": segment_start,
+                    "segment_end_cm": segment_end,
+                    "tile_length_cm": tile_length,
+                }
+            )
+
+        return result
+
+    def reverse_train(self, train: Train) -> bool:
+        """
+        Reverse a train's direction of travel.
+
+        This swaps which end is the leading end. Physical positions don't change,
+        only the interpretation of which end is "front".
+
+        Args:
+            train: Train to reverse
+
+        Returns:
+            True if reversed, False if train has no position
+        """
+        if not train.position:
+            return False
+
+        train.position.reverse()
+        train.facing_direction = train.position.facing_direction
+        train._current_direction = train.position.facing_direction
+        return True
 
     def remove_train(self, train_id: str) -> bool:
         train = self.trains.get(train_id)
@@ -2078,15 +2510,49 @@ class RailwayNetwork:
         # Handle block splitting if track belongs to a block
         # Stations are block boundaries, so placing a station may split the block
         original_block_id = track.block_section_id
+        original_block = None
+        length_per_tile_cm = (
+            None  # None means no block, 0.0 means block with zero length
+        )
+
         if original_block_id:
+            # Get the original block before removal
+            original_block = self.blocks.get(original_block_id)
+            if original_block:
+                # Calculate length per tile from the original block
+                original_positions = self.get_block_positions(original_block_id)
+                if original_positions:
+                    length_per_tile_cm = original_block.length_cm / len(
+                        original_positions
+                    )
+                    # Store this on the original block so child blocks can use it
+                    original_block._length_per_tile_cm = length_per_tile_cm
+
             # Remove this tile from its block (triggers connectivity check/split)
             self.remove_tile_from_block(x, y)
 
         # Create station block for this station
         station_block_id = f"{station_id}_BLOCK"
-        station_block = self.create_block(
-            block_id=station_block_id, name=f"Station Block - {station_id}"
+
+        # Calculate station block length:
+        # - If station was on a block, use calculated length per tile × 1 tile (may be 0)
+        # - If not on a block, use the input platform length
+        if length_per_tile_cm is not None:
+            # Was on a block (even if that block had zero length)
+            station_block_length_cm = length_per_tile_cm
+        else:
+            # Was not on a block, use input platform length
+            station_block_length_cm = length_cm if length_cm > 0 else 0.0
+
+        # Use station name in block name if provided, otherwise use station_id
+        block_name = (
+            f"Station Block - {name}" if name else f"Station Block - {station_id}"
         )
+
+        station_block = self.create_block(block_id=station_block_id, name=block_name)
+
+        # Set the calculated length on the block
+        station_block.length_cm = station_block_length_cm
 
         # Assign station tile to station block
         track.block_section_id = station_block_id
@@ -2565,7 +3031,8 @@ class RailwayNetwork:
 
         Child blocks inherit:
         - name: "{parent.name}_1", "{parent.name}_2", etc.
-        - length_cm, min_radius_cm, max_speed_kmh (copied as-is)
+        - length_cm: Calculated based on tile count × length_per_tile_cm from parent
+        - min_radius_cm, max_speed_kmh (copied as-is)
         - state: Reset to FREE (original occupancy doesn't transfer cleanly)
 
         Args:
@@ -2578,16 +3045,44 @@ class RailwayNetwork:
         new_block_ids = []
         base_name = parent_block.name if parent_block.name else parent_block.block_id
 
+        # Calculate length per tile from parent block
+        # Check if parent has stored length_per_tile_cm (from station split)
+        length_per_tile_cm = getattr(parent_block, "_length_per_tile_cm", None)
+
+        if length_per_tile_cm is None:
+            if (
+                not hasattr(parent_block, "length_cm")
+                or parent_block.length_cm is None
+                or parent_block.length_cm <= 0
+            ):
+                parent_block.length_cm = 0.0
+            parent_positions = self.get_block_positions(parent_block.block_id)
+            if parent_positions and parent_block.length_cm > 0:
+                length_per_tile_cm = parent_block.length_cm / len(parent_positions)
+            else:
+                total_tiles = sum(len(comp) for comp in components)
+                if total_tiles > 0 and parent_block.length_cm > 0:
+                    length_per_tile_cm = parent_block.length_cm / total_tiles
+                else:
+                    length_per_tile_cm = 0.0
+
         for i, component_positions in enumerate(components, start=1):
             # Generate child block ID and name
             child_id = f"{parent_block.block_id}_{i}"
             child_name = f"{base_name}_{i}"
 
+            # Calculate child block length based on tile count
+            child_length_cm = (
+                len(component_positions) * length_per_tile_cm
+                if length_per_tile_cm > 0
+                else 0.0
+            )
+
             # Create child block with inherited properties
             child_block = Block(
                 block_id=child_id,
                 name=child_name,
-                length_cm=parent_block.length_cm,  # Copy (user can adjust)
+                length_cm=child_length_cm,  # Calculated based on tile count
                 min_radius_cm=parent_block.min_radius_cm,
                 max_speed_kmh=parent_block.max_speed_kmh,
                 state=BlockState.FREE,  # Reset state
@@ -2718,6 +3213,106 @@ class RailwayNetwork:
         self.add_track(track)
         return track
 
+    # === Centralized Switch Management ===
+
+    def add_switch(self, switch: "Switch") -> None:
+        """
+        Register a switch configuration at a track tile.
+
+        Args:
+            switch: Switch entity to add
+
+        Raises:
+            ValueError: If no track at position or track is not a switch
+        """
+        track = self.get_track(switch.x, switch.y)
+        if not track:
+            raise ValueError(f"No track at ({switch.x}, {switch.y})")
+        if not track.is_switch:
+            raise ValueError(f"Track at ({switch.x}, {switch.y}) is not a switch")
+
+        # Store by ID
+        self.switches[switch.switch_id] = switch
+        # Link track to switch
+        track.switch_id = switch.switch_id
+
+    def get_switch(self, switch_id: str) -> Optional["Switch"]:
+        """Get switch configuration by ID."""
+        return self.switches.get(switch_id)
+
+    def get_switch_at(self, x: int, y: int) -> Optional["Switch"]:
+        """Get switch configuration at a tile position."""
+        for switch in self.switches.values():
+            if switch.x == x and switch.y == y:
+                return switch
+        return None
+
+    def remove_switch(self, switch_id: str) -> bool:
+        """
+        Remove switch configuration.
+
+        Args:
+            switch_id: Switch ID to remove
+
+        Returns:
+            True if removed, False if not found
+        """
+        switch = self.switches.get(switch_id)
+        if not switch:
+            return False
+
+        # Clear reference on track tile
+        track = self.get_track(switch.x, switch.y)
+        if track:
+            track.switch_id = None
+
+        del self.switches[switch_id]
+        return True
+
+    def update_switch(self, switch_id: str, **kwargs) -> Optional["Switch"]:
+        """
+        Update switch configuration.
+
+        Allowed updates:
+            - main_length_cm: float
+            - diverge_length_cm: float
+            - main_radius_cm: float
+            - diverge_radius_cm: float
+            - name: str
+            - notes: str
+            - switch_type: str
+
+        Args:
+            switch_id: Switch to update
+            **kwargs: Properties to update
+
+        Returns:
+            Updated Switch or None if not found
+        """
+        switch = self.switches.get(switch_id)
+        if not switch:
+            return None
+
+        # Update allowed properties
+        if "main_length_cm" in kwargs:
+            switch.main_length_cm = float(kwargs["main_length_cm"])
+        if "diverge_length_cm" in kwargs:
+            switch.diverge_length_cm = float(kwargs["diverge_length_cm"])
+        if "main_radius_cm" in kwargs:
+            value = kwargs["main_radius_cm"]
+            switch.main_radius_cm = float(value) if value is not None else None
+        if "diverge_radius_cm" in kwargs:
+            value = kwargs["diverge_radius_cm"]
+            switch.diverge_radius_cm = float(value) if value is not None else None
+        if "name" in kwargs:
+            switch.name = kwargs["name"]
+        if "notes" in kwargs:
+            switch.notes = kwargs["notes"]
+        if "switch_type" in kwargs:
+            switch.switch_type = kwargs["switch_type"]
+
+        return switch
+
     def to_dict(self) -> dict:
         """Convert network to dictionary for serialization"""
         # Enrich tracks with full signal data for frontend
@@ -2740,6 +3335,9 @@ class RailwayNetwork:
             "stations": [
                 s.to_dict_with_orientation(self) for s in self.stations.values()
             ],
+            "switches": {
+                k: v.to_dict() for k, v in self.switches.items()
+            },  # NEW: Switch persistence
         }
 
     def from_dict(self, data: dict):
@@ -2750,6 +3348,7 @@ class RailwayNetwork:
         self.blocks.clear()
         self.signals.clear()
         self.stations.clear()
+        self.switches.clear()  # NEW: Clear switches
         self.interlocking.routes.clear()
         self.schedules.clear()
 
@@ -2770,6 +3369,13 @@ class RailwayNetwork:
             track = self.get_track(*signal.position)
             if track and signal_id not in track.signal_ids:
                 track.signal_ids.append(signal_id)
+
+        # Rebuild switches
+        from switch import Switch
+
+        for switch_id, switch_data in data.get("switches", {}).items():
+            switch = Switch.from_dict(switch_data)
+            self.switches[switch_id] = switch
 
         # Rebuild stations
         for station_data in data.get("stations", []):

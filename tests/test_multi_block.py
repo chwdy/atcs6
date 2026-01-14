@@ -59,7 +59,7 @@ class TestMultiBlockOccupancy:
         """Create a short train (fits in one block)."""
         train = Train(train_id="T_SHORT")
         # Add a single short car (0.5 meters = 50cm)
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0, mass=10000.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
         train.consist.append(car)
         return train
 
@@ -68,9 +68,9 @@ class TestMultiBlockOccupancy:
         """Create a long train (spans multiple blocks)."""
         train = Train(train_id="T_LONG")
         # Add 3 cars, total 250cm = 2.5 meters
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=100.0, mass=10000.0))
-        train.consist.append(TrainCar(car_id="CAR_2", car_type="PASSENGER", length=100.0, mass=10000.0))
-        train.consist.append(TrainCar(car_id="CAR_3", car_type="PASSENGER", length=50.0, mass=10000.0))
+        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=100.0))
+        train.consist.append(TrainCar(car_id="CAR_2", car_type="PASSENGER", length=100.0))
+        train.consist.append(TrainCar(car_id="CAR_3", car_type="PASSENGER", length=50.0))
         return train
 
     def test_short_train_single_block(self, simple_network, short_train):
@@ -164,7 +164,7 @@ class TestOppositePolaritySafety:
         """Test opposite polarity not safe with single block."""
         train = Train(train_id="T001")
         train.current_pos = None
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0, mass=10000.0))
+        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0))
 
         # Single block - not safe
         result = train.is_opposite_polarity_safe(simple_network)
@@ -175,7 +175,7 @@ class TestOppositePolaritySafety:
         train = Train(train_id="T001")
         # Don't set current_pos - use reserved_blocks directly
         train.current_pos = None
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0, mass=10000.0))
+        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0))
         # Manually set reserved_blocks to simulate multi-block occupancy
         train.reserved_blocks = ["BLK_A", "BLK_B"]
 
@@ -188,8 +188,8 @@ class TestOppositePolaritySafety:
         """Test opposite polarity unsafe with multiple cars."""
         train = Train(train_id="T001")
         train.current_pos = None
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=80.0, mass=10000.0))
-        train.consist.append(TrainCar(car_id="CAR_2", car_type="LOCOMOTIVE", length=80.0, mass=10000.0))
+        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=80.0))
+        train.consist.append(TrainCar(car_id="CAR_2", car_type="LOCOMOTIVE", length=80.0))
 
         # Multiple cars - conservative: not safe
         # (would need detailed position tracking)
@@ -199,7 +199,7 @@ class TestOppositePolaritySafety:
     def test_opposite_polarity_no_network(self):
         """Test opposite polarity check with no network."""
         train = Train(train_id="T001")
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0, mass=10000.0))
+        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0))
 
         result = train.is_opposite_polarity_safe(None)
         assert result is False
@@ -249,7 +249,7 @@ class TestOppositePolarityVoltage:
         train = Train(train_id="T001")
         train.state = TrainState.IDLE
         train.current_pos = None
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0, mass=10000.0))
+        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0))
         train.reserved_blocks = ["BLK_A", "BLK_B"]
 
         # Update voltage
@@ -270,7 +270,7 @@ class TestOppositePolarityVoltage:
         train = Train(train_id="T001")
         train.state = TrainState.IDLE
         train.current_pos = None
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=250.0, mass=10000.0))
+        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=250.0))
         train.reserved_blocks = ["BLK_A", "BLK_B", "BLK_C"]
 
         # Update voltage
@@ -294,7 +294,7 @@ class TestOppositePolarityVoltage:
         train.state = TrainState.RUNNING_MOVING
         train.target_speed = 60.0
         train.current_pos = None
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0, mass=10000.0))
+        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0))
         train.reserved_blocks = ["BLK_A", "BLK_B"]
 
         profile = SpeedProfile(
@@ -320,7 +320,7 @@ class TestOppositePolarityVoltage:
         train = Train(train_id="T001")
         train.state = TrainState.IDLE
         train.current_pos = None
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0, mass=10000.0))
+        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0))
         train.reserved_blocks = ["BLK_A"]
 
         # Update voltage

@@ -68,7 +68,9 @@ from interlocking import InterlockingSystem, InterlockingRoute
 # Train
 from train import Train, TrainCar
 from train_atc import create_atc_for_train
-from train_config import ATC_NO_BLOCK_FALLBACK_CM, DEFAULT_TILE_LENGTH_CM
+from train_config import ATC_NO_BLOCK_FALLBACK_CM
+
+# NOTE: DEFAULT_TILE_LENGTH_CM was removed - blocks/stations/switches must be explicitly configured
 from train_lookahead import build_lookahead, build_lookahead_response, LookaheadItemType
 
 
@@ -3277,7 +3279,7 @@ class TestRailwayPathfinder:
         pathfinder = RailwayPathfinder(network)
 
         # Create a simple train for pathfinding
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=1.0, mass=1000.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=1.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=50.0)
 
         start = (0, 0)
@@ -3300,7 +3302,7 @@ class TestRailwayPathfinder:
         network.add_track(TrackSegment(x=5, y=5, track_bits=TRACK_EW))
 
         # Create a simple train for pathfinding
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=1.0, mass=1000.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=1.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=50.0)
 
         pathfinder = RailwayPathfinder(network)
@@ -4273,9 +4275,7 @@ class TestTrainManualControlBugFixes:
     """
 
     def test_clear_direction_from_standby(self):
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.state = TrainState.STANDBY
         train.facing_direction = Direction.EAST
@@ -4291,9 +4291,7 @@ class TestTrainManualControlBugFixes:
         assert train.target_speed == 0.0
 
     def test_clear_direction_rejects_moving(self):
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_02", consist=[car], max_speed=60.0)
         train.state = TrainState.STANDBY
         train.facing_direction = Direction.NORTH
@@ -4304,9 +4302,7 @@ class TestTrainManualControlBugFixes:
         assert train.facing_direction == Direction.NORTH
 
     def test_manual_speed_requires_manual_and_clamps(self):
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_03", consist=[car], max_speed=40.0)
 
         assert train.set_manual_speed(30.0) is False
@@ -4315,9 +4311,7 @@ class TestTrainManualControlBugFixes:
         assert train.manual_target_speed == 40.0
 
     def test_travel_direction_requires_manual(self):
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_04", consist=[car], max_speed=60.0)
 
         assert train.set_travel_direction("reverse") is False
@@ -4333,9 +4327,7 @@ class TestTrainManualControlBugFixes:
         network.add_track(track)
         network.propagate_from_tile(0, 0)
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_05", consist=[car], max_speed=50.0)
         train.current_pos = (0, 0)
 
@@ -4351,9 +4343,7 @@ class TestTrainLookahead:
             track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
             network.add_track(track)
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.current_pos = (0, 0)
         train.facing_direction = Direction.EAST
@@ -4366,16 +4356,15 @@ class TestTrainLookahead:
         assert result.max_speed_kmh == 60.0
         assert result.facing_direction == "EAST"
         assert result.travel_direction == "forward"
-        assert result.clearance_cm > 0
+        # NEW: Plain tracks without block configuration return 0 clearance
+        assert result.clearance_cm >= 0  # Changed from > 0 to >= 0
 
     def test_lookahead_traverses_tiles(self, network):
         for x in range(5):
             track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
             network.add_track(track)
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_02", consist=[car], max_speed=80.0)
         train.current_pos = (0, 0)
         train.facing_direction = Direction.EAST
@@ -4383,13 +4372,12 @@ class TestTrainLookahead:
 
         result = build_lookahead(train, network)
 
-        expected_clearance = 5 * DEFAULT_TILE_LENGTH_CM
+        # NEW: Plain tracks without block configuration return 0 length
+        expected_clearance = 0.0  # 5 tracks * 0 cm each (unconfigured)
         assert result.clearance_cm == expected_clearance
 
     def test_lookahead_with_no_position_returns_empty(self, network):
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_03", consist=[car], max_speed=60.0)
         train.current_pos = None
         train.facing_direction = None
@@ -4405,9 +4393,7 @@ class TestTrainLookahead:
             track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
             network.add_track(track)
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_04", consist=[car], max_speed=60.0)
         train.current_pos = (2, 0)
         train.facing_direction = Direction.EAST
@@ -4415,15 +4401,14 @@ class TestTrainLookahead:
 
         result = build_lookahead(train, network)
 
-        assert result.clearance_cm == 3 * DEFAULT_TILE_LENGTH_CM
+        # NEW: Plain tracks without block configuration return 0 length
+        assert result.clearance_cm == 0.0  # 3 tracks * 0 cm each (unconfigured)
 
     def test_lookahead_to_dict(self, network):
         track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
         network.add_track(track)
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_05", consist=[car], max_speed=60.0)
         train.current_pos = (0, 0)
         train.facing_direction = Direction.EAST
@@ -4459,9 +4444,7 @@ class TestTrainLookaheadVisualizationBugFix:
         station = network.add_station(2, 0, station_id="STA_001", name="Station A")
         signal = network.add_signal(0, 0, "E", auto_connect=False)
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_VIS_01", consist=[car], max_speed=60.0)
         train.current_pos = (0, 0)
         train.facing_direction = Direction.EAST
@@ -4484,22 +4467,20 @@ class TestTrainLookaheadVisualizationBugFix:
         for x in range(2):
             network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_VIS_REASON", consist=[car], max_speed=60.0)
         train.current_pos = (0, 0)
         train.current_path = [(0, 0, Direction.EAST), (1, 0, Direction.EAST)]
         train.path_index = 0
-        train.distance_on_track = DEFAULT_TILE_LENGTH_CM * 0.5
+        train.distance_on_track = 0.0  # Unconfigured track has 0 length
         train.facing_direction = Direction.EAST
         train.wait_reason = "Signal SIG_TEST is red"
 
         response = build_lookahead_response(train, network)
 
         assert response["wait_reason"] == "Signal SIG_TEST is red"
-        assert response["distance_into_path_cm"] == DEFAULT_TILE_LENGTH_CM * 0.5
-        assert response["distance_to_next_tile_cm"] == DEFAULT_TILE_LENGTH_CM * 0.5
+        assert response["distance_into_path_cm"] == 0.0  # Unconfigured
+        assert response["distance_to_next_tile_cm"] == 0.0  # Unconfigured
 
     def test_wait_reason_when_block_occupied(self, network):
         network.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_EW))
@@ -4521,9 +4502,7 @@ class TestTrainLookaheadVisualizationBugFix:
         block_b.occupied_by = "TRAIN_OTHER"
         network.tracks[(1, 0)].occupied_by = "TRAIN_OTHER"
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_WAIT", consist=[car], max_speed=60.0)
         train.current_pos = (0, 0)
         train.facing_direction = Direction.EAST
@@ -4572,9 +4551,7 @@ class TestTrainLookaheadVisualizationBugFix:
         network.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_EW))
         network.create_block_with_tracks("BLOCK_A", [(0, 0)])
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_DEL", consist=[car], max_speed=60.0)
         train.current_pos = (0, 0)
         network.trains[train.train_id] = train
@@ -4588,10 +4565,9 @@ class TestTrainLookaheadVisualizationBugFix:
 
     def test_visualization_respects_zero_length_block(self, network):
         """
-        Test that blocks with length_cm=0 are respected as 0, not fallback to DEFAULT_TILE_LENGTH_CM.
+        Test that blocks with length_cm=0 are respected as 0 (no default fallback).
 
-        BUG FIX: Previously, length_cm=0 would incorrectly fall back to DEFAULT_TILE_LENGTH_CM (1000cm).
-        FIX: Now respects 0 as 0cm.
+        This is now the standard behavior - unconfigured lengths return 0 and trigger warnings.
         """
         network.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_EW))
 
@@ -4601,9 +4577,7 @@ class TestTrainLookaheadVisualizationBugFix:
             length_cm=0.0,
         )
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_VIS_02", consist=[car], max_speed=60.0)
         train.current_pos = (0, 0)
         train.facing_direction = Direction.EAST
@@ -4631,9 +4605,7 @@ class TestTrainLookaheadVisualizationBugFix:
             length_cm=90.0,
         )
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_VIS_03", consist=[car], max_speed=60.0)
         train.current_pos = (0, 0)
         train.facing_direction = Direction.EAST
@@ -4644,9 +4616,7 @@ class TestTrainLookaheadVisualizationBugFix:
         assert block_starts == sorted(block_starts)
 
     def test_visualization_empty_when_train_has_no_position(self, network):
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_VIS_04", consist=[car], max_speed=60.0)
         train.current_pos = None
         train.facing_direction = None
@@ -4668,9 +4638,7 @@ class TestTrainPlacementOccupancy:
         block.tiles = [(0, 0)]
         track.block_section_id = "BLK_001"
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.set_position((0, 0), Direction.EAST)
 
@@ -4685,9 +4653,7 @@ class TestTrainPlacementOccupancy:
         track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
         network.add_track(track)
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_02", consist=[car], max_speed=60.0)
         train.set_position((0, 0), Direction.EAST)
 
@@ -4704,9 +4670,7 @@ class TestTrainPlacementOccupancy:
         network.blocks["BLK_001"] = block
         block.tiles = [(0, 0), (1, 0), (2, 0)]
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_03", consist=[car], max_speed=60.0)
         train.set_position((1, 0), Direction.EAST)
 
@@ -4719,9 +4683,7 @@ class TestTrainPlacementOccupancy:
 
 class TestTrainPropertyUpdate:
     def test_train_name_update(self, network):
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.name = "Original Name"
         network.add_train(train)
@@ -4730,9 +4692,7 @@ class TestTrainPropertyUpdate:
         assert network.trains["TRAIN_01"].name == "Updated Name"
 
     def test_train_max_speed_update(self, network):
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         network.add_train(train)
 
@@ -4740,15 +4700,17 @@ class TestTrainPropertyUpdate:
         assert network.trains["TRAIN_01"].max_speed == 120.0
 
     def test_train_length_update(self, network):
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        """Test that train length_cm is derived from consist."""
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
-        train.length_cm = 2000.0
         network.add_train(train)
 
-        train.length_cm = 3000.0
-        assert network.trains["TRAIN_01"].length_cm == 3000.0
+        # length_cm is a property derived from consist, so we update consist
+        assert train.length_cm == 20.0
+
+        # Add another car
+        train.consist.append(TrainCar(car_id="CAR_02", car_type="FREIGHT", length=30.0))
+        assert train.length_cm == 50.0
 
 
 class TestStationStoppingBehavior:
@@ -4761,9 +4723,7 @@ class TestStationStoppingBehavior:
             1, 0, station_id="STA_SINGLE", name="Single Tile Station", length_cm=1500.0
         )
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.current_pos = (1, 0)
         train.facing_direction = Direction.EAST
@@ -4788,9 +4748,7 @@ class TestStationStoppingBehavior:
         )
         network.extend_station("STA_MULTI_EW", [(2, 0), (3, 0)])
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.facing_direction = Direction.EAST
 
@@ -4814,9 +4772,7 @@ class TestStationStoppingBehavior:
         )
         network.extend_station("STA_MULTI_EW", [(2, 0), (3, 0)])
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.facing_direction = Direction.WEST
 
@@ -4840,9 +4796,7 @@ class TestStationStoppingBehavior:
         )
         network.extend_station("STA_MULTI_NS", [(0, 2), (0, 3)])
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.facing_direction = Direction.NORTH
 
@@ -4866,9 +4820,7 @@ class TestStationStoppingBehavior:
         )
         network.extend_station("STA_MULTI_NS", [(0, 2), (0, 3)])
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.facing_direction = Direction.SOUTH
 
@@ -4888,9 +4840,7 @@ class TestStationStoppingBehavior:
         )
         network.extend_station("STA_MULTI", [(2, 0), (3, 0)])
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.current_pos = (1, 0)
         train.facing_direction = Direction.EAST
@@ -4911,9 +4861,7 @@ class TestStationStoppingBehavior:
         )
         network.extend_station("STA_MULTI", [(2, 0), (3, 0)])
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.current_pos = (3, 0)
         train.facing_direction = Direction.EAST
@@ -4934,9 +4882,7 @@ class TestStationStoppingBehavior:
         )
         network.extend_station("STA_MULTI", [(2, 0), (3, 0)])
 
-        car = TrainCar(
-            car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0, mass=50000.0
-        )
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.facing_direction = None
 
@@ -4974,6 +4920,9 @@ class TestMultiBlockOccupancy:
 
     Bug Fixed: Train.get_occupied_blocks() was stubbed at line 796 with 'break'.
     Fix: Implemented full backward path tracing using train.current_path and path_index.
+
+    Note: These tests use the legacy position system (setting _current_pos directly)
+    to test get_occupied_blocks() which uses current_path for backward tracing.
     """
 
     def test_short_train_single_block(self):
@@ -4989,12 +4938,12 @@ class TestMultiBlockOccupancy:
 
         train = Train(
             train_id="T1",
-            consist=[TrainCar("CAR1", "LOCOMOTIVE", 5.0, 50000.0)],
-            current_pos=(0, 0),
-            current_path=[(0, 0, Direction.EAST)],
-            path_index=0,
-            distance_on_track=0.5,
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 5.0)],
         )
+        train._current_pos = (0, 0)
+        train.current_path = [(0, 0, Direction.EAST)]
+        train.path_index = 0
+        train._distance_on_track = 0.5
 
         occupied = train.get_occupied_blocks(network)
 
@@ -5020,12 +4969,12 @@ class TestMultiBlockOccupancy:
 
         train = Train(
             train_id="T1",
-            consist=[TrainCar("CAR1", "LOCOMOTIVE", 15.0, 100000.0)],
-            current_pos=(1, 0),
-            current_path=[(0, 0, Direction.EAST), (1, 0, Direction.EAST)],
-            path_index=1,
-            distance_on_track=0.1,
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 15.0)],
         )
+        train._current_pos = (1, 0)
+        train.current_path = [(0, 0, Direction.EAST), (1, 0, Direction.EAST)]
+        train.path_index = 1
+        train._distance_on_track = 0.1
 
         occupied = train.get_occupied_blocks(network)
 
@@ -5047,16 +4996,16 @@ class TestMultiBlockOccupancy:
 
         train = Train(
             train_id="T1",
-            consist=[TrainCar("CAR1", "LOCOMOTIVE", 250.0, 150000.0)],
-            current_pos=(2, 0),
-            current_path=[
-                (0, 0, Direction.EAST),
-                (1, 0, Direction.EAST),
-                (2, 0, Direction.EAST),
-            ],
-            path_index=2,
-            distance_on_track=0.5,
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 250.0)],
         )
+        train._current_pos = (2, 0)
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 2
+        train._distance_on_track = 0.5
 
         occupied = train.get_occupied_blocks(network)
 
@@ -5078,12 +5027,12 @@ class TestMultiBlockOccupancy:
 
         train = Train(
             train_id="T1",
-            consist=[TrainCar("CAR1", "LOCOMOTIVE", 10.0, 80000.0)],
-            current_pos=(0, 0),
-            current_path=[(0, 0, Direction.EAST)],
-            path_index=0,
-            distance_on_track=1.0,
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 10.0)],
         )
+        train._current_pos = (0, 0)
+        train.current_path = [(0, 0, Direction.EAST)]
+        train.path_index = 0
+        train._distance_on_track = 1.0
 
         occupied = train.get_occupied_blocks(network)
 
@@ -5109,12 +5058,12 @@ class TestMultiBlockOccupancy:
 
         train = Train(
             train_id="T1",
-            consist=[TrainCar("CAR1", "LOCOMOTIVE", 12.0, 90000.0)],
-            current_pos=(1, 0),
-            current_path=[(0, 0, Direction.EAST), (1, 0, Direction.EAST)],
-            path_index=1,
-            distance_on_track=0.05,
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 12.0)],
         )
+        train._current_pos = (1, 0)
+        train.current_path = [(0, 0, Direction.EAST), (1, 0, Direction.EAST)]
+        train.path_index = 1
+        train._distance_on_track = 0.05
 
         occupied = train.get_occupied_blocks(network)
 
@@ -5136,16 +5085,16 @@ class TestMultiBlockOccupancy:
 
         train = Train(
             train_id="T1",
-            consist=[TrainCar("CAR1", "LOCOMOTIVE", 15.0, 100000.0)],
-            current_pos=(1, 0),
-            current_path=[
-                (0, 0, Direction.EAST),
-                (1, 0, Direction.EAST),
-                (2, 0, Direction.EAST),
-            ],
-            path_index=1,
-            distance_on_track=333.0,
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 15.0)],
         )
+        train._current_pos = (1, 0)
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 1
+        train._distance_on_track = 333.0
 
         occupied_before = train.get_occupied_blocks(network)
         assert len(occupied_before) == 2
@@ -5153,8 +5102,8 @@ class TestMultiBlockOccupancy:
         assert "BLOCK_2" in occupied_before
 
         train.path_index = 1
-        train.current_pos = (1, 0)
-        train.distance_on_track = 3000.0
+        train._current_pos = (1, 0)
+        train._distance_on_track = 3000.0
 
         occupied_after = train.get_occupied_blocks(network)
         assert len(occupied_after) == 1
@@ -5181,12 +5130,12 @@ class TestMultiBlockOccupancy:
 
         train = Train(
             train_id="T1",
-            consist=[TrainCar("CAR1", "LOCOMOTIVE", 200.0, 120000.0)],
-            current_pos=(1, 0),
-            current_path=[(0, 0, Direction.EAST), (1, 0, Direction.EAST)],
-            path_index=1,
-            distance_on_track=2500.0,
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 200.0)],
         )
+        train._current_pos = (1, 0)
+        train.current_path = [(0, 0, Direction.EAST), (1, 0, Direction.EAST)]
+        train.path_index = 1
+        train._distance_on_track = 2500.0
 
         occupied = train.get_occupied_blocks(network)
 
@@ -5207,11 +5156,11 @@ class TestMultiBlockOccupancy:
 
         train = Train(
             train_id="T1",
-            consist=[TrainCar("CAR1", "LOCOMOTIVE", 15.0, 100000.0)],
-            current_pos=(0, 0),
-            current_path=None,
-            distance_on_track=500.0,
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 15.0)],
         )
+        train._current_pos = (0, 0)
+        train.current_path = None
+        train._distance_on_track = 500.0
 
         occupied = train.get_occupied_blocks(network)
 
@@ -5231,12 +5180,12 @@ class TestMultiBlockOccupancy:
 
         train = Train(
             train_id="T1",
-            consist=[TrainCar("CAR1", "LOCOMOTIVE", 5.0, 50000.0)],
-            current_pos=(0, 0),
-            current_path=[(0, 0, Direction.EAST)],
-            path_index=0,
-            distance_on_track=0.3,
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 5.0)],
         )
+        train._current_pos = (0, 0)
+        train.current_path = [(0, 0, Direction.EAST)]
+        train.path_index = 0
+        train._distance_on_track = 0.3
 
         occupied = train.get_occupied_blocks(network)
 
@@ -5257,16 +5206,16 @@ class TestMultiBlockOccupancy:
 
         train = Train(
             train_id="T1",
-            consist=[TrainCar("CAR1", "LOCOMOTIVE", 15.0, 100000.0)],
-            current_pos=(1, 0),
-            current_path=[
-                (0, 0, Direction.EAST),
-                (1, 0, Direction.EAST),
-                (2, 0, Direction.EAST),
-            ],
-            path_index=1,
-            distance_on_track=333.0,
+            consist=[TrainCar("CAR1", "LOCOMOTIVE", 15.0)],
         )
+        train._current_pos = (1, 0)
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 1
+        train._distance_on_track = 333.0
 
         train.update_occupancy(network)
 
@@ -5277,8 +5226,8 @@ class TestMultiBlockOccupancy:
         assert network.blocks["BLOCK_3"].state == BlockState.FREE
 
         train.path_index = 1
-        train.current_pos = (1, 0)
-        train.distance_on_track = 3000.0
+        train._current_pos = (1, 0)
+        train._distance_on_track = 3000.0
         train.update_occupancy(network)
 
         assert network.blocks["BLOCK_1"].state == BlockState.FREE
@@ -5429,6 +5378,57 @@ class TestBlockManager:
         assert block.state == BlockState.OCCUPIED
         assert block.occupied_by == "TRAIN_1"
 
+    def test_occupy_block_rejects_wrong_train_on_reserved_block(self):
+        """
+        Regression test for RESERVED → OCCUPIED train ownership validation.
+
+        BUG: occupy_block() allowed train B to occupy a block reserved for train A.
+        FIX: Now validates block.occupied_by matches train_id before transition.
+        """
+        from block_manager import BlockManager
+        from block import Block, BlockState
+
+        blocks = {"B1": Block("B1")}
+        blocks["B1"].state = BlockState.RESERVED
+        blocks["B1"].occupied_by = "TRAIN_A"
+        manager = BlockManager(blocks)
+
+        result = manager.occupy_block("B1", "TRAIN_B")
+
+        assert result == False
+        assert blocks["B1"].state == BlockState.RESERVED
+        assert blocks["B1"].occupied_by == "TRAIN_A"
+
+    def test_occupy_block_allows_correct_train_on_reserved_block(self):
+        from block_manager import BlockManager
+        from block import Block, BlockState
+
+        blocks = {"B1": Block("B1")}
+        blocks["B1"].state = BlockState.RESERVED
+        blocks["B1"].occupied_by = "TRAIN_A"
+        manager = BlockManager(blocks)
+
+        result = manager.occupy_block("B1", "TRAIN_A")
+
+        assert result == True
+        assert blocks["B1"].state == BlockState.OCCUPIED
+        assert blocks["B1"].occupied_by == "TRAIN_A"
+
+    def test_occupy_block_allows_reserved_without_owner(self):
+        from block_manager import BlockManager
+        from block import Block, BlockState
+
+        blocks = {"B1": Block("B1")}
+        blocks["B1"].state = BlockState.RESERVED
+        blocks["B1"].occupied_by = None
+        manager = BlockManager(blocks)
+
+        result = manager.occupy_block("B1", "ANY_TRAIN")
+
+        assert result == True
+        assert blocks["B1"].state == BlockState.OCCUPIED
+        assert blocks["B1"].occupied_by == "ANY_TRAIN"
+
 
 class TestRaceConditionFix:
     def test_block_manager_prevents_premature_release(self):
@@ -5512,7 +5512,7 @@ class TestTrainPlacement:
             "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
         )
 
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=30.0, mass=1000.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=30.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
 
@@ -5538,7 +5538,7 @@ class TestTrainPlacement:
             "BLOCK_1", [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)], length_cm=250.0
         )
 
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=60.0, mass=1000.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=60.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
 
@@ -5548,12 +5548,13 @@ class TestTrainPlacement:
         tile_length_cm = network._get_tile_length_cm(2, 0)
         assert train.distance_on_track == tile_length_cm
 
-    def test_place_train_at_end_of_line_pushes_forward(self):
-        """Train at end of line should be pushed forward."""
+    def test_place_train_at_end_of_line_validates_fit(self):
+        """Train that doesn't fit should raise ValueError - no pushing forward."""
         from network import RailwayNetwork
         from train import Train, TrainCar
         from track import TrackSegment, TRACK_EW
         from enums import Direction
+        import pytest
 
         network = RailwayNetwork()
         for x in range(3):
@@ -5563,15 +5564,14 @@ class TestTrainPlacement:
             "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
         )
 
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=60.0, mass=1000.0)
+        # 60cm train at (0,0) facing EAST - needs 10cm behind (0,0) but there's nothing
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=60.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
 
-        network.place_train(train, 0, 0, Direction.EAST)
-
-        assert train.current_pos == (1, 0)
-        tile_length_cm = network._get_tile_length_cm(1, 0)
-        assert train.distance_on_track < tile_length_cm
+        # Should raise ValueError because train doesn't fit
+        with pytest.raises(ValueError, match="exceeds available track"):
+            network.place_train(train, 0, 0, Direction.EAST)
 
     def test_place_train_no_track_raises_error(self):
         """Placing train on non-existent track should raise error."""
@@ -5581,9 +5581,2022 @@ class TestTrainPlacement:
         import pytest
 
         network = RailwayNetwork()
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=30.0, mass=1000.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=30.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
 
         with pytest.raises(ValueError):
             network.place_train(train, 0, 0, Direction.EAST)
+
+
+# =============================================================================
+# TEST: TrainPosition System
+# =============================================================================
+
+
+class TestTrainPosition:
+    """Tests for TrainPosition dataclass and basic functionality."""
+
+    def test_train_position_creation(self):
+        """TrainPosition can be created with all required fields."""
+        from train import TrainPosition
+        from enums import Direction
+
+        pos = TrainPosition(
+            end_a_tile=(1, 0),
+            end_a_distance_cm=50.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=10.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(0, 0), (1, 0)],
+            occupied_blocks=["BLOCK_1"],
+        )
+
+        assert pos.end_a_tile == (1, 0)
+        assert pos.end_b_tile == (0, 0)
+        assert pos.leading_end == "a"
+
+    def test_train_position_head_tail_properties(self):
+        """Head/tail properties return correct end based on leading_end."""
+        from train import TrainPosition
+        from enums import Direction
+
+        pos = TrainPosition(
+            end_a_tile=(1, 0),
+            end_a_distance_cm=50.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=10.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+        )
+
+        # When leading_end is "a", head = end_a, tail = end_b
+        assert pos.head_tile == (1, 0)
+        assert pos.head_distance_cm == 50.0
+        assert pos.tail_tile == (0, 0)
+        assert pos.tail_distance_cm == 10.0
+
+    def test_train_position_reverse(self):
+        """Reverse swaps leading_end and flips facing_direction."""
+        from train import TrainPosition
+        from enums import Direction
+
+        pos = TrainPosition(
+            end_a_tile=(1, 0),
+            end_a_distance_cm=50.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=10.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+        )
+
+        pos.reverse()
+
+        # After reverse: leading_end should be "b", direction should flip
+        assert pos.leading_end == "b"
+        assert pos.facing_direction == Direction.WEST
+        # Head/tail should now be swapped
+        assert pos.head_tile == (0, 0)
+        assert pos.tail_tile == (1, 0)
+
+    def test_train_position_to_dict(self):
+        """TrainPosition serializes correctly to dict."""
+        from train import TrainPosition
+        from enums import Direction
+
+        pos = TrainPosition(
+            end_a_tile=(1, 0),
+            end_a_distance_cm=50.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=10.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(0, 0), (1, 0)],
+            occupied_blocks=["BLOCK_1"],
+        )
+
+        data = pos.to_dict()
+
+        assert data["end_a"]["tile"] == [1, 0]
+        assert data["end_a"]["distance_cm"] == 50.0
+        assert data["end_b"]["tile"] == [0, 0]
+        assert data["leading_end"] == "a"
+        assert data["facing_direction"] == "EAST"
+        assert data["occupied_tiles"] == [[0, 0], [1, 0]]
+
+    def test_train_position_from_dict(self):
+        """TrainPosition deserializes correctly from dict."""
+        from train import TrainPosition
+        from enums import Direction
+
+        data = {
+            "end_a": {"tile": [1, 0], "distance_cm": 50.0, "entry_edge": "W"},
+            "end_b": {"tile": [0, 0], "distance_cm": 10.0, "entry_edge": "W"},
+            "leading_end": "a",
+            "facing_direction": "EAST",
+            "occupied_tiles": [[0, 0], [1, 0]],
+            "occupied_blocks": ["BLOCK_1"],
+        }
+
+        pos = TrainPosition.from_dict(data)
+
+        assert pos is not None
+        assert pos.end_a_tile == (1, 0)
+        assert pos.end_a_distance_cm == 50.0
+        assert pos.facing_direction == Direction.EAST
+
+    def test_train_position_from_dict_invalid_returns_none(self):
+        """TrainPosition.from_dict returns None for truly invalid data."""
+        from train import TrainPosition
+
+        # Completely invalid structure that will cause exception
+        pos = TrainPosition.from_dict(None)
+        assert pos is None
+
+        # Also test with non-dict
+        pos = TrainPosition.from_dict("not a dict")
+        assert pos is None
+
+
+class TestTrainPlacementValidation:
+    """Tests for train placement with length validation."""
+
+    def test_40cm_train_on_150cm_block_fits(self):
+        """40cm train on 150cm (3 tiles × 50cm) block should fit."""
+        from network import RailwayNetwork
+        from train import Train, TrainCar
+        from track import TrackSegment, TRACK_EW
+        from enums import Direction
+
+        network = RailwayNetwork()
+        for x in range(3):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        network.create_block_with_tracks(
+            "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
+        )
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="T1", consist=[car])
+        network.add_train(train)
+
+        # Should not raise
+        network.place_train(train, 1, 0, Direction.EAST)
+
+        assert train.position is not None
+        assert train.position.head_tile == (1, 0)
+        assert train.position.head_distance_cm == 50.0  # At exit edge
+
+    def test_40cm_train_tail_on_same_tile(self):
+        """40cm train head at 50cm means tail at 10cm (same tile)."""
+        from network import RailwayNetwork
+        from train import Train, TrainCar
+        from track import TrackSegment, TRACK_EW
+        from enums import Direction
+
+        network = RailwayNetwork()
+        for x in range(3):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        network.create_block_with_tracks(
+            "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
+        )
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="T1", consist=[car])
+        network.add_train(train)
+
+        network.place_train(train, 1, 0, Direction.EAST)
+
+        # Tail should be on same tile at 50 - 40 = 10cm
+        assert train.position.tail_tile == (1, 0)
+        assert train.position.tail_distance_cm == 10.0
+        assert len(train.position.occupied_tiles) == 1
+
+    def test_80cm_train_spans_two_tiles(self):
+        """80cm train with head at 50cm spans into previous tile."""
+        from network import RailwayNetwork
+        from train import Train, TrainCar
+        from track import TrackSegment, TRACK_EW
+        from enums import Direction
+
+        network = RailwayNetwork()
+        for x in range(3):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        network.create_block_with_tracks(
+            "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
+        )
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=80.0)
+        train = Train(train_id="T1", consist=[car])
+        network.add_train(train)
+
+        network.place_train(train, 1, 0, Direction.EAST)
+
+        # Head at (1,0) @ 50cm
+        # Need 80cm total, 50cm covered on head tile
+        # Remaining 30cm goes into previous tile (0,0)
+        # Tail at (0,0) @ 50 - 30 = 20cm
+        assert train.position.head_tile == (1, 0)
+        assert train.position.tail_tile == (0, 0)
+        assert train.position.tail_distance_cm == 20.0
+        assert len(train.position.occupied_tiles) == 2
+
+    def test_train_too_long_raises_error(self):
+        """Train longer than available track should raise ValueError."""
+        from network import RailwayNetwork
+        from train import Train, TrainCar
+        from track import TrackSegment, TRACK_EW
+        from enums import Direction
+        import pytest
+
+        network = RailwayNetwork()
+        # Only 2 tiles = 100cm
+        for x in range(2):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=100.0)
+
+        # 120cm train
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=120.0)
+        train = Train(train_id="T1", consist=[car])
+        network.add_train(train)
+
+        with pytest.raises(ValueError, match="no track at"):
+            network.place_train(train, 1, 0, Direction.EAST)
+
+    def test_place_train_occupies_multiple_blocks(self):
+        """Train spanning multiple blocks should occupy all of them."""
+        from network import RailwayNetwork
+        from train import Train, TrainCar
+        from track import TrackSegment, TRACK_EW
+        from enums import Direction
+
+        network = RailwayNetwork()
+        for x in range(4):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        network.create_block_with_tracks("BLOCK_A", [(0, 0), (1, 0)], length_cm=100.0)
+        network.create_block_with_tracks("BLOCK_B", [(2, 0), (3, 0)], length_cm=100.0)
+
+        # 80cm train starting at tile 2 should span into BLOCK_A
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=80.0)
+        train = Train(train_id="T1", consist=[car])
+        network.add_train(train)
+
+        network.place_train(train, 2, 0, Direction.EAST)
+
+        # Should occupy both blocks
+        assert "BLOCK_A" in train.position.occupied_blocks
+        assert "BLOCK_B" in train.position.occupied_blocks
+
+
+class TestTrainOccupiedTilesRich:
+    """Tests for get_occupied_tiles_rich method."""
+
+    def test_rich_tiles_single_tile_train(self):
+        """Single-tile train returns one tile with correct segment."""
+        from network import RailwayNetwork
+        from train import Train, TrainCar
+        from track import TrackSegment, TRACK_EW
+        from enums import Direction
+
+        network = RailwayNetwork()
+        for x in range(3):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        network.create_block_with_tracks(
+            "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
+        )
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="T1", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 1, 0, Direction.EAST)
+
+        rich = network.get_occupied_tiles_rich(train)
+
+        assert len(rich) == 1
+        assert rich[0]["tile"] == (1, 0)
+        assert rich[0]["block_id"] == "BLOCK_1"
+        assert rich[0]["segment_start_cm"] == 10.0  # Tail at 10cm
+        assert rich[0]["segment_end_cm"] == 50.0  # Head at 50cm
+
+    def test_rich_tiles_multi_tile_train(self):
+        """Multi-tile train returns correct segments for each tile."""
+        from network import RailwayNetwork
+        from train import Train, TrainCar
+        from track import TrackSegment, TRACK_EW
+        from enums import Direction
+
+        network = RailwayNetwork()
+        for x in range(3):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        network.create_block_with_tracks(
+            "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
+        )
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=80.0)
+        train = Train(train_id="T1", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 1, 0, Direction.EAST)
+
+        rich = network.get_occupied_tiles_rich(train)
+
+        assert len(rich) == 2
+        # First tile (tail tile)
+        assert rich[0]["tile"] == (0, 0)
+        assert rich[0]["segment_start_cm"] == 20.0  # Tail at 20cm
+        assert rich[0]["segment_end_cm"] == 50.0  # Full tile exit
+        # Second tile (head tile)
+        assert rich[1]["tile"] == (1, 0)
+        assert rich[1]["segment_start_cm"] == 0.0  # From entry
+        assert rich[1]["segment_end_cm"] == 50.0  # Head at exit
+
+
+class TestTrainReverse:
+    """Tests for train reversal."""
+
+    def test_reverse_train_swaps_leading_end(self):
+        """Reversing train swaps which end is leading."""
+        from network import RailwayNetwork
+        from train import Train, TrainCar
+        from track import TrackSegment, TRACK_EW
+        from enums import Direction
+
+        network = RailwayNetwork()
+        for x in range(3):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        network.create_block_with_tracks(
+            "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
+        )
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="T1", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 1, 0, Direction.EAST)
+
+        # Before reverse
+        assert train.position.leading_end == "a"
+        assert train.position.facing_direction == Direction.EAST
+        old_head = train.position.head_tile
+        old_tail = train.position.tail_tile
+
+        # Reverse
+        network.reverse_train(train)
+
+        # After reverse
+        assert train.position.leading_end == "b"
+        assert train.position.facing_direction == Direction.WEST
+        # Head and tail should be swapped (in terms of which end)
+        assert train.position.head_tile == old_tail
+        assert train.position.tail_tile == old_head
+
+
+class TestSwitchLocking:
+    """Tests for switch locking functionality."""
+
+    def test_switch_lock_unlock(self):
+        """Switch can be locked and unlocked by same path."""
+        from switch import Switch
+
+        switch = Switch(switch_id="SW_1", x=0, y=0)
+
+        # Lock
+        assert switch.lock("PATH_1", 0) is True
+        assert switch.is_locked() is True
+        assert switch.locked_by_path == "PATH_1"
+        assert switch.locked_state == 0
+
+        # Unlock
+        assert switch.unlock("PATH_1") is True
+        assert switch.is_locked() is False
+
+    def test_switch_lock_by_different_path_fails(self):
+        """Switch locked by one path cannot be locked by another."""
+        from switch import Switch
+
+        switch = Switch(switch_id="SW_1", x=0, y=0)
+
+        assert switch.lock("PATH_1", 0) is True
+        assert switch.lock("PATH_2", 1) is False  # Different path
+
+    def test_switch_unlock_by_different_path_fails(self):
+        """Switch cannot be unlocked by different path."""
+        from switch import Switch
+
+        switch = Switch(switch_id="SW_1", x=0, y=0)
+
+        switch.lock("PATH_1", 0)
+        assert switch.unlock("PATH_2") is False
+        assert switch.is_locked() is True  # Still locked
+
+    def test_switch_state_change_blocked_when_locked(self):
+        """Locked switch rejects state change requests."""
+        from switch import Switch
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW, TRACK_NE
+
+        network = RailwayNetwork()
+        # Create a switch tile
+        network.add_track(TrackSegment(0, 0, track_bits=TRACK_EW | TRACK_NE))
+
+        switch = Switch(switch_id="SW_1", x=0, y=0)
+        network.add_switch(switch)
+
+        # Lock in state 0
+        switch.lock("PATH_1", 0)
+
+        # Try to change to state 1
+        success, msg = switch.request_state_change(1, network)
+
+        assert success is False
+        assert "locked" in msg.lower()
+
+    def test_switch_state_change_allowed_when_unlocked(self):
+        """Unlocked switch allows state changes."""
+        from switch import Switch
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW, TRACK_NE
+
+        network = RailwayNetwork()
+        network.add_track(TrackSegment(0, 0, track_bits=TRACK_EW | TRACK_NE))
+
+        switch = Switch(switch_id="SW_1", x=0, y=0)
+        network.add_switch(switch)
+
+        # Not locked - should succeed
+        success, msg = switch.request_state_change(1, network)
+
+        assert success is True
+        track = network.get_track(0, 0)
+        assert track.switch_state == 1
+
+    def test_switch_serialization_includes_lock_state(self):
+        """Switch to_dict includes lock fields."""
+        from switch import Switch
+
+        switch = Switch(switch_id="SW_1", x=0, y=0)
+        switch.lock("PATH_1", 1)
+
+        data = switch.to_dict()
+
+        assert data["locked_by_path"] == "PATH_1"
+        assert data["locked_state"] == 1
+
+    def test_switch_deserialization_restores_lock_state(self):
+        """Switch from_dict restores lock fields."""
+        from switch import Switch
+
+        data = {
+            "switch_id": "SW_1",
+            "x": 0,
+            "y": 0,
+            "locked_by_path": "PATH_1",
+            "locked_state": 1,
+        }
+
+        switch = Switch.from_dict(data)
+
+        assert switch.is_locked() is True
+        assert switch.locked_by_path == "PATH_1"
+        assert switch.locked_state == 1
+
+
+class TestPathPrepending:
+    """
+    Comprehensive tests for path prepending functionality.
+
+    These tests verify that when a path is assigned to a train, tiles are
+    correctly prepended from the train's position to the path start, or
+    the path_index is advanced if the train is already on the path.
+
+    Key rules tested:
+    - Train and path[0] must be in same block
+    - If train is before path[0], prepend tiles
+    - If train is at path[0], no prepending needed
+    - If train is past path[0] but on path, advance path_index
+    - Direction-aware tile sorting for prepending
+    """
+
+    @pytest.fixture
+    def network_with_ew_block(self):
+        """Create a network with an EW block containing 4 tiles."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW
+        from block import Block
+        from enums import BlockState
+
+        network = RailwayNetwork()
+
+        # Create 4 EW tiles in a row: (0,0), (1,0), (2,0), (3,0)
+        for x in range(4):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track.block_section_id = "BLK_1"
+            network.add_track(track)
+
+        # Create the block
+        block = Block(block_id="BLK_1", name="Block 1")
+        block.length_cm = 1000.0
+        network.blocks["BLK_1"] = block
+
+        return network
+
+    @pytest.fixture
+    def network_with_ns_block(self):
+        """Create a network with a NS block containing 4 tiles."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_NS
+        from block import Block
+        from enums import BlockState
+
+        network = RailwayNetwork()
+
+        # Create 4 NS tiles in a column: (0,0), (0,1), (0,2), (0,3)
+        for y in range(4):
+            track = TrackSegment(0, y, track_bits=TRACK_NS)
+            track.block_section_id = "BLK_1"
+            network.add_track(track)
+
+        # Create the block
+        block = Block(block_id="BLK_1", name="Block 1")
+        block.length_cm = 1000.0
+        network.blocks["BLK_1"] = block
+
+        return network
+
+    @pytest.fixture
+    def train_at_origin_facing_east(self, network_with_ew_block):
+        """Create a train at (0,0) facing east."""
+        from train import Train, TrainCar
+        from enums import Direction
+
+        network = network_with_ew_block
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
+        train.current_pos = (0, 0)
+        train.facing_direction = Direction.EAST
+        train.distance_on_track = 0.0
+
+        return network, train
+
+    def test_prepend_tiles_when_train_before_path_start(
+        self, train_at_origin_facing_east
+    ):
+        """Train at (0,0), path starts at (2,0) - should prepend (0,0) and (1,0)."""
+        from path_utils import prepare_path_for_train, assign_path_to_train_with_prepend
+        from enums import Direction
+
+        network, train = train_at_origin_facing_east
+
+        # Path starts at (2,0), ends at (3,0)
+        path_tiles = [
+            (2, 0, Direction.EAST),
+            (3, 0, Direction.EAST),
+        ]
+
+        result = prepare_path_for_train(network, train, path_tiles)
+
+        assert result.success is True
+        assert result.prepend_tiles is not None
+        assert len(result.prepend_tiles) == 2
+        assert result.prepend_tiles[0][:2] == (0, 0)
+        assert result.prepend_tiles[1][:2] == (1, 0)
+        assert result.path_index == 0
+
+    def test_no_prepend_when_train_at_path_start(self, train_at_origin_facing_east):
+        """Train at (0,0), path starts at (0,0) - no prepending needed."""
+        from path_utils import prepare_path_for_train
+        from enums import Direction
+
+        network, train = train_at_origin_facing_east
+
+        # Path starts at train position
+        path_tiles = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+
+        result = prepare_path_for_train(network, train, path_tiles)
+
+        assert result.success is True
+        assert result.prepend_tiles is None
+        assert result.path_index == 0
+
+    def test_advance_path_index_when_train_past_path_start(
+        self, train_at_origin_facing_east
+    ):
+        """Train at (2,0), path starts at (0,0) - should advance path_index to 2."""
+        from path_utils import prepare_path_for_train
+        from enums import Direction
+
+        network, train = train_at_origin_facing_east
+        train.current_pos = (2, 0)  # Move train to (2,0)
+
+        # Path includes train's position
+        path_tiles = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+            (3, 0, Direction.EAST),
+        ]
+
+        result = prepare_path_for_train(network, train, path_tiles)
+
+        assert result.success is True
+        assert result.prepend_tiles is None
+        assert result.path_index == 2  # Train is at path[2]
+
+    def test_reject_when_train_and_path_in_different_blocks(self):
+        """Train in block A, path starts in block B - should reject."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW
+        from block import Block
+        from train import Train, TrainCar
+        from path_utils import prepare_path_for_train
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Block A: tiles (0,0), (1,0)
+        for x in range(2):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track.block_section_id = "BLK_A"
+            network.add_track(track)
+
+        # Block B: tiles (3,0), (4,0)
+        for x in range(3, 5):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track.block_section_id = "BLK_B"
+            network.add_track(track)
+
+        network.blocks["BLK_A"] = Block(block_id="BLK_A")
+        network.blocks["BLK_B"] = Block(block_id="BLK_B")
+
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
+        train.current_pos = (0, 0)  # In block A
+        train.facing_direction = Direction.EAST
+
+        # Path starts in block B
+        path_tiles = [
+            (3, 0, Direction.EAST),
+            (4, 0, Direction.EAST),
+        ]
+
+        result = prepare_path_for_train(network, train, path_tiles)
+
+        assert result.success is False
+        assert "different blocks" in result.error
+
+    def test_reject_when_train_not_in_block(self):
+        """Train position has no block assignment - should reject."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW
+        from block import Block
+        from train import Train, TrainCar
+        from path_utils import prepare_path_for_train
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Track without block assignment
+        track = TrackSegment(0, 0, track_bits=TRACK_EW)
+        network.add_track(track)  # No block_section_id
+
+        # Track with block assignment
+        track2 = TrackSegment(1, 0, track_bits=TRACK_EW)
+        track2.block_section_id = "BLK_1"
+        network.add_track(track2)
+        network.blocks["BLK_1"] = Block(block_id="BLK_1")
+
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
+        train.current_pos = (0, 0)  # Not in a block
+        train.facing_direction = Direction.EAST
+
+        path_tiles = [(1, 0, Direction.EAST)]
+
+        result = prepare_path_for_train(network, train, path_tiles)
+
+        assert result.success is False
+        assert "not in a block" in result.error
+
+    def test_reject_empty_path(self, train_at_origin_facing_east):
+        """Empty path should be rejected."""
+        from path_utils import prepare_path_for_train
+
+        network, train = train_at_origin_facing_east
+
+        result = prepare_path_for_train(network, train, [])
+
+        assert result.success is False
+        assert "Empty path" in result.error
+
+    def test_reject_train_without_position(self):
+        """Train without current_pos should be rejected."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW
+        from train import Train, TrainCar
+        from path_utils import prepare_path_for_train
+        from enums import Direction
+
+        network = RailwayNetwork()
+        track = TrackSegment(0, 0, track_bits=TRACK_EW)
+        network.add_track(track)
+
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
+        train.current_pos = None  # No position
+
+        path_tiles = [(0, 0, Direction.EAST)]
+
+        result = prepare_path_for_train(network, train, path_tiles)
+
+        assert result.success is False
+        assert "no position" in result.error
+
+    def test_assign_path_with_prepend_sets_train_properties(
+        self, train_at_origin_facing_east
+    ):
+        """assign_path_to_train_with_prepend should set train.current_path and path_index."""
+        from path_utils import assign_path_to_train_with_prepend
+        from enums import Direction
+
+        network, train = train_at_origin_facing_east
+
+        path_tiles = [
+            (2, 0, Direction.EAST),
+            (3, 0, Direction.EAST),
+        ]
+
+        success, error = assign_path_to_train_with_prepend(network, train, path_tiles)
+
+        assert success is True
+        assert error is None
+        assert train.current_path is not None
+        assert len(train.current_path) == 4  # 2 prepended + 2 original
+        assert train.current_path[0][:2] == (0, 0)
+        assert train.current_path[1][:2] == (1, 0)
+        assert train.current_path[2][:2] == (2, 0)
+        assert train.current_path[3][:2] == (3, 0)
+        assert train.path_index == 0
+
+    def test_direction_aware_sorting_ns_block_north(self):
+        """NS block with train facing north should sort y ascending."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_NS
+        from block import Block
+        from train import Train, TrainCar
+        from path_utils import prepare_path_for_train
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # NS block: (0,0), (0,1), (0,2), (0,3)
+        for y in range(4):
+            track = TrackSegment(0, y, track_bits=TRACK_NS)
+            track.block_section_id = "BLK_1"
+            network.add_track(track)
+        network.blocks["BLK_1"] = Block(block_id="BLK_1")
+
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
+        train.current_pos = (0, 0)  # South end
+        train.facing_direction = Direction.NORTH
+
+        # Path starts at (0,2)
+        path_tiles = [
+            (0, 2, Direction.NORTH),
+            (0, 3, Direction.NORTH),
+        ]
+
+        result = prepare_path_for_train(network, train, path_tiles)
+
+        assert result.success is True
+        assert result.prepend_tiles is not None
+        # Should prepend (0,0), (0,1) in ascending y order
+        assert result.prepend_tiles[0][:2] == (0, 0)
+        assert result.prepend_tiles[1][:2] == (0, 1)
+
+    def test_direction_aware_sorting_ns_block_south(self):
+        """NS block with train facing south should sort y descending."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_NS
+        from block import Block
+        from train import Train, TrainCar
+        from path_utils import prepare_path_for_train
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # NS block: (0,0), (0,1), (0,2), (0,3)
+        for y in range(4):
+            track = TrackSegment(0, y, track_bits=TRACK_NS)
+            track.block_section_id = "BLK_1"
+            network.add_track(track)
+        network.blocks["BLK_1"] = Block(block_id="BLK_1")
+
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
+        train.current_pos = (0, 3)  # North end
+        train.facing_direction = Direction.SOUTH
+
+        # Path starts at (0,1)
+        path_tiles = [
+            (0, 1, Direction.SOUTH),
+            (0, 0, Direction.SOUTH),
+        ]
+
+        result = prepare_path_for_train(network, train, path_tiles)
+
+        assert result.success is True
+        assert result.prepend_tiles is not None
+        # Should prepend (0,3), (0,2) in descending y order
+        assert result.prepend_tiles[0][:2] == (0, 3)
+        assert result.prepend_tiles[1][:2] == (0, 2)
+
+    def test_direction_aware_sorting_ew_block_west(self):
+        """EW block with train facing west should sort x descending."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW
+        from block import Block
+        from train import Train, TrainCar
+        from path_utils import prepare_path_for_train
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # EW block: (0,0), (1,0), (2,0), (3,0)
+        for x in range(4):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track.block_section_id = "BLK_1"
+            network.add_track(track)
+        network.blocks["BLK_1"] = Block(block_id="BLK_1")
+
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
+        train.current_pos = (3, 0)  # East end
+        train.facing_direction = Direction.WEST
+
+        # Path starts at (1,0)
+        path_tiles = [
+            (1, 0, Direction.WEST),
+            (0, 0, Direction.WEST),
+        ]
+
+        result = prepare_path_for_train(network, train, path_tiles)
+
+        assert result.success is True
+        assert result.prepend_tiles is not None
+        # Should prepend (3,0), (2,0) in descending x order
+        assert result.prepend_tiles[0][:2] == (3, 0)
+        assert result.prepend_tiles[1][:2] == (2, 0)
+
+    def test_real_world_scenario_train_placed_at_block_start(self):
+        """
+        Real-world scenario: Train placed at start of block, path goes through block.
+
+        This mimics the bug where debug panel showed:
+        - Train at (0,0)
+        - Path starts at (2,0)
+        - path_index=0 (should have tiles prepended)
+        """
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW
+        from block import Block
+        from train import Train, TrainCar
+        from path_utils import assign_path_to_train_with_prepend
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Create a block with 5 tiles
+        for x in range(5):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track.block_section_id = "MainBlock"
+            network.add_track(track)
+        network.blocks["MainBlock"] = Block(block_id="MainBlock", length_cm=2000.0)
+
+        # Train placed at (0,0) - beginning of block
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=100.0)
+        train = Train(train_id="TRN_Express", consist=[car], max_speed=120.0)
+        train.current_pos = (0, 0)
+        train.facing_direction = Direction.EAST
+        train.distance_on_track = 50.0  # Existing position on track
+
+        # Path created from (2,0) to (4,0)
+        path_tiles = [
+            (2, 0, Direction.EAST),
+            (3, 0, Direction.EAST),
+            (4, 0, Direction.EAST),
+        ]
+
+        # Assign path with prepending
+        success, error = assign_path_to_train_with_prepend(network, train, path_tiles)
+
+        # Should succeed
+        assert success is True
+        assert error is None
+
+        # Path should now include (0,0), (1,0), (2,0), (3,0), (4,0)
+        assert len(train.current_path) == 5
+        assert train.current_path[0][:2] == (0, 0)
+        assert train.current_path[1][:2] == (1, 0)
+        assert train.current_path[2][:2] == (2, 0)
+        assert train.path_index == 0
+
+        # distance_on_track should be unchanged (we don't modify it)
+        assert train.distance_on_track == 50.0
+
+
+class TestPathAppending:
+    """
+    Comprehensive tests for path appending functionality.
+
+    These tests verify that when a path ends at a destination block/station,
+    the remaining tiles of that block are appended to ensure the train
+    stops at the far edge of the platform, not at the entrance.
+    """
+
+    def test_append_tiles_to_complete_destination_block(self):
+        """Path ends at first tile of destination block - should append remaining tiles."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW
+        from block import Block
+        from path_utils import append_destination_block_tiles
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Create source block (2 tiles)
+        for x in range(2):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track.block_section_id = "BLK_SOURCE"
+            network.add_track(track)
+        network.blocks["BLK_SOURCE"] = Block(block_id="BLK_SOURCE")
+
+        # Create destination block (3 tiles): (2,0), (3,0), (4,0)
+        for x in range(2, 5):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track.block_section_id = "BLK_DEST"
+            network.add_track(track)
+        network.blocks["BLK_DEST"] = Block(block_id="BLK_DEST")
+
+        # Path ends at first tile of destination block
+        path_tiles = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),  # First tile of destination block
+        ]
+
+        extended_path, error = append_destination_block_tiles(network, path_tiles)
+
+        assert error is None
+        assert len(extended_path) == 5  # Original 3 + appended 2
+        assert extended_path[0][:2] == (0, 0)
+        assert extended_path[1][:2] == (1, 0)
+        assert extended_path[2][:2] == (2, 0)
+        assert extended_path[3][:2] == (3, 0)  # Appended
+        assert extended_path[4][:2] == (4, 0)  # Appended
+
+    def test_no_append_when_path_ends_at_block_end(self):
+        """Path already ends at far edge of destination block - no appending needed."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW
+        from block import Block
+        from path_utils import append_destination_block_tiles
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Create destination block (3 tiles)
+        for x in range(3):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track.block_section_id = "BLK_DEST"
+            network.add_track(track)
+        network.blocks["BLK_DEST"] = Block(block_id="BLK_DEST")
+
+        # Path already ends at last tile of block
+        path_tiles = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),  # Last tile of block
+        ]
+
+        extended_path, error = append_destination_block_tiles(network, path_tiles)
+
+        assert error is None
+        assert len(extended_path) == 3  # No change
+
+    def test_assign_complete_path_includes_both_prepend_and_append(self):
+        """assign_complete_path_to_train handles both prepend and append."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW
+        from block import Block
+        from train import Train, TrainCar
+        from path_utils import assign_complete_path_to_train
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Source block: (0,0), (1,0)
+        for x in range(2):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track.block_section_id = "BLK_SOURCE"
+            network.add_track(track)
+        network.blocks["BLK_SOURCE"] = Block(block_id="BLK_SOURCE")
+
+        # Destination block: (2,0), (3,0), (4,0)
+        for x in range(2, 5):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            track.block_section_id = "BLK_DEST"
+            network.add_track(track)
+        network.blocks["BLK_DEST"] = Block(block_id="BLK_DEST")
+
+        # Train at (0,0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
+        train.current_pos = (0, 0)
+        train.facing_direction = Direction.EAST
+
+        # Path from (1,0) to (2,0) - needs both prepend and append
+        path_tiles = [
+            (1, 0, Direction.EAST),  # Train at (0,0), needs prepend
+            (2, 0, Direction.EAST),  # First tile of dest block, needs append
+        ]
+
+        success, error = assign_complete_path_to_train(network, train, path_tiles)
+
+        assert success is True
+        assert error is None
+        # Should have: (0,0) prepended, (1,0), (2,0), (3,0), (4,0) appended
+        assert len(train.current_path) == 5
+        assert train.current_path[0][:2] == (0, 0)
+        assert train.current_path[1][:2] == (1, 0)
+        assert train.current_path[2][:2] == (2, 0)
+        assert train.current_path[3][:2] == (3, 0)
+        assert train.current_path[4][:2] == (4, 0)
+
+    def test_append_with_ns_block_north_direction(self):
+        """NS block with northbound path should append tiles in y ascending order."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_NS
+        from block import Block
+        from path_utils import append_destination_block_tiles
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # NS destination block: (0,0), (0,1), (0,2)
+        for y in range(3):
+            track = TrackSegment(0, y, track_bits=TRACK_NS)
+            track.block_section_id = "BLK_DEST"
+            network.add_track(track)
+        network.blocks["BLK_DEST"] = Block(block_id="BLK_DEST")
+
+        # Path ends at first tile of block
+        path_tiles = [
+            (0, 0, Direction.NORTH),  # First tile of block
+        ]
+
+        extended_path, error = append_destination_block_tiles(
+            network, path_tiles, Direction.NORTH
+        )
+
+        assert error is None
+        assert len(extended_path) == 3
+        assert extended_path[0][:2] == (0, 0)
+        assert extended_path[1][:2] == (0, 1)  # Appended
+        assert extended_path[2][:2] == (0, 2)  # Appended
+
+    def test_station_path_extends_to_platform_end(self):
+        """
+        Real-world scenario: Path to station should extend to far end of platform.
+
+        This fixes the bug where:
+        - Station at (9,3) and (9,4)
+        - Path ended at (9,3) - first tile
+        - Train stopped at entrance, not at platform end
+        """
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_NS
+        from block import Block
+        from train import Train, TrainCar
+        from path_utils import assign_complete_path_to_train
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Approach block: (9,0), (9,1), (9,2)
+        for y in range(3):
+            track = TrackSegment(9, y, track_bits=TRACK_NS)
+            track.block_section_id = "BLK_APPROACH"
+            network.add_track(track)
+        network.blocks["BLK_APPROACH"] = Block(block_id="BLK_APPROACH")
+
+        # Station block: (9,3), (9,4)
+        for y in range(3, 5):
+            track = TrackSegment(9, y, track_bits=TRACK_NS)
+            track.block_section_id = "BLK_STATION"
+            network.add_track(track)
+        network.blocks["BLK_STATION"] = Block(block_id="BLK_STATION")
+
+        # Train at (9,0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
+        train.current_pos = (9, 0)
+        train.facing_direction = Direction.NORTH
+
+        # Original path ends at first station tile
+        path_tiles = [
+            (9, 0, Direction.NORTH),
+            (9, 1, Direction.NORTH),
+            (9, 2, Direction.NORTH),
+            (9, 3, Direction.NORTH),  # First tile of station block
+        ]
+
+        success, error = assign_complete_path_to_train(network, train, path_tiles)
+
+        assert success is True
+        # Path should extend to include (9,4) - the far end of platform
+        assert len(train.current_path) == 5
+        assert train.current_path[3][:2] == (9, 3)
+        assert train.current_path[4][:2] == (9, 4)  # Appended station end
+
+
+class TestPositionsToPathTilesDirections:
+    """
+    Comprehensive tests for _positions_to_path_tiles direction inference.
+
+    Bug fixed: Last tile was incorrectly defaulting to Direction.EAST instead
+    of using the previous tile's direction. This caused issues with NS blocks
+    where the last tile would have an incorrect direction.
+
+    Tests cover:
+    - All four cardinal directions (NORTH, SOUTH, EAST, WEST)
+    - Single tile edge case
+    - Direction propagation to last tile
+    - Multi-segment paths with direction changes
+    """
+
+    def test_single_tile_defaults_to_east(self):
+        """Single tile with no default_direction uses EAST as fallback."""
+        from path_utils import _positions_to_path_tiles
+        from enums import Direction
+
+        positions = [(5, 5)]
+        result = _positions_to_path_tiles(positions, None, None)
+
+        assert len(result) == 1
+        assert result[0] == (5, 5, Direction.EAST)
+
+    def test_single_tile_uses_default_direction(self):
+        """Single tile uses provided default_direction."""
+        from path_utils import _positions_to_path_tiles
+        from enums import Direction
+
+        positions = [(5, 5)]
+        result = _positions_to_path_tiles(positions, Direction.NORTH, None)
+
+        assert len(result) == 1
+        assert result[0] == (5, 5, Direction.NORTH)
+
+    def test_two_tiles_north_direction(self):
+        """Two tiles going north: y increases."""
+        from path_utils import _positions_to_path_tiles
+        from enums import Direction
+
+        positions = [(5, 0), (5, 1)]
+        result = _positions_to_path_tiles(positions, None, None)
+
+        assert len(result) == 2
+        assert result[0] == (5, 0, Direction.NORTH)  # First tile: infer from next
+        assert result[1] == (5, 1, Direction.NORTH)  # Last tile: use previous direction
+
+    def test_two_tiles_south_direction(self):
+        """Two tiles going south: y decreases."""
+        from path_utils import _positions_to_path_tiles
+        from enums import Direction
+
+        positions = [(5, 5), (5, 4)]
+        result = _positions_to_path_tiles(positions, None, None)
+
+        assert len(result) == 2
+        assert result[0] == (5, 5, Direction.SOUTH)  # First tile: infer from next
+        assert result[1] == (5, 4, Direction.SOUTH)  # Last tile: use previous direction
+
+    def test_two_tiles_east_direction(self):
+        """Two tiles going east: x increases."""
+        from path_utils import _positions_to_path_tiles
+        from enums import Direction
+
+        positions = [(0, 5), (1, 5)]
+        result = _positions_to_path_tiles(positions, None, None)
+
+        assert len(result) == 2
+        assert result[0] == (0, 5, Direction.EAST)  # First tile: infer from next
+        assert result[1] == (1, 5, Direction.EAST)  # Last tile: use previous direction
+
+    def test_two_tiles_west_direction(self):
+        """Two tiles going west: x decreases."""
+        from path_utils import _positions_to_path_tiles
+        from enums import Direction
+
+        positions = [(5, 5), (4, 5)]
+        result = _positions_to_path_tiles(positions, None, None)
+
+        assert len(result) == 2
+        assert result[0] == (5, 5, Direction.WEST)  # First tile: infer from next
+        assert result[1] == (4, 5, Direction.WEST)  # Last tile: use previous direction
+
+    def test_multi_tile_north_direction(self):
+        """Multiple tiles going north: all should have NORTH direction."""
+        from path_utils import _positions_to_path_tiles
+        from enums import Direction
+
+        positions = [(9, 0), (9, 1), (9, 2), (9, 3), (9, 4)]
+        result = _positions_to_path_tiles(positions, None, None)
+
+        assert len(result) == 5
+        for i, (x, y, direction) in enumerate(result):
+            assert x == 9
+            assert y == i
+            assert direction == Direction.NORTH, (
+                f"Tile at (9, {i}) should be NORTH, got {direction}"
+            )
+
+    def test_multi_tile_south_direction(self):
+        """Multiple tiles going south: all should have SOUTH direction."""
+        from path_utils import _positions_to_path_tiles
+        from enums import Direction
+
+        positions = [(9, 4), (9, 3), (9, 2), (9, 1), (9, 0)]
+        result = _positions_to_path_tiles(positions, None, None)
+
+        assert len(result) == 5
+        for i, (x, y, direction) in enumerate(result):
+            assert x == 9
+            assert y == 4 - i
+            assert direction == Direction.SOUTH, (
+                f"Tile at (9, {4 - i}) should be SOUTH, got {direction}"
+            )
+
+    def test_multi_tile_east_direction(self):
+        """Multiple tiles going east: all should have EAST direction."""
+        from path_utils import _positions_to_path_tiles
+        from enums import Direction
+
+        positions = [(0, 5), (1, 5), (2, 5), (3, 5), (4, 5)]
+        result = _positions_to_path_tiles(positions, None, None)
+
+        assert len(result) == 5
+        for i, (x, y, direction) in enumerate(result):
+            assert x == i
+            assert y == 5
+            assert direction == Direction.EAST, (
+                f"Tile at ({i}, 5) should be EAST, got {direction}"
+            )
+
+    def test_multi_tile_west_direction(self):
+        """Multiple tiles going west: all should have WEST direction."""
+        from path_utils import _positions_to_path_tiles
+        from enums import Direction
+
+        positions = [(4, 5), (3, 5), (2, 5), (1, 5), (0, 5)]
+        result = _positions_to_path_tiles(positions, None, None)
+
+        assert len(result) == 5
+        for i, (x, y, direction) in enumerate(result):
+            assert x == 4 - i
+            assert y == 5
+            assert direction == Direction.WEST, (
+                f"Tile at ({4 - i}, 5) should be WEST, got {direction}"
+            )
+
+    def test_last_tile_inherits_previous_direction_ns_block(self):
+        """
+        Regression test: Last tile in NS block should NOT default to EAST.
+
+        Bug: _positions_to_path_tiles used to default last tile to Direction.EAST
+        which was wrong for NS blocks. The fix makes last tile use the previous
+        tile's calculated direction.
+        """
+        from path_utils import _positions_to_path_tiles
+        from enums import Direction
+
+        # NS block path going north
+        positions = [(9, 3), (9, 4)]
+        result = _positions_to_path_tiles(positions, None, None)
+
+        assert result[0][2] == Direction.NORTH
+        assert result[1][2] == Direction.NORTH  # Should NOT be EAST
+
+    def test_l_shaped_path_direction_changes(self):
+        """L-shaped path: direction changes from NORTH to EAST."""
+        from path_utils import _positions_to_path_tiles
+        from enums import Direction
+
+        # Going north then turning east
+        positions = [(0, 0), (0, 1), (0, 2), (1, 2), (2, 2)]
+        result = _positions_to_path_tiles(positions, None, None)
+
+        assert result[0][2] == Direction.NORTH
+        assert result[1][2] == Direction.NORTH
+        assert result[2][2] == Direction.EAST  # Turn happens here
+        assert result[3][2] == Direction.EAST
+        assert result[4][2] == Direction.EAST  # Last tile inherits EAST
+
+    def test_reverse_l_shaped_path_direction_changes(self):
+        """Reverse L-shaped path: direction changes from EAST to SOUTH."""
+        from path_utils import _positions_to_path_tiles
+        from enums import Direction
+
+        # Going east then turning south
+        positions = [(0, 2), (1, 2), (2, 2), (2, 1), (2, 0)]
+        result = _positions_to_path_tiles(positions, None, None)
+
+        assert result[0][2] == Direction.EAST
+        assert result[1][2] == Direction.EAST
+        assert result[2][2] == Direction.SOUTH  # Turn happens here
+        assert result[3][2] == Direction.SOUTH
+        assert result[4][2] == Direction.SOUTH  # Last tile inherits SOUTH
+
+    def test_u_turn_path(self):
+        """U-turn path: direction changes from NORTH to SOUTH."""
+        from path_utils import _positions_to_path_tiles
+        from enums import Direction
+
+        # Going north, then east, then south (U-turn)
+        positions = [(0, 0), (0, 1), (1, 1), (1, 0)]
+        result = _positions_to_path_tiles(positions, None, None)
+
+        assert result[0][2] == Direction.NORTH
+        assert result[1][2] == Direction.EAST
+        assert result[2][2] == Direction.SOUTH
+        assert result[3][2] == Direction.SOUTH  # Last tile inherits SOUTH
+
+    def test_empty_positions_returns_empty(self):
+        """Empty positions list returns empty result."""
+        from path_utils import _positions_to_path_tiles
+
+        result = _positions_to_path_tiles([], None, None)
+        assert result == []
+
+    def test_stationary_tiles_use_default_direction(self):
+        """Same position repeated uses default direction (edge case)."""
+        from path_utils import _positions_to_path_tiles
+        from enums import Direction
+
+        # This is an edge case - same position multiple times
+        positions = [(5, 5), (5, 5)]
+        result = _positions_to_path_tiles(positions, Direction.WEST, None)
+
+        assert result[0][2] == Direction.WEST  # No movement, use default
+        assert result[1][2] == Direction.WEST  # Inherit from previous
+
+
+class TestPathDirectionWithBlocks:
+    """
+    Integration tests for path direction handling with actual blocks.
+
+    Tests ensure that _positions_to_path_tiles works correctly when used
+    by append_destination_block_tiles to extend paths to the end of
+    destination blocks.
+    """
+
+    def test_ns_block_append_preserves_north_direction(self):
+        """
+        Path going NORTH into NS block should have NORTH direction on all
+        appended tiles, not EAST.
+        """
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_NS
+        from block import Block
+        from path_utils import append_destination_block_tiles
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Create NS block: (9,0), (9,1), (9,2), (9,3), (9,4)
+        for y in range(5):
+            track = TrackSegment(9, y, track_bits=TRACK_NS)
+            track.block_section_id = "BLK_NS"
+            network.add_track(track)
+        network.blocks["BLK_NS"] = Block(block_id="BLK_NS")
+
+        # Path ends at (9,2) going NORTH
+        path_tiles = [
+            (9, 0, Direction.NORTH),
+            (9, 1, Direction.NORTH),
+            (9, 2, Direction.NORTH),
+        ]
+
+        extended_path, error = append_destination_block_tiles(network, path_tiles)
+
+        assert error is None
+        assert len(extended_path) == 5
+
+        # All tiles should have NORTH direction
+        for x, y, direction in extended_path:
+            assert direction == Direction.NORTH, (
+                f"Tile ({x},{y}) should be NORTH, got {direction}"
+            )
+
+    def test_ns_block_append_preserves_south_direction(self):
+        """
+        Path going SOUTH into NS block should have SOUTH direction on all
+        appended tiles.
+        """
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_NS
+        from block import Block
+        from path_utils import append_destination_block_tiles
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Create NS block: (9,0), (9,1), (9,2), (9,3), (9,4)
+        for y in range(5):
+            track = TrackSegment(9, y, track_bits=TRACK_NS)
+            track.block_section_id = "BLK_NS"
+            network.add_track(track)
+        network.blocks["BLK_NS"] = Block(block_id="BLK_NS")
+
+        # Path ends at (9,2) going SOUTH
+        path_tiles = [
+            (9, 4, Direction.SOUTH),
+            (9, 3, Direction.SOUTH),
+            (9, 2, Direction.SOUTH),
+        ]
+
+        extended_path, error = append_destination_block_tiles(network, path_tiles)
+
+        assert error is None
+        assert len(extended_path) == 5
+
+        # All tiles should have SOUTH direction
+        for x, y, direction in extended_path:
+            assert direction == Direction.SOUTH, (
+                f"Tile ({x},{y}) should be SOUTH, got {direction}"
+            )
+
+    def test_ew_block_append_preserves_east_direction(self):
+        """Path going EAST into EW block should preserve EAST direction."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW
+        from block import Block
+        from path_utils import append_destination_block_tiles
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Create EW block: (0,5), (1,5), (2,5), (3,5), (4,5)
+        for x in range(5):
+            track = TrackSegment(x, 5, track_bits=TRACK_EW)
+            track.block_section_id = "BLK_EW"
+            network.add_track(track)
+        network.blocks["BLK_EW"] = Block(block_id="BLK_EW")
+
+        # Path ends at (2,5) going EAST
+        path_tiles = [
+            (0, 5, Direction.EAST),
+            (1, 5, Direction.EAST),
+            (2, 5, Direction.EAST),
+        ]
+
+        extended_path, error = append_destination_block_tiles(network, path_tiles)
+
+        assert error is None
+        assert len(extended_path) == 5
+
+        # All tiles should have EAST direction
+        for x, y, direction in extended_path:
+            assert direction == Direction.EAST, (
+                f"Tile ({x},{y}) should be EAST, got {direction}"
+            )
+
+    def test_ew_block_append_preserves_west_direction(self):
+        """Path going WEST into EW block should preserve WEST direction."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW
+        from block import Block
+        from path_utils import append_destination_block_tiles
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Create EW block: (0,5), (1,5), (2,5), (3,5), (4,5)
+        for x in range(5):
+            track = TrackSegment(x, 5, track_bits=TRACK_EW)
+            track.block_section_id = "BLK_EW"
+            network.add_track(track)
+        network.blocks["BLK_EW"] = Block(block_id="BLK_EW")
+
+        # Path ends at (2,5) going WEST
+        path_tiles = [
+            (4, 5, Direction.WEST),
+            (3, 5, Direction.WEST),
+            (2, 5, Direction.WEST),
+        ]
+
+        extended_path, error = append_destination_block_tiles(network, path_tiles)
+
+        assert error is None
+        assert len(extended_path) == 5
+
+        # All tiles should have WEST direction
+        for x, y, direction in extended_path:
+            assert direction == Direction.WEST, (
+                f"Tile ({x},{y}) should be WEST, got {direction}"
+            )
+
+
+class TestPathDirectionConversion:
+    """
+    Tests for _convert_path_tiles_to_train_path logic.
+
+    This function converts raw path tiles [(x,y), ...] to train path format [(x,y,Direction), ...].
+    The last tile should inherit the direction from the previous tile, not default to EAST.
+
+    Bug fixed: Last tile was always getting Direction.EAST regardless of actual travel direction.
+    """
+
+    @staticmethod
+    def _convert_path_tiles_to_train_path(tiles):
+        """Local copy of server.py function for testing without importing server module."""
+        from enums import Direction
+
+        result = []
+        last_direction = Direction.EAST  # Default fallback
+        for i, tile in enumerate(tiles):
+            if i + 1 < len(tiles):
+                next_tile = tiles[i + 1]
+                dx = next_tile[0] - tile[0]
+                dy = next_tile[1] - tile[1]
+
+                if dy > 0:
+                    direction = Direction.NORTH
+                elif dy < 0:
+                    direction = Direction.SOUTH
+                elif dx > 0:
+                    direction = Direction.EAST
+                else:
+                    direction = Direction.WEST
+                last_direction = direction
+            else:
+                # For the last tile, continue in the same direction as before
+                direction = last_direction
+
+            result.append((tile[0], tile[1], direction))
+
+        return result
+
+    def test_ns_path_last_tile_gets_north_direction(self):
+        """Path going NORTH should have last tile with NORTH direction, not EAST."""
+        from enums import Direction
+
+        # Path going north: (9,0) -> (9,1) -> (9,2) -> (9,3)
+        tiles = [(9, 0), (9, 1), (9, 2), (9, 3)]
+
+        result = self._convert_path_tiles_to_train_path(tiles)
+
+        assert len(result) == 4
+        # All tiles should have NORTH direction
+        for i, (x, y, direction) in enumerate(result):
+            assert direction == Direction.NORTH, (
+                f"Tile {i} ({x},{y}) should be NORTH, got {direction}"
+            )
+
+    def test_south_path_last_tile_gets_south_direction(self):
+        """Path going SOUTH should have last tile with SOUTH direction."""
+        from enums import Direction
+
+        tiles = [(0, 5), (0, 4), (0, 3), (0, 2)]
+
+        result = self._convert_path_tiles_to_train_path(tiles)
+
+        assert len(result) == 4
+        for x, y, direction in result:
+            assert direction == Direction.SOUTH
+
+    def test_east_path_last_tile_gets_east_direction(self):
+        """Path going EAST should have last tile with EAST direction."""
+        from enums import Direction
+
+        tiles = [(0, 0), (1, 0), (2, 0), (3, 0)]
+
+        result = self._convert_path_tiles_to_train_path(tiles)
+
+        assert len(result) == 4
+        for x, y, direction in result:
+            assert direction == Direction.EAST
+
+    def test_west_path_last_tile_gets_west_direction(self):
+        """Path going WEST should have last tile with WEST direction."""
+        from enums import Direction
+
+        tiles = [(5, 0), (4, 0), (3, 0), (2, 0)]
+
+        result = self._convert_path_tiles_to_train_path(tiles)
+
+        assert len(result) == 4
+        for x, y, direction in result:
+            assert direction == Direction.WEST
+
+    def test_turning_path_last_tile_preserves_final_direction(self):
+        """Path that turns should have last tile with the direction of the turn."""
+        from enums import Direction
+
+        # Path going EAST then turning NORTH
+        tiles = [(0, 0), (1, 0), (2, 0), (2, 1), (2, 2)]
+
+        result = self._convert_path_tiles_to_train_path(tiles)
+
+        assert len(result) == 5
+        # First 3 tiles go EAST, last 2 go NORTH
+        assert result[0][2] == Direction.EAST
+        assert result[1][2] == Direction.EAST
+        assert result[2][2] == Direction.NORTH  # Turn point - direction to next tile
+        assert result[3][2] == Direction.NORTH
+        assert result[4][2] == Direction.NORTH  # Last tile inherits NORTH
+
+    def test_single_tile_path_defaults_to_east(self):
+        """Single tile path has no previous direction, defaults to EAST."""
+        from enums import Direction
+
+        tiles = [(5, 5)]
+
+        result = self._convert_path_tiles_to_train_path(tiles)
+
+        assert len(result) == 1
+        assert result[0][2] == Direction.EAST  # Fallback default
+
+
+class TestTrainTailEntryEdge:
+    """
+    Tests for tail entry_edge calculation in network._calculate_occupied_tiles.
+
+    Bug fixed: Tail entry_edge was using opposite_edge (exit edge) instead of
+    backward_edge (actual entry edge when moving forward).
+
+    The tail and head should enter tiles from the SAME direction when on straight track,
+    because they're part of the same train moving in the same direction.
+    """
+
+    def test_eastbound_train_tail_has_west_entry_edge(self):
+        """Train moving EAST: both head and tail should have entry_edge='W'."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW
+        from train import Train
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Create 5 EW tiles
+        for x in range(5):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        # Place train at (3, 0), facing EAST
+        train = Train(train_id="T1", max_speed=60)
+        network.add_train(train)
+        network.place_train(train, tile_x=3, tile_y=0, direction=Direction.EAST)
+
+        pos = train.position
+        assert pos is not None
+
+        # Head entered from West (moving East)
+        assert pos.end_a_entry_edge == "W", (
+            f"Head entry should be W, got {pos.end_a_entry_edge}"
+        )
+
+        # Tail should ALSO have entered from West (same train, same direction)
+        assert pos.end_b_entry_edge == "W", (
+            f"Tail entry should be W, got {pos.end_b_entry_edge}"
+        )
+
+    def test_northbound_train_tail_has_south_entry_edge(self):
+        """Train moving NORTH: both head and tail should have entry_edge='S'."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_NS
+        from train import Train
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Create 5 NS tiles
+        for y in range(5):
+            track = TrackSegment(0, y, track_bits=TRACK_NS)
+            network.add_track(track)
+
+        # Place train at (0, 3), facing NORTH
+        train = Train(train_id="T1", max_speed=60)
+        network.add_train(train)
+        network.place_train(train, tile_x=0, tile_y=3, direction=Direction.NORTH)
+
+        pos = train.position
+        assert pos is not None
+
+        # Head entered from South (moving North)
+        assert pos.end_a_entry_edge == "S", (
+            f"Head entry should be S, got {pos.end_a_entry_edge}"
+        )
+
+        # Tail should also have entered from South
+        assert pos.end_b_entry_edge == "S", (
+            f"Tail entry should be S, got {pos.end_b_entry_edge}"
+        )
+
+    def test_westbound_train_tail_has_east_entry_edge(self):
+        """Train moving WEST: both head and tail should have entry_edge='E'."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW
+        from train import Train
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Create 5 EW tiles
+        for x in range(5):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        # Place train at (1, 0), facing WEST (entered from East)
+        train = Train(train_id="T1", max_speed=60)
+        network.add_train(train)
+        network.place_train(train, tile_x=1, tile_y=0, direction=Direction.WEST)
+
+        pos = train.position
+        assert pos is not None
+
+        # Head entered from East (moving West)
+        assert pos.end_a_entry_edge == "E", (
+            f"Head entry should be E, got {pos.end_a_entry_edge}"
+        )
+
+        # Tail should also have entered from East
+        assert pos.end_b_entry_edge == "E", (
+            f"Tail entry should be E, got {pos.end_b_entry_edge}"
+        )
+
+    def test_tail_entry_edge_consistent_after_recalculate(self):
+        """Tail entry_edge stays consistent after position recalculation."""
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW
+        from train import Train
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Create tiles
+        for x in range(5):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        # Place train
+        train = Train(train_id="T1", max_speed=60)
+        network.add_train(train)
+        network.place_train(train, tile_x=2, tile_y=0, direction=Direction.EAST)
+
+        # Move train forward slightly
+        train.distance_on_track = 45.0
+        train.current_pos = (2, 0)
+
+        # Recalculate position
+        network.recalculate_train_position(train)
+
+        pos = train.position
+        assert pos.end_a_entry_edge == "W", f"Head entry should be W after recalc"
+        assert pos.end_b_entry_edge == "W", f"Tail entry should be W after recalc"
+
+
+class TestSwitchBackwardTracing:
+    """
+    Comprehensive tests for backward tracing through switches in _calculate_occupied_tiles.
+
+    BUG FIXED: When tracing backward through a switch with 0cm length, the code
+    incorrectly calculated the entry edge for the switch tile, causing a "Circular
+    track detected" error.
+
+    ROOT CAUSE: When the train entered a switch from W and exited through N
+    (diverge path), backward tracing from the next tile would arrive at the switch
+    via its N edge. The code then needed to determine: "If the train exited
+    through N, which edge did it enter from?" This requires checking the switch
+    state to find the correct entry edge (W in this case).
+
+    FIX: Added get_entry_for_exit() method to TrackSegment which performs the
+    inverse of get_exits(). For switches, it respects switch state to determine
+    which entry edge leads to the given exit.
+    """
+
+    def test_get_entry_for_exit_main_state(self):
+        """get_entry_for_exit returns correct entry for MAIN state."""
+        from track import TrackSegment, TRACK_EW, TRACK_NW
+
+        # Switch with EW + NW paths (bits = 10)
+        # MAIN (0): E-W path active
+        # DIVERGE (1): N-W path active
+        switch = TrackSegment(0, 0, track_bits=TRACK_EW | TRACK_NW)
+        switch.set_switch_state(0)
+
+        # In MAIN state, W->E and E->W are active
+        assert switch.get_entry_for_exit("E") == "W"
+        assert switch.get_entry_for_exit("W") == "E"
+        # N is not an exit in MAIN state
+        assert switch.get_entry_for_exit("N") is None
+
+    def test_get_entry_for_exit_diverge_state(self):
+        """get_entry_for_exit returns correct entry for DIVERGE state."""
+        from track import TrackSegment, TRACK_EW, TRACK_NW
+
+        switch = TrackSegment(0, 0, track_bits=TRACK_EW | TRACK_NW)
+        switch.set_switch_state(1)
+
+        # In DIVERGE state, W->N and N->W are active
+        assert switch.get_entry_for_exit("N") == "W"
+        assert switch.get_entry_for_exit("W") == "N"
+        # E is not an exit in DIVERGE state
+        assert switch.get_entry_for_exit("E") is None
+
+    def test_get_entry_for_exit_simple_track(self):
+        """get_entry_for_exit works on simple non-switch tracks."""
+        from track import TrackSegment, TRACK_EW, TRACK_NS
+
+        # Simple EW track
+        track = TrackSegment(0, 0, track_bits=TRACK_EW)
+        assert track.get_entry_for_exit("E") == "W"
+        assert track.get_entry_for_exit("W") == "E"
+        assert track.get_entry_for_exit("N") is None
+        assert track.get_entry_for_exit("S") is None
+
+        # Simple NS track
+        track_ns = TrackSegment(0, 0, track_bits=TRACK_NS)
+        assert track_ns.get_entry_for_exit("N") == "S"
+        assert track_ns.get_entry_for_exit("S") == "N"
+
+    def test_occupied_tiles_through_diverge_switch(self):
+        """
+        Occupied tiles correctly calculated when tracing back through diverge switch.
+
+        Scenario:
+        - (8,0): EW track, 50cm block
+        - (9,0): Switch (EW+NW), 0cm, DIVERGE state (train entered W, exited N)
+        - (9,1): NS track, 50cm block
+        - Train at (9,1), 60cm long
+
+        Expected occupied_tiles: [(8,0), (9,0), (9,1)]
+        """
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW, TRACK_NW, TRACK_NS
+        from block import Block
+        from switch import Switch
+
+        network = RailwayNetwork()
+
+        # Create tracks
+        track_8_0 = TrackSegment(x=8, y=0, track_bits=TRACK_EW)
+        network.add_track(track_8_0)
+
+        track_9_0 = TrackSegment(x=9, y=0, track_bits=TRACK_EW | TRACK_NW)
+        network.add_track(track_9_0)
+
+        track_9_1 = TrackSegment(x=9, y=1, track_bits=TRACK_NS)
+        network.add_track(track_9_1)
+
+        # Create blocks
+        block1 = Block(block_id="B1", name="Block 1")
+        block1.length_cm = 50.0
+        block1.tiles = [(8, 0)]
+        network.blocks["B1"] = block1
+        track_8_0.block_section_id = "B1"
+
+        block2 = Block(block_id="B2", name="Block 2")
+        block2.length_cm = 50.0
+        block2.tiles = [(9, 1)]
+        network.blocks["B2"] = block2
+        track_9_1.block_section_id = "B2"
+
+        # Create switch with 0cm length
+        sw = Switch(switch_id="SW_9_0", x=9, y=0)
+        network.switches["SW_9_0"] = sw
+        track_9_0.switch_id = "SW_9_0"
+
+        # Set switch to DIVERGE - train entered from W, exited through N
+        track_9_0.set_switch_state(1)
+
+        # Calculate occupied tiles
+        # Train head at (9,1), 25cm into tile, entered from S
+        # Train is 60cm long
+        occupied, tail_tile, tail_dist, tail_entry = network._calculate_occupied_tiles(
+            head_tile=(9, 1),
+            head_distance_cm=25.0,
+            head_entry_edge="S",
+            train_length_cm=60.0,
+        )
+
+        # Should occupy all three tiles
+        assert occupied == [(8, 0), (9, 0), (9, 1)], f"Got: {occupied}"
+        assert tail_tile == (8, 0)
+        assert tail_entry == "W"  # Train entered (8,0) from West
+
+    def test_occupied_tiles_through_main_switch(self):
+        """
+        Occupied tiles correctly calculated when tracing back through main switch.
+
+        Same track layout but switch in MAIN state (E-W path active).
+        Train would have entered from E, exited W (or vice versa).
+        """
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW, TRACK_NW
+        from block import Block
+        from switch import Switch
+
+        network = RailwayNetwork()
+
+        # Create tracks: (7,0) - (8,0) - (9,0 switch) - (10,0)
+        for x in range(7, 11):
+            if x == 9:
+                track = TrackSegment(x=x, y=0, track_bits=TRACK_EW | TRACK_NW)
+            else:
+                track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        # Create blocks
+        for x in range(7, 11):
+            if x != 9:  # Switch has no block
+                block = Block(block_id=f"B{x}", name=f"Block {x}")
+                block.length_cm = 50.0
+                block.tiles = [(x, 0)]
+                network.blocks[f"B{x}"] = block
+                network.get_track(x, 0).block_section_id = f"B{x}"
+
+        # Create switch with 0cm length
+        sw = Switch(switch_id="SW_9_0", x=9, y=0)
+        network.switches["SW_9_0"] = sw
+        network.get_track(9, 0).switch_id = "SW_9_0"
+
+        # Set switch to MAIN - E-W path active
+        network.get_track(9, 0).set_switch_state(0)
+
+        # Train head at (10,0), 25cm into tile, entered from W
+        # Train is 120cm long
+        occupied, tail_tile, tail_dist, tail_entry = network._calculate_occupied_tiles(
+            head_tile=(10, 0),
+            head_distance_cm=25.0,
+            head_entry_edge="W",
+            train_length_cm=120.0,
+        )
+
+        # Should trace back through switch using MAIN (E-W) path
+        assert (9, 0) in occupied, f"Switch should be in occupied tiles: {occupied}"
+        assert (8, 0) in occupied, f"Tile (8,0) should be in occupied tiles: {occupied}"
+        assert tail_entry == "W"  # Consistent entry direction
+
+    def test_no_circular_error_on_switch(self):
+        """
+        Verify no 'Circular track detected' error when tracing through switch.
+
+        This was the original bug: the code would loop back to the same tile
+        because it calculated the wrong entry edge for the switch.
+        """
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW, TRACK_NW, TRACK_NS
+        from switch import Switch
+
+        network = RailwayNetwork()
+
+        # Minimal reproduction: switch + one tile on each path
+        track_8_0 = TrackSegment(x=8, y=0, track_bits=TRACK_EW)
+        track_9_0 = TrackSegment(x=9, y=0, track_bits=TRACK_EW | TRACK_NW)
+        track_9_1 = TrackSegment(x=9, y=1, track_bits=TRACK_NS)
+
+        network.add_track(track_8_0)
+        network.add_track(track_9_0)
+        network.add_track(track_9_1)
+
+        # Switch in DIVERGE state
+        sw = Switch(switch_id="SW", x=9, y=0)
+        network.switches["SW"] = sw
+        track_9_0.switch_id = "SW"
+        track_9_0.set_switch_state(1)
+
+        # This should NOT raise "Circular track detected"
+        try:
+            occupied, _, _, _ = network._calculate_occupied_tiles(
+                head_tile=(9, 1),
+                head_distance_cm=25.0,
+                head_entry_edge="S",
+                train_length_cm=100.0,  # Long enough to span all tiles
+            )
+            # Success - no exception raised
+            assert (9, 0) in occupied
+            assert (8, 0) in occupied
+        except ValueError as e:
+            if "Circular" in str(e):
+                pytest.fail(f"Bug regression: {e}")

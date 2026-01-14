@@ -18,7 +18,23 @@ class TrainMonitor {
         this.currentScale = 160;
         
         this.loadScale();
-        this.currentScale = 160;
+        
+        this.viewDistance = 0;
+        this.hoveredBlock = null;
+        this.blockRects = [];
+        
+        this.initViewDistanceButtons();
+        
+        this.viewLookaheadBtn = document.getElementById('view-lookahead-btn');
+        if (this.viewLookaheadBtn) {
+            this.viewLookaheadBtn.addEventListener('click', () => this.dumpLookaheadData());
+        }
+        
+        this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
+        this.canvas.addEventListener('mouseleave', () => {
+            this.hoveredBlock = null;
+            this.render();
+        });
         
         this.stateColors = {
             'free': '#04d361',
@@ -57,6 +73,53 @@ class TrainMonitor {
     
     getTrainId() {
         return this.trainId;
+    }
+
+    initViewDistanceButtons() {
+        const buttons = document.querySelectorAll('.view-dist-btn');
+        buttons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                buttons.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                this.viewDistance = parseInt(btn.dataset.distance, 10);
+                this.render();
+            });
+        });
+    }
+
+    dumpLookaheadData() {
+        if (this.lookaheadData) {
+            console.log('=== LOOKAHEAD DATA ===');
+            console.log(JSON.stringify(this.lookaheadData, null, 2));
+            if (this.lookaheadData.blocks) console.table(this.lookaheadData.blocks);
+            if (this.lookaheadData.signals) console.table(this.lookaheadData.signals);
+            if (this.lookaheadData.switches) console.table(this.lookaheadData.switches);
+            if (this.lookaheadData.stations) console.table(this.lookaheadData.stations);
+        } else {
+            console.log('No lookahead data available');
+        }
+    }
+
+    handleMouseMove(e) {
+        if (!this.lookaheadData) return;
+        
+        const rect = this.canvas.getBoundingClientRect();
+        const mouseX = (e.clientX - rect.left) * window.devicePixelRatio;
+        const mouseY = (e.clientY - rect.top) * window.devicePixelRatio;
+        
+        let found = null;
+        for (const block of this.blockRects) {
+            if (mouseX >= block.x && mouseX <= block.x + block.w &&
+                mouseY >= block.y && mouseY <= block.y + block.h) {
+                found = block.data;
+                break;
+            }
+        }
+        
+        if (this.hoveredBlock !== found) {
+            this.hoveredBlock = found;
+            this.render();
+        }
     }
     
     async loadScale() {
@@ -111,8 +174,66 @@ class TrainMonitor {
             }
         }
         
+        // NEW: Check for configuration warnings
+        // User requirement: Show warnings but allow operation (non-blocking)
+        if (lookaheadData.warnings && lookaheadData.warnings.length > 0) {
+            this._displayConfigurationWarnings(lookaheadData.warnings, lookaheadData.train_id);
+        }
+        
         this.updateUpcomingElements(lookaheadData);
         this.render();
+    }
+    
+    _displayConfigurationWarnings(warnings, trainId) {
+        // Display configuration warnings via toast notifications.
+        // Track which warnings we've already shown to avoid spam
+        const warningKey = warnings.map(w => `${w.type}_${w.position || w.block_id || w.station_id}`).join('|');
+        
+        // Only show warnings once per unique set (avoid repeated toasts)
+        if (this.lastWarningKey === warningKey) {
+            return;
+        }
+        this.lastWarningKey = warningKey;
+        
+        for (const warning of warnings) {
+            let message = '';
+            switch (warning.type) {
+                case 'block_length_not_configured':
+                    message = `⚠️ Block ${warning.block_id} has no length configured. Please set length in Block Editor.`;
+                    break;
+                case 'station_length_not_configured':
+                    message = `⚠️ Station ${warning.station_id} has no length configured. Please set length in Station Editor.`;
+                    break;
+                case 'switch_not_configured':
+                    message = `⚠️ Switch at (${warning.position[0]}, ${warning.position[1]}) [${warning.state}] has no length configured.`;
+                    break;
+                case 'switch_entity_missing':
+                    message = `⚠️ Switch at (${warning.position[0]}, ${warning.position[1]}) has no configuration entity.`;
+                    break;
+                case 'block_not_found':
+                    message = `⚠️ Block ${warning.block_id} not found in network.`;
+                    break;
+                case 'station_not_found':
+                    message = `⚠️ Station ${warning.station_id} not found in network.`;
+                    break;
+                default:
+                    message = warning.message || 'Unknown configuration warning';
+            }
+            
+            // Show warning toast (auto-dismiss after 8 seconds)
+            if (window.showToast) {
+                window.showToast(message, 'warning', 8000);
+            }
+        }
+        
+        // Show summary warning
+        if (window.showToast) {
+            window.showToast(
+                `Train ${trainId}: ${warnings.length} configuration warning(s). Operation allowed but physics may be inaccurate.`,
+                'warning',
+                6000
+            );
+        }
     }
     
     updateUpcomingElements(data) {
@@ -169,9 +290,13 @@ class TrainMonitor {
         const trainDist = data.distance_into_path_cm || 0;
         
         this.upcomingEl.innerHTML = upcoming.map(el => {
-            const distAhead = Math.max(0, el.distance - trainDist);
-            const distM = (distAhead / 100).toFixed(1);
-            const lengthM = (el.length / 100).toFixed(1);
+            const distToStart = el.distance - trainDist;
+            const distToEnd = (el.distance + el.length) - trainDist;
+            const totalLength = el.length;
+            
+            const startM = (distToStart / 100).toFixed(1);
+            const endM = (distToEnd / 100).toFixed(1);
+            const lengthM = (totalLength / 100).toFixed(1);
             
             let icon = '▣';
             let colorClass = '';
@@ -186,8 +311,11 @@ class TrainMonitor {
             return `<div class="upcoming-item ${colorClass}">
                 <span class="upcoming-icon">${icon}</span>
                 <span class="upcoming-name">${el.name}</span>
-                <span class="upcoming-dist">${distM}m</span>
-                ${el.length > 0 ? `<span class="upcoming-len">(${lengthM}m)</span>` : ''}
+                <div class="upcoming-distances">
+                    <span class="dist-start" title="Distance to start">${startM}m</span>
+                    ${el.length > 0 ? `<span class="dist-end" title="Distance to end">→ ${endM}m</span>` : ''}
+                    ${el.length > 0 ? `<span class="dist-length" title="Length">(${lengthM}m)</span>` : ''}
+                </div>
             </div>`;
         }).join('');
     }
@@ -250,8 +378,14 @@ class TrainMonitor {
         
         const trainDist = data.distance_into_path_cm || 0;
         
-        const maxAheadElement = this.getMaxDistanceAhead(data, trainDist);
-        const lookaheadDistance = Math.max(2000, Math.min(maxAheadElement + 1000, 10000));
+        let lookaheadDistance;
+        if (this.viewDistance > 0) {
+            lookaheadDistance = this.viewDistance;
+        } else {
+            const maxAheadElement = this.getMaxDistanceAhead(data, trainDist);
+            lookaheadDistance = Math.max(2000, Math.min(maxAheadElement + 1000, 10000));
+        }
+
         const visibleStartCm = trainDist;
         const visibleEndCm = trainDist + lookaheadDistance;
         const visibleRangeCm = visibleEndCm - visibleStartCm;
@@ -274,6 +408,8 @@ class TrainMonitor {
         }
         
         this.drawDistanceScale(padding.left, height - 5, trackWidth, trainDist, visibleRangeCm);
+        
+        this.drawHoverTooltip();
     }
     
     drawTrackLine(x, y, width, color) {
@@ -296,6 +432,7 @@ class TrainMonitor {
     }
     
     drawBlocks(blocks, cmToX, trackY) {
+        this.blockRects = [];
         const blockHeight = 16;
         
         blocks.forEach(block => {
@@ -305,6 +442,15 @@ class TrainMonitor {
             if (endX < 0 || startX > this.canvas.width) return;
             
             const blockWidth = Math.max(endX - startX, 2);
+            
+            this.blockRects.push({
+                x: startX,
+                y: trackY - blockHeight/2,
+                w: blockWidth,
+                h: blockHeight,
+                data: block
+            });
+
             const color = this.stateColors[block.state] || '#666';
             
             this.ctx.fillStyle = color;
@@ -481,5 +627,46 @@ class TrainMonitor {
         this.ctx.textAlign = 'right';
         const maxM = Math.round(rangeCm / 100);
         this.ctx.fillText(`${maxM}m`, x + width, y);
+    }
+
+    drawHoverTooltip() {
+        if (!this.hoveredBlock) return;
+        
+        const block = this.hoveredBlock;
+        const padding = 8;
+        const lineHeight = 14;
+        
+        const lines = [
+            `Block: ${block.name || block.id}`,
+            `State: ${block.state}`,
+            `Length: ${(block.length_cm/100).toFixed(1)}m`,
+            `Start: ${(block.start_cm/100).toFixed(1)}m`
+        ];
+        
+        this.ctx.font = '11px Inter, sans-serif';
+        let maxWidth = 0;
+        lines.forEach(line => {
+            const w = this.ctx.measureText(line).width;
+            maxWidth = Math.max(maxWidth, w);
+        });
+        
+        const width = maxWidth + padding * 2;
+        const height = lines.length * lineHeight + padding * 2;
+        
+        const x = this.canvas.width / 2 - width / 2;
+        const y = 10;
+        
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+        this.ctx.fillRect(x, y, width, height);
+        this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+        this.ctx.strokeRect(x, y, width, height);
+        
+        this.ctx.fillStyle = '#fff';
+        this.ctx.textAlign = 'left';
+        this.ctx.textBaseline = 'top';
+        
+        lines.forEach((line, i) => {
+            this.ctx.fillText(line, x + padding, y + padding + i * lineHeight);
+        });
     }
 }

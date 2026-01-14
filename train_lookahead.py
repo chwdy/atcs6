@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Tuple, TYPE_CHECKING
 from enum import Enum
 
-from train_config import DEFAULT_TILE_LENGTH_CM
+# NOTE: DEFAULT_TILE_LENGTH_CM import removed - no longer using default fallback
 from enums import BlockState, SignalState, Direction
 
 if TYPE_CHECKING:
@@ -46,6 +46,9 @@ class LookaheadResult:
     lookahead_items: List[LookaheadItem] = field(default_factory=list)
     clearance_cm: float = 0.0
     atc_target_speed_kmh: float = 0.0
+    warnings: List[Dict[str, Any]] = field(
+        default_factory=list
+    )  # NEW: Configuration warnings
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -59,6 +62,7 @@ class LookaheadResult:
             "lookahead_items": [item.to_dict() for item in self.lookahead_items],
             "clearance_cm": self.clearance_cm,
             "atc_target_speed_kmh": self.atc_target_speed_kmh,
+            "warnings": self.warnings,  # NEW: Include warnings array
         }
 
 
@@ -93,7 +97,14 @@ def _get_tile_physical_length(
     block_tile_counts: Dict[str, int],
     station_tile_counts: Dict[str, int],
 ) -> float:
+    """
+    Calculate physical length of a track tile.
+
+    NOTE: Returns 0.0 if length is unconfigured (no default fallback).
+    This will trigger warnings in the lookahead system.
+    """
     if hasattr(track, "is_switch") and track.is_switch:
+        # Switches handled separately via Switch entity
         return 0.0
 
     if hasattr(track, "block_section_id") and track.block_section_id:
@@ -101,26 +112,20 @@ def _get_tile_physical_length(
         block = network.blocks.get(block_id)
         if block and hasattr(block, "length_cm"):
             if block.length_cm == 0:
-                return 0.0
+                return 0.0  # Unconfigured - will trigger warning
             tile_count = block_tile_counts.get(block_id, 1)
             if tile_count <= 0:
                 tile_count = 1
             return block.length_cm / tile_count
-        return DEFAULT_TILE_LENGTH_CM
+        return 0.0  # No block entity or no length - will trigger warning
 
     if hasattr(track, "station_id") and track.station_id:
-        station_id = track.station_id
-        station = network.stations.get(station_id)
-        if station and hasattr(station, "length_cm"):
-            if station.length_cm == 0:
-                return 0.0
-            tile_count = station_tile_counts.get(station_id, 1)
-            if tile_count <= 0:
-                tile_count = 1
-            return station.length_cm / tile_count
-        return DEFAULT_TILE_LENGTH_CM
+        # Stations are markers, not physical distance.
+        # Station length is metadata for display purposes only.
+        # Physical distance should be determined by the block the station is in.
+        return 0.0
 
-    return DEFAULT_TILE_LENGTH_CM
+    return 0.0  # Plain track with no block/station - length is 0
 
 
 def _precompute_tile_counts(
@@ -146,24 +151,83 @@ def _calculate_absolute_position_to_tile_start(
     network: "RailwayNetwork",
     block_tile_counts: Dict[str, int],
     station_tile_counts: Dict[str, int],
-) -> float:
+) -> Tuple[float, set, float]:
+    """
+    Calculate physical distance from path start to the start of the current tile.
+
+    Returns:
+        Tuple of (physical_distance, seen_blocks, current_block_offset)
+        current_block_offset: How far into the current block we are (if applicable)
+    """
     if not train.current_path:
-        return 0.0
+        return 0.0, set(), 0.0
+
+    # Determine the block ID of the current tile (where the train head is)
+    current_block_id = None
+    if train.path_index < len(train.current_path):
+        px, py, _ = train.current_path[train.path_index]
+        track = network.tracks.get((px, py))
+        if track:
+            current_block_id = getattr(track, "block_section_id", None)
 
     physical_distance = 0.0
+    current_block_offset = 0.0
+    seen_blocks: set = set()
 
     for i in range(train.path_index):
         if i >= len(train.current_path):
             break
         px, py, _ = train.current_path[i]
         track = network.tracks.get((px, py))
-        if track:
-            tile_length = _get_tile_physical_length(
-                network, track, block_tile_counts, station_tile_counts
-            )
-            physical_distance += tile_length
+        if not track:
+            continue
 
-    return physical_distance
+        is_switch = hasattr(track, "is_switch") and track.is_switch
+        item_added = False
+
+        # Block handling
+        if hasattr(track, "block_section_id") and track.block_section_id:
+            block_id = track.block_section_id
+
+            # Special handling for the block the train is currently in
+            if block_id == current_block_id:
+                # We are traversing tiles OF the current block BEFORE the current head position.
+                # Do NOT add full block length. Do NOT mark as seen.
+                # Add per-tile length instead.
+                block = network.blocks.get(block_id)
+                if block and hasattr(block, "length_cm") and block.length_cm > 0:
+                    tile_count = block_tile_counts.get(block_id, 1)
+                    per_tile_len = block.length_cm / tile_count
+                    physical_distance += per_tile_len
+                    current_block_offset += per_tile_len
+                item_added = True
+
+            # Normal handling for completed blocks
+            elif block_id not in seen_blocks:
+                seen_blocks.add(block_id)
+                block = network.blocks.get(block_id)
+                if block and hasattr(block, "length_cm") and block.length_cm > 0:
+                    physical_distance += block.length_cm
+                item_added = True
+            else:
+                # Already seen block (and not current) - skip adding length
+                item_added = True
+
+        # Switch handling (only if not part of a block)
+        if is_switch and not item_added:
+            switch_config = (
+                network.get_switch_at(px, py)
+                if hasattr(network, "get_switch_at")
+                else None
+            )
+            if switch_config:
+                physical_distance += switch_config.get_active_length(track.switch_state)
+            item_added = True
+
+        # Plain track without block - use per-tile length (usually 0 for unconfigured)
+        # Stations are markers, don't add to distance
+
+    return physical_distance, seen_blocks, current_block_offset
 
 
 def build_lookahead(
@@ -199,21 +263,33 @@ def build_lookahead(
 
     block_tile_counts, station_tile_counts = _precompute_tile_counts(network)
 
-    train_absolute_cm = _calculate_absolute_position_to_tile_start(
-        train, network, block_tile_counts, station_tile_counts
+    train_absolute_cm, already_seen_blocks, current_block_offset = (
+        _calculate_absolute_position_to_tile_start(
+            train, network, block_tile_counts, station_tile_counts
+        )
     )
 
-    physical_distance = train_absolute_cm
+    # Determine current block ID for offset correction
+    current_track = network.get_track(current_x, current_y)
+    current_block_id = (
+        getattr(current_track, "block_section_id", None) if current_track else None
+    )
+
     visited = set()
     x, y = current_x, current_y
     entry_edge = OPPOSITE_EDGE.get(travel_edge, "S")
 
-    seen_blocks: Dict[str, float] = {}
+    # Initialize seen_blocks with blocks already counted before path_index
+    # This prevents double-counting blocks that span multiple tiles
+    seen_blocks: Dict[str, float] = {block_id: -1.0 for block_id in already_seen_blocks}
     seen_stations: Dict[str, float] = {}
     sequence_counter = 0
-    cumulative_distance = 0.0
+    # Start cumulative distance from train's absolute position along the path
+    # This ensures lookahead item positions are in the same coordinate system
+    # as distance_into_path_cm (both absolute from path start)
+    cumulative_distance = train_absolute_cm
 
-    while cumulative_distance < max_distance_cm:
+    while cumulative_distance < (train_absolute_cm + max_distance_cm):
         if (x, y) in visited:
             break
         visited.add((x, y))
@@ -224,6 +300,22 @@ def build_lookahead(
 
         is_switch = hasattr(track, "is_switch") and track.is_switch
 
+        # Calculate this tile's physical length for signal positioning
+        tile_length_for_signal = _get_tile_physical_length(
+            network, track, block_tile_counts, station_tile_counts
+        )
+        # For switches not in blocks, get switch length
+        if is_switch and tile_length_for_signal == 0.0:
+            switch_config = (
+                network.get_switch_at(x, y)
+                if hasattr(network, "get_switch_at")
+                else None
+            )
+            if switch_config:
+                tile_length_for_signal = switch_config.get_active_length(
+                    track.switch_state if hasattr(track, "switch_state") else 0
+                )
+
         _collect_signals_on_tile(
             network,
             track,
@@ -233,33 +325,68 @@ def build_lookahead(
             cumulative_distance,
             result,
             sequence_counter,
+            tile_length_for_signal,
         )
 
         item_added_this_tile = False
 
         if hasattr(track, "block_section_id") and track.block_section_id:
             block_id = track.block_section_id
+            block = network.blocks.get(block_id)
+            tile_count = block_tile_counts.get(block_id, 1)
+            block_length = (
+                block.length_cm if block and hasattr(block, "length_cm") else 0.0
+            )
+            per_tile_length = block_length / tile_count if tile_count > 0 else 0.0
+
             if block_id not in seen_blocks:
-                seen_blocks[block_id] = cumulative_distance
+                # First tile of this block - record it for lookahead display
+                start_distance = cumulative_distance
+                is_current_block = block_id == current_block_id
+
+                if is_current_block and current_block_offset > 0:
+                    # We are mid-block. The block actually started earlier.
+                    # Adjust start distance backwards.
+                    start_distance = cumulative_distance - current_block_offset
+
+                seen_blocks[block_id] = start_distance
                 sequence_counter += 1
-                block = network.blocks.get(block_id)
-                block_length = 0.0
-                if block and hasattr(block, "length_cm"):
-                    block_length = block.length_cm
-                else:
-                    tile_count = block_tile_counts.get(block_id, 1)
-                    block_length = tile_count * DEFAULT_TILE_LENGTH_CM
+
+                # Validation warnings
+                if not block:
+                    result.warnings.append(
+                        {
+                            "type": "block_not_found",
+                            "block_id": block_id,
+                            "position": (x, y),
+                            "message": f"Block {block_id} not found in network",
+                        }
+                    )
+                elif not hasattr(block, "length_cm") or block.length_cm == 0:
+                    result.warnings.append(
+                        {
+                            "type": "block_length_not_configured",
+                            "block_id": block_id,
+                            "position": (x, y),
+                            "message": f"Block {block_id} has no length configured. Please set length in Block Editor.",
+                        }
+                    )
 
                 _add_block_item(
                     network,
                     block_id,
-                    cumulative_distance,
+                    start_distance,
                     block_tile_counts,
                     result,
                     sequence_counter,
                 )
-                cumulative_distance += block_length
-                item_added_this_tile = True
+
+            # Always add per-tile length for this tile (whether first or subsequent)
+            # This ensures signals on later tiles get correct distances
+            cumulative_distance += per_tile_length
+
+            # Mark as handled so switches inside blocks don't double-count
+            item_added_this_tile = True
 
         if hasattr(track, "station_id") and track.station_id:
             station_id = track.station_id
@@ -267,12 +394,26 @@ def build_lookahead(
                 seen_stations[station_id] = cumulative_distance
                 sequence_counter += 1
                 station = network.stations.get(station_id)
-                station_length = 0.0
-                if station and hasattr(station, "length_cm"):
-                    station_length = station.length_cm
-                else:
-                    tile_count = station_tile_counts.get(station_id, 1)
-                    station_length = tile_count * DEFAULT_TILE_LENGTH_CM
+
+                # Validate station exists and has length configured
+                if not station:
+                    result.warnings.append(
+                        {
+                            "type": "station_not_found",
+                            "station_id": station_id,
+                            "position": (x, y),
+                            "message": f"Station {station_id} not found in network",
+                        }
+                    )
+                elif not hasattr(station, "length_cm") or station.length_cm == 0:
+                    result.warnings.append(
+                        {
+                            "type": "station_length_not_configured",
+                            "station_id": station_id,
+                            "position": (x, y),
+                            "message": f"Station {station_id} has no length configured. Please set length in Station Editor.",
+                        }
+                    )
 
                 _add_station_item(
                     network,
@@ -282,13 +423,51 @@ def build_lookahead(
                     result,
                     sequence_counter,
                 )
-                cumulative_distance += station_length
-                item_added_this_tile = True
+                # NOTE: Stations are just markers - they do NOT add to cumulative_distance.
+                # Station length is metadata (for train monitor display), not physical track length.
+                # Physical distance is determined by blocks, not stations.
 
-        if is_switch:
+        if is_switch and not item_added_this_tile:
+            # Only handle switches that are NOT part of a block
+            # If switch is in a block, block length already covers the physical distance
             sequence_counter += 1
-            _add_switch_item(track, x, y, cumulative_distance, result, sequence_counter)
-            cumulative_distance += 1.0
+
+            # NEW: Get switch configuration from network
+            switch_config = (
+                network.get_switch_at(x, y)
+                if hasattr(network, "get_switch_at")
+                else None
+            )
+
+            if switch_config:
+                # Get length based on current switch state
+                current_state = track.switch_state
+                switch_length = switch_config.get_active_length(current_state)
+
+                # Note: switch_length=0 is correct by design - switches don't add distance
+                # The warning was removed as 0-length switches are intentional
+            else:
+                # No switch entity found - this shouldn't happen with auto-creation
+                # but handle gracefully
+                result.warnings.append(
+                    {
+                        "type": "switch_entity_missing",
+                        "position": (x, y),
+                        "message": f"Switch at ({x}, {y}) has no configuration entity",
+                    }
+                )
+                switch_length = 0.0
+
+            _add_switch_item(
+                track,
+                x,
+                y,
+                cumulative_distance,
+                result,
+                sequence_counter,
+                switch_config,
+            )
+            cumulative_distance += switch_length
             item_added_this_tile = True
 
         if not item_added_this_tile:
@@ -318,16 +497,18 @@ def _add_block_item(
     result: LookaheadResult,
     sequence: int,
 ) -> None:
+    """Add block item to lookahead. No default fallback - returns 0 if unconfigured."""
     block = network.blocks.get(block_id)
     if not block:
         return
 
     tile_count = block_tile_counts.get(block_id, 1)
 
+    # No default fallback - use configured length or 0
     if hasattr(block, "length_cm"):
         length_cm = block.length_cm
     else:
-        length_cm = tile_count * DEFAULT_TILE_LENGTH_CM
+        length_cm = 0.0
 
     item = LookaheadItem(
         item_type=LookaheadItemType.BLOCK,
@@ -352,16 +533,18 @@ def _add_station_item(
     result: LookaheadResult,
     sequence: int,
 ) -> None:
+    """Add station item to lookahead. No default fallback - returns 0 if unconfigured."""
     station = network.stations.get(station_id)
     if not station:
         return
 
     tile_count = station_tile_counts.get(station_id, 1)
 
+    # No default fallback - use configured length or 0
     if hasattr(station, "length_cm"):
         length_cm = station.length_cm
     else:
-        length_cm = tile_count * DEFAULT_TILE_LENGTH_CM
+        length_cm = 0.0
 
     item = LookaheadItem(
         item_type=LookaheadItemType.STATION,
@@ -385,9 +568,21 @@ def _add_switch_item(
     distance_cm: float,
     result: LookaheadResult,
     sequence: int,
+    switch_config=None,  # NEW: Optional Switch entity
 ) -> None:
+    """Add switch item to lookahead with physical properties from Switch entity."""
     switch_state = track.switch_state if hasattr(track, "switch_state") else 0
-    position = "main" if switch_state == 0 else "diverging"
+    position = "main" if switch_state == 0 else "diverge"
+
+    # Get length from Switch entity (per-branch)
+    if switch_config:
+        length_cm = switch_config.get_active_length(switch_state)
+        radius_cm = switch_config.get_active_radius(switch_state)
+        switch_id = switch_config.switch_id
+    else:
+        length_cm = 0.0
+        radius_cm = None
+        switch_id = None
 
     item = LookaheadItem(
         item_type=LookaheadItemType.SWITCH,
@@ -397,7 +592,9 @@ def _add_switch_item(
             "x": x,
             "y": y,
             "position": position,
-            "length_cm": 0.0,
+            "length_cm": length_cm,
+            "radius_cm": radius_cm,
+            "switch_id": switch_id,
         },
     )
     result.lookahead_items.append(item)
@@ -461,7 +658,7 @@ def build_lookahead_response(
                     "y": item.data.get("y"),
                     "position": item.data.get("position"),
                     "distance_cm": item.distance_cm,
-                    "length_cm": 0.0,
+                    "length_cm": item.data.get("length_cm", 0.0),
                     "sequence": item.sequence,
                 }
             )
@@ -519,14 +716,25 @@ def _calculate_train_physical_position(
     block_tile_counts: Dict[str, int],
     station_tile_counts: Dict[str, int],
 ) -> Tuple[float, Optional[float]]:
+    """
+    Calculate train's physical position along the path and distance to next block.
+
+    Uses per-tile calculation for the current block to ensure smooth position updates
+    as train moves between tiles within the same block.
+    """
     if not train.current_path or not train.current_pos:
         return 0.0, None
 
     cumulative_distance = 0.0
-    seen_blocks = set()
-    seen_stations = set()
+    seen_blocks: set = set()
     current_track = network.get_track(*train.current_pos)
 
+    # Determine the block ID of the current tile (where the train head is)
+    current_block_id = (
+        getattr(current_track, "block_section_id", None) if current_track else None
+    )
+
+    # Sum distance for all tiles before current path_index
     for i in range(train.path_index):
         if i >= len(train.current_path):
             break
@@ -535,110 +743,93 @@ def _calculate_train_physical_position(
         if not track:
             continue
 
+        is_switch = hasattr(track, "is_switch") and track.is_switch
         item_added = False
 
+        # Block handling
         if hasattr(track, "block_section_id") and track.block_section_id:
             block_id = track.block_section_id
-            if block_id not in seen_blocks:
+
+            # Special handling for the block the train is currently in
+            # Add per-tile length instead of full block length
+            if block_id == current_block_id:
+                block = network.blocks.get(block_id)
+                if block and hasattr(block, "length_cm") and block.length_cm > 0:
+                    tile_count = block_tile_counts.get(block_id, 1)
+                    per_tile_len = block.length_cm / tile_count
+                    cumulative_distance += per_tile_len
+                item_added = True
+            # Normal handling for completed blocks (not the current block)
+            elif block_id not in seen_blocks:
                 seen_blocks.add(block_id)
                 block = network.blocks.get(block_id)
-                if block and hasattr(block, "length_cm"):
+                if block and hasattr(block, "length_cm") and block.length_cm > 0:
                     cumulative_distance += block.length_cm
-                else:
-                    tile_count = block_tile_counts.get(block_id, 1)
-                    cumulative_distance += tile_count * DEFAULT_TILE_LENGTH_CM
+                item_added = True
+            else:
+                # Already seen block (and not current) - skip adding length
                 item_added = True
 
-        elif hasattr(track, "station_id") and track.station_id:
-            station_id = track.station_id
-            if station_id not in seen_stations:
-                seen_stations.add(station_id)
-                station = network.stations.get(station_id)
-                if station and hasattr(station, "length_cm"):
-                    cumulative_distance += station.length_cm
-                else:
-                    tile_count = station_tile_counts.get(station_id, 1)
-                    cumulative_distance += tile_count * DEFAULT_TILE_LENGTH_CM
-                item_added = True
-
-        elif hasattr(track, "is_switch") and track.is_switch:
-            cumulative_distance += 1.0
+        # Switch handling (only if not part of a block)
+        if is_switch and not item_added:
+            switch_config = (
+                network.get_switch_at(px, py)
+                if hasattr(network, "get_switch_at")
+                else None
+            )
+            if switch_config:
+                cumulative_distance += switch_config.get_active_length(
+                    track.switch_state
+                )
             item_added = True
 
-        if not item_added:
-            tile_length = _get_tile_physical_length(
-                network, track, block_tile_counts, station_tile_counts
-            )
-            cumulative_distance += tile_length
+        # Stations are just markers - don't add to cumulative distance
+        # Plain track without block - length is 0 (unconfigured)
 
-    if current_track:
-        current_block_id = getattr(current_track, "block_section_id", None)
-        if current_block_id and current_block_id not in seen_blocks:
-            block = network.blocks.get(current_block_id)
-            if block and hasattr(block, "length_cm") and block.length_cm > 0:
-                tile_count = block_tile_counts.get(current_block_id, 1)
-                if tile_count > 0:
-                    current_tile_index = 0
-                    for i in range(train.path_index, len(train.current_path)):
-                        px, py, _ = train.current_path[i]
-                        track_in_block = network.tracks.get((px, py))
-                        if (
-                            track_in_block
-                            and hasattr(track_in_block, "block_section_id")
-                            and track_in_block.block_section_id == current_block_id
-                        ):
-                            if (px, py) == train.current_pos:
-                                break
-                            current_tile_index += 1
+    # Now handle the current tile (where train head is)
+    if current_track and current_block_id:
+        block = network.blocks.get(current_block_id)
+        if block and hasattr(block, "length_cm") and block.length_cm > 0:
+            tile_count = block_tile_counts.get(current_block_id, 1)
+            if tile_count > 0:
+                per_tile_length = block.length_cm / tile_count
 
-                    tiles_before_current = current_tile_index
-                    per_tile_length = block.length_cm / tile_count
-                    distance_to_current_tile_start = (
-                        tiles_before_current * per_tile_length
-                    )
-
-                    fraction = (
-                        train.distance_on_track / per_tile_length
-                        if per_tile_length > 0
-                        else 0.0
-                    )
-                    fraction = max(0.0, min(1.0, fraction))
-
-                    distance_within_tile = fraction * per_tile_length
-                    cumulative_distance += (
-                        distance_to_current_tile_start + distance_within_tile
-                    )
-
-                    remaining_in_tile = (1.0 - fraction) * per_tile_length
-                    remaining_tiles = tile_count - current_tile_index - 1
-                    distance_to_next_block = remaining_in_tile + (
-                        remaining_tiles * per_tile_length
-                    )
-                    return cumulative_distance, distance_to_next_block
-            else:
-                tile_length = _get_tile_physical_length(
-                    network, current_track, block_tile_counts, station_tile_counts
-                )
-                # distance_on_track is now in cm, tile_length is also in cm
+                # Fraction through current tile
                 fraction = (
-                    train.distance_on_track / tile_length if tile_length > 0 else 0.0
+                    train.distance_on_track / per_tile_length
+                    if per_tile_length > 0
+                    else 0.0
                 )
                 fraction = max(0.0, min(1.0, fraction))
-                cumulative_distance += fraction * tile_length
-                distance_to_next_tile_cm = (1.0 - fraction) * tile_length
-                return cumulative_distance, distance_to_next_tile_cm
-        else:
-            tile_length = _get_tile_physical_length(
-                network, current_track, block_tile_counts, station_tile_counts
-            )
-            # distance_on_track is now in cm, tile_length is also in cm
-            fraction = train.distance_on_track / tile_length if tile_length > 0 else 0.0
-            fraction = max(0.0, min(1.0, fraction))
-            cumulative_distance += fraction * tile_length
-            distance_to_next_tile_cm = (1.0 - fraction) * tile_length
-            return cumulative_distance, distance_to_next_tile_cm
 
-    return cumulative_distance, None
+                distance_within_tile = fraction * per_tile_length
+                cumulative_distance += distance_within_tile
+
+                # Calculate remaining distance in block
+                # Count how many tiles of this block remain after current position
+                remaining_tiles = 0
+                found_current = False
+                for i in range(len(train.current_path)):
+                    px, py, _ = train.current_path[i]
+                    track_check = network.tracks.get((px, py))
+                    if (
+                        track_check
+                        and getattr(track_check, "block_section_id", None)
+                        == current_block_id
+                    ):
+                        if (px, py) == train.current_pos:
+                            found_current = True
+                        elif found_current:
+                            remaining_tiles += 1
+
+                remaining_in_tile = (1.0 - fraction) * per_tile_length
+                distance_to_next_block = remaining_in_tile + (
+                    remaining_tiles * per_tile_length
+                )
+                return cumulative_distance, distance_to_next_block
+
+    # Return 0.0 for distance_to_next_tile when unconfigured (no block or no length)
+    return cumulative_distance, 0.0
 
 
 def _opposite_direction(direction: Direction) -> Direction:
@@ -689,9 +880,19 @@ def _collect_signals_on_tile(
     distance_cm: float,
     result: LookaheadResult,
     sequence: int,
+    tile_length_cm: float = 0.0,
 ) -> None:
+    """Collect signals on a tile and add them to lookahead.
+
+    Args:
+        distance_cm: Distance to tile START
+        tile_length_cm: Physical length of this tile (for placing signal at middle)
+    """
     if not hasattr(track, "signal_ids") or not track.signal_ids:
         return
+
+    # Calculate signal position at tile middle
+    signal_distance = distance_cm + (tile_length_cm / 2.0)
 
     for signal_id in track.signal_ids:
         signal = network.signals.get(signal_id)
@@ -703,7 +904,7 @@ def _collect_signals_on_tile(
             if signal_edge == travel_edge:
                 item = LookaheadItem(
                     item_type=LookaheadItemType.SIGNAL,
-                    distance_cm=distance_cm,
+                    distance_cm=signal_distance,
                     sequence=sequence,
                     data={
                         "id": signal_id,

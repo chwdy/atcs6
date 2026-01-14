@@ -100,8 +100,11 @@ class BlockManager:
 
         # Allow RESERVED → OCCUPIED (normal path following)
         if block.state == BlockState.RESERVED:
-            # TODO: Should we validate that block.occupied_by matches train_id?
-            # Currently RESERVED might be set by PathDispatcher with a train_id
+            # Safety check: only the train that reserved the block can occupy it
+            if block.occupied_by is not None and block.occupied_by != train_id:
+                return (
+                    False  # Wrong train trying to occupy a block reserved for another
+                )
             block.state = BlockState.OCCUPIED
             block.occupied_by = train_id
             return True
@@ -288,3 +291,28 @@ class BlockManager:
             return True
 
         return False
+
+    def occupy_blocks(self, block_ids: List[str], train_id: str) -> bool:
+        """Atomically occupy multiple blocks. Returns True if all succeed, rolls back on failure.
+
+        This method ensures that either all blocks are occupied successfully, or
+        the operation is rolled back to maintain consistent state.
+
+        Args:
+            block_ids: List of block IDs to occupy
+            train_id: ID of the train occupying the blocks
+
+        Returns:
+            True if all blocks were occupied successfully, False if any failed (with rollback)
+        """
+        occupied = []
+        try:
+            for block_id in block_ids:
+                if not self.occupy_block(block_id, train_id):
+                    raise ValueError(f"Failed to occupy block {block_id}")
+                occupied.append(block_id)
+            return True
+        except Exception:
+            for block_id in occupied:
+                self.clear_block(block_id)
+            return False

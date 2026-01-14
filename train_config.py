@@ -19,7 +19,7 @@ When scale is applied:
 # =============================================================================
 # Model Scale Configuration
 # =============================================================================
-_MODEL_SCALE = 1.0  # Default: full scale (1:1), change to 160 for N, 87 for HO
+_MODEL_SCALE = 160.0  # Default: N scale (1:160)
 
 
 def get_model_scale() -> float:
@@ -51,7 +51,9 @@ SCALE_PRESETS = {
 # =============================================================================
 # Track Layout Configuration
 # =============================================================================
-DEFAULT_TILE_LENGTH_CM = 1000.0  # 10m per tile (abstract grid unit, scale-agnostic)
+# NOTE: DEFAULT_TILE_LENGTH_CM was removed - blocks, stations, and switches must have
+# explicit length_cm configuration. No default fallback values are provided.
+# This ensures configuration errors are caught early via warnings.
 
 # =============================================================================
 # Speed Limits
@@ -63,7 +65,8 @@ STOPPED_SPEED_THRESHOLD_KMH = 0.5  # Below this = considered stopped
 # =============================================================================
 # ATC Configuration
 # =============================================================================
-ATC_SAFETY_MARGIN_CM = 50.0  # Buffer distance before obstruction
+ATC_SAFETY_MARGIN_CM = 25.0  # Buffer distance before obstruction (general)
+ATC_PLATFORM_SAFETY_MARGIN_CM = 5.0  # Buffer for platform/destination stops
 ATC_SIGNAL_LOOKAHEAD_BLOCKS = 3  # How many blocks ahead to check signals
 ATC_MIN_CLEARANCE_CM = 10.0  # Minimum clearance to allow any movement
 ATC_NO_BLOCK_FALLBACK_CM = 100000.0  # 1km - clearance when no block is configured

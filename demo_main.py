@@ -34,6 +34,7 @@ from dispatcher import TrainDispatcher
 from path_dispatcher import PathDispatcher
 from route_executor import RouteExecutor
 from railway_signal import SignalType
+from path_utils import assign_path_to_train_with_prepend, assign_complete_path_to_train
 
 # ============= Demo Functions =============
 
@@ -526,8 +527,7 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
     car = TrainCar(
         car_id="DEMO_CAR_01",
         car_type="LOCOMOTIVE",
-        length=40.0,
-        mass=50000.0,
+        length=40.0,  # 40 cm in model scale (N scale 1:160)
     )
     demo_train = Train(train_id="DEMO_TRAIN", consist=[car], max_speed=60.0)
     network.add_train(demo_train)
@@ -545,10 +545,20 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
             train_id=demo_train.train_id,
         )
         if path_result.success and path_result.path:
-            demo_train.current_path = executor._convert_path_to_train_path(
+            # Convert path tiles to train path format
+            raw_path = executor._convert_path_to_train_path(
                 path_result.path
             )
-            demo_train.path_index = 0
+            # Use assign_complete_path_to_train to handle:
+            # 1. Prepending tiles from train position to path start
+            # 2. Appending tiles to complete destination block (e.g., station platform)
+            success, error = assign_complete_path_to_train(
+                network, demo_train, raw_path
+            )
+            if not success:
+                # Fall back to direct assignment if prepend/append fails
+                demo_train.current_path = raw_path
+                demo_train.path_index = 0
             demo_train.assigned_path_id = path_result.path.path_id
 
     demo_train.power_on()
