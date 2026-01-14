@@ -1318,9 +1318,31 @@ class Train:
             "leading_end": self.leading_end,
         }
 
-        # New position system (TrainPosition)
-        if self.position:
-            data["position"] = self.position.to_dict()
+        # Position data for rendering
+        # Include BOTH legacy format (x, y, distance) AND new TrainPosition format
+        # for backward compatibility with renderer
+        if self.current_pos:
+            # Default tile length if network not available
+            tile_length_cm = 50.0
+            if network and hasattr(network, "_get_tile_length_cm"):
+                tile_length_cm = network._get_tile_length_cm(*self.current_pos)
+
+            distance_ratio = (
+                self.distance_on_track / tile_length_cm if tile_length_cm > 0 else 0.0
+            )
+            distance_ratio = max(0.0, min(1.0, distance_ratio))
+
+            # Legacy format for drawTrainLegacy
+            data["position"] = {
+                "x": self.current_pos[0],
+                "y": self.current_pos[1],
+                "distance": distance_ratio,
+                "tile_length_cm": tile_length_cm,
+            }
+
+            # If new TrainPosition exists, merge its data (for drawTrainFromPath)
+            if self.position:
+                data["position"].update(self.position.to_dict())
 
             # Also include rich tile data if network available
             if network and hasattr(network, "get_occupied_tiles_rich"):
