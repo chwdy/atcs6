@@ -10,6 +10,7 @@ from train_atc import TrainATC
 from route_executor import RouteExecutor
 from speed_profile import SpeedProfile, SpeedProfileRegistry
 from train_config import kmh_to_cm_per_sec
+from train_movement import TrainMover
 
 if TYPE_CHECKING:
     from path_dispatcher import PathDispatcher
@@ -41,6 +42,7 @@ class SimulationController:
         self.power_controller = BlockPowerController(network)
         self.route_executor = RouteExecutor(network, path_dispatcher)
         self.speed_profile_registry = SpeedProfileRegistry()
+        self.train_mover = TrainMover(network)
 
         self.atc_instances: Dict[str, TrainATC] = {}
         self.simulation_time: float = 0.0
@@ -347,6 +349,12 @@ class SimulationController:
         # This keeps the TrainPosition in sync as the train moves
         if train.position:
             self.network.recalculate_train_position(train)
+
+        # === UPDATE PATH QUEUE POSITION ===
+        # NOTE: Running parallel to legacy position system during migration.
+        # TODO: Remove legacy position update once path queue system is validated.
+        if train.path_tiles:
+            self.train_mover.update_train_path_position(train, delta_seconds)
 
     def _advance_train_track(self, train: Train, overflow_cm: float = 0.0) -> None:
         if not train.current_pos:

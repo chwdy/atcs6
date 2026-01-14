@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 import demo_main
 from persistence import PersistenceManager
 from path_dispatcher import PathDispatcher
-from train_lookahead import build_lookahead_response
+
 from speed_profile import SpeedProfile, SpeedProfileRegistry
 
 app = Flask(__name__, static_folder="static")
@@ -1864,18 +1864,6 @@ def train_emergency_stop(train_id):
 
     train.emergency_stop()
     return jsonify({"status": "success", "train": train.to_dict(network)})
-
-
-@app.route("/api/trains/<train_id>/lookahead", methods=["GET"])
-def train_lookahead(train_id):
-    train = network.trains.get(train_id)
-    if not train:
-        return jsonify({"error": "Train not found"}), 404
-
-    distance_cm = request.args.get("distance_cm", 100000.0, type=float)
-
-    response = build_lookahead_response(train, network, max_distance_cm=distance_cm)
-    return jsonify(response)
 
 
 @app.route("/api/trains", methods=["GET"])

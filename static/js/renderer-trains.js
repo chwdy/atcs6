@@ -21,6 +21,29 @@ class RendererTrainHandler {
         };
     }
 
+    // ========================================================================
+    // Main Entry Point
+    // ========================================================================
+
+    drawTrain(train) {
+        // Check for new path-based position
+        if (train.path_tiles && train.path_tiles.length > 0 && train.path_tile_info) {
+            this.drawTrainFromPath(train);
+            return;
+        }
+        
+        // Fall back to legacy rendering
+        this.drawTrainLegacy(train);
+    }
+
+    // ========================================================================
+    // Legacy Rendering (for trains without path data)
+    // ========================================================================
+
+    drawTrainLegacy(train) {
+        if (!train.position) return;
+    }
+
     /**
      * Get possible exit edges for a track given an entry edge.
      * Mirrors the backend TrackSegment.get_exits() logic.
@@ -284,40 +307,47 @@ class RendererTrainHandler {
             // Fallback: use direction-based positioning
             const direction = train.position?.facing_direction || train.direction || 'EAST';
             const positionOffset = tailDistance - 0.5;
-            let interpX = tailX;
-            let interpY = tailY;
-
-            if (direction === 'NORTH') {
-                interpY = tailY + positionOffset;
-                rotation = -Math.PI / 4;
-            } else if (direction === 'SOUTH') {
-                interpY = tailY - positionOffset;
-                rotation = Math.PI * 3 / 4;
-            } else if (direction === 'EAST') {
-                interpX = tailX + positionOffset;
-                rotation = Math.PI / 4;
-            } else if (direction === 'WEST') {
-                interpX = tailX - positionOffset;
-                rotation = -Math.PI * 3 / 4;
+            
+            // Adjust position based on direction
+            switch (direction) {
+                case 'EAST':
+                    tailScreenX = cx + positionOffset * tileSize;
+                    tailScreenY = cy;
+                    rotation = 0;
+                    break;
+                case 'WEST':
+                    tailScreenX = cx - positionOffset * tileSize;
+                    tailScreenY = cy;
+                    rotation = Math.PI;
+                    break;
+                case 'NORTH':
+                    tailScreenX = cx;
+                    tailScreenY = cy - positionOffset * tileSize;
+                    rotation = -Math.PI / 2;
+                    break;
+                case 'SOUTH':
+                    tailScreenX = cx;
+                    tailScreenY = cy + positionOffset * tileSize;
+                    rotation = Math.PI / 2;
+                    break;
             }
-
-            tailScreenX = this.gridToScreenX(interpX, interpY);
-            tailScreenY = this.gridToScreenY(interpX, interpY);
         }
 
-        // Draw tail square
         this.ctx.save();
         this.ctx.translate(tailScreenX, tailScreenY);
         this.ctx.rotate(rotation);
-
-        const sqSize = 5 * s;
-        this.ctx.fillStyle = '#aaaaaa';
-        this.ctx.fillRect(-sqSize / 2, -sqSize / 2, sqSize, sqSize);
-
-        this.ctx.strokeStyle = '#333';
+        
+        // Draw tail square (smaller than head triangle)
+        const tailSize = 8 * s;
+        this.ctx.fillStyle = '#ff3b30'; // Red for tail
+        this.ctx.strokeStyle = '#ffffff';
         this.ctx.lineWidth = 1 * s;
-        this.ctx.strokeRect(-sqSize / 2, -sqSize / 2, sqSize, sqSize);
-
+        
+        this.ctx.beginPath();
+        this.ctx.rect(-tailSize / 2, -tailSize / 2, tailSize, tailSize);
+        this.ctx.fill();
+        this.ctx.stroke();
+        
         this.ctx.restore();
     }
 }

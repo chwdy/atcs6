@@ -22,15 +22,15 @@ from enums import TrainState, Direction, OPPOSITE_DIRECTIONS
 class TrainPosition:
     """
     Complete train position tracking with both ends and occupied tiles.
-    
+
     Both ends (end_a and end_b) have independent, precise positions.
     When train reverses, positions don't move - only leading_end swaps.
-    
+
     Attributes:
         end_a_tile: One end of train (x, y) coordinates
         end_a_distance_cm: Distance from entry edge to end_a on that tile
         end_a_entry_edge: Which edge end_a entered from (N/E/S/W)
-        end_b_tile: Other end of train (x, y) coordinates  
+        end_b_tile: Other end of train (x, y) coordinates
         end_b_distance_cm: Distance from entry edge to end_b on that tile
         end_b_entry_edge: Which edge end_b entered from (N/E/S/W)
         leading_end: Which end is currently front ("a" or "b")
@@ -38,65 +38,77 @@ class TrainPosition:
         occupied_tiles: Ordered list of tiles from end_a to end_b
         occupied_blocks: List of block IDs the train occupies
     """
-    
+
     # End A position (precise)
     end_a_tile: Tuple[int, int]
     end_a_distance_cm: float
     end_a_entry_edge: str
-    
+
     # End B position (precise)
     end_b_tile: Tuple[int, int]
     end_b_distance_cm: float
     end_b_entry_edge: str
-    
+
     # Which end is leading (front of travel direction)
     leading_end: str = "a"  # "a" or "b"
-    
+
     # Direction train is facing
     facing_direction: Optional[Direction] = None
-    
+
     # Tiles occupied (ordered from end_a to end_b)
     occupied_tiles: List[Tuple[int, int]] = field(default_factory=list)
-    
+
     # Blocks occupied
     occupied_blocks: List[str] = field(default_factory=list)
-    
+
     @property
     def head_tile(self) -> Tuple[int, int]:
         """Get tile of leading end (head)."""
         return self.end_a_tile if self.leading_end == "a" else self.end_b_tile
-    
+
     @property
     def head_distance_cm(self) -> float:
         """Get distance on tile for leading end (head)."""
-        return self.end_a_distance_cm if self.leading_end == "a" else self.end_b_distance_cm
-    
+        return (
+            self.end_a_distance_cm
+            if self.leading_end == "a"
+            else self.end_b_distance_cm
+        )
+
     @property
     def head_entry_edge(self) -> str:
         """Get entry edge for leading end (head)."""
-        return self.end_a_entry_edge if self.leading_end == "a" else self.end_b_entry_edge
-    
+        return (
+            self.end_a_entry_edge if self.leading_end == "a" else self.end_b_entry_edge
+        )
+
     @property
     def tail_tile(self) -> Tuple[int, int]:
         """Get tile of trailing end (tail)."""
         return self.end_b_tile if self.leading_end == "a" else self.end_a_tile
-    
+
     @property
     def tail_distance_cm(self) -> float:
         """Get distance on tile for trailing end (tail)."""
-        return self.end_b_distance_cm if self.leading_end == "a" else self.end_a_distance_cm
-    
+        return (
+            self.end_b_distance_cm
+            if self.leading_end == "a"
+            else self.end_a_distance_cm
+        )
+
     @property
     def tail_entry_edge(self) -> str:
         """Get entry edge for trailing end (tail)."""
-        return self.end_b_entry_edge if self.leading_end == "a" else self.end_a_entry_edge
-    
+        return (
+            self.end_b_entry_edge if self.leading_end == "a" else self.end_a_entry_edge
+        )
+
     def reverse(self) -> None:
         """Swap leading end (train reverses direction)."""
         self.leading_end = "b" if self.leading_end == "a" else "a"
         if self.facing_direction:
             self.facing_direction = self.facing_direction.opposite()
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -111,25 +123,27 @@ class TrainPosition:
                 "entry_edge": self.end_b_entry_edge,
             },
             "leading_end": self.leading_end,
-            "facing_direction": self.facing_direction.name if self.facing_direction else None,
+            "facing_direction": self.facing_direction.name
+            if self.facing_direction
+            else None,
             "occupied_tiles": [list(t) for t in self.occupied_tiles],
             "occupied_blocks": self.occupied_blocks.copy(),
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> Optional["TrainPosition"]:
         """Reconstruct from dictionary. Returns None if data is invalid/incompatible."""
         try:
             if not isinstance(data, dict):
                 return None
-                
+
             end_a = data.get("end_a", {})
             end_b = data.get("end_b", {})
-            
+
             facing_dir = None
             if data.get("facing_direction"):
                 facing_dir = Direction[data["facing_direction"]]
-            
+
             return cls(
                 end_a_tile=tuple(end_a.get("tile", [0, 0])),
                 end_a_distance_cm=float(end_a.get("distance_cm", 0.0)),
@@ -241,7 +255,7 @@ class Train:
     Position System:
     - position: TrainPosition with both ends tracked precisely
     - current_pos, distance_on_track: Legacy properties for backward compatibility
-    
+
     New in Phase 1:
     - model: Train model name (e.g., "BR 218", "Shinkansen E5")
     - min_radius_cm: Minimum curve radius train can navigate
@@ -300,6 +314,24 @@ class Train:
     # Path assignment (dispatcher system)
     # Note: "path" = dispatcher's reserved route; "route" = train's travel plan
     assigned_path_id: Optional[str] = None
+
+    # ========================================================================
+    # PATH-BASED POSITION SYSTEM (Task 1.1)
+    # ========================================================================
+    # Full path: passed tiles + occupied tiles + ahead tiles
+    path_tiles: List[Tuple[int, int]] = field(default_factory=list)
+
+    # Two physical ends (don't change on reverse)
+    end_a_index: int = 0  # Index into path_tiles
+    end_a_distance_cm: float = 0.0  # Distance from entry edge on this tile
+    end_a_entry_edge: Optional[str] = None  # 'N', 'E', 'S', 'W'
+
+    end_b_index: int = 0
+    end_b_distance_cm: float = 0.0
+    end_b_entry_edge: Optional[str] = None
+
+    # Which end is currently leading (flip on reverse)
+    leading_end: str = "a"  # 'a' or 'b'
 
     # ========================================================================
     # NEW PROPERTIES (Phase 1 - Train System)
@@ -403,6 +435,159 @@ class Train:
         if self.acceleration == 0:
             return 0
         return (v_ms * v_ms) / (2 * self.acceleration)
+
+    # ========================================================================
+    # PATH POSITION PROPERTIES (Task 1.1)
+    # ========================================================================
+
+    @property
+    def head_index(self) -> int:
+        """Index of head tile in path_tiles."""
+        return self.end_a_index if self.leading_end == "a" else self.end_b_index
+
+    @property
+    def tail_index(self) -> int:
+        """Index of tail tile in path_tiles."""
+        return self.end_b_index if self.leading_end == "a" else self.end_a_index
+
+    @property
+    def head_distance_cm(self) -> float:
+        """Distance from entry edge on head tile."""
+        return (
+            self.end_a_distance_cm
+            if self.leading_end == "a"
+            else self.end_b_distance_cm
+        )
+
+    @head_distance_cm.setter
+    def head_distance_cm(self, value: float) -> None:
+        if self.leading_end == "a":
+            self.end_a_distance_cm = value
+        else:
+            self.end_b_distance_cm = value
+
+    @property
+    def tail_distance_cm(self) -> float:
+        """Distance from entry edge on tail tile."""
+        return (
+            self.end_b_distance_cm
+            if self.leading_end == "a"
+            else self.end_a_distance_cm
+        )
+
+    @tail_distance_cm.setter
+    def tail_distance_cm(self, value: float) -> None:
+        if self.leading_end == "a":
+            self.end_b_distance_cm = value
+        else:
+            self.end_a_distance_cm = value
+
+    @property
+    def head_entry_edge(self) -> Optional[str]:
+        """Entry edge for head tile."""
+        return (
+            self.end_a_entry_edge if self.leading_end == "a" else self.end_b_entry_edge
+        )
+
+    @head_entry_edge.setter
+    def head_entry_edge(self, value: Optional[str]) -> None:
+        if self.leading_end == "a":
+            self.end_a_entry_edge = value
+        else:
+            self.end_b_entry_edge = value
+
+    @property
+    def tail_entry_edge(self) -> Optional[str]:
+        """Entry edge for tail tile."""
+        return (
+            self.end_b_entry_edge if self.leading_end == "a" else self.end_a_entry_edge
+        )
+
+    @tail_entry_edge.setter
+    def tail_entry_edge(self, value: Optional[str]) -> None:
+        if self.leading_end == "a":
+            self.end_b_entry_edge = value
+        else:
+            self.end_a_entry_edge = value
+
+    @property
+    def occupied_tiles(self) -> List[Tuple[int, int]]:
+        """Tiles currently occupied by train (tail to head)."""
+        if not self.path_tiles:
+            return []
+        start = min(self.tail_index, self.head_index)
+        end = max(self.tail_index, self.head_index)
+        return self.path_tiles[start : end + 1]
+
+    def reverse_direction(self) -> None:
+        """Flip which end is the head (no position recalculation needed)."""
+        self.leading_end = "b" if self.leading_end == "a" else "a"
+
+    # === PATH QUEUE METHODS ===
+
+    def advance_head(self, new_entry_edge: str) -> bool:
+        """Move head to next tile in path.
+
+        Args:
+            new_entry_edge: Entry edge for the new tile ('N', 'E', 'S', 'W')
+
+        Returns:
+            True if advanced, False if at end of path
+        """
+        if self.leading_end == "a":
+            if self.end_a_index + 1 >= len(self.path_tiles):
+                return False
+            self.end_a_index += 1
+            self.end_a_entry_edge = new_entry_edge
+            self.end_a_distance_cm = 0.0
+        else:
+            if self.end_b_index + 1 >= len(self.path_tiles):
+                return False
+            self.end_b_index += 1
+            self.end_b_entry_edge = new_entry_edge
+            self.end_b_distance_cm = 0.0
+        return True
+
+    def advance_tail(self, new_entry_edge: str) -> bool:
+        """Move tail to next tile (called when tail leaves a tile).
+
+        Args:
+            new_entry_edge: Entry edge for the new tile
+
+        Returns:
+            True if advanced, False if tail would pass head
+        """
+        if self.leading_end == "a":
+            if self.end_b_index + 1 > self.end_a_index:
+                return False
+            self.end_b_index += 1
+            self.end_b_entry_edge = new_entry_edge
+            self.end_b_distance_cm = 0.0
+        else:
+            if self.end_a_index + 1 > self.end_b_index:
+                return False
+            self.end_a_index += 1
+            self.end_a_entry_edge = new_entry_edge
+            self.end_a_distance_cm = 0.0
+        return True
+
+    def extend_path(self, tiles: List[Tuple[int, int]]) -> None:
+        """Append tiles to the path (when path is extended).
+
+        Args:
+            tiles: List of (x, y) positions to append
+        """
+        self.path_tiles.extend(tiles)
+
+    def clear_path(self) -> None:
+        """Clear path and reset all position data (when path is cancelled)."""
+        self.path_tiles = []
+        self.end_a_index = 0
+        self.end_b_index = 0
+        self.end_a_distance_cm = 0.0
+        self.end_b_distance_cm = 0.0
+        self.end_a_entry_edge = None
+        self.end_b_entry_edge = None
 
     def update_physics(
         self, delta_time: float, target_speed: float, track_length: float
@@ -1122,12 +1307,21 @@ class Train:
                 {"x": x, "y": y, "dir": d.name if d else None}
                 for x, y, d in (self.current_path or [])
             ],
+            # === NEW PATH FIELDS ===
+            "path_tiles": self.path_tiles,
+            "end_a_index": self.end_a_index,
+            "end_a_distance_cm": self.end_a_distance_cm,
+            "end_a_entry_edge": self.end_a_entry_edge,
+            "end_b_index": self.end_b_index,
+            "end_b_distance_cm": self.end_b_distance_cm,
+            "end_b_entry_edge": self.end_b_entry_edge,
+            "leading_end": self.leading_end,
         }
 
         # New position system (TrainPosition)
         if self.position:
             data["position"] = self.position.to_dict()
-            
+
             # Also include rich tile data if network available
             if network and hasattr(network, "get_occupied_tiles_rich"):
                 data["occupied_tiles_rich"] = network.get_occupied_tiles_rich(self)
@@ -1152,6 +1346,39 @@ class Train:
                 )
             data["schedule"]["stops"] = stops
 
+        # Add path_tile_info if network available
+        if network and self.path_tiles:
+            path_tile_info = []
+            for tile in self.path_tiles:
+                x, y = tile
+                track = network.get_track(x, y)
+                tile_info = {
+                    "tile": [x, y],
+                    "length_cm": network._get_tile_length_cm(x, y) if track else 50.0,
+                    "block_id": track.block_section_id if track else None,
+                }
+                # Add signal info if present
+                if track and track.signal_ids:
+                    tile_info["signals"] = []
+                    for sig_id in track.signal_ids:
+                        signal = network.signals.get(sig_id)
+                        if signal:
+                            tile_info["signals"].append(
+                                {
+                                    "id": sig_id,
+                                    "state": signal.state.value
+                                    if signal.state
+                                    else "unknown",
+                                    "direction": signal.detection_direction,
+                                }
+                            )
+                # Add switch info if present
+                if track and track.is_switch:
+                    tile_info["is_switch"] = True
+                    tile_info["switch_state"] = track.switch_state
+                path_tile_info.append(tile_info)
+            data["path_tile_info"] = path_tile_info
+
         return data
 
     @classmethod
@@ -1161,7 +1388,7 @@ class Train:
 
         Note: This reconstructs basic train state. Schedule and path
         will be None and need to be re-established if needed.
-        
+
         Position handling:
         - Uses TrainPosition format (requires 'end_a' in position dict)
         - If position format is incompatible, train position is discarded

@@ -796,6 +796,7 @@ class App {
     
     async fetchTrainLookahead(trainId) {
         if (!trainId) return;
+        if (!this.trainMonitor.isVisible()) return;
         
         const now = Date.now();
         if (now - this.lastLookaheadFetch < this.lookaheadThrottleMs) return;

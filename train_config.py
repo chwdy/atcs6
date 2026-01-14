@@ -56,6 +56,11 @@ SCALE_PRESETS = {
 # This ensures configuration errors are caught early via warnings.
 
 # =============================================================================
+# NOTE: DEFAULT_TILE_LENGTH_CM was removed - blocks, stations, and switches must have
+# explicit length_cm configuration. No default fallback values are provided.
+# This ensures configuration errors are caught early via warnings.
+
+# =============================================================================
 # Speed Limits
 # =============================================================================
 DEFAULT_MAX_SPEED_KMH = 100.0
