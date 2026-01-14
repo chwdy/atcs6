@@ -149,7 +149,7 @@ class TrainMonitor {
             }
             
             // Add switches
-            if (info.is_switch) {
+            if (info.is_switch && tile && tile.length >= 2) {
                 switches.push({
                     x: tile[0],
                     y: tile[1],

@@ -420,15 +420,17 @@ class App {
     
     async fetchTrainLookahead(trainId) {
         if (!trainId) return;
+        if (!this.trainMonitor.isVisible()) return;
         
         const now = Date.now();
         if (now - this.lastLookaheadFetch < this.lookaheadThrottleMs) return;
         this.lastLookaheadFetch = now;
         
         try {
-            const lookahead = await window.api.getTrainLookahead(trainId);
-            if (this.selectedTrainId === trainId && this.trainMonitor.isVisible()) {
-                this.trainMonitor.update(lookahead);
+            // Find train in the network data (already fetched)
+            const train = this.currentNetwork?.trains?.find(t => t.id === trainId);
+            if (train && this.selectedTrainId === trainId) {
+                this.trainMonitor.update(train);
             }
         } catch (e) {
             console.error('[App] fetchTrainLookahead failed:', e);
