@@ -42,6 +42,7 @@ class SimulationController:
         self.power_controller = BlockPowerController(network)
         self.route_executor = RouteExecutor(network, path_dispatcher)
         self.speed_profile_registry = SpeedProfileRegistry()
+        self.train_mover = TrainMover(network)
 
         self.atc_instances: Dict[str, TrainATC] = {}
         self.simulation_time: float = 0.0
@@ -309,9 +310,10 @@ class SimulationController:
             self._advance_train_track(train, overflow_cm)
 
         # === UPDATE PATH QUEUE POSITION ===
-        if train.path_tiles and len(train.path_tiles) > 0:
-            mover = TrainMover(self.network)
-            mover.update_train_path_position(train, delta_seconds)
+        # NOTE: Running parallel to legacy position system during migration.
+        # TODO: Remove legacy position update once path queue system is validated.
+        if train.path_tiles:
+            self.train_mover.update_train_path_position(train, delta_seconds)
 
     def _advance_train_track(self, train: Train, overflow_cm: float = 0.0) -> None:
         if not train.current_pos:

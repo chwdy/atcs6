@@ -6078,6 +6078,7 @@ class TestSimulationPathIntegration:
     def test_simulation_updates_path_position(self):
         """SimulationController should update train path position."""
         from simulation import SimulationController
+        from train_config import kmh_to_cm_per_sec, DEFAULT_TILE_LENGTH_CM
 
         network = RailwayNetwork()
         from track import TrackSegment, TRACK_EW
@@ -6101,7 +6102,7 @@ class TestSimulationPathIntegration:
         train.end_b_distance_cm = 0.0
         train.end_b_entry_edge = "W"
         train.leading_end = "a"
-        train.current_speed = 36.0
+        train.current_speed = 36.0  # km/h
         train.state = TrainState.RUNNING_MOVING
         train.facing_direction = Direction.EAST
         # Set legacy fields for compatibility
@@ -6114,9 +6115,82 @@ class TestSimulationPathIntegration:
 
         controller = SimulationController(network)
         initial_distance = train.end_a_distance_cm
+        initial_index = train.end_a_index
 
-        # Run simulation for 1 second
+        # Run simulation for a short time (0.01 seconds to stay within one tile)
+        delta_seconds = 0.01
+        controller.update(delta_seconds)
+
+        # Calculate expected movement
+        expected_movement_cm = kmh_to_cm_per_sec(36.0) * delta_seconds
+
+        # Calculate actual movement
+        actual_distance = train.end_a_distance_cm
+        if train.end_a_index > initial_index:
+            # Train advanced to next tile(s) - calculate total distance covered
+            tiles_crossed = train.end_a_index - initial_index
+            tile_length = DEFAULT_TILE_LENGTH_CM
+            actual_movement = (
+                tiles_crossed * tile_length - initial_distance
+            ) + actual_distance
+        else:
+            actual_movement = actual_distance - initial_distance
+
+        # Verify movement occurred and matches expected (within tolerance for floating point)
+        assert actual_movement > 0, "Train should have moved forward"
+        assert abs(actual_movement - expected_movement_cm) < 0.1, (
+            f"Expected movement ~{expected_movement_cm:.2f} cm, got {actual_movement:.2f} cm"
+        )
+
+    def test_simulation_path_position_reaches_end(self):
+        """Verify train correctly reaches end of path."""
+        from simulation import SimulationController
+
+        network = RailwayNetwork()
+        from track import TrackSegment, TRACK_EW
+
+        for x in range(5):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+        block_length_cm = 250.0
+        network.create_block_with_tracks(
+            "B1",
+            [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)],
+            name="Block 1",
+            length_cm=block_length_cm,
+        )
+        tile_length_cm = block_length_cm / 5  # 50 cm per tile
+
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)]
+        # Start near end of path
+        train.end_a_index = 3
+        train.end_a_distance_cm = tile_length_cm - 5.0  # 5cm from end of tile 3
+        train.end_a_entry_edge = "W"
+        train.end_b_index = 2
+        train.end_b_distance_cm = 0.0
+        train.end_b_entry_edge = "W"
+        train.leading_end = "a"
+        train.current_speed = 100.0  # km/h - fast enough to reach end
+        train.state = TrainState.RUNNING_MOVING
+        train.facing_direction = Direction.EAST
+        # Set legacy fields for compatibility
+        train.current_pos = (3, 0)
+        train.current_direction = Direction.EAST
+        train.current_path = [(x, 0, Direction.EAST) for x in range(5)]
+        train.path_index = 3
+
+        network.trains["T1"] = train
+
+        controller = SimulationController(network)
+
+        # Run simulation long enough to reach end
         controller.update(1.0)
 
-        # Head should have moved forward
-        assert train.end_a_distance_cm > initial_distance or train.end_a_index > 1
+        # Train should be at end of path (index 4 with distance capped at tile length)
+        assert train.end_a_index == 4, (
+            f"Train should reach last tile, got index {train.end_a_index}"
+        )
+        assert train.end_a_distance_cm == tile_length_cm, (
+            f"Train distance should be capped at tile end ({tile_length_cm} cm), got {train.end_a_distance_cm}"
+        )
