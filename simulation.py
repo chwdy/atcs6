@@ -10,6 +10,7 @@ from train_atc import TrainATC
 from route_executor import RouteExecutor
 from speed_profile import SpeedProfile, SpeedProfileRegistry
 from train_config import kmh_to_cm_per_sec
+from train_movement import TrainMover
 
 if TYPE_CHECKING:
     from path_dispatcher import PathDispatcher
@@ -306,6 +307,11 @@ class SimulationController:
         if train.distance_on_track >= tile_length_cm:
             overflow_cm = train.distance_on_track - tile_length_cm
             self._advance_train_track(train, overflow_cm)
+
+        # === UPDATE PATH QUEUE POSITION ===
+        if train.path_tiles and len(train.path_tiles) > 0:
+            mover = TrainMover(self.network)
+            mover.update_train_path_position(train, delta_seconds)
 
     def _advance_train_track(self, train: Train, overflow_cm: float = 0.0) -> None:
         if not train.current_pos:

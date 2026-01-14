@@ -6067,3 +6067,56 @@ class TestTrainMoverPathQueue:
         assert train.end_b_distance_cm > 20.0
         # end_a should be unchanged (it's the tail)
         # (tail might also advance if train is short enough)
+
+
+# ============= SIMULATION PATH INTEGRATION TESTS =============
+
+
+class TestSimulationPathIntegration:
+    """Tests for simulation using path queue system."""
+
+    def test_simulation_updates_path_position(self):
+        """SimulationController should update train path position."""
+        from simulation import SimulationController
+
+        network = RailwayNetwork()
+        from track import TrackSegment, TRACK_EW
+
+        for x in range(5):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+        network.create_block_with_tracks(
+            "B1",
+            [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)],
+            name="Block 1",
+            length_cm=250.0,
+        )
+
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)]
+        train.end_a_index = 1
+        train.end_a_distance_cm = 25.0
+        train.end_a_entry_edge = "W"
+        train.end_b_index = 0
+        train.end_b_distance_cm = 0.0
+        train.end_b_entry_edge = "W"
+        train.leading_end = "a"
+        train.current_speed = 36.0
+        train.state = TrainState.RUNNING_MOVING
+        train.facing_direction = Direction.EAST
+        # Set legacy fields for compatibility
+        train.current_pos = (1, 0)
+        train.current_direction = Direction.EAST
+        train.current_path = [(x, 0, Direction.EAST) for x in range(5)]
+        train.path_index = 1
+
+        network.trains["T1"] = train
+
+        controller = SimulationController(network)
+        initial_distance = train.end_a_distance_cm
+
+        # Run simulation for 1 second
+        controller.update(1.0)
+
+        # Head should have moved forward
+        assert train.end_a_distance_cm > initial_distance or train.end_a_index > 1
