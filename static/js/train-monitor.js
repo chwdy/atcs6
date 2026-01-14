@@ -78,23 +78,121 @@ class TrainMonitor {
         }
     }
     
-    update(lookaheadData) {
-        this.lookaheadData = lookaheadData;
-        this.currentSpeedEl.textContent = Math.round(lookaheadData.current_speed_kmh || 0);
-        this.targetSpeedEl.textContent = Math.round(lookaheadData.target_speed_kmh || 0);
+    update(train) {
+        // Check for path-based data
+        if (!train || !train.path_tile_info) {
+            this.lookaheadData = null;
+            this.render();
+            return;
+        }
+        
+        const pathTiles = train.path_tiles || [];
+        const pathInfo = train.path_tile_info || [];
+        const headIndex = train.leading_end === 'a' ? train.end_a_index : train.end_b_index;
+        const headDistanceCm = train.leading_end === 'a' ? train.end_a_distance_cm : train.end_b_distance_cm;
+        
+        // Build blocks, signals, switches from tiles ahead of head
+        const blocks = [];
+        const signals = [];
+        const switches = [];
+        const stations = [];
+        
+        let cumulativeDistance = -(headDistanceCm || 0); // Start from head position
+        const seenBlocks = new Set();
+        
+        for (let i = headIndex || 0; i < pathTiles.length; i++) {
+            const tile = pathTiles[i];
+            const info = pathInfo[i];
+            if (!info) continue;
+            
+            const tileLength = info.length_cm || 50;
+            const tileStart = Math.max(0, cumulativeDistance);
+            
+            // Add block if not seen
+            if (info.block_id && !seenBlocks.has(info.block_id)) {
+                seenBlocks.add(info.block_id);
+                
+                // Find all tiles in this block to calculate total length
+                let blockLength = 0;
+                let tileCount = 0;
+                for (let j = i; j < pathInfo.length; j++) {
+                    if (pathInfo[j]?.block_id === info.block_id) {
+                        blockLength += pathInfo[j].length_cm || 50;
+                        tileCount++;
+                    } else {
+                        break;
+                    }
+                }
+                
+                blocks.push({
+                    id: info.block_id,
+                    name: info.block_id,
+                    state: info.block_state || 'free',
+                    start_cm: tileStart,
+                    end_cm: tileStart + blockLength,
+                    length_cm: blockLength,
+                    tile_count: tileCount,
+                    sequence: blocks.length
+                });
+            }
+            
+            // Add signals
+            if (info.signals) {
+                info.signals.forEach(sig => {
+                    signals.push({
+                        id: sig.id,
+                        state: sig.state,
+                        distance_cm: tileStart,
+                        sequence: signals.length
+                    });
+                });
+            }
+            
+            // Add switches
+            if (info.is_switch) {
+                switches.push({
+                    x: tile[0],
+                    y: tile[1],
+                    position: info.switch_state === 0 ? 'main' : 'diverging',
+                    distance_cm: tileStart,
+                    sequence: switches.length
+                });
+            }
+            
+            cumulativeDistance += tileLength;
+        }
+        
+        // Build lookahead-compatible data structure
+        this.lookaheadData = {
+            current_speed_kmh: train.speed || 0,
+            target_speed_kmh: train.target_speed || 0,
+            state: train.state,
+            wait_reason: train.wait_reason,
+            speed_limit_reason: train.speed_limit_reason,
+            blocks: blocks,
+            signals: signals,
+            switches: switches,
+            stations: stations,
+            distance_into_path_cm: 0, // Head is always at 0
+            clearance_cm: cumulativeDistance
+        };
+        
+        // Update UI elements
+        this.currentSpeedEl.textContent = Math.round(this.lookaheadData.current_speed_kmh || 0);
+        this.targetSpeedEl.textContent = Math.round(this.lookaheadData.target_speed_kmh || 0);
         
         if (this.speedCmsEl) {
-            const speedCms = ((lookaheadData.current_speed_kmh || 0) * 27.78 / this.currentScale).toFixed(1);
+            const speedCms = ((this.lookaheadData.current_speed_kmh || 0) * 27.78 / this.currentScale).toFixed(1);
             this.speedCmsEl.textContent = speedCms;
         }
         if (this.clearanceEl) {
-            const clearanceM = ((lookaheadData.clearance_cm || 0) / 100).toFixed(1);
+            const clearanceM = ((this.lookaheadData.clearance_cm || 0) / 100).toFixed(1);
             this.clearanceEl.textContent = clearanceM;
         }
         
         if (this.waitReasonEl) {
-            if (lookaheadData.state === 'running_waiting' && lookaheadData.wait_reason) {
-                this.waitReasonEl.textContent = lookaheadData.wait_reason;
+            if (this.lookaheadData.state === 'running_waiting' && this.lookaheadData.wait_reason) {
+                this.waitReasonEl.textContent = this.lookaheadData.wait_reason;
                 this.waitReasonEl.classList.remove('hidden');
             } else {
                 this.waitReasonEl.classList.add('hidden');
@@ -102,8 +200,8 @@ class TrainMonitor {
         }
         
         if (this.speedLimitReasonEl) {
-            const speedLimitReason = lookaheadData.speed_limit_reason;
-            if (speedLimitReason && lookaheadData.state !== 'running_waiting') {
+            const speedLimitReason = this.lookaheadData.speed_limit_reason;
+            if (speedLimitReason && this.lookaheadData.state !== 'running_waiting') {
                 this.speedLimitReasonEl.textContent = speedLimitReason;
                 this.speedLimitReasonEl.classList.remove('hidden');
             } else {
@@ -111,7 +209,7 @@ class TrainMonitor {
             }
         }
         
-        this.updateUpcomingElements(lookaheadData);
+        this.updateUpcomingElements(this.lookaheadData);
         this.render();
     }
     
