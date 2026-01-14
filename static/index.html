@@ -16,13 +16,17 @@
             </div>
             <div class="controls">
                 <div class="simulation-controls">
-                    <button id="btn-play" class="btn btn-primary" title="Start Simulation">▶ Play</button>
-                    <button id="btn-pause" class="btn btn-secondary" title="Pause Simulation">⏸ Pause</button>
-                    <button id="btn-reset" class="btn btn-danger" title="Reset Simulation">↺ Reset</button>
-                    <div class="speed-control">
-                        <label>Speed:</label>
-                        <input type="range" id="speed-slider" min="0.1" max="10" step="0.1" value="1">
-                        <span id="speed-value">1x</span>
+                    <button id="btn-play-pause" class="btn btn-primary" title="Start/Pause Simulation">
+                        <span class="icon">▶</span> Play
+                    </button>
+                    <button id="btn-reset" class="btn btn-danger" title="Reset Simulation">
+                        <span class="icon">↺</span>
+                    </button>
+                    <div class="speed-presets">
+                        <button class="btn btn-sm speed-btn" data-speed="0.5">0.5x</button>
+                        <button class="btn btn-sm speed-btn active" data-speed="1">1x</button>
+                        <button class="btn btn-sm speed-btn" data-speed="2">2x</button>
+                        <button class="btn btn-sm speed-btn" data-speed="3">3x</button>
                     </div>
                 </div>
                 <div class="mode-switch">
@@ -145,74 +149,59 @@
                     <div class="sidebar-section debug-panel" id="debug-panel">
                         <h3>Debug Info</h3>
                         <div class="debug-controls">
-                            <label>
+                            <label title="Show Track Bits">
                                 <input type="checkbox" id="debug-show-bits" />
-                                <span>Show Track Bits</span>
+                                <span>Track Bits</span>
                             </label>
-                            <label>
+                            <label title="Show Coordinates">
                                 <input type="checkbox" id="debug-show-coords" />
-                                <span>Show Coordinates</span>
+                                <span>Coordinates</span>
                             </label>
-                            <label>
+                            <label title="Show Switch States">
                                 <input type="checkbox" id="debug-show-switches" />
-                                <span>Show Switch States</span>
+                                <span>Switch States</span>
                             </label>
-                            <label>
+                            <label title="Show Edge Labels (N/E/S/W)">
                                 <input type="checkbox" id="debug-show-edges" />
-                                <span>Show Edge Labels (N/E/S/W)</span>
+                                <span>Edge Labels</span>
                             </label>
-                            <label>
+                            <label title="Show Block Details">
                                 <input type="checkbox" id="debug-show-blocks" />
-                                <span>Show Block Details</span>
+                                <span>Blocks</span>
                             </label>
-                            <label>
+                            <label title="Show Signal Details">
                                 <input type="checkbox" id="debug-show-signals" />
-                                <span>Show Signal Details</span>
+                                <span>Signals</span>
                             </label>
-                            <label>
-                                <input type="checkbox" id="debug-show-train-path" />
-                                <span>Show Train Path (entry→exit)</span>
-                            </label>
-                            <label>
+
+                            <label title="Show Train Position Details" style="grid-column: 1 / -1;">
                                 <input type="checkbox" id="debug-show-train-position" checked />
                                 <span>Show Train Position Details</span>
                             </label>
 
                         </div>
                         
-                        <!-- Train Position Debug Panel (visible when train selected) -->
-                        <div id="train-debug-panel" class="train-debug-panel hidden">
-                            <h4 class="debug-section-header">🚂 Train Position Debug</h4>
-                            <div id="train-debug-content">
-                                <p class="text-muted text-xs">Select a train to see position details</p>
-                            </div>
-                        </div>
+                        <!-- Train Position Debug Panel is now in secondary sidebar -->
+
                     </div>
 
                     <div class="sidebar-section settings-panel" id="settings-panel">
                         <h3>Settings</h3>
                         <div class="settings-controls">
-                            <div class="setting-item">
-                                <label for="scale-select">Model Scale:</label>
-                                <select id="scale-select" class="setting-select">
-                                    <option value="1">1:1 (Full Scale)</option>
-                                    <option value="22.5">1:22.5 (G Scale)</option>
-                                    <option value="43.5">1:43.5 (O Scale)</option>
-                                    <option value="64">1:64 (S Scale)</option>
-                                    <option value="87">1:87 (HO Scale)</option>
-                                    <option value="120">1:120 (TT Scale)</option>
-                                    <option value="148">1:148 (N Scale UK)</option>
-                                    <option value="160">1:160 (N Scale)</option>
-                                    <option value="220">1:220 (Z Scale)</option>
+                            <div class="setting-row">
+                                <span id="scale-current-display" class="setting-label-compact" style="width: auto; margin-right: 5px;">Current: 1:1</span>
+                                <select id="scale-select" class="setting-select setting-input-compact" style="flex: 1;">
+                                    <option value="1">1:1 (Full)</option>
+                                    <option value="22.5">1:22.5 (G)</option>
+                                    <option value="43.5">1:43.5 (O)</option>
+                                    <option value="64">1:64 (S)</option>
+                                    <option value="87">1:87 (HO)</option>
+                                    <option value="120">1:120 (TT)</option>
+                                    <option value="148">1:148 (N UK)</option>
+                                    <option value="160">1:160 (N)</option>
+                                    <option value="220">1:220 (Z)</option>
                                 </select>
-                            </div>
-                            <div class="setting-item">
-                                <label for="scale-custom">Custom Scale:</label>
-                                <input type="number" id="scale-custom" class="setting-input" min="1" max="500" step="0.1" placeholder="e.g. 160">
-                                <button id="scale-apply-custom" class="btn btn-sm">Apply</button>
-                            </div>
-                            <div class="setting-info">
-                                <span id="scale-current-display">Current: 1:1</span>
+                                <button id="scale-apply-custom" class="btn btn-sm btn-secondary">Set</button>
                             </div>
                         </div>
                     </div>
@@ -336,6 +325,11 @@
             <div class="train-monitor-upcoming" id="monitor-upcoming-container">
                 <div class="upcoming-header">Upcoming</div>
                 <div class="upcoming-list" id="monitor-upcoming"></div>
+            </div>
+            <!-- Expanded Debug Info Panel (appended dynamically) -->
+            <div id="train-monitor-debug-container" class="train-monitor-debug-container hidden">
+                <div class="debug-header">Debug Details</div>
+                <div id="train-monitor-debug-content"></div>
             </div>
         </div>
     </div>

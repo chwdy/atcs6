@@ -18,26 +18,39 @@ class App {
     }
 
     setupControls() {
-        document.getElementById('btn-play').addEventListener('click', () => {
-            window.api.controlSimulation('start').catch(e => console.error('[App] Play error:', e));
-            this.startSimulationPolling();
-        });
-
-        document.getElementById('btn-pause').addEventListener('click', () => {
-            window.api.controlSimulation('stop').catch(e => console.error('[App] Pause error:', e));
-            this.stopSimulationPolling();
+        const playPauseBtn = document.getElementById('btn-play-pause');
+        playPauseBtn.addEventListener('click', () => {
+            if (this.isSimulationRunning) {
+                // Pause
+                window.api.controlSimulation('stop').catch(e => console.error('[App] Pause error:', e));
+                this.stopSimulationPolling();
+                this.updatePlaybackUI(false);
+            } else {
+                // Play
+                window.api.controlSimulation('start').catch(e => console.error('[App] Play error:', e));
+                this.startSimulationPolling();
+                this.updatePlaybackUI(true);
+            }
         });
 
         document.getElementById('btn-reset').addEventListener('click', () => {
             window.api.controlSimulation('reset').catch(e => console.error('[App] Reset error:', e));
             this.stopSimulationPolling();
+            this.updatePlaybackUI(false); // Ensure button shows Play
             this.refreshNetwork();
         });
 
-        document.getElementById('speed-slider').addEventListener('input', (e) => {
-            const speed = parseFloat(e.target.value);
-            document.getElementById('speed-value').textContent = `${speed}x`;
-            window.api.controlSimulation('set_speed', speed);
+        document.querySelectorAll('.speed-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const speed = parseFloat(e.target.dataset.speed);
+                window.api.controlSimulation('set_speed', speed);
+                
+                // Update active state
+                document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+                e.target.classList.add('active');
+                
+                window.showToast(`Speed set to ${speed}x`, 'info', 1000);
+            });
         });
 
         document.getElementById('mode-edit').addEventListener('click', () => {
@@ -54,6 +67,21 @@ class App {
 
         // Layout controls
         this.setupLayoutControls();
+    }
+
+    updatePlaybackUI(isPlaying) {
+        const btn = document.getElementById('btn-play-pause');
+        if (!btn) return;
+        
+        if (isPlaying) {
+            btn.innerHTML = '<span class="icon">⏸</span> Pause';
+            btn.classList.remove('btn-primary');
+            btn.classList.add('btn-secondary'); 
+        } else {
+            btn.innerHTML = '<span class="icon">▶</span> Play';
+            btn.classList.remove('btn-secondary');
+            btn.classList.add('btn-primary');
+        }
     }
 
     setupLayoutControls() {
@@ -425,26 +453,26 @@ class App {
     }
     
     updateTrainDebugPanel(train) {
-        const panel = document.getElementById('train-debug-panel');
-        const content = document.getElementById('train-debug-content');
         const checkbox = document.getElementById('debug-show-train-position');
         
-        if (!panel || !content) return;
-        
-        // Show/hide based on checkbox
+        // If debug is disabled, hide the debug container in the monitor panel
         if (checkbox && !checkbox.checked) {
-            panel.classList.add('hidden');
+            const container = document.getElementById('train-monitor-debug-container');
+            if (container) container.classList.add('hidden');
             return;
         }
         
-        panel.classList.remove('hidden');
+        if (!train) return;
+
+        // Ensure the monitor panel debug container is visible
+        const container = document.getElementById('train-monitor-debug-container');
+        if (container) container.classList.remove('hidden');
         
-        if (!train) {
-            content.innerHTML = '<p class="text-muted text-xs">No train selected</p>';
-            return;
-        }
+        const content = document.getElementById('train-monitor-debug-content');
+        if (!content) return;
         
-        let html = '';
+        // Build HTML content
+        let html = '<div class="train-debug-panel" style="background: transparent; border: none; padding: 0;">';
         
         // Basic info
         html += `<div class="train-debug-row"><span class="train-debug-label">Train ID:</span><span class="train-debug-value">${train.id}</span></div>`;
@@ -521,26 +549,34 @@ class App {
             html += `</div>`;
         }
         
-        // Wrap main content in a div so lookahead can be appended separately
-        content.innerHTML = `<div class="train-debug-main">${html}</div>`;
+        // This is a placeholder for the lookahead section which will be updated separately
+        html += `<div class="train-debug-lookahead"></div>`;
+        
+        html += '</div>'; // End wrapper
+        
+        content.innerHTML = html;
         
         // Re-append stored lookahead data if available
         if (this.lastLookaheadData && this.selectedTrainId === train.id) {
             this.updateTrainDebugWithLookahead(this.lastLookaheadData);
         }
     }
-    
+
     hideTrainDebugPanel() {
-        const panel = document.getElementById('train-debug-panel');
-        if (panel) {
-            panel.classList.add('hidden');
-        }
+        const panel = document.getElementById('train-monitor-debug-container');
+        if (panel) panel.classList.add('hidden');
     }
     
     // Update debug panel with lookahead data for additional info
     updateTrainDebugWithLookahead(lookahead) {
-        const content = document.getElementById('train-debug-content');
-        if (!content) return;
+        // We now append to the train monitor panel
+        const container = document.getElementById('train-monitor-debug-container');
+        const content = document.getElementById('train-monitor-debug-content');
+        
+        if (!container || !content) return;
+        
+        // Find if there's already a lookahead section and replace it, else append
+        let existingLookahead = content.querySelector('.train-debug-lookahead');
         
         let extra = '';
         
@@ -629,8 +665,128 @@ class App {
             extra += `</div>`;
         }
         
+        if (existingLookahead) {
+            existingLookahead.outerHTML = `<div class="train-debug-lookahead">${extra}</div>`;
+        } else {
+            content.insertAdjacentHTML('beforeend', `<div class="train-debug-lookahead">${extra}</div>`);
+        }
+    }
+    
+    openSecondarySidebar(title, content) {
+        if (this.editor && this.editor.ui) {
+            this.editor.ui.showSecondarySidebar(title, content);
+        }
+    }
+    
+    closeSecondarySidebar() {
+        if (this.editor && this.editor.ui) {
+            this.editor.ui.hideSecondarySidebar();
+        }
+    }
+
+    hideTrainDebugPanel() {
+        const panel = document.getElementById('train-monitor-debug-container');
+        if (panel) panel.classList.add('hidden');
+    }
+    
+    // Update debug panel with lookahead data for additional info
+    updateTrainDebugWithLookahead(lookahead) {
+        // We now append to the train monitor panel
+        const container = document.getElementById('train-monitor-debug-container');
+        const content = document.getElementById('train-monitor-debug-content');
+        
+        if (!container || !content) return;
+        
         // Find if there's already a lookahead section and replace it, else append
-        const existingLookahead = content.querySelector('.train-debug-lookahead');
+        let existingLookahead = content.querySelector('.train-debug-lookahead');
+        
+        let extra = '';
+        
+        // Speed & Position Info
+        extra += `<div class="train-debug-subsection">`;
+        extra += `<div class="train-debug-subsection-title">Lookahead - Speed & Position</div>`;
+        extra += `<div class="train-debug-row"><span class="train-debug-label">Current Speed:</span><span class="train-debug-value">${lookahead.current_speed_kmh?.toFixed(1) || 0} km/h</span></div>`;
+        extra += `<div class="train-debug-row"><span class="train-debug-label">Target Speed:</span><span class="train-debug-value">${lookahead.target_speed_kmh?.toFixed(1) || 0} km/h</span></div>`;
+        extra += `<div class="train-debug-row"><span class="train-debug-label">ATC Target:</span><span class="train-debug-value">${lookahead.atc_target_speed_kmh?.toFixed(1) || 0} km/h</span></div>`;
+        extra += `<div class="train-debug-row"><span class="train-debug-label">Max Speed:</span><span class="train-debug-value">${lookahead.max_speed_kmh?.toFixed(1) || 0} km/h</span></div>`;
+        extra += `<div class="train-debug-row"><span class="train-debug-label">Distance into Path:</span><span class="train-debug-value">${lookahead.distance_into_path_cm?.toFixed(1) || 0} cm</span></div>`;
+        extra += `<div class="train-debug-row"><span class="train-debug-label">To Next Tile:</span><span class="train-debug-value">${lookahead.distance_to_next_tile_cm?.toFixed(1) || '-'} cm</span></div>`;
+        extra += `<div class="train-debug-row"><span class="train-debug-label">Clearance:</span><span class="train-debug-value text-track">${lookahead.clearance_cm?.toFixed(1) || 0} cm</span></div>`;
+        if (lookahead.speed_limit_reason) {
+            extra += `<div class="train-debug-row"><span class="train-debug-label">Speed Limit:</span><span class="train-debug-value text-signal-danger">${lookahead.speed_limit_reason}</span></div>`;
+        }
+        if (lookahead.wait_reason) {
+            extra += `<div class="train-debug-row"><span class="train-debug-label">Wait Reason:</span><span class="train-debug-value text-signal-danger">${lookahead.wait_reason}</span></div>`;
+        }
+        extra += `</div>`;
+        
+        // Blocks ahead
+        if (lookahead.blocks && lookahead.blocks.length > 0) {
+            extra += `<div class="train-debug-subsection">`;
+            extra += `<div class="train-debug-subsection-title">Lookahead - Blocks (${lookahead.blocks.length})</div>`;
+            lookahead.blocks.slice(0, 5).forEach((block, i) => {
+                const stateColor = block.state === 'free' ? 'text-success' : 
+                                   block.state === 'occupied' ? 'text-danger' : 
+                                   block.state === 'reserved' ? 'text-warning' : '';
+                extra += `<div class="train-debug-row">`;
+                extra += `<span class="train-debug-label">${block.name || block.id}:</span>`;
+                extra += `<span class="train-debug-value ${stateColor}">${block.state} @ ${block.start_cm?.toFixed(0)}-${block.end_cm?.toFixed(0)} cm</span>`;
+                extra += `</div>`;
+            });
+            if (lookahead.blocks.length > 5) {
+                extra += `<div class="train-debug-row text-muted text-xs">...and ${lookahead.blocks.length - 5} more</div>`;
+            }
+            extra += `</div>`;
+        }
+        
+        // Signals ahead
+        if (lookahead.signals && lookahead.signals.length > 0) {
+            extra += `<div class="train-debug-subsection">`;
+            extra += `<div class="train-debug-subsection-title">Lookahead - Signals (${lookahead.signals.length})</div>`;
+            lookahead.signals.slice(0, 5).forEach((signal, i) => {
+                const aspectColor = signal.state === 'green' ? 'text-success' :
+                                    signal.state === 'yellow' ? 'text-warning' :
+                                    signal.state === 'red' ? 'text-danger' : '';
+                extra += `<div class="train-debug-row">`;
+                extra += `<span class="train-debug-label">${signal.id}:</span>`;
+                extra += `<span class="train-debug-value ${aspectColor}">${signal.state} @ ${signal.distance_cm?.toFixed(0)} cm</span>`;
+                extra += `</div>`;
+            });
+            if (lookahead.signals.length > 5) {
+                extra += `<div class="train-debug-row text-muted text-xs">...and ${lookahead.signals.length - 5} more</div>`;
+            }
+            extra += `</div>`;
+        }
+        
+        // Stations ahead
+        if (lookahead.stations && lookahead.stations.length > 0) {
+            extra += `<div class="train-debug-subsection">`;
+            extra += `<div class="train-debug-subsection-title">Lookahead - Stations (${lookahead.stations.length})</div>`;
+            lookahead.stations.forEach((station, i) => {
+                extra += `<div class="train-debug-row">`;
+                extra += `<span class="train-debug-label">${station.name || station.station_id}:</span>`;
+                extra += `<span class="train-debug-value text-station">@ ${station.distance_cm?.toFixed(0)} cm (${station.length_cm?.toFixed(0)} cm long)</span>`;
+                extra += `</div>`;
+            });
+            extra += `</div>`;
+        }
+        
+        // Switches ahead
+        if (lookahead.switches && lookahead.switches.length > 0) {
+            extra += `<div class="train-debug-subsection">`;
+            extra += `<div class="train-debug-subsection-title">Lookahead - Switches (${lookahead.switches.length})</div>`;
+            lookahead.switches.slice(0, 5).forEach((sw, i) => {
+                extra += `<div class="train-debug-row">`;
+                extra += `<span class="train-debug-label">(${sw.x},${sw.y}):</span>`;
+                extra += `<span class="train-debug-value">${sw.position || 'unknown'} @ ${sw.distance_cm?.toFixed(0)} cm</span>`;
+                extra += `</div>`;
+            });
+            if (lookahead.switches.length > 5) {
+                extra += `<div class="train-debug-row text-muted text-xs">...and ${lookahead.switches.length - 5} more</div>`;
+            }
+            extra += `</div>`;
+        }
+        
         if (existingLookahead) {
             existingLookahead.outerHTML = `<div class="train-debug-lookahead">${extra}</div>`;
         } else {
@@ -730,11 +886,10 @@ class App {
 
     setupSettingsPanel() {
         const scaleSelect = document.getElementById('scale-select');
-        const scaleCustomInput = document.getElementById('scale-custom');
         const scaleApplyBtn = document.getElementById('scale-apply-custom');
         const scaleDisplay = document.getElementById('scale-current-display');
 
-        if (!scaleSelect || !scaleCustomInput || !scaleApplyBtn || !scaleDisplay) {
+        if (!scaleSelect || !scaleApplyBtn || !scaleDisplay) {
             console.warn('[App] Settings panel elements not found');
             return;
         }
@@ -742,9 +897,7 @@ class App {
         // Load current scale on init
         this.loadCurrentScale();
 
-        // Handle preset selection
-        scaleSelect.addEventListener('change', async () => {
-            const scaleValue = scaleSelect.value;
+        const applyScale = async (scaleValue) => {
             if (!scaleValue) return;
 
             const scale = parseFloat(scaleValue);
@@ -761,32 +914,16 @@ class App {
                 console.error('[App] Failed to set scale:', e);
                 window.showToast('Failed to set scale', 'error');
             }
+        };
+
+        // Handle preset selection
+        scaleSelect.addEventListener('change', () => {
+            applyScale(scaleSelect.value);
         });
 
-        // Handle custom scale input
-        scaleApplyBtn.addEventListener('click', async () => {
-            const customScale = parseFloat(scaleCustomInput.value);
-            if (isNaN(customScale) || customScale <= 0) {
-                window.showToast('Invalid scale value', 'error');
-                return;
-            }
-
-            try {
-                await window.api.setScale(customScale);
-                await this.loadCurrentScale();
-                scaleSelect.value = ''; // Clear preset selection
-                window.showToast(`Scale set to 1:${customScale}`, 'success');
-            } catch (e) {
-                console.error('[App] Failed to set custom scale:', e);
-                window.showToast('Failed to set scale', 'error');
-            }
-        });
-
-        // Allow Enter key to apply custom scale
-        scaleCustomInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                scaleApplyBtn.click();
-            }
+        // Handle apply button click
+        scaleApplyBtn.addEventListener('click', () => {
+            applyScale(scaleSelect.value);
         });
     }
 

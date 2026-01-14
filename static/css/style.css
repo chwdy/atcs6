@@ -79,6 +79,42 @@ body {
     border-right: 1px solid var(--border-color);
 }
 
+#btn-play-pause {
+    min-width: 80px;
+    justify-content: center;
+}
+
+.speed-presets {
+    display: flex;
+    gap: 2px;
+    background: var(--bg-dark);
+    padding: 2px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+}
+
+.speed-btn {
+    padding: 4px 8px;
+    font-size: 0.75rem;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    border-radius: 2px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.speed-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.speed-btn.active {
+    background: var(--accent-color);
+    color: white;
+    font-weight: 600;
+}
+
 .mode-switch {
     display: flex;
     background-color: var(--bg-dark);
@@ -487,18 +523,6 @@ body {
     font-size: 0.8rem;
 }
 
-.speed-control {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-}
-
-input[type="range"] {
-    width: 80px;
-}
-
 .placeholder-text {
     color: var(--text-secondary);
     font-style: italic;
@@ -747,8 +771,8 @@ input[type="range"] {
 }
 
 .debug-controls {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 4px;
     margin-bottom: 0;
 }
@@ -757,10 +781,13 @@ input[type="range"] {
     display: flex;
     align-items: center;
     cursor: pointer;
-    font-size: 13px;
-    padding: 4px 6px;
+    font-size: 11px;
+    padding: 3px 4px;
     border-radius: 4px;
     transition: background 0.2s;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .debug-controls label:hover {
@@ -782,36 +809,61 @@ input[type="range"] {
 .settings-panel {
     background: var(--bg-panel);
     border-radius: 8px;
-    padding: 16px;
+    padding: 12px;
     margin-top: 12px;
 }
 
 .settings-controls {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 0;
 }
 
-.setting-item {
+.setting-row {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
 }
 
-.setting-item label {
-    font-size: 12px;
+.setting-label-compact {
+    width: 45px;
+    font-size: 11px;
     color: var(--text-secondary);
+    font-weight: 500;
+    flex-shrink: 0;
 }
 
-.setting-select,
-.setting-input {
+.setting-input-compact {
+    padding: 6px 8px;
+    font-size: 12px;
+    height: 28px;
+}
+
+.input-group {
+    display: flex;
+    gap: 4px;
+    flex: 1;
+}
+
+.input-group input {
+    flex: 1;
+    min-width: 0; /* Allows input to shrink below default width */
+}
+
+.input-group .btn {
+    padding: 0 10px;
+    height: 28px;
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
+.setting-select {
+    flex: 1;
     background: var(--bg-dark);
     border: 1px solid var(--border-color);
     border-radius: 4px;
-    padding: 8px 10px;
     color: var(--text-primary);
-    font-size: 13px;
-    width: 100%;
 }
 
 .setting-select:focus,
@@ -820,18 +872,15 @@ input[type="range"] {
     border-color: var(--accent-color);
 }
 
-.setting-item .btn-sm {
-    padding: 6px 12px;
-    font-size: 12px;
-    margin-top: 4px;
-}
-
-.setting-info {
-    font-size: 12px;
+.setting-info-compact {
+    font-size: 11px;
     color: var(--text-secondary);
-    padding: 8px;
+    padding: 4px 8px;
     background: var(--bg-dark);
     border-radius: 4px;
+    text-align: center;
+    margin-top: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 #scale-current-display {
@@ -989,6 +1038,13 @@ input[type="range"] {
     font-family: var(--font-mono);
     color: var(--text-secondary);
 }
+
+.train-debug-path-step.train-debug-path-current {
+    color: var(--accent-green);
+    font-weight: bold;
+    text-decoration: underline;
+}
+
 
 .train-debug-path-current {
     background: var(--accent-blue);
@@ -1615,10 +1671,17 @@ input[type="range"] {
 }
 
 
+.layout-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
 .layout-controls .btn {
     font-size: 0.85rem;
     padding: 6px 16px;
     min-width: 90px;
+    width: auto;
 }
 
 /* ============================================================================
@@ -3557,9 +3620,34 @@ input[type="range"] {
     border-left: 2px solid var(--warning-color);
 }
 
-/* ============================================================================
-   COMPACT FORM LAYOUTS - Horizontal input fields and grouped info displays
-   ============================================================================ */
+/* Train Monitor Debug Panel Extension */
+.train-monitor-debug-container {
+    width: 320px;
+    background: rgba(13, 16, 32, 0.95);
+    border-left: 1px solid var(--border-color);
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow-y: auto;
+    flex-shrink: 0;
+}
+
+.train-monitor-debug-container.hidden {
+    display: none;
+}
+
+.train-monitor-debug-container .debug-header {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Adjust row borders for grid layout - maybe make them less prominent or remove */
 
 /* Horizontal form layout: label and input on same line */
 .form-row-horizontal {
