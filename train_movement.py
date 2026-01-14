@@ -40,6 +40,7 @@ from typing import Optional, Tuple, List
 from train import Train, Direction
 from network import RailwayNetwork
 from track import TrackSegment
+from train_config import kmh_to_cm_per_sec
 
 
 class TrainMover:
@@ -225,8 +226,6 @@ class TrainMover:
             train: Train to update
             delta_seconds: Time elapsed since last update
         """
-        from train_config import kmh_to_cm_per_sec
-
         if not train.path_tiles or train.current_speed <= 0:
             return
 
@@ -250,11 +249,10 @@ class TrainMover:
             # Try to advance to next tile
             if train.head_index + 1 < len(train.path_tiles):
                 # Calculate new entry edge based on track geometry
-                current_track = self.network.get_track(*head_tile)
                 next_tile = train.path_tiles[train.head_index + 1]
 
                 new_entry_edge = self._calculate_entry_edge(
-                    head_tile, next_tile, train.head_entry_edge, current_track
+                    head_tile, next_tile, train.head_entry_edge
                 )
 
                 if not train.advance_head(new_entry_edge):
@@ -278,7 +276,6 @@ class TrainMover:
         from_tile: Tuple[int, int],
         to_tile: Tuple[int, int],
         current_entry_edge: Optional[str],
-        track: Optional[TrackSegment],
     ) -> str:
         """Calculate entry edge when moving from one tile to another.
 
@@ -321,46 +318,54 @@ class TrainMover:
         # Calculate total distance from tail to head
         total_distance = 0.0
 
-        # Distance from tail entry to end of tail tile
         tail_tile = train.path_tiles[train.tail_index]
         tail_tile_length = self.network._get_tile_length_cm(*tail_tile)
-        total_distance += tail_tile_length - train.tail_distance_cm
 
-        # Full tiles between tail and head
-        for i in range(train.tail_index + 1, train.head_index):
-            tile = train.path_tiles[i]
-            total_distance += self.network._get_tile_length_cm(*tile)
+        if train.head_index == train.tail_index:
+            # Head and tail on same tile: distance is simply head - tail
+            total_distance = train.head_distance_cm - train.tail_distance_cm
+        else:
+            # Distance from tail position to end of tail tile
+            total_distance += tail_tile_length - train.tail_distance_cm
 
-        # Distance from head tile entry to head position
-        if train.head_index > train.tail_index:
+            # Full tiles between tail and head
+            for i in range(train.tail_index + 1, train.head_index):
+                tile = train.path_tiles[i]
+                total_distance += self.network._get_tile_length_cm(*tile)
+
+            # Distance from head tile entry to head position
             total_distance += train.head_distance_cm
 
         # Advance tail while total distance exceeds train length
-        while total_distance > train_length_cm and train.tail_index < train.head_index:
+        while total_distance > train_length_cm:
             # How much to advance tail
             advance_distance = total_distance - train_length_cm
 
             # Distance remaining in current tail tile
             remaining_in_tail = tail_tile_length - train.tail_distance_cm
 
-            if advance_distance >= remaining_in_tail:
-                # Advance to next tile
-                if train.tail_index + 1 <= train.head_index:
-                    next_tile = train.path_tiles[train.tail_index + 1]
-                    current_tile = train.path_tiles[train.tail_index]
-                    new_entry = self._calculate_entry_edge(
-                        current_tile, next_tile, train.tail_entry_edge, None
-                    )
-                    train.advance_tail(new_entry)
-                    train.tail_distance_cm = 0.0
-                    total_distance -= remaining_in_tail
+            if (
+                advance_distance >= remaining_in_tail
+                and train.tail_index < train.head_index
+            ):
+                # Advance to next tile (only if not at head tile)
+                next_tile = train.path_tiles[train.tail_index + 1]
+                current_tile = train.path_tiles[train.tail_index]
+                new_entry = self._calculate_entry_edge(
+                    current_tile, next_tile, train.tail_entry_edge
+                )
+                train.advance_tail(new_entry)
+                train.tail_distance_cm = 0.0
+                total_distance -= remaining_in_tail
 
-                    # Update for next iteration
-                    tail_tile = train.path_tiles[train.tail_index]
-                    tail_tile_length = self.network._get_tile_length_cm(*tail_tile)
-                else:
-                    break
+                # Update for next iteration
+                tail_tile = train.path_tiles[train.tail_index]
+                tail_tile_length = self.network._get_tile_length_cm(*tail_tile)
             else:
-                # Advance within current tile
+                # Advance within current tile (capped at head position if on same tile)
+                if train.tail_index == train.head_index:
+                    # Don't advance past head position
+                    max_advance = train.head_distance_cm - train.tail_distance_cm
+                    advance_distance = min(advance_distance, max_advance)
                 train.tail_distance_cm += advance_distance
                 break
