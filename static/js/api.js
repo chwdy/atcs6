@@ -897,30 +897,6 @@ class API {
         }
     }
 
-    /**
-     * Get lookahead data for train monitor display
-     * @param {string} trainId - Train ID
-     * @param {number} maxDistanceCm - Maximum lookahead distance in cm (default: 100000)
-     * @returns {Object} Lookahead data with signals, blocks, stations ahead
-     */
-    async getTrainLookahead(trainId, maxDistanceCm = 100000) {
-        try {
-            const url = new URL(`${this.baseUrl}/trains/${trainId}/lookahead`, window.location.origin);
-            if (maxDistanceCm !== 100000) {
-                url.searchParams.set('max_distance_cm', maxDistanceCm);
-            }
-            const response = await fetch(url);
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to get train lookahead');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] getTrainLookahead failed:', e);
-            throw e;
-        }
-    }
-
     // === Schedule API ===
 
     async getSchedules() {
