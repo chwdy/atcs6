@@ -739,6 +739,21 @@ class TrainEditorHandler {
         }
         if (!train) return;
 
+        // Delegate to the data-based update method
+        this.updateControlPanelValuesFromData(train);
+    }
+
+    /**
+     * Update train control panel values from train data object (no API call).
+     * Used during simulation to avoid redundant API calls.
+     * @param {Object} train - Train data object from currentNetwork
+     */
+    updateControlPanelValuesFromData(train) {
+        if (!train) return;
+        
+        const panel = document.querySelector(`.train-control-panel[data-train-id="${train.id}"]`);
+        if (!panel) return;
+
         const stateColors = {
             'off': '#888',
             'idle': '#ffd93d',
@@ -761,8 +776,8 @@ class TrainEditorHandler {
         let reasonEl = panel.querySelector('.train-wait-reason');
         if (train.state === 'running_waiting' && train.wait_reason) {
             if (!reasonEl) {
-                // If element doesn't exist but should, we might need to recreate the info block, 
-                // but simpler to just append if missing or update parent. 
+                // If element doesn't exist but should, we might need to recreate the info block,
+                // but simpler to just append if missing or update parent.
                 // For simplicity, we'll assume the basic structure exists.
                 // If it's too complex to inject, we can just reload the panel, but that flickers.
                 // Let's try to update the text content if it exists.
@@ -773,8 +788,12 @@ class TrainEditorHandler {
             reasonEl.remove();
         }
 
+        // Update position - use new TrainPosition format
         const positionEl = panel.querySelector('.train-pos-display');
-        if (positionEl && train.position_legacy) {
+        if (positionEl && train.position && train.position.end_a) {
+            const headEnd = train.position.leading_end === 'a' ? train.position.end_a : train.position.end_b;
+            positionEl.textContent = `(${headEnd.tile[0]}, ${headEnd.tile[1]})`;
+        } else if (positionEl && train.position_legacy) {
             positionEl.textContent = `(${train.position_legacy.x}, ${train.position_legacy.y})`;
         }
 

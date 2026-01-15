@@ -1343,26 +1343,29 @@ class Train:
             # If new TrainPosition exists, merge its data (for drawTrainFromPath)
             if self.position:
                 pos_dict = self.position.to_dict()
-                # Override end_a/end_b values with current Train values
-                # (simulation updates train.end_a_* fields, not train.position.end_a_*)
-                pos_dict["end_a"]["distance_cm"] = self.end_a_distance_cm
-                pos_dict["end_b"]["distance_cm"] = self.end_b_distance_cm
-                pos_dict["end_a"]["entry_edge"] = self.end_a_entry_edge
-                pos_dict["end_b"]["entry_edge"] = self.end_b_entry_edge
-                # Also override tile positions from path_tiles using indices
-                if (
-                    self.path_tiles
-                    and self.end_a_index is not None
-                    and self.end_b_index is not None
-                ):
-                    if 0 <= self.end_a_index < len(self.path_tiles):
-                        pos_dict["end_a"]["tile"] = list(
-                            self.path_tiles[self.end_a_index]
-                        )
-                    if 0 <= self.end_b_index < len(self.path_tiles):
-                        pos_dict["end_b"]["tile"] = list(
-                            self.path_tiles[self.end_b_index]
-                        )
+                # IMPORTANT: Only override with top-level fields if path_tiles system is active
+                # Otherwise, use TrainPosition values directly (updated by recalculate_train_position)
+                if self.path_tiles:
+                    # Override end_a/end_b values with path_tiles-based position
+                    # (simulation updates train.end_a_* fields when using path_tiles)
+                    pos_dict["end_a"]["distance_cm"] = self.end_a_distance_cm
+                    pos_dict["end_b"]["distance_cm"] = self.end_b_distance_cm
+                    pos_dict["end_a"]["entry_edge"] = self.end_a_entry_edge
+                    pos_dict["end_b"]["entry_edge"] = self.end_b_entry_edge
+                    # Also override tile positions from path_tiles using indices
+                    if (
+                        self.end_a_index is not None
+                        and self.end_b_index is not None
+                    ):
+                        if 0 <= self.end_a_index < len(self.path_tiles):
+                            pos_dict["end_a"]["tile"] = list(
+                                self.path_tiles[self.end_a_index]
+                            )
+                        if 0 <= self.end_b_index < len(self.path_tiles):
+                            pos_dict["end_b"]["tile"] = list(
+                                self.path_tiles[self.end_b_index]
+                            )
+                # If no path_tiles, TrainPosition values are already correct (no override needed)
                 data["position"].update(pos_dict)
             elif self.path_tiles and self.end_a_index is not None:
                 # Build end_a/end_b from top-level fields when TrainPosition doesn't exist
@@ -1473,6 +1476,7 @@ class Train:
         Position handling:
         - Uses TrainPosition format (requires 'end_a' in position dict)
         - If position format is incompatible, train position is discarded
+        - path_tiles is NOT loaded (cleared) - legacy movement system uses TrainPosition
         """
         from enums import TrainState, Direction
 
@@ -1541,5 +1545,16 @@ class Train:
         train.manual_target_speed = float(data.get("manual_target_speed", 0.0))
         train.wait_reason = data.get("wait_reason")
         train.speed_limit_reason = data.get("speed_limit_reason")
+
+        # IMPORTANT: Clear path_tiles data from saved files
+        # path_tiles is only used by the NEW path-queue movement system
+        # Legacy movement (current system) uses TrainPosition updated by recalculate_train_position()
+        train.path_tiles = []
+        train.end_a_index = 0
+        train.end_b_index = 0
+        train.end_a_distance_cm = 0.0
+        train.end_b_distance_cm = 0.0
+        train.end_a_entry_edge = None
+        train.end_b_entry_edge = None
 
         return train

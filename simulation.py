@@ -345,16 +345,17 @@ class SimulationController:
             tile_length_cm = self.network._get_tile_length_cm(*train.current_pos)
             hops += 1
 
-        # Recalculate full TrainPosition (end_b, occupied_tiles, occupied_blocks)
-        # This keeps the TrainPosition in sync as the train moves
-        if train.position:
-            self.network.recalculate_train_position(train)
-
         # === UPDATE PATH QUEUE POSITION ===
         # NOTE: Running parallel to legacy position system during migration.
         # TODO: Remove legacy position update once path queue system is validated.
         if train.path_tiles:
             self.train_mover.update_train_path_position(train, delta_seconds)
+
+        # Recalculate full TrainPosition (end_b, occupied_tiles, occupied_blocks)
+        # This keeps the TrainPosition in sync as the train moves
+        # IMPORTANT: Do this AFTER path_tiles update so recalculate has latest data
+        if train.position:
+            self.network.recalculate_train_position(train)
 
     def _advance_train_track(self, train: Train, overflow_cm: float = 0.0) -> None:
         if not train.current_pos:

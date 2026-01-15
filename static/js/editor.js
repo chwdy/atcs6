@@ -202,6 +202,7 @@ class Editor {
      * Force refresh the currently open secondary editor.
      * Use sparingly - prefer refreshEditorIfNeeded for targeted updates.
      * Skips refresh if an input has focus to avoid interrupting user input.
+     * During simulation, train-control updates are handled by app.js to avoid race conditions.
      */
     refreshCurrentEditor() {
         if (!this._currentEditorType || !this._currentEditorId) {
@@ -211,15 +212,20 @@ class Editor {
         // Don't refresh if user is actively editing an input field or interacting with slider
         const activeElement = document.activeElement;
         if (activeElement && (
-            activeElement.tagName === 'INPUT' || 
-            activeElement.tagName === 'TEXTAREA' || 
+            activeElement.tagName === 'INPUT' ||
+            activeElement.tagName === 'TEXTAREA' ||
             activeElement.tagName === 'SELECT'
         )) {
             return;
         }
 
-        // For train control panel, do incremental update instead of full re-render
+        // For train control panel during simulation, skip update - app.js handles it
+        // This prevents competing updates and race conditions
         if (this._currentEditorType === 'train-control') {
+            // Only update if simulation is NOT running
+            if (window.app && window.app.isSimulationRunning) {
+                return;  // Let app.js simulation loop handle train control updates
+            }
             this.trainHandler.updateTrainControlPanelValues(this._currentEditorId);
             return;
         }

@@ -1928,18 +1928,11 @@ class RailwayNetwork:
         train.occupied_tracks = occupied_tiles.copy()
         train.facing_direction = direction
 
-        # Initialize path_tiles for new rendering system
-        # path_tiles is ordered from end_a to end_b (head to tail when leading_end="a")
-        train.path_tiles = occupied_tiles_end_a_to_b
-        train.end_a_index = 0  # end_a (head) is at start of path_tiles
-        train.end_a_distance_cm = head_distance_cm
-        train.end_a_entry_edge = head_entry_edge
-        train.end_b_index = (
-            len(occupied_tiles) - 1
-        )  # end_b (tail) is at end of path_tiles
-        train.end_b_distance_cm = tail_distance_cm
-        train.end_b_entry_edge = tail_entry_edge
-        train.leading_end = "a"  # end_a is the head
+        # NOTE: We do NOT initialize path_tiles here because place_train() is used
+        # with the LEGACY movement system (current_pos, distance_on_track, path_index).
+        # path_tiles is only used by the NEW path-queue movement system.
+        # The TrainPosition object (train.position) is kept updated by recalculate_train_position()
+        # and is correctly serialized when path_tiles is empty.
 
         # Occupy all blocks the train covers
         if self.block_manager and occupied_blocks:
