@@ -696,17 +696,19 @@ class App {
         this.lastLookaheadFetch = now;
         
         try {
-            const lookahead = await window.api.getTrainLookahead(trainId);
-            // Skip if null (feature not implemented yet)
-            if (!lookahead) return;
+            // Use train data from network (which includes path_tile_info)
+            // instead of the non-existent lookahead endpoint
+            if (!this.currentNetwork?.trains) return;
+            const train = this.currentNetwork.trains.find(t => t.id === trainId);
+            if (!train) return;
             
             if (this.selectedTrainId === trainId) {
-                this.lastLookaheadData = lookahead;  // Store for panel rebuilds
+                this.lastLookaheadData = train;  // Store for panel rebuilds
                 if (this.trainMonitor.isVisible()) {
-                    this.trainMonitor.update(lookahead);
+                    this.trainMonitor.update(train);
                 }
                 // Append lookahead to existing debug panel content
-                this.updateTrainDebugWithLookahead(lookahead);
+                this.updateTrainDebugWithLookahead(train);
             }
         } catch (e) {
             console.error('[App] fetchTrainLookahead failed:', e);

@@ -291,11 +291,11 @@ class TrainMonitor {
         
         // NEW: Check for configuration warnings
         // User requirement: Show warnings but allow operation (non-blocking)
-        if (lookaheadData.warnings && lookaheadData.warnings.length > 0) {
-            this._displayConfigurationWarnings(lookaheadData.warnings, lookaheadData.train_id);
+        if (this.lookaheadData.warnings && this.lookaheadData.warnings.length > 0) {
+            this._displayConfigurationWarnings(this.lookaheadData.warnings, this.lookaheadData.train_id);
         }
         
-        this.updateUpcomingElements(lookaheadData);
+        this.updateUpcomingElements(this.lookaheadData);
         this.render();
     }
     
