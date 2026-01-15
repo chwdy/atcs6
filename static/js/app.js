@@ -453,32 +453,20 @@ class App {
     }
     
     updateTrainDebugPanel(train) {
-        console.log('[updateTrainDebugPanel] Called with train:', train?.id);
-        
         const checkbox = document.getElementById('debug-show-train-position');
-        console.log('[updateTrainDebugPanel] Debug checkbox:', checkbox?.checked);
         
         // If debug is disabled, hide the debug container
         if (checkbox && !checkbox.checked) {
-            console.log('[updateTrainDebugPanel] Debug checkbox UNCHECKED, hiding panel');
             const controlDebug = document.getElementById('train-control-debug-section');
             if (controlDebug) controlDebug.classList.add('hidden');
             return;
         }
         
-        if (!train) {
-            console.warn('[updateTrainDebugPanel] No train provided!');
-            return;
-        }
+        if (!train) return;
 
         // Target the Train Control panel debug section
         const controlPanelDebug = document.getElementById('train-control-debug-section');
-        if (!controlPanelDebug) {
-            console.warn('[updateTrainDebugPanel] train-control-debug-section element not found!');
-            return;
-        }
-        
-        console.log('[updateTrainDebugPanel] Proceeding to update panel...');
+        if (!controlPanelDebug) return;
         
         // Build HTML content
         let html = '<div class="train-debug-panel" style="background: transparent; border: none; padding: 0;">';
@@ -503,20 +491,8 @@ class App {
         }
         
         // TrainPosition with end_a/end_b
-        console.log('[updateTrainDebugPanel] Checking train.position:', train.position);
-        console.log('[updateTrainDebugPanel] Has end_a?', !!train.position?.end_a);
-        
         if (train.position && train.position.end_a) {
             const p = train.position;
-            
-            // Debug: Log full position objects to see the actual data
-            console.log('[DEBUG] end_a object:', JSON.stringify(p.end_a));
-            console.log('[DEBUG] end_b object:', JSON.stringify(p.end_b));
-            console.log('[DEBUG] end_a.tile:', p.end_a.tile);
-            console.log('[DEBUG] end_a.distance_cm:', p.end_a.distance_cm);
-            
-            // Debug: Log position data to verify it's changing
-            console.log(`[Debug Panel] Train ${train.id} position - End A: (${p.end_a.tile[0]},${p.end_a.tile[1]}) ${p.end_a.distance_cm?.toFixed(1)}cm, End B: (${p.end_b.tile[0]},${p.end_b.tile[1]}) ${p.end_b.distance_cm?.toFixed(1)}cm`);
             
             html += `<div class="train-debug-subsection">`;
             html += `<div class="train-debug-subsection-title">End A (${p.leading_end === 'a' ? 'HEAD' : 'TAIL'})</div>`;
@@ -722,7 +698,7 @@ class App {
         
         try {
             // Use train data from network (which includes path_tile_info)
-            // instead of the non-existent lookahead endpoint
+            // The path_tile_info contains blocks, signals, switches, and stations ahead
             if (!this.currentNetwork?.trains) return;
             const train = this.currentNetwork.trains.find(t => t.id === trainId);
             if (!train) return;
@@ -1010,16 +986,12 @@ class App {
             }
             
             if (this.selectedTrainId) {
-                console.log('[Simulation Loop] Selected train:', this.selectedTrainId);
                 const train = this.currentNetwork?.trains?.find(t => t.id === this.selectedTrainId);
                 if (train) {
-                    console.log('[Simulation Loop] Found train, calling updates...');
                     // Update both control panel values AND debug panel
                     // This is the single source of truth for train updates during simulation
                     this.editor.trainHandler.updateControlPanelValuesFromData(train);
                     this.updateTrainDebugPanel(train);
-                } else {
-                    console.warn('[Simulation Loop] Train not found in currentNetwork.trains!');
                 }
                 
                 // Fetch lookahead for both Monitor and Debug Panel

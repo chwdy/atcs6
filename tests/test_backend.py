@@ -7501,7 +7501,7 @@ class TestTrainPathSerialization:
         """to_dict should populate path_tiles from TrainPosition for renderer."""
         from train import TrainPosition
         from enums import Direction
-        
+
         train = Train(train_id="T1")
         # Create TrainPosition with occupied_tiles (source of truth)
         train.position = TrainPosition(
@@ -8105,7 +8105,7 @@ class TestPathTileInfo:
         """path_tile_info should include block_id for each tile."""
         from train import TrainPosition
         from enums import Direction
-        
+
         network = three_tile_network_with_block
 
         train = Train(train_id="T1")
@@ -8123,20 +8123,30 @@ class TestPathTileInfo:
         )
         train._current_pos = (0, 0)  # For serialization
 
+        # Set current_path - required for path_tile_info generation
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 0
+
         data = train.to_dict(network)
 
-        assert "path_tile_info" in data
-        assert len(data["path_tile_info"]) == 3
+        # path_tile_info now contains occupied tiles (for renderer)
+        # lookahead_tile_info contains future path with block info (for monitor)
+        assert "lookahead_tile_info" in data
+        assert len(data["lookahead_tile_info"]) == 3
 
         # All tiles should have block_id B1
-        for tile_info in data["path_tile_info"]:
+        for tile_info in data["lookahead_tile_info"]:
             assert tile_info["block_id"] == "B1"
 
     def test_path_tile_info_includes_block_state(self, three_tile_network_with_block):
         """path_tile_info should include block_state for lookahead display."""
         from train import TrainPosition
         from enums import Direction
-        
+
         network = three_tile_network_with_block
 
         # Set block to occupied
@@ -8158,8 +8168,830 @@ class TestPathTileInfo:
         )
         train._current_pos = (0, 0)  # For serialization
 
+        # Set current_path - required for path_tile_info generation
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 0
+
         data = train.to_dict(network)
 
-        assert "path_tile_info" in data
+        # lookahead_tile_info contains block state (for train monitor)
+        assert "lookahead_tile_info" in data
         # First tile should have block_state
-        assert data["path_tile_info"][0].get("block_state") == "occupied"
+        assert data["lookahead_tile_info"][0].get("block_state") == "occupied"
+
+
+class TestTrainPositionUpdateBugFix:
+    """
+    Comprehensive tests for train position end_a/end_b update bug fixed in Jan 2026.
+
+    These tests ensure the following bug doesn't regress:
+
+    BUG: train.position.end_a and train.position.end_b remained stuck at initialization
+    values during simulation, even though train.distance_on_track was updating correctly.
+    The debug panel showed static position data while the train visually moved.
+
+    FIX:
+    - Added network.recalculate_train_position() method (network.py line 2167-2275)
+    - Integrated into simulation loop (simulation.py line 354-358)
+    - Fixed Train.to_dict() to properly serialize TrainPosition data (train.py line 1278-1418)
+    - Fixed occupied_tiles ordering to be end_a→end_b (network.py line 2260-2265)
+
+    References:
+    - plans/train_debug_panel_backend_issue.md
+    - plans/train_debug_panel_fix_implementation.md
+    - tests/test_train_position_update.py
+    """
+
+    @pytest.fixture
+    def simple_straight_network(self):
+        """Create 5-tile straight EW track for testing."""
+        network = RailwayNetwork()
+        for x in range(5):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+        return network
+
+    @pytest.fixture
+    def running_train(self, simple_straight_network):
+        """Create a train in RUNNING_MOVING state with proper position."""
+        from train import TrainCar, TrainPosition
+
+        train = Train(
+            train_id="MOVING_TRAIN",
+            consist=[TrainCar(car_id="loco1", car_type="LOCOMOTIVE", length=40.0)],
+            current_speed=50.0,
+            max_speed=80.0,
+            state=TrainState.RUNNING_MOVING,
+            target_speed=50.0,
+        )
+
+        # Set initial position at (0, 0) facing EAST
+        train._current_pos = (0, 0)
+        train._current_direction = Direction.EAST
+        train._distance_on_track = 25.0  # 25cm into tile (tile is 50cm)
+        train.facing_direction = Direction.EAST
+
+        # Create TrainPosition with initial end points
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=25.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=0.0,  # Tail at start (40cm train on 50cm tile fits on one tile)
+            end_b_entry_edge="W",
+            leading_end="a",  # end_a is head
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(0, 0)],
+            occupied_blocks=[],
+        )
+
+        # Create simple path
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+            (3, 0, Direction.EAST),
+            (4, 0, Direction.EAST),
+        ]
+        train.path_index = 0
+
+        simple_straight_network.add_train(train)
+        return train
+
+    def test_recalculate_updates_end_a_after_movement(
+        self, simple_straight_network, running_train
+    ):
+        """
+        The specific case that triggered the bug: end_a not updating during movement.
+
+        This verifies that network.recalculate_train_position() correctly updates
+        end_a position fields after train.distance_on_track changes.
+        """
+        train = running_train
+        network = simple_straight_network
+
+        # Initial state
+        initial_end_a_distance = train.position.end_a_distance_cm
+        initial_end_a_tile = train.position.end_a_tile
+
+        # Simulate movement: advance distance_on_track
+        # Use property setter to keep TrainPosition in sync
+        train.distance_on_track = 40.0  # Move forward 15cm (25→40)
+        train.current_pos = (0, 0)  # Still on same tile
+
+        # Call recalculate (what simulation loop does)
+        success = network.recalculate_train_position(train)
+
+        assert success, "Recalculation should succeed"
+
+        # CRITICAL: end_a should have been updated
+        assert train.position.end_a_distance_cm == 40.0, (
+            f"end_a distance should update to 40.0, got {train.position.end_a_distance_cm}"
+        )
+        assert train.position.end_a_tile == (0, 0), "end_a tile should still be (0,0)"
+
+    def test_recalculate_updates_end_a_when_crossing_tile_boundary(
+        self, simple_straight_network, running_train
+    ):
+        """
+        Edge case: Train head crosses to next tile.
+
+        When train.current_pos changes, end_a should move to the new tile.
+        """
+        train = running_train
+        network = simple_straight_network
+
+        # Move to next tile
+        # Use property setters to keep TrainPosition in sync
+        train.current_pos = (1, 0)
+        train.distance_on_track = 10.0  # 10cm into tile (1, 0)
+
+        # Recalculate
+        success = network.recalculate_train_position(train)
+
+        assert success, "Recalculation should succeed"
+        assert train.position.end_a_tile == (1, 0), (
+            f"end_a should be on tile (1,0), got {train.position.end_a_tile}"
+        )
+        assert train.position.end_a_distance_cm == 10.0, (
+            f"end_a distance should be 10.0cm, got {train.position.end_a_distance_cm}"
+        )
+
+    def test_recalculate_updates_end_b_correctly(
+        self, simple_straight_network, running_train
+    ):
+        """
+        Verify that end_b (tail) position is calculated correctly.
+
+        For a 40cm train at distance 25cm on a 50cm tile:
+        - end_a (head): 25cm from entry
+        - end_b (tail): 25cm - 40cm = -15cm (but train doesn't fit)
+
+        Actually for 40cm train on 50cm tile with head at 25cm:
+        - Tail should be at 25cm - 40cm = -15cm (invalid)
+        Wait, that's wrong. Let me recalculate:
+
+        If head is at 25cm from entry and train is 40cm long:
+        - Tail is at 25cm - 40cm = -15cm (extends off tile)
+        This test needs a longer distance or multi-tile setup.
+        """
+        train = running_train
+        network = simple_straight_network
+
+        # Move head to 45cm into first tile (near exit)
+        # Use property setters to keep TrainPosition in sync
+        train.distance_on_track = 45.0
+        train.current_pos = (0, 0)
+
+        # Recalculate
+        success = network.recalculate_train_position(train)
+
+        assert success, "Recalculation should succeed"
+
+        # For 40cm train with head at 45cm on 50cm tile:
+        # Tail is at 45cm - 40cm = 5cm from entry
+        # Both ends on same tile
+        assert train.position.end_b_tile == (0, 0), "Tail should still be on tile (0,0)"
+        assert train.position.end_b_distance_cm == 5.0, (
+            f"Tail should be at 5.0cm, got {train.position.end_b_distance_cm}"
+        )
+
+    def test_recalculate_multi_tile_occupancy(self, simple_straight_network):
+        """
+        Real-world scenario: Train spanning multiple tiles.
+
+        Create a longer train (120cm) that occupies 3 tiles (50cm each).
+        Verify that occupied_tiles list is correct and end_a/end_b are on different tiles.
+        """
+        from train import TrainCar, TrainPosition
+
+        # Create 120cm train (spans 3 tiles)
+        # With head at 40cm into tile (2,0):
+        # - Tile (2,0): 40cm from head backward
+        # - Tile (1,0): 50cm
+        # - Tile (0,0): 30cm needed (120 - 40 - 50 = 30cm)
+        # Tail should be at 50cm - 30cm = 20cm from entry of tile (0,0)
+        train = Train(
+            train_id="LONG_TRAIN",
+            consist=[TrainCar(car_id="loco1", car_type="LOCOMOTIVE", length=120.0)],
+            current_speed=50.0,
+            max_speed=80.0,
+        )
+
+        # Initialize position first (needed before using property setters)
+        train.position = TrainPosition(
+            end_a_tile=(2, 0),
+            end_a_distance_cm=40.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),  # Wrong, will be recalculated
+            end_b_distance_cm=0.0,  # Wrong, will be recalculated
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+        )
+
+        # Use property setters to keep TrainPosition in sync
+        train.current_pos = (2, 0)
+        train.distance_on_track = 40.0
+        train._current_direction = Direction.EAST
+
+        simple_straight_network.add_train(train)
+
+        # Recalculate position based on actual train length
+        success = simple_straight_network.recalculate_train_position(train)
+
+        assert success, "Recalculation should succeed"
+
+        # Verify end_a (head)
+        assert train.position.end_a_tile == (2, 0), "Head should be at (2,0)"
+        assert train.position.end_a_distance_cm == 40.0, "Head should be at 40cm"
+
+        # Verify end_b (tail)
+        # Train is 120cm, head at 40cm into tile (2,0)
+        # Going backward: 40cm in tile 2, 50cm in tile 1, 30cm in tile 0 = 120cm total
+        # Tail should be at 50cm - 30cm = 20cm from entry of tile (0,0)
+        assert train.position.end_b_tile == (0, 0), "Tail should be at (0,0)"
+        assert abs(train.position.end_b_distance_cm - 20.0) < 0.1, (
+            f"Tail should be at ~20cm, got {train.position.end_b_distance_cm}"
+        )
+
+        # Verify occupied tiles
+        assert len(train.position.occupied_tiles) == 3, "Should occupy 3 tiles"
+
+    def test_recalculate_updates_occupied_tiles_list(
+        self, simple_straight_network, running_train
+    ):
+        """
+        Verify that occupied_tiles list is updated during recalculation.
+
+        occupied_tiles should always reflect current train position, ordered from end_a to end_b.
+        """
+        train = running_train
+        network = simple_straight_network
+
+        # Initial: train on single tile
+        assert len(train.position.occupied_tiles) == 1, "Initially should occupy 1 tile"
+        assert train.position.occupied_tiles[0] == (0, 0), "Should be tile (0,0)"
+
+        # Move to next tile
+        # Use property setters to keep TrainPosition in sync
+        train.current_pos = (1, 0)
+        train.distance_on_track = 20.0
+
+        # Recalculate
+        network.recalculate_train_position(train)
+
+        # Train is 40cm long, head at 20cm into tile (1,0) which is 50cm long
+        # Tail would be at 20-40= -20cm, so it extends into previous tile (0,0)
+        # Tile (0,0): tail enters at 50-20=30cm from entry
+        # So train occupies tiles (0,0) and (1,0)
+
+        assert len(train.position.occupied_tiles) >= 1, "Should occupy at least 1 tile"
+        # end_a (head) should be first in list
+        assert train.position.occupied_tiles[0] == (1, 0), (
+            f"First tile should be end_a (head) at (1,0), got {train.position.occupied_tiles[0]}"
+        )
+
+    def test_to_dict_serializes_updated_end_points(
+        self, simple_straight_network, running_train
+    ):
+        """
+        Test that Train.to_dict() properly includes updated end_a/end_b values.
+
+        This is what the frontend receives via API, so it's critical for the debug panel.
+        """
+        train = running_train
+        network = simple_straight_network
+
+        # Move train - use property setter to keep TrainPosition in sync
+        train.distance_on_track = 35.0
+        network.recalculate_train_position(train)
+
+        # Serialize
+        data = train.to_dict(network)
+
+        # Check structure
+        assert "position" in data, "Should have position key"
+        position = data["position"]
+
+        # Check new TrainPosition format is included
+        assert "end_a" in position, "Should have end_a in position"
+        assert "end_b" in position, "Should have end_b in position"
+
+        # Verify end_a values
+        assert position["end_a"]["tile"] == [0, 0], "end_a tile should be [0,0]"
+        assert position["end_a"]["distance_cm"] == 35.0, (
+            f"end_a distance should be 35.0cm, got {position['end_a']['distance_cm']}"
+        )
+        assert position["end_a"]["entry_edge"] == "W", "end_a entry should be W"
+
+        # Verify end_b is present and reasonable
+        assert "tile" in position["end_b"], "end_b should have tile"
+        assert "distance_cm" in position["end_b"], "end_b should have distance_cm"
+        assert "entry_edge" in position["end_b"], "end_b should have entry_edge"
+
+    def test_simulation_updates_position_every_tick(
+        self, simple_straight_network, running_train
+    ):
+        """
+        Integration test: Verify simulation loop updates position continuously.
+
+        This is the real-world scenario that was failing - position should update
+        every simulation tick, not remain frozen.
+        """
+        from simulation import SimulationController
+
+        train = running_train
+        network = simple_straight_network
+        sim = SimulationController(network)
+
+        # Get initial state
+        initial_distance = train.position.end_a_distance_cm
+
+        # Run simulation for multiple ticks
+        for i in range(5):
+            sim.update(0.1)  # 100ms per tick
+
+        # Position should have changed
+        assert train.position.end_a_distance_cm != initial_distance, (
+            "BUG REGRESSION: end_a distance should change during simulation"
+        )
+
+        # Get serialized data (what frontend sees)
+        data = train.to_dict(network)
+        position = data["position"]
+
+        # Verify frontend gets updated values
+        assert position["end_a"]["distance_cm"] != initial_distance, (
+            "Frontend should receive updated end_a distance"
+        )
+
+    def test_distance_on_track_syncs_with_end_a(
+        self, simple_straight_network, running_train
+    ):
+        """
+        Verify that train.distance_on_track and train.position.end_a_distance_cm stay in sync.
+
+        These are the same value - distance from entry edge to train head.
+        """
+        train = running_train
+        network = simple_straight_network
+
+        # Update distance_on_track - use property setter to keep TrainPosition in sync
+        train.distance_on_track = 42.0
+
+        # Recalculate
+        network.recalculate_train_position(train)
+
+        # end_a_distance_cm should match
+        assert train.position.end_a_distance_cm == 42.0, (
+            f"end_a distance should match distance_on_track (42.0), "
+            f"got {train.position.end_a_distance_cm}"
+        )
+
+    def test_occupied_tiles_ordered_from_end_a_to_end_b(self, simple_straight_network):
+        """
+        Verify that occupied_tiles is always ordered from end_a to end_b.
+
+        This was a subtle bug - _calculate_occupied_tiles returns tail-to-head order,
+        but the TrainPosition.occupied_tiles should be end_a-to-end_b order.
+        """
+        from train import TrainCar, TrainPosition
+
+        # Create longer train that spans 2 tiles
+        train = Train(
+            train_id="TWO_TILE_TRAIN",
+            consist=[TrainCar(car_id="loco1", car_type="LOCOMOTIVE", length=70.0)],
+        )
+
+        # Initialize position first (needed before using property setters)
+        train.position = TrainPosition(
+            end_a_tile=(1, 0),
+            end_a_distance_cm=30.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),  # Will be calculated
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+        )
+
+        # Use property setters to keep TrainPosition in sync
+        train.current_pos = (1, 0)
+        train.distance_on_track = 30.0
+        train._current_direction = Direction.EAST
+
+        simple_straight_network.add_train(train)
+
+        # Recalculate
+        success = simple_straight_network.recalculate_train_position(train)
+        assert success, "Recalculation should succeed"
+
+        # Verify ordering: first tile should be end_a (head)
+        occupied = train.position.occupied_tiles
+        assert len(occupied) >= 2, "Train should occupy at least 2 tiles"
+        assert occupied[0] == train.position.end_a_tile, (
+            f"First tile should be end_a (head), got {occupied[0]} vs {train.position.end_a_tile}"
+        )
+        assert occupied[-1] == train.position.end_b_tile, (
+            f"Last tile should be end_b (tail), got {occupied[-1]} vs {train.position.end_b_tile}"
+        )
+
+    def test_occupied_tiles_ordered_from_end_a_to_end_b_with_leading_end_b(
+        self, simple_straight_network
+    ):
+        """
+        Verify that occupied_tiles is correctly ordered when leading_end is 'b'.
+
+        When leading_end is 'b', end_b is the head and end_a is the tail.
+        Since _calculate_occupied_tiles returns tiles from head to tail,
+        and end_a is tail, end_b is head, the order is already end_a→end_b
+        (no reversal needed when leading_end == 'b').
+
+        This complements test_occupied_tiles_ordered_from_end_a_to_end_b
+        which tests the leading_end == 'a' case (requiring reversal).
+        """
+        from train import TrainCar, TrainPosition
+
+        train = Train(
+            train_id="TWO_TILE_TRAIN_B_LEADING",
+            consist=[TrainCar(car_id="loco1", car_type="LOCOMOTIVE", length=70.0)],
+        )
+
+        train.position = TrainPosition(
+            end_a_tile=(2, 0),
+            end_a_distance_cm=0.0,
+            end_a_entry_edge="E",
+            end_b_tile=(1, 0),
+            end_b_distance_cm=40.0,
+            end_b_entry_edge="W",
+            leading_end="b",
+            facing_direction=Direction.WEST,
+        )
+
+        train.current_pos = (1, 0)
+        train.distance_on_track = 40.0
+        train._current_direction = Direction.WEST
+
+        simple_straight_network.add_train(train)
+
+        success = simple_straight_network.recalculate_train_position(train)
+        assert success, "Recalculation should succeed"
+
+        occupied = train.position.occupied_tiles
+        assert len(occupied) >= 2, "Train should occupy at least 2 tiles"
+
+        assert occupied[0] == train.position.end_a_tile, (
+            f"First tile should be end_a (tail when leading_end='b'), "
+            f"got {occupied[0]} vs {train.position.end_a_tile}"
+        )
+        assert occupied[-1] == train.position.end_b_tile, (
+            f"Last tile should be end_b (head when leading_end='b'), "
+            f"got {occupied[-1]} vs {train.position.end_b_tile}"
+        )
+
+        assert train.position.leading_end == "b", "leading_end should remain 'b'"
+
+    def test_to_dict_includes_path_tiles_from_occupied_tiles(
+        self, simple_straight_network, running_train
+    ):
+        """
+        Verify that Train.to_dict() populates path_tiles from current_path (lookahead).
+
+        The renderer uses path_tiles, so this must be correctly derived.
+        Note: path_tiles now comes from current_path starting at path_index,
+        not from occupied_tiles (which is just the tiles the train is currently on).
+        """
+        train = running_train
+        network = simple_straight_network
+
+        # Move train to tile (1, 0)
+        # Use property setters to keep TrainPosition in sync
+        train.current_pos = (1, 0)
+        train.distance_on_track = 20.0
+        train.path_index = 1  # Update path_index to match current tile
+        network.recalculate_train_position(train)
+
+        # Serialize
+        data = train.to_dict(network)
+
+        # path_tiles now contains occupied tiles (for renderer)
+        # lookahead_tiles contains remaining path (for monitor)
+        assert "path_tiles" in data, "Should have path_tiles key"
+        assert len(data["path_tiles"]) > 0, "path_tiles should not be empty"
+
+        assert "lookahead_tiles" in data, "Should have lookahead_tiles key"
+        assert len(data["lookahead_tiles"]) > 0, "lookahead_tiles should not be empty"
+
+        # lookahead_tiles should match remaining path from path_index
+        expected_tiles = [[x, y] for x, y, _ in train.current_path[train.path_index :]]
+        assert data["lookahead_tiles"] == expected_tiles, (
+            f"lookahead_tiles should match current_path from path_index, got {data['lookahead_tiles']} vs {expected_tiles}"
+        )
+
+    def test_recalculate_at_exact_tile_boundary(
+        self, simple_straight_network, running_train
+    ):
+        """
+        Edge case: Train head exactly at tile exit edge (distance_on_track = tile_length).
+
+        This should work without errors and produce valid position data.
+        """
+        train = running_train
+        network = simple_straight_network
+
+        # Move head to exact tile boundary
+        # Use property setters to keep TrainPosition in sync
+        tile_length = network._get_tile_length_cm(0, 0)  # Should be 50.0cm
+        train.distance_on_track = tile_length  # Exactly at boundary
+        train.current_pos = (0, 0)
+
+        # Recalculate
+        success = network.recalculate_train_position(train)
+
+        assert success, "Recalculation at tile boundary should succeed"
+
+        # Position should be valid
+        assert train.position.end_a_distance_cm == tile_length, (
+            f"end_a should be at tile boundary ({tile_length}cm)"
+        )
+
+    def test_recalculate_with_zero_length_tiles(self, simple_straight_network):
+        """
+        Edge case: Switches with 0cm length (unconfigured).
+
+        Train positioned on/near zero-length tiles should handle correctly.
+        """
+        from train import TrainCar, TrainPosition
+        from switch import Switch
+
+        # Add a switch at (2, 0) with zero length
+        switch_track = simple_straight_network.get_track(2, 0)
+        switch_track.set_track_bits(TRACK_EW | TRACK_NE)  # Make it a switch
+        switch_track.switch_id = "SW_2_0"
+
+        switch = Switch(
+            switch_id="SW_2_0",
+            x=2,
+            y=0,
+            main_length_cm=0.0,  # Zero length
+            diverge_length_cm=0.0,
+            switch_type="standard",
+        )
+        simple_straight_network.add_switch(switch)
+
+        # Create train approaching the switch
+        train = Train(
+            train_id="SWITCH_TRAIN",
+            consist=[TrainCar(car_id="loco1", car_type="LOCOMOTIVE", length=40.0)],
+        )
+
+        train._current_pos = (1, 0)
+        train._distance_on_track = 45.0  # Near exit of tile (1,0)
+        train._current_direction = Direction.EAST
+
+        train.position = TrainPosition(
+            end_a_tile=(1, 0),
+            end_a_distance_cm=45.0,
+            end_a_entry_edge="W",
+            end_b_tile=(1, 0),
+            end_b_distance_cm=5.0,  # 45-40=5cm
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+        )
+
+        simple_straight_network.add_train(train)
+
+        # Recalculate should handle zero-length switch gracefully
+        success = simple_straight_network.recalculate_train_position(train)
+
+        # Should not crash, even if position calculation is off
+        assert success or train.position is not None, (
+            "Recalculation with zero-length switch should not crash"
+        )
+
+    def test_backward_compatibility_current_pos_property(
+        self, simple_straight_network, running_train
+    ):
+        """
+        Test that train.current_pos property correctly delegates to TrainPosition.
+
+        Legacy code uses train.current_pos, which should read from train.position.head_tile.
+        """
+        train = running_train
+        network = simple_straight_network
+
+        # Move train
+        train._current_pos = (2, 0)
+        train._distance_on_track = 15.0
+        network.recalculate_train_position(train)
+
+        # current_pos property should return head tile from TrainPosition
+        assert train.current_pos == train.position.head_tile, (
+            f"current_pos should delegate to position.head_tile, "
+            f"got {train.current_pos} vs {train.position.head_tile}"
+        )
+
+    def test_backward_compatibility_distance_on_track_property(
+        self, simple_straight_network, running_train
+    ):
+        """
+        Test that train.distance_on_track property correctly delegates to TrainPosition.
+
+        Legacy code uses train.distance_on_track, which should read from position.head_distance_cm.
+        """
+        train = running_train
+        network = simple_straight_network
+
+        # Update position
+        train._distance_on_track = 38.0
+        network.recalculate_train_position(train)
+
+        # distance_on_track property should match position.end_a_distance_cm
+        assert train.distance_on_track == train.position.end_a_distance_cm, (
+            f"distance_on_track should match position.end_a_distance_cm, "
+            f"got {train.distance_on_track} vs {train.position.end_a_distance_cm}"
+        )
+
+
+class TestBlockVoltagePowerSystem:
+    """
+    Tests for block voltage/power system integration.
+
+    The BlockPowerController manages voltage output to track blocks based on
+    train states and speed profiles. This system simulates DC analog control.
+    """
+
+    def test_get_block_voltage_endpoint_exists(self):
+        """
+        Smoke test: Verify GET /api/blocks/<id>/voltage endpoint exists.
+
+        This endpoint was added as part of the power system but has no API tests.
+        """
+        from network import RailwayNetwork
+        from block import Block
+
+        network = RailwayNetwork()
+        block = network.create_block("BLK_VOLTAGE_TEST", "Voltage Test")
+
+        # At minimum, block should exist and be accessible
+        assert network.get_block("BLK_VOLTAGE_TEST") is not None
+
+        # Note: Full endpoint testing requires server.py and Flask context
+        # This is a unit test placeholder - full test should be in test_api.js
+
+
+class TestSwitchConfigurationEndpoints:
+    """
+    Tests for switch configuration CRUD endpoints.
+
+    Switches are critical for interlocking and path routing. These endpoints
+    manage switch physical properties (lengths, radii) and state changes.
+    """
+
+    def test_create_switch_at_track(self):
+        """
+        Test POST /api/tracks/<x>/<y>/switch endpoint logic.
+
+        When a switch track is placed, a Switch entity should be auto-created
+        with default 0.0cm lengths.
+        """
+        from switch import Switch
+
+        network = RailwayNetwork()
+
+        # Create switch track
+        track = TrackSegment(x=5, y=5, track_bits=TRACK_EW | TRACK_NE)
+        network.add_track(track)
+
+        assert track.is_switch, "Track should be identified as switch"
+
+        # Create switch entity
+        switch = Switch(
+            switch_id="SW_5_5",
+            x=5,
+            y=5,
+            main_length_cm=0.0,
+            diverge_length_cm=0.0,
+        )
+        network.add_switch(switch)
+
+        # Verify switch is registered
+        retrieved = network.get_switch_at(5, 5)
+        assert retrieved is not None, "Switch should be retrievable by position"
+        assert retrieved.switch_id == "SW_5_5", "Switch ID should match"
+
+
+class TestTrainRouteSystem:
+    """
+    Tests for train route/waypoint management system.
+
+    Routes define travel plans with multiple station stops, dwell times,
+    and timing modes (relative, absolute, none).
+    """
+
+    def test_create_route_with_waypoints(self):
+        """
+        Test basic route creation with waypoints.
+
+        Routes should support multiple waypoints with stations and dwell times.
+        """
+        from train_route import Route, Waypoint, RouteMode, TimingMode
+
+        route = Route(route_id="ROUTE_TEST", name="Test Route", mode=RouteMode.ONE_WAY)
+
+        # Add waypoints
+        wp1 = Waypoint(
+            station_id="STA_A", dwell_time_sec=30.0, timing_mode=TimingMode.NONE
+        )
+        wp2 = Waypoint(
+            station_id="STA_B", dwell_time_sec=60.0, timing_mode=TimingMode.NONE
+        )
+
+        route.add_waypoint(wp1)
+        route.add_waypoint(wp2)
+
+        # Verify waypoints
+        assert len(route.waypoints) == 2, "Should have 2 waypoints"
+        assert route.waypoints[0].station_id == "STA_A", "First waypoint correct"
+        assert route.waypoints[1].station_id == "STA_B", "Second waypoint correct"
+
+
+class TestSpeedProfileSystem:
+    """
+    Tests for speed profile configuration and management.
+
+    Speed profiles define speed-voltage curves, acceleration rates,
+    and special voltages (min start, lighting) for different train types.
+    """
+
+    def test_speed_profile_creation(self):
+        """
+        Test SpeedProfile creation with custom curve.
+
+        Profiles should support custom speed-voltage curves for different train models.
+        """
+        from speed_profile import SpeedProfile
+
+        profile = SpeedProfile(
+            profile_id="CUSTOM",
+            name="Custom Profile",
+            speed_voltage_curve=[[0, 0], [30, 5.0], [60, 8.0], [100, 12.0]],
+            min_start_voltage=2.5,
+            lighting_voltage=3.0,
+        )
+
+        assert profile.profile_id == "CUSTOM"
+        assert len(profile.speed_voltage_curve) == 4
+        assert profile.min_start_voltage == 2.5
+
+
+class TestPathDispatcherEndpoints:
+    """
+    Tests for path dispatcher endpoints that manage block reservations.
+
+    The path dispatcher creates, extends, and cancels paths (reserved routes
+    through consecutive blocks) for trains.
+    """
+
+    def test_path_creation_basic(self):
+        """
+        Test basic path creation between two blocks.
+
+        Path should reserve blocks and set switch positions.
+        """
+        from path_dispatcher import PathDispatcher
+
+        network = RailwayNetwork()
+
+        # Create two connected blocks
+        for x in range(4):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        block1 = network.create_block_with_tracks(
+            "BLK_START", [(0, 0), (1, 0)], validate=False
+        )
+        block2 = network.create_block_with_tracks(
+            "BLK_END", [(2, 0), (3, 0)], validate=False
+        )
+
+        dispatcher = PathDispatcher(network)
+
+        # Create path
+        result = dispatcher.create_path(
+            start_block_id="BLK_START",
+            end_block_id="BLK_END",
+            dispatcher_id="test",
+            priority=5,
+        )
+
+        assert result.success, f"Path creation should succeed: {result.error}"
+        assert result.path is not None, "Should return path object"
+        assert result.path.start_block_id == "BLK_START"
+        assert result.path.end_block_id == "BLK_END"

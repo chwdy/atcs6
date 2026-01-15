@@ -1949,6 +1949,8 @@ def update_train(train_id):
         train.current_speed = float(data["current_speed"])
     if "target_speed" in data:
         train.target_speed = float(data["target_speed"])
+    if "num_cars" in data:
+        train.num_cars = int(data["num_cars"])
 
     return jsonify(train.to_dict(network))
 

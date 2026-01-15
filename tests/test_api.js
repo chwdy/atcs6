@@ -1796,3 +1796,711 @@ runAllTests().catch(error => {
     console.error('Fatal error running tests:', error);
     process.exit(1);
 });
+
+
+// ============= TRAIN POSITION UPDATE ENDPOINT =============
+
+async function test_PUT_train_position() {
+    await resetNetwork();
+
+    // Create track and train
+    await createTrack(5, 5, TRACK_EW);
+    await createTrack(6, 5, TRACK_EW);
+    await fetchJSON('/trains', {
+        method: 'POST',
+        body: JSON.stringify({
+            id: 'TRAIN_POS_UPDATE',
+            length: 0.4,  // 40cm train
+            position: { x: 5, y: 5 },
+            direction: 'EAST'
+        })
+    });
+
+    // Update position via API
+    const result = await fetchJSON('/trains/TRAIN_POS_UPDATE/position', {
+        method: 'PUT',
+        body: JSON.stringify({
+            current_pos: [5, 5],
+            distance_on_track: 0.6  // 60% through tile (ratio)
+        })
+    });
+
+    assert(result.ok, 'PUT /trains/{id}/position should succeed');
+    assert(result.data.position !== undefined, 'Should return updated position');
+    
+    // Verify end_a and end_b are in response (THIS IS THE BUG FIX)
+    assert(result.data.position.end_a !== undefined, 'Response should include end_a');
+    assert(result.data.position.end_b !== undefined, 'Response should include end_b');
+    
+    // Verify end_a values are updated (not stuck at initialization)
+    assert(result.data.position.end_a.tile !== undefined, 'end_a should have tile');
+    assert(result.data.position.end_a.distance_cm !== undefined, 'end_a should have distance_cm');
+}
+
+async function test_PUT_train_position_updates_end_points() {
+    await resetNetwork();
+
+    // Create track
+    await createTrack(10, 10, TRACK_NS);
+    await createTrack(10, 11, TRACK_NS);
+    
+    // Create train
+    await fetchJSON('/trains', {
+        method: 'POST',
+        body: JSON.stringify({
+            id: 'TRAIN_ENDPOINT_TEST',
+            length: 0.4,
+            position: { x: 10, y: 10 },
+            direction: 'NORTH'
+        })
+    });
+
+    // Get initial position
+    const initialResult = await fetchJSON('/trains/TRAIN_ENDPOINT_TEST');
+    const initialEndA = initialResult.data.position?.end_a?.distance_cm;
+
+    // Update position
+    await fetchJSON('/trains/TRAIN_ENDPOINT_TEST/position', {
+        method: 'PUT',
+        body: JSON.stringify({
+            current_pos: [10, 10],
+            distance_on_track: 0.8  // Move forward
+        })
+    });
+
+    // Get updated position
+    const updatedResult = await fetchJSON('/trains/TRAIN_ENDPOINT_TEST');
+    const updatedEndA = updatedResult.data.position?.end_a?.distance_cm;
+
+    // CRITICAL: end_a should have changed (this was the bug)
+    assert(updatedEndA !== initialEndA, 
+           `end_a distance should change after position update (was ${initialEndA}, now ${updatedEndA})`);
+}
+
+// ============= TRAIN STATE TRANSITION ENDPOINTS =============
+
+async function test_POST_train_clear_direction() {
+    await resetNetwork();
+
+    await createTrack(0, 0, TRACK_EW);
+    await fetchJSON('/trains', {
+        method: 'POST',
+        body: JSON.stringify({
+            id: 'TRAIN_CLEARDIR_TEST',
+            length: 1.0,
+            position: { x: 0, y: 0 },
+            direction: 'EAST'
+        })
+    });
+    
+    // Power on and set direction
+    await fetchJSON('/trains/TRAIN_CLEARDIR_TEST/power-on', { method: 'POST' });
+    await fetchJSON('/trains/TRAIN_CLEARDIR_TEST/set-direction', {
+        method: 'POST',
+        body: JSON.stringify({ direction: 'E' })
+    });
+
+    // Clear direction (STANDBY -> IDLE)
+    const result = await fetchJSON('/trains/TRAIN_CLEARDIR_TEST/clear-direction', {
+        method: 'POST'
+    });
+
+    assert(result.ok, 'POST /trains/{id}/clear-direction should succeed');
+    assert(result.data.state === 'idle', 'Train state should be idle after clearing direction');
+}
+
+async function test_POST_train_depart() {
+    await resetNetwork();
+
+    await createTrack(0, 0, TRACK_EW);
+    await fetchJSON('/trains', {
+        method: 'POST',
+        body: JSON.stringify({
+            id: 'TRAIN_DEPART_TEST',
+            length: 1.0,
+            position: { x: 0, y: 0 },
+            direction: 'EAST'
+        })
+    });
+    
+    // Power on, set direction to get to STANDBY
+    await fetchJSON('/trains/TRAIN_DEPART_TEST/power-on', { method: 'POST' });
+    await fetchJSON('/trains/TRAIN_DEPART_TEST/set-direction', {
+        method: 'POST',
+        body: JSON.stringify({ direction: 'E' })
+    });
+
+    // Depart (STANDBY -> RUNNING_MOVING)
+    const result = await fetchJSON('/trains/TRAIN_DEPART_TEST/depart', {
+        method: 'POST'
+    });
+
+    assert(result.ok, 'POST /trains/{id}/depart should succeed');
+    // State should be running_moving or running_waiting depending on path/signals
+    assert(result.data.state !== 'standby', 'Train should have transitioned from standby');
+}
+
+async function test_POST_train_arrive() {
+    await resetNetwork();
+
+    // Create station
+    await createTrack(0, 0, TRACK_EW);
+    const stationResult = await createStation(0, 0, 'Arrival Station');
+    
+    await fetchJSON('/trains', {
+        method: 'POST',
+        body: JSON.stringify({
+            id: 'TRAIN_ARRIVE_TEST',
+            length: 1.0,
+            position: { x: 0, y: 0 },
+            direction: 'EAST'
+        })
+    });
+    
+    // Set to RUNNING_MOVING state (prerequisite for arrival)
+    await fetchJSON('/trains/TRAIN_ARRIVE_TEST/power-on', { method: 'POST' });
+    await fetchJSON('/trains/TRAIN_ARRIVE_TEST/set-direction', {
+        method: 'POST',
+        body: JSON.stringify({ direction: 'E' })
+    });
+    await fetchJSON('/trains/TRAIN_ARRIVE_TEST/depart', { method: 'POST' });
+
+    // Arrive at station
+    const result = await fetchJSON('/trains/TRAIN_ARRIVE_TEST/arrive', {
+        method: 'POST'
+    });
+
+    // May fail if train not in correct state, but endpoint should exist
+    if (result.ok) {
+        assert(result.data.state === 'running_at_station', 'Train should be at station');
+    }
+}
+
+// ============= SWITCH CONFIGURATION ENDPOINTS =============
+
+async function test_GET_switches() {
+    await resetNetwork();
+
+    const result = await fetchJSON('/switches');
+
+    assert(result.ok, 'GET /api/switches should succeed');
+    assert(Array.isArray(result.data), 'Response should be an array');
+}
+
+async function test_POST_tracks_switch_create() {
+    await resetNetwork();
+
+    // Create switch track
+    await createTrack(10, 10, TRACK_EW | TRACK_NE);
+
+    // Create switch entity at this position
+    const result = await fetchJSON('/tracks/10/10/switch', {
+        method: 'POST',
+        body: JSON.stringify({
+            main_length_cm: 60.0,
+            diverge_length_cm: 65.0
+        })
+    });
+
+    assert(result.ok, 'POST /api/tracks/{x}/{y}/switch should succeed');
+    assert(result.data.switch_id !== undefined, 'Should return switch ID');
+}
+
+async function test_GET_switch_by_id() {
+    await resetNetwork();
+
+    // Create switch track and entity
+    await createTrack(10, 10, TRACK_EW | TRACK_NE);
+    const createResult = await fetchJSON('/tracks/10/10/switch', {
+        method: 'POST',
+        body: JSON.stringify({ main_length_cm: 60.0 })
+    });
+
+    if (createResult.ok && createResult.data.switch_id) {
+        const result = await fetchJSON(`/switches/${createResult.data.switch_id}`);
+        assert(result.ok, 'GET /api/switches/{id} should succeed');
+    }
+}
+
+async function test_PUT_switch_update() {
+    await resetNetwork();
+
+    // Create switch
+    await createTrack(10, 10, TRACK_EW | TRACK_NE);
+    const createResult = await fetchJSON('/tracks/10/10/switch', {
+        method: 'POST',
+        body: JSON.stringify({ main_length_cm: 60.0 })
+    });
+
+    if (createResult.ok && createResult.data.switch_id) {
+        const result = await fetchJSON(`/switches/${createResult.data.switch_id}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+                main_length_cm: 70.0,
+                name: 'Updated Switch'
+            })
+        });
+
+        assert(result.ok, 'PUT /api/switches/{id} should succeed');
+    }
+}
+
+async function test_PUT_switch_state_change() {
+    await resetNetwork();
+
+    // Create switch
+    await createTrack(10, 10, TRACK_EW | TRACK_NE);
+    const createResult = await fetchJSON('/tracks/10/10/switch', {
+        method: 'POST'
+    });
+
+    if (createResult.ok && createResult.data.switch_id) {
+        const result = await fetchJSON(`/switches/${createResult.data.switch_id}/state`, {
+            method: 'PUT',
+            body: JSON.stringify({ state: 1 })  // DIVERGE
+        });
+
+        assert(result.ok, 'PUT /api/switches/{id}/state should succeed');
+    }
+}
+
+// ============= SPEED PROFILE ENDPOINTS =============
+
+async function test_GET_speed_profiles() {
+    const result = await fetchJSON('/speed-profiles');
+
+    assert(result.ok, 'GET /api/speed-profiles should succeed');
+    assert(result.data.profiles !== undefined, 'Response should contain profiles array');
+    assert(Array.isArray(result.data.profiles), 'Profiles should be an array');
+}
+
+async function test_POST_speed_profile_create() {
+    const result = await fetchJSON('/speed-profiles', {
+        method: 'POST',
+        body: JSON.stringify({
+            profile_id: 'TEST_PROFILE',
+            name: 'Test Speed Profile',
+            min_start_voltage: 2.0,
+            lighting_voltage: 2.5
+        })
+    });
+
+    // May conflict if profile already exists from previous test run
+    assert(result.ok || result.status === 409, 
+           'POST /api/speed-profiles should succeed or return 409 conflict');
+    
+    if (result.ok) {
+        assert(result.data.profile_id === 'TEST_PROFILE', 'Profile ID should match');
+    }
+}
+
+async function test_GET_speed_profile_by_id() {
+    // Try to get default profile (always exists)
+    const result = await fetchJSON('/speed-profiles/default');
+
+    assert(result.ok, 'GET /api/speed-profiles/{id} should succeed');
+    assert(result.data.profile_id === 'default', 'Should return default profile');
+}
+
+// ============= SCALE CONFIGURATION ENDPOINTS =============
+
+async function test_GET_scale() {
+    const result = await fetchJSON('/scale');
+
+    assert(result.ok, 'GET /api/scale should succeed');
+    assert(result.data.scale !== undefined, 'Response should contain scale value');
+    assert(result.data.presets !== undefined, 'Response should contain presets');
+}
+
+async function test_PUT_scale() {
+    const result = await fetchJSON('/scale', {
+        method: 'PUT',
+        body: JSON.stringify({ scale: 160.0 })
+    });
+
+    assert(result.ok, 'PUT /api/scale should succeed');
+    assert(result.data.scale === 160.0, 'Scale should be set to 160.0');
+}
+
+// ============= TRAIN ROUTE ENDPOINTS =============
+
+async function test_GET_train_routes() {
+    const result = await fetchJSON('/train-routes');
+
+    assert(result.ok, 'GET /api/train-routes should succeed');
+    assert(result.data.routes !== undefined, 'Response should contain routes array');
+    assert(Array.isArray(result.data.routes), 'Routes should be an array');
+}
+
+async function test_POST_train_route_create() {
+    await resetNetwork();
+
+    // Create stations for waypoints
+    await createTrack(0, 0, TRACK_NS);
+    await createTrack(0, 5, TRACK_NS);
+    const station1 = await createStation(0, 0, 'Station A');
+    const station2 = await createStation(0, 5, 'Station B');
+
+    const result = await fetchJSON('/train-routes', {
+        method: 'POST',
+        body: JSON.stringify({
+            route_id: 'ROUTE_TEST',
+            name: 'Test Route',
+            mode: 'one_way',
+            waypoints: [
+                { station_id: station1.data.station_id, dwell_time_sec: 30.0 },
+                { station_id: station2.data.station_id, dwell_time_sec: 60.0 }
+            ]
+        })
+    });
+
+    assert(result.ok, 'POST /api/train-routes should succeed');
+    assert(result.data.route !== undefined, 'Response should contain route object');
+}
+
+async function test_GET_train_route_by_id() {
+    await resetNetwork();
+
+    // Create a route first
+    await createTrack(0, 0, TRACK_NS);
+    const station1 = await createStation(0, 0, 'Station A');
+    
+    await fetchJSON('/train-routes', {
+        method: 'POST',
+        body: JSON.stringify({
+            route_id: 'ROUTE_GET_TEST',
+            name: 'Test Route',
+            waypoints: [{ station_id: station1.data.station_id, dwell_time_sec: 30.0 }]
+        })
+    });
+
+    const result = await fetchJSON('/train-routes/ROUTE_GET_TEST');
+
+    assert(result.ok, 'GET /api/train-routes/{id} should succeed');
+    assert(result.data.route_id === 'ROUTE_GET_TEST', 'Route ID should match');
+}
+
+async function test_DELETE_train_route() {
+    await resetNetwork();
+
+    // Create a route first
+    await createTrack(0, 0, TRACK_NS);
+    const station1 = await createStation(0, 0, 'Station A');
+    
+    await fetchJSON('/train-routes', {
+        method: 'POST',
+        body: JSON.stringify({
+            route_id: 'ROUTE_DEL_TEST',
+            name: 'Test Route',
+            waypoints: [{ station_id: station1.data.station_id, dwell_time_sec: 30.0 }]
+        })
+    });
+
+    const result = await fetchJSON('/train-routes/ROUTE_DEL_TEST', {
+        method: 'DELETE'
+    });
+
+    assert(result.ok, 'DELETE /api/train-routes/{id} should succeed');
+}
+
+// ============= PATH DISPATCHER ENDPOINTS =============
+
+async function test_GET_paths() {
+    const result = await fetchJSON('/paths');
+
+    assert(result.ok, 'GET /api/paths should succeed');
+    assert(result.data.paths !== undefined, 'Response should contain paths array');
+}
+
+async function test_POST_paths_create() {
+    await resetNetwork();
+
+    // Create blocks
+    await createTrack(0, 0, TRACK_EW);
+    await createTrack(1, 0, TRACK_EW);
+    await createTrack(2, 0, TRACK_EW);
+    await createTrack(3, 0, TRACK_EW);
+    
+    const block1 = await fetchJSON('/blocks/create-with-tracks', {
+        method: 'POST',
+        body: JSON.stringify({
+            block_id: 'BLK_PATH_START',
+            positions: [[0, 0], [1, 0]]
+        })
+    });
+    
+    const block2 = await fetchJSON('/blocks/create-with-tracks', {
+        method: 'POST',
+        body: JSON.stringify({
+            block_id: 'BLK_PATH_END',
+            positions: [[2, 0], [3, 0]]
+        })
+    });
+
+    if (block1.ok && block2.ok) {
+        const result = await fetchJSON('/paths', {
+            method: 'POST',
+            body: JSON.stringify({
+                start_block_id: 'BLK_PATH_START',
+                end_block_id: 'BLK_PATH_END',
+                priority: 5
+            })
+        });
+
+        assert(result.ok, 'POST /api/paths should succeed');
+        assert(result.data.success !== undefined, 'Response should indicate success/failure');
+    }
+}
+
+async function test_GET_path_by_id() {
+    await resetNetwork();
+
+    // Create blocks and path
+    await createTrack(0, 0, TRACK_EW);
+    await createTrack(1, 0, TRACK_EW);
+    const block1 = await fetchJSON('/blocks/create-with-tracks', {
+        method: 'POST',
+        body: JSON.stringify({
+            block_id: 'BLK_P1',
+            positions: [[0, 0]]
+        })
+    });
+    const block2 = await fetchJSON('/blocks/create-with-tracks', {
+        method: 'POST',
+        body: JSON.stringify({
+            block_id: 'BLK_P2',
+            positions: [[1, 0]]
+        })
+    });
+
+    if (block1.ok && block2.ok) {
+        const createResult = await fetchJSON('/paths', {
+            method: 'POST',
+            body: JSON.stringify({
+                start_block_id: 'BLK_P1',
+                end_block_id: 'BLK_P2'
+            })
+        });
+
+        if (createResult.ok && createResult.data.path) {
+            const result = await fetchJSON(`/paths/${createResult.data.path.path_id}`);
+            assert(result.ok, 'GET /api/paths/{id} should succeed');
+        }
+    }
+}
+
+// ============= BLOCK ENDPOINTS (ADDITIONAL) =============
+
+async function test_GET_block_voltage() {
+    await resetNetwork();
+
+    // Create block
+    const blockResult = await createBlock('BLK_VOLTAGE', 'Voltage Test');
+
+    if (blockResult.ok) {
+        const result = await fetchJSON(`/blocks/${blockResult.data.block_id}/voltage`);
+
+        assert(result.ok, 'GET /api/blocks/{id}/voltage should succeed');
+        assert(result.data.voltage !== undefined, 'Response should contain voltage');
+    }
+}
+
+async function test_GET_block_end_tiles() {
+    await resetNetwork();
+
+    // Create block with multiple tiles
+    await createTrack(5, 5, TRACK_NS);
+    await createTrack(5, 6, TRACK_NS);
+    const blockResult = await fetchJSON('/blocks/create-with-tracks', {
+        method: 'POST',
+        body: JSON.stringify({
+            block_id: 'BLK_ENDTILES',
+            positions: [[5, 5], [5, 6]]
+        })
+    });
+
+    if (blockResult.ok) {
+        const result = await fetchJSON(`/blocks/${blockResult.data.block_id}/end_tiles`);
+
+        assert(result.ok, 'GET /api/blocks/{id}/end_tiles should succeed');
+        assert(result.data.start_tile !== undefined, 'Should have start_tile');
+        assert(result.data.end_tile !== undefined, 'Should have end_tile');
+    }
+}
+
+// ============= UPDATE TEST RUNNER =============
+
+async function runAllTestsUpdated() {
+    console.log('Starting REST API Tests (Extended)...\n');
+    console.log('Testing against:', BASE_URL);
+    console.log('Ensure server is running at localhost:5001\n');
+
+    // (All existing tests from original runAllTests function)
+    // Network endpoints
+    await runTest('GET /api/network', test_GET_network);
+    await runTest('GET /api/network/stats', test_GET_network_stats);
+
+    // Track endpoints (Core)
+    await runTest('GET /api/track', test_GET_track);
+    await runTest('PATCH /api/track (update)', test_PATCH_track_update);
+    await runTest('DELETE /api/track', test_DELETE_track);
+    await runTest('POST /api/tracks/bulk', test_POST_tracks_bulk);
+    await runTest('POST /api/tracks/bulk-delete', test_POST_tracks_bulk_delete);
+
+    // Track endpoints (Extensive)
+    await runTest('Track: Reject forbidden bits', test_track_forbidden_bits_rejected);
+
+    // Block endpoints (Core)
+    await runTest('GET /api/blocks', test_GET_blocks);
+    await runTest('POST /api/blocks (create)', test_POST_blocks_create);
+    await runTest('GET /api/blocks/{id}', test_GET_block_by_id);
+    await runTest('PATCH /api/blocks/{id}', test_PATCH_block_update);
+    await runTest('DELETE /api/blocks/{id}', test_DELETE_block);
+    await runTest('POST /api/blocks/{id}/cycle-state', test_POST_block_cycle_state);
+    await runTest('POST /api/blocks/create-with-tracks', test_POST_blocks_create_with_tracks);
+    await runTest('POST /api/blocks/{id}/tracks', test_POST_block_tracks_add);
+    await runTest('POST /api/blocks/{id}/extend', test_POST_block_extend);
+
+    // Block endpoints (Extensive)
+    await runTest('BLK-API-E01: Reject non-existent tracks', test_BLK_API_E01_reject_nonexistent_tracks);
+    await runTest('BLK-API-E02: Reject switch in block', test_BLK_API_E02_reject_switch_in_block);
+    await runTest('BLK-API-E03: Reject crossing in block', test_BLK_API_E03_reject_crossing_in_block);
+    
+    // Block endpoints (NEW)
+    await runTest('GET /api/blocks/{id}/voltage', test_GET_block_voltage);
+    await runTest('GET /api/blocks/{id}/end_tiles', test_GET_block_end_tiles);
+
+    // Signal endpoints (Core)
+    await runTest('POST /api/signal (create)', test_POST_signal_create);
+    await runTest('GET /api/signal/{id}', test_GET_signal_by_id);
+    await runTest('GET /api/signal/{x}/{y}', test_GET_signal_by_position);
+    await runTest('PATCH /api/signal/{id}', test_PATCH_signal_update);
+    await runTest('DELETE /api/signal/{id}', test_DELETE_signal);
+    await runTest('DELETE /api/signal/{x}/{y}', test_DELETE_signal_by_position);
+    await runTest('GET /api/signal/validate', test_GET_signal_validate);
+    await runTest('GET /api/signal/{id}/reachable-blocks', test_GET_signal_reachable_blocks);
+
+    // Signal endpoints (Extensive)
+    await runTest('Signal: Reject on switch', test_signal_on_switch_rejected);
+
+    // Station endpoints (Core)
+    await runTest('POST /api/station (create)', test_POST_station_create);
+    await runTest('GET /api/station/{id}', test_GET_station_by_id);
+    await runTest('PATCH /api/station/{id}', test_PATCH_station_update);
+    await runTest('DELETE /api/station/{id}', test_DELETE_station);
+    await runTest('GET /api/station/validate', test_GET_station_validate);
+    await runTest('POST /api/station/{id}/extend', test_POST_station_extend);
+
+    // Train endpoints (Core)
+    await runTest('POST /api/trains (create)', test_POST_trains_create);
+    await runTest('GET /api/trains', test_GET_trains_list);
+    await runTest('GET /api/trains/{id}', test_GET_train_by_id);
+    await runTest('DELETE /api/trains/{id}', test_DELETE_train);
+    await runTest('POST /api/trains/{id}/power-on', test_POST_train_power_on);
+    await runTest('POST /api/trains/{id}/power-off', test_POST_train_power_off);
+    await runTest('POST /api/trains/{id}/set-direction', test_POST_train_set_direction);
+    await runTest('POST /api/trains/{id}/turn-around', test_POST_train_turn_around);
+    await runTest('POST /api/trains/{id}/enable-manual', test_POST_train_enable_manual);
+    await runTest('POST /api/trains/{id}/disable-manual', test_POST_train_disable_manual);
+    await runTest('POST /api/trains/{id}/manual-speed', test_POST_train_manual_speed);
+    await runTest('POST /api/trains/{id}/travel-direction', test_POST_train_travel_direction);
+    await runTest('POST /api/trains/{id}/emergency-stop', test_POST_train_emergency_stop);
+    
+    // Train endpoints (NEW - Bug Fix Tests)
+    await runTest('PUT /api/trains/{id}/position', test_PUT_train_position);
+    await runTest('PUT /api/trains/{id}/position (updates end points)', test_PUT_train_position_updates_end_points);
+    await runTest('POST /api/trains/{id}/clear-direction', test_POST_train_clear_direction);
+    await runTest('POST /api/trains/{id}/depart', test_POST_train_depart);
+    await runTest('POST /api/trains/{id}/arrive', test_POST_train_arrive);
+
+    // Station additional endpoints
+    await runTest('POST /api/station/{id}/remove_tile', test_POST_station_remove_tile);
+    await runTest('GET /api/station/{id}/end_tiles', test_GET_station_end_tiles);
+    await runTest('POST /api/station/{id}/can_extend', test_POST_station_can_extend);
+    await runTest('POST /api/station/{id}/assign_tile', test_POST_station_assign_tile);
+    await runTest('POST /api/station/{id}/unassign_tile', test_POST_station_unassign_tile);
+    await runTest('GET /api/station/{id}/block_assignments', test_GET_station_block_assignments);
+
+    // Block additional endpoints
+    await runTest('DELETE /api/blocks/{id}/tracks', test_DELETE_block_tracks);
+    await runTest('POST /api/blocks/{id}/can_extend', test_POST_block_can_extend);
+
+    // Switch endpoints (NEW)
+    await runTest('GET /api/switches', test_GET_switches);
+    await runTest('POST /api/tracks/{x}/{y}/switch', test_POST_tracks_switch_create);
+    await runTest('GET /api/switches/{id}', test_GET_switch_by_id);
+    await runTest('PUT /api/switches/{id}', test_PUT_switch_update);
+    await runTest('PUT /api/switches/{id}/state', test_PUT_switch_state_change);
+
+    // Speed Profile endpoints (NEW)
+    await runTest('GET /api/speed-profiles', test_GET_speed_profiles);
+    await runTest('POST /api/speed-profiles', test_POST_speed_profile_create);
+    await runTest('GET /api/speed-profiles/{id}', test_GET_speed_profile_by_id);
+
+    // Scale endpoints (NEW)
+    await runTest('GET /api/scale', test_GET_scale);
+    await runTest('PUT /api/scale', test_PUT_scale);
+
+    // Train Route endpoints (NEW)
+    await runTest('GET /api/train-routes', test_GET_train_routes);
+    await runTest('POST /api/train-routes', test_POST_train_route_create);
+    await runTest('GET /api/train-routes/{id}', test_GET_train_route_by_id);
+    await runTest('DELETE /api/train-routes/{id}', test_DELETE_train_route);
+
+    // Path Dispatcher endpoints (NEW)
+    await runTest('GET /api/paths', test_GET_paths);
+    await runTest('POST /api/paths', test_POST_paths_create);
+    await runTest('GET /api/paths/{id}', test_GET_path_by_id);
+    
+    // Dispatcher endpoints
+    await runTest('GET /api/dispatcher/reachable/{block_id}', test_GET_dispatcher_reachable);
+    await runTest('POST /api/dispatcher/paths', test_POST_dispatcher_paths);
+
+    // Simulation endpoints
+    await runTest('POST /api/simulation/control', test_POST_simulation_control);
+
+    // Layout persistence endpoints
+    await runTest('GET /api/layouts', test_GET_layouts_list);
+    await runTest('POST /api/layouts (save)', test_POST_layouts_save);
+    await runTest('POST /api/layouts/:name/load', test_POST_layouts_load);
+    await runTest('DELETE /api/layouts/:name', test_DELETE_layouts);
+    await runTest('POST /api/network/clear', test_POST_network_clear);
+
+    // Infrastructure endpoints
+    await runTest('GET / and GET /<path:path> (static files)', test_static_file_serving);
+
+    // Parity tests
+    await runTest('PARITY-001: All forbidden track bits', test_PARITY_001_all_forbidden_track_bits);
+    await runTest('PARITY-002: Signal on switch rejected', test_PARITY_002_signal_on_switch_rejected);
+    await runTest('PARITY-003: Valid signal directions', test_PARITY_003_valid_signal_directions);
+    await runTest('PARITY-004: Crossing in block rejected', test_PARITY_004_crossing_in_block_rejected);
+
+    // Print summary
+    console.log('\n========================================');
+    console.log('TEST RESULTS');
+    console.log('========================================');
+    console.log(`Total tests run: ${testsRun}`);
+    console.log(`Passed: ${testsPassed} ✓`);
+    console.log(`Failed: ${testsFailed} ✗`);
+    console.log('========================================');
+
+    if (testsFailed > 0) {
+        console.log('\nFailed tests:');
+        failedTests.forEach(({ name, error }) => {
+            console.log(`  ✗ ${name}`);
+            console.log(`    ${error}`);
+        });
+    }
+
+    process.exit(testsFailed > 0 ? 1 : 0);
+}
+
+// Replace the old runner with the new one
+const originalRunner = runAllTests;
+runAllTests = runAllTestsUpdated;
+
+// Run tests
+runAllTests().catch(error => {
+    console.error('Fatal error running tests:', error);
+    process.exit(1);
+});

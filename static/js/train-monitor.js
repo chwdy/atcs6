@@ -155,44 +155,113 @@ class TrainMonitor {
             return;
         }
         
-        if (!train.path_tile_info) {
-            console.warn('[TrainMonitor] Missing path_tile_info', {
+        // ========================================================================
+        // LOOKAHEAD DATA SOURCE
+        // ========================================================================
+        // Primary: lookahead_tile_info (new format with precise distances)
+        // Fallback: path_tile_info (legacy, now also includes lookahead)
+        //
+        // Data comes from Train.to_dict() which now builds lookahead from current_path
+        // starting at path_index (train head position)
+        const pathInfo = train.lookahead_tile_info || train.path_tile_info || [];
+        const pathTiles = train.lookahead_tiles || train.path_tiles || [];
+        const hasPathData = pathInfo.length > 0;
+        
+        if (!hasPathData) {
+            console.warn('[TrainMonitor] Missing or empty lookahead/path_tile_info', {
                 trainId: train.id,
-                hasPathTiles: !!train.path_tiles,
-                pathTilesLength: train.path_tiles?.length
+                hasLookaheadTileInfo: !!train.lookahead_tile_info,
+                hasPathTileInfo: !!train.path_tile_info,
+                pathLength: train.path_length,
+                pathIndex: train.path_index
             });
-            this.lookaheadData = null;
+            
+            // Build minimal lookahead data with just speed/state info
+            this.lookaheadData = {
+                current_speed_kmh: train.speed || 0,
+                target_speed_kmh: train.target_speed || 0,
+                state: train.state,
+                wait_reason: train.wait_reason,
+                speed_limit_reason: train.speed_limit_reason,
+                blocks: [],
+                signals: [],
+                switches: [],
+                stations: [],
+                distance_into_path_cm: 0,
+                clearance_cm: 0
+            };
+            
+            // Update UI elements with minimal data
+            this.currentSpeedEl.textContent = Math.round(this.lookaheadData.current_speed_kmh || 0);
+            this.targetSpeedEl.textContent = Math.round(this.lookaheadData.target_speed_kmh || 0);
+            
+            if (this.speedCmsEl) {
+                const speedCms = ((this.lookaheadData.current_speed_kmh || 0) * 27.78 / this.currentScale).toFixed(1);
+                this.speedCmsEl.textContent = speedCms;
+            }
+            if (this.clearanceEl) {
+                this.clearanceEl.textContent = '0.0';
+            }
+            
+            if (this.waitReasonEl) {
+                if (this.lookaheadData.state === 'running_waiting' && this.lookaheadData.wait_reason) {
+                    this.waitReasonEl.textContent = this.lookaheadData.wait_reason;
+                    this.waitReasonEl.classList.remove('hidden');
+                } else {
+                    this.waitReasonEl.classList.add('hidden');
+                }
+            }
+            
+            if (this.speedLimitReasonEl) {
+                const speedLimitReason = this.lookaheadData.speed_limit_reason;
+                if (speedLimitReason && this.lookaheadData.state !== 'running_waiting') {
+                    this.speedLimitReasonEl.textContent = speedLimitReason;
+                    this.speedLimitReasonEl.classList.remove('hidden');
+                } else {
+                    this.speedLimitReasonEl.classList.add('hidden');
+                }
+            }
+            
+            this.updateUpcomingElements(this.lookaheadData);
             this.render();
             return;
         }
         
-        const pathTiles = train.path_tiles || [];
-        const pathInfo = train.path_tile_info || [];
-        const headIndex = train.leading_end === 'a' ? train.end_a_index : train.end_b_index;
-        const headDistanceCm = train.leading_end === 'a' ? train.end_a_distance_cm : train.end_b_distance_cm;
-        
-        // Build blocks, signals, switches from tiles ahead of head
+        // ========================================================================
+        // BUILD LOOKAHEAD VISUALIZATION DATA
+        // ========================================================================
+        // Now lookahead_tile_info contains ALL tiles from head position to end of path
+        // Each tile has distance_to_tile_cm (distance from train head to tile start)
+        //
+        // We process this into blocks, signals, switches for display
         const blocks = [];
         const signals = [];
         const switches = [];
         const stations = [];
         
-        let cumulativeDistance = -(headDistanceCm || 0); // Start from head position
         const seenBlocks = new Set();
         
-        for (let i = headIndex || 0; i < pathTiles.length; i++) {
-            const tile = pathTiles[i];
+        // Process each tile in lookahead (already ordered from head forward)
+        for (let i = 0; i < pathInfo.length; i++) {
             const info = pathInfo[i];
+            const tile = pathTiles[i];
             if (!info) continue;
             
             const tileLength = info.length_cm || 50;
-            const tileStart = Math.max(0, cumulativeDistance);
             
-            // Add block if not seen
+            // distance_to_tile_cm: distance from train head to START of this tile
+            // For first tile (head tile), this is negative (head already into tile)
+            // For subsequent tiles, this is positive
+            const distanceToTileStart = info.distance_to_tile_cm ?? 0;
+            
+            // Calculate distance from head to START of tile (0 if head is on this tile)
+            const tileStartFromHead = Math.max(0, distanceToTileStart);
+            
+            // Add block if not seen yet
             if (info.block_id && !seenBlocks.has(info.block_id)) {
                 seenBlocks.add(info.block_id);
                 
-                // Find all tiles in this block to calculate total length
+                // Find all consecutive tiles in this block to calculate total length
                 let blockLength = 0;
                 let tileCount = 0;
                 for (let j = i; j < pathInfo.length; j++) {
@@ -208,38 +277,44 @@ class TrainMonitor {
                     id: info.block_id,
                     name: info.block_id,
                     state: info.block_state || 'free',
-                    start_cm: tileStart,
-                    end_cm: tileStart + blockLength,
+                    start_cm: tileStartFromHead,
+                    end_cm: tileStartFromHead + blockLength,
                     length_cm: blockLength,
                     tile_count: tileCount,
                     sequence: blocks.length
                 });
             }
             
-            // Add signals
-            if (info.signals) {
+            // Add signals on this tile
+            if (info.signals && info.signals.length > 0) {
                 info.signals.forEach(sig => {
                     signals.push({
                         id: sig.id,
                         state: sig.state,
-                        distance_cm: tileStart,
+                        distance_cm: tileStartFromHead, // Signal at start of tile
                         sequence: signals.length
                     });
                 });
             }
             
-            // Add switches
+            // Add switch if present
             if (info.is_switch && tile && tile.length >= 2) {
                 switches.push({
                     x: tile[0],
                     y: tile[1],
                     position: info.switch_state === 0 ? 'main' : 'diverging',
-                    distance_cm: tileStart,
+                    distance_cm: tileStartFromHead,
                     sequence: switches.length
                 });
             }
-            
-            cumulativeDistance += tileLength;
+        }
+        
+        // Calculate total clearance (distance from head to end of path)
+        let totalClearance = 0;
+        if (pathInfo.length > 0) {
+            const lastTile = pathInfo[pathInfo.length - 1];
+            const lastTileStart = lastTile.distance_to_tile_cm ?? 0;
+            totalClearance = Math.max(0, lastTileStart) + (lastTile.length_cm || 50);
         }
         
         // Build lookahead-compatible data structure
@@ -253,8 +328,8 @@ class TrainMonitor {
             signals: signals,
             switches: switches,
             stations: stations,
-            distance_into_path_cm: 0, // Head is always at 0
-            clearance_cm: cumulativeDistance
+            distance_into_path_cm: 0, // Head is always at 0 (we measure from head)
+            clearance_cm: totalClearance
         };
         
         // Update UI elements

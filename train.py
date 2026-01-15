@@ -278,6 +278,9 @@ class Train:
     current_speed: float = 0.0  # Current speed in km/h
     acceleration: float = 2.0  # Acceleration in m/s²
 
+    # Number of cars in train (for display purposes)
+    num_cars: int = 1  # Number of cars/wagons in train consist
+
     # Priority (for dispatcher system)
     priority: int = 5  # 1-10, higher = higher priority, default 5
 
@@ -304,8 +307,20 @@ class Train:
     # Schedule management
     schedule: Optional[TrainSchedule] = None
 
-    # Pathfinding and movement
+    # ========================================================================
+    # NAVIGATION PATH - Where the train is going
+    # ========================================================================
+    # current_path: Full planned route from pathfinder (head tile to destination)
+    # - List of (x, y, direction) tuples ordered from current position to goal
+    # - Used by: TrainMonitor (lookahead display), ATC (speed calculation),
+    #            simulation (next tile decisions)
+    # - Updated when: New route assigned, recalculated after reaching destination
     current_path: Optional[List[Tuple[int, int, Direction]]] = None
+
+    # path_index: Current position in current_path (0 = first tile in path)
+    # - Train head is on current_path[path_index]
+    # - Tiles before path_index have been passed
+    # - Tiles after path_index are upcoming (lookahead)
     path_index: int = 0
 
     # Block system integration
@@ -316,9 +331,14 @@ class Train:
     assigned_path_id: Optional[str] = None
 
     # ========================================================================
-    # PATH-BASED POSITION SYSTEM (Task 1.1)
+    # PATH-QUEUE POSITION SYSTEM (Legacy - for future path-based renderer)
     # ========================================================================
-    # Full path: passed tiles + occupied tiles + ahead tiles
+    # NOTE: This system is NOT currently active. The legacy movement system uses
+    # TrainPosition (updated by network.recalculate_train_position()).
+    # These fields are kept for future path-queue based rendering.
+    # For current train head/tail display, see TrainPosition class above.
+    #
+    # path_tiles: Flattened tile list for position queue (NOT used for lookahead)
     path_tiles: List[Tuple[int, int]] = field(default_factory=list)
 
     # Two physical ends (don't change on reverse)
@@ -1284,6 +1304,7 @@ class Train:
             "length_cm": self.length_cm,
             "speed": self.current_speed,
             "max_speed": self.max_speed,
+            "num_cars": self.num_cars,
             "occupied_tracks": self.occupied_tracks,
             "model": self.model,
             "min_radius_cm": self.min_radius_cm,
@@ -1329,21 +1350,30 @@ class Train:
                 "y": self.current_pos[1],
                 "distance": distance_ratio,
                 "tile_length_cm": tile_length_cm,
-            }            # NEW: Populate path_tiles from TrainPosition for path-based renderer
+            }  # NEW: Populate path_tiles from TrainPosition for path-based renderer
             # This converts TrainPosition (which IS updated) into the format
             # the path-based renderer expects
             if self.position and self.position.occupied_tiles:
                 pos = self.position
                 # Sync TrainPosition -> path_tiles format for renderer
+                # Note: occupied_tiles is now guaranteed to be ordered from end_a to end_b
+                # (enforced by recalculate_train_position in network.py)
                 data["path_tiles"] = [list(t) for t in pos.occupied_tiles]
-                data["end_a_index"] = 0  # end_a is first in occupied_tiles
+                data["end_a_index"] = 0  # end_a is first (index 0) in occupied_tiles
                 data["end_b_index"] = len(pos.occupied_tiles) - 1  # end_b is last
                 data["end_a_distance_cm"] = pos.end_a_distance_cm
                 data["end_b_distance_cm"] = pos.end_b_distance_cm
                 data["end_a_entry_edge"] = pos.end_a_entry_edge
                 data["end_b_entry_edge"] = pos.end_b_entry_edge
                 data["leading_end"] = pos.leading_end
-                
+
+                # Add path_tile_info for renderer (needs tile lengths)
+                if network:
+                    data["path_tile_info"] = [
+                        {"length_cm": network._get_tile_length_cm(tile[0], tile[1])}
+                        for tile in pos.occupied_tiles
+                    ]
+
                 # Merge full TrainPosition data into position dict
                 data["position"].update(pos.to_dict())
 
@@ -1371,22 +1401,52 @@ class Train:
                 )
             data["schedule"]["stops"] = stops
 
-        # Add path_tile_info if network available (uses data['path_tiles'] from TrainPosition)
-        if network and data.get('path_tiles'):
-            path_tile_info = []
-            for tile in data['path_tiles']:
-                x, y = tile
+        # ========================================================================
+        # LOOKAHEAD TILE INFO - Used by TrainMonitor for upcoming elements
+        # ========================================================================
+        # Build lookahead_tiles from current_path starting at path_index (head position)
+        # This provides info about ALL tiles ahead, not just occupied tiles
+        #
+        # Data structure:
+        # - lookahead_tiles: List of (x, y) tiles from head forward along path
+        # - lookahead_tile_info: Rich info for each tile (block, signals, switches, distance)
+        # - head_distance_into_tile_cm: How far into current tile the head is
+        #
+        if network and self.current_path and self.path_index >= 0:
+            lookahead_tiles = []
+            lookahead_tile_info = []
+
+            # Distance from train head to start of each tile
+            # Starts negative (train head is already into first tile)
+            head_distance_into_tile = self.distance_on_track
+            cumulative_distance_cm = (
+                -head_distance_into_tile
+            )  # Start from head position
+
+            # Iterate from current position to end of path
+            for i in range(self.path_index, len(self.current_path)):
+                path_entry = self.current_path[i]
+                x, y = path_entry[0], path_entry[1]
+                lookahead_tiles.append([x, y])
+
                 track = network.get_track(x, y)
+                tile_length = network._get_tile_length_cm(x, y) if track else 50.0
+
                 tile_info = {
                     "tile": [x, y],
-                    "length_cm": network._get_tile_length_cm(x, y) if track else 50.0,
+                    "length_cm": tile_length,
                     "block_id": track.block_section_id if track else None,
+                    # Distance from train head to START of this tile (cm)
+                    # For first tile (head tile), this is negative
+                    "distance_to_tile_cm": cumulative_distance_cm,
                 }
+
                 # Add block state if block exists
                 if track and track.block_section_id:
                     block = network.blocks.get(track.block_section_id)
                     if block:
                         tile_info["block_state"] = block.state.value
+
                 # Add signal info if present
                 if track and track.signal_ids:
                     tile_info["signals"] = []
@@ -1402,12 +1462,27 @@ class Train:
                                     "direction": signal.detection_direction,
                                 }
                             )
+
                 # Add switch info if present
                 if track and track.is_switch:
                     tile_info["is_switch"] = True
                     tile_info["switch_state"] = track.switch_state
-                path_tile_info.append(tile_info)
-            data["path_tile_info"] = path_tile_info
+
+                lookahead_tile_info.append(tile_info)
+
+                # Move cumulative distance forward by this tile's length
+                # After first tile, distance becomes positive (ahead of head)
+                cumulative_distance_cm += tile_length
+
+            # Export lookahead data
+            data["lookahead_tiles"] = lookahead_tiles
+            data["lookahead_tile_info"] = lookahead_tile_info
+            data["head_distance_into_tile_cm"] = head_distance_into_tile
+
+            # NOTE: Do NOT overwrite path_tiles here!
+            # path_tiles is already set correctly to occupied_tiles (line 1361)
+            # for the path-based train renderer.
+            # lookahead data is separate and used by the train monitor.
 
         return data
 
@@ -1430,6 +1505,7 @@ class Train:
             train_id=data.get("id", ""),
             max_speed=data.get("max_speed", 100.0),
             current_speed=data.get("speed", 0.0),
+            num_cars=int(data.get("num_cars", 1)),
         )
 
         # Use new TrainPosition format only

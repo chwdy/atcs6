@@ -464,11 +464,37 @@ class RendererTrainHandler {
                 // Same tile - direct line
                 this.ctx.lineTo(headPos.x, headPos.y);
             } else if (occupiedTileCount === 2) {
-                // 2 tiles - go through boundary
-                const tailCenterX = this.gridToScreenX(tailTile[0], tailTile[1]);
-                const tailCenterY = this.gridToScreenY(tailTile[0], tailTile[1]);
-                const tailEntryOffset = this.getEdgeCenterOffset(tailEntryEdge);
-                this.ctx.lineTo(tailCenterX + tailEntryOffset.x, tailCenterY + tailEntryOffset.y);
+                // 2 tiles - go through boundary between tiles
+                // Get exit edge from tail tile using switch-aware getTrackExits
+                const tailTrack = tracks.find(t => t.x === tailTile[0] && t.y === tailTile[1]);
+                if (!tailTrack) {
+                    console.warn('[RendererTrainHandler] Track not found for tail tile', {
+                        tailTile, trainId: train.id
+                    });
+                    return;
+                }
+                const tailExits = this.getTrackExits(tailTrack, tailEntryEdge);
+                const tailExitEdge = tailExits.length > 0 ? tailExits[0] : null;
+
+                // Get entry edge for head tile (opposite of exit from previous tile)
+                const headEntryEdgeCalc = tailExitEdge ? this.getOppositeEdge(tailExitEdge) : headEntryEdge;
+                
+                // Draw from tail position to tail exit
+                if (tailExitEdge) {
+                    const tailCenterX = this.gridToScreenX(tailTile[0], tailTile[1]);
+                    const tailCenterY = this.gridToScreenY(tailTile[0], tailTile[1]);
+                    const tailExitOffset = this.getEdgeCenterOffset(tailExitEdge);
+                    this.ctx.lineTo(tailCenterX + tailExitOffset.x, tailCenterY + tailExitOffset.y);
+                }
+                
+                // Draw from head entry to head position
+                if (headEntryEdgeCalc && (headTile[0] !== tailTile[0] || headTile[1] !== tailTile[1])) {
+                    const headCenterX = this.gridToScreenX(headTile[0], headTile[1]);
+                    const headCenterY = this.gridToScreenY(headTile[0], headTile[1]);
+                    const headEntryOffset = this.getEdgeCenterOffset(headEntryEdgeCalc);
+                    this.ctx.lineTo(headCenterX + headEntryOffset.x, headCenterY + headEntryOffset.y);
+                }
+                
                 this.ctx.lineTo(headPos.x, headPos.y);
             } else {
                 // 3+ tiles - draw through all occupied tiles
@@ -477,8 +503,17 @@ class RendererTrainHandler {
                 
                 for (let i = tailIndex; i !== headIndex; i += step) {
                     const currentTile = pathTiles[i];
-                    const trackBits = getTrackBits(currentTile);
-                    const exitEdge = this.getExitEdge(trackBits, currentEntryEdge);
+                    const track = tracks.find(t => t.x === currentTile[0] && t.y === currentTile[1]);
+                    if (!track) {
+                        console.warn('[RendererTrainHandler] Track not found for intermediate tile', {
+                            tile: currentTile, trainId: train.id
+                        });
+                        continue;
+                    }
+
+                    // Use getTrackExits which handles switches properly
+                    const exits = this.getTrackExits(track, currentEntryEdge);
+                    const exitEdge = exits.length > 0 ? exits[0] : null;
                     
                     if (exitEdge) {
                         const centerX = this.gridToScreenX(currentTile[0], currentTile[1]);
@@ -513,11 +548,11 @@ class RendererTrainHandler {
         this.ctx.restore();
         
         // === Draw tail square ===
-        this.drawTailMarker(tailPos.x, tailPos.y, tailPos.rotation);
+        this.drawTailMarker(tailPos.x, tailPos.y, tailPos.rotation, train);
         
         // === Draw head triangle ===
         this.drawHeadMarker(headPos.x, headPos.y, headPos.rotation);
-        
+
         // === Draw label ===
         const headTrackBits = getTrackBits(headTile);
         this.drawTrainLabel(train, headPos.x, headPos.y, headTrackBits, train.direction, headTile[0], headTile[1], tracks);
@@ -525,20 +560,31 @@ class RendererTrainHandler {
 
     /**
      * Draw head marker (white triangle pointing in direction of movement).
+     * The triangle's flat (back) edge is aligned with the precise head position.
      */
     drawHeadMarker(x, y, rotation) {
         const s = this.scale;
-        const triSize = 8 * s;
+        const triHeight = 9 * s;  // 1.5x of original 6s
+        const triWidth = triHeight * 0.6;  // Width at base
+        
+        // Calculate offset to align flat back edge with (x, y)
+        // Move forward along the rotation direction by half the triangle height
+        const offsetX = Math.cos(rotation) * (triHeight / 2);
+        const offsetY = Math.sin(rotation) * (triHeight / 2);
+        
+        const drawX = x + offsetX;
+        const drawY = y + offsetY;
         
         this.ctx.save();
-        this.ctx.translate(x, y);
+        this.ctx.translate(drawX, drawY);
         this.ctx.rotate(rotation);
         
         this.ctx.fillStyle = '#ffffff';
         this.ctx.beginPath();
-        this.ctx.moveTo(triSize, 0);
-        this.ctx.lineTo(-triSize * 0.6, -triSize * 0.6);
-        this.ctx.lineTo(-triSize * 0.6, triSize * 0.6);
+        // Tip at front, flat back at -triHeight/2 (centered on x,y after offset)
+        this.ctx.moveTo(triHeight / 2, 0);  // Tip
+        this.ctx.lineTo(-triHeight / 2, -triWidth);  // Back left
+        this.ctx.lineTo(-triHeight / 2, triWidth);   // Back right
         this.ctx.closePath();
         this.ctx.fill();
         
@@ -550,14 +596,18 @@ class RendererTrainHandler {
     }
 
     /**
-     * Draw tail marker (white square with dark border).
+     * Draw tail marker (white square with dark border and num_cars display).
      * The square is offset backward along the track direction and rotated to align with the track.
+     * @param {number} x - Screen X position
+     * @param {number} y - Screen Y position
+     * @param {number} rotation - Rotation angle in radians
+     * @param {Object} train - Train object (to access num_cars)
      */
-    drawTailMarker(x, y, rotation = 0) {
+    drawTailMarker(x, y, rotation = 0, train = null) {
         const s = this.scale;
-        const squareSize = 5 * s;
+        const squareSize = 10 * s;  // 1.5x bigger again (was 7.5s, now 11.25s)
 
-        // Calculate offset position - move backward along the path direction
+        //Calculate offset position - move backward along the path direction
         // rotation gives us the direction of the path, we offset in the opposite direction
         const offsetDistance = squareSize / 2;
         const offsetX = -Math.cos(rotation) * offsetDistance;
@@ -570,30 +620,72 @@ class RendererTrainHandler {
         this.ctx.translate(drawX, drawY);
         this.ctx.rotate(rotation);  // Rotate square to align with track direction
 
+        // Draw white background square
         this.ctx.fillStyle = '#ffffff';
         this.ctx.fillRect(-squareSize / 2, -squareSize / 2, squareSize, squareSize);
 
+        // Draw dark border
         this.ctx.strokeStyle = '#333';
         this.ctx.lineWidth = 1 * s;
         this.ctx.strokeRect(-squareSize / 2, -squareSize / 2, squareSize, squareSize);
+
+        // Draw num_cars text in center (counter-rotate by 45° for isometric view)
+        if (train && train.num_cars) {
+            this.ctx.save();
+            this.ctx.rotate(-Math.PI / 4);  // Counter-rotate 45° for isometric view
+            this.ctx.fillStyle = '#333';
+            this.ctx.font = `bold ${6 * s}px sans-serif`;
+            this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'middle';
+            this.ctx.fillText(train.num_cars.toString(), 0, 0);
+            this.ctx.restore();
+        }
 
         this.ctx.restore();
     }
 
     /**
      * Draw train label (purple box with train ID).
+     * Label is placed perpendicular to the train's heading direction.
      */
     drawTrainLabel(train, cx, cy, trackBits, direction, tileX, tileY, tracks) {
         const s = this.scale;
         const tileSize = this.gridSize * s;
         
-        // Use smart positioning with tile coordinates and tracks array if available
-        const quadrant = getBestLabelQuadrant(trackBits, direction || 'EAST', tileX, tileY, tracks);
-        // Use dynamic spacing based on user preference
-        const offset = getQuadrantOffsets()[quadrant];
+        // Measure text first to calculate text-dependent offset
+        const labelText = train.id;
+        this.ctx.save();
+        this.ctx.font = `bold ${9 * s}px sans-serif`;
+        const textMetrics = this.ctx.measureText(labelText);
+        const textWidth = textMetrics.width;
+        const textHeight = 9 * s;
+        const padding = 4 * s;
+        const boxWidth = textWidth + padding * 2;
+        const boxHeight = textHeight + padding * 1.5;
+        this.ctx.restore();
         
-        const labelX = cx + offset.dx * tileSize;
-        const labelY = cy + offset.dy * tileSize;
+        // Calculate offset perpendicular to train heading
+        // If train is facing E/W, offset N/S; if facing N/S, offset E/W
+        const dir = direction || 'EAST';
+        let offsetX, offsetY;
+        
+        if (dir === 'EAST' || dir === 'WEST') {
+            // Train facing horizontally, offset vertically (to the south in isometric view)
+            offsetX = -0.5;  // South direction in isometric
+            offsetY = 0.5;
+        } else {
+            // Train facing vertically (N/S), offset horizontally (to the east in isometric view)
+            offsetX = 0.5;   // East direction in isometric
+            offsetY = 0.5;
+        }
+
+        const spacingMultiplier = getLabelSpacingMultiplier();
+        
+        // Add text-dependent offset (sqrt(2) * textWidth for isometric space)
+        const textDependentOffset = Math.SQRT2 * boxWidth;
+        
+        const labelX = cx + offsetX * tileSize * spacingMultiplier + offsetX * textDependentOffset;
+        const labelY = cy + offsetY * tileSize * spacingMultiplier + offsetY * textDependentOffset;
         
         // Draw leader line
         this.ctx.save();
@@ -606,15 +698,8 @@ class RendererTrainHandler {
         this.ctx.restore();
         
         // Draw label box
-        const labelText = train.id;
         this.ctx.save();
         this.ctx.font = `bold ${9 * s}px sans-serif`;
-        const textMetrics = this.ctx.measureText(labelText);
-        const textWidth = textMetrics.width;
-        const textHeight = 9 * s;
-        const padding = 4 * s;
-        const boxWidth = textWidth + padding * 2;
-        const boxHeight = textHeight + padding * 1.5;
         
         this.ctx.fillStyle = 'rgba(130, 87, 229, 0.9)';
         const cornerRadius = 3 * s;

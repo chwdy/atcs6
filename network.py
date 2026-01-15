@@ -2251,12 +2251,29 @@ class RailwayNetwork:
                         self.block_manager.occupy_block(block_id, train.train_id)
 
             # Update TrainPosition
-            pos.end_a_tile = head_tile
-            pos.end_a_distance_cm = head_distance_cm
-            pos.end_a_entry_edge = head_entry_edge
-            pos.end_b_tile = tail_tile
-            pos.end_b_distance_cm = tail_distance_cm
-            pos.end_b_entry_edge = tail_entry_edge
+            # Assign head/tail to end_a/end_b based on leading_end
+            if pos.leading_end == "a":
+                # Head is end_a, tail is end_b
+                pos.end_a_tile = head_tile
+                pos.end_a_distance_cm = head_distance_cm
+                pos.end_a_entry_edge = head_entry_edge
+                pos.end_b_tile = tail_tile
+                pos.end_b_distance_cm = tail_distance_cm
+                pos.end_b_entry_edge = tail_entry_edge
+                # _calculate_occupied_tiles returns tiles in tail→head order = end_b→end_a
+                # We need end_a→end_b (head→tail), so reverse
+                occupied_tiles = list(reversed(occupied_tiles))
+            else:
+                # Head is end_b, tail is end_a
+                pos.end_b_tile = head_tile
+                pos.end_b_distance_cm = head_distance_cm
+                pos.end_b_entry_edge = head_entry_edge
+                pos.end_a_tile = tail_tile
+                pos.end_a_distance_cm = tail_distance_cm
+                pos.end_a_entry_edge = tail_entry_edge
+                # _calculate_occupied_tiles returns tiles in tail→head order = end_a→end_b
+                # This is already the order we want, no reversal needed
+                pass
             pos.occupied_tiles = occupied_tiles
             pos.occupied_blocks = occupied_blocks
 
