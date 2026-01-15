@@ -5627,14 +5627,15 @@ class TestTrainOccupiedTilesRich:
         rich = network.get_occupied_tiles_rich(train)
 
         assert len(rich) == 2
-        # First tile (tail tile)
-        assert rich[0]["tile"] == (0, 0)
-        assert rich[0]["segment_start_cm"] == 20.0  # Tail at 20cm
-        assert rich[0]["segment_end_cm"] == 50.0  # Full tile exit
-        # Second tile (head tile)
-        assert rich[1]["tile"] == (1, 0)
-        assert rich[1]["segment_start_cm"] == 0.0  # From entry
-        assert rich[1]["segment_end_cm"] == 50.0  # Head at exit
+        # With leading_end="a", occupied_tiles is ordered head-to-tail (end_a to end_b)
+        # First tile (head tile at x=1)
+        assert rich[0]["tile"] == (1, 0)
+        assert rich[0]["segment_start_cm"] == 0.0  # From entry
+        assert rich[0]["segment_end_cm"] == 50.0  # Head at exit
+        # Second tile (tail tile at x=0)
+        assert rich[1]["tile"] == (0, 0)
+        assert rich[1]["segment_start_cm"] == 20.0  # Tail at 20cm
+        assert rich[1]["segment_end_cm"] == 50.0  # Full tile exit
 
 
 class TestTrainReverse:
@@ -7981,3 +7982,160 @@ class TestSimulationPathIntegration:
         assert train.end_a_distance_cm == tile_length_cm, (
             f"Train distance should be capped at tile end ({tile_length_cm} cm), got {train.end_a_distance_cm}"
         )
+
+
+# ============= TRAIN MOVER POSITION SYNC TESTS =============
+
+
+class TestTrainMoverPositionSync:
+    """
+    Tests for TrainMover keeping path systems in sync.
+
+    These tests verify that:
+    1. TrainMover correctly updates end_a_distance_cm during movement
+    2. end_a_index advances when crossing tile boundaries
+    3. Tail position follows head correctly based on train length
+    """
+
+    @pytest.fixture(autouse=True)
+    def reset_model_scale(self):
+        """Reset model scale to default N scale (1:160) before and after each test."""
+        from train_config import set_model_scale
+
+        set_model_scale(160.0)  # Reset to default
+        yield
+        set_model_scale(160.0)  # Reset after test
+
+    @pytest.fixture
+    def three_tile_network(self):
+        """Create a simple 3-tile EW track network."""
+        network = RailwayNetwork()
+        for x in range(3):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+        network.create_block_with_tracks(
+            "B1", [(0, 0), (1, 0), (2, 0)], name="Block 1", length_cm=150.0
+        )
+        return network
+
+    def test_path_system_updates_on_movement(self, three_tile_network):
+        """Verify end_a_distance_cm updates during simulation."""
+        from train_movement import TrainMover
+
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.end_a_index = 0
+        train.end_a_distance_cm = 25.0
+        train.end_a_entry_edge = "W"
+        train.end_b_index = 0
+        train.end_b_distance_cm = 0.0
+        train.end_b_entry_edge = "W"
+        train.leading_end = "a"
+        train.current_speed = 360.0  # Fast for testing
+
+        mover = TrainMover(three_tile_network)
+        initial_distance = train.end_a_distance_cm
+
+        mover.update_train_path_position(train, 0.1)
+
+        # Distance should increase
+        assert train.end_a_distance_cm > initial_distance
+
+    def test_path_index_advances_on_tile_crossing(self, three_tile_network):
+        """Verify end_a_index advances when crossing tile boundary."""
+        from train_movement import TrainMover
+
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.end_a_index = 0
+        train.end_a_distance_cm = 49.0  # Near end of first tile (50cm)
+        train.end_a_entry_edge = "W"
+        train.end_b_index = 0
+        train.end_b_distance_cm = 0.0
+        train.end_b_entry_edge = "W"
+        train.leading_end = "a"
+        train.current_speed = 360.0  # Fast enough to cross
+
+        mover = TrainMover(three_tile_network)
+
+        # Move enough to cross tile boundary
+        mover.update_train_path_position(train, 0.1)
+
+        # Should have advanced to next tile
+        assert train.end_a_index == 1
+        assert train.end_a_entry_edge == "W"  # Entering from west
+
+
+# ============= PATH TILE INFO TESTS =============
+
+
+class TestPathTileInfo:
+    """
+    Tests for path_tile_info generation in Train.to_dict().
+
+    These tests verify that path_tile_info:
+    1. Includes block_id for each tile
+    2. Includes block_state for lookahead display
+    3. Is correctly ordered from path start to end
+    """
+
+    @pytest.fixture
+    def three_tile_network_with_block(self):
+        """Create a 3-tile EW track network with a block."""
+        network = RailwayNetwork()
+        for x in range(3):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+        network.create_block_with_tracks(
+            "B1", [(0, 0), (1, 0), (2, 0)], name="Block 1", length_cm=150.0
+        )
+        return network
+
+    def test_path_tile_info_includes_block_id(self, three_tile_network_with_block):
+        """path_tile_info should include block_id for each tile."""
+        network = three_tile_network_with_block
+
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.end_a_index = 0
+        train.end_a_distance_cm = 25.0
+        train.end_a_entry_edge = "W"
+        train.end_b_index = 0
+        train.end_b_distance_cm = 0.0
+        train.end_b_entry_edge = "W"
+        train.leading_end = "a"
+        train.current_pos = (0, 0)
+
+        data = train.to_dict(network)
+
+        assert "path_tile_info" in data
+        assert len(data["path_tile_info"]) == 3
+
+        # All tiles should have block_id B1
+        for tile_info in data["path_tile_info"]:
+            assert tile_info["block_id"] == "B1"
+
+    def test_path_tile_info_includes_block_state(self, three_tile_network_with_block):
+        """path_tile_info should include block_state for lookahead display."""
+        network = three_tile_network_with_block
+
+        # Set block to occupied
+        block = network.blocks.get("B1")
+        block.state = BlockState.OCCUPIED
+
+        train = Train(train_id="T1")
+        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.end_a_index = 0
+        train.end_a_distance_cm = 25.0
+        train.end_a_entry_edge = "W"
+        train.end_b_index = 0
+        train.end_b_distance_cm = 0.0
+        train.end_b_entry_edge = "W"
+        train.leading_end = "a"
+        train.current_pos = (0, 0)
+
+        data = train.to_dict(network)
+
+        assert "path_tile_info" in data
+        # First tile should have block_state
+        assert data["path_tile_info"][0].get("block_state") == "occupied"

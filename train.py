@@ -1342,7 +1342,28 @@ class Train:
 
             # If new TrainPosition exists, merge its data (for drawTrainFromPath)
             if self.position:
-                data["position"].update(self.position.to_dict())
+                pos_dict = self.position.to_dict()
+                # Override end_a/end_b values with current Train values
+                # (simulation updates train.end_a_* fields, not train.position.end_a_*)
+                pos_dict["end_a"]["distance_cm"] = self.end_a_distance_cm
+                pos_dict["end_b"]["distance_cm"] = self.end_b_distance_cm
+                pos_dict["end_a"]["entry_edge"] = self.end_a_entry_edge
+                pos_dict["end_b"]["entry_edge"] = self.end_b_entry_edge
+                # Also override tile positions from path_tiles using indices
+                if (
+                    self.path_tiles
+                    and self.end_a_index is not None
+                    and self.end_b_index is not None
+                ):
+                    if 0 <= self.end_a_index < len(self.path_tiles):
+                        pos_dict["end_a"]["tile"] = list(
+                            self.path_tiles[self.end_a_index]
+                        )
+                    if 0 <= self.end_b_index < len(self.path_tiles):
+                        pos_dict["end_b"]["tile"] = list(
+                            self.path_tiles[self.end_b_index]
+                        )
+                data["position"].update(pos_dict)
 
             # Also include rich tile data if network available
             if network and hasattr(network, "get_occupied_tiles_rich"):
@@ -1379,6 +1400,11 @@ class Train:
                     "length_cm": network._get_tile_length_cm(x, y) if track else 50.0,
                     "block_id": track.block_section_id if track else None,
                 }
+                # Add block state if block exists
+                if track and track.block_section_id:
+                    block = network.blocks.get(track.block_section_id)
+                    if block:
+                        tile_info["block_state"] = block.state.value
                 # Add signal info if present
                 if track and track.signal_ids:
                     tile_info["signals"] = []

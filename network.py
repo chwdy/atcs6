@@ -1904,6 +1904,10 @@ class RailwayNetwork:
                     seen_blocks.add(block_id)
 
         # Create TrainPosition
+        # Note: _calculate_occupied_tiles returns tiles in tail-to-head order,
+        # but TrainPosition expects end_a to end_b order. Since end_a=head,
+        # we need to reverse the list to get head-to-tail (end_a to end_b) order.
+        occupied_tiles_end_a_to_b = list(reversed(occupied_tiles))
         train.position = TrainPosition(
             end_a_tile=head_tile,
             end_a_distance_cm=head_distance_cm,
@@ -1913,7 +1917,7 @@ class RailwayNetwork:
             end_b_entry_edge=tail_entry_edge,
             leading_end="a",  # end_a is head
             facing_direction=direction,
-            occupied_tiles=occupied_tiles,
+            occupied_tiles=occupied_tiles_end_a_to_b,
             occupied_blocks=occupied_blocks,
         )
 
@@ -1923,6 +1927,19 @@ class RailwayNetwork:
         train._distance_on_track = head_distance_cm
         train.occupied_tracks = occupied_tiles.copy()
         train.facing_direction = direction
+
+        # Initialize path_tiles for new rendering system
+        # path_tiles is ordered from end_a to end_b (head to tail when leading_end="a")
+        train.path_tiles = occupied_tiles_end_a_to_b
+        train.end_a_index = 0  # end_a (head) is at start of path_tiles
+        train.end_a_distance_cm = head_distance_cm
+        train.end_a_entry_edge = head_entry_edge
+        train.end_b_index = (
+            len(occupied_tiles) - 1
+        )  # end_b (tail) is at end of path_tiles
+        train.end_b_distance_cm = tail_distance_cm
+        train.end_b_entry_edge = tail_entry_edge
+        train.leading_end = "a"  # end_a is the head
 
         # Occupy all blocks the train covers
         if self.block_manager and occupied_blocks:
@@ -2270,7 +2287,7 @@ class RailwayNetwork:
             train: Train to get occupied tiles for
 
         Returns:
-            List of dicts (ordered tail to head), each containing:
+            List of dicts (ordered from end_a to end_b), each containing:
             - tile: (x, y) coordinates
             - block_id: Block ID if tile is in a block, else None
             - segment_start_cm: Distance from entry edge where train starts on this tile
@@ -2289,21 +2306,51 @@ class RailwayNetwork:
         result = []
         num_tiles = len(occupied_tiles)
 
+        # occupied_tiles is ordered from end_a to end_b
+        # When leading_end="a": end_a=head, end_b=tail, so order is head-to-tail
+        # When leading_end="b": end_a=tail, end_b=head, so order is tail-to-head
+        is_head_first = pos.leading_end == "a"
+
         for i, tile in enumerate(occupied_tiles):
             tile_track = self.get_track(*tile)
             tile_length = self._get_tile_length_cm(*tile)
 
             block_id = tile_track.block_section_id if tile_track else None
 
-            # Determine segment boundaries
-            if i == 0:
-                # First tile (tail tile)
-                segment_start = pos.tail_distance_cm
-                segment_end = tile_length
-            elif i == num_tiles - 1:
-                # Last tile (head tile)
-                segment_start = 0.0
-                segment_end = pos.head_distance_cm
+            # Determine segment boundaries based on position in list
+            is_first = i == 0
+            is_last = i == num_tiles - 1
+
+            if is_first and is_last:
+                # Single tile - both ends on same tile
+                if is_head_first:
+                    # end_a (head) is at index 0, end_b (tail) also at index 0
+                    segment_start = pos.tail_distance_cm
+                    segment_end = pos.head_distance_cm
+                else:
+                    # end_a (tail) is at index 0, end_b (head) also at index 0
+                    segment_start = pos.tail_distance_cm
+                    segment_end = pos.head_distance_cm
+            elif is_first:
+                # First tile in list (end_a's tile)
+                if is_head_first:
+                    # end_a is head - this is head tile
+                    segment_start = 0.0
+                    segment_end = pos.head_distance_cm
+                else:
+                    # end_a is tail - this is tail tile
+                    segment_start = pos.tail_distance_cm
+                    segment_end = tile_length
+            elif is_last:
+                # Last tile in list (end_b's tile)
+                if is_head_first:
+                    # end_b is tail - this is tail tile
+                    segment_start = pos.tail_distance_cm
+                    segment_end = tile_length
+                else:
+                    # end_b is head - this is head tile
+                    segment_start = 0.0
+                    segment_end = pos.head_distance_cm
             else:
                 # Middle tile - train occupies entire tile
                 segment_start = 0.0

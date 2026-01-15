@@ -89,14 +89,19 @@ class TrainMonitor {
 
     dumpLookaheadData() {
         if (this.lookaheadData) {
-            console.log('=== LOOKAHEAD DATA ===');
-            console.log(JSON.stringify(this.lookaheadData, null, 2));
-            if (this.lookaheadData.blocks) console.table(this.lookaheadData.blocks);
-            if (this.lookaheadData.signals) console.table(this.lookaheadData.signals);
-            if (this.lookaheadData.switches) console.table(this.lookaheadData.switches);
-            if (this.lookaheadData.stations) console.table(this.lookaheadData.stations);
+            if (window.app && window.app.editor) {
+                window.app.editor.showFullJSONViewer(this.lookaheadData, 'Train Lookahead Data');
+            } else {
+                console.log('=== LOOKAHEAD DATA ===');
+                console.log(JSON.stringify(this.lookaheadData, null, 2));
+                if (this.lookaheadData.blocks) console.table(this.lookaheadData.blocks);
+                if (this.lookaheadData.signals) console.table(this.lookaheadData.signals);
+                if (this.lookaheadData.switches) console.table(this.lookaheadData.switches);
+                if (this.lookaheadData.stations) console.table(this.lookaheadData.stations);
+            }
         } else {
             console.log('No lookahead data available');
+            if (window.showToast) window.showToast('No lookahead data available', 'info');
         }
     }
 
@@ -143,7 +148,19 @@ class TrainMonitor {
     
     update(train) {
         // Check for path-based data
-        if (!train || !train.path_tile_info) {
+        if (!train) {
+            console.warn('[TrainMonitor] No train data');
+            this.lookaheadData = null;
+            this.render();
+            return;
+        }
+        
+        if (!train.path_tile_info) {
+            console.warn('[TrainMonitor] Missing path_tile_info', {
+                trainId: train.id,
+                hasPathTiles: !!train.path_tiles,
+                pathTilesLength: train.path_tiles?.length
+            });
             this.lookaheadData = null;
             this.render();
             return;

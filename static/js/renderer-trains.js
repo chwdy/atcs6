@@ -412,8 +412,21 @@ class RendererTrainHandler {
         const headEntryEdge = train.leading_end === 'a' ? train.end_a_entry_edge : train.end_b_entry_edge;
         const tailEntryEdge = train.leading_end === 'a' ? train.end_b_entry_edge : train.end_a_entry_edge;
         
-        if (headIndex >= pathTiles.length || tailIndex >= pathTiles.length) return;
-        if (headIndex === undefined || tailIndex === undefined) return;
+        // Validate indices - enhanced bounds checking
+        if (headIndex === undefined || headIndex === null || 
+            tailIndex === undefined || tailIndex === null) {
+            console.warn('[RendererTrainHandler] Missing head/tail indices', {
+                headIndex, tailIndex, trainId: train.id
+            });
+            return;
+        }
+        
+        if (headIndex >= pathTiles.length || tailIndex >= pathTiles.length) {
+            console.warn('[RendererTrainHandler] Index out of bounds', {
+                headIndex, tailIndex, pathLength: pathTiles.length, trainId: train.id
+            });
+            return;
+        }
         
         // Get track bits lookup
         const tracks = this.currentNetwork?.tracks || [];
@@ -424,131 +437,90 @@ class RendererTrainHandler {
         
         const headTile = pathTiles[headIndex];
         const tailTile = pathTiles[tailIndex];
-        const headInfo = pathInfo[headIndex];
-        const tailInfo = pathInfo[tailIndex];
-        
-        // Warn if using fallback values (helps debug missing path_tile_info)
-        if (!headInfo) {
-            console.warn(`[RendererTrainHandler] Missing path_tile_info for head tile index ${headIndex}, using fallback`);
-        }
-        if (!tailInfo) {
-            console.warn(`[RendererTrainHandler] Missing path_tile_info for tail tile index ${tailIndex}, using fallback`);
-        }
-        
-        const headInfoWithFallback = headInfo || { length_cm: 50 };
-        const tailInfoWithFallback = tailInfo || { length_cm: 50 };
+        const headInfo = pathInfo[headIndex] || { length_cm: 50 };
+        const tailInfo = pathInfo[tailIndex] || { length_cm: 50 };
         
         // Calculate head and tail screen positions
         const headPos = this.getTilePathPosition(
             headTile, headEntryEdge, headDistanceCm, 
-            headInfoWithFallback.length_cm, getTrackBits(headTile)
+            headInfo.length_cm, getTrackBits(headTile)
         );
         
         const tailPos = this.getTilePathPosition(
             tailTile, tailEntryEdge, tailDistanceCm,
-            tailInfoWithFallback.length_cm, getTrackBits(tailTile)
+            tailInfo.length_cm, getTrackBits(tailTile)
         );
         
-        // Draw path line from tail to head
-        this.drawTrainPathLine(train, pathTiles, pathInfo, tailIndex, headIndex, 
-                               tailPos, headPos, getTrackBits);
-        
-        // Draw tail square
-        this.drawTailMarker(tailPos.x, tailPos.y);
-        
-        // Draw head triangle
-        this.drawHeadMarker(headPos.x, headPos.y, headPos.rotation);
-        
-        // Draw label
-        const headTrackBits = getTrackBits(headTile);
-        this.drawTrainLabel(train, headPos.x, headPos.y, headTrackBits, train.direction);
-    }
-
-    /**
-     * Draw the path line connecting tail to head through all occupied tiles.
-     */
-    drawTrainPathLine(train, pathTiles, pathInfo, tailIdx, headIdx, tailPos, headPos, getTrackBits) {
         const s = this.scale;
+        const occupiedTileCount = Math.abs(headIndex - tailIndex) + 1;
         
+        // === Draw train body (white stroke with dark border from tail to head) ===
+        // Build the path once, then stroke it twice (dark border first, white fill second)
+        const buildBodyPath = () => {
+            this.ctx.beginPath();
+            this.ctx.moveTo(tailPos.x, tailPos.y);
+            
+            if (occupiedTileCount === 1) {
+                // Same tile - direct line
+                this.ctx.lineTo(headPos.x, headPos.y);
+            } else if (occupiedTileCount === 2) {
+                // 2 tiles - go through boundary
+                const tailCenterX = this.gridToScreenX(tailTile[0], tailTile[1]);
+                const tailCenterY = this.gridToScreenY(tailTile[0], tailTile[1]);
+                const tailEntryOffset = this.getEdgeCenterOffset(tailEntryEdge);
+                this.ctx.lineTo(tailCenterX + tailEntryOffset.x, tailCenterY + tailEntryOffset.y);
+                this.ctx.lineTo(headPos.x, headPos.y);
+            } else {
+                // 3+ tiles - draw through all occupied tiles
+                const step = tailIndex <= headIndex ? 1 : -1;
+                let currentEntryEdge = tailEntryEdge;
+                
+                for (let i = tailIndex; i !== headIndex; i += step) {
+                    const currentTile = pathTiles[i];
+                    const trackBits = getTrackBits(currentTile);
+                    const exitEdge = this.getExitEdge(trackBits, currentEntryEdge);
+                    
+                    if (exitEdge) {
+                        const centerX = this.gridToScreenX(currentTile[0], currentTile[1]);
+                        const centerY = this.gridToScreenY(currentTile[0], currentTile[1]);
+                        const exitOffset = this.getEdgeCenterOffset(exitEdge);
+                        this.ctx.lineTo(centerX + exitOffset.x, centerY + exitOffset.y);
+                        currentEntryEdge = this.getOppositeEdge(exitEdge);
+                    }
+                }
+                this.ctx.lineTo(headPos.x, headPos.y);
+            }
+        };
+        
+        // Draw dark border (thicker stroke underneath)
+        this.ctx.save();
+        this.ctx.strokeStyle = '#333';
+        this.ctx.lineWidth = 5 * s;
+        this.ctx.lineCap = 'round';
+        this.ctx.lineJoin = 'round';
+        buildBodyPath();
+        this.ctx.stroke();
+        this.ctx.restore();
+        
+        // Draw white fill on top
         this.ctx.save();
         this.ctx.strokeStyle = '#ffffff';
         this.ctx.lineWidth = 3 * s;
         this.ctx.lineCap = 'round';
         this.ctx.lineJoin = 'round';
-        
-        this.ctx.beginPath();
-        this.ctx.moveTo(tailPos.x, tailPos.y);
-        
-        // Determine iteration direction (tail to head)
-        const step = tailIdx <= headIdx ? 1 : -1;
-        
-        // Draw through intermediate tiles
-        for (let i = tailIdx; i !== headIdx; i += step) {
-            const nextIdx = i + step;
-            if (nextIdx < 0 || nextIdx >= pathTiles.length) break;
-            
-            const currentTile = pathTiles[i];
-            const trackBits = getTrackBits(currentTile);
-            
-            // Get entry edge for current tile
-            let entryEdge;
-            if (i === tailIdx) {
-                // For tail tile, use tail entry edge
-                entryEdge = train.leading_end === 'a' ? train.end_b_entry_edge : train.end_a_entry_edge;
-            } else {
-                // For intermediate tiles, entry edge is opposite of previous tile's exit
-                const prevTile = pathTiles[i - step];
-                const prevTrackBits = getTrackBits(prevTile);
-                const prevEntryEdge = this.getEntryEdgeForTile(train, pathTiles, pathInfo, i - step, getTrackBits);
-                const prevExitEdge = this.getExitEdge(prevTrackBits, prevEntryEdge);
-                entryEdge = this.getOppositeEdge(prevExitEdge);
-            }
-            
-            // Draw to exit point of current tile
-            const exitEdge = this.getExitEdge(trackBits, entryEdge);
-            if (exitEdge) {
-                const exitOffset = this.getEdgeCenterOffset(exitEdge);
-                const centerX = this.gridToScreenX(currentTile[0], currentTile[1]);
-                const centerY = this.gridToScreenY(currentTile[0], currentTile[1]);
-                this.ctx.lineTo(centerX + exitOffset.x, centerY + exitOffset.y);
-            }
-        }
-        
-        // Draw to head position
-        this.ctx.lineTo(headPos.x, headPos.y);
-        
+        buildBodyPath();
         this.ctx.stroke();
         this.ctx.restore();
-    }
-
-    /**
-     * Get entry edge for a tile at given index in the path.
-     */
-    getEntryEdgeForTile(train, pathTiles, pathInfo, tileIdx, getTrackBits) {
-        const tailIdx = train.leading_end === 'a' ? train.end_b_index : train.end_a_index;
-        const headIdx = train.leading_end === 'a' ? train.end_a_index : train.end_b_index;
-        const step = tailIdx <= headIdx ? 1 : -1;
         
-        if (tileIdx === tailIdx) {
-            return train.leading_end === 'a' ? train.end_b_entry_edge : train.end_a_entry_edge;
-        }
-        if (tileIdx === headIdx) {
-            return train.leading_end === 'a' ? train.end_a_entry_edge : train.end_b_entry_edge;
-        }
+        // === Draw tail square ===
+        this.drawTailMarker(tailPos.x, tailPos.y, tailPos.rotation);
         
-        // For intermediate tiles, trace from tail
-        let currentEntry = train.leading_end === 'a' ? train.end_b_entry_edge : train.end_a_entry_edge;
-        for (let i = tailIdx; i !== tileIdx; i += step) {
-            const tile = pathTiles[i];
-            const trackBits = getTrackBits(tile);
-            const exitEdge = this.getExitEdge(trackBits, currentEntry);
-            if (!exitEdge) {
-                console.warn(`[RendererTrainHandler] No exit edge for tile ${tile}, entry ${currentEntry}`);
-                return currentEntry;  // Return last known entry edge
-            }
-            currentEntry = this.getOppositeEdge(exitEdge);
-        }
-        return currentEntry;
+        // === Draw head triangle ===
+        this.drawHeadMarker(headPos.x, headPos.y, headPos.rotation);
+        
+        // === Draw label ===
+        const headTrackBits = getTrackBits(headTile);
+        this.drawTrainLabel(train, headPos.x, headPos.y, headTrackBits, train.direction, headTile[0], headTile[1], tracks);
     }
 
     /**
@@ -578,34 +550,47 @@ class RendererTrainHandler {
     }
 
     /**
-     * Draw tail marker (white square).
+     * Draw tail marker (white square with dark border).
+     * The square is offset backward along the track direction and rotated to align with the track.
      */
-    drawTailMarker(x, y) {
+    drawTailMarker(x, y, rotation = 0) {
         const s = this.scale;
         const squareSize = 5 * s;
-        
+
+        // Calculate offset position - move backward along the path direction
+        // rotation gives us the direction of the path, we offset in the opposite direction
+        const offsetDistance = squareSize / 2;
+        const offsetX = -Math.cos(rotation) * offsetDistance;
+        const offsetY = -Math.sin(rotation) * offsetDistance;
+
+        const drawX = x + offsetX;
+        const drawY = y + offsetY;
+
         this.ctx.save();
-        this.ctx.translate(x, y);
-        
+        this.ctx.translate(drawX, drawY);
+        this.ctx.rotate(rotation);  // Rotate square to align with track direction
+
         this.ctx.fillStyle = '#ffffff';
         this.ctx.fillRect(-squareSize / 2, -squareSize / 2, squareSize, squareSize);
-        
+
         this.ctx.strokeStyle = '#333';
         this.ctx.lineWidth = 1 * s;
         this.ctx.strokeRect(-squareSize / 2, -squareSize / 2, squareSize, squareSize);
-        
+
         this.ctx.restore();
     }
 
     /**
      * Draw train label (purple box with train ID).
      */
-    drawTrainLabel(train, cx, cy, trackBits, direction) {
+    drawTrainLabel(train, cx, cy, trackBits, direction, tileX, tileY, tracks) {
         const s = this.scale;
         const tileSize = this.gridSize * s;
         
-        const quadrant = getBestLabelQuadrant(trackBits, direction || 'EAST');
-        const offset = QUADRANT_OFFSETS[quadrant];
+        // Use smart positioning with tile coordinates and tracks array if available
+        const quadrant = getBestLabelQuadrant(trackBits, direction || 'EAST', tileX, tileY, tracks);
+        // Use dynamic spacing based on user preference
+        const offset = getQuadrantOffsets()[quadrant];
         
         const labelX = cx + offset.dx * tileSize;
         const labelY = cy + offset.dy * tileSize;
