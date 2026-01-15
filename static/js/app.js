@@ -707,8 +707,23 @@ class App {
                 if (this.trainMonitor.isVisible()) {
                     this.trainMonitor.update(train);
                 }
-                // Append lookahead to existing debug panel content
-                this.updateTrainDebugWithLookahead(train);
+                // Use trainMonitor's processed lookaheadData for debug panel
+                // This has the correctly named fields (current_speed_kmh, etc.)
+                const lookaheadData = this.trainMonitor.lookaheadData;
+                if (lookaheadData) {
+                    // Add max_speed from train data
+                    lookaheadData.max_speed_kmh = train.max_speed || 0;
+                    // Add distance_to_next_tile_cm calculation
+                    if (train.path_tile_info && train.path_tile_info.length > 0) {
+                        const headIndex = train.leading_end === 'a' ? train.end_a_index : train.end_b_index;
+                        const headDistanceCm = train.leading_end === 'a' ? train.end_a_distance_cm : train.end_b_distance_cm;
+                        const headTileInfo = train.path_tile_info[headIndex];
+                        if (headTileInfo) {
+                            lookaheadData.distance_to_next_tile_cm = (headTileInfo.length_cm || 50) - (headDistanceCm || 0);
+                        }
+                    }
+                    this.updateTrainDebugWithLookahead(lookaheadData);
+                }
             }
         } catch (e) {
             console.error('[App] fetchTrainLookahead failed:', e);

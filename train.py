@@ -1364,6 +1364,39 @@ class Train:
                             self.path_tiles[self.end_b_index]
                         )
                 data["position"].update(pos_dict)
+            elif self.path_tiles and self.end_a_index is not None:
+                # Build end_a/end_b from top-level fields when TrainPosition doesn't exist
+                end_a_tile = (
+                    list(self.path_tiles[self.end_a_index])
+                    if 0 <= self.end_a_index < len(self.path_tiles)
+                    else [0, 0]
+                )
+                end_b_tile = (
+                    list(self.path_tiles[self.end_b_index])
+                    if self.end_b_index is not None
+                    and 0 <= self.end_b_index < len(self.path_tiles)
+                    else end_a_tile
+                )
+                data["position"].update(
+                    {
+                        "end_a": {
+                            "tile": end_a_tile,
+                            "distance_cm": self.end_a_distance_cm or 0.0,
+                            "entry_edge": self.end_a_entry_edge or "W",
+                        },
+                        "end_b": {
+                            "tile": end_b_tile,
+                            "distance_cm": self.end_b_distance_cm or 0.0,
+                            "entry_edge": self.end_b_entry_edge or "W",
+                        },
+                        "leading_end": self.leading_end or "a",
+                        "facing_direction": self.facing_direction.name
+                        if self.facing_direction
+                        else None,
+                        "occupied_tiles": [],
+                        "occupied_blocks": [],
+                    }
+                )
 
             # Also include rich tile data if network available
             if network and hasattr(network, "get_occupied_tiles_rich"):
