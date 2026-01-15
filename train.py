@@ -1307,15 +1307,6 @@ class Train:
                 {"x": x, "y": y, "dir": d.name if d else None}
                 for x, y, d in (self.current_path or [])
             ],
-            # === NEW PATH FIELDS ===
-            "path_tiles": self.path_tiles,
-            "end_a_index": self.end_a_index,
-            "end_a_distance_cm": self.end_a_distance_cm,
-            "end_a_entry_edge": self.end_a_entry_edge,
-            "end_b_index": self.end_b_index,
-            "end_b_distance_cm": self.end_b_distance_cm,
-            "end_b_entry_edge": self.end_b_entry_edge,
-            "leading_end": self.leading_end,
         }
 
         # Position data for rendering
@@ -1338,68 +1329,23 @@ class Train:
                 "y": self.current_pos[1],
                 "distance": distance_ratio,
                 "tile_length_cm": tile_length_cm,
-            }
-
-            # If new TrainPosition exists, merge its data (for drawTrainFromPath)
-            if self.position:
-                pos_dict = self.position.to_dict()
-                # IMPORTANT: Only override with top-level fields if path_tiles system is active
-                # Otherwise, use TrainPosition values directly (updated by recalculate_train_position)
-                if self.path_tiles:
-                    # Override end_a/end_b values with path_tiles-based position
-                    # (simulation updates train.end_a_* fields when using path_tiles)
-                    pos_dict["end_a"]["distance_cm"] = self.end_a_distance_cm
-                    pos_dict["end_b"]["distance_cm"] = self.end_b_distance_cm
-                    pos_dict["end_a"]["entry_edge"] = self.end_a_entry_edge
-                    pos_dict["end_b"]["entry_edge"] = self.end_b_entry_edge
-                    # Also override tile positions from path_tiles using indices
-                    if (
-                        self.end_a_index is not None
-                        and self.end_b_index is not None
-                    ):
-                        if 0 <= self.end_a_index < len(self.path_tiles):
-                            pos_dict["end_a"]["tile"] = list(
-                                self.path_tiles[self.end_a_index]
-                            )
-                        if 0 <= self.end_b_index < len(self.path_tiles):
-                            pos_dict["end_b"]["tile"] = list(
-                                self.path_tiles[self.end_b_index]
-                            )
-                # If no path_tiles, TrainPosition values are already correct (no override needed)
-                data["position"].update(pos_dict)
-            elif self.path_tiles and self.end_a_index is not None:
-                # Build end_a/end_b from top-level fields when TrainPosition doesn't exist
-                end_a_tile = (
-                    list(self.path_tiles[self.end_a_index])
-                    if 0 <= self.end_a_index < len(self.path_tiles)
-                    else [0, 0]
-                )
-                end_b_tile = (
-                    list(self.path_tiles[self.end_b_index])
-                    if self.end_b_index is not None
-                    and 0 <= self.end_b_index < len(self.path_tiles)
-                    else end_a_tile
-                )
-                data["position"].update(
-                    {
-                        "end_a": {
-                            "tile": end_a_tile,
-                            "distance_cm": self.end_a_distance_cm or 0.0,
-                            "entry_edge": self.end_a_entry_edge or "W",
-                        },
-                        "end_b": {
-                            "tile": end_b_tile,
-                            "distance_cm": self.end_b_distance_cm or 0.0,
-                            "entry_edge": self.end_b_entry_edge or "W",
-                        },
-                        "leading_end": self.leading_end or "a",
-                        "facing_direction": self.facing_direction.name
-                        if self.facing_direction
-                        else None,
-                        "occupied_tiles": [],
-                        "occupied_blocks": [],
-                    }
-                )
+            }            # NEW: Populate path_tiles from TrainPosition for path-based renderer
+            # This converts TrainPosition (which IS updated) into the format
+            # the path-based renderer expects
+            if self.position and self.position.occupied_tiles:
+                pos = self.position
+                # Sync TrainPosition -> path_tiles format for renderer
+                data["path_tiles"] = [list(t) for t in pos.occupied_tiles]
+                data["end_a_index"] = 0  # end_a is first in occupied_tiles
+                data["end_b_index"] = len(pos.occupied_tiles) - 1  # end_b is last
+                data["end_a_distance_cm"] = pos.end_a_distance_cm
+                data["end_b_distance_cm"] = pos.end_b_distance_cm
+                data["end_a_entry_edge"] = pos.end_a_entry_edge
+                data["end_b_entry_edge"] = pos.end_b_entry_edge
+                data["leading_end"] = pos.leading_end
+                
+                # Merge full TrainPosition data into position dict
+                data["position"].update(pos.to_dict())
 
             # Also include rich tile data if network available
             if network and hasattr(network, "get_occupied_tiles_rich"):
@@ -1425,10 +1371,10 @@ class Train:
                 )
             data["schedule"]["stops"] = stops
 
-        # Add path_tile_info if network available
-        if network and self.path_tiles:
+        # Add path_tile_info if network available (uses data['path_tiles'] from TrainPosition)
+        if network and data.get('path_tiles'):
             path_tile_info = []
-            for tile in self.path_tiles:
+            for tile in data['path_tiles']:
                 x, y = tile
                 track = network.get_track(x, y)
                 tile_info = {

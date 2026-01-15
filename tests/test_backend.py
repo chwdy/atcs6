@@ -7498,24 +7498,34 @@ class TestTrainPathSerialization:
     """Tests for train path serialization."""
 
     def test_to_dict_includes_path_fields(self, network):
-        """to_dict should include all path-related fields."""
+        """to_dict should populate path_tiles from TrainPosition for renderer."""
+        from train import TrainPosition
+        from enums import Direction
+        
         train = Train(train_id="T1")
-        train.path_tiles = [(0, 0), (1, 0)]
-        train.end_a_index = 1
-        train.end_a_distance_cm = 25.0
-        train.end_a_entry_edge = "W"
-        train.end_b_index = 0
-        train.end_b_distance_cm = 10.0
-        train.end_b_entry_edge = "W"
-        train.leading_end = "a"
+        # Create TrainPosition with occupied_tiles (source of truth)
+        train.position = TrainPosition(
+            end_a_tile=(1, 0),  # Head at tile (1, 0)
+            end_a_distance_cm=25.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),  # Tail at tile (0, 0)
+            end_b_distance_cm=10.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(1, 0), (0, 0)],  # end_a to end_b order
+        )
+        train._current_pos = (1, 0)  # For serialization check
 
         data = train.to_dict(network)
 
-        assert data["path_tiles"] == [(0, 0), (1, 0)]
-        assert data["end_a_index"] == 1
+        # Verify path_tiles is populated from TrainPosition.occupied_tiles
+        assert "path_tiles" in data
+        assert data["path_tiles"] == [[1, 0], [0, 0]]  # Converted to lists for JSON
+        assert data["end_a_index"] == 0  # end_a is first in occupied_tiles
+        assert data["end_b_index"] == 1  # end_b is second
         assert data["end_a_distance_cm"] == 25.0
         assert data["end_a_entry_edge"] == "W"
-        assert data["end_b_index"] == 0
         assert data["end_b_distance_cm"] == 10.0
         assert data["end_b_entry_edge"] == "W"
         assert data["leading_end"] == "a"
@@ -8093,18 +8103,25 @@ class TestPathTileInfo:
 
     def test_path_tile_info_includes_block_id(self, three_tile_network_with_block):
         """path_tile_info should include block_id for each tile."""
+        from train import TrainPosition
+        from enums import Direction
+        
         network = three_tile_network_with_block
 
         train = Train(train_id="T1")
-        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
-        train.end_a_index = 0
-        train.end_a_distance_cm = 25.0
-        train.end_a_entry_edge = "W"
-        train.end_b_index = 0
-        train.end_b_distance_cm = 0.0
-        train.end_b_entry_edge = "W"
-        train.leading_end = "a"
-        train.current_pos = (0, 0)
+        # Create TrainPosition with occupied_tiles (source of truth)
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=25.0,
+            end_a_entry_edge="W",
+            end_b_tile=(2, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(0, 0), (1, 0), (2, 0)],  # Will populate path_tiles
+        )
+        train._current_pos = (0, 0)  # For serialization
 
         data = train.to_dict(network)
 
@@ -8117,6 +8134,9 @@ class TestPathTileInfo:
 
     def test_path_tile_info_includes_block_state(self, three_tile_network_with_block):
         """path_tile_info should include block_state for lookahead display."""
+        from train import TrainPosition
+        from enums import Direction
+        
         network = three_tile_network_with_block
 
         # Set block to occupied
@@ -8124,15 +8144,19 @@ class TestPathTileInfo:
         block.state = BlockState.OCCUPIED
 
         train = Train(train_id="T1")
-        train.path_tiles = [(0, 0), (1, 0), (2, 0)]
-        train.end_a_index = 0
-        train.end_a_distance_cm = 25.0
-        train.end_a_entry_edge = "W"
-        train.end_b_index = 0
-        train.end_b_distance_cm = 0.0
-        train.end_b_entry_edge = "W"
-        train.leading_end = "a"
-        train.current_pos = (0, 0)
+        # Create TrainPosition with occupied_tiles (source of truth)
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=25.0,
+            end_a_entry_edge="W",
+            end_b_tile=(2, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(0, 0), (1, 0), (2, 0)],  # Will populate path_tiles
+        )
+        train._current_pos = (0, 0)  # For serialization
 
         data = train.to_dict(network)
 
