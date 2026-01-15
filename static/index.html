@@ -41,7 +41,7 @@
             </div>
         </header>
 
-        <main class="main-content">
+        <div class="app-body">
             <aside class="sidebar">
                 <div class="sidebar-tools-section" id="tools-panel">
                     <h3>Tools</h3>
@@ -189,6 +189,14 @@
                         <h3>Settings</h3>
                         <div class="settings-controls">
                             <div class="setting-row">
+                                <span class="setting-label-compact" style="width: auto; margin-right: 5px;">Labels</span>
+                                <select id="label-spacing-select" class="setting-select setting-input-compact" style="flex: 1;">
+                                    <option value="tight">Tight</option>
+                                    <option value="mid" selected>Mid</option>
+                                    <option value="cozy">Cozy</option>
+                                </select>
+                            </div>
+                            <div class="setting-row">
                                 <span id="scale-current-display" class="setting-label-compact" style="width: auto; margin-right: 5px;">Current: 1:1</span>
                                 <select id="scale-select" class="setting-select setting-input-compact" style="flex: 1;">
                                     <option value="1">1:1 (Full)</option>
@@ -208,131 +216,85 @@
                 </div>
             </aside>
 
-            <!-- Secondary sidebar for editors (block, signal details) - positioned to the right of main sidebar -->
-            <aside class="secondary-sidebar" id="secondary-sidebar">
-                <div class="secondary-sidebar-header">
-                    <h3 id="secondary-sidebar-title">Editor</h3>
-                    <button class="close-btn" id="close-secondary-sidebar" title="Close">×</button>
-                </div>
-                <div class="secondary-sidebar-content" id="secondary-sidebar-content">
-                    <!-- Dynamic content will be injected here -->
-                </div>
-            </aside>
+            <div class="content-area">
+                <div class="workspace">
+                    <!-- Secondary sidebar for editors (block, signal details) - positioned to the right of main sidebar -->
+                    <aside class="secondary-sidebar" id="secondary-sidebar">
+                        <div class="secondary-sidebar-header">
+                            <h3 id="secondary-sidebar-title">Editor</h3>
+                            <button class="close-btn" id="close-secondary-sidebar" title="Close">×</button>
+                        </div>
+                        <div class="secondary-sidebar-content" id="secondary-sidebar-content">
+                            <!-- Dynamic content will be injected here -->
+                        </div>
+                    </aside>
 
-            <div class="canvas-container">
-                <canvas id="rail-canvas"></canvas>
-                <div class="canvas-overlay">
-                    <div class="status-bar">
-                        <span id="status-coords">0, 0</span>
-                        <span id="status-zoom">100%</span>
-                        <span id="status-state">Ready</span>
+                    <div class="canvas-container">
+                        <canvas id="rail-canvas"></canvas>
+                        <div class="canvas-overlay">
+                            <div class="status-bar">
+                                <span id="status-coords">0, 0</span>
+                                <span id="status-zoom">100%</span>
+                                <span id="status-state">Ready</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Train Monitor Bar (bottom of screen, visible when train selected) -->
+                <div id="train-monitor-bar" class="train-monitor-bar hidden">
+                    <div class="train-monitor-header">
+                        <span class="train-monitor-title" id="train-monitor-title">Train Monitor</span>
+                        
+                        <div class="view-distance-controls">
+                            <button class="view-dist-btn" data-distance="100">1m</button>
+                            <button class="view-dist-btn" data-distance="500">5m</button>
+                            <button class="view-dist-btn" data-distance="1000">10m</button>
+                            <button class="view-dist-btn active" data-distance="0">All</button>
+                        </div>
+                        <button class="view-lookahead-btn" id="view-lookahead-btn" title="View raw lookahead data">📋</button>
+                        
+                        <button class="train-monitor-close" id="train-monitor-close" title="Close">×</button>
+                    </div>
+                    <div class="train-monitor-content">
+                        <div class="train-monitor-info" id="train-monitor-info">
+                            <div class="train-speed-display">
+                                <span class="speed-value" id="monitor-current-speed">0</span>
+                                <span class="speed-unit">km/h</span>
+                            </div>
+                            <div class="train-target-speed">
+                                <span class="label">Target:</span>
+                                <span class="value" id="monitor-target-speed">0</span>
+                                <span class="unit">km/h</span>
+                            </div>
+                            <div class="train-debug-info text-xs mt-2">
+                                <span class="debug-label">Debug:</span>
+                                <span class="debug-value" id="monitor-speed-cms">0</span>
+                                <span class="debug-unit">cm/s</span>
+                                <span class="debug-separator">|</span>
+                                <span class="debug-label">Clearance:</span>
+                                <span class="debug-value" id="monitor-clearance">0</span>
+                                <span class="debug-unit">m</span>
+                            </div>
+                            <div class="train-speed-limit-reason text-xs mt-2 hidden" id="monitor-speed-limit-reason"></div>
+                            <div class="train-wait-reason text-xs text-secondary mt-2 hidden" id="monitor-wait-reason"></div>
+                        </div>
+                        <canvas id="train-monitor-canvas" class="train-monitor-canvas"></canvas>
+                        <div class="train-monitor-upcoming" id="monitor-upcoming-container">
+                            <div class="upcoming-header">Upcoming</div>
+                            <div class="upcoming-list" id="monitor-upcoming"></div>
+                        </div>
+                        <!-- Expanded Debug Info Panel (appended dynamically) -->
+                        <div id="train-monitor-debug-container" class="train-monitor-debug-container hidden">
+                            <div class="debug-header">Debug Details</div>
+                            <div id="train-monitor-debug-content"></div>
+                        </div>
                     </div>
                 </div>
             </div>
-        </main>
-    </div>
-
-    <!-- Save Layout Modal -->
-    <div id="save-layout-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>Save Layout</h3>
-                <button class="close-btn" data-close-modal>&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label for="layout-name">Layout Name</label>
-                    <input type="text" id="layout-name" placeholder="Enter layout name..." />
-                </div>
-                <div class="form-group">
-                    <label for="layout-description">Description (optional)</label>
-                    <textarea id="layout-description" placeholder="Enter description..." rows="3"></textarea>
-                </div>
-                <div class="form-group">
-                    <label>Or overwrite existing layout:</label>
-                    <div id="save-layouts-list" class="layouts-list layouts-list-compact">
-                        <p class="loading-text">Loading...</p>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" data-close-modal>Cancel</button>
-                <button class="btn btn-primary" id="btn-confirm-save">Save</button>
-            </div>
         </div>
     </div>
 
-    <!-- Load Layout Modal -->
-    <div id="load-layout-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>Load Layout</h3>
-                <button class="close-btn" data-close-modal>&times;</button>
-            </div>
-            <div class="modal-body">
-                <div id="layouts-list" class="layouts-list">
-                    <p class="loading-text">Loading layouts...</p>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" data-close-modal>Cancel</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Toast Notification Container -->
-    <div id="toast-container" class="toast-container"></div>
-
-    <!-- Train Monitor Bar (bottom of screen, visible when train selected) -->
-    <div id="train-monitor-bar" class="train-monitor-bar hidden">
-        <div class="train-monitor-header">
-            <span class="train-monitor-title" id="train-monitor-title">Train Monitor</span>
-            
-            <div class="view-distance-controls">
-                <button class="view-dist-btn" data-distance="100">1m</button>
-                <button class="view-dist-btn" data-distance="500">5m</button>
-                <button class="view-dist-btn" data-distance="1000">10m</button>
-                <button class="view-dist-btn active" data-distance="0">All</button>
-            </div>
-            <button class="view-lookahead-btn" id="view-lookahead-btn" title="View raw lookahead data">📋</button>
-            
-            <button class="train-monitor-close" id="train-monitor-close" title="Close">×</button>
-        </div>
-        <div class="train-monitor-content">
-            <div class="train-monitor-info" id="train-monitor-info">
-                <div class="train-speed-display">
-                    <span class="speed-value" id="monitor-current-speed">0</span>
-                    <span class="speed-unit">km/h</span>
-                </div>
-                <div class="train-target-speed">
-                    <span class="label">Target:</span>
-                    <span class="value" id="monitor-target-speed">0</span>
-                    <span class="unit">km/h</span>
-                </div>
-                <div class="train-debug-info text-xs mt-2">
-                    <span class="debug-label">Debug:</span>
-                    <span class="debug-value" id="monitor-speed-cms">0</span>
-                    <span class="debug-unit">cm/s</span>
-                    <span class="debug-separator">|</span>
-                    <span class="debug-label">Clearance:</span>
-                    <span class="debug-value" id="monitor-clearance">0</span>
-                    <span class="debug-unit">m</span>
-                </div>
-                <div class="train-speed-limit-reason text-xs mt-2 hidden" id="monitor-speed-limit-reason"></div>
-                <div class="train-wait-reason text-xs text-secondary mt-2 hidden" id="monitor-wait-reason"></div>
-            </div>
-            <canvas id="train-monitor-canvas" class="train-monitor-canvas"></canvas>
-            <div class="train-monitor-upcoming" id="monitor-upcoming-container">
-                <div class="upcoming-header">Upcoming</div>
-                <div class="upcoming-list" id="monitor-upcoming"></div>
-            </div>
-            <!-- Expanded Debug Info Panel (appended dynamically) -->
-            <div id="train-monitor-debug-container" class="train-monitor-debug-container hidden">
-                <div class="debug-header">Debug Details</div>
-                <div id="train-monitor-debug-content"></div>
-            </div>
-        </div>
-    </div>
 
     <script src="js/constants.js?v=14"></script>
     <script src="js/api.js?v=14"></script>
@@ -349,6 +311,7 @@
     <script src="js/editor-blocks.js?v=14"></script>
     <script src="js/editor-stations.js?v=14"></script>
     <script src="js/editor-signals.js?v=14"></script>
+    <script src="js/editor-switches.js?v=14"></script>
     <script src="js/editor-trains.js?v=14"></script>
     <script src="js/editor-routes.js?v=14"></script>
     <script src="js/editor-ui.js?v=14"></script>

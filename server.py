@@ -324,6 +324,27 @@ def update_track(x, y):
         if track.is_switch and track.block_section_id:
             network.remove_tile_from_block(x, y)
 
+        # Auto-create switch entity if track is now a switch and doesn't have one
+        if track.is_switch and not track.switch_id:
+            from switch import Switch
+
+            switch_id = f"SW_{x}_{y}"
+            # Check if switch already exists (shouldn't, but be safe)
+            existing = network.get_switch_at(x, y)
+            if not existing:
+                switch = Switch(
+                    switch_id=switch_id,
+                    x=x,
+                    y=y,
+                    main_length_cm=0.0,
+                    diverge_length_cm=0.0,
+                    main_radius_cm=None,
+                    diverge_radius_cm=None,
+                )
+                network.add_switch(switch)
+                # Link track to switch
+                track.switch_id = switch_id
+
     # === Dead-ends (buffer stops) ===
     if "dead_end_ports" in data:
         # Replace set directly with normalized values
@@ -389,6 +410,8 @@ def add_tracks_bulk():
 
     Requires track_bits: int - 6-bit track geometry
     """
+    from switch import Switch
+
     data = request.json
     tracks_data = data.get("tracks", [])
     added = []
@@ -417,6 +440,20 @@ def add_tracks_bulk():
             if existing_track.is_switch and existing_track.block_section_id:
                 network.remove_tile_from_block(x, y)
 
+            # Auto-create switch entity if track is now a switch
+            if existing_track.is_switch and not existing_track.switch_id:
+                switch_id = f"SW_{x}_{y}"
+                if not network.get_switch_at(x, y):
+                    switch = Switch(
+                        switch_id=switch_id,
+                        x=x,
+                        y=y,
+                        main_length_cm=0.0,
+                        diverge_length_cm=0.0,
+                    )
+                    network.add_switch(switch)
+                    existing_track.switch_id = switch_id
+
             network.propagate_from_tile(x, y)
             updated.append(existing_track.to_dict())
         else:
@@ -430,6 +467,21 @@ def add_tracks_bulk():
                 track.station_name = track_data["station_name"]
 
             network.add_track(track)
+
+            # Auto-create switch entity if new track is a switch
+            if track.is_switch and not track.switch_id:
+                switch_id = f"SW_{x}_{y}"
+                if not network.get_switch_at(x, y):
+                    switch = Switch(
+                        switch_id=switch_id,
+                        x=x,
+                        y=y,
+                        main_length_cm=0.0,
+                        diverge_length_cm=0.0,
+                    )
+                    network.add_switch(switch)
+                    track.switch_id = switch_id
+
             added.append(track.to_dict())
 
     return jsonify(

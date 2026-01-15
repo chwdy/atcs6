@@ -222,8 +222,10 @@ class RendererBlockHandler {
             const shortId = blockId.length > 10 ? blockId.slice(-6) : blockId;
             const displayName = blockName || shortId;
 
-            const offsetY = tileSize * 0.35;
-            const offsetX = tileSize * 0.3;
+            // Use dynamic spacing based on user preference
+            const spacingMultiplier = getLabelSpacingMultiplier();
+            const offsetY = tileSize * spacingMultiplier;
+            const offsetX = tileSize * (spacingMultiplier - 0.05);
             const neOffsetX = 10;
             const neOffsetY = -10;
 
@@ -311,8 +313,10 @@ class RendererBlockHandler {
             const shortId = hoveredBlockId.length > 10 ? hoveredBlockId.slice(-6) : hoveredBlockId;
             const displayName = blockName || shortId;
 
-            const offsetY = tileSize * 0.35;
-            const offsetX = tileSize * 0.3;
+            // Use dynamic spacing based on user preference (same as non-hovered)
+            const spacingMultiplier = getLabelSpacingMultiplier();
+            const offsetY = tileSize * spacingMultiplier;
+            const offsetX = tileSize * (spacingMultiplier - 0.05);
             const neOffsetX = 10;
             const neOffsetY = -10;
 

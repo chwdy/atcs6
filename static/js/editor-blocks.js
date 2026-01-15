@@ -80,26 +80,84 @@ class BlockEditorHandler {
         }
 
         const blockColor = this.getColor(blockId);
+        const stateColor = block.state === 'free' ? '#04d361' :
+                          block.state === 'reserved' ? '#ffd93d' :
+                          block.state === 'occupied' ? '#e83f5b' :
+                          block.state === 'caution' ? '#ff9500' : '#888';
 
         const content = `
             <div class="block-editor-panel" data-block-id="${blockId}" style="background: transparent;">
                 ${renderHeaderId(blockId, blockColor)}
-                ${renderBlockStateDisplay(block.state || 'free', 'cycle-block-state-btn')}
-                ${renderTextInput('block-name-input', 'Block Name', block.name || '', 'Enter block name...')}
-                ${renderReadOnlyValue('Track Count', `${block.track_count || 0} tiles`, 'text-track font-bold')}
-                ${renderTileList(block.sorted_positions, {
-                    entityType: 'block',
-                    extendStartBtnId: 'extend-block-start-btn',
-                    extendEndBtnId: 'extend-block-end-btn',
-                    removeBtnClass: 'delete-block-tile-btn'
-                })}
-                ${renderNumberInput('block-length-input', 'Length (cm)', block.length_cm || 0, { min: 0, step: 1 })}
-                ${renderNumberInput('block-radius-input', 'Min Radius (cm)', block.min_radius_cm || '', { min: 0, step: 1, placeholder: 'Not set' })}
-                ${renderNumberInput('block-speed-input', 'Max Speed (km/h)', block.max_speed_kmh || '', { min: 0, step: 1, placeholder: 'Not set' })}
-                ${renderConditional(block.occupied_by, 
-                    renderStatusBadge('Occupied By', `🚂 ${block.occupied_by}`, 'status-display-danger')
-                )}
-                ${renderActionButtons('save-block-btn', 'delete-block-btn')}
+                
+                <!-- INFO SECTION (Read-only, styled like Train Control) -->
+                <div class="info-box-track mb-12">
+                    <div class="flex justify-between items-start mb-2">
+                        <span class="text-xs text-muted uppercase tracking-wider">State</span>
+                        ${block.occupied_by ? `<span class="badge badge-warning text-xxs">🚂 ${block.occupied_by}</span>` : ''}
+                    </div>
+                    
+                    <div class="text-2xl font-bold mb-4 font-mono" style="color: ${stateColor}" id="block-state-display">
+                        ${(block.state || 'free').toUpperCase()}
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm font-mono">
+                        <div>
+                            <span class="text-muted text-xs block">Track Count</span>
+                            <span class="text-track font-bold">${block.track_count || 0} tiles</span>
+                        </div>
+                        <div>
+                            <span class="text-muted text-xs block">Length</span>
+                            <span class="text-info">${block.length_cm || 0} cm</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- CONTROL BUTTONS -->
+                <div class="control-section mt-12">
+                    <h4 class="text-sm text-muted mb-8">Actions</h4>
+                    <div class="flex gap-8">
+                        <button id="cycle-block-state-btn" class="btn btn-secondary btn-sm flex-1">🔄 Cycle State</button>
+                    </div>
+                </div>
+                
+                <!-- TILES LIST (Scrollable with extend buttons) -->
+                <div class="control-section mt-12">
+                    <h4 class="text-sm text-muted mb-8">Tiles</h4>
+                    ${renderTileList(block.sorted_positions, {
+                        entityType: 'block',
+                        extendStartBtnId: 'extend-block-start-btn',
+                        extendEndBtnId: 'extend-block-end-btn',
+                        removeBtnClass: 'delete-block-tile-btn'
+                    })}
+                </div>
+                
+                <!-- EDITABLE PROPERTIES SECTION -->
+                <div class="control-section mt-12 pt-12" style="border-top: 1px solid var(--border-color);">
+                    <h4 class="text-sm text-muted mb-8">Properties</h4>
+                    
+                    ${renderTextInput('block-name-input', 'Block Name', block.name || '', 'Enter block name...')}
+                    
+                    <div class="grid grid-cols-2 gap-8 mb-8">
+                        <div class="form-group mb-0">
+                            <label class="text-xs text-muted mb-4 block">Length (cm)</label>
+                            <input type="number" id="block-length-input" class="property-input" value="${block.length_cm || 0}" min="0" step="1">
+                        </div>
+                        <div class="form-group mb-0">
+                            <label class="text-xs text-muted mb-4 block">Min Radius (cm)</label>
+                            <input type="number" id="block-radius-input" class="property-input" value="${block.min_radius_cm || ''}" min="0" step="1" placeholder="Not set">
+                        </div>
+                    </div>
+                    
+                    <div class="form-group mb-8">
+                        <label class="text-xs text-muted mb-4 block">Max Speed (km/h)</label>
+                        <input type="number" id="block-speed-input" class="property-input" value="${block.max_speed_kmh || ''}" min="0" step="1" placeholder="Not set">
+                    </div>
+
+                    <div class="flex gap-8">
+                        <button id="save-block-btn" class="btn btn-primary btn-sm flex-1">💾 Save</button>
+                        <button id="delete-block-btn" class="btn btn-danger btn-sm flex-1">🗑 Delete</button>
+                    </div>
+                </div>
             </div>
         `;
 

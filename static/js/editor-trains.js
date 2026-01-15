@@ -5,113 +5,7 @@ class TrainEditorHandler {
 
     get api() { return this.editor.api; }
 
-    async showTrainEditor(trainId) {
-        this.editor._currentEditorType = 'train';
-        this.editor._currentEditorId = trainId;
-
-        let train;
-        try {
-            train = await this.api.getTrain(trainId);
-        } catch (err) {
-            console.error('[TrainEditorHandler] Failed to fetch train:', err);
-            window.showToast(`Failed to load train: ${err.message}`, 'error', 5000);
-            return;
-        }
-
-        if (!train) {
-            console.warn('[TrainEditorHandler] Train not found:', trainId);
-            window.showToast(`Train ${trainId} not found`, 'error', 5000);
-            return;
-        }
-
-        const statusClass = train.state === 'running_moving' ? 'status-display-success' :
-                           train.state === 'idle' ? 'status-display-warning' :
-                           train.state === 'manual' ? 'status-display-info' : 'status-display-secondary';
-
-        const content = `
-            <div class="train-editor-panel" data-train-id="${trainId}">
-                ${renderHeaderId(trainId, '#8257e5')}
-                ${renderStatusBadge('Status', train.state || 'off', statusClass)}
-                ${renderReadOnlyValue('Position', 
-                    train.position_legacy ? `(${train.position_legacy.x}, ${train.position_legacy.y})` : 'Unknown', 
-                    'text-info', true
-                )}
-                ${renderReadOnlyValue('Direction', train.direction || 'EAST', 'font-bold text-station')}
-                ${renderReadOnlyValue('Current Speed', `${(train.current_speed || 0).toFixed(1)} km/h`, 'font-bold text-track')}
-                ${renderNumberInput('train-max-speed-input', 'Max Speed (km/h)', train.max_speed || 100, { min: 1, max: 500, step: 1 })}
-                ${renderNumberInput('train-length-input', 'Length (cm)', train.length_cm || 0, { min: 0, step: 10 })}
-                ${renderConditional(train.block_section_id,
-                    renderReadOnlyValue('Block Section', train.block_section_id, 'text-block', true)
-                )}
-                ${renderConditional(train.schedule && train.schedule.length > 0, `
-                    <div class="property-item">
-                        <label class="property-label">Schedule</label>
-                        <div class="schedule-list-display text-xs text-muted">
-                            ${train.schedule.map((stop, idx) => `${idx + 1}. ${stop}`).join('<br>')}
-                        </div>
-                    </div>
-                `)}
-                ${renderActionButtons('save-train-btn', 'delete-train-btn')}
-            </div>
-        `;
-
-        this.editor.showSecondarySidebar('🚄 Train Editor', content);
-
-        setTimeout(() => this.initTrainEditorHandlers(trainId), 0);
-    }
-
-    async initTrainEditorHandlers(trainId) {
-        const saveBtn = document.getElementById('save-train-btn');
-        const deleteBtn = document.getElementById('delete-train-btn');
-        const maxSpeedInput = document.getElementById('train-max-speed-input');
-        const lengthInput = document.getElementById('train-length-input');
-
-        if (saveBtn) {
-            saveBtn.onclick = async () => {
-                const updates = {};
-
-                if (maxSpeedInput) {
-                    const val = parseFloat(maxSpeedInput.value);
-                    if (!isNaN(val) && val > 0) {
-                        updates.max_speed = val;
-                    }
-                }
-                if (lengthInput) {
-                    const val = parseFloat(lengthInput.value);
-                    if (!isNaN(val) && val >= 0) {
-                        updates.length_cm = val;
-                    }
-                }
-
-                try {
-                    await this.api.updateTrain(trainId, updates);
-                    await window.app.refreshNetwork();
-                    this.showTrainEditor(trainId);
-                    window.showToast('Train properties saved', 'success', 5000);
-                } catch (err) {
-                    console.error('Failed to save train properties:', err);
-                    window.showToast('Failed to save train properties: ' + err.message, 'error', 5000);
-                }
-            };
-        }
-
-        if (deleteBtn) {
-            deleteBtn.onclick = async () => {
-                if (!confirm(`Delete train "${trainId}"? This action cannot be undone.`)) {
-                    return;
-                }
-                try {
-                    await this.api.deleteTrain(trainId);
-                    await window.app.refreshNetwork();
-                    this.editor.hideSecondarySidebar();
-                    window.showToast('Train deleted', 'success', 5000);
-                } catch (err) {
-                    console.error('Failed to delete train:', err);
-                    window.showToast('Failed to delete train: ' + err.message, 'error', 5000);
-                }
-            };
-        }
-    }
+    // showTrainEditor and initTrainEditorHandlers removed - merged into showTrainControlPanel
 
     showAddTrainDialog() {
         const content = `
@@ -208,12 +102,14 @@ class TrainEditorHandler {
 
         let content = `
             <div class="trains-panel">
-                <button id="refresh-trains-btn" class="btn btn-secondary btn-full text-sm mb-8">
-                    🔄 Refresh Trains
-                </button>
-                <button id="add-new-train-btn" class="btn btn-primary btn-full text-sm mb-16">
-                    🚂 Add New Train
-                </button>
+                <div class="flex gap-8 mb-16">
+                    <button id="refresh-trains-btn" class="btn btn-secondary btn-sm flex-1">
+                        🔄 Refresh
+                    </button>
+                    <button id="add-new-train-btn" class="btn btn-primary btn-sm flex-1">
+                        🚂 Add
+                    </button>
+                </div>
         `;
 
         if (trains.length === 0) {
@@ -235,7 +131,18 @@ class TrainEditorHandler {
 
     renderTrainListItem(train) {
         const state = train.state || 'off';
-        const stateColor = state === 'running_moving' ? '#04d361' : (state === 'off' ? '#e83f5b' : '#ffd93d');
+        // Map states to consistent colors
+        const stateColorMap = {
+            'running_moving': '#04d361', // Success green
+            'running_waiting': '#ff9500', // Warning orange
+            'running_at_station': '#8257e5', // Purple
+            'off': '#888', // Grey
+            'idle': '#ffd93d', // Yellow
+            'standby': '#00d4ff', // Cyan
+            'manual': '#e83f5b' // Red/Pink
+        };
+        const stateColor = stateColorMap[state] || '#888';
+        
         // Get head position from new TrainPosition format
         let position = { x: 0, y: 0 };
         if (train.position && train.position.end_a) {
@@ -244,27 +151,29 @@ class TrainEditorHandler {
         }
 
         return `
-            <div class="train-item" data-train-id="${train.id}">
-                <div class="train-header">
-                    <span class="train-status" style="color: ${stateColor}">
-                        ● ${state.toUpperCase().replace('_', ' ')}
-                    </span>
-                </div>
-                <div class="train-id text-sm value-display-mono">${train.id}</div>
-                <div class="train-position text-xs text-muted">
-                    📍 (${position.x}, ${position.y})
-                </div>
-                <div class="train-speed text-xs">
-                    🚄 ${(train.current_speed || 0).toFixed(1)} / ${train.max_speed || 100} km/h
-                </div>
-                ${train.facing_direction ? `
-                <div class="train-direction text-xs">
-                    Facing: ${train.facing_direction}
-                </div>
-                ` : ''}
-                <div class="train-actions mt-8">
-                    <button class="btn btn-sm btn-info select-train-btn" data-train-id="${train.id}">Select</button>
-                    <button class="btn btn-sm btn-danger delete-train-btn" data-train-id="${train.id}">Delete</button>
+            <div class="train-summary-row mb-8">
+                <div class="flex items-center gap-12 w-full p-2">
+                    <div class="flex flex-col items-center gap-1">
+                        <div class="train-status-dot" style="background-color: ${stateColor}"></div>
+                    </div>
+                    <div class="train-info flex-1">
+                        <div class="flex items-center gap-2 mb-1">
+                            <span class="train-id font-mono font-bold text-white">${train.id}</span>
+                            <span class="text-xs font-bold uppercase tracking-wider" style="color: ${stateColor}">
+                                ${state.toUpperCase().replace('RUNNING_', '')}
+                            </span>
+                        </div>
+                        <div class="flex justify-between items-end">
+                            <div class="text-xs text-muted">
+                                <div>📍 (${position.x}, ${position.y}) ${train.facing_direction ? `→ ${train.facing_direction}` : ''}</div>
+                                <div>🚀 ${(train.current_speed || 0).toFixed(1)} km/h</div>
+                            </div>
+                            <div class="flex gap-4">
+                                <button class="edit-btn btn-sm" onclick="window.app.selectTrain('${train.id}')">Edit</button>
+                                <button class="btn btn-sm btn-danger text-white delete-train-btn" style="background-color: var(--danger-color);" data-train-id="${train.id}">Delete</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         `;
@@ -437,35 +346,39 @@ class TrainEditorHandler {
             <div class="train-control-panel" data-train-id="${trainId}">
                 ${renderHeaderId(trainId, '#8257e5')}
                 
-                <div class="property-item">
-                    <label class="property-label">State</label>
-                    <div class="value-display font-bold" style="color: ${stateColor}">
-                        ${(train.state || 'off').toUpperCase().replace('_', ' ')}
-                        ${train.state === 'running_waiting' && train.wait_reason ? `<div class="text-xs mt-2 text-secondary font-normal">${train.wait_reason}</div>` : ''}
+                <!-- INFO SECTION (Styled like Track Bits) -->
+                <div class="info-box-track mb-12">
+                    <div class="flex justify-between items-start mb-2">
+                        <span class="text-xs text-muted uppercase tracking-wider">State</span>
+                        ${train.block_section_id ? `<span class="badge badge-warning text-xxs">Block ${train.block_section_id}</span>` : ''}
                     </div>
+                    
+                    <div class="text-2xl font-bold mb-4 font-mono train-state-display" style="color: ${stateColor}">
+                        ${(train.state || 'off').toUpperCase().replace('_', ' ')}
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm font-mono">
+                        <div>
+                            <span class="text-muted text-xs block">Position</span>
+                            <span class="text-info train-pos-display">${train.position && train.position.end_a ? `(${train.position.leading_end === 'a' ? train.position.end_a.tile[0] : train.position.end_b.tile[0]}, ${train.position.leading_end === 'a' ? train.position.end_a.tile[1] : train.position.end_b.tile[1]})` : 'Unknown'}</span>
+                        </div>
+                        <div>
+                            <span class="text-muted text-xs block">Direction</span>
+                            <span class="text-station train-dir-display">${train.direction || train.facing_direction || 'Unknown'}</span>
+                        </div>
+                        <div class="col-span-2">
+                            <span class="text-muted text-xs block">Speed</span>
+                            <span class="text-track train-speed-display">${(train.current_speed || 0).toFixed(1)} <span class="text-muted">/ ${train.max_speed || 100} km/h</span></span>
+                        </div>
+                    </div>
+                    
+                     ${train.state === 'running_waiting' && train.wait_reason ? `
+                        <div class="mt-4 pt-4 border-t border-gray-700 text-xs text-warning train-wait-reason">
+                            <span class="block text-muted mb-1">Waiting Reason:</span>
+                            ${train.wait_reason}
+                        </div>
+                    ` : ''}
                 </div>
-                
-                <div class="property-item">
-                    <label class="property-label">Position</label>
-                    <div class="value-display text-info">${train.position && train.position.end_a ? `(${train.position.leading_end === 'a' ? train.position.end_a.tile[0] : train.position.end_b.tile[0]}, ${train.position.leading_end === 'a' ? train.position.end_a.tile[1] : train.position.end_b.tile[1]})` : 'Unknown'}</div>
-                </div>
-                
-                <div class="property-item">
-                    <label class="property-label">Direction</label>
-                    <div class="value-display text-station">${train.direction || train.facing_direction || 'Unknown'}</div>
-                </div>
-                
-                <div class="property-item">
-                    <label class="property-label">Speed</label>
-                    <div class="value-display text-track">${(train.current_speed || 0).toFixed(1)} / ${train.max_speed || 100} km/h</div>
-                </div>
-                
-                ${train.block_section_id ? `
-                <div class="property-item">
-                    <label class="property-label">Block</label>
-                    <div class="value-display text-block">${train.block_section_id}</div>
-                </div>
-                ` : ''}
                 
                 <div class="control-section mt-16">
                     <h4 class="text-sm text-muted mb-8">Power Control</h4>
@@ -523,17 +436,50 @@ class TrainEditorHandler {
                     <button id="train-emergency-btn" class="btn btn-danger btn-full btn-sm">🚨 Emergency Stop</button>
                 </div>
                 
-                <div class="mt-12">
-                    <button id="train-edit-btn" class="btn btn-secondary btn-full btn-sm">✏️ Edit Train Properties</button>
+                <!-- Train Position Debug Section (shown when debug checkbox is enabled) -->
+                <div id="train-control-debug-section" class="mt-12 hidden" style="border-top: 1px solid var(--border-color); padding-top: 12px;">
+                    <!-- Content injected by app.js updateTrainDebugPanel() -->
                 </div>
                 
                 <div class="mt-8">
                     <button id="train-monitor-btn" class="btn btn-info btn-full btn-sm">📊 Open Train Monitor</button>
                 </div>
+
+                <!-- EDITABLE PROPERTIES SECTION -->
+                <div class="control-section mt-12 pt-12" style="border-top: 1px solid var(--border-color);">
+                    <h4 class="text-sm text-muted mb-8">Properties</h4>
+                    
+                    <div class="grid grid-cols-2 gap-8 mb-8">
+                        <div class="form-group mb-0">
+                            <label class="text-xs text-muted mb-4 block">Max Speed (km/h)</label>
+                            <input type="number" id="train-max-speed-input" class="prop-input" value="${train.max_speed || 100}" min="1" max="500">
+                        </div>
+                        <div class="form-group mb-0">
+                            <label class="text-xs text-muted mb-4 block">Length (cm)</label>
+                            <input type="number" id="train-length-input" class="prop-input" value="${train.length_cm || 0}" min="0" step="10">
+                        </div>
+                    </div>
+
+                    <div class="flex gap-8">
+                         <button id="save-train-btn" class="btn btn-primary btn-sm flex-1">💾 Save Changes</button>
+                         <button id="delete-train-btn" class="btn btn-danger btn-sm flex-1">🗑 Delete Train</button>
+                    </div>
+                </div>
             </div>
         `;
 
         this.editor.showSecondarySidebar('🚂 Train Control', content);
+
+        // Check debug checkbox immediately and update visibility
+        const debugCheckbox = document.getElementById('debug-show-train-position');
+        const debugSection = document.getElementById('train-control-debug-section');
+        if (debugCheckbox && debugCheckbox.checked && debugSection) {
+            debugSection.classList.remove('hidden');
+            // Trigger an immediate update to populate content
+            if (window.app) {
+                window.app.updateTrainDebugPanel(train);
+            }
+        }
 
         setTimeout(() => this.initTrainControlHandlers(trainId), 0);
     }
@@ -720,10 +666,56 @@ class TrainEditorHandler {
         }
 
         // Edit properties button - opens the train editor
-        const editBtn = document.getElementById('train-edit-btn');
-        if (editBtn) {
-            editBtn.onclick = () => {
-                this.showTrainEditor(trainId);
+        // (Removed as properties are now inline)
+        
+        const saveBtn = document.getElementById('save-train-btn');
+        const deleteBtn = document.getElementById('delete-train-btn');
+        const maxSpeedInput = document.getElementById('train-max-speed-input');
+        const lengthInput = document.getElementById('train-length-input');
+
+        if (saveBtn) {
+            saveBtn.onclick = async () => {
+                const updates = {};
+
+                if (maxSpeedInput) {
+                    const val = parseFloat(maxSpeedInput.value);
+                    if (!isNaN(val) && val > 0) {
+                        updates.max_speed = val;
+                    }
+                }
+                if (lengthInput) {
+                    const val = parseFloat(lengthInput.value);
+                    if (!isNaN(val) && val >= 0) {
+                        updates.length_cm = val;
+                    }
+                }
+
+                try {
+                    await this.api.updateTrain(trainId, updates);
+                    await window.app.refreshNetwork();
+                    this.showTrainControlPanel(trainId);
+                    window.showToast('Train properties saved', 'success', 5000);
+                } catch (err) {
+                    console.error('Failed to save train properties:', err);
+                    window.showToast('Failed to save train properties: ' + err.message, 'error', 5000);
+                }
+            };
+        }
+
+        if (deleteBtn) {
+            deleteBtn.onclick = async () => {
+                if (!confirm(`Delete train "${trainId}"? This action cannot be undone.`)) {
+                    return;
+                }
+                try {
+                    await this.api.deleteTrain(trainId);
+                    await window.app.refreshNetwork();
+                    this.editor.hideSecondarySidebar();
+                    window.showToast('Train deleted', 'success', 5000);
+                } catch (err) {
+                    console.error('Failed to delete train:', err);
+                    window.showToast('Failed to delete train: ' + err.message, 'error', 5000);
+                }
             };
         }
 
@@ -757,28 +749,43 @@ class TrainEditorHandler {
             'manual': '#e83f5b'
         };
 
-        const stateEl = panel.querySelector('.property-item .value-display.font-bold');
+        const stateEl = panel.querySelector('.train-state-display');
         if (stateEl) {
             stateEl.style.color = stateColors[train.state] || '#888';
             stateEl.innerHTML = `
                 ${(train.state || 'off').toUpperCase().replace('_', ' ')}
-                ${train.state === 'running_waiting' && train.wait_reason ? `<div class="text-xs mt-2 text-secondary font-normal">${train.wait_reason}</div>` : ''}
             `;
         }
+        
+        // Update waiting reason
+        let reasonEl = panel.querySelector('.train-wait-reason');
+        if (train.state === 'running_waiting' && train.wait_reason) {
+            if (!reasonEl) {
+                // If element doesn't exist but should, we might need to recreate the info block, 
+                // but simpler to just append if missing or update parent. 
+                // For simplicity, we'll assume the basic structure exists.
+                // If it's too complex to inject, we can just reload the panel, but that flickers.
+                // Let's try to update the text content if it exists.
+            } else {
+                 reasonEl.innerHTML = `<span class="block text-muted mb-1">Waiting Reason:</span> ${train.wait_reason}`;
+            }
+        } else if (reasonEl) {
+            reasonEl.remove();
+        }
 
-        const positionEl = panel.querySelector('.property-item .value-display.text-info');
+        const positionEl = panel.querySelector('.train-pos-display');
         if (positionEl && train.position_legacy) {
             positionEl.textContent = `(${train.position_legacy.x}, ${train.position_legacy.y})`;
         }
 
-        const directionEl = panel.querySelector('.property-item .value-display.text-station');
+        const directionEl = panel.querySelector('.train-dir-display');
         if (directionEl) {
             directionEl.textContent = train.direction || train.facing_direction || 'Unknown';
         }
 
-        const speedEl = panel.querySelector('.property-item .value-display.text-track');
+        const speedEl = panel.querySelector('.train-speed-display');
         if (speedEl) {
-            speedEl.textContent = `${(train.current_speed || 0).toFixed(1)} / ${train.max_speed || 100} km/h`;
+            speedEl.innerHTML = `${(train.current_speed || 0).toFixed(1)} <span class="text-muted">/ ${train.max_speed || 100} km/h</span>`;
         }
 
         const speedLabel = document.getElementById('manual-speed-label');

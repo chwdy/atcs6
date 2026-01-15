@@ -1295,6 +1295,145 @@ class API {
             throw e;
         }
     }
+
+    // === Switch Management API ===
+
+    async getSwitches() {
+        try {
+            const response = await fetch(`${this.baseUrl}/switches`);
+            const result = await response.json();
+            return result;
+        } catch (e) {
+            console.error('[API] getSwitches failed:', e);
+            throw e;
+        }
+    }
+
+    async getSwitch(switchId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/switches/${encodeURIComponent(switchId)}`);
+            const result = await response.json();
+            return result;
+        } catch (e) {
+            console.error('[API] getSwitch failed:', e);
+            throw e;
+        }
+    }
+
+    async updateSwitch(switchId, updates) {
+        try {
+            const response = await fetch(`${this.baseUrl}/switches/${encodeURIComponent(switchId)}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updates)
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to update switch');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] updateSwitch failed:', e);
+            throw e;
+        }
+    }
+
+    async deleteSwitch(switchId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/switches/${encodeURIComponent(switchId)}`, {
+                method: 'DELETE'
+            });
+            const result = await response.json();
+            return result;
+        } catch (e) {
+            console.error('[API] deleteSwitch failed:', e);
+            throw e;
+        }
+    }
+
+    /**
+     * Change switch state (MAIN=0, DIVERGE=1).
+     * Fails with 409 Conflict if switch is locked by a path.
+     * @param {string} switchId - Switch ID
+     * @param {number} state - 0 for MAIN, 1 for DIVERGE
+     * @returns {Promise<object>} { success, message, switch }
+     */
+    async setSwitchState(switchId, state) {
+        try {
+            const response = await fetch(`${this.baseUrl}/switches/${encodeURIComponent(switchId)}/state`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ state })
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to change switch state');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] setSwitchState failed:', e);
+            throw e;
+        }
+    }
+
+    /**
+     * Toggle switch state between MAIN and DIVERGE.
+     * Uses track endpoint for simple state toggle.
+     * @param {number} x - Track X coordinate
+     * @param {number} y - Track Y coordinate
+     * @returns {Promise<object>} Updated track data
+     */
+    async toggleSwitchState(x, y) {
+        try {
+            const track = await this.getTrack(x, y);
+            if (!track || !track.is_switch) {
+                throw new Error('Track is not a switch');
+            }
+            const newState = track.switch_state === 0 ? 1 : 0;
+            return await this.updateTrack(x, y, { switch_state: newState });
+        } catch (e) {
+            console.error('[API] toggleSwitchState failed:', e);
+            throw e;
+        }
+    }
+
+    /**
+     * Create a switch entity for a track tile.
+     * This should be called when placing a switch track.
+     * @param {number} x - Track X coordinate
+     * @param {number} y - Track Y coordinate
+     * @param {object} options - Optional switch configuration
+     * @returns {Promise<object>} Created switch data
+     */
+    async createSwitchAt(x, y, options = {}) {
+        try {
+            const response = await fetch(`${this.baseUrl}/tracks/${x}/${y}/switch`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(options)
+            });
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.error || 'Failed to create switch');
+            }
+            return await response.json();
+        } catch (e) {
+            console.error('[API] createSwitchAt failed:', e);
+            throw e;
+        }
+    }
+
+    /**
+     * Get train lookahead data (blocks, signals, etc. ahead of train).
+     * NOTE: Backend endpoint not yet implemented - returns null.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object|null>} Lookahead data or null if not available
+     */
+    async getTrainLookahead(trainId) {
+        // TODO: Implement backend endpoint /api/trains/{trainId}/lookahead
+        // For now, return null to indicate feature not available
+        return null;
+    }
 }
 
 // Export as global

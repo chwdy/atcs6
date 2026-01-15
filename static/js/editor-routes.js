@@ -256,9 +256,11 @@ class RouteEditorHandler {
 
         let content = `
             <div class="paths-panel">
-                <button id="refresh-paths-btn" class="btn btn-secondary btn-full text-sm mb-8">
-                    🔄 Refresh Paths
-                </button>
+                <div class="flex gap-8 mb-16">
+                    <button id="refresh-paths-btn" class="btn btn-secondary btn-sm flex-1">
+                        🔄 Refresh
+                    </button>
+                </div>
         `;
 
         if (this.cachedPaths.length === 0) {
@@ -285,27 +287,41 @@ class RouteEditorHandler {
             : 0;
 
         return `
-            <div class="path-item" data-path-id="${path.path_id}">
-                <div class="path-header">
-                    <span class="path-status" style="color: ${statusColor}">
-                        ● ${path.status.toUpperCase()}
-                    </span>
-                    <span class="path-priority">P${path.priority}</span>
-                </div>
-                <div class="path-id text-sm value-display-mono">${path.path_id}</div>
-                <div class="path-endpoints text-xs text-muted">
-                    ${path.start_block_id} → ${path.end_block_id}
-                </div>
-                ${path.train_id ? `<div class="path-train text-xs">🚂 ${path.train_id}</div>` : ''}
-                ${path.status === 'active' ? `
-                    <div class="progress-container">
-                        <div class="progress-bar" style="width: ${progress}%"></div>
-                        <span class="progress-text">${progress}%</span>
+            <div class="train-summary-row mb-8">
+                <div class="flex items-center gap-12 w-full p-2">
+                    <div class="flex flex-col items-center justify-center gap-2" style="min-width: 40px; padding-top: 4px;">
+                        <div class="train-status-dot" style="background-color: ${statusColor}"></div>
+                        <div class="text-xxs font-bold uppercase tracking-wider" style="color: ${statusColor}; font-size: 0.65rem; line-height: 1; padding: 4px 0; margin-top: 2px;">
+                            ${path.status.toUpperCase()}
+                        </div>
+                        <div class="text-xxs font-bold text-muted" title="Priority" style="line-height: 1; padding-top: 2px;">P${path.priority}</div>
                     </div>
-                ` : ''}
-                <div class="path-actions">
-                    <button class="btn btn-sm btn-info view-path-btn" data-path-id="${path.path_id}">View</button>
-                    <button class="btn btn-sm btn-danger cancel-path-btn" data-path-id="${path.path_id}">Cancel</button>
+                    <div class="train-info flex-1" style="min-width: 0;">
+                        <div class="flex flex-col gap-1 mb-6">
+                            <div class="flex justify-between items-start gap-2">
+                                <span class="train-id font-mono font-bold text-white" style="word-break: break-all; line-height: 1.2;">${path.path_id}</span>
+                            </div>
+                        </div>
+                        <div class="flex justify-between items-end gap-2">
+                            <div class="text-xs text-muted flex-1" style="min-width: 0;">
+                                <div style="word-break: break-word; line-height: 1.4; margin-bottom: 6px;">
+                                    <div class="font-mono text-white opacity-90">${path.start_block_id}</div>
+                                    <div class="text-xxs opacity-50 py-1" style="text-align: center; width: 20px;">↓</div>
+                                    <div class="font-mono text-white opacity-90">${path.end_block_id}</div>
+                                </div>
+                                <div style="margin-bottom: 4px;">${path.train_id ? `🚂 ${path.train_id}` : 'No Train'}</div>
+                                ${path.status === 'active' ? `
+                                    <div class="progress-container mt-1" style="width: 100%; max-width: 120px; height: 4px;">
+                                        <div class="progress-bar" style="width: ${progress}%; background-color: ${statusColor};"></div>
+                                    </div>
+                                ` : ''}
+                            </div>
+                            <div class="flex gap-4 flex-shrink-0">
+                                <button class="edit-btn btn-sm view-path-btn" data-path-id="${path.path_id}">View</button>
+                                <button class="btn btn-sm btn-danger text-white cancel-path-btn" style="background-color: var(--danger-color);" data-path-id="${path.path_id}">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         `;
@@ -397,58 +413,72 @@ class RouteEditorHandler {
             <div class="path-editor-panel" data-path-id="${pathId}">
                 ${renderHeaderId(path.path_id, statusColor)}
                 
-                ${renderPropertyItem('Status', `
-                    <div class="value-display flex items-center gap-8">
-                        <span class="status-dot" style="background: ${statusColor}; width: 12px; height: 12px; border-radius: 50%; display: inline-block;"></span>
-                        <span class="font-bold" style="color: ${statusColor}">${path.status.toUpperCase()}</span>
+                <!-- INFO SECTION (Read-only, styled like Train Control) -->
+                <div class="info-box-track mb-12">
+                    <div class="flex justify-between items-start mb-4">
+                        <span class="text-xs text-muted uppercase tracking-wider">Status</span>
+                        <span class="text-xxs text-muted">P${path.priority}</span>
                     </div>
-                `)}
-                
-                ${renderReadOnlyValue('Priority', `${path.priority} / 10`, 'font-bold')}
-                
-                ${path.train_id
-                    ? renderReadOnlyValue('Train', `🚂 ${path.train_id}`, 'text-info font-bold')
-                    : renderReadOnlyValue('Train', 'None assigned', 'text-muted')
-                }
-                
-                ${renderReadOnlyValue('Start Block', path.start_block_id, 'value-display-mono text-sm')}
-                ${renderReadOnlyValue('End Block', path.end_block_id, 'value-display-mono text-sm')}
-                
-                ${path.status === 'active' ? `
-                    <div class="property-item">
-                        <label class="property-label">Progress</label>
-                        <div class="progress-container">
-                            <div class="progress-bar" style="width: ${progress}%"></div>
-                            <span class="progress-text">${progress}%</span>
+                    
+                    <div class="text-2xl font-bold mb-6 font-mono" style="color: ${statusColor}">
+                        ${path.status.toUpperCase()}
+                    </div>
+                    
+                    <div class="grid grid-cols-1 gap-y-4 text-sm font-mono">
+                        <div>
+                            <span class="text-muted text-xs block mb-2">Route</span>
+                            <div class="text-white" style="line-height: 1.4;">
+                                <div class="opacity-90">${path.start_block_id}</div>
+                                <div class="text-xxs text-muted py-1">↓</div>
+                                <div class="opacity-90">${path.end_block_id}</div>
+                            </div>
                         </div>
+                        <div>
+                            <span class="text-muted text-xs block">Train</span>
+                            <span class="${path.train_id ? 'text-info' : 'text-muted'}">${path.train_id ? `🚂 ${path.train_id}` : 'None assigned'}</span>
+                        </div>
+                        ${path.status === 'active' ? `
+                        <div>
+                            <span class="text-muted text-xs block mb-1">Progress</span>
+                            <div class="progress-container" style="width: 100%; max-width: 150px; height: 6px;">
+                                <div class="progress-bar" style="width: ${progress}%; background-color: ${statusColor};"></div>
+                            </div>
+                            <span class="text-xxs text-muted mt-1">${progress}%</span>
+                        </div>
+                        ` : ''}
                     </div>
-                ` : ''}
+                    
+                    ${path.approach_locked_blocks?.length > 0 ? `
+                        <div class="mt-4 pt-4 border-t border-gray-700 text-xs text-warning">
+                            ⚠️ ${path.approach_locked_blocks.length} blocks approach-locked
+                        </div>
+                    ` : ''}
+                </div>
                 
-                <div class="property-item">
-                    <label class="property-label">Blocks (${path.block_sequence?.length || 0})</label>
+                <!-- CONTROL BUTTONS -->
+                <div class="control-section mt-12">
+                    <h4 class="text-sm text-muted mb-8">Actions</h4>
+                    <div class="flex gap-8">
+                        ${(path.status === 'set' || path.status === 'active') ? `
+                            <button id="extend-path-btn" class="btn btn-primary btn-sm flex-1">
+                                ➕ Extend
+                            </button>
+                        ` : ''}
+                        <button id="cancel-path-btn" class="btn btn-danger btn-sm flex-1" style="background-color: var(--danger-color);">
+                            ❌ Cancel
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- BLOCKS LIST (Scrollable) -->
+                <div class="control-section mt-12 pt-12" style="border-top: 1px solid var(--border-color);">
+                    <h4 class="text-sm text-muted mb-8">Blocks (${path.block_sequence?.length || 0})</h4>
                     <div class="bg-input rounded-lg" style="max-height: 150px; overflow-y: auto; padding: 8px; border: 1px solid #3a3a4e;">
                         ${blocksListHtml || '<div class="text-muted text-xs">No blocks</div>'}
                     </div>
                 </div>
                 
-                ${path.approach_locked_blocks?.length > 0 ? `
-                    <div class="info-box-warning text-xs text-warning">
-                        ⚠️ ${path.approach_locked_blocks.length} blocks approach-locked
-                    </div>
-                ` : ''}
-                
-                <div class="property-item-row" style="margin-top: 16px;">
-                    ${(path.status === 'set' || path.status === 'active') ? `
-                        <button id="extend-path-btn" class="btn btn-primary text-sm" style="flex: 1;">
-                            Extend Path
-                        </button>
-                    ` : ''}
-                    <button id="cancel-path-btn" class="btn btn-danger text-sm" style="flex: 1;">
-                        Cancel Path
-                    </button>
-                </div>
-                
-                <button id="back-to-paths-btn" class="btn btn-secondary btn-full text-sm" style="margin-top: 8px;">
+                <button id="back-to-paths-btn" class="btn btn-secondary btn-full btn-sm mt-12">
                     ← Back to Paths List
                 </button>
             </div>

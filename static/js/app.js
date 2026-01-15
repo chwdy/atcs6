@@ -455,21 +455,18 @@ class App {
     updateTrainDebugPanel(train) {
         const checkbox = document.getElementById('debug-show-train-position');
         
-        // If debug is disabled, hide the debug container in the monitor panel
+        // If debug is disabled, hide the debug container
         if (checkbox && !checkbox.checked) {
-            const container = document.getElementById('train-monitor-debug-container');
-            if (container) container.classList.add('hidden');
+            const controlDebug = document.getElementById('train-control-debug-section');
+            if (controlDebug) controlDebug.classList.add('hidden');
             return;
         }
         
         if (!train) return;
 
-        // Ensure the monitor panel debug container is visible
-        const container = document.getElementById('train-monitor-debug-container');
-        if (container) container.classList.remove('hidden');
-        
-        const content = document.getElementById('train-monitor-debug-content');
-        if (!content) return;
+        // Target the Train Control panel debug section
+        const controlPanelDebug = document.getElementById('train-control-debug-section');
+        if (!controlPanelDebug) return;
         
         // Build HTML content
         let html = '<div class="train-debug-panel" style="background: transparent; border: none; padding: 0;">';
@@ -554,7 +551,11 @@ class App {
         
         html += '</div>'; // End wrapper
         
-        content.innerHTML = html;
+        // Inject into the new location in the Train Control panel
+        if (controlPanelDebug) {
+             controlPanelDebug.innerHTML = html;
+             controlPanelDebug.classList.remove('hidden');
+        }
         
         // Re-append stored lookahead data if available
         if (this.lastLookaheadData && this.selectedTrainId === train.id) {
@@ -563,20 +564,19 @@ class App {
     }
 
     hideTrainDebugPanel() {
-        const panel = document.getElementById('train-monitor-debug-container');
-        if (panel) panel.classList.add('hidden');
+        const controlDebug = document.getElementById('train-control-debug-section');
+        if (controlDebug) controlDebug.classList.add('hidden');
     }
     
     // Update debug panel with lookahead data for additional info
     updateTrainDebugWithLookahead(lookahead) {
-        // We now append to the train monitor panel
-        const container = document.getElementById('train-monitor-debug-container');
-        const content = document.getElementById('train-monitor-debug-content');
+        // We now append to the train control panel
+        const targetContent = document.getElementById('train-control-debug-section');
         
-        if (!container || !content) return;
+        if (!targetContent) return;
         
         // Find if there's already a lookahead section and replace it, else append
-        let existingLookahead = content.querySelector('.train-debug-lookahead');
+        let existingLookahead = targetContent.querySelector('.train-debug-lookahead');
         
         let extra = '';
         
@@ -668,7 +668,7 @@ class App {
         if (existingLookahead) {
             existingLookahead.outerHTML = `<div class="train-debug-lookahead">${extra}</div>`;
         } else {
-            content.insertAdjacentHTML('beforeend', `<div class="train-debug-lookahead">${extra}</div>`);
+            targetContent.insertAdjacentHTML('beforeend', `<div class="train-debug-lookahead">${extra}</div>`);
         }
     }
     
@@ -684,119 +684,12 @@ class App {
         }
     }
 
-    hideTrainDebugPanel() {
-        const panel = document.getElementById('train-monitor-debug-container');
-        if (panel) panel.classList.add('hidden');
-    }
-    
-    // Update debug panel with lookahead data for additional info
-    updateTrainDebugWithLookahead(lookahead) {
-        // We now append to the train monitor panel
-        const container = document.getElementById('train-monitor-debug-container');
-        const content = document.getElementById('train-monitor-debug-content');
-        
-        if (!container || !content) return;
-        
-        // Find if there's already a lookahead section and replace it, else append
-        let existingLookahead = content.querySelector('.train-debug-lookahead');
-        
-        let extra = '';
-        
-        // Speed & Position Info
-        extra += `<div class="train-debug-subsection">`;
-        extra += `<div class="train-debug-subsection-title">Lookahead - Speed & Position</div>`;
-        extra += `<div class="train-debug-row"><span class="train-debug-label">Current Speed:</span><span class="train-debug-value">${lookahead.current_speed_kmh?.toFixed(1) || 0} km/h</span></div>`;
-        extra += `<div class="train-debug-row"><span class="train-debug-label">Target Speed:</span><span class="train-debug-value">${lookahead.target_speed_kmh?.toFixed(1) || 0} km/h</span></div>`;
-        extra += `<div class="train-debug-row"><span class="train-debug-label">ATC Target:</span><span class="train-debug-value">${lookahead.atc_target_speed_kmh?.toFixed(1) || 0} km/h</span></div>`;
-        extra += `<div class="train-debug-row"><span class="train-debug-label">Max Speed:</span><span class="train-debug-value">${lookahead.max_speed_kmh?.toFixed(1) || 0} km/h</span></div>`;
-        extra += `<div class="train-debug-row"><span class="train-debug-label">Distance into Path:</span><span class="train-debug-value">${lookahead.distance_into_path_cm?.toFixed(1) || 0} cm</span></div>`;
-        extra += `<div class="train-debug-row"><span class="train-debug-label">To Next Tile:</span><span class="train-debug-value">${lookahead.distance_to_next_tile_cm?.toFixed(1) || '-'} cm</span></div>`;
-        extra += `<div class="train-debug-row"><span class="train-debug-label">Clearance:</span><span class="train-debug-value text-track">${lookahead.clearance_cm?.toFixed(1) || 0} cm</span></div>`;
-        if (lookahead.speed_limit_reason) {
-            extra += `<div class="train-debug-row"><span class="train-debug-label">Speed Limit:</span><span class="train-debug-value text-signal-danger">${lookahead.speed_limit_reason}</span></div>`;
-        }
-        if (lookahead.wait_reason) {
-            extra += `<div class="train-debug-row"><span class="train-debug-label">Wait Reason:</span><span class="train-debug-value text-signal-danger">${lookahead.wait_reason}</span></div>`;
-        }
-        extra += `</div>`;
-        
-        // Blocks ahead
-        if (lookahead.blocks && lookahead.blocks.length > 0) {
-            extra += `<div class="train-debug-subsection">`;
-            extra += `<div class="train-debug-subsection-title">Lookahead - Blocks (${lookahead.blocks.length})</div>`;
-            lookahead.blocks.slice(0, 5).forEach((block, i) => {
-                const stateColor = block.state === 'free' ? 'text-success' : 
-                                   block.state === 'occupied' ? 'text-danger' : 
-                                   block.state === 'reserved' ? 'text-warning' : '';
-                extra += `<div class="train-debug-row">`;
-                extra += `<span class="train-debug-label">${block.name || block.id}:</span>`;
-                extra += `<span class="train-debug-value ${stateColor}">${block.state} @ ${block.start_cm?.toFixed(0)}-${block.end_cm?.toFixed(0)} cm</span>`;
-                extra += `</div>`;
-            });
-            if (lookahead.blocks.length > 5) {
-                extra += `<div class="train-debug-row text-muted text-xs">...and ${lookahead.blocks.length - 5} more</div>`;
-            }
-            extra += `</div>`;
-        }
-        
-        // Signals ahead
-        if (lookahead.signals && lookahead.signals.length > 0) {
-            extra += `<div class="train-debug-subsection">`;
-            extra += `<div class="train-debug-subsection-title">Lookahead - Signals (${lookahead.signals.length})</div>`;
-            lookahead.signals.slice(0, 5).forEach((signal, i) => {
-                const aspectColor = signal.state === 'green' ? 'text-success' :
-                                    signal.state === 'yellow' ? 'text-warning' :
-                                    signal.state === 'red' ? 'text-danger' : '';
-                extra += `<div class="train-debug-row">`;
-                extra += `<span class="train-debug-label">${signal.id}:</span>`;
-                extra += `<span class="train-debug-value ${aspectColor}">${signal.state} @ ${signal.distance_cm?.toFixed(0)} cm</span>`;
-                extra += `</div>`;
-            });
-            if (lookahead.signals.length > 5) {
-                extra += `<div class="train-debug-row text-muted text-xs">...and ${lookahead.signals.length - 5} more</div>`;
-            }
-            extra += `</div>`;
-        }
-        
-        // Stations ahead
-        if (lookahead.stations && lookahead.stations.length > 0) {
-            extra += `<div class="train-debug-subsection">`;
-            extra += `<div class="train-debug-subsection-title">Lookahead - Stations (${lookahead.stations.length})</div>`;
-            lookahead.stations.forEach((station, i) => {
-                extra += `<div class="train-debug-row">`;
-                extra += `<span class="train-debug-label">${station.name || station.station_id}:</span>`;
-                extra += `<span class="train-debug-value text-station">@ ${station.distance_cm?.toFixed(0)} cm (${station.length_cm?.toFixed(0)} cm long)</span>`;
-                extra += `</div>`;
-            });
-            extra += `</div>`;
-        }
-        
-        // Switches ahead
-        if (lookahead.switches && lookahead.switches.length > 0) {
-            extra += `<div class="train-debug-subsection">`;
-            extra += `<div class="train-debug-subsection-title">Lookahead - Switches (${lookahead.switches.length})</div>`;
-            lookahead.switches.slice(0, 5).forEach((sw, i) => {
-                extra += `<div class="train-debug-row">`;
-                extra += `<span class="train-debug-label">(${sw.x},${sw.y}):</span>`;
-                extra += `<span class="train-debug-value">${sw.position || 'unknown'} @ ${sw.distance_cm?.toFixed(0)} cm</span>`;
-                extra += `</div>`;
-            });
-            if (lookahead.switches.length > 5) {
-                extra += `<div class="train-debug-row text-muted text-xs">...and ${lookahead.switches.length - 5} more</div>`;
-            }
-            extra += `</div>`;
-        }
-        
-        if (existingLookahead) {
-            existingLookahead.outerHTML = `<div class="train-debug-lookahead">${extra}</div>`;
-        } else {
-            content.insertAdjacentHTML('beforeend', `<div class="train-debug-lookahead">${extra}</div>`);
-        }
-    }
     
     async fetchTrainLookahead(trainId) {
         if (!trainId) return;
-        if (!this.trainMonitor.isVisible()) return;
+        // Check if debug is enabled, otherwise we don't need to fetch
+        const debugCheckbox = document.getElementById('debug-show-train-position');
+        if (debugCheckbox && !debugCheckbox.checked) return;
         
         const now = Date.now();
         if (now - this.lastLookaheadFetch < this.lookaheadThrottleMs) return;
@@ -804,9 +697,14 @@ class App {
         
         try {
             const lookahead = await window.api.getTrainLookahead(trainId);
-            if (this.selectedTrainId === trainId && this.trainMonitor.isVisible()) {
+            // Skip if null (feature not implemented yet)
+            if (!lookahead) return;
+            
+            if (this.selectedTrainId === trainId) {
                 this.lastLookaheadData = lookahead;  // Store for panel rebuilds
-                this.trainMonitor.update(lookahead);
+                if (this.trainMonitor.isVisible()) {
+                    this.trainMonitor.update(lookahead);
+                }
                 // Append lookahead to existing debug panel content
                 this.updateTrainDebugWithLookahead(lookahead);
             }
@@ -877,6 +775,10 @@ class App {
                     const train = this.currentNetwork.trains?.find(t => t.id === this.selectedTrainId);
                     if (train) {
                         this.updateTrainDebugPanel(train);
+                        // Also trigger lookahead fetch immediately if checkbox is enabled
+                        if (trainPosCheckbox.checked) {
+                            this.fetchTrainLookahead(this.selectedTrainId);
+                        }
                     }
                 } else {
                     this.hideTrainDebugPanel();
@@ -889,10 +791,19 @@ class App {
         const scaleSelect = document.getElementById('scale-select');
         const scaleApplyBtn = document.getElementById('scale-apply-custom');
         const scaleDisplay = document.getElementById('scale-current-display');
+        const labelSpacingSelect = document.getElementById('label-spacing-select');
 
         if (!scaleSelect || !scaleApplyBtn || !scaleDisplay) {
             console.warn('[App] Settings panel elements not found');
             return;
+        }
+
+        // Setup label spacing selector
+        if (labelSpacingSelect) {
+            labelSpacingSelect.addEventListener('change', () => {
+                setLabelSpacing(labelSpacingSelect.value);
+                this.refreshNetwork();
+            });
         }
 
         // Load current scale on init
@@ -1052,13 +963,17 @@ class App {
             if (this.editor) {
                 this.editor.refreshCurrentEditor();
             }
-            if (this.selectedTrainId && this.trainMonitor.isVisible()) {
-                // Update debug panel first (builds base content)
+            if (this.selectedTrainId) {
+                // Update debug panel (checks debug checkbox internally)
                 const train = this.currentNetwork?.trains?.find(t => t.id === this.selectedTrainId);
                 if (train) {
                     this.updateTrainDebugPanel(train);
                 }
-                // Then fetch and append lookahead info
+                
+                // Fetch lookahead if needed (for both Monitor and Debug Panel)
+                // fetchTrainLookahead checks the debug checkbox, so we might miss updates for Monitor if debug is off
+                // We should probably allow fetching if Monitor is visible OR Debug is on.
+                // For now, we just ensure it's called so the Debug Panel updates even if Monitor is hidden.
                 await this.fetchTrainLookahead(this.selectedTrainId);
             }
         }, 200);
@@ -1205,13 +1120,7 @@ class App {
         if (newWidth >= minWidth && newWidth <= maxWidth) {
             currentSidebar.style.width = newWidth + 'px';
             
-            // Update secondary sidebar position when main sidebar resizes
-            if (currentSidebar.classList.contains('sidebar')) {
-                const secondary = document.getElementById('secondary-sidebar');
-                if (secondary) {
-                    secondary.style.left = newWidth + 'px';
-                }
-            }
+            // Secondary sidebar position is now handled by flexbox layout
         }
     });
     

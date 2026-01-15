@@ -28,27 +28,60 @@ class StationEditorHandler {
 
         const content = `
             <div class="station-editor-panel" data-station-id="${stationId}" style="background: transparent;">
-                ${renderHeaderId(stationId, '#ffd93d')}
-                ${renderTextInput('station-name-input', 'Station Name', station.name || '', 'Enter station name...')}
-                ${renderNumberInput('station-length-input', 'Platform Length (cm)', station.length_cm || 0, { min: 0, step: 10 })}
-                ${renderDropdown('station-side-input', 'Platform Side', station.platform_side, [
-                    { value: 'both', label: 'Both Sides' },
-                    { value: 'left', label: 'Left Side' },
-                    { value: 'right', label: 'Right Side' }
-                ])}
-                ${renderNumberInput('station-speed-input', 'Top Speed (km/h)', station.top_speed_kmh || '', { min: 0, step: 5, placeholder: 'Not set' })}
-                ${renderReadOnlyValue('Track Count', `${station.positions ? station.positions.length : 0} tiles`, 'text-track font-bold')}
-                ${renderTileListWithBlocks(station.sorted_positions, station.block_assignments_sorted, blocks, {
-                    entityType: 'station',
-                    extendStartBtnId: 'extend-start-btn',
-                    extendEndBtnId: 'extend-end-btn',
-                    removeBtnClass: 'delete-tile-btn',
-                    assignBtnClass: 'assign-block-btn'
-                })}
-                ${renderConditional(station.orientation, 
-                    renderReadOnlyValue('Orientation', station.orientation, 'text-info font-bold')
-                )}
-                ${renderActionButtons('save-station-btn', 'delete-station-btn')}
+                
+                <!-- TOP: READ-ONLY INFO SECTION -->
+                <div class="info-box-track mb-12">
+                    <div class="flex justify-between items-start mb-2">
+                        <span class="text-xs text-muted uppercase tracking-wider">Station</span>
+                    </div>
+                    
+                    <!-- Station ID Header -->
+                    <div class="value-display value-display-mono font-bold text-white mb-8" style="border-color: #ffd93d;">${stationId}</div>
+                    
+                    ${station.name ? `<div class="text-lg font-bold mb-4" style="color: #ffd93d;">${station.name}</div>` : ''}
+                    
+                    <div class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm font-mono">
+                        <div>
+                            <span class="text-muted text-xs block">Track Count</span>
+                            <span class="text-track font-bold">${station.positions ? station.positions.length : 0} tiles</span>
+                        </div>
+                        <div>
+                            <span class="text-muted text-xs block">Orientation</span>
+                            <span class="text-info font-bold">${station.orientation || 'Auto'}</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- MIDDLE: TILE EDITING TOOLS -->
+                <div class="control-section">
+                    <h4 class="text-sm text-muted mb-8">Tiles</h4>
+                    ${renderTileListWithBlocks(station.sorted_positions, station.block_assignments_sorted, blocks, {
+                        entityType: 'station',
+                        extendStartBtnId: 'extend-start-btn',
+                        extendEndBtnId: 'extend-end-btn',
+                        removeBtnClass: 'delete-tile-btn',
+                        assignBtnClass: 'assign-block-btn'
+                    })}
+                </div>
+                
+                <!-- BOTTOM: EDITABLE PROPERTIES -->
+                <div class="control-section mt-12 pt-12" style="border-top: 1px solid var(--border-color);">
+                    <h4 class="text-sm text-muted mb-8">Properties</h4>
+                    
+                    ${renderTextInput('station-name-input', 'Station Name', station.name || '', 'Enter station name...')}
+                    ${renderNumberInput('station-length-input', 'Platform Length (cm)', station.length_cm || 0, { min: 0, step: 10 })}
+                    ${renderDropdown('station-side-input', 'Platform Side', station.platform_side, [
+                        { value: 'both', label: 'Both Sides' },
+                        { value: 'left', label: 'Left Side' },
+                        { value: 'right', label: 'Right Side' }
+                    ])}
+                    ${renderNumberInput('station-speed-input', 'Top Speed (km/h)', station.top_speed_kmh || '', { min: 0, step: 5, placeholder: 'Not set' })}
+                    
+                    <div class="flex gap-8 mt-12">
+                        <button id="save-station-btn" class="btn btn-primary btn-sm flex-1">💾 Save</button>
+                        <button id="delete-station-btn" class="btn btn-danger btn-sm flex-1">🗑 Delete</button>
+                    </div>
+                </div>
             </div>
         `;
 

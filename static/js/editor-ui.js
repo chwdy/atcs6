@@ -102,10 +102,6 @@ class EditorUIHandler {
             
             sidebar.classList.remove('compact');
             
-            const mainSidebar = document.querySelector('.sidebar');
-            if (mainSidebar) {
-                sidebar.style.left = mainSidebar.offsetWidth + 'px';
-            }
             
             sidebar.classList.add('visible');
         }
@@ -309,6 +305,25 @@ class EditorUIHandler {
                         await window.api.addTracksBulk([newTrack]);
                     } else {
                         await window.api.updateTrack(track.x, track.y, { track_bits: newBits });
+                    }
+
+                    // Auto-create switch entity if track is now a switch
+                    // Get the updated track to check if it's a switch
+                    const updatedTrack = await window.api.getTrack(track.x, track.y);
+                    if (updatedTrack && updatedTrack.is_switch && !updatedTrack.switch_id) {
+                        // Create switch entity with default values (0 for lengths)
+                        try {
+                            await window.api.createSwitchAt(track.x, track.y, {
+                                main_length_cm: 0,
+                                diverge_length_cm: 0,
+                                main_radius_cm: null,
+                                diverge_radius_cm: null
+                            });
+                            console.log(`[Editor] Auto-created switch entity at (${track.x}, ${track.y})`);
+                        } catch (switchErr) {
+                            console.warn('[Editor] Failed to auto-create switch:', switchErr);
+                            // Don't fail the whole operation if switch creation fails
+                        }
                     }
 
                     await window.app.refreshNetwork();

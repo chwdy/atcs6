@@ -58,6 +58,7 @@ class Editor {
         this.stationHandler = new StationEditorHandler(this);
         this.trainHandler = new TrainEditorHandler(this);
         this.routeHandler = new RouteEditorHandler(this);
+        this.switchHandler = new SwitchEditorHandler(this);
         this.uiHandler = new EditorUIHandler(this);
         
         this.setupEventListeners();
@@ -150,6 +151,10 @@ class Editor {
             case 'train-control':
                 itemExists = Array.isArray(this.cachedNetwork?.trains) &&
                              this.cachedNetwork.trains.some(t => t.id === id);
+                break;
+            case 'switch':
+                // switches is an object keyed by switch_id
+                itemExists = this.cachedNetwork?.switches && (id in this.cachedNetwork.switches);
                 break;
             case 'trains-list':
             case 'schedules-list':
@@ -256,6 +261,10 @@ class Editor {
         return this.stationHandler.showEditor(stationId);
     }
 
+    async showSwitchEditor(switchId) {
+        return this.switchHandler.showEditor(switchId);
+    }
+
     async initStationEditorHandlers(stationId) {
         return this.stationHandler.initEditorHandlers(stationId);
     }
@@ -290,11 +299,11 @@ class Editor {
     }
 
     async showTrainEditor(trainId) {
-        return this.trainHandler.showTrainEditor(trainId);
+        return this.trainHandler.showTrainControlPanel(trainId);
     }
 
     async initTrainEditorHandlers(trainId) {
-        return this.trainHandler.initTrainEditorHandlers(trainId);
+        return this.trainHandler.initTrainControlHandlers(trainId);
     }
 
     showAddTrainDialog() {
@@ -1700,42 +1709,29 @@ class Editor {
                     : ''}
             </div>
 
-            ${track.switch_points && Object.keys(track.switch_points).length > 0 ? `
-            <div class="info-box-signal">
-                <label class="text-info font-bold">Switch State:</label>
-                ${track.is_diagonal_only_switch ? `
-                <div class="info-box-warning text-xxs text-warning info-box-warning-container">
-                    ⟳ Diagonal-only switch (uses clockwise ordering)
-                </div>
-                ` : ''}
-                <div class="p-8 rounded switch-state-box ${track.switch_state === 0 ? 'border-success' : 'border-warning'}" style="background: ${track.switch_state === 0 ? '#1a3a2a' : '#3a3a1a'};">
-                    <span class="switch-state-text" style="color: ${track.switch_state === 0 ? '#04d361' : '#ffd93d'};">
-                        ${track.switch_state === 0 ? 'MAIN (0)' : 'DIVERGE (1)'}
-                        ${track.is_locked || track.locked_by_path ? ' 🔒' : ''}
-                    </span>
-                    <div class="text-xxs text-secondary mt-4">
-                        ${track.is_diagonal_only_switch
-                            ? (track.switch_state === 0 ? 'Clockwise first exit' : 'Clockwise second exit')
-                            : (track.switch_state === 0 ? 'Long paths active: NS, EW' : 'Short paths active: NE, NW, SE, SW')}
+            <!-- Switch Summary (Compact view with Edit button) -->
+            ${track.switch_points && Object.keys(track.switch_points).length > 0 ? (() => {
+                const switchStateColor = track.switch_state === 0 ? '#04d361' : '#ffd93d';
+                const switchStateText = track.switch_state === 0 ? 'MAIN' : 'DIVERGE';
+                const isLocked = track.is_locked || track.locked_by_path;
+                const hasSwitchId = track.switch_id && track.switch_id !== '';
+                return `
+                <div class="property-group-header">Switch</div>
+                <div class="property-item-row">
+                    <div class="switch-summary-row" style="border-left: 3px solid ${switchStateColor}">
+                        <div class="switch-status-dot" style="background-color: ${switchStateColor};"></div>
+                        <div class="switch-info">
+                            <span class="switch-id">${track.switch_id || 'Switch'}</span>
+                            <span class="switch-state" style="color: ${switchStateColor}">${switchStateText}${isLocked ? ' 🔒' : ''}</span>
+                        </div>
+                        ${hasSwitchId 
+                            ? `<button class="edit-btn edit-switch-btn" data-switch-id="${track.switch_id}">Edit</button>`
+                            : `<span class="text-muted text-xs">No switch entity</span>`
+                        }
                     </div>
                 </div>
-                ${track.is_locked || track.locked_by_path ? `
-                <div class="info-box-warning text-xxs text-warning info-box-warning-container">
-                    🔒 Locked by path: ${track.locked_by_path || 'Unknown'}
-                </div>
-                ` : `
-                <div class="helper-text text-dim mt-4">Right-click to toggle switch</div>
-                `}
-            </div>
-            <div class="info-box-signal">
-                <label class="text-info font-bold">Switch Points:</label>
-                <pre class="switch-points-pre">${
-                    Object.entries(track.switch_points).map(([entry, exits]) => 
-                        `${entry} -> [${exits.join(', ')}]`
-                    ).join('\n')
-                }</pre>
-            </div>
-            ` : ''}
+                `;
+            })() : ''}
             ${track.signals && track.signals.length > 0 ? `
             <div class="property-group-header">Signals</div>
             ${track.signals.map(signal => `
@@ -1814,7 +1810,9 @@ class Editor {
                                 return headEnd.tile[0] === track.x && headEnd.tile[1] === track.y;
                             }
                         }
-                        return false;
+                        // Legacy fallback
+                        const legacyPos = t.position_legacy || (t.position && typeof t.position.x === 'number' ? t.position : null);
+                        return legacyPos && legacyPos.x === track.x && legacyPos.y === track.y;
                     })
                     : [];
                 if (trainsAtTile.length === 0) return '';
@@ -1894,6 +1892,7 @@ class Editor {
         setTimeout(() => this.initVisualTrackEditor(editorId, track), 0);
         setTimeout(() => this.initSignalEditor(track), 0);
         setTimeout(() => this.initBlockEditor(track), 0);
+        setTimeout(() => this.initSwitchEditor(track), 0);
         setTimeout(() => this.initStationButtonHandlers(), 0);
         setTimeout(() => this.initTrainEditor(track), 0);
         setTimeout(() => this.initViewFullJSONButton(track), 0);
@@ -1928,13 +1927,40 @@ class Editor {
         }
     }
 
+    // Initialize switch edit button handler
+    initSwitchEditor(track) {
+        if (!track.switch_id) return;
+
+        const editBtn = document.querySelector(`.edit-switch-btn[data-switch-id="${track.switch_id}"]`);
+        if (editBtn) {
+            editBtn.onclick = () => {
+                this.showSwitchEditor(track.switch_id);
+            };
+        }
+    }
+
     // Initialize train summary edit button handler
     initTrainEditor(track) {
         // Find all trains at this tile
         const trainsAtTile = this.cachedNetwork && this.cachedNetwork.trains
             ? this.cachedNetwork.trains.filter(t => {
-                const pos = t.position_legacy || t.position;
-                return pos && pos.x === track.x && pos.y === track.y;
+                // Check new TrainPosition format: occupied_tiles array
+                const pos = t.position;
+                if (pos && pos.occupied_tiles) {
+                    return pos.occupied_tiles.some(tile => 
+                        tile[0] === track.x && tile[1] === track.y
+                    );
+                }
+                // Fallback: check head tile from end_a/end_b
+                if (pos && pos.end_a && pos.end_b) {
+                    const headEnd = pos.leading_end === 'a' ? pos.end_a : pos.end_b;
+                    if (headEnd.tile) {
+                        return headEnd.tile[0] === track.x && headEnd.tile[1] === track.y;
+                    }
+                }
+                // Legacy fallback
+                const legacyPos = t.position_legacy || (t.position && typeof t.position.x === 'number' ? t.position : null);
+                return legacyPos && legacyPos.x === track.x && legacyPos.y === track.y;
             })
             : [];
         

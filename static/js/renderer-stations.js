@@ -119,7 +119,9 @@ class RendererStationHandler {
 
         const sideMultiplier = this.getSideMultiplier(side, orientation);
 
-        const labelOffset = half * 0.3 + 18 * this.scale;
+        // Use dynamic spacing based on user preference
+        const spacingMultiplier = getLabelSpacingMultiplier();
+        const labelOffset = half * spacingMultiplier + 18 * this.scale;
         const labelX = centerX + perpX * labelOffset * sideMultiplier;
         const labelY = centerY + perpY * labelOffset * sideMultiplier;
 

@@ -83,11 +83,60 @@ const SEGMENT_QUADRANTS = {
     5: ['NW', 'SW'],  // SW segment (vertical on screen)
 };
 
+// ============================================================================
+// Label Spacing System
+// ============================================================================
+
+/**
+ * Label spacing presets - multiplier applied to tileSize for label offset
+ */
+const LABEL_SPACING_PRESETS = {
+    'tight': 0.35,
+    'mid': 0.5,
+    'cozy': 0.7
+};
+
+// Current label spacing setting (can be changed at runtime)
+let currentLabelSpacing = 'mid';
+
+/**
+ * Get the current label spacing multiplier
+ * @returns {number} Spacing multiplier (0.35, 0.5, or 0.7)
+ */
+function getLabelSpacingMultiplier() {
+    return LABEL_SPACING_PRESETS[currentLabelSpacing] || 0.5;
+}
+
+/**
+ * Set the current label spacing
+ * @param {string} spacing - 'tight', 'mid', or 'cozy'
+ */
+function setLabelSpacing(spacing) {
+    if (LABEL_SPACING_PRESETS[spacing] !== undefined) {
+        currentLabelSpacing = spacing;
+    }
+}
+
+/**
+ * Get quadrant offsets based on current label spacing setting
+ * @returns {Object} Quadrant offset object with dx/dy values
+ */
+function getQuadrantOffsets() {
+    const spacing = getLabelSpacingMultiplier();
+    return {
+        'NE': { dx: spacing, dy: -spacing },
+        'NW': { dx: -spacing, dy: -spacing },
+        'SE': { dx: spacing, dy: spacing },
+        'SW': { dx: -spacing, dy: spacing },
+    };
+}
+
+// Legacy static offsets (for backward compatibility, uses default mid spacing)
 const QUADRANT_OFFSETS = {
-    'NE': { dx: 0.35, dy: -0.35 },
-    'NW': { dx: -0.35, dy: -0.35 },
-    'SE': { dx: 0.35, dy: 0.35 },
-    'SW': { dx: -0.35, dy: 0.35 },
+    'NE': { dx: 0.5, dy: -0.5 },
+    'NW': { dx: -0.5, dy: -0.5 },
+    'SE': { dx: 0.5, dy: 0.5 },
+    'SW': { dx: -0.5, dy: 0.5 },
 };
 
 const DIRECTION_PREFERRED_QUADRANTS = {
@@ -120,13 +169,45 @@ function getOccupiedQuadrants(trackBits) {
 }
 
 /**
- * Get the best quadrant for placing a label based on track configuration and direction
+ * Get the best quadrant for placing a label based on track configuration, direction, and nearby tracks
  * @param {number} trackBits - 6-bit track configuration
  * @param {string} direction - Direction name ('NORTH', 'SOUTH', 'EAST', 'WEST')
+ * @param {number} tileX - X coordinate of the tile (optional, for smart positioning)
+ * @param {number} tileY - Y coordinate of the tile (optional, for smart positioning)
+ * @param {Array} tracks - Array of track objects (optional, for smart positioning)
  * @returns {string} Best quadrant name for label placement
  */
-function getBestLabelQuadrant(trackBits, direction) {
+function getBestLabelQuadrant(trackBits, direction, tileX, tileY, tracks) {
     const occupied = getOccupiedQuadrants(trackBits);
+    
+    // Smart positioning: also check neighboring tiles to avoid placing labels over adjacent tracks
+    if (tracks && tileX !== undefined && tileY !== undefined) {
+        // In isometric view, quadrants map to diagonal neighbors:
+        // NE quadrant -> tile at (x+1, y) and (x, y+1)
+        // NW quadrant -> tile at (x-1, y) and (x, y+1)
+        // SE quadrant -> tile at (x+1, y) and (x, y-1)
+        // SW quadrant -> tile at (x-1, y) and (x, y-1)
+        
+        const hasTrackAt = (x, y) => {
+            const t = tracks.find(t => t.x === x && t.y === y);
+            return t && t.track_bits > 0;
+        };
+        
+        // Check if neighbor tiles have tracks that would be blocked by label
+        if (hasTrackAt(tileX + 1, tileY) || hasTrackAt(tileX, tileY + 1)) {
+            occupied.add('NE');
+        }
+        if (hasTrackAt(tileX - 1, tileY) || hasTrackAt(tileX, tileY + 1)) {
+            occupied.add('NW');
+        }
+        if (hasTrackAt(tileX + 1, tileY) || hasTrackAt(tileX, tileY - 1)) {
+            occupied.add('SE');
+        }
+        if (hasTrackAt(tileX - 1, tileY) || hasTrackAt(tileX, tileY - 1)) {
+            occupied.add('SW');
+        }
+    }
+    
     const preferred = DIRECTION_PREFERRED_QUADRANTS[direction] || ['NE', 'NW', 'SE', 'SW'];
     
     for (const quad of preferred) {
