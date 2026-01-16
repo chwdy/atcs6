@@ -8,6 +8,10 @@
 class SwitchEditorHandler {
     constructor(editor) {
         this.editor = editor;
+        this._switchId = null;
+        this._unsubscribe = null;
+        this._localState = null;
+        this._isDirty = false;
     }
 
     // Convenience getters for common editor properties
@@ -212,6 +216,73 @@ class SwitchEditorHandler {
                 }
             };
         }
+        
+        // ═══════════════════════════════════════════════════════════════
+        // SUBSCRIPTION SETUP (Phase 4)
+        // ═══════════════════════════════════════════════════════════════
+        
+        this._cleanup();
+        this._switchId = switchData.switch_id;
+        this._localState = JSON.parse(JSON.stringify(switchData));
+        this._isDirty = false;
+        
+        this._unsubscribe = window.stateManager.subscribe(
+            'switches',
+            switchData.switch_id,
+            (newSwitch, oldSwitch) => this._onSwitchUpdate(newSwitch, oldSwitch),
+            { immediate: false }
+        );
+    }
+    
+    _onSwitchUpdate(newSwitch, oldSwitch) {
+        if (!newSwitch) {
+            window.showToast('Switch was deleted', 'warning');
+            this.editor.hideSecondarySidebar();
+            return;
+        }
+        
+        const activeElement = document.activeElement;
+        if (activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA' || activeElement.tagName === 'SELECT')) {
+            return;
+        }
+        
+        if (this._isDirty) return;
+        
+        this._localState = JSON.parse(JSON.stringify(newSwitch));
+        this._updateSwitchDisplay(newSwitch);
+    }
+    
+    async _updateSwitchDisplay(switchData) {
+        const track = await this.api.getTrack(switchData.x, switchData.y);
+        const currentState = track?.switch_state ?? 0;
+        const stateText = currentState === 0 ? 'MAIN' : 'DIVERGE';
+        const stateColor = currentState === 0 ? '#04d361' : '#ffd93d';
+        const isLocked = switchData.locked_by_path !== null;
+        
+        const stateDot = document.querySelector('.train-status-dot');
+        if (stateDot) stateDot.style.background = stateColor;
+        
+        const stateSpan = stateDot?.nextElementSibling;
+        if (stateSpan) {
+            stateSpan.style.color = stateColor;
+            stateSpan.textContent = stateText;
+        }
+        
+        const lockBadge = document.querySelector('.badge-danger, .badge-success');
+        if (lockBadge) {
+            lockBadge.className = `badge ${isLocked ? 'badge-danger' : 'badge-success'} text-xxs`;
+            lockBadge.textContent = isLocked ? 'LOCKED' : 'UNLOCKED';
+        }
+    }
+    
+    _cleanup() {
+        if (this._unsubscribe) {
+            this._unsubscribe();
+            this._unsubscribe = null;
+        }
+        this._switchId = null;
+        this._localState = null;
+        this._isDirty = false;
     }
 
     // === Switch List Rendering ===

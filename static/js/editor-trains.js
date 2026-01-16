@@ -1,6 +1,8 @@
 class TrainEditorHandler {
     constructor(editor) {
         this.editor = editor;
+        this._trainId = null;  // Currently displayed train ID
+        this._unsubscribe = null;  // Unsubscribe function for StateManager
     }
 
     get api() { return this.editor.api; }
@@ -767,6 +769,54 @@ class TrainEditorHandler {
                 window.app.selectTrain(trainId);
             };
         }
+        
+        // ═══════════════════════════════════════════════════════════════
+        // SUBSCRIPTION SETUP (NEW - Phase 3)
+        // ═══════════════════════════════════════════════════════════════
+        
+        // Cleanup previous subscription if any
+        this._cleanup();
+        
+        // Store current train ID
+        this._trainId = trainId;
+        
+        // Subscribe to train updates from StateManager
+        this._unsubscribe = window.stateManager.subscribe(
+            'trains',
+            trainId,
+            (newTrain, oldTrain) => this._onTrainUpdate(newTrain, oldTrain),
+            { immediate: false }  // Don't call immediately, we already have the data
+        );
+    }
+    
+    /**
+     * Handle train updates from StateManager subscription.
+     * This replaces the polling-based updateControlPanelValuesFromData.
+     * @private
+     */
+    _onTrainUpdate(newTrain, oldTrain) {
+        if (!newTrain) {
+            // Train was deleted
+            window.showToast('Train was deleted', 'warning');
+            this.editor.hideSecondarySidebar();
+            return;
+        }
+        
+        // Always update display values - this is a live view (Control Panel pattern)
+        // No "dirty" concept for control panels - they update in real-time
+        this.updateControlPanelValuesFromData(newTrain);
+    }
+    
+    /**
+     * Cleanup subscription when panel is hidden or train changes.
+     * @private
+     */
+    _cleanup() {
+        if (this._unsubscribe) {
+            this._unsubscribe();
+            this._unsubscribe = null;
+        }
+        this._trainId = null;
     }
 
     async updateTrainControlPanelValues(trainId) {

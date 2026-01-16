@@ -1,6 +1,11 @@
 class StationEditorHandler {
     constructor(editor) {
         this.editor = editor;
+        this._stationId = null;
+        this._unsubscribe = null;
+        this._localState = null;
+        this._isDirty = false;
+        this._isUserInteracting = false;
     }
 
     get api() { return this.editor.api; }
@@ -87,6 +92,9 @@ class StationEditorHandler {
 
         this.editor.showSecondarySidebar('🚉 Station Editor', content);
 
+        // Setup subscription
+        this._setupSubscription(stationId, station);
+
         setTimeout(() => this.initEditorHandlers(stationId), 0);
     }
 
@@ -133,7 +141,7 @@ class StationEditorHandler {
                     if (this.selectedElement && this.selectedElement.station_id === stationId) {
                         await this.editor.selectElement({ x: this.selectedElement.x, y: this.selectedElement.y });
                     }
-                    window.showToast('Station properties saved', 'success', 'error', 5000);
+                    window.showToast('Station properties saved', 'success', 5000);
                 } catch (err) {
                     console.error('Failed to save station properties:', err);
                     window.showToast('Failed to save station properties: ' + err.message, 'error', 5000);
@@ -155,7 +163,7 @@ class StationEditorHandler {
                     if (wasShowingThisStation && selectedPos) {
                         await this.editor.selectElement(selectedPos);
                     }
-                    window.showToast('Station deleted', 'success', 'error', 5000);
+                    window.showToast('Station deleted', 'success', 5000);
                 } catch (err) {
                     console.error('Failed to delete station:', err);
                     window.showToast('Failed to delete station: ' + err.message, 'error', 5000);
@@ -614,5 +622,53 @@ class StationEditorHandler {
                 }
             }, 50);
         });
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // SUBSCRIPTION METHODS (Phase 4)
+    // ═══════════════════════════════════════════════════════════════
+    
+    _setupSubscription(stationId, stationData) {
+        this._cleanup();
+        this._stationId = stationId;
+        this._localState = JSON.parse(JSON.stringify(stationData));
+        this._isDirty = false;
+        
+        this._unsubscribe = window.stateManager.subscribe(
+            'stations',
+            stationId,
+            (newStation, oldStation) => this._onStationUpdate(newStation, oldStation),
+            { immediate: false }
+        );
+    }
+    
+    _onStationUpdate(newStation, oldStation) {
+        if (!newStation) {
+            window.showToast('Station was deleted', 'warning');
+            this.editor.hideSecondarySidebar();
+            return;
+        }
+        
+        if (this._isUserInteracting) return;
+        
+        const activeElement = document.activeElement;
+        if (activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA' || activeElement.tagName === 'SELECT')) {
+            return;
+        }
+        
+        if (this._isDirty) return;
+        
+        this._localState = JSON.parse(JSON.stringify(newStation));
+    }
+    
+    _cleanup() {
+        if (this._unsubscribe) {
+            this._unsubscribe();
+            this._unsubscribe = null;
+        }
+        this._stationId = null;
+        this._localState = null;
+        this._isDirty = false;
+        this._isUserInteracting = false;
     }
 }

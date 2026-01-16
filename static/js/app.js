@@ -402,6 +402,10 @@ class App {
             try {
                 const network = await window.api.getNetwork();
                 this.currentNetwork = network;
+                
+                // NEW: Update StateManager cache
+                window.stateManager.updateFromNetwork(network);
+                
                 this.editor.setCachedNetwork(network);
                 // Validate that the current editor still exists (close if deleted)
                 this.editor.validateCurrentEditor();
@@ -416,6 +420,10 @@ class App {
         try {
             const network = await window.api.getNetwork();
             this.currentNetwork = network;
+            
+            // NEW: Update StateManager cache
+            window.stateManager.updateFromNetwork(network);
+            
             this.editor.setCachedNetwork(network);
             this.renderer.drawNetwork(network);
             // Validate that the current editor still exists (close if deleted)
@@ -979,22 +987,18 @@ class App {
         this.simulationInterval = setInterval(async () => {
             await this.refreshNetwork();
             
-            // Refresh other editor types (blocks, signals, stations)
-            // Train control is handled below to avoid race conditions
-            if (this.editor) {
-                this.editor.refreshCurrentEditor();  // This now skips train-control during simulation
-            }
+            // Phase 4 COMPLETE: All panels now use StateManager subscriptions
+            // No need for refreshCurrentEditor() - subscriptions handle all updates
             
             if (this.selectedTrainId) {
-                const train = this.currentNetwork?.trains?.find(t => t.id === this.selectedTrainId);
+                const train = window.stateManager.get('trains', this.selectedTrainId);
                 if (train) {
-                    // Update both control panel values AND debug panel
-                    // This is the single source of truth for train updates during simulation
-                    this.editor.trainHandler.updateControlPanelValuesFromData(train);
+                    // Train Control Panel updates via subscription
+                    // Only update debug panel here
                     this.updateTrainDebugPanel(train);
                 }
                 
-                // Fetch lookahead for both Monitor and Debug Panel
+                // Fetch lookahead for Monitor and Debug Panel
                 await this.fetchTrainLookahead(this.selectedTrainId);
             }
         }, 200);

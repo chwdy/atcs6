@@ -8,6 +8,11 @@
 class BlockEditorHandler {
     constructor(editor) {
         this.editor = editor;
+        this._blockId = null;
+        this._unsubscribe = null;
+        this._localState = null;
+        this._isDirty = false;
+        this._isUserInteracting = false;  // For tile picker drag operations
     }
 
     // Convenience getters for common editor properties
@@ -162,6 +167,9 @@ class BlockEditorHandler {
         `;
 
         this.editor.showSecondarySidebar(`📦 Block Editor`, content);
+        
+        // Setup subscription before handlers
+        this._setupSubscription(blockId, block);
         
         // Initialize event handlers after content is rendered
         setTimeout(() => this.initEditorHandlers(blockId), 0);
@@ -818,5 +826,53 @@ class BlockEditorHandler {
                 }
             });
         });
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // SUBSCRIPTION METHODS (Phase 4)
+    // ═══════════════════════════════════════════════════════════════
+    
+    _setupSubscription(blockId, blockData) {
+        this._cleanup();
+        this._blockId = blockId;
+        this._localState = JSON.parse(JSON.stringify(blockData));
+        this._isDirty = false;
+        
+        this._unsubscribe = window.stateManager.subscribe(
+            'blocks',
+            blockId,
+            (newBlock, oldBlock) => this._onBlockUpdate(newBlock, oldBlock),
+            { immediate: false }
+        );
+    }
+    
+    _onBlockUpdate(newBlock, oldBlock) {
+        if (!newBlock) {
+            window.showToast('Block was deleted', 'warning');
+            this.editor.hideSecondarySidebar();
+            return;
+        }
+        
+        if (this._isUserInteracting) return;  // Don't interrupt tile picker drag
+        
+        const activeElement = document.activeElement;
+        if (activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA' || activeElement.tagName === 'SELECT')) {
+            return;
+        }
+        
+        if (this._isDirty) return;
+        
+        this._localState = JSON.parse(JSON.stringify(newBlock));
+    }
+    
+    _cleanup() {
+        if (this._unsubscribe) {
+            this._unsubscribe();
+            this._unsubscribe = null;
+        }
+        this._blockId = null;
+        this._localState = null;
+        this._isDirty = false;
+        this._isUserInteracting = false;
     }
 }

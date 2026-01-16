@@ -209,37 +209,22 @@ class Editor {
             return;
         }
 
-        // Don't refresh if user is actively editing an input field or interacting with slider
         const activeElement = document.activeElement;
-        if (activeElement && (
-            activeElement.tagName === 'INPUT' ||
-            activeElement.tagName === 'TEXTAREA' ||
-            activeElement.tagName === 'SELECT'
-        )) {
+        if (activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA' || activeElement.tagName === 'SELECT')) {
             return;
         }
 
-        // For train control panel during simulation, skip update - app.js handles it
-        // This prevents competing updates and race conditions
+        // Phase 3-4: All panels now use subscriptions - no need to refresh
         if (this._currentEditorType === 'train-control') {
-            // Only update if simulation is NOT running
-            if (window.app && window.app.isSimulationRunning) {
-                return;  // Let app.js simulation loop handle train control updates
-            }
+            if (window.app?.isSimulationRunning) return;
             this.trainHandler.updateTrainControlPanelValues(this._currentEditorId);
             return;
         }
-
-        switch (this._currentEditorType) {
-            case 'block':
-                this.showBlockEditor(this._currentEditorId);
-                break;
-            case 'signal':
-                this.showSignalEditor(this._currentEditorId);
-                break;
-            case 'station':
-                this.showStationEditor(this._currentEditorId);
-                break;
+        
+        // All other panels use subscriptions
+        if (this._currentEditorType === 'signal' || this._currentEditorType === 'switch' || 
+            this._currentEditorType === 'block' || this._currentEditorType === 'station') {
+            return;
         }
     }
 

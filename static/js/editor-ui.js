@@ -113,6 +113,14 @@ class EditorUIHandler {
             sidebar.classList.remove('visible');
             sidebar.classList.remove('compact');
         }
+        
+        // Phase 3-4: Cleanup subscriptions for all handlers
+        if (this.editor.trainHandler?._cleanup) this.editor.trainHandler._cleanup();
+        if (this.editor.signalHandler?._cleanup) this.editor.signalHandler._cleanup();
+        if (this.editor.switchHandler?._cleanup) this.editor.switchHandler._cleanup();
+        if (this.editor.blockHandler?._cleanup) this.editor.blockHandler._cleanup();
+        if (this.editor.stationHandler?._cleanup) this.editor.stationHandler._cleanup();
+        
         this.editor._currentEditorType = null;
         this.editor._currentEditorId = null;
     }

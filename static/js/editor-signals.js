@@ -1,6 +1,10 @@
 class SignalEditorHandler {
     constructor(editor) {
         this.editor = editor;
+        this._signalId = null;  // Currently displayed signal ID
+        this._unsubscribe = null;  // Unsubscribe function for StateManager
+        this._localState = null;  // Local copy for editing
+        this._isDirty = false;  // True if user has unsaved changes
     }
 
     get api() { return this.editor.api; }
@@ -306,7 +310,7 @@ class SignalEditorHandler {
 
                 try {
                     await this.api.updateSignal(signalId, updates);
-                    window.showToast('Signal updated successfully', 'success', 'error', 5000);
+                    window.showToast('Signal updated successfully', 'success', 5000);
                     await window.app.refreshNetwork();
 
                     if (this.selectedElement) {
@@ -318,6 +322,103 @@ class SignalEditorHandler {
                 }
             };
         }
+        
+        // ═══════════════════════════════════════════════════════════════
+        // SUBSCRIPTION SETUP (NEW - Phase 4)
+        // ═══════════════════════════════════════════════════════════════
+        
+        // Cleanup previous subscription
+        this._cleanup();
+        
+        // Store current signal ID and initial state
+        this._signalId = signalId;
+        this._localState = JSON.parse(JSON.stringify(signal));
+        this._isDirty = false;
+        
+        // Subscribe to signal updates
+        this._unsubscribe = window.stateManager.subscribe(
+            'signals',
+            signalId,
+            (newSignal, oldSignal) => this._onSignalUpdate(newSignal, oldSignal),
+            { immediate: false }
+        );
+    }
+    
+    /**
+     * Handle signal updates from StateManager.
+     * @private
+     */
+    _onSignalUpdate(newSignal, oldSignal) {
+        if (!newSignal) {
+            // Signal was deleted
+            window.showToast('Signal was deleted', 'warning');
+            this.editor.hideSecondarySidebar();
+            return;
+        }
+        
+        // Check if user is actively editing
+        const activeElement = document.activeElement;
+        if (activeElement && (
+            activeElement.tagName === 'INPUT' ||
+            activeElement.tagName === 'TEXTAREA' ||
+            activeElement.tagName === 'SELECT'
+        )) {
+            // User is typing - don't interrupt
+            return;
+        }
+        
+        if (this._isDirty) {
+            // User has unsaved changes - don't overwrite
+            // Could show an indicator here in the future
+            return;
+        }
+        
+        // Update local state and refresh display
+        this._localState = JSON.parse(JSON.stringify(newSignal));
+        this._updateSignalDisplay(newSignal);
+    }
+    
+    /**
+     * Update signal display values without rebuilding the entire panel.
+     * @private
+     */
+    _updateSignalDisplay(signal) {
+        // Update state display
+        const state = (signal.state || signal.signal_state || 'green').toLowerCase();
+        const stateColor = state === 'green' ? '#04d361' : (state === 'yellow' ? '#ffd93d' : '#e83f5b');
+        const stateText = state.toUpperCase();
+        
+        const stateDot = document.querySelector('.train-status-dot');
+        if (stateDot) {
+            stateDot.style.background = stateColor;
+            stateDot.style.boxShadow = `0 0 8px ${stateColor}`;
+        }
+        
+        const stateSpan = stateDot?.nextElementSibling;
+        if (stateSpan) {
+            stateSpan.style.color = stateColor;
+            stateSpan.textContent = stateText;
+        }
+        
+        // Update monitored block display
+        const monitoredBlockDisplay = document.querySelector('.value-display.text-track');
+        if (monitoredBlockDisplay) {
+            monitoredBlockDisplay.textContent = signal.monitored_block_id || 'None';
+        }
+    }
+    
+    /**
+     * Cleanup subscription.
+     * @private
+     */
+    _cleanup() {
+        if (this._unsubscribe) {
+            this._unsubscribe();
+            this._unsubscribe = null;
+        }
+        this._signalId = null;
+        this._localState = null;
+        this._isDirty = false;
     }
 
     renderSignalList(signals) {
