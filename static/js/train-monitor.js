@@ -19,7 +19,7 @@ class TrainMonitor {
         
         this.loadScale();
         
-        this.viewDistance = 0;
+        this.viewDistance = 500; // Default to 5m
         this.hoveredBlock = null;
         this.blockRects = [];
         
@@ -254,8 +254,15 @@ class TrainMonitor {
             // For subsequent tiles, this is positive
             const distanceToTileStart = info.distance_to_tile_cm ?? 0;
             
-            // Calculate distance from head to START of tile (0 if head is on this tile)
-            const tileStartFromHead = Math.max(0, distanceToTileStart);
+            // Train's travel direction on this tile (N/E/S/W)
+            const travelDirection = info.travel_direction;
+            
+            // For blocks: use actual distance (can be negative for current block)
+            // This allows the current block to scroll left as train advances
+            const blockTileStart = distanceToTileStart;
+            
+            // For signals/switches: use max(0, dist) since they are point elements
+            const pointElementStart = Math.max(0, distanceToTileStart);
             
             // Add block if not seen yet
             if (info.block_id && !seenBlocks.has(info.block_id)) {
@@ -277,23 +284,33 @@ class TrainMonitor {
                     id: info.block_id,
                     name: info.block_id,
                     state: info.block_state || 'free',
-                    start_cm: tileStartFromHead,
-                    end_cm: tileStartFromHead + blockLength,
+                    start_cm: blockTileStart,
+                    end_cm: blockTileStart + blockLength,
                     length_cm: blockLength,
                     tile_count: tileCount,
                     sequence: blocks.length
                 });
             }
             
-            // Add signals on this tile
-            if (info.signals && info.signals.length > 0) {
+            // Add signals on this tile - only if facing train's travel direction
+            if (info.signals && info.signals.length > 0 && travelDirection) {
                 info.signals.forEach(sig => {
-                    signals.push({
-                        id: sig.id,
-                        state: sig.state,
-                        distance_cm: tileStartFromHead, // Signal at start of tile
-                        sequence: signals.length
-                    });
+                    // Only include signals where detection_direction matches train's travel direction
+                    // Signal direction can be single letter (N/E/S/W) or full name (NORTH/EAST/etc)
+                    const sigDir = (sig.direction || '').toUpperCase();
+                    const trainDir = travelDirection.toUpperCase();
+                    const dirMatches = sigDir === trainDir || 
+                                       sigDir === trainDir[0] || 
+                                       sigDir[0] === trainDir[0];
+                    
+                    if (dirMatches) {
+                        signals.push({
+                            id: sig.id,
+                            state: sig.state,
+                            distance_cm: pointElementStart,
+                            sequence: signals.length
+                        });
+                    }
                 });
             }
             
@@ -303,7 +320,8 @@ class TrainMonitor {
                     x: tile[0],
                     y: tile[1],
                     position: info.switch_state === 0 ? 'main' : 'diverging',
-                    distance_cm: tileStartFromHead,
+                    distance_cm: pointElementStart,
+                    locked: info.switch_locked || false,
                     sequence: switches.length
                 });
             }
@@ -581,6 +599,17 @@ class TrainMonitor {
         const visibleRangeCm = visibleEndCm - visibleStartCm;
         const cmToX = (cm) => padding.left + ((cm - visibleStartCm) / visibleRangeCm) * trackWidth;
         
+        // Draw grey overlay beyond clearance distance (unknown territory)
+        const clearanceCm = data.clearance_cm || 0;
+        if (clearanceCm > 0 && clearanceCm < lookaheadDistance) {
+            const clearanceX = cmToX(trainDist + clearanceCm);
+            const greyWidth = width - clearanceX;
+            if (greyWidth > 0) {
+                this.ctx.fillStyle = '#1a1a1a';
+                this.ctx.fillRect(clearanceX, 0, greyWidth, height - padding.bottom);
+            }
+        }
+        
         this.drawTrackLine(padding.left, blockTrackY, trackWidth, '#333');
         this.drawBlocks(data.blocks || [], cmToX, blockTrackY);
         this.drawSwitches(data.switches || [], cmToX, blockTrackY);
@@ -735,6 +764,15 @@ class TrainMonitor {
             if (x < 0 || x > this.canvas.width) return;
             
             const isMain = sw.position === 'main' || sw.position === 0;
+            
+            // Draw orange lock circle if switch is locked
+            if (sw.locked) {
+                this.ctx.strokeStyle = '#ff8c00'; // Orange
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+                this.ctx.arc(x, trackY, 8, 0, Math.PI * 2);
+                this.ctx.stroke();
+            }
             
             this.ctx.strokeStyle = isMain ? '#04d361' : '#ffcd1e';
             this.ctx.lineWidth = 2.5;

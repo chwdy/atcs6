@@ -1427,6 +1427,12 @@ class Train:
             for i in range(self.path_index, len(self.current_path)):
                 path_entry = self.current_path[i]
                 x, y = path_entry[0], path_entry[1]
+                # path_entry[2] is the Direction enum for train's travel direction
+                travel_direction = (
+                    path_entry[2].name
+                    if len(path_entry) > 2 and hasattr(path_entry[2], "name")
+                    else None
+                )
                 lookahead_tiles.append([x, y])
 
                 track = network.get_track(x, y)
@@ -1439,6 +1445,8 @@ class Train:
                     # Distance from train head to START of this tile (cm)
                     # For first tile (head tile), this is negative
                     "distance_to_tile_cm": cumulative_distance_cm,
+                    # Train's travel direction on this tile (N/E/S/W)
+                    "travel_direction": travel_direction,
                 }
 
                 # Add block state if block exists
@@ -1467,6 +1475,7 @@ class Train:
                 if track and track.is_switch:
                     tile_info["is_switch"] = True
                     tile_info["switch_state"] = track.switch_state
+                    tile_info["switch_locked"] = track.is_locked_by_path()
 
                 lookahead_tile_info.append(tile_info)
 

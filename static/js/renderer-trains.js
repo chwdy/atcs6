@@ -455,97 +455,120 @@ class RendererTrainHandler {
         const occupiedTileCount = Math.abs(headIndex - tailIndex) + 1;
         
         // === Draw train body (white stroke with dark border from tail to head) ===
-        // Build the path once, then stroke it twice (dark border first, white fill second)
-        const buildBodyPath = () => {
-            this.ctx.beginPath();
-            this.ctx.moveTo(tailPos.x, tailPos.y);
+        // Collect all path points
+        const pathPoints = [];
+        pathPoints.push({ x: tailPos.x, y: tailPos.y });
+        
+        if (occupiedTileCount === 1) {
+            // Same tile - direct line
+            pathPoints.push({ x: headPos.x, y: headPos.y });
+        } else if (occupiedTileCount === 2) {
+            // 2 tiles - go through boundary between tiles
+            const tailTrack = tracks.find(t => t.x === tailTile[0] && t.y === tailTile[1]);
+            if (!tailTrack) {
+                console.warn('[RendererTrainHandler] Track not found for tail tile', {
+                    tailTile, trainId: train.id
+                });
+                return;
+            }
+            const tailExits = this.getTrackExits(tailTrack, tailEntryEdge);
+            const tailExitEdge = tailExits.length > 0 ? tailExits[0] : null;
+            const headEntryEdgeCalc = tailExitEdge ? this.getOppositeEdge(tailExitEdge) : headEntryEdge;
             
-            if (occupiedTileCount === 1) {
-                // Same tile - direct line
-                this.ctx.lineTo(headPos.x, headPos.y);
-            } else if (occupiedTileCount === 2) {
-                // 2 tiles - go through boundary between tiles
-                // Get exit edge from tail tile using switch-aware getTrackExits
-                const tailTrack = tracks.find(t => t.x === tailTile[0] && t.y === tailTile[1]);
-                if (!tailTrack) {
-                    console.warn('[RendererTrainHandler] Track not found for tail tile', {
-                        tailTile, trainId: train.id
+            if (tailExitEdge) {
+                const tailCenterX = this.gridToScreenX(tailTile[0], tailTile[1]);
+                const tailCenterY = this.gridToScreenY(tailTile[0], tailTile[1]);
+                const tailExitOffset = this.getEdgeCenterOffset(tailExitEdge);
+                pathPoints.push({ x: tailCenterX + tailExitOffset.x, y: tailCenterY + tailExitOffset.y });
+            }
+            
+            if (headEntryEdgeCalc && (headTile[0] !== tailTile[0] || headTile[1] !== tailTile[1])) {
+                const headCenterX = this.gridToScreenX(headTile[0], headTile[1]);
+                const headCenterY = this.gridToScreenY(headTile[0], headTile[1]);
+                const headEntryOffset = this.getEdgeCenterOffset(headEntryEdgeCalc);
+                pathPoints.push({ x: headCenterX + headEntryOffset.x, y: headCenterY + headEntryOffset.y });
+            }
+            
+            pathPoints.push({ x: headPos.x, y: headPos.y });
+        } else {
+            // 3+ tiles - draw through all occupied tiles
+            const step = tailIndex <= headIndex ? 1 : -1;
+            let currentEntryEdge = tailEntryEdge;
+            
+            for (let i = tailIndex; i !== headIndex; i += step) {
+                const currentTile = pathTiles[i];
+                const track = tracks.find(t => t.x === currentTile[0] && t.y === currentTile[1]);
+                if (!track) {
+                    console.warn('[RendererTrainHandler] Track not found for intermediate tile', {
+                        tile: currentTile, trainId: train.id
                     });
-                    return;
+                    continue;
                 }
-                const tailExits = this.getTrackExits(tailTrack, tailEntryEdge);
-                const tailExitEdge = tailExits.length > 0 ? tailExits[0] : null;
 
-                // Get entry edge for head tile (opposite of exit from previous tile)
-                const headEntryEdgeCalc = tailExitEdge ? this.getOppositeEdge(tailExitEdge) : headEntryEdge;
+                const exits = this.getTrackExits(track, currentEntryEdge);
+                const exitEdge = exits.length > 0 ? exits[0] : null;
                 
-                // Draw from tail position to tail exit
-                if (tailExitEdge) {
-                    const tailCenterX = this.gridToScreenX(tailTile[0], tailTile[1]);
-                    const tailCenterY = this.gridToScreenY(tailTile[0], tailTile[1]);
-                    const tailExitOffset = this.getEdgeCenterOffset(tailExitEdge);
-                    this.ctx.lineTo(tailCenterX + tailExitOffset.x, tailCenterY + tailExitOffset.y);
+                if (exitEdge) {
+                    const centerX = this.gridToScreenX(currentTile[0], currentTile[1]);
+                    const centerY = this.gridToScreenY(currentTile[0], currentTile[1]);
+                    const exitOffset = this.getEdgeCenterOffset(exitEdge);
+                    pathPoints.push({ x: centerX + exitOffset.x, y: centerY + exitOffset.y });
+                    currentEntryEdge = this.getOppositeEdge(exitEdge);
                 }
-                
-                // Draw from head entry to head position
-                if (headEntryEdgeCalc && (headTile[0] !== tailTile[0] || headTile[1] !== tailTile[1])) {
-                    const headCenterX = this.gridToScreenX(headTile[0], headTile[1]);
-                    const headCenterY = this.gridToScreenY(headTile[0], headTile[1]);
-                    const headEntryOffset = this.getEdgeCenterOffset(headEntryEdgeCalc);
-                    this.ctx.lineTo(headCenterX + headEntryOffset.x, headCenterY + headEntryOffset.y);
+            }
+            pathPoints.push({ x: headPos.x, y: headPos.y });
+        }
+        
+        // Draw body in segments: first (butt cap), middle (round caps), last (butt cap)
+        const drawBodySegments = (strokeStyle, lineWidth) => {
+            if (pathPoints.length < 2) return;
+            
+            // First segment (tail to first intermediate) - butt cap at tail
+            this.ctx.save();
+            this.ctx.strokeStyle = strokeStyle;
+            this.ctx.lineWidth = lineWidth;
+            this.ctx.lineCap = 'butt';
+            this.ctx.lineJoin = 'round';
+            this.ctx.beginPath();
+            this.ctx.moveTo(pathPoints[0].x, pathPoints[0].y);
+            this.ctx.lineTo(pathPoints[1].x, pathPoints[1].y);
+            this.ctx.stroke();
+            this.ctx.restore();
+            
+            // Middle segments - round caps for smooth joins
+            if (pathPoints.length > 2) {
+                this.ctx.save();
+                this.ctx.strokeStyle = strokeStyle;
+                this.ctx.lineWidth = lineWidth;
+                this.ctx.lineCap = 'round';
+                this.ctx.lineJoin = 'round';
+                for (let i = 1; i < pathPoints.length - 1; i++) {
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(pathPoints[i].x, pathPoints[i].y);
+                    this.ctx.lineTo(pathPoints[i + 1].x, pathPoints[i + 1].y);
+                    this.ctx.stroke();
                 }
-                
-                this.ctx.lineTo(headPos.x, headPos.y);
-            } else {
-                // 3+ tiles - draw through all occupied tiles
-                const step = tailIndex <= headIndex ? 1 : -1;
-                let currentEntryEdge = tailEntryEdge;
-                
-                for (let i = tailIndex; i !== headIndex; i += step) {
-                    const currentTile = pathTiles[i];
-                    const track = tracks.find(t => t.x === currentTile[0] && t.y === currentTile[1]);
-                    if (!track) {
-                        console.warn('[RendererTrainHandler] Track not found for intermediate tile', {
-                            tile: currentTile, trainId: train.id
-                        });
-                        continue;
-                    }
-
-                    // Use getTrackExits which handles switches properly
-                    const exits = this.getTrackExits(track, currentEntryEdge);
-                    const exitEdge = exits.length > 0 ? exits[0] : null;
-                    
-                    if (exitEdge) {
-                        const centerX = this.gridToScreenX(currentTile[0], currentTile[1]);
-                        const centerY = this.gridToScreenY(currentTile[0], currentTile[1]);
-                        const exitOffset = this.getEdgeCenterOffset(exitEdge);
-                        this.ctx.lineTo(centerX + exitOffset.x, centerY + exitOffset.y);
-                        currentEntryEdge = this.getOppositeEdge(exitEdge);
-                    }
-                }
-                this.ctx.lineTo(headPos.x, headPos.y);
+                this.ctx.restore();
+            }
+            
+            // Last segment - butt cap at head (only if more than 2 points)
+            if (pathPoints.length > 2) {
+                this.ctx.save();
+                this.ctx.strokeStyle = strokeStyle;
+                this.ctx.lineWidth = lineWidth;
+                this.ctx.lineCap = 'butt';
+                this.ctx.lineJoin = 'round';
+                this.ctx.beginPath();
+                this.ctx.moveTo(pathPoints[pathPoints.length - 2].x, pathPoints[pathPoints.length - 2].y);
+                this.ctx.lineTo(pathPoints[pathPoints.length - 1].x, pathPoints[pathPoints.length - 1].y);
+                this.ctx.stroke();
+                this.ctx.restore();
             }
         };
         
-        // Draw dark border (thicker stroke underneath)
-        this.ctx.save();
-        this.ctx.strokeStyle = '#333';
-        this.ctx.lineWidth = 5 * s;
-        this.ctx.lineCap = 'round';
-        this.ctx.lineJoin = 'round';
-        buildBodyPath();
-        this.ctx.stroke();
-        this.ctx.restore();
-        
-        // Draw white fill on top
-        this.ctx.save();
-        this.ctx.strokeStyle = '#ffffff';
-        this.ctx.lineWidth = 3 * s;
-        this.ctx.lineCap = 'round';
-        this.ctx.lineJoin = 'round';
-        buildBodyPath();
-        this.ctx.stroke();
-        this.ctx.restore();
+        // Draw dark border then white fill
+        drawBodySegments('#333', 5 * s);
+        drawBodySegments('#ffffff', 3 * s);
         
         // === Draw tail square ===
         this.drawTailMarker(tailPos.x, tailPos.y, tailPos.rotation, train);
@@ -595,23 +618,24 @@ class RendererTrainHandler {
         this.ctx.restore();
     }
 
-    /**
-     * Draw tail marker (white square with dark border and num_cars display).
-     * The square is offset backward along the track direction and rotated to align with the track.
-     * @param {number} x - Screen X position
-     * @param {number} y - Screen Y position
-     * @param {number} rotation - Rotation angle in radians
-     * @param {Object} train - Train object (to access num_cars)
-     */
-    drawTailMarker(x, y, rotation = 0, train = null) {
+     /**
+      * Draw tail marker (white square with dark border and num_cars display).
+      * Mirrors head marker: rotation points forward (toward head), offset forward,
+      * so the square's back edge aligns with the tail position (x, y).
+      * @param {number} x - Screen X position (tail position - trailing edge of train)
+      * @param {number} y - Screen Y position (tail position - trailing edge of train)
+      * @param {number} rotation - Rotation angle in radians (points toward head, entry→exit direction)
+      * @param {Object} train - Train object (to access num_cars)
+      */
+     drawTailMarker(x, y, rotation = 0, train = null) {
         const s = this.scale;
-        const squareSize = 10 * s;  // 1.5x bigger again (was 7.5s, now 11.25s)
+        const squareSize = 10 * s;
 
-        //Calculate offset position - move backward along the path direction
-        // rotation gives us the direction of the path, we offset in the opposite direction
+        // Offset FORWARD (same as head marker) so after drawing centered square,
+        // the back edge (-squareSize/2) ends up at the original tail position (x,y)
         const offsetDistance = squareSize / 2;
-        const offsetX = -Math.cos(rotation) * offsetDistance;
-        const offsetY = -Math.sin(rotation) * offsetDistance;
+        const offsetX = Math.cos(rotation) * offsetDistance;
+        const offsetY = Math.sin(rotation) * offsetDistance;
 
         const drawX = x + offsetX;
         const drawY = y + offsetY;
@@ -629,10 +653,11 @@ class RendererTrainHandler {
         this.ctx.lineWidth = 1 * s;
         this.ctx.strokeRect(-squareSize / 2, -squareSize / 2, squareSize, squareSize);
 
-        // Draw num_cars text in center (counter-rotate by 45° for isometric view)
+        // Draw num_cars text in center (counter-rotate to keep upright for readability)
         if (train && train.num_cars) {
             this.ctx.save();
-            this.ctx.rotate(-Math.PI / 4);  // Counter-rotate 45° for isometric view
+            // Counter-rotate both the track rotation AND the square's rotation to keep text upright
+            this.ctx.rotate(-rotation);  // Cancel the square's rotation from line 621
             this.ctx.fillStyle = '#333';
             this.ctx.font = `bold ${6 * s}px sans-serif`;
             this.ctx.textAlign = 'center';

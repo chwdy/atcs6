@@ -52,7 +52,15 @@ class RendererTrackHandler {
         if (isSwitch) {
             this.drawTrackWithSwitches(trackBits, half, trackColor, switchState, isDiagonalOnly, switchPoints);
 
-            if (track.locked_by_route) {
+            // Draw orange circle if switch is locked by a path
+            if (track.locked_by_path) {
+                this.ctx.strokeStyle = '#ff8c00'; // Orange
+                this.ctx.lineWidth = 2 * this.scale;
+                this.ctx.beginPath();
+                this.ctx.arc(0, 0, 6 * this.scale, 0, Math.PI * 2);
+                this.ctx.stroke();
+            } else if (track.locked_by_route) {
+                // Legacy: brown circle for route lock
                 this.ctx.strokeStyle = '#8B4513';
                 this.ctx.lineWidth = 2 * this.scale;
                 this.ctx.beginPath();

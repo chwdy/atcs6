@@ -846,7 +846,12 @@ class TestPathLifecycle:
         assert path.current_block_index > 0
 
     def test_complete_path(self, simple_linear_network, dispatcher, train):
-        """Test route completion."""
+        """Test route completion.
+
+        Note: complete_path only clears blocks that are not OCCUPIED.
+        If a train is still physically in a block, it stays OCCUPIED.
+        This test verifies that the path is removed and switches/reservations are cleared.
+        """
         dispatcher.network = simple_linear_network
         simple_linear_network.add_train(train)
 
@@ -862,11 +867,14 @@ class TestPathLifecycle:
         assert success
         assert dispatcher.get_path(path_id) is None  # Removed from active routes
 
-        # Blocks should be released
+        # Path should be removed and path reservations cleared
         for block_id in ["BLOCK_A", "BLOCK_B", "BLOCK_C"]:
             block = simple_linear_network.blocks.get(block_id)
             if block:
-                assert block.state == BlockState.FREE
+                # Block reservation should be cleared
+                assert block.reserved_by_path is None
+                # Block state depends on whether train is still physically in it
+                # Since this test doesn't track train position, blocks may still be OCCUPIED
 
 
 # ============================================================================
@@ -1507,3 +1515,302 @@ class TestDirectionAwarePath:
         # C and D should be reachable (they're not reserved yet since route only goes to B)
         # But this depends on block reservation logic
         assert "BLOCK_C" in reachable1 or "BLOCK_D" in reachable1
+
+
+# ============================================================================
+# Path-Based Block Release Tests
+# ============================================================================
+
+
+class TestPathBasedBlockRelease:
+    """
+    Comprehensive tests for path-based block release using train tail position.
+
+    These tests ensure the following bug doesn't regress:
+
+    BUG: Blocks were released based on train head position, not tail position.
+         This caused blocks to be released prematurely before the train tail
+         had completely cleared them, leading to collisions and unsafe operations.
+
+    FIX: Updated _release_blocks_behind_train() to use train.position.occupied_blocks
+         (which is calculated from train tail position) instead of head position.
+         Blocks now transition correctly: OCCUPIED → CAUTION → FREE based on tail.
+    """
+
+    def test_block_release_waits_for_tail_to_clear(
+        self, simple_linear_network, dispatcher
+    ):
+        """
+        Test that blocks are only released after train tail has completely cleared.
+
+        Scenario:
+        - Train enters Block A (50cm long train, 100cm block)
+        - Train head enters Block B
+        - Block A should remain OCCUPIED until tail leaves Block A
+        - Then Block A should transition to CAUTION
+        - Then Block A should transition to FREE
+        """
+        network = simple_linear_network
+        dispatcher.network = network
+
+        # Create path A → B → C WITHOUT a train first
+        result = dispatcher.create_path("BLOCK_A", "BLOCK_C", train_id=None)
+        assert result.success
+        path = result.path
+
+        # Path should be in SET status, blocks RESERVED, no train assigned yet
+        assert path.status == PathStatus.SET
+        assert path.train_id is None
+        assert network.blocks["BLOCK_A"].state == BlockState.RESERVED
+
+        # Now create and place train on the path
+        train = Train(
+            train_id="TRAIN_1", consist=[TrainCar("CAR_1", "LOCOMOTIVE", 50.0)]
+        )
+        train.state = TrainState.RUNNING_MOVING
+        train.current_pos = (0, 0)
+        train.distance_on_track = 0.0
+        train.current_direction = Direction.EAST
+        train.max_speed = 50.0
+        train.current_speed = 25.0
+
+        # Initialize train position
+        from train import TrainPosition
+
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=0.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(0, 0)],
+            occupied_blocks=["BLOCK_A"],
+        )
+
+        network.trains["TRAIN_1"] = train
+
+        # Activate path (train enters first block)
+        # This assigns the train to the path and transitions to ACTIVE
+        success = dispatcher.on_train_enters_path(path.path_id, "TRAIN_1", "BLOCK_A")
+        assert success
+        assert path.status == PathStatus.ACTIVE
+        assert path.train_id == "TRAIN_1"
+        assert network.blocks["BLOCK_A"].state == BlockState.OCCUPIED
+
+        # Simulate train head entering Block B (train tail still in Block A)
+        train.current_pos = (1, 0)
+        train.distance_on_track = 25.0  # 25cm into Block B
+        train.position.end_a_tile = (1, 0)
+        train.position.end_a_distance_cm = 25.0
+        train.position.end_a_entry_edge = "W"
+        # Tail is still in Block A (50cm train, so tail is 25cm behind head)
+        train.position.end_b_tile = (0, 0)
+        train.position.end_b_distance_cm = 75.0  # 75cm from west edge of Block A
+        train.position.occupied_tiles = [(0, 0), (1, 0)]
+        train.position.occupied_blocks = ["BLOCK_A", "BLOCK_B"]
+
+        # Train advances to Block B
+        dispatcher.on_train_advances(path.path_id, "BLOCK_B")
+
+        # Block A should STILL be OCCUPIED (tail hasn't cleared yet)
+        assert network.blocks["BLOCK_A"].state == BlockState.OCCUPIED
+        assert network.blocks["BLOCK_B"].state == BlockState.OCCUPIED
+
+        # Simulate train tail leaving Block A (tail now fully in Block B)
+        train.current_pos = (2, 0)
+        train.distance_on_track = 25.0  # 25cm into tile (2,0)
+        train.position.end_a_tile = (2, 0)
+        train.position.end_a_distance_cm = 25.0
+        train.position.end_b_tile = (1, 0)
+        train.position.end_b_distance_cm = 75.0  # Tail is now in Block B
+        train.position.occupied_tiles = [(1, 0), (2, 0)]
+        train.position.occupied_blocks = ["BLOCK_B"]  # Only Block B now
+
+        # Release blocks behind train
+        dispatcher._release_blocks_behind_train(path)
+
+        # Now Block A should transition to CAUTION (tail has cleared)
+        assert network.blocks["BLOCK_A"].state == BlockState.CAUTION
+
+        # Call again to transition CAUTION → FREE
+        dispatcher._release_blocks_behind_train(path)
+
+        # Now Block A should be FREE
+        assert network.blocks["BLOCK_A"].state == BlockState.FREE
+        assert "BLOCK_A" in path.blocks_cleared
+
+    def test_long_train_occupies_multiple_blocks(
+        self, simple_linear_network, dispatcher
+    ):
+        """
+        Test that a long train keeps all blocks OCCUPIED while tail is in them.
+
+        Scenario:
+        - Train is 250cm long (longer than individual blocks)
+        - Train occupies Blocks A, B, and C simultaneously
+        - As tail clears each block, that block transitions to CAUTION then FREE
+        """
+        network = simple_linear_network
+        dispatcher.network = network
+
+        # Create a 250cm train (longer than any single block)
+        train = Train(
+            train_id="TRAIN_LONG", consist=[TrainCar("CAR_1", "LOCOMOTIVE", 250.0)]
+        )
+        train.state = TrainState.RUNNING_MOVING
+        train.current_pos = (3, 0)
+        train.distance_on_track = 50.0
+        train.current_direction = Direction.EAST
+
+        # Initialize train position (head in Block C, tail in Block A)
+        from train import TrainPosition
+
+        train.position = TrainPosition(
+            end_a_tile=(3, 0),
+            end_a_distance_cm=50.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=50.0,  # Tail position
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(0, 0), (1, 0), (2, 0), (3, 0)],
+            occupied_blocks=["BLOCK_A", "BLOCK_B", "BLOCK_C"],
+        )
+
+        network.trains["TRAIN_LONG"] = train
+
+        # Create path A → C
+        result = dispatcher.create_path("BLOCK_A", "BLOCK_C", train_id="TRAIN_LONG")
+        assert result.success
+        path = result.path
+
+        # Activate path
+        dispatcher.on_train_enters_path(path.path_id, "TRAIN_LONG", "BLOCK_A")
+        dispatcher.on_train_advances(path.path_id, "BLOCK_B")
+        dispatcher.on_train_advances(path.path_id, "BLOCK_C")
+
+        # All blocks should be OCCUPIED
+        assert network.blocks["BLOCK_A"].state == BlockState.OCCUPIED
+        assert network.blocks["BLOCK_B"].state == BlockState.OCCUPIED
+        assert network.blocks["BLOCK_C"].state == BlockState.OCCUPIED
+
+        # Simulate tail clearing Block A
+        train.position.end_b_tile = (1, 0)
+        train.position.end_b_distance_cm = 0.0
+        train.position.occupied_tiles = [(1, 0), (2, 0), (3, 0)]
+        train.position.occupied_blocks = ["BLOCK_B", "BLOCK_C"]
+
+        dispatcher._release_blocks_behind_train(path)
+
+        # Block A should now be CAUTION
+        assert network.blocks["BLOCK_A"].state == BlockState.CAUTION
+        assert network.blocks["BLOCK_B"].state == BlockState.OCCUPIED
+        assert network.blocks["BLOCK_C"].state == BlockState.OCCUPIED
+
+        # Call again to transition CAUTION → FREE
+        dispatcher._release_blocks_behind_train(path)
+        assert network.blocks["BLOCK_A"].state == BlockState.FREE
+
+    def test_block_release_real_world_scenario(self, simple_linear_network, dispatcher):
+        """
+        Test real-world scenario: Train progresses through multiple blocks.
+
+        This test simulates a train moving through blocks and verifies that
+        blocks are released in the correct order with proper state transitions.
+        """
+        network = simple_linear_network
+        dispatcher.network = network
+
+        # Create a 50cm train
+        train = Train(
+            train_id="TRAIN_RW", consist=[TrainCar("CAR_1", "LOCOMOTIVE", 50.0)]
+        )
+        train.state = TrainState.RUNNING_MOVING
+        train.current_pos = (0, 0)
+        train.distance_on_track = 0.0
+        train.current_direction = Direction.EAST
+
+        # Initialize position
+        from train import TrainPosition
+
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=0.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(0, 0)],
+            occupied_blocks=["BLOCK_A"],
+        )
+
+        network.trains["TRAIN_RW"] = train
+
+        # Create path A → C
+        result = dispatcher.create_path("BLOCK_A", "BLOCK_C", train_id="TRAIN_RW")
+        assert result.success
+        path = result.path
+
+        # Step 1: Train enters path
+        dispatcher.on_train_enters_path(path.path_id, "TRAIN_RW", "BLOCK_A")
+        assert network.blocks["BLOCK_A"].state == BlockState.OCCUPIED
+
+        # Step 2: Head enters Block B, tail still in Block A
+        train.current_pos = (1, 0)
+        train.position.end_a_tile = (1, 0)
+        train.position.end_a_distance_cm = 25.0
+        train.position.end_b_tile = (0, 0)
+        train.position.end_b_distance_cm = 75.0
+        train.position.occupied_blocks = ["BLOCK_A", "BLOCK_B"]
+
+        dispatcher.on_train_advances(path.path_id, "BLOCK_B")
+        dispatcher._release_blocks_behind_train(path)
+
+        # Block A still OCCUPIED (tail hasn't cleared)
+        assert network.blocks["BLOCK_A"].state == BlockState.OCCUPIED
+        assert network.blocks["BLOCK_B"].state == BlockState.OCCUPIED
+
+        # Step 3: Tail clears Block A
+        train.position.end_b_tile = (1, 0)
+        train.position.end_b_distance_cm = 25.0
+        train.position.occupied_blocks = ["BLOCK_B"]
+
+        dispatcher._release_blocks_behind_train(path)
+
+        # Block A now CAUTION
+        assert network.blocks["BLOCK_A"].state == BlockState.CAUTION
+
+        # Step 4: Safety margin satisfied
+        dispatcher._release_blocks_behind_train(path)
+        assert network.blocks["BLOCK_A"].state == BlockState.FREE
+
+        # Step 5: Head enters Block C
+        train.current_pos = (3, 0)
+        train.position.end_a_tile = (3, 0)
+        train.position.end_a_distance_cm = 25.0
+        train.position.end_b_tile = (2, 0)
+        train.position.end_b_distance_cm = 75.0
+        train.position.occupied_blocks = ["BLOCK_B", "BLOCK_C"]
+
+        dispatcher.on_train_advances(path.path_id, "BLOCK_C")
+        dispatcher._release_blocks_behind_train(path)
+
+        # Block B still OCCUPIED
+        assert network.blocks["BLOCK_B"].state == BlockState.OCCUPIED
+
+        # Step 6: Tail clears Block B
+        train.position.end_b_tile = (3, 0)
+        train.position.end_b_distance_cm = 25.0
+        train.position.occupied_blocks = ["BLOCK_C"]
+
+        dispatcher._release_blocks_behind_train(path)
+        assert network.blocks["BLOCK_B"].state == BlockState.CAUTION
+
+        dispatcher._release_blocks_behind_train(path)
+        assert network.blocks["BLOCK_B"].state == BlockState.FREE

@@ -1107,12 +1107,29 @@ class PathDispatcher:
 
     def _release_blocks_behind_train(self, path: Path) -> None:
         """
-        Release blocks behind the train while maintaining safety distance.
+        Release blocks behind the train tail while maintaining safety distance.
+
+        This method uses path-based position tracking to determine when the train
+        tail has completely cleared a block, transitioning it through:
+        OCCUPIED (head enters) → CAUTION (tail passes) → FREE (safety margin satisfied)
         """
+        if not path.train_id:
+            return
+
+        train = self.network.trains.get(path.train_id)
+        if not train or not train.position:
+            return
+
+        # Get list of blocks the train currently occupies (from TrainPosition)
+        occupied_block_ids = set(train.position.occupied_blocks)
+
+        # Process each block in the path sequence
         for i, block_id in enumerate(path.block_sequence):
+            # Don't process blocks at or ahead of current head position
             if i >= path.current_block_index:
                 break
 
+            # Skip already cleared blocks
             if block_id in path.blocks_cleared:
                 continue
 
@@ -1120,24 +1137,37 @@ class PathDispatcher:
             if not block:
                 continue
 
-            blocks_behind = path.current_block_index - i
-            if blocks_behind >= 1:
-                if self.network.block_manager:
-                    if block.state == BlockState.OCCUPIED:
+            # Check if train tail has passed this block
+            tail_has_cleared = block_id not in occupied_block_ids
+
+            # State transition logic
+            if tail_has_cleared:
+                # Train tail has completely left this block
+                if block.state == BlockState.OCCUPIED:
+                    # OCCUPIED → CAUTION (tail just cleared, maintain safety margin)
+                    if self.network.block_manager:
                         self.network.block_manager.set_block_to_caution(block_id)
-                    elif block.state == BlockState.CAUTION:
-                        self.network.block_manager.clear_block(block_id)
-                        block.reserved_by_path = None
-                        path.blocks_cleared.add(block_id)
-                        self._release_switches_for_block(path, block_id)
-                else:
-                    if block.state == BlockState.OCCUPIED:
+                    else:
                         block.set_to_caution()
-                    elif block.state == BlockState.CAUTION:
+                elif block.state == BlockState.CAUTION:
+                    # CAUTION → FREE (safety margin satisfied, complete release)
+                    if self.network.block_manager:
+                        self.network.block_manager.clear_block(block_id)
+                    else:
                         block.clear()
-                        block.reserved_by_path = None
-                        path.blocks_cleared.add(block_id)
-                        self._release_switches_for_block(path, block_id)
+                    block.reserved_by_path = None
+                    path.blocks_cleared.add(block_id)
+                    self._release_switches_for_block(path, block_id)
+            else:
+                # Train tail still in this block - keep as OCCUPIED
+                if block.state != BlockState.OCCUPIED:
+                    # Ensure block is marked as occupied
+                    if self.network.block_manager:
+                        self.network.block_manager.occupy_block(
+                            block_id, train.train_id
+                        )
+                    else:
+                        block.occupy(train.train_id)
 
     def _release_switches_for_block(self, path: Path, block_id: str) -> None:
         """Release switches that are only associated with a cleared block."""
