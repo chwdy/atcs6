@@ -363,6 +363,7 @@ class Train:
 
     # Direction control
     facing_direction: Optional[Direction] = None  # Which cab is active
+    active_cab: Optional[Literal["A", "B"]] = None  # Active cab: A, B, or None (off)
     travel_direction: Literal["forward", "reverse"] = "forward"  # For MANUAL mode
 
     # DC analog control state
@@ -1102,11 +1103,32 @@ class Train:
         self.wait_reason = "Emergency stop"
         return True
 
+    def stop(self) -> bool:
+        """
+        Controlled stop - bring train to standby state.
+
+        This is the normal ATO stop that brings the train to a controlled stop
+        and transitions to STANDBY, ready to depart again.
+
+        Can only be called from running states (RUNNING_MOVING, RUNNING_WAITING).
+
+        Returns:
+            True if successful, False if train is not in a running state
+        """
+        if self.state not in (TrainState.RUNNING_MOVING, TrainState.RUNNING_WAITING):
+            return False
+        self.target_speed = 0.0
+        self.current_speed = 0.0  # Immediately stop for now (simulation handles decel)
+        self.state = TrainState.STANDBY
+        self.wait_reason = None
+        return True
+
     def set_direction_and_standby(self, direction: Direction) -> bool:
         """
         Set direction and transition to STANDBY (IDLE -> STANDBY).
 
         Convenience method that combines setting direction and transitioning.
+        Also sets active_cab to "A" since this method implies Cab A is leading.
 
         Args:
             direction: Facing direction to set
@@ -1117,8 +1139,78 @@ class Train:
         if self.state != TrainState.IDLE:
             return False
         self.facing_direction = direction
+        self.active_cab = "A"  # Setting direction implies Cab A is leading
+        if self.position:
+            self.position.leading_end = "a"
         self.state = TrainState.STANDBY
         return True
+
+    def set_cab(self, cab: Literal["A", "B", None]) -> bool:
+        """
+        Set active cab and manage state transitions.
+
+        Cab control logic:
+        - Setting cab A or B: Auto power-on if OFF, transitions to STANDBY
+        - Setting cab to None (off): Train must be STANDBY (stopped), transitions to IDLE
+        - Cab A uses end_a as leading end
+        - Cab B uses end_b as leading end
+        - When switching cabs, ALL position data is swapped (tiles, distance, entry_edge)
+
+        Args:
+            cab: Cab to activate ("A", "B", or None for off)
+
+        Returns:
+            True if successful, False if state doesn't allow the transition
+        """
+        if cab in ("A", "B"):
+            # Auto power-on if train is OFF
+            if self.state == TrainState.OFF:
+                self.power_on()
+
+            # Setting a cab: must be IDLE or STANDBY (not moving)
+            if self.state not in (TrainState.IDLE, TrainState.STANDBY):
+                return False
+
+            # Check if switching from other cab (need to swap position data)
+            old_cab = self.active_cab
+            self.active_cab = cab
+
+            # Update leading end based on cab selection
+            if self.position:
+                new_leading_end = cab.lower()  # "A" -> "a", "B" -> "b"
+
+                # If switching cabs (A to B or B to A), swap ALL position data
+                # between end_a and end_b. This is because the physical train
+                # doesn't move, but the designation of which end is A or B swaps.
+                if old_cab and old_cab != cab:
+                    # Swap tiles
+                    temp_tile = self.position.end_a_tile
+                    self.position.end_a_tile = self.position.end_b_tile
+                    self.position.end_b_tile = temp_tile
+
+                    # Swap distances
+                    temp_distance = self.position.end_a_distance_cm
+                    self.position.end_a_distance_cm = self.position.end_b_distance_cm
+                    self.position.end_b_distance_cm = temp_distance
+
+                    # Swap entry edges
+                    temp_entry = self.position.end_a_entry_edge
+                    self.position.end_a_entry_edge = self.position.end_b_entry_edge
+                    self.position.end_b_entry_edge = temp_entry
+
+                self.position.leading_end = new_leading_end
+
+            self.state = TrainState.STANDBY
+            return True
+        elif cab is None:
+            # Turning cab off: must be STANDBY (stopped, not moving)
+            if self.state != TrainState.STANDBY:
+                return False
+            self.active_cab = None
+            self.facing_direction = None
+            self.state = TrainState.IDLE
+            return True
+        return False
 
     # ========================================================================
     # MULTI-BLOCK OCCUPANCY (Phase 6)
@@ -1311,6 +1403,7 @@ class Train:
             "facing_direction": self.facing_direction.name
             if self.facing_direction
             else None,
+            "active_cab": self.active_cab,
             "travel_direction": self.travel_direction,
             "state": self.state.value,
             "speed_profile_id": self.speed_profile_id,

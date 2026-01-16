@@ -1587,7 +1587,9 @@ class PathDispatcher:
         switches_released: List[Tuple[int, int]] = []
         approach_locked: List[str] = list(path.approach_locked_blocks)
 
-        # Emergency stop the train
+        # Get train's occupied tiles and blocks if train is assigned to this path
+        train_occupied_tiles: set[Tuple[int, int]] = set()
+        train_occupied_blocks: set[str] = set()
         if path.train_id:
             train = self.network.trains.get(path.train_id)
             if train:
@@ -1596,11 +1598,21 @@ class PathDispatcher:
                     train.state
                 )  # Keep current state, train will handle stopping
 
+                # Collect all tiles and blocks the train physically occupies
+                if train.position and train.position.occupied_tiles:
+                    train_occupied_tiles = set(train.position.occupied_tiles)
+                if train.position and train.position.occupied_blocks:
+                    train_occupied_blocks = set(train.position.occupied_blocks)
+
         # Release non-approach-locked blocks
         for block_id in path.block_sequence:
             if block_id not in path.approach_locked_blocks or force:
                 block = self.network.blocks.get(block_id)
                 if not block:
+                    continue
+
+                # Skip blocks that the train is physically occupying
+                if block_id in train_occupied_blocks:
                     continue
 
                 # Only clear blocks that are not currently occupied by a train
@@ -1617,6 +1629,10 @@ class PathDispatcher:
         for pos in path.switch_positions:
             track = self.network.get_track(*pos)
             if track:
+                # Skip switches that the train is physically over
+                if pos in train_occupied_tiles:
+                    continue
+
                 # Check if switch is in approach-locked block
                 if force or not self._is_switch_in_approach_locked_block(path, pos):
                     track.unlock_for_path(path_id)
@@ -1633,8 +1649,10 @@ class PathDispatcher:
         for pos in path.flank_protection_switches:
             track = self.network.get_track(*pos)
             if track:
-                track.unlock_for_path(path_id)
-                switches_released.append(pos)
+                # Skip switches that the train is physically over
+                if pos not in train_occupied_tiles:
+                    track.unlock_for_path(path_id)
+                    switches_released.append(pos)
 
         # Remove from active paths if fully released
         if not path.approach_locked_blocks or force:

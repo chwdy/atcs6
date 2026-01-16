@@ -1977,7 +1977,9 @@ class Editor {
             const editBtn = document.querySelector(`.edit-train-btn[data-train-id="${train.id}"]`);
             if (editBtn) {
                 editBtn.onclick = () => {
-                    this.showTrainControlPanel(train.id);
+                    // Use app.selectTrain() to ensure selectedTrainId is set
+                    // This enables auto-updates during simulation
+                    window.app.selectTrain(train.id);
                 };
             }
         });

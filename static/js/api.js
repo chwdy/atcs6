@@ -765,6 +765,24 @@ class API {
         }
     }
 
+    async trainSetCab(trainId, cab) {
+        try {
+            const response = await fetch(`${this.baseUrl}/trains/${trainId}/set-cab`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ cab })
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to set train cab');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] trainSetCab failed:', e);
+            throw e;
+        }
+    }
+
     async trainDepart(trainId) {
         try {
             const response = await fetch(`${this.baseUrl}/trains/${trainId}/depart`, {
@@ -893,6 +911,22 @@ class API {
             return result;
         } catch (e) {
             console.error('[API] trainEmergencyStop failed:', e);
+            throw e;
+        }
+    }
+
+    async trainStop(trainId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/trains/${trainId}/stop`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to stop train');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] trainStop failed:', e);
             throw e;
         }
     }

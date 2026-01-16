@@ -34,6 +34,7 @@ from dispatcher import TrainDispatcher
 from path_dispatcher import PathDispatcher
 from route_executor import RouteExecutor
 from railway_signal import SignalType
+from switch import Switch
 from path_utils import assign_path_to_train_with_prepend, assign_complete_path_to_train
 
 # ============= Demo Functions =============
@@ -70,7 +71,12 @@ def test_block_validation():
 
     # Test 2: Cannot add switch to block
     print("\n[TEST 2] Verifying switches cannot be in blocks...")
-    test_network.add_track(TrackSegment(5, 0, track_bits=TRACK_EW | TRACK_NE))  # Switch
+    switch_track = TrackSegment(5, 0, track_bits=TRACK_EW | TRACK_NE)  # Switch
+    test_network.add_track(switch_track)
+    # Create switch entity
+    switch = Switch(switch_id="SW_5_0", x=5, y=0)
+    test_network.add_switch(switch)
+    switch_track.switch_id = switch.switch_id
     try:
         test_network.create_block_with_tracks(
             block_id="TEST_WITH_SWITCH",
@@ -226,6 +232,10 @@ def create_comprehensive_demo():
     track.switch_state = 0  # MAIN (EW) active
     # track.block_section_id intentionally left as None
     network.add_track(track)
+    # Create switch entity
+    switch = Switch(switch_id="SW_3_0", x=3, y=0)
+    network.add_switch(switch)
+    track.switch_id = switch.switch_id
 
     # Main Line East: (4,0) to (10,0)
     for x in range(4, 11):
@@ -285,6 +295,10 @@ def create_comprehensive_demo():
     switch_track = TrackSegment(9, 0, track_bits=TRACK_EW | TRACK_NW)
     switch_track.switch_state = 0  # MAIN (EW) active initially
     network.add_track(switch_track)
+    # Create switch entity
+    switch = Switch(switch_id="SW_9_0", x=9, y=0)
+    network.add_switch(switch)
+    switch_track.switch_id = switch.switch_id
 
     # Simple approach: vertical branch at x=9
     for y in range(1, 6):
@@ -546,9 +560,7 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
         )
         if path_result.success and path_result.path:
             # Convert path tiles to train path format
-            raw_path = executor._convert_path_to_train_path(
-                path_result.path
-            )
+            raw_path = executor._convert_path_to_train_path(path_result.path)
             # Use assign_complete_path_to_train to handle:
             # 1. Prepending tiles from train position to path start
             # 2. Appending tiles to complete destination block (e.g., station platform)
@@ -624,6 +636,10 @@ def create_diagonal_siding(network: RailwayNetwork):
     switch_track = TrackSegment(12, 0, track_bits=TRACK_EW | TRACK_NW)
     switch_track.switch_state = 0  # MAIN (EW) active initially
     network.add_track(switch_track)
+    # Create switch entity
+    switch = Switch(switch_id="SW_12_0", x=12, y=0)
+    network.add_switch(switch)
+    switch_track.switch_id = switch.switch_id
     print(f"    Created switch at (12,0) with EW+NW")
 
     # Diagonal siding pattern: alternating NW and SE

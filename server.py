@@ -1794,6 +1794,42 @@ def train_clear_direction(train_id):
     ), 400
 
 
+@app.route("/api/trains/<train_id>/set-cab", methods=["POST"])
+def train_set_cab(train_id):
+    """Set active cab (A, B, or None/off) and manage state transitions"""
+    train = network.trains.get(train_id)
+    if not train:
+        return jsonify({"error": "Train not found"}), 404
+
+    data = request.json or {}
+    cab = data.get("cab")
+
+    # Validate cab value
+    if cab not in ("A", "B", None, "off", "Off", "OFF"):
+        return jsonify(
+            {"error": f"Invalid cab value: {cab}. Must be 'A', 'B', or None"}
+        ), 400
+
+    # Normalize "off" strings to None
+    if cab in ("off", "Off", "OFF"):
+        cab = None
+
+    if train.set_cab(cab):
+        return jsonify({"status": "success", "train": train.to_dict(network)})
+
+    # Provide helpful error message based on state
+    if cab in ("A", "B"):
+        return jsonify(
+            {
+                "error": f"Cannot set cab (train not in IDLE or STANDBY state, current: {train.state.value})"
+            }
+        ), 400
+    else:
+        return jsonify(
+            {"error": "Cannot turn cab off (train must be stopped in STANDBY state)"}
+        ), 400
+
+
 @app.route("/api/trains/<train_id>/depart", methods=["POST"])
 def train_depart(train_id):
     train = network.trains.get(train_id)
@@ -1916,6 +1952,18 @@ def train_emergency_stop(train_id):
 
     train.emergency_stop()
     return jsonify({"status": "success", "train": train.to_dict(network)})
+
+
+@app.route("/api/trains/<train_id>/stop", methods=["POST"])
+def train_stop(train_id):
+    """Controlled stop - bring train to standby state (ATO stop)."""
+    train = network.trains.get(train_id)
+    if not train:
+        return jsonify({"error": "Train not found"}), 404
+
+    if train.stop():
+        return jsonify({"status": "success", "train": train.to_dict(network)})
+    return jsonify({"error": "Cannot stop (train not in a running state)"}), 400
 
 
 @app.route("/api/trains", methods=["GET"])

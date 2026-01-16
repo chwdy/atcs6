@@ -726,20 +726,20 @@ class RouteEditorHandler {
         this.editor._currentEditorId = this.extendPathState.selectedPathId;
 
         const route = this.extendPathState.selectedPath;
-        const statusColor = this.getPathStatusColor(path.status);
+        const statusColor = this.getPathStatusColor(route.status);
         const exitDir = this.extendPathState.exitDirection;
         const exitDirText = exitDir ? this.getDirectionName(exitDir) : 'Unknown';
         const reachableCount = this.extendPathState.reachableEndpoints.length;
 
         const content = `
             <div class="extend-route-panel">
-                ${renderHeaderId(path.path_id, statusColor)}
+                ${renderHeaderId(route.path_id, statusColor)}
                 
-                ${renderReadOnlyValue('Current End', path.end_block_id, 'value-display-mono text-sm')}
+                ${renderReadOnlyValue('Current End', route.end_block_id, 'value-display-mono text-sm')}
                 ${renderReadOnlyValue('Direction', `${exitDirText} (${exitDir || '?'})`, 'text-info font-bold')}
-                ${renderReadOnlyValue('Status', path.status.toUpperCase(), `font-bold`)}
-                ${path.train_id
-                    ? renderReadOnlyValue('Train', `${path.train_id}`, 'text-info font-bold')
+                ${renderReadOnlyValue('Status', route.status.toUpperCase(), `font-bold`)}
+                ${route.train_id
+                    ? renderReadOnlyValue('Train', `${route.train_id}`, 'text-info font-bold')
                     : ''
                 }
                 
