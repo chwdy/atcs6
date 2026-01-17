@@ -3,7 +3,8 @@ Backend API Tests - Test index file
 
 Run with: pytest tests/test_backend.py -v
 
-This file imports all test modules. Individual test categories are in:
+This file imports all test modules so running test_backend.py runs everything.
+Individual test categories are in:
 - tests/test_track.py - Track geometry and switches
 - tests/test_blocks.py - Block state management and validation
 - tests/test_signals.py - Signal creation and behavior
@@ -14,6 +15,15 @@ This file imports all test modules. Individual test categories are in:
 """
 
 import pytest
+
+# Import all test modules - pytest will discover and run all tests from these
+from tests.test_track import *
+from tests.test_blocks import *
+from tests.test_signals import *
+from tests.test_stations import *
+from tests.test_pathfinding import *
+from tests.test_trains import *
+from tests.test_interlocking import *
 
 
 if __name__ == "__main__":
@@ -28,5 +38,5 @@ if __name__ == "__main__":
     print("  pytest tests/test_trains.py -v")
     print("  pytest tests/test_interlocking.py -v")
     print("\nOr run all tests:")
-    print("  pytest tests/test_*.py -v")
-    print("  conda run -n general pytest tests/test_*.py -v")
+    print("  pytest tests/test_backend.py -v")
+    print("  conda run -n general pytest tests/test_backend.py -v")

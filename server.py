@@ -1966,6 +1966,124 @@ def train_stop(train_id):
     return jsonify({"error": "Cannot stop (train not in a running state)"}), 400
 
 
+# ============================================================================
+# OnboardComputer Endpoints (New - TrainMover spec)
+# ============================================================================
+
+
+def _get_or_create_obc(train_id: str, train) -> "OnboardComputer":
+    """Get or create OnboardComputer for a train, syncing initial state."""
+    if not hasattr(network, "onboard_computers"):
+        network.onboard_computers = {}
+
+    if train_id not in network.onboard_computers:
+        from train_onboard import OnboardComputer
+
+        network.onboard_computers[train_id] = OnboardComputer(
+            train_id=train_id, network=network
+        )
+
+    obc = network.onboard_computers[train_id]
+    obc.power_on = train.state != TrainState.OFF
+    obc.active_cab = train.active_cab
+    obc.control_mode = "manual" if train.state == TrainState.MANUAL else "ato"
+    return obc
+
+
+@app.route("/api/trains/<train_id>/onboard", methods=["GET"])
+def get_onboard_computer(train_id):
+    """Get OnboardComputer state for a train."""
+    train = network.trains.get(train_id)
+    if not train:
+        return jsonify({"error": "Train not found"}), 404
+
+    obc = _get_or_create_obc(train_id, train)
+    return jsonify(obc.to_dict())
+
+
+@app.route("/api/trains/<train_id>/handle", methods=["POST"])
+def set_handle_position(train_id):
+    """Set throttle/brake handle position."""
+    train = network.trains.get(train_id)
+    if not train:
+        return jsonify({"error": "Train not found"}), 404
+
+    data = request.json or {}
+    position_str = data.get("position")
+    if not position_str:
+        return jsonify({"error": "Missing position"}), 400
+
+    from enums import HandlePosition
+
+    try:
+        position = HandlePosition(position_str)
+    except ValueError:
+        return jsonify(
+            {
+                "error": f"Invalid handle position: {position_str}. Valid: P1-P5, N, B1-B8, EB"
+            }
+        ), 400
+
+    obc = _get_or_create_obc(train_id, train)
+    result = obc.set_handle(position)
+
+    if result.success:
+        return jsonify({"status": "success", "onboard": obc.to_dict()})
+    return jsonify({"error": result.message}), 400
+
+
+@app.route("/api/trains/<train_id>/mode", methods=["POST"])
+def set_control_mode(train_id):
+    """Set control mode (ATO or Manual)."""
+    train = network.trains.get(train_id)
+    if not train:
+        return jsonify({"error": "Train not found"}), 404
+
+    data = request.json or {}
+    mode = data.get("mode")
+    if mode not in ("ato", "manual"):
+        return jsonify(
+            {"error": f"Invalid mode: {mode}. Must be 'ato' or 'manual'"}
+        ), 400
+
+    obc = _get_or_create_obc(train_id, train)
+    result = obc.set_mode(mode)
+
+    if result.success:
+        return jsonify({"status": "success", "onboard": obc.to_dict()})
+    return jsonify({"error": result.message}), 400
+
+
+@app.route("/api/trains/<train_id>/ato-go", methods=["POST"])
+def ato_go(train_id):
+    """Start ATO movement toward destination."""
+    train = network.trains.get(train_id)
+    if not train:
+        return jsonify({"error": "Train not found"}), 404
+
+    obc = _get_or_create_obc(train_id, train)
+    result = obc.ato_go()
+
+    if result.success:
+        return jsonify({"status": "success", "onboard": obc.to_dict()})
+    return jsonify({"error": result.message}), 400
+
+
+@app.route("/api/trains/<train_id>/ato-stop", methods=["POST"])
+def ato_stop(train_id):
+    """Stop ATO movement (service stop)."""
+    train = network.trains.get(train_id)
+    if not train:
+        return jsonify({"error": "Train not found"}), 404
+
+    obc = _get_or_create_obc(train_id, train)
+    result = obc.ato_stop()
+
+    if result.success:
+        return jsonify({"status": "success", "onboard": obc.to_dict()})
+    return jsonify({"error": result.message}), 400
+
+
 @app.route("/api/trains", methods=["GET"])
 def list_trains():
     """List all trains in the network."""

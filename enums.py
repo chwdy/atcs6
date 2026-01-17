@@ -6,8 +6,9 @@ This module contains all the enumeration types used throughout the railway manag
 These enums define the possible states, types, and directions for various railway components.
 """
 
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Any, Dict, Optional
 
 
 class TrackType(Enum):
@@ -156,3 +157,91 @@ OPPOSITE_DIRECTIONS = {
     "E": "W",
     "W": "E",
 }
+
+
+class HandlePosition(Enum):
+    """Throttle/brake handle positions for train control.
+
+    Power notches (P1-P5): Apply acceleration
+    Neutral (N): Coast (no power, no braking)
+    Brake notches (B1-B8): Apply service braking
+    Emergency Brake (EB): Maximum braking force
+    """
+
+    P5 = "P5"  # Power notch 5 (max acceleration: 100%)
+    P4 = "P4"  # Power notch 4 (80%)
+    P3 = "P3"  # Power notch 3 (60%)
+    P2 = "P2"  # Power notch 2 (40%)
+    P1 = "P1"  # Power notch 1 (min acceleration: 20%)
+    N = "N"  # Neutral (coast)
+    B1 = "B1"  # Brake notch 1 (min braking: 12.5%)
+    B2 = "B2"  # Brake notch 2 (25%)
+    B3 = "B3"  # Brake notch 3 (37.5%)
+    B4 = "B4"  # Brake notch 4 (50%)
+    B5 = "B5"  # Brake notch 5 (62.5%)
+    B6 = "B6"  # Brake notch 6 (75%)
+    B7 = "B7"  # Brake notch 7 (87.5%)
+    B8 = "B8"  # Brake notch 8 (max service braking: 100%)
+    EB = "EB"  # Emergency brake
+
+
+# Handle position order (for UI slider)
+HANDLE_ORDER = [
+    "P5",
+    "P4",
+    "P3",
+    "P2",
+    "P1",
+    "N",
+    "B1",
+    "B2",
+    "B3",
+    "B4",
+    "B5",
+    "B6",
+    "B7",
+    "B8",
+    "EB",
+]
+
+
+# Acceleration multipliers for power notches
+POWER_MULTIPLIERS = {
+    HandlePosition.P5: 1.0,
+    HandlePosition.P4: 0.8,
+    HandlePosition.P3: 0.6,
+    HandlePosition.P2: 0.4,
+    HandlePosition.P1: 0.2,
+}
+
+# Deceleration multipliers for brake notches
+BRAKE_MULTIPLIERS = {
+    HandlePosition.B1: 0.125,
+    HandlePosition.B2: 0.25,
+    HandlePosition.B3: 0.375,
+    HandlePosition.B4: 0.5,
+    HandlePosition.B5: 0.625,
+    HandlePosition.B6: 0.75,
+    HandlePosition.B7: 0.875,
+    HandlePosition.B8: 1.0,
+}
+
+
+@dataclass
+class CommandResult:
+    """Result of a TrainMover command execution.
+
+    Provides a standardized response format for command validation and execution.
+    """
+
+    success: bool
+    message: str = ""
+    data: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "success": self.success,
+            "message": self.message,
+            "data": self.data,
+        }
