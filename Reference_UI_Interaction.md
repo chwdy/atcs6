@@ -2,7 +2,7 @@
 
 > **Note:** This document describes design patterns from Simutrans (C++). For actual implementation, see `static/js/editor.js`.
 >
-> **Last Verified:** 2026-01-01
+> **Last Verified:** 2026-01-16
 
 ## Context
 This document explains how user interactions (clicks, drags, dialogs) translate into building actions, based on Simutrans patterns.

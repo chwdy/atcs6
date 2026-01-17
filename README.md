@@ -80,7 +80,9 @@ The `demo_main.py` automatically runs Python tests before starting. This ensures
 - ✅ Pathfinding algorithms
 - ✅ Dispatcher routing
 - ✅ Frontend-backend parity
-- ✅ All 42 REST API endpoints
+- ✅ 50+ REST API endpoints
+- ✅ JavaScript syntax validation
+- ✅ Application smoke tests
 
 ## Project Structure
 
@@ -90,22 +92,32 @@ atcs6/
 ├── track.py                 # Track segment with 6-bit geometry
 ├── blocking.py              # Block section safety system
 ├── block.py                 # Block entity class
+├── block_manager.py         # Centralized block state manager
 ├── block_validation.py      # Block continuity validation
 ├── interlocking.py          # Interlocking and route management
 ├── train.py                 # Train and schedule definitions
+├── train_config.py          # Train physics configuration
+├── train_movement.py        # Train movement calculations
+├── train_atc.py             # Automatic Train Control (speed limiting)
+├── train_route.py           # Route and waypoint definitions
 ├── network.py               # Railway network management
 ├── pathfinder.py            # A* pathfinding for trains
 ├── dispatcher.py            # Train dispatching system
 ├── dispatcher_interface.py  # Route dispatcher interface
+├── path_dispatcher.py       # Block/switch reservation for paths
+├── route_executor.py        # Route and waypoint execution
 ├── railway_signal.py        # Signal entity class
 ├── signal_validation.py     # Signal placement validation
+├── switch.py                # Switch/turnout entity
 ├── station.py               # Station entity with platforms
+├── speed_profile.py         # Speed-to-voltage mapping
+├── block_power.py           # DC voltage output to blocks
 ├── simulation.py            # Background simulation loop
 ├── server.py                # Flask REST API server
 ├── demo_main.py             # Main demonstration script
 ├── docs/                    # API and architecture documentation
 ├── static/                  # Web frontend (HTML, CSS, JS)
-└── openttd_reference/       # External research documents
+└── tests/                   # Test suites
 ```
 
 ## Module Descriptions

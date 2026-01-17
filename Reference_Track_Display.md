@@ -1,5 +1,7 @@
 # Reference: Track Display and Rendering
 
+> **Last Verified:** 2026-01-16
+
 ## Context
 This document explains how our system renders tracks using the 6-bit `track_bits` system (inspired by OpenTTD's tile geometry). The system uses canvas-based rendering where each track segment is drawn as a line between edge midpoints.
 

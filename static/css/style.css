@@ -3435,7 +3435,9 @@ body {
 }
 
 .train-monitor-info {
-    width: 240px;
+    width: 180px;
+    min-width: 120px;
+    max-width: 280px;
     padding: 8px 12px;
     display: flex;
     flex-direction: column;
@@ -3443,6 +3445,8 @@ body {
     gap: 4px;
     border-right: 1px solid var(--border-color);
     flex-shrink: 0;
+    resize: horizontal;
+    overflow: auto;
 }
 
 .view-distance-controls {
@@ -3505,6 +3509,7 @@ body {
     display: flex;
     align-items: baseline;
     gap: 4px;
+    width: 100%;
 }
 
 .train-speed-display .speed-value {
@@ -3523,6 +3528,7 @@ body {
 .train-target-speed {
     font-size: 11px;
     color: var(--text-secondary);
+    width: 100%;
 }
 
 .train-target-speed .label {
@@ -3549,7 +3555,8 @@ body {
     align-items: center;
     gap: 4px;
     flex-wrap: wrap;
-    max-width: 100px;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .train-debug-info .debug-label {
@@ -3576,7 +3583,8 @@ body {
     padding: 2px 4px;
     background: rgba(255, 205, 30, 0.15);
     border-radius: 3px;
-    max-width: 90px;
+    width: 100%;
+    box-sizing: border-box;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -3589,14 +3597,17 @@ body {
 }
 
 .train-monitor-upcoming {
-    width: 160px;
+    width: 200px;
+    min-width: 140px;
+    max-width: 320px;
     padding: 6px 10px;
     border-left: 1px solid var(--border-color);
     display: flex;
     flex-direction: column;
     gap: 4px;
-    overflow: hidden;
+    overflow: auto;
     flex-shrink: 0;
+    resize: horizontal;
 }
 
 .upcoming-header {
@@ -3664,6 +3675,24 @@ body {
 
 .upcoming-item.state-caution {
     border-left: 2px solid var(--warning-color);
+}
+
+/* Signal state colors for upcoming items */
+.upcoming-item.signal-green {
+    border-left: 2px solid var(--success-color);
+}
+
+.upcoming-item.signal-yellow,
+.upcoming-item.signal-double_yellow {
+    border-left: 2px solid var(--warning-color);
+}
+
+.upcoming-item.signal-red {
+    border-left: 2px solid var(--danger-color);
+}
+
+.upcoming-item.signal-unknown {
+    border-left: 2px solid var(--text-muted);
 }
 
 /* Train Monitor Debug Panel Extension */

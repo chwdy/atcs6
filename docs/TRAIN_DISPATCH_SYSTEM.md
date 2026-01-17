@@ -46,7 +46,7 @@ Trains move through the layout by following a **path** - a sequence of `(x, y, d
 ### Movement Algorithm
 
 ```python
-# Core movement loop (simulation.py:278-293)
+# Core movement loop (simulation.py:311-359)
 def _update_train_position(train, delta_seconds):
     # 1. Calculate distance traveled this tick
     speed_ms = train.current_speed / 3.6  # km/h → m/s
@@ -66,7 +66,7 @@ def _update_train_position(train, delta_seconds):
 When a train's `distance_on_track` exceeds the current tile's `length`, it advances to the next tile in its path:
 
 ```python
-# simulation.py:295-355
+# simulation.py:360-378
 def _advance_train_track(train):
     # 1. Check if at end of path
     if train.path_index + 1 >= len(train.current_path):
@@ -122,7 +122,7 @@ The system tracks two direction concepts:
 2. **`travel_direction`** - "forward" or "reverse" (only used in MANUAL mode)
 
 ```python
-# train.py:428-444
+# train.py:832-848
 def get_effective_direction():
     if facing_direction is None:
         return None
@@ -148,7 +148,7 @@ Train facing EAST, travel_direction="reverse" (MANUAL mode only)
 In MANUAL mode without a path, trains use track connections to determine movement:
 
 ```python
-# simulation.py:383-467
+# simulation.py:585-698
 def _advance_manual_train_no_path(train, effective_dir):
     # 1. Get entry direction (opposite of travel)
     entry_dir = effective_dir.opposite()
@@ -188,7 +188,7 @@ Target Speed = min(
 ### 1. Base Speed Limits
 
 ```python
-# simulation.py:109-112
+# simulation.py:115-118
 base_target = train.max_speed  # e.g., 120 km/h
 limit_speed = check_path_limits(train)
 atc_limit = atc.get_speed_limit()
@@ -201,7 +201,7 @@ train.target_speed = min(base_target, atc_limit, limit_speed)
 Immediate next-tile checks:
 
 ```python
-# simulation.py:150-205
+# simulation.py:163-221
 def _check_path_limits(train):
     limit_speed = train.max_speed
     
@@ -232,7 +232,7 @@ def _check_path_limits(train):
 ATC calculates safe speed based on clearance ahead using braking curves:
 
 ```python
-# train_atc.py:35-78
+# train_atc.py:36-78
 def calculate_max_safe_speed(clearance_cm, deceleration_rate):
     # Physics: v² = 2 * a * d
     # Solve for v: v = sqrt(2 * a * d)
@@ -253,7 +253,7 @@ def calculate_max_safe_speed(clearance_cm, deceleration_rate):
 **ATC Clearance Calculation:**
 
 ```python
-# train_atc.py:108-152
+# train_atc.py:109-153
 def get_clearance_ahead():
     clearance = 0.0
     
@@ -291,7 +291,7 @@ Max safe speed at 3 m/s² deceleration = 46.5 km/h
 Speed profiles control acceleration and deceleration curves:
 
 ```python
-# speed_profile.py:143-195
+# speed_profile.py:145-179
 def calculate_new_speed(current_speed, target_speed, delta_seconds):
     if current_speed < target_speed:
         # Accelerate
@@ -349,7 +349,7 @@ def _calculate_voltage_for_train(train, speed_profile):
 **Voltage Interpolation:**
 
 ```python
-# speed_profile.py:56-99
+# speed_profile.py:58-101
 def speed_to_voltage(speed_kmh):
     # Find bracketing points
     for i in range(len(speed_voltage_points) - 1):
@@ -372,9 +372,10 @@ def speed_to_voltage(speed_kmh):
 Train position is tracked at multiple granularities:
 
 ```python
-# train.py:141-145
+# train.py:298-306
 class Train:
-    current_pos: Optional[Tuple[int, int]] = None     # Tile coordinates
+    position: Optional[TrainPosition] = None    # New TrainPosition system
+    current_pos: Optional[Tuple[int, int]] = None     # Legacy tile coordinates
     current_direction: Optional[Direction] = None      # Travel direction
     distance_on_track: float = 0.0                     # Distance within tile (cm)
     occupied_tracks: List[Tuple[int, int]] = []        # All tiles train occupies
@@ -397,7 +398,7 @@ Position breakdown:
 Trains occupy blocks (safety sections):
 
 ```python
-# simulation.py:338-349 (when advancing tiles)
+# simulation.py:425-448 (when advancing tiles)
 # 1. Occupy next block
 if next_track.block_section_id:
     network.block_manager.occupy_block(next_track.block_section_id, train.train_id)
@@ -409,7 +410,7 @@ if old_track.block_section_id != next_track.block_section_id:
 
 **Block States:**
 ```python
-# block.py:100-139
+# block.py:116-127
 def occupy(train_id):
     self.state = BlockState.OCCUPIED
     self.occupied_by = train_id
@@ -426,7 +427,7 @@ def release():
 Long trains can occupy multiple blocks simultaneously:
 
 ```python
-# train.py:724-809
+# train.py:1219-1311
 def get_occupied_blocks(network):
     if not current_pos:
         return []
@@ -450,7 +451,7 @@ def get_occupied_blocks(network):
 The PathDispatcher reserves blocks ahead of the train:
 
 ```python
-# path_dispatcher.py:463-516
+# path_dispatcher.py:741-837
 def create_path(start_block_id, end_block_id, train_id):
     # 1. Find path through blocks
     path_tiles = pathfinding_algorithm(start_block, end_block)
@@ -492,7 +493,7 @@ graph TD
 Manages infrastructure reservations:
 
 ```python
-# path_dispatcher.py:59-149
+# path_dispatcher.py:60-103
 class PathDispatcher:
     def create_path(start_block_id, end_block_id, train_id):
         # 1. Pathfinding
@@ -550,7 +551,7 @@ def update(delta_seconds):
 **Waypoint Arrival Detection:**
 
 ```python
-# route_executor.py:373-431
+# route_executor.py:424-449
 def _is_train_at_station(train, station_id):
     station = network.stations[station_id]
     
@@ -575,7 +576,7 @@ def _get_target_station_tile(train, station):
 **Dwell Time Management:**
 
 ```python
-# route_executor.py:311-369
+# route_executor.py:311-371
 def _check_dwell_complete(train, route):
     waypoint = route.get_current_waypoint()
     time_at_station = simulation_time - arrived_at_station_time
@@ -600,7 +601,7 @@ def _check_dwell_complete(train, route):
 ### State Enumeration
 
 ```python
-# enums.py:91-104
+# enums.py:91-111
 class TrainState(Enum):
     OFF = "off"                          # Powered off
     IDLE = "idle"                        # Powered on, no direction
@@ -638,7 +639,7 @@ stateDiagram-v2
 ### State Transition Methods
 
 ```python
-# train.py:450-719
+# train.py:854-1125
 # Power control
 def power_on(): OFF → IDLE
 def power_off(): any → OFF (if stopped)
@@ -673,7 +674,7 @@ def depart_from_station(has_more): RUNNING_AT_STATION → STANDBY/IDLE
 **State-Specific Behaviors:**
 
 ```python
-# simulation.py:70-92
+# simulation.py:73-97
 def _update_train(train, delta_seconds):
     if train.state == TrainState.OFF:
         train.current_speed = 0.0
@@ -703,7 +704,7 @@ def _update_train(train, delta_seconds):
 ### Simulation Loop
 
 ```python
-# simulation.py:47-53
+# simulation.py:50-57
 def update(delta_seconds):
     simulation_time += delta_seconds
     
@@ -742,7 +743,7 @@ graph TD
 ### Moving Train Update Detail
 
 ```python
-# simulation.py:94-130
+# simulation.py:98-139
 def _update_moving_train(train, delta_seconds):
     # 1. Check if path exists
     if not train.current_path:
@@ -979,6 +980,8 @@ The train dispatch system integrates multiple components to provide realistic tr
 
 **Future Enhancements:**
 - Complete multi-block occupancy implementation
-- Integrate PathDispatcher lifecycle hooks
-- Add speed profile REST API
+- Integrate PathDispatcher lifecycle hooks with simulation loop
 - Implement real-time performance monitoring
+
+**Recently Completed:**
+- Speed profile REST API (`/api/speed-profiles` CRUD endpoints)

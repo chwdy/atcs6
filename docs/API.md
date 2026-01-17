@@ -453,6 +453,120 @@ Activate emergency stop. Immediately stops the train.
 }
 ```
 
+### POST /api/trains/{train_id}/stop
+
+Controlled stop - bring train to standby state (ATO stop). Only works when train is in a running state.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "state": "standby",
+  "message": "Train stopped"
+}
+```
+
+**Error (400):** `{"error": "Cannot stop (train not in a running state)"}`
+
+### POST /api/trains/{train_id}/set-cab
+
+Set active cab (A, B, or off) and manage state transitions. Cab selection determines which end of the train is "forward".
+
+**Request:**
+
+```json
+{
+  "cab": "A"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| cab | string | `A`, `B`, or `null`/`off` to turn off |
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "train": { ... }
+}
+```
+
+**Error (400):** `{"error": "Cannot set cab (train not in IDLE or STANDBY state)"}`
+
+### POST /api/trains/{train_id}/clear-direction
+
+Clear facing direction and transition back to IDLE state. Only works when train is in STANDBY state.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "train": { ... }
+}
+```
+
+**Error (400):** `{"error": "Cannot clear direction (train not in STANDBY state)"}`
+
+### PATCH /api/trains/{train_id}
+
+Update train properties directly. **Deprecated** - use specific state transition endpoints instead.
+
+**Request:**
+
+```json
+{
+  "current_speed": 50.0,
+  "target_speed": 60.0,
+  "num_cars": 5
+}
+```
+
+**Response:** Updated train object
+
+### PUT /api/trains/{train_id}/position
+
+Update train position on the network.
+
+**Request:**
+
+```json
+{
+  "current_pos": [5, 10],
+  "path_index": 0,
+  "distance_on_track": 0.5
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| current_pos | array | Yes | `[x, y]` coordinates |
+| path_index | int | No | Index in current path |
+| distance_on_track | float | No | 0.0-1.0 ratio along tile |
+
+**Response:** Updated train object
+
+**Error (400):** `{"error": "No track at position (x, y)"}`
+
+### PUT /api/trains/{train_id}/speed-profile
+
+Assign a speed profile to a train.
+
+**Request:**
+
+```json
+{
+  "profile_id": "SHINKANSEN_N700"
+}
+```
+
+**Response:** Updated train object
+
+**Error (404):** `{"error": "Speed profile 'UNKNOWN' not found"}`
+
 ### GET /api/trains/{train_id}/lookahead
 
 Get lookahead data for train monitor visualization. Returns blocks, signals, stations, and speed limits ahead of the train up to a specified distance.
@@ -612,6 +726,37 @@ Create a new train route travel plan.
 Get detailed information about a specific route.
 
 **Response:** Route object (JSON)
+
+**Error (404):** `{"error": "Route not found"}`
+
+### PUT /api/train-routes/{route_id}
+
+Update an existing train route.
+
+**Request:**
+
+```json
+{
+  "name": "Updated Route Name",
+  "mode": "loop",
+  "waypoints": [
+    {
+      "station_id": "STA_A",
+      "dwell_time_sec": 45.0,
+      "timing_mode": "relative",
+      "target_time": 300
+    }
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| name | string | No | Updated route name |
+| mode | string | No | `one_way`, `loop`, or `round_trip` |
+| waypoints | array | No | Replaces all waypoints if provided |
+
+**Response:** Updated route object
 
 **Error (404):** `{"error": "Route not found"}`
 
@@ -1158,6 +1303,22 @@ Check if a position can be added to extend a block.
   "reason": "Track is a switch - switches are block boundaries"
 }
 ```
+
+### GET /api/blocks/{block_id}/voltage
+
+Get current voltage for a block (used for DC analog control simulation).
+
+**Response:**
+
+```json
+{
+  "block_id": "BLK_001",
+  "voltage": 12.0,
+  "timestamp": "2024-01-03T12:00:00"
+}
+```
+
+**Error (404):** `{"error": "Block 'BLK_001' not found"}`
 
 ---
 
@@ -1824,6 +1985,270 @@ Clear the current network (empty canvas).
   }
 }
 ```
+
+### GET /api/network/stats
+
+Get counts of items in the network. Useful for checking if network is empty.
+
+**Response:**
+
+```json
+{
+  "tracks": 100,
+  "blocks": 10,
+  "signals": 20,
+  "stations": 5,
+  "trains": 2,
+  "is_empty": false
+}
+```
+
+---
+
+## Speed Profile Endpoints
+
+Speed profiles define how trains accelerate, decelerate, and map speed to voltage for DC analog control.
+
+### GET /api/speed-profiles
+
+List all registered speed profiles.
+
+**Response:**
+
+```json
+{
+  "profiles": [
+    {
+      "profile_id": "default",
+      "name": "Default Profile",
+      "speed_voltage_curve": [[0, 0], [50, 6], [100, 12]],
+      "min_start_voltage": 2.0,
+      "lighting_voltage": 2.5,
+      "acceleration_rate": 10.0,
+      "deceleration_rate": 15.0,
+      "emergency_brake_rate": 30.0
+    }
+  ],
+  "count": 1
+}
+```
+
+### POST /api/speed-profiles
+
+Create a new speed profile.
+
+**Request:**
+
+```json
+{
+  "profile_id": "SHINKANSEN_N700",
+  "name": "Shinkansen N700",
+  "speed_voltage_curve": [[0, 0], [100, 8], [270, 12]],
+  "min_start_voltage": 3.0,
+  "lighting_voltage": 3.5,
+  "acceleration_rate": 8.0,
+  "deceleration_rate": 12.0,
+  "emergency_brake_rate": 25.0
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| profile_id | string | Yes | - | Unique identifier |
+| name | string | Yes | - | Human-readable name |
+| speed_voltage_curve | array | No | [[0,0],[100,12]] | Speed-voltage mapping points |
+| min_start_voltage | float | No | 2.0 | Minimum voltage to start moving |
+| lighting_voltage | float | No | 2.5 | Voltage for lights when stopped |
+| acceleration_rate | float | No | 10.0 | Acceleration in km/h/s |
+| deceleration_rate | float | No | 15.0 | Normal deceleration in km/h/s |
+| emergency_brake_rate | float | No | 30.0 | Emergency brake rate in km/h/s |
+
+**Response (201):** Created profile object
+
+**Error (409):** `{"error": "Speed profile with profile_id 'X' already exists"}`
+
+### GET /api/speed-profiles/{profile_id}
+
+Get a single speed profile by ID.
+
+**Response:** Profile object
+
+**Error (404):** `{"error": "Speed profile 'X' not found"}`
+
+### PUT /api/speed-profiles/{profile_id}
+
+Update an existing speed profile. All fields are optional except profile_id must match URL.
+
+**Request:** Same as POST
+
+**Response:** Updated profile object
+
+**Error (404):** `{"error": "Speed profile 'X' not found"}`
+
+### DELETE /api/speed-profiles/{profile_id}
+
+Delete a speed profile. Cannot delete if profile is "default" or is assigned to any train.
+
+**Response:** 204 No Content
+
+**Error (409):** `{"error": "Cannot delete speed profile in use by trains: train_1, train_2"}`
+
+---
+
+## Switch Endpoints
+
+Switches (turnouts/points) control train routing at junctions. They can be locked by paths to prevent conflicts.
+
+### GET /api/switches
+
+List all switch configurations.
+
+**Response:**
+
+```json
+[
+  {
+    "switch_id": "SW_5_10",
+    "x": 5,
+    "y": 10,
+    "name": "Junction A",
+    "switch_type": "standard",
+    "main_length_cm": 15.0,
+    "diverge_length_cm": 18.0,
+    "main_radius_cm": null,
+    "diverge_radius_cm": 50.0,
+    "is_locked": false,
+    "locked_by_path": null,
+    "locked_state": null,
+    "notes": ""
+  }
+]
+```
+
+### GET /api/switches/{switch_id}
+
+Get specific switch configuration.
+
+**Response:** Switch object
+
+**Error (404):** `{"error": "Switch not found"}`
+
+### POST /api/tracks/{x}/{y}/switch
+
+Create a switch configuration for a track tile. Auto-called when switch track is placed.
+
+**Request (optional):**
+
+```json
+{
+  "name": "Junction A",
+  "main_length_cm": 15.0,
+  "diverge_length_cm": 18.0,
+  "main_radius_cm": null,
+  "diverge_radius_cm": 50.0,
+  "switch_type": "standard",
+  "notes": ""
+}
+```
+
+**Response (201):** Created switch object
+
+**Response (200):** Existing switch object (if already exists, idempotent)
+
+**Error (400):** `{"error": "Track is not a switch"}`
+
+### PUT /api/switches/{switch_id}
+
+Update switch configuration.
+
+**Request:** Partial update with any switch fields
+
+**Response:** Updated switch object
+
+**Error (404):** `{"error": "Switch not found"}`
+
+### DELETE /api/switches/{switch_id}
+
+Remove switch configuration.
+
+**Response:** `{"success": true}`
+
+**Error (404):** `{"error": "Switch not found"}`
+
+### PUT /api/switches/{switch_id}/state
+
+Change switch state (MAIN=0, DIVERGE=1). Fails if switch is locked by a path.
+
+**Request:**
+
+```json
+{
+  "state": 0
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| state | int | 0 = MAIN, 1 = DIVERGE |
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "message": "Switch state changed to MAIN",
+  "switch": { ... }
+}
+```
+
+**Error (409):** `{"error": "Switch locked by path PATH_123"}`
+
+### POST /api/switches/{switch_id}/lock
+
+Lock a switch for a path. Used by dispatcher to prevent conflicting routes.
+
+**Request:**
+
+```json
+{
+  "path_id": "PATH_123",
+  "state": 0
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "switch": { ... }
+}
+```
+
+**Error (409):** `{"error": "Switch already locked by path PATH_456"}`
+
+### POST /api/switches/{switch_id}/unlock
+
+Unlock a switch. Only the path that locked it can unlock it.
+
+**Request:**
+
+```json
+{
+  "path_id": "PATH_123"
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "switch": { ... }
+}
+```
+
+**Error (403):** `{"error": "Switch locked by different path: PATH_456"}`
 
 ---
 

@@ -306,6 +306,7 @@ class TrainMonitor {
                     if (dirMatches) {
                         signals.push({
                             id: sig.id,
+                            name: sig.name || sig.id,
                             state: sig.state,
                             distance_cm: pointElementStart,
                             sequence: signals.length
@@ -319,6 +320,7 @@ class TrainMonitor {
                 switches.push({
                     x: tile[0],
                     y: tile[1],
+                    name: info.switch_name || `Switch (${tile[0]},${tile[1]})`,
                     position: info.switch_state === 0 ? 'main' : 'diverging',
                     distance_cm: pointElementStart,
                     locked: info.switch_locked || false,
@@ -473,11 +475,22 @@ class TrainMonitor {
         (data.switches || []).forEach(sw => {
             elements.push({
                 type: 'switch',
-                name: `Switch (${sw.x},${sw.y})`,
+                name: sw.name || `Switch (${sw.x},${sw.y})`,
                 distance: sw.distance_cm,
                 length: 0,
                 position: sw.position,
                 sequence: sw.sequence || 0
+            });
+        });
+        
+        (data.signals || []).forEach(sig => {
+            elements.push({
+                type: 'signal',
+                name: sig.name || sig.id,
+                distance: sig.distance_cm,
+                length: 0,
+                state: sig.state,
+                sequence: sig.sequence || 0
             });
         });
         
@@ -512,6 +525,9 @@ class TrainMonitor {
                 icon = '🚉';
             } else if (el.type === 'switch') {
                 icon = '⇋';
+            } else if (el.type === 'signal') {
+                icon = '🚦';
+                colorClass = `signal-${el.state || 'unknown'}`;
             } else if (el.type === 'block') {
                 colorClass = `state-${el.state || 'unknown'}`;
             }

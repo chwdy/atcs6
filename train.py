@@ -1557,6 +1557,7 @@ class Train:
                             tile_info["signals"].append(
                                 {
                                     "id": sig_id,
+                                    "name": signal.name or sig_id,
                                     "state": signal.state.value
                                     if signal.state
                                     else "unknown",
@@ -1569,6 +1570,16 @@ class Train:
                     tile_info["is_switch"] = True
                     tile_info["switch_state"] = track.switch_state
                     tile_info["switch_locked"] = track.is_locked_by_path()
+                    # Get switch name from switch entity if available
+                    switch_entity = (
+                        network.get_switch_at(x, y)
+                        if hasattr(network, "get_switch_at")
+                        else None
+                    )
+                    if switch_entity and switch_entity.name:
+                        tile_info["switch_name"] = switch_entity.name
+                    else:
+                        tile_info["switch_name"] = f"Switch ({x},{y})"
 
                 lookahead_tile_info.append(tile_info)
 

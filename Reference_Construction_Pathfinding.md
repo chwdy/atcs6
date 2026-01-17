@@ -2,7 +2,7 @@
 
 > **Note:** This document describes design patterns from Simutrans (C++). For actual implementation, see `static/js/editor.js` (JavaScript construction pathfinder).
 >
-> **Last Verified:** 2026-01-01
+> **Last Verified:** 2026-01-16
 
 ## Context
 This document explains the "Construction Pathfinding" algorithm used in Simutrans (`src/simutrans/builder/wegbauer.cc`).

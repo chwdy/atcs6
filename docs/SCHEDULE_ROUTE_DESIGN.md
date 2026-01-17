@@ -1,8 +1,17 @@
 # Schedule and Route System Design
 
-**Version:** 1.0  
-**Status:** Draft  
-**Created:** 2026-01-11
+**Version:** 1.1  
+**Status:** Partially Implemented  
+**Created:** 2026-01-11  
+**Updated:** 2026-01-16
+
+**Implementation Status:**
+- Route data structures: ✅ Implemented in `train_route.py`
+- Route CRUD operations: ✅ Implemented via `/api/train-routes` endpoints
+- RouteExecutor: ✅ Implemented in `route_executor.py`
+- Route modes (ONE_WAY, LOOP, SHUTTLE): ✅ Implemented
+- Route Editor UI: ⏳ Not implemented
+- Schedule system: ⏳ Not implemented
 
 ---
 
@@ -393,29 +402,31 @@ class RouteExecutionState:
 
 ## 9. API Endpoints
 
-### 9.1 Route CRUD
+> **Note:** The actual implementation uses `/api/train-routes` prefix instead of `/api/routes`.
+> See [`docs/API.md`](API.md) for complete API documentation.
+
+### 9.1 Route CRUD (Implemented)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/routes` | List all routes |
-| GET | `/api/routes/{id}` | Get route details |
-| POST | `/api/routes` | Create new route |
-| PUT | `/api/routes/{id}` | Update route |
-| DELETE | `/api/routes/{id}` | Delete route |
-| POST | `/api/routes/{id}/activate` | Activate route |
-| POST | `/api/routes/{id}/archive` | Archive route |
-| POST | `/api/routes/{id}/duplicate` | Duplicate route |
+| GET | `/api/train-routes` | List all routes |
+| GET | `/api/train-routes/{id}` | Get route details |
+| POST | `/api/train-routes` | Create new route |
+| PUT | `/api/train-routes/{id}` | Update route |
+| DELETE | `/api/train-routes/{id}` | Delete route |
+| POST | `/api/train-routes/{id}/activate` | Activate route for a train |
+| POST | `/api/train-routes/{id}/deactivate` | Deactivate route |
 
-### 9.2 Waypoint Management
+### 9.2 Waypoint Management (Future)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/routes/{id}/waypoints` | Add waypoint |
-| PUT | `/api/routes/{id}/waypoints/{idx}` | Update waypoint |
-| DELETE | `/api/routes/{id}/waypoints/{idx}` | Remove waypoint |
-| POST | `/api/routes/{id}/waypoints/reorder` | Reorder waypoints |
+| POST | `/api/train-routes/{id}/waypoints` | Add waypoint |
+| PUT | `/api/train-routes/{id}/waypoints/{idx}` | Update waypoint |
+| DELETE | `/api/train-routes/{id}/waypoints/{idx}` | Remove waypoint |
+| POST | `/api/train-routes/{id}/waypoints/reorder` | Reorder waypoints |
 
-### 9.3 Route Assignment
+### 9.3 Route Assignment (Future)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -425,12 +436,12 @@ class RouteExecutionState:
 | POST | `/api/assignments/{id}/pause` | Pause execution |
 | POST | `/api/assignments/{id}/resume` | Resume execution |
 
-### 9.4 Route Validation
+### 9.4 Route Validation (Future)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/routes/{id}/validate` | Validate route is executable |
-| GET | `/api/routes/{id}/preview` | Get path preview without execution |
+| POST | `/api/train-routes/{id}/validate` | Validate route is executable |
+| GET | `/api/train-routes/{id}/preview` | Get path preview without execution |
 
 ---
 
@@ -497,37 +508,37 @@ class RouteExecutionState:
 
 ## 11. Implementation Phases
 
-### Phase 1: Core Route System
-- Route data structure and storage
-- Basic CRUD operations
+### Phase 1: Core Route System ✅ Complete
+- Route data structure and storage (`train_route.py`)
+- Basic CRUD operations (`/api/train-routes` endpoints)
 - Waypoint management
 - ONE_WAY mode only
 
-### Phase 2: Route Editor UI
+### Phase 2: Route Editor UI ⏳ Not Started
 - Route list panel
 - Waypoint editor
 - Map visualization
 - Route validation
 
-### Phase 3: Route Execution
-- RouteExecutor integration
+### Phase 3: Route Execution ✅ Complete
+- RouteExecutor integration (`route_executor.py`)
 - Automatic path creation between waypoints
 - Dwell time management
 - Status tracking
 
-### Phase 4: Advanced Modes
+### Phase 4: Advanced Modes ✅ Complete
 - LOOP mode
 - SHUTTLE mode
 - POINT_TO_POINT mode
 - Direction management
 
-### Phase 5: Schedule System
+### Phase 5: Schedule System ⏳ Not Started
 - Schedule data structure
 - Time-based triggers
 - Schedule editor UI
 - Recurrence patterns
 
-### Phase 6: Advanced Features
+### Phase 6: Advanced Features ⏳ Not Started
 - Route conflicts detection
 - Priority-based scheduling
 - Delay propagation

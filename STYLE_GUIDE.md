@@ -1,7 +1,7 @@
 # Frontend Style Guide
 
 **Version:** 1.0  
-**Last Updated:** 2026-01-03
+**Last Updated:** 2026-01-16
 
 This guide documents the design system for the railway control system frontend. Use these CSS classes instead of inline styles to maintain consistency across the application.
 

@@ -1,5 +1,7 @@
 # Reference: Vehicle Pathfinding
 
+> **Last Verified:** 2026-01-16
+
 ## Context
 This document details the **Vehicle Pathfinding** system (`route_t`), used by convoys (trains, trucks, ships) to navigate the **existing** network.
 **Crucial Distinction:** This is *not* the system used when you drag the mouse to build tracks. This system assumes the tracks already exist and finds the best valid route for a vehicle to travel.

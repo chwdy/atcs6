@@ -4,9 +4,16 @@
 
 | | |
 |---|---|
-| **Status** | Proposed |
+| **Status** | Partially Implemented |
 | **Created** | 2026-01-15 |
-| **Last Updated** | 2026-01-15 |
+| **Last Updated** | 2026-01-16 |
+
+**Implementation Status:**
+- Phase 1 (Foundation): ✅ Complete - `state-manager.js` created and integrated
+- Phase 2 (Backend Endpoints): ✅ Complete - All entity endpoints exist in `server.py`
+- Phase 3 (Train Control Migration): ⏳ Pending
+- Phase 4 (Other Panel Migrations): ⏳ Pending
+- Phase 5 (Cleanup & Optimization): ⏳ Pending
 
 ---
 
@@ -2167,19 +2174,19 @@ For each:
 
 ## File Changes Summary
 
-| File | Change Type | Phase | Description |
-|------|-------------|-------|-------------|
-| `static/js/state-manager.js` | **NEW** | 1 | StateManager class |
-| `templates/index.html` | MODIFY | 1 | Add script tag |
-| `static/js/app.js` | MODIFY | 1, 3 | Wire StateManager, remove special train handling |
-| `server.py` | MODIFY | 2 | Add entity GET endpoints |
-| `static/js/api.js` | MODIFY | 2 | Add entity fetch methods |
-| `static/js/editor-trains.js` | MODIFY | 3 | Use subscriptions |
-| `static/js/editor-signals.js` | MODIFY | 4 | Use subscriptions |
-| `static/js/editor-switches.js` | MODIFY | 4 | Use subscriptions |
-| `static/js/editor-blocks.js` | MODIFY | 4 | Use subscriptions |
-| `static/js/editor-stations.js` | MODIFY | 4 | Use subscriptions |
-| `static/js/editor.js` | MODIFY | 4, 5 | Properties panel, remove cachedNetwork |
+| File | Change Type | Phase | Status | Description |
+|------|-------------|-------|--------|-------------|
+| `static/js/state-manager.js` | **NEW** | 1 | ✅ Done | StateManager class |
+| `templates/index.html` | MODIFY | 1 | ✅ Done | Add script tag |
+| `static/js/app.js` | MODIFY | 1, 3 | ✅ Phase 1 | Wire StateManager, remove special train handling |
+| `server.py` | MODIFY | 2 | ✅ Done | Add entity GET endpoints |
+| `static/js/api.js` | MODIFY | 2 | ✅ Done | Add entity fetch methods |
+| `static/js/editor-trains.js` | MODIFY | 3 | ⏳ Pending | Use subscriptions |
+| `static/js/editor-signals.js` | MODIFY | 4 | ⏳ Pending | Use subscriptions |
+| `static/js/editor-switches.js` | MODIFY | 4 | ⏳ Pending | Use subscriptions |
+| `static/js/editor-blocks.js` | MODIFY | 4 | ⏳ Pending | Use subscriptions |
+| `static/js/editor-stations.js` | MODIFY | 4 | ⏳ Pending | Use subscriptions |
+| `static/js/editor.js` | MODIFY | 4, 5 | ⏳ Pending | Properties panel, remove cachedNetwork |
 
 ---
 
