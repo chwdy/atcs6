@@ -253,8 +253,8 @@ class Train:
     operational status, and assigned schedule.
 
     Position System:
-    - position: TrainPosition with both ends tracked precisely
-    - current_pos, distance_on_track: Legacy properties for backward compatibility
+    - position: TrainPosition with both ends tracked precisely (CURRENT SYSTEM)
+    - current_pos, distance_on_track: DEPRECATED - Legacy properties for backward compatibility only
 
     New in Phase 1:
     - model: Train model name (e.g., "BR 218", "Shinkansen E5")
@@ -297,8 +297,9 @@ class Train:
     # ========================================================================
     position: Optional[TrainPosition] = None
 
-    # Legacy position fields (deprecated - use position property)
-    # These are kept for backward compatibility during migration
+    # Legacy position fields (DEPRECATED - use position property)
+    # These are kept for backward compatibility with old save files
+    # DO NOT USE IN NEW CODE - will be removed in future version
     _current_pos: Optional[Tuple[int, int]] = field(default=None, repr=False)
     _current_direction: Optional[Direction] = field(default=None, repr=False)
     _distance_on_track: float = field(default=0.0, repr=False)
@@ -431,14 +432,19 @@ class Train:
 
     @property
     def distance_on_track(self) -> float:
-        """Get distance from entry edge to train head (cm)."""
-        if self.position:
-            return self.position.head_distance_cm
+        """DEPRECATED: Use train.position instead. Legacy property for backward compatibility."""
+        import warnings
+
+        warnings.warn(
+            "distance_on_track is deprecated, use train.position instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self._distance_on_track
 
     @distance_on_track.setter
     def distance_on_track(self, value: float):
-        """Set distance on track (updates both legacy and new position system)."""
+        """DEPRECATED: Use train.position instead. Legacy property for backward compatibility."""
         self._distance_on_track = value
         # Also update TrainPosition if it exists
         if self.position:

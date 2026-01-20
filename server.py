@@ -47,6 +47,7 @@ class SignedIntConverter(IntegerConverter):
 app.url_map.converters["sint"] = SignedIntConverter
 
 from simulation import SimulationController
+from train_controller import TrainController
 
 # Global state
 network = RailwayNetwork()
@@ -1741,9 +1742,11 @@ def train_power_on(train_id):
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
-    if train.power_on():
+    controller = _get_train_controller(train)
+    result = controller.power_on_cmd()
+    if result.success:
         return jsonify({"status": "success", "train": train.to_dict(network)})
-    return jsonify({"error": "Failed to power on train"}), 400
+    return jsonify({"error": result.message}), 400
 
 
 @app.route("/api/trains/<train_id>/power-off", methods=["POST"])
@@ -1753,9 +1756,11 @@ def train_power_off(train_id):
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
-    if train.power_off():
+    controller = _get_train_controller(train)
+    result = controller.power_off_cmd()
+    if result.success:
         return jsonify({"status": "success", "train": train.to_dict(network)})
-    return jsonify({"error": "Cannot power off while train is moving"}), 400
+    return jsonify({"error": result.message}), 400
 
 
 @app.route("/api/trains/<train_id>/set-direction", methods=["POST"])
@@ -1775,7 +1780,8 @@ def train_set_direction(train_id):
     except KeyError:
         return jsonify({"error": f"Invalid direction: {direction_str}"}), 400
 
-    if train.set_direction_and_standby(direction):
+    controller = _get_train_controller(train)
+    if controller.set_direction_and_standby(direction):
         return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify({"error": "Cannot set direction (train not in IDLE state)"}), 400
 
@@ -1787,7 +1793,8 @@ def train_clear_direction(train_id):
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
-    if train.clear_direction():
+    controller = _get_train_controller(train)
+    if controller.clear_direction():
         return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify(
         {"error": "Cannot clear direction (train not in STANDBY state)"}
@@ -1814,20 +1821,11 @@ def train_set_cab(train_id):
     if cab in ("off", "Off", "OFF"):
         cab = None
 
-    if train.set_cab(cab):
+    controller = _get_train_controller(train)
+    result = controller.set_cab(cab)
+    if result.success:
         return jsonify({"status": "success", "train": train.to_dict(network)})
-
-    # Provide helpful error message based on state
-    if cab in ("A", "B"):
-        return jsonify(
-            {
-                "error": f"Cannot set cab (train not in IDLE or STANDBY state, current: {train.state.value})"
-            }
-        ), 400
-    else:
-        return jsonify(
-            {"error": "Cannot turn cab off (train must be stopped in STANDBY state)"}
-        ), 400
+    return jsonify({"error": result.message}), 400
 
 
 @app.route("/api/trains/<train_id>/depart", methods=["POST"])
@@ -1836,15 +1834,17 @@ def train_depart(train_id):
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
+    controller = _get_train_controller(train)
+
     if train.state == TrainState.RUNNING_WAITING:
-        if train.clear_to_move():
+        if controller.clear_to_move():
             return jsonify({"status": "success", "train": train.to_dict(network)})
 
     if train.state == TrainState.RUNNING_AT_STATION:
-        if train.depart_from_station(has_more_waypoints=True):
+        if controller.depart_from_station(has_more_waypoints=True):
             return jsonify({"status": "success", "train": train.to_dict(network)})
 
-    if train.depart():
+    if controller.depart():
         return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify({"error": "Cannot depart (train not in STANDBY state)"}), 400
 
@@ -1856,7 +1856,8 @@ def train_arrive(train_id):
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
-    if train.arrive_at_station():
+    controller = _get_train_controller(train)
+    if controller.arrive_at_station():
         return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify({"error": "Cannot arrive (train not in RUNNING_MOVING state)"}), 400
 
@@ -1868,7 +1869,8 @@ def train_turn_around(train_id):
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
-    if train.turn_around():
+    controller = _get_train_controller(train)
+    if controller.turn_around():
         return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify(
         {"error": "Cannot turn around (train is moving or no direction set)"}
@@ -1882,7 +1884,8 @@ def train_enable_manual(train_id):
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
-    if train.enable_manual():
+    controller = _get_train_controller(train)
+    if controller.enable_manual():
         return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify(
         {"error": "Cannot enable manual mode (train must be stopped and not OFF)"}
@@ -1896,7 +1899,8 @@ def train_disable_manual(train_id):
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
-    if train.disable_manual():
+    controller = _get_train_controller(train)
+    if controller.disable_manual():
         return jsonify({"status": "success", "train": train.to_dict(network)})
     return jsonify(
         {
@@ -1950,8 +1954,11 @@ def train_emergency_stop(train_id):
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
-    train.emergency_stop()
-    return jsonify({"status": "success", "train": train.to_dict(network)})
+    controller = _get_train_controller(train)
+    result = controller.emergency_stop_cmd()
+    if result.success:
+        return jsonify({"status": "success", "train": train.to_dict(network)})
+    return jsonify({"error": result.message}), 400
 
 
 @app.route("/api/trains/<train_id>/stop", methods=["POST"])
@@ -1961,44 +1968,32 @@ def train_stop(train_id):
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
-    if train.stop():
+    controller = _get_train_controller(train)
+    result = controller.ato_stop()
+    if result.success:
         return jsonify({"status": "success", "train": train.to_dict(network)})
-    return jsonify({"error": "Cannot stop (train not in a running state)"}), 400
+    return jsonify({"error": result.message}), 400
 
 
 # ============================================================================
-# OnboardComputer Endpoints (New - TrainMover spec)
+# TrainController Endpoints (New Architecture)
 # ============================================================================
 
 
-def _get_or_create_obc(train_id: str, train) -> "OnboardComputer":
-    """Get or create OnboardComputer for a train, syncing initial state."""
-    if not hasattr(network, "onboard_computers"):
-        network.onboard_computers = {}
-
-    if train_id not in network.onboard_computers:
-        from train_onboard import OnboardComputer
-
-        network.onboard_computers[train_id] = OnboardComputer(
-            train_id=train_id, network=network
-        )
-
-    obc = network.onboard_computers[train_id]
-    obc.power_on = train.state != TrainState.OFF
-    obc.active_cab = train.active_cab
-    obc.control_mode = "manual" if train.state == TrainState.MANUAL else "ato"
-    return obc
+def _get_train_controller(train) -> "TrainController":
+    """Get or create TrainController for a train."""
+    return sim_controller._get_or_create_controller(train)
 
 
 @app.route("/api/trains/<train_id>/onboard", methods=["GET"])
 def get_onboard_computer(train_id):
-    """Get OnboardComputer state for a train."""
+    """Get TrainController state for a train."""
     train = network.trains.get(train_id)
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
-    obc = _get_or_create_obc(train_id, train)
-    return jsonify(obc.to_dict())
+    controller = _get_train_controller(train)
+    return jsonify(controller.to_dict())
 
 
 @app.route("/api/trains/<train_id>/handle", methods=["POST"])
@@ -2024,11 +2019,10 @@ def set_handle_position(train_id):
             }
         ), 400
 
-    obc = _get_or_create_obc(train_id, train)
-    result = obc.set_handle(position)
-
+    controller = _get_train_controller(train)
+    result = controller.set_handle(position)
     if result.success:
-        return jsonify({"status": "success", "onboard": obc.to_dict()})
+        return jsonify({"status": "success", "onboard": controller.to_dict()})
     return jsonify({"error": result.message}), 400
 
 
@@ -2046,11 +2040,10 @@ def set_control_mode(train_id):
             {"error": f"Invalid mode: {mode}. Must be 'ato' or 'manual'"}
         ), 400
 
-    obc = _get_or_create_obc(train_id, train)
-    result = obc.set_mode(mode)
-
+    controller = _get_train_controller(train)
+    result = controller.set_mode(mode)
     if result.success:
-        return jsonify({"status": "success", "onboard": obc.to_dict()})
+        return jsonify({"status": "success", "onboard": controller.to_dict()})
     return jsonify({"error": result.message}), 400
 
 
@@ -2061,11 +2054,10 @@ def ato_go(train_id):
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
-    obc = _get_or_create_obc(train_id, train)
-    result = obc.ato_go()
-
+    controller = _get_train_controller(train)
+    result = controller.ato_go()
     if result.success:
-        return jsonify({"status": "success", "onboard": obc.to_dict()})
+        return jsonify({"status": "success", "onboard": controller.to_dict()})
     return jsonify({"error": result.message}), 400
 
 
@@ -2076,11 +2068,10 @@ def ato_stop(train_id):
     if not train:
         return jsonify({"error": "Train not found"}), 404
 
-    obc = _get_or_create_obc(train_id, train)
-    result = obc.ato_stop()
-
+    controller = _get_train_controller(train)
+    result = controller.ato_stop()
     if result.success:
-        return jsonify({"status": "success", "onboard": obc.to_dict()})
+        return jsonify({"status": "success", "onboard": controller.to_dict()})
     return jsonify({"error": result.message}), 400
 
 

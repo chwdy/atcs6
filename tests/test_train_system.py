@@ -11,7 +11,47 @@ import pytest
 from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
 from train_route import Route, Waypoint, TimingMode, RouteMode
 from train import Train, TrainCar
-from enums import Direction, TrainState, BlockState
+from enums import Direction, TrainState, BlockState, HandlePosition
+from network import RailwayNetwork
+from train_controller import TrainController, create_controller_for_train
+
+
+# =============================================================================
+# Controller Test Helpers
+# =============================================================================
+
+
+def create_test_train_with_controller(
+    train_id: str = "T001",
+    state: TrainState = TrainState.OFF,
+    current_speed: float = 0.0,
+    max_speed: float = 100.0,
+) -> tuple[Train, TrainController, RailwayNetwork]:
+    """
+    Create a train with a controller for testing.
+
+    Returns:
+        Tuple of (train, controller, network)
+    """
+    network = RailwayNetwork()
+    train = Train(
+        train_id=train_id,
+        max_speed=max_speed,
+        current_speed=current_speed,
+    )
+    train.state = state
+    network.add_train(train)
+    controller = create_controller_for_train(train_id, network)
+
+    # Sync controller state with train state
+    if state == TrainState.OFF:
+        controller.power_on = False
+        controller.state = TrainState.OFF
+    else:
+        controller.power_on = True
+        controller.state = state
+
+    return train, controller, network
 
 
 # =============================================================================
@@ -503,70 +543,81 @@ class TestTrainPhase1:
         basic_train.current_speed = 1.0
         assert basic_train.is_stopped() is False
 
-    def test_power_on_off(self, basic_train: Train):
-        """Test power_on and power_off."""
-        basic_train.state = TrainState.OFF
-        basic_train.current_speed = 0.0
+    def test_power_on_off(self):
+        """Test power_on_cmd and power_off_cmd via TrainController."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.OFF
+        )
 
         # Power on
-        result = basic_train.power_on()
-        assert result is True
-        assert basic_train.state == TrainState.IDLE
+        result = controller.power_on_cmd()
+        assert result.success is True
+        assert train.state == TrainState.IDLE
+        assert controller.state == TrainState.IDLE
 
         # Can't power on again
-        result = basic_train.power_on()
-        assert result is False
+        result = controller.power_on_cmd()
+        assert result.success is False
 
         # Power off
-        result = basic_train.power_off()
+        result = controller.power_off_cmd()
+        assert result.success is True
+        assert train.state == TrainState.OFF
+        assert controller.state == TrainState.OFF
+
+    def test_power_off_while_moving_fails(self):
+        """Test power_off_cmd fails when train is moving."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.RUNNING_MOVING, current_speed=50.0
+        )
+
+        result = controller.power_off_cmd()
+        assert result.success is False
+        assert train.state == TrainState.RUNNING_MOVING
+
+    def test_set_standby(self):
+        """Test set_direction_and_standby via TrainController."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.IDLE
+        )
+
+        result = controller.set_direction_and_standby(Direction.NORTH)
         assert result is True
-        assert basic_train.state == TrainState.OFF
+        assert train.state == TrainState.STANDBY
+        assert train.facing_direction == Direction.NORTH
 
-    def test_power_off_while_moving_fails(self, basic_train: Train):
-        """Test power_off fails when train is moving."""
-        basic_train.state = TrainState.RUNNING_MOVING
-        basic_train.current_speed = 50.0
+    def test_set_standby_not_idle_fails(self):
+        """Test set_direction_and_standby fails when not IDLE."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.OFF
+        )
 
-        result = basic_train.power_off()
-        assert result is False
-        assert basic_train.state == TrainState.RUNNING_MOVING
-
-    def test_set_standby(self, basic_train: Train):
-        """Test setting standby mode."""
-        basic_train.state = TrainState.IDLE
-
-        result = basic_train.set_standby(Direction.NORTH)
-        assert result is True
-        assert basic_train.state == TrainState.STANDBY
-        assert basic_train.facing_direction == Direction.NORTH
-
-    def test_set_standby_not_idle_fails(self, basic_train: Train):
-        """Test set_standby fails when not IDLE."""
-        basic_train.state = TrainState.OFF
-
-        result = basic_train.set_standby(Direction.NORTH)
+        result = controller.set_direction_and_standby(Direction.NORTH)
         assert result is False
 
-    def test_enable_disable_manual(self, basic_train: Train):
-        """Test manual mode enable/disable."""
-        basic_train.state = TrainState.IDLE
-        basic_train.current_speed = 0.0
-        basic_train.facing_direction = Direction.EAST
+    def test_enable_disable_manual(self):
+        """Test enable_manual and disable_manual via TrainController."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.IDLE
+        )
+        train.facing_direction = Direction.EAST
 
         # Enable manual
-        result = basic_train.enable_manual()
+        result = controller.enable_manual()
         assert result is True
-        assert basic_train.state == TrainState.MANUAL
+        assert train.state == TrainState.MANUAL
 
         # Disable manual - should go to STANDBY (has facing direction)
-        result = basic_train.disable_manual()
+        result = controller.disable_manual()
         assert result is True
-        assert basic_train.state == TrainState.STANDBY
+        assert train.state == TrainState.STANDBY
 
-    def test_enable_manual_off_fails(self, basic_train: Train):
+    def test_enable_manual_off_fails(self):
         """Test enable_manual fails when OFF."""
-        basic_train.state = TrainState.OFF
-        result = basic_train.enable_manual()
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.OFF
+        )
+        result = controller.enable_manual()
         assert result is False
 
     def test_set_manual_speed(self, basic_train: Train):
@@ -703,7 +754,7 @@ from block_power import (
     OutputInterface,
 )
 from block import Block
-from train_atc import TrainATC, calculate_max_safe_speed
+from train_controller import calculate_max_safe_speed
 from train_config import (
     MAX_TRACK_VOLTAGE,
     DEFAULT_LIGHTING_VOLTAGE,
@@ -935,127 +986,9 @@ class TestCalculateMaxSafeSpeed:
         assert speed == 0.0
 
 
-class TestTrainATC:
-    """Tests for TrainATC class."""
-
-    @pytest.fixture
-    def mock_network(self):
-        """Create a mock network for testing."""
-
-        class MockNetwork:
-            def __init__(self):
-                self.blocks = {}
-                self.tracks = {}
-                self.signals = {}
-                self.trains = {}
-                self.paths = {}
-
-        return MockNetwork()
-
-    @pytest.fixture
-    def basic_train(self) -> Train:
-        """Create a basic train for testing."""
-        train = Train(train_id="TRAIN_001", max_speed=100.0)
-        train.current_pos = (5, 5)
-        train.reserved_blocks = ["BLK_001", "BLK_002", "BLK_003"]
-        return train
-
-    @pytest.fixture
-    def atc(self, basic_train: Train, mock_network) -> TrainATC:
-        """Create ATC for testing."""
-        # Add blocks to network
-        mock_network.blocks["BLK_001"] = Block(block_id="BLK_001", length_cm=100.0)
-        mock_network.blocks["BLK_002"] = Block(block_id="BLK_002", length_cm=150.0)
-        mock_network.blocks["BLK_003"] = Block(block_id="BLK_003", length_cm=200.0)
-
-        # Add a mock track at train position
-        class MockTrack:
-            block_section_id = "BLK_001"
-
-        mock_network.tracks[(5, 5)] = MockTrack()
-
-        return TrainATC(train=basic_train, network=mock_network)
-
-    def test_atc_initialization(self, atc: TrainATC):
-        """Test ATC is created correctly."""
-        assert atc.train is not None
-        assert atc.network is not None
-        assert atc.safety_margin_cm == ATC_SAFETY_MARGIN_CM
-
-    def test_get_current_block_id(self, atc: TrainATC):
-        """Test getting current block ID."""
-        block_id = atc._get_current_block_id()
-        assert block_id == "BLK_001"
-
-    def test_get_blocks_ahead(self, atc: TrainATC):
-        """Test getting blocks ahead."""
-        blocks = atc._get_blocks_ahead()
-        # Should return BLK_002, BLK_003 (not BLK_001 which is current)
-        assert "BLK_002" in blocks
-        assert "BLK_003" in blocks
-
-    def test_clearance_with_free_blocks(self, atc: TrainATC):
-        """Test clearance calculation with free blocks ahead."""
-        clearance = atc.get_clearance_ahead()
-        # Should include distance in current block + ahead blocks
-        # BLK_001 (100) + BLK_002 (150) + BLK_003 (200) = 450
-        assert clearance > 0
-
-    def test_clearance_with_occupied_block(self, atc: TrainATC):
-        """Test clearance stops at occupied block."""
-        # Mark BLK_002 as occupied by another train
-        atc.network.blocks["BLK_002"].state = BlockState.OCCUPIED
-        atc.network.blocks["BLK_002"].occupied_by = "OTHER_TRAIN"
-
-        clearance = atc.get_clearance_ahead()
-        # Should stop at BLK_002, so only includes BLK_001
-        # (100cm from current block)
-        assert clearance <= 100.0
-
-    def test_is_block_obstructed_disabled(self, atc: TrainATC):
-        """Test disabled block is obstructed."""
-        block = Block(block_id="TEST", disabled=True)
-        assert atc._is_block_obstructed(block, "TEST") is True
-
-    def test_is_block_obstructed_occupied_by_other(self, atc: TrainATC):
-        """Test block occupied by other train is obstructed."""
-        block = Block(block_id="TEST")
-        block.state = BlockState.OCCUPIED
-        block.occupied_by = "OTHER_TRAIN"
-        assert atc._is_block_obstructed(block, "TEST") is True
-
-    def test_is_block_not_obstructed_occupied_by_self(self, atc: TrainATC):
-        """Test block occupied by same train is not obstructed."""
-        block = Block(block_id="TEST")
-        block.state = BlockState.OCCUPIED
-        block.occupied_by = "TRAIN_001"  # Same as atc.train.train_id
-        assert atc._is_block_obstructed(block, "TEST") is False
-
-    def test_get_speed_limit(self, atc: TrainATC):
-        """Test speed limit calculation."""
-        limit, reason = atc.get_speed_limit()
-        assert limit > 0
-
-    def test_get_target_speed(self, atc: TrainATC):
-        """Test target speed is limited by train max_speed."""
-        # With lots of clearance, limit might be high
-        # But should be capped by train.max_speed (100)
-        target = atc.get_target_speed()
-        assert target <= 100.0
-
-    def test_is_safe_to_move(self, atc: TrainATC):
-        """Test is_safe_to_move with clearance."""
-        assert atc.is_safe_to_move() is True
-
-    def test_get_clearance_status(self, atc: TrainATC):
-        """Test clearance status dictionary."""
-        atc.get_clearance_ahead()  # Populate cache
-        status = atc.get_clearance_status()
-
-        assert "clearance_cm" in status
-        assert "speed_limit_kmh" in status
-        assert "current_block" in status
-        assert status["current_block"] == "BLK_001"
+# Note: TestTrainATC class removed - TrainATC is deprecated.
+# TrainController now contains the ATC logic with a different API.
+# See train_controller.py for the new implementation.
 
 
 class TestTrainConfig:
@@ -1267,234 +1200,273 @@ class TestTrainStateManager:
 
 
 class TestTrainStateTransitions:
-    """Tests for Train state transition methods."""
+    """Tests for TrainController state transition methods."""
 
-    @pytest.fixture
-    def test_train(self) -> Train:
-        """Create a train for testing."""
-        train = Train(
-            train_id="T001",
-            max_speed=100.0,
-            current_speed=0.0,
+    def test_power_on_transition(self):
+        """Test power_on_cmd() transitions OFF -> IDLE."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.OFF
         )
-        return train
+        result = controller.power_on_cmd()
+        assert result.success is True
+        assert train.state == TrainState.IDLE
+        assert controller.state == TrainState.IDLE
 
-    def test_power_on_transition(self, test_train: Train):
-        """Test power_on() transitions OFF -> IDLE."""
-        test_train.state = TrainState.OFF
-        result = test_train.power_on()
+    def test_power_on_fails_when_already_on(self):
+        """Test power_on_cmd() fails when already powered."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.IDLE
+        )
+        result = controller.power_on_cmd()
+        assert result.success is False
+        assert train.state == TrainState.IDLE
+
+    def test_power_off_when_stopped(self):
+        """Test power_off_cmd() works when stopped."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.IDLE
+        )
+        result = controller.power_off_cmd()
+        assert result.success is True
+        assert train.state == TrainState.OFF
+        assert controller.state == TrainState.OFF
+
+    def test_power_off_fails_when_moving(self):
+        """Test power_off_cmd() fails when moving."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.RUNNING_MOVING, current_speed=50.0
+        )
+        result = controller.power_off_cmd()
+        assert result.success is False
+        assert train.state == TrainState.RUNNING_MOVING
+
+    def test_set_standby_transition(self):
+        """Test set_direction_and_standby() transitions IDLE -> STANDBY."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.IDLE
+        )
+        result = controller.set_direction_and_standby(Direction.NORTH)
         assert result is True
-        assert test_train.state == TrainState.IDLE
+        assert train.state == TrainState.STANDBY
+        assert train.facing_direction == Direction.NORTH
 
-    def test_power_on_fails_when_already_on(self, test_train: Train):
-        """Test power_on() fails when already powered."""
-        test_train.state = TrainState.IDLE
-        result = test_train.power_on()
+    def test_set_standby_fails_from_wrong_state(self):
+        """Test set_direction_and_standby() fails from non-IDLE state."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.OFF
+        )
+        result = controller.set_direction_and_standby(Direction.NORTH)
         assert result is False
-        assert test_train.state == TrainState.IDLE
+        assert train.state == TrainState.OFF
 
-    def test_power_off_when_stopped(self, test_train: Train):
-        """Test power_off() works when stopped."""
-        test_train.state = TrainState.IDLE
-        test_train.current_speed = 0.0
-        result = test_train.power_off()
-        assert result is True
-        assert test_train.state == TrainState.OFF
-
-    def test_power_off_fails_when_moving(self, test_train: Train):
-        """Test power_off() fails when moving."""
-        test_train.state = TrainState.RUNNING_MOVING
-        test_train.current_speed = 50.0
-        result = test_train.power_off()
-        assert result is False
-        assert test_train.state == TrainState.RUNNING_MOVING
-
-    def test_set_standby_transition(self, test_train: Train):
-        """Test set_standby() transitions IDLE -> STANDBY."""
-        test_train.state = TrainState.IDLE
-        result = test_train.set_standby(Direction.NORTH)
-        assert result is True
-        assert test_train.state == TrainState.STANDBY
-        assert test_train.facing_direction == Direction.NORTH
-
-    def test_set_standby_fails_from_wrong_state(self, test_train: Train):
-        """Test set_standby() fails from non-IDLE state."""
-        test_train.state = TrainState.OFF
-        result = test_train.set_standby(Direction.NORTH)
-        assert result is False
-        assert test_train.state == TrainState.OFF
-
-    def test_depart_transition(self, test_train: Train):
+    def test_depart_transition(self):
         """Test depart() transitions STANDBY -> RUNNING_MOVING."""
-        test_train.state = TrainState.STANDBY
-        test_train.facing_direction = Direction.NORTH
-        result = test_train.depart()
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.STANDBY
+        )
+        train.facing_direction = Direction.NORTH
+        result = controller.depart()
         assert result is True
-        assert test_train.state == TrainState.RUNNING_MOVING
+        assert train.state == TrainState.RUNNING_MOVING
 
-    def test_depart_fails_without_direction(self, test_train: Train):
+    def test_depart_fails_without_direction(self):
         """Test depart() fails without facing direction."""
-        test_train.state = TrainState.STANDBY
-        test_train.facing_direction = None
-        result = test_train.depart()
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.STANDBY
+        )
+        train.facing_direction = None
+        result = controller.depart()
         assert result is False
 
-    def test_depart_fails_from_wrong_state(self, test_train: Train):
+    def test_depart_fails_from_wrong_state(self):
         """Test depart() fails from non-STANDBY state."""
-        test_train.state = TrainState.IDLE
-        test_train.facing_direction = Direction.NORTH
-        result = test_train.depart()
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.IDLE
+        )
+        train.facing_direction = Direction.NORTH
+        result = controller.depart()
         assert result is False
 
-    def test_wait_for_path_transition(self, test_train: Train):
+    def test_wait_for_path_transition(self):
         """Test wait_for_path() transitions RUNNING_MOVING -> RUNNING_WAITING."""
-        test_train.state = TrainState.RUNNING_MOVING
-        test_train.target_speed = 60.0
-        result = test_train.wait_for_path()
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.RUNNING_MOVING
+        )
+        train.target_speed = 60.0
+        result = controller.wait_for_path()
         assert result is True
-        assert test_train.state == TrainState.RUNNING_WAITING
-        assert test_train.target_speed == 0.0
+        assert train.state == TrainState.RUNNING_WAITING
+        assert train.target_speed == 0.0
 
-    def test_clear_to_move_transition(self, test_train: Train):
+    def test_clear_to_move_transition(self):
         """Test clear_to_move() transitions RUNNING_WAITING -> RUNNING_MOVING."""
-        test_train.state = TrainState.RUNNING_WAITING
-        result = test_train.clear_to_move()
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.RUNNING_WAITING
+        )
+        result = controller.clear_to_move()
         assert result is True
-        assert test_train.state == TrainState.RUNNING_MOVING
+        assert train.state == TrainState.RUNNING_MOVING
 
-    def test_arrive_at_station_transition(self, test_train: Train):
+    def test_arrive_at_station_transition(self):
         """Test arrive_at_station() transitions RUNNING_MOVING -> RUNNING_AT_STATION."""
-        test_train.state = TrainState.RUNNING_MOVING
-        test_train.target_speed = 40.0
-        result = test_train.arrive_at_station()
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.RUNNING_MOVING
+        )
+        train.target_speed = 40.0
+        result = controller.arrive_at_station()
         assert result is True
-        assert test_train.state == TrainState.RUNNING_AT_STATION
-        assert test_train.target_speed == 0.0
+        assert train.state == TrainState.RUNNING_AT_STATION
+        assert train.target_speed == 0.0
 
-    def test_depart_from_station_with_more_waypoints(self, test_train: Train):
+    def test_depart_from_station_with_more_waypoints(self):
         """Test depart_from_station() transitions to STANDBY when more waypoints."""
-        test_train.state = TrainState.RUNNING_AT_STATION
-        test_train.assigned_route_id = "route1"
-        result = test_train.depart_from_station(has_more_waypoints=True)
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.RUNNING_AT_STATION
+        )
+        train.assigned_route_id = "route1"
+        result = controller.depart_from_station(has_more_waypoints=True)
         assert result is True
-        assert test_train.state == TrainState.STANDBY
-        assert test_train.assigned_route_id == "route1"  # Route still assigned
+        assert train.state == TrainState.STANDBY
+        assert train.assigned_route_id == "route1"  # Route still assigned
 
-    def test_depart_from_station_route_complete(self, test_train: Train):
+    def test_depart_from_station_route_complete(self):
         """Test depart_from_station() transitions to IDLE when route complete."""
-        test_train.state = TrainState.RUNNING_AT_STATION
-        test_train.assigned_route_id = "route1"
-        result = test_train.depart_from_station(has_more_waypoints=False)
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.RUNNING_AT_STATION
+        )
+        train.assigned_route_id = "route1"
+        result = controller.depart_from_station(has_more_waypoints=False)
         assert result is True
-        assert test_train.state == TrainState.IDLE
-        assert test_train.assigned_route_id is None  # Route cleared
-        assert test_train.target_speed == 0.0
+        assert train.state == TrainState.IDLE
+        assert train.assigned_route_id is None  # Route cleared
+        assert train.target_speed == 0.0
 
-    def test_emergency_stop_from_running(self, test_train: Train):
-        """Test emergency_stop() from RUNNING_MOVING."""
-        test_train.state = TrainState.RUNNING_MOVING
-        test_train.target_speed = 80.0
-        result = test_train.emergency_stop()
-        assert result is True
-        assert test_train.state == TrainState.RUNNING_WAITING
-        assert test_train.target_speed == 0.0
-        assert test_train.is_emergency_braking is True
+    def test_emergency_stop_cmd_from_running(self):
+        """Test emergency_stop_cmd() from RUNNING_MOVING."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.RUNNING_MOVING
+        )
+        train.target_speed = 80.0
+        result = controller.emergency_stop_cmd()
+        assert result.success is True
+        assert controller.emergency_stop_active is True
+        assert train.emergency_brake is True
 
-    def test_emergency_stop_from_non_running(self, test_train: Train):
-        """Test emergency_stop() works from non-RUNNING_MOVING state."""
-        test_train.state = TrainState.IDLE
-        result = test_train.emergency_stop()
-        assert result is True
-        assert test_train.state == TrainState.RUNNING_WAITING
-        assert test_train.wait_reason == "Emergency stop"
+    def test_emergency_stop_cmd_always_allowed(self):
+        """Test emergency_stop_cmd() works from any state."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.IDLE
+        )
+        result = controller.emergency_stop_cmd()
+        assert result.success is True
+        assert controller.emergency_stop_active is True
 
-    def test_enable_manual_from_idle(self, test_train: Train):
+    def test_enable_manual_from_idle(self):
         """Test enable_manual() from IDLE when stopped."""
-        test_train.state = TrainState.IDLE
-        test_train.current_speed = 0.0
-        result = test_train.enable_manual()
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.IDLE
+        )
+        result = controller.enable_manual()
         assert result is True
-        assert test_train.state == TrainState.MANUAL
+        assert train.state == TrainState.MANUAL
 
-    def test_enable_manual_fails_when_moving(self, test_train: Train):
+    def test_enable_manual_fails_when_moving(self):
         """Test enable_manual() fails when moving."""
-        test_train.state = TrainState.STANDBY
-        test_train.current_speed = 30.0
-        result = test_train.enable_manual()
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.STANDBY, current_speed=30.0
+        )
+        result = controller.enable_manual()
         assert result is False
 
-    def test_enable_manual_fails_from_off(self, test_train: Train):
+    def test_enable_manual_fails_from_off(self):
         """Test enable_manual() fails from OFF."""
-        test_train.state = TrainState.OFF
-        result = test_train.enable_manual()
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.OFF
+        )
+        result = controller.enable_manual()
         assert result is False
 
-    def test_disable_manual_to_idle(self, test_train: Train):
+    def test_disable_manual_to_idle(self):
         """Test disable_manual() transitions to IDLE when no direction."""
-        test_train.state = TrainState.MANUAL
-        test_train.current_speed = 0.0
-        test_train.facing_direction = None
-        result = test_train.disable_manual()
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.MANUAL
+        )
+        train.facing_direction = None
+        result = controller.disable_manual()
         assert result is True
-        assert test_train.state == TrainState.IDLE
-        assert test_train.manual_target_speed == 0.0
+        assert train.state == TrainState.IDLE
+        assert train.manual_target_speed == 0.0
 
-    def test_disable_manual_to_standby(self, test_train: Train):
+    def test_disable_manual_to_standby(self):
         """Test disable_manual() transitions to STANDBY when direction set."""
-        test_train.state = TrainState.MANUAL
-        test_train.current_speed = 0.0
-        test_train.facing_direction = Direction.EAST
-        result = test_train.disable_manual()
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.MANUAL
+        )
+        train.facing_direction = Direction.EAST
+        result = controller.disable_manual()
         assert result is True
-        assert test_train.state == TrainState.STANDBY
+        assert train.state == TrainState.STANDBY
 
-    def test_disable_manual_fails_when_moving(self, test_train: Train):
+    def test_disable_manual_fails_when_moving(self):
         """Test disable_manual() fails when moving."""
-        test_train.state = TrainState.MANUAL
-        test_train.current_speed = 40.0
-        result = test_train.disable_manual()
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.MANUAL, current_speed=40.0
+        )
+        result = controller.disable_manual()
         assert result is False
 
-    def test_disable_manual_fails_from_wrong_state(self, test_train: Train):
+    def test_disable_manual_fails_from_wrong_state(self):
         """Test disable_manual() fails from non-MANUAL state."""
-        test_train.state = TrainState.IDLE
-        result = test_train.disable_manual()
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.IDLE
+        )
+        result = controller.disable_manual()
         assert result is False
 
-    def test_set_direction_and_standby(self, test_train: Train):
+    def test_set_direction_and_standby(self):
         """Test set_direction_and_standby() convenience method."""
-        test_train.state = TrainState.IDLE
-        result = test_train.set_direction_and_standby(Direction.SOUTH)
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.IDLE
+        )
+        result = controller.set_direction_and_standby(Direction.SOUTH)
         assert result is True
-        assert test_train.state == TrainState.STANDBY
-        assert test_train.facing_direction == Direction.SOUTH
+        assert train.state == TrainState.STANDBY
+        assert train.facing_direction == Direction.SOUTH
 
-    def test_set_manual_speed(self, test_train: Train):
-        """Test set_manual_speed() in MANUAL mode."""
-        test_train.state = TrainState.MANUAL
-        result = test_train.set_manual_speed(50.0)
+    def test_set_manual_speed(self):
+        """Test set_manual_speed() in MANUAL mode - uses Train method directly."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.MANUAL
+        )
+        # Note: set_manual_speed is on Train, not controller
+        result = train.set_manual_speed(50.0)
         assert result is True
-        assert test_train.manual_target_speed == 50.0
+        assert train.manual_target_speed == 50.0
 
-    def test_set_manual_speed_clamps_to_max(self, test_train: Train):
+    def test_set_manual_speed_clamps_to_max(self):
         """Test set_manual_speed() clamps to max_speed."""
-        test_train.state = TrainState.MANUAL
-        test_train.max_speed = 100.0
-        result = test_train.set_manual_speed(150.0)
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.MANUAL, max_speed=100.0
+        )
+        result = train.set_manual_speed(150.0)
         assert result is True
-        assert test_train.manual_target_speed == 100.0
+        assert train.manual_target_speed == 100.0
 
-    def test_set_manual_speed_clamps_to_zero(self, test_train: Train):
+    def test_set_manual_speed_clamps_to_zero(self):
         """Test set_manual_speed() clamps negative to 0."""
-        test_train.state = TrainState.MANUAL
-        result = test_train.set_manual_speed(-10.0)
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.MANUAL
+        )
+        result = train.set_manual_speed(-10.0)
         assert result is True
-        assert test_train.manual_target_speed == 0.0
+        assert train.manual_target_speed == 0.0
 
-    def test_set_manual_speed_fails_when_not_manual(self, test_train: Train):
+    def test_set_manual_speed_fails_when_not_manual(self):
         """Test set_manual_speed() fails when not in MANUAL mode."""
-        test_train.state = TrainState.IDLE
-        result = test_train.set_manual_speed(50.0)
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.IDLE
+        )
+        result = train.set_manual_speed(50.0)
         assert result is False
 
 
@@ -1605,105 +1577,125 @@ class TestStateBasedVoltageOutput:
 
 
 class TestCompleteStateFlows:
-    """Integration tests for complete state transition flows."""
+    """Integration tests for complete state transition flows via TrainController."""
 
     def test_normal_startup_to_running_flow(self):
         """Test complete flow: OFF -> IDLE -> STANDBY -> RUNNING_MOVING."""
-        train = Train(train_id="T001", current_speed=0.0)
-        train.state = TrainState.OFF
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.OFF
+        )
 
         # Power on
-        assert train.power_on() is True
+        result = controller.power_on_cmd()
+        assert result.success is True
         assert train.state == TrainState.IDLE
 
         # Set direction and standby
-        assert train.set_direction_and_standby(Direction.NORTH) is True
+        assert controller.set_direction_and_standby(Direction.NORTH) is True
         assert train.state == TrainState.STANDBY
         assert train.facing_direction == Direction.NORTH
 
         # Depart
-        assert train.depart() is True
+        assert controller.depart() is True
         assert train.state == TrainState.RUNNING_MOVING
 
     def test_running_to_station_to_complete_flow(self):
         """Test complete flow through station arrival and route completion."""
-        train = Train(train_id="T001", current_speed=0.0)
-        train.state = TrainState.RUNNING_MOVING
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.RUNNING_MOVING
+        )
         train.assigned_route_id = "route1"
 
         # Arrive at station
-        assert train.arrive_at_station() is True
+        assert controller.arrive_at_station() is True
         assert train.state == TrainState.RUNNING_AT_STATION
         assert train.target_speed == 0.0
 
         # Depart with more waypoints
-        assert train.depart_from_station(has_more_waypoints=True) is True
+        assert controller.depart_from_station(has_more_waypoints=True) is True
         assert train.state == TrainState.STANDBY
         assert train.assigned_route_id == "route1"
 
         # Simulate moving and arriving at final station
-        train.state = TrainState.RUNNING_MOVING
-        assert train.arrive_at_station() is True
+        # Need to set controller state too for proper flow
+        train.facing_direction = Direction.NORTH
+        controller.depart()
+        assert train.state == TrainState.RUNNING_MOVING
+
+        assert controller.arrive_at_station() is True
         assert train.state == TrainState.RUNNING_AT_STATION
 
         # Route complete
-        assert train.depart_from_station(has_more_waypoints=False) is True
+        assert controller.depart_from_station(has_more_waypoints=False) is True
         assert train.state == TrainState.IDLE
         assert train.assigned_route_id is None
 
     def test_manual_mode_flow(self):
         """Test complete manual mode flow."""
-        train = Train(train_id="T001", current_speed=0.0)
-        train.state = TrainState.IDLE
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.IDLE
+        )
 
         # Enable manual
-        assert train.enable_manual() is True
+        assert controller.enable_manual() is True
         assert train.state == TrainState.MANUAL
 
-        # Set manual speed
+        # Set manual speed (still on Train - not moved to controller)
         assert train.set_manual_speed(50.0) is True
         assert train.manual_target_speed == 50.0
 
         # Cannot disable while "moving" (simulated)
         train.current_speed = 50.0
-        assert train.disable_manual() is False
+        assert controller.disable_manual() is False
         assert train.state == TrainState.MANUAL
 
         # Stop and disable
         train.current_speed = 0.0
-        assert train.disable_manual() is True
+        assert controller.disable_manual() is True
         assert train.state == TrainState.IDLE
         assert train.manual_target_speed == 0.0
 
     def test_emergency_stop_flow(self):
-        """Test emergency stop flow."""
-        train = Train(train_id="T001", current_speed=80.0)
-        train.state = TrainState.RUNNING_MOVING
+        """Test emergency stop flow via TrainController."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.RUNNING_MOVING, current_speed=80.0
+        )
         train.target_speed = 100.0
 
         # Emergency stop
-        assert train.emergency_stop() is True
-        assert train.state == TrainState.RUNNING_WAITING
-        assert train.target_speed == 0.0
-        assert train.is_emergency_braking is True
+        result = controller.emergency_stop_cmd()
+        assert result.success is True
+        assert controller.emergency_stop_active is True
+        assert train.emergency_brake is True
+        # Emergency stop sets handle to EB
+        assert controller.handle_position.value == "EB"
 
-        # Cannot move until cleared
-        # (would need to set is_emergency_braking = False first)
+        # Cannot release emergency until stopped and handle in N/B
+        train.current_speed = 0.0  # Simulate stopping
+        # Handle is still EB, need to set to N first
+        controller.handle_position = HandlePosition.N
+        result = controller.release_emergency_cmd()
+        assert result.success is True
+        assert controller.emergency_stop_active is False
 
     def test_shutdown_flow(self):
         """Test complete shutdown flow."""
-        train = Train(train_id="T001", current_speed=50.0)
-        train.state = TrainState.RUNNING_MOVING
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.RUNNING_MOVING, current_speed=50.0
+        )
 
         # Cannot power off while moving
-        assert train.power_off() is False
+        result = controller.power_off_cmd()
+        assert result.success is False
         assert train.state == TrainState.RUNNING_MOVING
 
-        # Stop first
-        train.state = TrainState.IDLE
+        # Stop first - simulate stopping
         train.current_speed = 0.0
+        controller.state = TrainState.IDLE
+        train.state = TrainState.IDLE
 
         # Now can power off
-        assert train.power_off() is True
+        result = controller.power_off_cmd()
+        assert result.success is True
         assert train.state == TrainState.OFF
         assert train.target_speed == 0.0

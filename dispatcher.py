@@ -19,12 +19,13 @@ TODO List:
 """
 
 import logging
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from collections import defaultdict
 from train import Train, TrainSchedule
 from pathfinder import RailwayPathfinder
 from enums import TrainState, SignalState, Direction
+from train_controller import TrainController, create_controller_for_train
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,21 @@ class TrainDispatcher:
         self.pathfinder = RailwayPathfinder(network)
         self.current_time = datetime.now()
         self.conflict_matrix: dict = defaultdict(set)
+        self.controllers: Dict[str, TrainController] = {}
+
+    def _get_controller(self, train: Train) -> TrainController:
+        """Get or create TrainController for a train."""
+        if train.train_id not in self.controllers:
+            controller = create_controller_for_train(
+                train_id=train.train_id,
+                network=self.network,
+            )
+            # Sync controller state from train if train is already running
+            if train.state != TrainState.OFF:
+                controller.state = train.state
+                controller.power_on = True
+            self.controllers[train.train_id] = controller
+        return self.controllers[train.train_id]
 
     def update_time(self, new_time: datetime):
         """Update system time"""
@@ -86,6 +102,8 @@ class TrainDispatcher:
         Returns:
             bool: True if dispatch successful
         """
+        controller = self._get_controller(train)
+
         if not train.current_pos:
             logger.warning("Train %s has no current position", train.train_id)
             return False
@@ -122,15 +140,15 @@ class TrainDispatcher:
         train.current_path = path
         train.path_index = 0
         if train.state == TrainState.STANDBY:
-            train.depart()
+            controller.depart()
         elif train.state == TrainState.IDLE:
             if train.facing_direction:
-                train.state = TrainState.RUNNING_MOVING
+                controller.transition_to_moving()
             else:
-                train.set_direction_and_standby(
+                controller.set_direction_and_standby(
                     train.current_direction or Direction.EAST
                 )
-                train.depart()
+                controller.depart()
 
         logger.info("  Train dispatch successful")
         return True

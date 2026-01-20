@@ -7,7 +7,7 @@ It handles waypoint arrival detection, dwell time management, automatic turn-aro
 and route mode execution (ONE_WAY, LOOP, ROUND_TRIP).
 
 The executor integrates with:
-- Train state machine for state transitions
+- TrainController for state transitions (not Train methods directly)
 - PathDispatcher for infrastructure reservations
 - Station system for position matching
 """
@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple, TYPE_CHECKING
 from enums import TrainState, Direction, OPPOSITE_DIRECTIONS
+from train_controller import TrainController, create_controller_for_train
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -62,6 +63,7 @@ class RouteExecutor:
         self,
         network: "RailwayNetwork",
         path_dispatcher: Optional["PathDispatcher"] = None,
+        shared_controllers: Optional[Dict[str, TrainController]] = None,
     ):
         """
         Initialize route executor.
@@ -69,6 +71,7 @@ class RouteExecutor:
         Args:
             network: Railway network
             path_dispatcher: Path dispatcher for infrastructure reservations
+            shared_controllers: Shared controller dict from SimulationController (optional)
         """
         self.network = network
         self.path_dispatcher = path_dispatcher
@@ -76,8 +79,21 @@ class RouteExecutor:
         # Track execution state for each train
         self.execution_states: Dict[str, RouteExecutionState] = {}
 
+        # Use shared controllers if provided, otherwise create our own
+        self.controllers = shared_controllers if shared_controllers is not None else {}
+        self._owns_controllers = shared_controllers is None
+
         # Simulation time
         self.simulation_time: float = 0.0
+
+    def _get_controller(self, train: "Train") -> TrainController:
+        """Get or create TrainController for a train."""
+        if train.train_id not in self.controllers:
+            self.controllers[train.train_id] = create_controller_for_train(
+                train_id=train.train_id,
+                network=self.network,
+            )
+        return self.controllers[train.train_id]
 
     def update(self, delta_time: float) -> None:
         """
@@ -139,6 +155,7 @@ class RouteExecutor:
     def _try_depart_to_waypoint(
         self, train: "Train", route: "Route", exec_state: RouteExecutionState
     ) -> None:
+        controller = self._get_controller(train)
         waypoint = route.get_current_waypoint()
         if not waypoint:
             logger.info(
@@ -151,7 +168,7 @@ class RouteExecutor:
             error_msg = f"Station {waypoint.station_id} not found"
             logger.error(f"Train {train.train_id}: {error_msg}")
             route.set_error(error_msg, self.simulation_time)
-            train.wait_for_path(error_msg)
+            controller.wait_for_path(error_msg)
             exec_state.waiting_for_path = True
             return
 
@@ -159,7 +176,7 @@ class RouteExecutor:
             logger.info(
                 f"Train {train.train_id}: Turning around for waypoint {waypoint.station_id}"
             )
-            train.turn_around()
+            controller.turn_around()
 
         if self.path_dispatcher and train.current_pos:
             current_track = self.network.get_track(*train.current_pos)
@@ -174,7 +191,7 @@ class RouteExecutor:
                 error_msg = f"Station {waypoint.station_id} has no associated block"
                 logger.error(f"Train {train.train_id}: {error_msg}")
                 route.set_error(error_msg, self.simulation_time)
-                train.wait_for_path(error_msg)
+                controller.wait_for_path(error_msg)
                 exec_state.waiting_for_path = True
                 return
 
@@ -184,7 +201,7 @@ class RouteExecutor:
                 exec_state.waiting_for_path = False
                 route.clear_error()
                 if train.state == TrainState.STANDBY:
-                    train.depart()
+                    controller.depart()
                     logger.info(
                         f"Train {train.train_id}: Already at target block, departed"
                     )
@@ -205,7 +222,7 @@ class RouteExecutor:
                 train.assigned_path_id = path_result.path.path_id
 
                 if train.state == TrainState.STANDBY:
-                    train.depart()
+                    controller.depart()
                     logger.info(
                         f"Train {train.train_id}: Path acquired, departed to {waypoint.station_id}"
                     )
@@ -219,11 +236,11 @@ class RouteExecutor:
                 elif train.state == TrainState.STANDBY:
                     train.wait_reason = error_msg
                 else:
-                    train.wait_for_path(error_msg)
+                    controller.wait_for_path(error_msg)
                 exec_state.waiting_for_path = True
         else:
             if train.state == TrainState.STANDBY:
-                train.depart()
+                controller.depart()
                 logger.info(
                     f"Train {train.train_id}: No dispatcher, departed to {waypoint.station_id}"
                 )
@@ -281,6 +298,7 @@ class RouteExecutor:
             route: Route being executed
             exec_state: Execution state
         """
+        controller = self._get_controller(train)
         waypoint = route.get_current_waypoint()
         if not waypoint:
             return
@@ -306,7 +324,7 @@ class RouteExecutor:
                 )
             else:
                 # Normal running states - transition to station state
-                train.arrive_at_station()
+                controller.arrive_at_station()
 
     def _check_dwell_complete(
         self, train: "Train", route: "Route", exec_state: RouteExecutionState
@@ -319,6 +337,7 @@ class RouteExecutor:
             route: Route being executed
             exec_state: Execution state
         """
+        controller = self._get_controller(train)
         waypoint = route.get_current_waypoint()
         if not waypoint:
             return
@@ -354,7 +373,7 @@ class RouteExecutor:
                     )
                 else:
                     # Normal running states - transition to STANDBY
-                    train.depart_from_station(has_more_waypoints=True)
+                    controller.depart_from_station(has_more_waypoints=True)
                 exec_state.arrived_at_station_time = None
             else:
                 # Route complete (ONE_WAY only)
@@ -363,7 +382,7 @@ class RouteExecutor:
                     # In MANUAL mode, stay in MANUAL but clear route
                     train.assigned_route_id = None
                 else:
-                    train.depart_from_station(has_more_waypoints=False)
+                    controller.depart_from_station(has_more_waypoints=False)
                 route.deactivate()
                 exec_state.arrived_at_station_time = None
 
@@ -482,6 +501,8 @@ class RouteExecutor:
         Returns:
             True if successful
         """
+        controller = self._get_controller(train)
+
         # Activate route
         route.activate(self.simulation_time)
 
@@ -495,7 +516,7 @@ class RouteExecutor:
 
         # If train is IDLE, transition to STANDBY
         if train.state == TrainState.IDLE and train.facing_direction:
-            train.set_direction_and_standby(train.facing_direction)
+            controller.set_direction_and_standby(train.facing_direction)
 
         logger.info(f"Train {train.train_id}: Activated route {route.route_id}")
         return True
@@ -511,6 +532,8 @@ class RouteExecutor:
         Returns:
             True if successful
         """
+        controller = self._get_controller(train)
+
         route.deactivate()
         train.assigned_route_id = None
 
@@ -518,9 +541,14 @@ class RouteExecutor:
         if train.train_id in self.execution_states:
             del self.execution_states[train.train_id]
 
+        # Clean up controller instance only if we own the controllers dict
+        # (don't delete from shared controllers - that's managed by SimulationController)
+        if self._owns_controllers and train.train_id in self.controllers:
+            del self.controllers[train.train_id]
+
         # Transition train to IDLE if not already
-        if train.state != TrainState.OFF:
-            train.power_off() if train.is_stopped() else None
+        if train.state != TrainState.OFF and train.is_stopped():
+            controller.power_off_cmd()
 
         logger.info(f"Train {train.train_id}: Deactivated route {route.route_id}")
         return True

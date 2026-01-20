@@ -527,6 +527,7 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
     from route_executor import RouteExecutor
     from train import TrainCar, Train
     from enums import Direction
+    from train_controller import create_controller_for_train
 
     executor = RouteExecutor(network, path_dispatcher)
 
@@ -573,9 +574,19 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
                 demo_train.path_index = 0
             demo_train.assigned_path_id = path_result.path.path_id
 
-    demo_train.power_on()
-    demo_train.set_direction_and_standby(Direction.EAST)
-    demo_train.depart()
+    # Use TrainController for state transitions
+    controller = create_controller_for_train(
+        train_id=demo_train.train_id,
+        network=network,
+    )
+    controller.power_on_cmd()
+    controller.set_direction_and_standby(Direction.EAST)
+    controller.depart()
+
+    # Sync train state to match controller (so SimulationController's controller will inherit it)
+    demo_train.state = controller.state
+    # Note: SimulationController will create its own controller when it starts,
+    # and it will sync from the train's state via the dispatcher's _get_controller
 
 
 def create_track_showcase(network: RailwayNetwork):

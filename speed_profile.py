@@ -36,6 +36,7 @@ class SpeedProfile:
         acceleration_rate: Speed increase rate (km/h per second)
         deceleration_rate: Service brake rate (km/h per second)
         emergency_brake_rate: Emergency brake rate (km/h per second)
+        friction_rate: Coasting deceleration rate (km/h per second) when handle is N
     """
 
     profile_id: str
@@ -47,6 +48,7 @@ class SpeedProfile:
     acceleration_rate: float = 10.0  # km/h per second
     deceleration_rate: float = 15.0  # km/h per second (service brake)
     emergency_brake_rate: float = 30.0  # km/h per second
+    friction_rate: float = 0.5  # km/h per second (coasting deceleration)
 
     def __post_init__(self):
         """Ensure speed_voltage_curve is sorted by speed."""
@@ -267,6 +269,7 @@ class SpeedProfile:
             "acceleration_rate": self.acceleration_rate,
             "deceleration_rate": self.deceleration_rate,
             "emergency_brake_rate": self.emergency_brake_rate,
+            "friction_rate": self.friction_rate,
         }
 
     @classmethod
@@ -285,6 +288,7 @@ class SpeedProfile:
             acceleration_rate=float(data.get("acceleration_rate", 10.0)),
             deceleration_rate=float(data.get("deceleration_rate", 15.0)),
             emergency_brake_rate=float(data.get("emergency_brake_rate", 30.0)),
+            friction_rate=float(data.get("friction_rate", 0.5)),
         )
 
 

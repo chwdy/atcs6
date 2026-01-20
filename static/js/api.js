@@ -931,6 +931,118 @@ class API {
         }
     }
 
+    // === OnboardComputer API (New Train Control Architecture) ===
+    
+    /**
+     * Get OnboardComputer state for a train.
+     * This is the single source of truth for train control state.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} OnboardComputer state
+     */
+    async getOnboardState(trainId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/trains/${trainId}/onboard`);
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to get onboard state');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] getOnboardState failed:', e);
+            throw e;
+        }
+    }
+
+    /**
+     * Set throttle/brake handle position.
+     * @param {string} trainId - Train ID
+     * @param {string} position - Handle position: P1-P5, N, B1-B8, EB
+     * @returns {Promise<object>} { status, onboard }
+     */
+    async setHandle(trainId, position) {
+        try {
+            const response = await fetch(`${this.baseUrl}/trains/${trainId}/handle`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ position })
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to set handle position');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] setHandle failed:', e);
+            throw e;
+        }
+    }
+
+    /**
+     * Set control mode (ATO or Manual) via OnboardComputer.
+     * @param {string} trainId - Train ID
+     * @param {string} mode - 'ato' or 'manual'
+     * @returns {Promise<object>} { status, onboard }
+     */
+    async setControlMode(trainId, mode) {
+        try {
+            const response = await fetch(`${this.baseUrl}/trains/${trainId}/mode`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode })
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to set control mode');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] setControlMode failed:', e);
+            throw e;
+        }
+    }
+
+    /**
+     * Start ATO movement via OnboardComputer.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} { status, onboard }
+     */
+    async atoGo(trainId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/trains/${trainId}/ato-go`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to start ATO');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] atoGo failed:', e);
+            throw e;
+        }
+    }
+
+    /**
+     * Stop ATO movement (service stop) via OnboardComputer.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} { status, onboard }
+     */
+    async atoStop(trainId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/trains/${trainId}/ato-stop`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to stop ATO');
+            }
+            return result;
+        } catch (e) {
+            console.error('[API] atoStop failed:', e);
+            throw e;
+        }
+    }
+
     // === Schedule API ===
 
     async getSchedules() {
