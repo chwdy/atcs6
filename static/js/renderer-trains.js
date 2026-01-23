@@ -403,7 +403,6 @@ class RendererTrainHandler {
     drawTrainFromPath(train) {
         const pathTiles = train.path_tiles;
         const pathInfo = train.path_tile_info || [];
-        
         // Determine head and tail based on leading_end
         const headIndex = train.leading_end === 'a' ? train.end_a_index : train.end_b_index;
         const tailIndex = train.leading_end === 'a' ? train.end_b_index : train.end_a_index;

@@ -348,16 +348,19 @@ class TrainEditorHandler {
             'running_at_station': '#8257e5',
             'manual': '#e83f5b'
         };
-        const stateColor = stateColors[onboard?.train_state || train.state] || '#888';
+        const trainState = onboard?.state || train.state || 'off';
+        const stateColor = stateColors[trainState] || '#888';
 
         // Get path and destination info for ATO section
-        let pathName = 'No path';
-        let destinationName = 'No path';
-        if (train.assigned_path_id) {
+        const onboardAto = onboard?.ato_info;
+        const assignedPathId = onboardAto?.path_id || train.assigned_path_id;
+        let pathName = onboardAto?.path_id || 'No path';
+        let destinationName = onboardAto?.destination_station_name || onboardAto?.destination_block_id || 'No path';
+        if (assignedPathId) {
             try {
-                const path = await this.api.getPath(train.assigned_path_id);
+                const path = await this.api.getPath(assignedPathId);
                 if (path) {
-                    pathName = path.path_id || train.assigned_path_id;
+                    pathName = path.path_id || assignedPathId;
                     // Get destination: prefer station name, fallback to block name
                     if (path.end_station_id) {
                         const station = await this.api.getStation(path.end_station_id);
@@ -399,7 +402,7 @@ class TrainEditorHandler {
                     </div>
                     
                     <div class="text-2xl font-bold mb-4 font-mono train-state-display" style="color: ${stateColor}">
-                        ${(onboard?.train_state || train.state || 'off').toUpperCase().replace('_', ' ')}
+                        ${trainState.toUpperCase().replace('_', ' ')}
                     </div>
                     
                     <div class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm font-mono">
@@ -505,9 +508,9 @@ class TrainEditorHandler {
                     <div id="ato-controls" class="${isManual ? 'hidden' : ''}">
                         <div class="mb-8 pb-8" style="border-bottom: 1px solid var(--border-color);">
                             <div class="text-xs text-muted mb-2">Path</div>
-                            <div class="text-sm text-info font-mono mb-4">${pathName}</div>
+                            <div class="text-sm text-info font-mono mb-4 train-ato-path-display">${pathName}</div>
                             <div class="text-xs text-muted mb-2">Destination</div>
-                            <div class="text-sm text-station font-mono">${destinationName}</div>
+                            <div class="text-sm text-station font-mono train-ato-destination-display">${destinationName}</div>
                         </div>
                         <div class="flex gap-8">
                             <button id="train-ato-go-btn" class="btn btn-success btn-sm flex-1" ${!onboard?.active_cab || atoRunning ? 'disabled' : ''}>▶ Go</button>
@@ -1013,6 +1016,9 @@ class TrainEditorHandler {
         const panel = document.querySelector(`.train-control-panel[data-train-id="${train.id}"]`);
         if (!panel) return;
 
+        const onboard = train.onboard || null;
+        const trainState = onboard?.state || train.state || 'off';
+
         const stateColors = {
             'off': '#888',
             'idle': '#ffd93d',
@@ -1025,15 +1031,15 @@ class TrainEditorHandler {
 
         const stateEl = panel.querySelector('.train-state-display');
         if (stateEl) {
-            stateEl.style.color = stateColors[train.state] || '#888';
+            stateEl.style.color = stateColors[trainState] || '#888';
             stateEl.innerHTML = `
-                ${(train.state || 'off').toUpperCase().replace('_', ' ')}
+                ${trainState.toUpperCase().replace('_', ' ')}
             `;
         }
         
         // Update waiting reason
         let reasonEl = panel.querySelector('.train-wait-reason');
-        if (train.state === 'running_waiting' && train.wait_reason) {
+        if (trainState === 'running_waiting' && train.wait_reason) {
             if (!reasonEl) {
                 // If element doesn't exist but should, we might need to recreate the info block,
                 // but simpler to just append if missing or update parent.
@@ -1063,7 +1069,81 @@ class TrainEditorHandler {
 
         const speedEl = panel.querySelector('.train-speed-display');
         if (speedEl) {
-            speedEl.innerHTML = `${(train.current_speed || 0).toFixed(1)} <span class="text-muted">/ ${train.max_speed || 100} km/h</span>`;
+            const currentSpeed = onboard?.current_speed ?? train.current_speed ?? 0;
+            speedEl.innerHTML = `${currentSpeed.toFixed(1)} <span class="text-muted">/ ${train.max_speed || 100} km/h</span>`;
+        }
+
+        if (onboard) {
+            const powerDisplay = panel.querySelector('.obc-power-display');
+            const modeDisplay = panel.querySelector('.obc-mode-display');
+            const handleDisplay = panel.querySelector('.obc-handle-display');
+
+            const powerOn = onboard.power_on ?? false;
+            const controlMode = onboard.control_mode || 'ato';
+            const handlePosition = onboard.handle_position || 'N';
+
+            if (powerDisplay) {
+                powerDisplay.textContent = powerOn ? 'ON' : 'OFF';
+                powerDisplay.style.color = powerOn ? '#04d361' : '#888';
+            }
+
+            if (modeDisplay) {
+                modeDisplay.textContent = controlMode.toUpperCase();
+                modeDisplay.style.color = controlMode === 'manual' ? '#e83f5b' : '#00d4ff';
+            }
+
+            if (handleDisplay) {
+                handleDisplay.textContent = handlePosition;
+                if (handlePosition.startsWith('P')) {
+                    handleDisplay.style.color = '#04d361';
+                } else if (handlePosition.startsWith('B') || handlePosition === 'EB') {
+                    handleDisplay.style.color = '#e83f5b';
+                } else {
+                    handleDisplay.style.color = '#ffd93d';
+                }
+            }
+
+            const pathDisplay = panel.querySelector('.train-ato-path-display');
+            const destinationDisplay = panel.querySelector('.train-ato-destination-display');
+            if (pathDisplay) {
+                pathDisplay.textContent = onboard.ato_info?.path_id || train.assigned_path_id || 'No path';
+            }
+            if (destinationDisplay) {
+                destinationDisplay.textContent = onboard.ato_info?.destination_station_name || onboard.ato_info?.destination_block_id || 'No path';
+            }
+
+            const handleSlider = document.getElementById('train-handle-slider');
+            const handleLabel = document.getElementById('handle-position-label');
+            const handleDesc = document.getElementById('handle-description');
+            const handleOrder = ['P5', 'P4', 'P3', 'P2', 'P1', 'N', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'EB'];
+            const handleIndex = handleOrder.indexOf(handlePosition);
+
+            if (handleSlider && handleIndex >= 0 && document.activeElement !== handleSlider) {
+                handleSlider.value = handleIndex;
+            }
+
+            if (handleLabel) {
+                handleLabel.textContent = handlePosition;
+                if (handlePosition.startsWith('P')) {
+                    handleLabel.style.color = '#04d361';
+                } else if (handlePosition.startsWith('B') || handlePosition === 'EB') {
+                    handleLabel.style.color = '#e83f5b';
+                } else {
+                    handleLabel.style.color = '#ffd93d';
+                }
+            }
+
+            if (handleDesc) {
+                if (handlePosition === 'N') {
+                    handleDesc.textContent = 'Coast (no power, no braking)';
+                } else if (handlePosition.startsWith('P')) {
+                    handleDesc.textContent = `Power ${handlePosition.slice(1)} - Accelerating`;
+                } else if (handlePosition === 'EB') {
+                    handleDesc.textContent = 'Emergency Brake';
+                } else {
+                    handleDesc.textContent = `Brake ${handlePosition.slice(1)} - Decelerating`;
+                }
+            }
         }
 
         const speedLabel = document.getElementById('manual-speed-label');

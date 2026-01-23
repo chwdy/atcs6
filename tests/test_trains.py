@@ -4,9 +4,10 @@ Train Tests - Train placement, movement, and occupancy
 Run with: pytest tests/test_trains.py -v
 """
 
+import logging
 import pytest
 
-from track import TrackSegment, TRACK_NS, TRACK_EW
+from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
 from enums import BlockState, Direction, TrainState, HandlePosition
@@ -14,6 +15,7 @@ from train import Train, TrainCar, TrainPosition
 from dispatcher import TrainDispatcher
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
+from switch import Switch
 
 
 @pytest.fixture
@@ -378,6 +380,192 @@ class TestTrainReverse:
         assert train.position.facing_direction == Direction.WEST
 
 
+class TestCabSwitchEndPositionsBugFix:
+    """
+    Comprehensive tests for cab switching end position swaps (2026-01-22).
+
+    BUG: TrainController.set_cab() swapped end_a/end_b positions when switching
+    cabs, causing occupied_tiles to stay in the old order. This inverted the
+    renderer's head/tail selection when using path_tiles + leading_end.
+
+    FIX: Switching cabs only flips leading_end and facing_direction. Physical
+    end_a/end_b positions and occupied_tiles ordering (end_a -> end_b) remain
+    unchanged.
+    """
+
+    def _setup_two_tile_train(self, network):
+        for x in range(3):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=80.0)
+        train = Train(train_id="CAB_SWAP_TEST", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 1, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on = True
+
+        return train, controller
+
+    def test_cab_switch_keeps_end_positions(self, network):
+        train, controller = self._setup_two_tile_train(network)
+
+        controller.set_cab("A")
+        original_end_a = train.position.end_a_tile
+        original_end_b = train.position.end_b_tile
+        original_entry_a = train.position.end_a_entry_edge
+        original_entry_b = train.position.end_b_entry_edge
+
+        controller.set_cab("B")
+
+        assert train.position.leading_end == "b"
+        assert train.position.end_a_tile == original_end_a
+        assert train.position.end_b_tile == original_end_b
+        assert train.position.end_a_entry_edge == original_entry_a
+        assert train.position.end_b_entry_edge == original_entry_b
+
+    def test_cab_switch_preserves_occupied_tiles_order(self, network):
+        train, controller = self._setup_two_tile_train(network)
+
+        controller.set_cab("A")
+        original_occupied = train.position.occupied_tiles.copy()
+
+        controller.set_cab("B")
+
+        assert train.position.occupied_tiles == original_occupied
+        assert train.position.occupied_tiles[0] == train.position.end_a_tile
+        assert train.position.occupied_tiles[-1] == train.position.end_b_tile
+
+    def test_cab_switch_renderer_serialization_order(self, network):
+        train, controller = self._setup_two_tile_train(network)
+
+        controller.set_cab("A")
+        original_end_a = train.position.end_a_tile
+        original_end_b = train.position.end_b_tile
+
+        controller.set_cab("B")
+        data = train.to_dict(network)
+
+        assert data["leading_end"] == "b"
+        assert data["path_tiles"][0] == list(original_end_a)
+        assert data["path_tiles"][-1] == list(original_end_b)
+        assert data["end_a_index"] == 0
+        assert data["end_b_index"] == len(data["path_tiles"]) - 1
+
+
+class TestTrainPhysicsOccupiedTilesOrderBugFix:
+    """
+    Comprehensive tests for occupied_tiles ordering in TrainPhysics (2026-01-22).
+
+    BUG: TrainPhysics._update_occupied_tiles() always stored tiles from tail to
+    head, even when leading_end='a'. This inverted end_a/end_b ordering, causing
+    renderer head/tail swaps when the train spans multiple tiles.
+
+    FIX: occupied_tiles stays ordered from end_a -> end_b regardless of
+    leading_end.
+    """
+
+    def _setup_two_tile_train(self, network):
+        for x in range(3):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=80.0)
+        train = Train(train_id="OCCUPIED_TILE_ORDER", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 1, 0, Direction.EAST)
+
+        return train
+
+    def test_occupied_tiles_order_leading_end_a(self, network):
+        train = self._setup_two_tile_train(network)
+
+        from train_physics import TrainPhysics
+
+        physics = TrainPhysics(train_id=train.train_id, network=network)
+        physics._move_train(train, 1.0)
+
+        assert train.position.leading_end == "a"
+        assert train.position.occupied_tiles[0] == train.position.end_a_tile
+        assert train.position.occupied_tiles[-1] == train.position.end_b_tile
+
+    def test_renderer_path_tiles_order_leading_end_a(self, network):
+        train = self._setup_two_tile_train(network)
+
+        from train_physics import TrainPhysics
+
+        physics = TrainPhysics(train_id=train.train_id, network=network)
+        physics._move_train(train, 1.0)
+
+        data = train.to_dict(network)
+
+        assert data["path_tiles"][0] == list(train.position.end_a_tile)
+        assert data["path_tiles"][-1] == list(train.position.end_b_tile)
+
+
+class TestTrainPhysicsTailPositionBugFix:
+    """
+    Comprehensive tests for incorrect tail distance/entry edge (2026-01-21).
+
+    BUG: TrainPhysics._update_tail_position produced tail distances larger than
+    tile length (e.g., 61cm in a 50cm tile) and flipped the tail entry edge when
+    the head advanced into the next tile.
+
+    FIX: Tail distance stays within the tile length and preserves the correct
+    entry edge when tracing backward across tiles.
+    """
+
+    def test_tail_distance_within_tile_after_advance(self, network):
+        for x in range(3):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        network.create_block_with_tracks(
+            "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
+        )
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="T1", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        from train_physics import TrainPhysics
+
+        physics = TrainPhysics(train_id=train.train_id, network=network)
+        physics._move_train(train, 1.0)
+
+        assert train.position.head_tile == (1, 0)
+        assert train.position.tail_tile == (0, 0)
+        assert train.position.tail_entry_edge == "W"
+        assert train.position.tail_distance_cm == pytest.approx(11.0)
+
+
+class TestZeroLengthSwitchTraversal:
+    """Tests for moving across zero-length switch tiles."""
+
+    def test_train_advances_across_zero_length_switch(self, network):
+        network.add_track(TrackSegment(0, 0, track_bits=TRACK_EW))
+        switch_track = TrackSegment(1, 0, track_bits=TRACK_EW | TRACK_NW)
+        switch_track.switch_state = 0
+        network.add_track(switch_track)
+        network.add_track(TrackSegment(2, 0, track_bits=TRACK_EW))
+        switch = Switch(switch_id="SW_1_0", x=1, y=0)
+        network.add_switch(switch)
+        switch_track.switch_id = switch.switch_id
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="T1", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        from train_physics import TrainPhysics
+
+        physics = TrainPhysics(train_id=train.train_id, network=network)
+        physics._move_train(train, 25.0)
+
+        assert train.position.head_tile == (2, 0)
+        assert train.position.head_distance_cm == pytest.approx(25.0)
+        assert train.position.tail_tile == (0, 0)
+        assert train.position.tail_entry_edge == "W"
+        assert train.position.tail_distance_cm == pytest.approx(35.0)
+
+
 class TestRaceConditionFix:
     """Tests for race condition fixes."""
 
@@ -440,31 +628,300 @@ class TestRaceConditionFix:
 
     def test_controller_transitions_to_waiting_when_stopped(self):
         """
-        Test that controller transitions from RUNNING_MOVING to RUNNING_WAITING when stopped.
+        Test that controller transitions from RUNNING_MOVING to RUNNING_WAITING
+        when train is stopped AND there's an obstruction (ATC limit = 0).
 
-        BUG: train_controller.py:263-267 doesn't auto-transition from RUNNING_MOVING
-        to RUNNING_WAITING when train is stopped (speed = 0).
+        The transition to WAITING should ONLY occur when:
+        1. Train's current_speed <= threshold (physically stopped)
+        2. ATC speed limit <= threshold (obstruction detected)
 
-        FIX: Add check in controller.tick() to transition RUNNING_MOVING -> RUNNING_WAITING
-        when current_speed <= STOPPED_SPEED_THRESHOLD.
+        Simply being stopped without an obstruction should NOT trigger WAITING.
         """
         network = RailwayNetwork()
+
+        # Create track and block
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        track.block_section_id = "B1"
+        network.add_track(track)
+
+        # Create a block that is occupied by ANOTHER train (obstruction)
+        block = network.create_block("B1", "Block 1")
+        network.block_manager.occupy_block("B1", "OTHER_TRAIN")
+
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_TRANSITION_TEST", consist=[car], max_speed=60.0)
         train.state = TrainState.RUNNING_MOVING
         train.current_speed = 0.0  # Train is stopped
+        train.current_pos = (0, 0)
         network.add_train(train)
 
         sim = SimulationController(network)
         controller = sim._get_or_create_controller(train)
         controller.power_on = True
         controller.state = TrainState.RUNNING_MOVING
+        controller.ato_running = True
+        controller.active_cab = "A"  # Set cab so ATC calculates speed properly
 
-        # Tick controller - should detect train is stopped and transition to WAITING
+        # Tick controller - should detect obstruction and transition to WAITING
         sim.update(0.1)
 
-        # Controller should have transitioned to RUNNING_WAITING (train is stopped)
+        # Controller should have transitioned to RUNNING_WAITING
+        # because there's an obstruction (block occupied by another train)
         assert controller.state == TrainState.RUNNING_WAITING
+        assert train.wait_reason is not None
+
+    def test_controller_stays_moving_when_stopped_without_obstruction(self):
+        """
+        Test that controller stays in RUNNING_MOVING when train is stopped
+        but there's NO obstruction (path is clear).
+
+        This verifies that simply reaching speed = 0 doesn't trigger WAITING.
+        The train should remain in RUNNING_MOVING if the path ahead is clear.
+        """
+        network = RailwayNetwork()
+
+        # Create track and block with sufficient length for clearance
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        track.block_section_id = "B1"
+        network.add_track(track)
+
+        block = network.create_block("B1", "Block 1")
+        block.length_cm = 1000.0  # 10 meters - sufficient for clearance
+
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_NO_OBSTRUCTION", consist=[car], max_speed=60.0)
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 0.0  # Train is stopped, but path is clear
+        train.current_pos = (0, 0)  # Train is on the track
+        network.add_train(train)
+
+        sim = SimulationController(network)
+        controller = sim._get_or_create_controller(train)
+        controller.power_on = True
+        controller.state = TrainState.RUNNING_MOVING
+        controller.active_cab = "A"  # Set cab so ATC calculates speed properly
+
+        # Tick controller - should NOT transition to WAITING (no obstruction)
+        sim.update(0.1)
+
+        # Controller should remain in RUNNING_MOVING (path is clear, no obstruction)
+        assert controller.state == TrainState.RUNNING_MOVING
+
+    def test_controller_auto_transitions_waiting_to_moving_when_obstruction_clears(
+        self,
+    ):
+        """
+        Test that controller auto-transitions from RUNNING_WAITING back to RUNNING_MOVING
+        when the obstruction clears (ATC limit > 0).
+
+        This is the key test for the WAITING ↔ MOVING fix:
+        1. Train is in RUNNING_WAITING (blocked by another train)
+        2. Obstruction clears (block becomes free)
+        3. Train should automatically transition to RUNNING_MOVING
+        """
+        network = RailwayNetwork()
+
+        # Create track and block
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        track.block_section_id = "B1"
+        network.add_track(track)
+
+        # Create a block that is occupied by ANOTHER train (obstruction)
+        # Set block length so ATC clearance calculation works
+        block = network.create_block("B1", "Block 1")
+        block.length_cm = 1000.0  # 10 meters - sufficient for clearance
+        network.block_manager.occupy_block("B1", "OTHER_TRAIN")
+
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_WAITING_TEST", consist=[car], max_speed=60.0)
+        train.state = TrainState.RUNNING_WAITING
+        train.current_speed = 0.0  # Train is stopped
+        train.current_pos = (0, 0)
+        train.wait_reason = "Block B1 occupied by OTHER_TRAIN"
+        network.add_train(train)
+
+        sim = SimulationController(network)
+        controller = sim._get_or_create_controller(train)
+        controller.power_on = True
+        controller.state = TrainState.RUNNING_WAITING
+        controller.ato_running = False  # ATO was paused due to waiting
+        controller.active_cab = "A"  # Set cab so ATC calculates speed properly
+
+        # Verify initial state
+        assert controller.state == TrainState.RUNNING_WAITING
+
+        # Now clear the obstruction - the other train leaves the block
+        network.block_manager.set_block_to_caution("B1")
+        network.block_manager.clear_block("B1")
+
+        # Tick controller - should detect obstruction cleared and transition to MOVING
+        sim.update(0.1)
+
+        # Controller should have transitioned to RUNNING_MOVING
+        # because obstruction is gone (block is free)
+        assert controller.state == TrainState.RUNNING_MOVING, (
+            f"Expected RUNNING_MOVING but got {controller.state}. "
+            f"Train should auto-transition when obstruction clears."
+        )
+        # ATO should be restarted
+        assert controller.ato_running == True, (
+            "ATO should be restarted after obstruction clears"
+        )
+        # Wait reason should be cleared
+        assert train.wait_reason is None, "Wait reason should be cleared"
+
+    def test_atc_triggers_warning_on_5kmh_overspeed(self):
+        """
+        Test that ATC triggers warning when overspeed by 5-10 km/h.
+
+        Per new tick() workflow:
+        - current_speed > atc_speed + 5 → atc_warning_active = True
+        - current_speed > atc_speed + 10 → eb_active = True
+        """
+        network = RailwayNetwork()
+
+        # Create track and block with speed limit
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        track.block_section_id = "B1"
+        network.add_track(track)
+
+        block = network.create_block("B1", "Block 1")
+        block.length_cm = 1000.0
+        block.max_speed_kmh = 30.0  # 30 km/h limit
+
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_OVERSPEED_TEST", consist=[car], max_speed=100.0)
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 37.0  # 7 km/h over limit (warning zone)
+        train.current_pos = (0, 0)
+        network.add_train(train)
+
+        sim = SimulationController(network)
+        controller = sim._get_or_create_controller(train)
+        controller.power_on = True
+        controller.state = TrainState.RUNNING_MOVING
+        controller.active_cab = "A"
+
+        # Tick controller
+        sim.update(0.1)
+
+        # Should have warning but not EB
+        assert controller.atc_warning_active == True, (
+            "Warning should be active at 7 km/h overspeed"
+        )
+        assert controller.eb_active == False, (
+            "EB should not trigger at 7 km/h overspeed"
+        )
+
+    def test_atc_triggers_eb_on_10kmh_overspeed(self):
+        """
+        Test that ATC triggers emergency brake when overspeed by > 10 km/h.
+
+        Per new tick() workflow:
+        - current_speed > atc_speed + 10 → eb_active = True
+        """
+        network = RailwayNetwork()
+
+        # Create track and block with speed limit
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        track.block_section_id = "B1"
+        network.add_track(track)
+
+        block = network.create_block("B1", "Block 1")
+        block.length_cm = 1000.0
+        block.max_speed_kmh = 30.0  # 30 km/h limit
+
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_EB_TEST", consist=[car], max_speed=100.0)
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 42.0  # 12 km/h over limit (EB zone)
+        train.current_pos = (0, 0)
+        network.add_train(train)
+
+        sim = SimulationController(network)
+        controller = sim._get_or_create_controller(train)
+        controller.power_on = True
+        controller.state = TrainState.RUNNING_MOVING
+        controller.active_cab = "A"
+
+        # Tick controller
+        sim.update(0.1)
+
+        # Should trigger EB
+        assert controller.eb_active == True, "EB should trigger at 12 km/h overspeed"
+        assert "overspeed" in controller.speed_limit_reason.lower(), (
+            f"Speed limit reason should mention overspeed, got: {controller.speed_limit_reason}"
+        )
+        # Should have notification
+        assert len(controller.pending_notifications) > 0, (
+            "Should have notification for EB"
+        )
+
+    def test_eb_resets_to_standby_when_stopped(self):
+        """
+        Test that EB resets to STANDBY state when train stops.
+
+        Per new tick() workflow:
+        - When eb_active and train stops → eb_active = False, state = STANDBY
+        """
+        network = RailwayNetwork()
+
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_EB_RESET_TEST", consist=[car], max_speed=60.0)
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 0.0  # Already stopped
+        network.add_train(train)
+
+        sim = SimulationController(network)
+        controller = sim._get_or_create_controller(train)
+        controller.power_on = True
+        controller.eb_active = True  # EB is active
+        controller.state = TrainState.RUNNING_MOVING
+
+        # Tick controller - train is stopped, should reset EB
+        sim.update(0.1)
+
+        # EB should be released and state should be STANDBY
+        assert controller.eb_active == False, "EB should be released when train stopped"
+        assert controller.state == TrainState.STANDBY, (
+            f"State should be STANDBY after EB reset, got {controller.state}"
+        )
+        # Should have notification
+        assert "released" in " ".join(controller.pending_notifications).lower(), (
+            "Should have notification for EB release"
+        )
+
+    def test_no_cab_selected_sets_atc_speed_zero(self):
+        """
+        Test that when no cab is selected, ATC speed is 0.
+
+        Per new tick() workflow:
+        - If active_cab is None → atc_speed_limit = 0, reason = "No cab selected"
+        """
+        network = RailwayNetwork()
+
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_NO_CAB_TEST", consist=[car], max_speed=60.0)
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 0.0
+        network.add_train(train)
+
+        sim = SimulationController(network)
+        controller = sim._get_or_create_controller(train)
+        controller.power_on = True
+        controller.state = TrainState.RUNNING_MOVING
+        controller.active_cab = None  # No cab selected
+
+        # Tick controller
+        sim.update(0.1)
+
+        # ATC speed should be 0
+        assert controller.atc_speed_limit == 0.0, (
+            "ATC speed should be 0 when no cab selected"
+        )
+        assert controller.speed_limit_reason == "No cab selected", (
+            f"Reason should be 'No cab selected', got: {controller.speed_limit_reason}"
+        )
 
     def test_block_release_uses_caution_state(self):
         """
@@ -505,14 +962,227 @@ class TestRaceConditionFix:
             f"Expected CAUTION but got {block.state}"
         )
 
-    def test_friction_stops_train_when_target_speed_zero(self):
+
+class TestTrainPhysicsBlockCautionReleaseBugFix:
+    """
+    Comprehensive tests for TrainPhysics CAUTION release fix (2026-01-22).
+
+    BUG: TrainPhysics._update_block_occupancy() only transitions OCCUPIED -> CAUTION
+    and never clears CAUTION blocks, leaving blocks stuck in CAUTION indefinitely.
+
+    FIX: When a block remains unoccupied after the CAUTION transition, clear it
+    to FREE on the next update tick.
+    """
+
+    def test_caution_block_clears_after_train_fully_leaves(self):
+        """Block should advance from CAUTION to FREE after train fully exits."""
+        network = RailwayNetwork()
+        block = network.create_block("B1", "Block 1")
+
+        network.block_manager.occupy_block("B1", "TRAIN_1")
+        assert block.state == BlockState.OCCUPIED
+
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=100.0)
+        train = Train(train_id="TRAIN_1", consist=[car], max_speed=60.0)
+        network.add_train(train)
+
+        sim = SimulationController(network)
+        physics = sim._get_or_create_physics(train)
+
+        physics._last_occupied_blocks = {"B1"}
+        train.position = None
+
+        physics._update_block_occupancy(train)
+        assert block.state == BlockState.CAUTION
+
+        physics._update_block_occupancy(train)
+        assert block.state == BlockState.FREE
+
+
+class TestTrainControlPanelDataBugFix:
+    """
+    Comprehensive tests for train control panel data propagation fix (2026-01-22).
+
+    BUG: /api/network returned train data without controller state, so the
+    train control panel could not reflect power/handle status or ATO path info.
+
+    FIX: /api/network includes an onboard controller snapshot per train.
+    """
+
+    def test_network_includes_onboard_snapshot(self):
+        """Network response should include onboard controller state per train."""
+        from simulation import build_network_payload
+
+        network = RailwayNetwork()
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        train.assigned_path_id = "PATH_1"
+        network.add_train(train)
+
+        sim_controller = SimulationController(network)
+        controller = sim_controller._get_or_create_controller(train)
+        controller.power_on = True
+        controller.handle_position = HandlePosition.P2
+        controller.control_mode = "ato"
+
+        payload = build_network_payload(network, sim_controller)
+        train_data = payload["trains"][0]
+        assert "onboard" in train_data
+        assert train_data["onboard"]["power_on"] is True
+        assert train_data["onboard"]["handle_position"] == "P2"
+        assert train_data["onboard"]["control_mode"] == "ato"
+        assert "ato_info" in train_data["onboard"]
+
+
+class TestTrainDebugLogging:
+    """Regression tests for controller/physics debug logging (2026-01-22)."""
+
+    def test_train_controller_logs_power_off_state(self, caplog):
+        """TrainController.tick should log when power is off."""
+        network = RailwayNetwork()
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_LOG_1", consist=[car], max_speed=60.0)
+        network.add_train(train)
+
+        sim = SimulationController(network)
+        controller = sim._get_or_create_controller(train)
+        controller.power_on = False
+
+        caplog.set_level(logging.DEBUG)
+        controller.tick(0.1)
+
+        assert any(
+            "power off" in record.message.lower() for record in caplog.records
+        ), "Expected debug log for power off state"
+
+
+class TestTrainClearancePrecisionBugFix:
+    """
+    Comprehensive tests for clearance precision bug fix (2026-01-22).
+
+    BUG: clearance uses legacy current_pos/distance_on_track and ignores TrainPosition,
+    causing clearance to jump when the head enters the last tile.
+
+    FIX: clearance derives remaining distance from TrainPosition head location.
+    """
+
+    def test_remaining_distance_uses_train_position_head(self):
+        """Remaining distance should reflect head distance in current tile."""
+        network = RailwayNetwork()
+
+        track_a = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        track_b = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        track_a.block_section_id = "B1"
+        track_b.block_section_id = "B1"
+        network.add_track(track_a)
+        network.add_track(track_b)
+
+        block = network.create_block("B1", "Block 1")
+        block.length_cm = 40.0
+
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=10.0)
+        train = Train(train_id="TRAIN_CLEARANCE", consist=[car], max_speed=60.0)
+        train.current_pos = (0, 0)
+        train.current_path = [(0, 0, Direction.EAST), (1, 0, Direction.EAST)]
+
+        train.position = TrainPosition(
+            end_a_tile=(1, 0),
+            end_a_distance_cm=5.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=5.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(1, 0), (0, 0)],
+        )
+
+        network.add_train(train)
+        controller = TrainController(train_id=train.train_id, network=network)
+
+        remaining = controller._get_remaining_distance_in_current_block()
+
+        assert remaining == pytest.approx(15.0), (
+            f"Expected 15.0 cm remaining, got {remaining}"
+        )
+
+
+class TestTrainPhysicsDebugLogging:
+    """Regression tests for TrainPhysics debug details (2026-01-22)."""
+
+    def test_train_physics_tick_updates_speed_correctly(self):
+        """TrainPhysics.tick should update speed based on handle position."""
+        network = RailwayNetwork()
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_PHYS_LOG", consist=[car], max_speed=60.0)
+        train.current_speed = 12.0
+        network.add_train(train)
+
+        sim = SimulationController(network)
+        controller = sim._get_or_create_controller(train)
+        physics = sim._get_or_create_physics(train)
+
+        controller.power_on = True
+        controller.handle_position = HandlePosition.P2
+        controller.target_speed = 40.0
+
+        initial_speed = train.current_speed
+        physics.tick(0.1)
+
+        # Speed should increase with P2 handle (power)
+        assert train.current_speed > initial_speed
+
+
+class TestTrainAssignedPathSerializationBugFix:
+    """
+    Comprehensive tests for assigned_path_id serialization fix (2026-01-22).
+
+    BUG: Train.to_dict omitted assigned_path_id, causing frontend to show "No path"
+    after UI refresh or cab switch.
+
+    FIX: Train.to_dict includes assigned_path_id for frontend state.
+    """
+
+    def test_train_to_dict_includes_assigned_path_id(self):
+        """Train serialization should include assigned_path_id."""
+        network = RailwayNetwork()
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_PATH", consist=[car], max_speed=60.0)
+        train.assigned_path_id = "PATH_123"
+        network.add_train(train)
+
+        data = train.to_dict(network)
+
+        assert data.get("assigned_path_id") == "PATH_123"
+
+    def test_train_physics_power_off_does_not_update_speed(self):
+        """TrainPhysics.tick should not update speed when power is off."""
+        network = RailwayNetwork()
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_LOG_2", consist=[car], max_speed=60.0)
+        train.current_speed = 10.0
+        network.add_train(train)
+
+        sim = SimulationController(network)
+        controller = sim._get_or_create_controller(train)
+        physics = sim._get_or_create_physics(train)
+        controller.power_on = False
+
+        initial_speed = train.current_speed
+        physics.tick(0.1)
+
+        # Speed should remain unchanged when power is off
+        assert train.current_speed == initial_speed
+
+    def test_target_speed_does_not_override_power_handle(self):
         """
-        Test that friction decelerates train to stop even if handle is P1 but target_speed is 0.
+        Test that target_speed does not force deceleration in TrainPhysics.
 
-        BUG: train_physics.py:199-202 only applies friction when handle=N,
-        but if target_speed=0 and handle=P1, train incorrectly accelerates.
+        BUG: train_physics.py:204-221 forces decel and clamps speed when
+        target_speed < current_speed, even with power handle.
 
-        FIX: When target_speed=0, always decelerate regardless of handle position.
+        FIX: Speed changes should be driven by handle position; target_speed
+        is enforced by TrainController, not TrainPhysics.
         """
         network = RailwayNetwork()
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=100.0)
@@ -524,21 +1194,104 @@ class TestRaceConditionFix:
         controller = sim._get_or_create_controller(train)
         physics = sim._get_or_create_physics(train)
 
-        # Set controller state: power on, but target speed is 0 (should stop)
+        # Set controller state: power on, but target speed is 0 (should not stop)
         controller.power_on = True
         controller.handle_position = HandlePosition.P1  # Power handle
         controller.target_speed = 0.0  # But target is to stop
 
         initial_speed = train.current_speed
 
-        # Tick physics - train should decelerate, not accelerate
+        # Tick physics - train should accelerate due to power handle
         physics.tick(0.1)
 
-        # Train should have slowed down (friction/braking), not sped up
-        assert train.current_speed < initial_speed, (
-            f"Train should decelerate when target_speed=0, "
+        # Train should have sped up (handle-driven), not slowed down
+        assert train.current_speed > initial_speed, (
+            f"Train should accelerate with power handle even if target_speed=0, "
             f"but speed went from {initial_speed} to {train.current_speed}"
         )
+
+
+class TestTrainControllerBrakingNotches:
+    """Tests for braking notch selection updates (2026-01-22)."""
+
+    def test_braking_notch_for_speed_uses_b1_to_b8(self):
+        """Speed-based braking should map to B1-B8 notches."""
+        network = RailwayNetwork()
+        train = Train(train_id="TRAIN_BRAKE", max_speed=60.0)
+        network.add_train(train)
+
+        controller = TrainController(train_id=train.train_id, network=network)
+
+        assert (
+            controller._calculate_braking_notch_for_speed(60.0, 25.0)
+            == HandlePosition.B8
+        )
+        assert (
+            controller._calculate_braking_notch_for_speed(40.0, 14.0)
+            == HandlePosition.B7
+        )
+        assert (
+            controller._calculate_braking_notch_for_speed(30.0, 8.0)
+            == HandlePosition.B6
+        )
+        assert (
+            controller._calculate_braking_notch_for_speed(22.0, 7.0)
+            == HandlePosition.B5
+        )
+        assert (
+            controller._calculate_braking_notch_for_speed(18.0, 7.0)
+            == HandlePosition.B4
+        )
+        assert (
+            controller._calculate_braking_notch_for_speed(12.0, 6.0)
+            == HandlePosition.B3
+        )
+        assert (
+            controller._calculate_braking_notch_for_speed(9.0, 6.0) == HandlePosition.B2
+        )
+        assert (
+            controller._calculate_braking_notch_for_speed(7.0, 6.0) == HandlePosition.B1
+        )
+
+    def test_stop_braking_notch_uses_b1_to_b8(self):
+        """Stop braking should map to B1-B8 based on speed."""
+        network = RailwayNetwork()
+        train = Train(train_id="TRAIN_STOP", max_speed=60.0)
+        network.add_train(train)
+
+        controller = TrainController(train_id=train.train_id, network=network)
+
+        assert controller._calculate_braking_notch(35.0) == HandlePosition.B8
+        assert controller._calculate_braking_notch(27.0) == HandlePosition.B7
+        assert controller._calculate_braking_notch(22.0) == HandlePosition.B6
+        assert controller._calculate_braking_notch(16.0) == HandlePosition.B5
+        assert controller._calculate_braking_notch(12.0) == HandlePosition.B4
+        assert controller._calculate_braking_notch(8.0) == HandlePosition.B3
+        assert controller._calculate_braking_notch(4.0) == HandlePosition.B2
+        assert controller._calculate_braking_notch(1.0) == HandlePosition.B1
+
+    def test_manual_mode_uses_atc_speed_braking(self, monkeypatch):
+        """Manual mode should brake toward ATC speed, not full stop."""
+        network = RailwayNetwork()
+        train = Train(train_id="TRAIN_MANUAL", max_speed=60.0)
+        train.current_speed = 16.0
+        network.add_train(train)
+
+        controller = TrainController(train_id=train.train_id, network=network)
+        controller.control_mode = "manual"
+        controller.power_on = True
+        controller.active_cab = "A"
+
+        monkeypatch.setattr(controller, "_calculate_clearance_ahead", lambda: 200.0)
+        monkeypatch.setattr(
+            controller,
+            "_calculate_atc_speed_limit",
+            lambda: (10.0, "test"),
+        )
+
+        controller.tick(0.1)
+
+        assert controller.handle_position == HandlePosition.B3
 
     def test_no_duplicate_controller_instances(self):
         """

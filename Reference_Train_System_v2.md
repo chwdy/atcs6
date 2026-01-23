@@ -394,47 +394,88 @@ The `TrainState` enum is the primary operational state:
 | **OFF** | 0V | Train shut off, no power |
 | **IDLE** | Lighting | Powered, no cab selected, red lights both ends (if safe) |
 | **STANDBY** | Lighting | Cab selected, ready to depart, headlight + taillight |
-| **RUNNING_MOVING** | Speed-based | Actively moving toward destination |
-| **RUNNING_WAITING** | Lighting | Stopped, waiting for path/signal clearance |
-| **RUNNING_AT_STATION** | Lighting | Dwelling at station |
+| **RUNNING_MOVING** | Speed-based | Train is moving OR intends to move (path is clear) |
+| **RUNNING_WAITING** | Lighting | Stopped due to external obstruction (signal, blocked path) |
+| **RUNNING_AT_STATION** | Lighting | Dwelling at station (intentional stop) |
 | **MANUAL** | User-controlled | User controls speed via handle, ATC still protects |
+
+**Important Distinction:**
+- `RUNNING_MOVING`: Train wants to move and CAN move (path clear, ATC allows)
+- `RUNNING_WAITING`: Train wants to move but CANNOT (external obstruction)
+- `RUNNING_AT_STATION`: Train is intentionally stopped (scheduled dwell)
+
+`RUNNING_WAITING` is **not** triggered by speed reaching zero. It is triggered by:
+- Red signal ahead
+- Block occupied by another train
+- Path not yet reserved/available
+- ATC speed limit = 0 due to obstruction
+
+When the obstruction clears, the train automatically transitions back to `RUNNING_MOVING`.
 
 ### 3.5 State Machine
 
 ```
-                                    ┌─────────────────────────────────────────┐
-                                    │            RUNNING (group)              │
-                                    │  ┌─────────┐ ┌─────────┐ ┌───────────┐  │
-                                    │  │ MOVING  │ │ WAITING │ │ AT_STATION│  │
-                                    │  │ (speed) │ │(lighting)│ │(lighting) │  │
-                                    │  └────┬────┘ └────┬────┘ └─────┬─────┘  │
-                                    │       │          │            │         │
-                                    │       └──────────┼────────────┘         │
-                                    │                  │                      │
-                                    └──────────────────┼──────────────────────┘
-                                                       ▲
-                                          ato_go()     │     arrive() / ato_stop()
-                                                       │
-┌───────────────────┐              ┌───────────────────┴───────────────────┐
-│      MANUAL       │◄────────────►│               STANDBY                  │
-│  User controls    │  set_mode()  │  Cab selected, lighting voltage        │
-│  handle, ATC      │  (stopped    │  Ready to depart                       │
-│  still protects   │   only)      └───────────────────┬───────────────────┘
-└───────────────────┘                                  ▲
-                                      set_cab('A'/'B') │  set_cab(None)
-                                                       │
-                                    ┌──────────────────┴───────────────────┐
-                                    │                IDLE                   │
-                                    │  Powered, no cab selected, lighting V │
-                                    └──────────────────┬───────────────────┘
-                                                       ▲
-                                          power_on()   │   power_off()
-                                                       │
-                                    ┌──────────────────┴───────────────────┐
-                                    │                 OFF                   │
-                                    │  0V, no power                         │
-                                    └──────────────────────────────────────┘
+                                    ┌─────────────────────────────────────────────────────┐
+                                    │                   RUNNING (group)                    │
+                                    │                                                     │
+                                    │  ┌─────────────┐      ┌─────────────┐               │
+                                    │  │   MOVING    │      │ AT_STATION  │               │
+                                    │  │ (speed-V)   │      │ (lighting)  │               │
+                                    │  └──────┬──────┘      └──────┬──────┘               │
+                                    │         │                    │                      │
+                                    │         │ obstruction        │ arrive_at_station()  │
+                                    │         │ (ATC limit=0)      │                      │
+                                    │         ▼                    │                      │
+                                    │  ┌─────────────┐             │                      │
+                                    │  │   WAITING   │◄────────────┘                      │
+                                    │  │ (lighting)  │                                    │
+                                    │  └──────┬──────┘                                    │
+                                    │         │                                           │
+                                    │         │ obstruction clears                        │
+                                    │         │ (ATC limit > 0)                           │
+                                    │         │ AUTO-TRANSITION                           │
+                                    │         ▼                                           │
+                                    │  ┌─────────────┐                                    │
+                                    │  │   MOVING    │ ◄──── resumes ATO if enabled       │
+                                    │  └─────────────┘                                    │
+                                    │                                                     │
+                                    └─────────────────────────┬───────────────────────────┘
+                                                              ▲
+                                                 ato_go()     │     arrive() / ato_stop()
+                                                              │
+┌───────────────────┐                 ┌───────────────────────┴───────────────────────┐
+│      MANUAL       │◄───────────────►│                   STANDBY                      │
+│  User controls    │    set_mode()   │  Cab selected, lighting voltage                │
+│  handle, ATC      │    (stopped     │  Ready to depart                               │
+│  still protects   │     only)       └───────────────────────┬───────────────────────┘
+└───────────────────┘                                         ▲
+                                             set_cab('A'/'B') │  set_cab(None)
+                                                              │
+                                       ┌──────────────────────┴──────────────────────┐
+                                       │                    IDLE                      │
+                                       │  Powered, no cab selected, lighting V        │
+                                       └──────────────────────┬──────────────────────┘
+                                                              ▲
+                                                 power_on()   │   power_off()
+                                                              │
+                                       ┌──────────────────────┴──────────────────────┐
+                                       │                     OFF                      │
+                                       │  0V, no power                                │
+                                       └──────────────────────────────────────────────┘
 ```
+
+**Key State Transitions:**
+
+| From | To | Trigger | Notes |
+|------|-----|---------|-------|
+| RUNNING_MOVING | RUNNING_WAITING | ATC limit = 0 AND train stopped | External obstruction detected |
+| RUNNING_WAITING | RUNNING_MOVING | ATC limit > 0 | **Auto-transition** when path clears |
+| RUNNING_MOVING | RUNNING_AT_STATION | arrive_at_station() | Reached scheduled stop |
+| RUNNING_AT_STATION | STANDBY | depart_from_station() | Ready for next waypoint |
+
+**Critical: WAITING ↔ MOVING is Automatic**
+
+The transition between WAITING and MOVING is managed automatically by the controller's `tick()` method based on ATC clearance. This ensures trains resume movement immediately when obstructions clear, without requiring manual intervention.
 
 ### 3.6 Command Methods
 
@@ -470,6 +511,15 @@ The `TrainState` enum is the primary operational state:
 
 ### 3.7 Tick Method (Called Each Simulation Tick)
 
+The `tick()` method is called every simulation tick and is responsible for:
+1. Calculating ATC safety limits
+2. Managing state transitions between RUNNING_MOVING and RUNNING_WAITING
+3. Calculating target speed and handle position
+
+**Critical Design Principle:** The RUNNING_WAITING state represents an external obstruction, not simply "speed = 0". The controller must:
+- Transition MOVING → WAITING when an obstruction forces a stop
+- **Automatically** transition WAITING → MOVING when the obstruction clears
+
 ```python
 def tick(self, delta: float) -> None:
     """
@@ -483,11 +533,12 @@ def tick(self, delta: float) -> None:
     # 1. Skip if powered off
     if not self.power_on:
         self.target_speed = 0.0
+        self.state = TrainState.OFF
         return
     
-    # 2. Calculate ATC (safety) limits
+    # 2. Calculate ATC (safety) limits - always do this first
     self.clearance_ahead_cm = self._calculate_clearance_ahead()
-    self.atc_speed_limit = self._calculate_atc_speed_limit()
+    self.atc_speed_limit, self.speed_limit_reason = self._calculate_atc_speed_limit()
     self.current_block_speed_limit = self._get_current_block_speed_limit()
     
     # 3. Emergency stop override
@@ -496,24 +547,97 @@ def tick(self, delta: float) -> None:
         self.target_speed = 0.0
         return
     
-    # 4. Calculate target speed and handle based on mode
-    if self.state in [TrainState.RUNNING_MOVING, TrainState.MANUAL]:
+    # 4. Calculate effective speed limit (used by multiple states)
+    effective_limit = min(
+        train.max_speed,
+        self.atc_speed_limit,
+        self.current_block_speed_limit
+    )
+    
+    # 5. State-specific behavior
+    if self.state == TrainState.RUNNING_MOVING:
+        # Train is moving or intends to move
         if self.control_mode == 'ato' and self.ato_running:
-            # ATO: automatically calculate handle position
             self.handle_position = self._ato_calculate_handle()
-        # else: manual mode uses user-set handle_position
         
-        # Calculate effective target speed (respecting ATC limit)
-        effective_limit = min(
-            train.max_speed,
-            self.atc_speed_limit,
-            self.current_block_speed_limit
-        )
         self.target_speed = effective_limit
+        train.speed_limit_reason = self.speed_limit_reason
+        
+        # Check if obstruction forces a stop
+        if effective_limit <= STOPPED_SPEED_THRESHOLD_KMH:
+            if train.current_speed <= STOPPED_SPEED_THRESHOLD_KMH:
+                # Train has stopped due to obstruction - transition to WAITING
+                self.state = TrainState.RUNNING_WAITING
+                train.state = TrainState.RUNNING_WAITING
+                train.wait_reason = self.speed_limit_reason or "Obstruction ahead"
+    
+    elif self.state == TrainState.RUNNING_WAITING:
+        # Train is stopped due to obstruction - check if path cleared
+        if effective_limit > STOPPED_SPEED_THRESHOLD_KMH:
+            # Path is clear - resume movement
+            self.state = TrainState.RUNNING_MOVING
+            train.state = TrainState.RUNNING_MOVING
+            train.wait_reason = None
+            
+            # Restart ATO if in ATO mode
+            if self.control_mode == 'ato':
+                self.ato_running = True
+            
+            # Set target speed for resuming
+            self.target_speed = effective_limit
+            
+            # ATO will calculate handle, or manual uses current handle
+            if self.control_mode == 'ato' and self.ato_running:
+                self.handle_position = self._ato_calculate_handle()
+        else:
+            # Still obstructed - remain waiting
+            self.target_speed = 0.0
+            self.handle_position = HandlePosition.N
+    
+    elif self.state == TrainState.MANUAL:
+        # Manual mode - user controls via handle, ATC still limits
+        self.target_speed = effective_limit
+        train.speed_limit_reason = self.speed_limit_reason
+    
     else:
-        # IDLE, STANDBY, AT_STATION, WAITING: not actively moving
+        # IDLE, STANDBY, AT_STATION, OFF: not actively moving
         self.target_speed = 0.0
-        self.handle_position = HandlePosition.N
+        if self.state != TrainState.OFF:
+            self.handle_position = HandlePosition.N
+    
+    # 6. Update train's target_speed for reference
+    train.target_speed = self.target_speed
+```
+
+**State Transition Logic Summary:**
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                         TICK() STATE LOGIC                              │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│  RUNNING_MOVING:                                                       │
+│    ├─ Calculate target_speed from ATC/ATO                              │
+│    ├─ IF effective_limit ≤ threshold AND speed ≤ threshold:           │
+│    │     → Transition to RUNNING_WAITING (obstruction detected)        │
+│    └─ ELSE: Continue moving                                            │
+│                                                                        │
+│  RUNNING_WAITING:                                                      │
+│    ├─ Check: Is effective_limit > threshold?                           │
+│    ├─ IF YES (path clear):                                             │
+│    │     → Transition to RUNNING_MOVING                                │
+│    │     → Restart ATO if enabled                                      │
+│    │     → Set target_speed = effective_limit                          │
+│    └─ IF NO (still blocked):                                           │
+│          → target_speed = 0, handle = N                                │
+│                                                                        │
+│  MANUAL:                                                               │
+│    └─ target_speed = effective_limit (ATC protection active)           │
+│                                                                        │
+│  IDLE / STANDBY / AT_STATION:                                          │
+│    └─ target_speed = 0 (intentionally not moving)                      │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 3.8 ATC (Automatic Train Control) Logic
@@ -602,9 +726,64 @@ def _calculate_atc_speed_limit(self) -> float:
     return v_kmh
 ```
 
-### 3.9 ATO (Automatic Train Operation) Logic
+### 3.9 Automatic WAITING ↔ MOVING Transitions
 
-#### 3.9.1 Handle Selection
+The transition between `RUNNING_WAITING` and `RUNNING_MOVING` is **automatic** and managed by the controller's `tick()` method. This is critical for correct train operation.
+
+#### 3.9.1 When MOVING → WAITING Occurs
+
+A train transitions from `RUNNING_MOVING` to `RUNNING_WAITING` when ALL of these are true:
+1. **ATC speed limit ≤ threshold** (obstruction detected)
+2. **Train's current speed ≤ threshold** (train has physically stopped)
+3. **Reason exists** (signal, block occupied, path unavailable)
+
+```python
+# In tick(), within RUNNING_MOVING state handling:
+if effective_limit <= STOPPED_SPEED_THRESHOLD_KMH:
+    if train.current_speed <= STOPPED_SPEED_THRESHOLD_KMH:
+        self.state = TrainState.RUNNING_WAITING
+        train.wait_reason = self.speed_limit_reason or "Obstruction ahead"
+```
+
+**Important:** Simply reaching speed = 0 does NOT trigger this transition. There must be an external obstruction (low ATC limit).
+
+#### 3.9.2 When WAITING → MOVING Occurs
+
+A train transitions from `RUNNING_WAITING` to `RUNNING_MOVING` when:
+1. **ATC speed limit > threshold** (obstruction cleared)
+
+```python
+# In tick(), within RUNNING_WAITING state handling:
+if effective_limit > STOPPED_SPEED_THRESHOLD_KMH:
+    self.state = TrainState.RUNNING_MOVING
+    train.wait_reason = None
+    
+    # Restart ATO if in ATO mode
+    if self.control_mode == 'ato':
+        self.ato_running = True
+    
+    self.target_speed = effective_limit
+```
+
+#### 3.9.3 Why This Matters
+
+Without automatic WAITING → MOVING transition:
+- Train stops due to obstruction (correct)
+- Obstruction clears, ATC limit increases (correct)
+- Train remains in WAITING state forever (BUG!)
+- `tick()` sets target_speed = 0 for WAITING state (BUG!)
+- Train never moves again (DEADLOCK!)
+
+With automatic transition:
+- Train stops due to obstruction
+- Obstruction clears, ATC limit increases
+- `tick()` detects ATC limit > 0, transitions to MOVING
+- `tick()` sets target_speed = effective_limit
+- Train resumes movement automatically
+
+### 3.10 ATO (Automatic Train Operation) Logic
+
+#### 3.10.1 Handle Selection
 
 When in ATO mode, the controller automatically selects the appropriate handle position:
 
@@ -648,7 +827,7 @@ def _ato_calculate_handle(self) -> HandlePosition:
     return self._calculate_braking_notch_for_speed(current_speed, effective_target)
 ```
 
-### 3.10 Class Definition
+### 3.11 Class Definition
 
 ```python
 @dataclass
@@ -817,7 +996,7 @@ class TrainController:
         }
 ```
 
-### 3.11 Integration with Train Entity
+### 3.12 Integration with Train Entity
 
 TrainController reads/writes certain Train properties:
 
@@ -830,7 +1009,7 @@ TrainController reads/writes certain Train properties:
 | Write | `train.facing_direction` | When switching cabs |
 | Write | `train.active_cab` | Mirrors `active_cab` for frontend |
 
-### 3.12 Integration with TrainPhysics
+### 3.13 Integration with TrainPhysics
 
 TrainController provides state that TrainPhysics reads:
 
@@ -2128,9 +2307,16 @@ When a train's Route cannot find a Path to the next waypoint:
 
 1. **Train stops** at current position (target_speed = 0)
 2. **Error is logged** with details (train_id, current position, target station)
-3. **Train state** set to `RUNNING_WAITING`
-4. **Route remains active** but paused - can retry when path becomes available
-5. **UI displays error** to operator
+3. **Train state** set to `RUNNING_WAITING` with wait_reason
+4. **Route remains active** but paused - RouteExecutor will retry
+5. **UI displays error** to operator via wait_reason
+
+**Automatic Recovery:** When in RUNNING_WAITING, the controller's `tick()` method continuously checks if the path has cleared (ATC speed limit > 0). When the obstruction clears:
+- State automatically transitions to RUNNING_MOVING
+- ATO is restarted if in ATO mode
+- Train resumes toward destination
+
+This means temporary obstructions (another train in the block, signal timing) are handled automatically without operator intervention.
 
 ```python
 def _dispatch_to_station(self, train_id: str, station_id: str) -> bool:
@@ -2152,8 +2338,7 @@ def _dispatch_to_station(self, train_id: str, station_id: str) -> bool:
     
     if not result.success:
         self._set_route_error(train_id, f"No path to {station_id}: {result.error}")
-        controller.target_speed = 0
-        controller.state = TrainState.RUNNING_WAITING
+        controller.wait_for_path(f"No path to {station_id}")
         return False
     
     train.current_path = result.path.tiles

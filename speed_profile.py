@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Any, Optional
 import math
 
-from train_config import get_speed_conversion_factor
+from model_scale import get_speed_conversion_factor
 
 
 @dataclass
@@ -49,6 +49,9 @@ class SpeedProfile:
     deceleration_rate: float = 15.0  # km/h per second (service brake)
     emergency_brake_rate: float = 30.0  # km/h per second
     friction_rate: float = 0.5  # km/h per second (coasting deceleration)
+    operational_decel_ratio: float = (
+        0.5  # Use 50% of max brake for ATC operational braking
+    )
 
     def __post_init__(self):
         """Ensure speed_voltage_curve is sorted by speed."""
@@ -270,6 +273,7 @@ class SpeedProfile:
             "deceleration_rate": self.deceleration_rate,
             "emergency_brake_rate": self.emergency_brake_rate,
             "friction_rate": self.friction_rate,
+            "operational_decel_ratio": self.operational_decel_ratio,
         }
 
     @classmethod
@@ -289,6 +293,7 @@ class SpeedProfile:
             deceleration_rate=float(data.get("deceleration_rate", 15.0)),
             emergency_brake_rate=float(data.get("emergency_brake_rate", 30.0)),
             friction_rate=float(data.get("friction_rate", 0.5)),
+            operational_decel_ratio=float(data.get("operational_decel_ratio", 0.5)),
         )
 
 

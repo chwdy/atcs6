@@ -56,17 +56,11 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 from enums import (
     BRAKE_MULTIPLIERS,
     POWER_MULTIPLIERS,
+    BlockState,
     HandlePosition,
     TrainState,
 )
-from train_config import (
-    DEFAULT_ACCELERATION_RATE,
-    DEFAULT_DECELERATION_RATE,
-    DEFAULT_EMERGENCY_BRAKE_RATE,
-    DEFAULT_LIGHTING_VOLTAGE,
-    STOPPED_SPEED_THRESHOLD_KMH,
-    kmh_to_cm_per_sec,
-)
+from model_scale import kmh_to_cm_per_sec
 
 if TYPE_CHECKING:
     from block_manager import BlockManager
@@ -79,6 +73,8 @@ if TYPE_CHECKING:
 
 # Edge opposites for track geometry
 OPPOSITE_EDGES = {"N": "S", "S": "N", "E": "W", "W": "E"}
+
+STOPPED_SPEED_THRESHOLD_KMH = 0.5
 
 
 @dataclass
@@ -109,6 +105,7 @@ class TrainPhysics:
 
     # Track last occupied blocks for delta calculations
     _last_occupied_blocks: Set[str] = field(default_factory=set)
+    _caution_blocks: Set[str] = field(default_factory=set)
 
     # =========================================================================
     # Internal Helpers
@@ -183,44 +180,51 @@ class TrainPhysics:
             profile.emergency_brake_rate,
         )
 
-        # 3. Handle special case: target_speed < current_speed requires deceleration
-        # regardless of handle position (ATC override)
-        target = controller.target_speed if controller.target_speed >= 0 else 0.0
-        if target < train.current_speed:
-            # Force deceleration when target is below current speed
-            if acceleration > 0:
-                acceleration = -profile.deceleration_rate
+        # 3. Update speed based on acceleration
+        previous_speed = train.current_speed
+        new_speed = previous_speed + (acceleration * delta)
 
-        # 4. Update speed based on acceleration
-        new_speed = train.current_speed + (acceleration * delta)
+        # 4. Clamp speed to valid range [0, inf)
+        new_speed = max(0.0, new_speed)
 
-        # 5. Clamp speed to valid range [0, target_speed]
-        new_speed = max(0.0, min(new_speed, target))
-
-        # 6. If braking and speed is low enough, stop completely
+        # 5. If braking and speed is low enough, stop completely
         if acceleration < 0 and new_speed <= STOPPED_SPEED_THRESHOLD_KMH:
             new_speed = 0.0
 
-        # 7. When coasting (N), apply minimal friction/resistance
+        # 6. When coasting (N), apply minimal friction/resistance
         if controller.handle_position == HandlePosition.N and train.current_speed > 0:
             # Gentle deceleration from friction (using profile's friction_rate)
             friction_decel = profile.friction_rate * delta
             new_speed = max(0.0, new_speed - friction_decel)
 
+        speed_delta = new_speed - previous_speed
+        print(
+            f"[TrainPhysics {self.train_id}] speed update: new_speed={new_speed:.2f} "
+            f"delta={delta:.2f} speed_delta={speed_delta:.2f}"
+        )
+
         train.current_speed = new_speed
 
         # 7. Calculate distance to move
         distance_cm = self._speed_to_distance(new_speed, delta)
+        print(f"[TrainPhysics {self.train_id}] distance_cm={distance_cm:.2f}")
 
         # 8. Move train position
         if distance_cm > 0:
             self._move_train(train, distance_cm)
+            print(f"[TrainPhysics {self.train_id}] moved distance_cm={distance_cm:.2f}")
 
         # 9. Update block occupancy
         self._update_block_occupancy(train)
+        print(
+            f"[TrainPhysics {self.train_id}] occupied_blocks="
+            f"{sorted(self._get_blocks_for_train(train))} "
+            f"caution_blocks={sorted(self._caution_blocks)}"
+        )
 
         # 10. Output voltage to occupied blocks
         self._update_voltage_output(train, controller)
+        print(f"[TrainPhysics {self.train_id}] voltage update complete")
 
     # =========================================================================
     # Speed and Acceleration
@@ -353,9 +357,30 @@ class TrainPhysics:
         new_entry_edge = entry_edge
 
         # Handle tile transition if distance exceeds tile length
-        tile_length = self._get_tile_length_cm(new_tile)
+        max_iterations = 100
+        for _ in range(max_iterations):
+            tile_length = self._get_tile_length_cm(new_tile)
 
-        while new_distance >= tile_length and tile_length > 0:
+            if tile_length <= 0:
+                exit_edge = self._calculate_exit_edge(new_tile, new_entry_edge)
+                if not exit_edge:
+                    new_distance = 0.0
+                    train.current_speed = 0.0
+                    break
+
+                next_tile = self._get_neighbor_tile(new_tile, exit_edge)
+                if next_tile is None:
+                    new_distance = 0.0
+                    train.current_speed = 0.0
+                    break
+
+                new_tile = next_tile
+                new_entry_edge = OPPOSITE_EDGES[exit_edge]
+                continue
+
+            if new_distance < tile_length:
+                break
+
             new_distance -= tile_length
 
             # Get exit edge based on track geometry
@@ -377,7 +402,6 @@ class TrainPhysics:
             # Move to next tile
             new_tile = next_tile
             new_entry_edge = OPPOSITE_EDGES[exit_edge]
-            tile_length = self._get_tile_length_cm(new_tile)
 
         # Update position
         if is_end_a:
@@ -519,9 +543,20 @@ class TrainPhysics:
                 # Start of track - tail is at entry edge of first tile
                 break
 
+            prev_track = self.network.get_track(*prev_tile) if self.network else None
+            exit_edge = OPPOSITE_EDGES.get(current_entry, current_entry)
+            entry_edge = None
+            if prev_track:
+                entry_edge = prev_track.get_entry_for_exit(
+                    exit_edge, use_switch_state=True
+                )
+
             # Move to previous tile
             current_tile = prev_tile
-            current_entry = OPPOSITE_EDGES.get(current_entry, current_entry)
+            if entry_edge:
+                current_entry = entry_edge
+            else:
+                current_entry = exit_edge
 
             tile_length = self._get_tile_length_cm(current_tile)
             remaining_length -= tile_length
@@ -532,15 +567,11 @@ class TrainPhysics:
         if position.leading_end == "a":
             position.end_b_tile = current_tile
             position.end_b_entry_edge = current_entry
-            position.end_b_distance_cm = (
-                tile_length - remaining_length if remaining_length < 0 else 0.0
-            )
+            position.end_b_distance_cm = tail_distance
         else:
             position.end_a_tile = current_tile
             position.end_a_entry_edge = current_entry
-            position.end_a_distance_cm = (
-                tile_length - remaining_length if remaining_length < 0 else 0.0
-            )
+            position.end_a_distance_cm = tail_distance
 
     def _update_occupied_tiles(self, train: "Train") -> None:
         """
@@ -592,7 +623,10 @@ class TrainPhysics:
             current_tile = next_tile
             current_entry = OPPOSITE_EDGES[exit_edge]
 
-        position.occupied_tiles = occupied
+        if position.leading_end == "a":
+            position.occupied_tiles = list(reversed(occupied))
+        else:
+            position.occupied_tiles = occupied
 
     # =========================================================================
     # Block Occupancy Management
@@ -614,6 +648,29 @@ class TrainPhysics:
 
         old_occupied = self._last_occupied_blocks
 
+        # Clear caution blocks once the train has fully left them
+        # A block should only be cleared from CAUTION to FREE when:
+        # 1. The train has fully exited the block (not in new_occupied)
+        # 2. The block is still in CAUTION state (not already freed by another train)
+        for block_id in list(self._caution_blocks):
+            if block_id in new_occupied:
+                # Train still in this block, keep in CAUTION state
+                continue
+            block = block_manager.blocks.get(block_id)
+            if not block:
+                # Block doesn't exist, remove from tracking
+                self._caution_blocks.discard(block_id)
+                continue
+            if (
+                block.state == BlockState.CAUTION
+                and block.occupied_by == train.train_id
+            ):
+                # Train has fully exited, safe to clear to FREE
+                block_manager.clear_block(block_id)
+            # Remove from tracking regardless of state
+            # (if already FREE, we don't need to track it anymore)
+            self._caution_blocks.discard(block_id)
+
         # Occupy new blocks
         for block_id in new_occupied - old_occupied:
             block_manager.occupy_block(block_id, train.train_id)
@@ -622,7 +679,10 @@ class TrainPhysics:
         for block_id in old_occupied - new_occupied:
             # Use set_block_to_caution for proper safety transition
             # (OCCUPIED -> CAUTION -> FREE, not OCCUPIED -> FREE)
-            block_manager.set_block_to_caution(block_id)
+            # The block will be cleared to FREE on a subsequent tick
+            # when we detect the train has fully exited
+            if block_manager.set_block_to_caution(block_id):
+                self._caution_blocks.add(block_id)
 
         # Update tracking
         self._last_occupied_blocks = new_occupied
@@ -697,7 +757,7 @@ class TrainPhysics:
             voltage = 0.0
 
         # Emergency stop override
-        if controller.emergency_stop_active:
+        if controller.eb_active:
             voltage = 0.0
 
         # Set voltage for all occupied blocks

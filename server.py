@@ -46,7 +46,7 @@ class SignedIntConverter(IntegerConverter):
 
 app.url_map.converters["sint"] = SignedIntConverter
 
-from simulation import SimulationController
+from simulation import SimulationController, build_network_payload
 from train_controller import TrainController
 
 # Global state
@@ -287,7 +287,7 @@ def static_files(path):
 
 @app.route("/api/network", methods=["GET"])
 def get_network():
-    return jsonify(network.to_dict())
+    return jsonify(build_network_payload(network, sim_controller))
 
 
 @app.route("/api/track/<sint:x>/<sint:y>", methods=["GET"])
@@ -2075,6 +2075,18 @@ def ato_stop(train_id):
     return jsonify({"error": result.message}), 400
 
 
+@app.route("/api/trains/<train_id>/notifications", methods=["GET"])
+def get_train_notifications(train_id):
+    """Get and clear pending notifications for a train (for toast messages)."""
+    train = network.trains.get(train_id)
+    if not train:
+        return jsonify({"error": "Train not found"}), 404
+
+    controller = _get_train_controller(train)
+    notifications = controller.get_and_clear_notifications()
+    return jsonify({"notifications": notifications})
+
+
 @app.route("/api/trains", methods=["GET"])
 def list_trains():
     """List all trains in the network."""
@@ -3275,7 +3287,7 @@ def get_scale():
     Returns:
         JSON with current scale value and available presets
     """
-    from train_config import get_model_scale, SCALE_PRESETS
+    from model_scale import get_model_scale, SCALE_PRESETS
 
     return jsonify({"scale": get_model_scale(), "presets": SCALE_PRESETS})
 
@@ -3292,7 +3304,7 @@ def set_scale():
     Returns:
         JSON with new scale value
     """
-    from train_config import get_model_scale, set_model_scale, SCALE_PRESETS
+    from model_scale import get_model_scale, set_model_scale, SCALE_PRESETS
 
     data = request.get_json()
     if not data:

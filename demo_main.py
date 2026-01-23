@@ -528,6 +528,7 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
     from train import TrainCar, Train
     from enums import Direction
     from train_controller import create_controller_for_train
+    from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
 
     executor = RouteExecutor(network, path_dispatcher)
 
@@ -545,6 +546,20 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
         length=40.0,  # 40 cm in model scale (N scale 1:160)
     )
     demo_train = Train(train_id="DEMO_TRAIN", consist=[car], max_speed=60.0)
+    demo_profile = SpeedProfile(
+        profile_id="demo_profile",
+        name="Demo Profile",
+        speed_voltage_curve=list(DEFAULT_SPEED_PROFILE.speed_voltage_curve),
+        min_start_voltage=DEFAULT_SPEED_PROFILE.min_start_voltage,
+        lighting_voltage=DEFAULT_SPEED_PROFILE.lighting_voltage,
+        acceleration_rate=3.0,
+        deceleration_rate=4.2,
+        emergency_brake_rate=5,
+        friction_rate=DEFAULT_SPEED_PROFILE.friction_rate,
+        operational_decel_ratio=DEFAULT_SPEED_PROFILE.operational_decel_ratio,
+    )
+    network.speed_profiles[demo_profile.profile_id] = demo_profile
+    demo_train.speed_profile_id = demo_profile.profile_id
     network.add_train(demo_train)
     network.place_train(demo_train, 0, 0, Direction.EAST)
     if start_track and start_track.block_section_id and network.block_manager:

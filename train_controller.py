@@ -41,6 +41,7 @@ Design Principles:
 5. Separation from Physics: TrainController decides WHAT speed; TrainPhysics executes
 """
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
@@ -55,22 +56,68 @@ from enums import (
     SignalState,
     TrainState,
 )
-from train_config import (
-    ATC_MIN_CLEARANCE_CM,
-    ATC_NO_BLOCK_FALLBACK_CM,
-    ATC_PLATFORM_SAFETY_MARGIN_CM,
-    ATC_SAFETY_MARGIN_CM,
-    ATC_SIGNAL_LOOKAHEAD_BLOCKS,
-    DEFAULT_DECELERATION_RATE,
-    STOPPED_SPEED_THRESHOLD_KMH,
-    YELLOW_SIGNAL_SPEED_KMH,
-    get_speed_conversion_factor,
-)
+from model_scale import get_speed_conversion_factor
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
     from speed_profile import SpeedProfile
     from train import Train
+
+
+logger = logging.getLogger(__name__)
+
+
+ATC_SAFETY_MARGIN_CM = 25.0
+ATC_PLATFORM_SAFETY_MARGIN_CM = 5.0
+ATC_SIGNAL_LOOKAHEAD_BLOCKS = 3
+ATC_MIN_CLEARANCE_CM = 10.0
+ATC_NO_BLOCK_FALLBACK_CM = 100000.0
+YELLOW_SIGNAL_SPEED_KMH = 40.0
+STOPPED_SPEED_THRESHOLD_KMH = 0.5
+
+
+# =============================================================================
+# Data Structures for Lookahead and ATO
+# =============================================================================
+
+
+@dataclass
+class LookaheadPoint:
+    """
+    A point in the lookahead representing block information ahead of the train.
+
+    Used by both ATC (for safety speed calculation) and ATO (for navigation).
+    Signal state is included for display purposes but does not affect ATC speed
+    calculation (this is a CBTC-like block-based system).
+    """
+
+    distance_cm: float  # Distance from train head to start of this block
+    speed_limit_kmh: float  # Block speed limit (or 0 if path end)
+    block_id: str  # Block ID
+    signal_state: Optional[SignalState] = None  # Signal for display (not ATC calc)
+    station_id: Optional[str] = None  # Station ID if block has station
+    is_path_end: bool = False  # True if this is the last block in path
+
+
+@dataclass
+class ATOInfo:
+    """
+    ATO navigation information derived from the train's assigned path.
+
+    Contains path/destination details and determines which cab should be active
+    based on path direction.
+    """
+
+    path_id: Optional[str] = None
+    destination_block_id: Optional[str] = None
+    destination_station_name: Optional[str] = None
+    path_heading: str = "a"  # "a" or "b" - which end the path heads toward
+    required_cab: str = "A"  # "A" or "B" based on path_heading
+
+
+# =============================================================================
+# Speed Calculation Helper
+# =============================================================================
 
 
 def calculate_max_safe_speed(
@@ -145,7 +192,15 @@ class TrainController:
     # Power & Safety State
     # -------------------------------------------------------------------------
     power_on: bool = False
-    emergency_stop_active: bool = False
+    eb_active: bool = (
+        False  # Emergency brake active (renamed from emergency_stop_active)
+    )
+    atc_warning_active: bool = False  # True when overspeed by 5-10 km/h
+
+    # -------------------------------------------------------------------------
+    # Notifications (for frontend toast messages via API)
+    # -------------------------------------------------------------------------
+    pending_notifications: List[str] = field(default_factory=list)
 
     # -------------------------------------------------------------------------
     # Cab & Mode State
@@ -181,6 +236,12 @@ class TrainController:
     signal_lookahead_blocks: int = ATC_SIGNAL_LOOKAHEAD_BLOCKS
 
     # -------------------------------------------------------------------------
+    # Lookahead & ATO Info (calculated each tick)
+    # -------------------------------------------------------------------------
+    lookahead: List[LookaheadPoint] = field(default_factory=list)
+    ato_info: Optional[ATOInfo] = None
+
+    # -------------------------------------------------------------------------
     # Internal Helpers
     # -------------------------------------------------------------------------
 
@@ -214,7 +275,17 @@ class TrainController:
         """
         Called each simulation tick by SimulationController.
 
-        Calculates ATC limits and ATO handle decisions.
+        Workflow:
+        0. Power check
+        1. Emergency brake (EB) check
+        2. Lookahead calculation (shared)
+        3. ATC info collection
+        4. ATC action (warning/EB on overspeed)
+        5. ATO info
+        6. ATO action (cab correction, handle calculation)
+        7. Effective limit & target speed
+        8. State transitions
+
         Does NOT move the train - that's TrainPhysics.tick().
 
         Args:
@@ -225,54 +296,208 @@ class TrainController:
             self.target_speed = 0.0
             return
 
-        # 1. Skip if powered off
+        logger.debug(
+            "[TrainController %s] tick start: power=%s eb=%s mode=%s state=%s speed=%.2f",
+            self.train_id,
+            self.power_on,
+            self.eb_active,
+            self.control_mode,
+            self.state.value,
+            train.current_speed,
+        )
+
+        # ===== 0. POWER CHECK =====
         if not self.power_on:
             self.target_speed = 0.0
             self.state = TrainState.OFF
+            train.state = TrainState.OFF
+            logger.debug(
+                "[TrainController %s] power off -> target=0 state=off",
+                self.train_id,
+            )
             return
 
-        # 2. Calculate ATC (safety) limits
-        self.clearance_ahead_cm = self._calculate_clearance_ahead()
-        self.atc_speed_limit, self.speed_limit_reason = (
-            self._calculate_atc_speed_limit()
-        )
-        self.current_block_speed_limit = self._get_current_block_speed_limit()
-
-        # 3. Emergency stop override
-        if self.emergency_stop_active:
+        # ===== 1. EMERGENCY BRAKE CHECK =====
+        if self.eb_active:
             self.handle_position = HandlePosition.EB
             self.target_speed = 0.0
+
+            logger.debug(
+                "[TrainController %s] EB active -> handle=EB target=0 speed=%.2f",
+                self.train_id,
+                train.current_speed,
+            )
+
+            # Check if train has stopped
+            if train.current_speed <= STOPPED_SPEED_THRESHOLD_KMH:
+                # EB complete - transition to STANDBY
+                self.eb_active = False
+                self.state = TrainState.STANDBY
+                train.state = TrainState.STANDBY
+                self.pending_notifications.append("Emergency brake released")
+                logger.debug(
+                    "[TrainController %s] EB release -> state=standby",
+                    self.train_id,
+                )
             return
 
-        # 4. Calculate target speed and handle based on mode and state
-        if self.state in (TrainState.RUNNING_MOVING, TrainState.MANUAL):
-            if self.control_mode == "ato" and self.ato_running:
-                # ATO: automatically calculate handle position
-                self.handle_position = self._ato_calculate_handle()
+        # ===== 2. LOOKAHEAD CALCULATION (shared by ATC and ATO) =====
+        self.lookahead = self._calculate_lookahead()
 
-            # Calculate effective target speed (respecting ATC limit)
-            effective_limit = min(
-                train.max_speed,
-                self.atc_speed_limit,
-                self.current_block_speed_limit,
+        # ===== 3. ATC INFO COLLECTION =====
+        if self.active_cab is None:
+            self.atc_speed_limit = 0.0
+            self.speed_limit_reason = "No cab selected"
+            logger.debug(
+                "[TrainController %s] ATC blocked: no cab selected",
+                self.train_id,
             )
-            self.target_speed = effective_limit
-
-            # Update train's speed limit reason
-            train.speed_limit_reason = self.speed_limit_reason
         else:
-            # IDLE, STANDBY, AT_STATION, WAITING: not actively moving
-            self.target_speed = 0.0
-            if self.state != TrainState.OFF:
-                self.handle_position = HandlePosition.N
+            # Get block speed limit for current block
+            self.current_block_speed_limit = self._get_current_block_speed_limit()
 
-        # 5. Auto-transition RUNNING_MOVING -> RUNNING_WAITING when stopped
-        if self.state == TrainState.RUNNING_MOVING:
-            if train.current_speed <= STOPPED_SPEED_THRESHOLD_KMH:
-                self.state = TrainState.RUNNING_WAITING
+            # Calculate clearance and ATC speed from existing methods
+            # (These use lookahead data internally)
+            self.clearance_ahead_cm = self._calculate_clearance_ahead()
+            self.atc_speed_limit, self.speed_limit_reason = (
+                self._calculate_atc_speed_limit()
+            )
+            logger.debug(
+                "[TrainController %s] ATC: clearance=%.2f limit=%.2f reason=%s",
+                self.train_id,
+                self.clearance_ahead_cm,
+                self.atc_speed_limit,
+                self.speed_limit_reason,
+            )
 
-        # Update train's target_speed for reference
+        # ===== 4. ATC ACTION =====
+        overspeed = train.current_speed - self.atc_speed_limit
+
+        if overspeed > 10:
+            # Emergency brake - overspeed > 10 km/h
+            self.eb_active = True
+            self.speed_limit_reason = "Emergency brake: overspeed"
+            self.handle_position = HandlePosition.EB
+            self.pending_notifications.append(
+                "ATC triggered emergency brake: overspeed"
+            )
+            logger.debug(
+                "[TrainController %s] ATC EB: overspeed=%.2f",
+                self.train_id,
+                overspeed,
+            )
+            return
+        elif overspeed > 5:
+            # Warning only
+            self.atc_warning_active = True
+            logger.debug(
+                "[TrainController %s] ATC warning: overspeed=%.2f",
+                self.train_id,
+                overspeed,
+            )
+        else:
+            self.atc_warning_active = False
+
+        # ===== 5. ATO INFO =====
+        self.ato_info = self._calculate_ato_info()
+
+        # ===== 6. ATO ACTION (skip if manual) =====
+        if self.control_mode == "ato":
+            # Check cab matches path direction
+            if self.ato_info and self.active_cab != self.ato_info.required_cab:
+                old_cab = self.active_cab
+                self.active_cab = self.ato_info.required_cab
+                self.pending_notifications.append(
+                    f"Cab switched from {old_cab} to {self.active_cab}"
+                )
+                logger.debug(
+                    "[TrainController %s] ATO cab switch: %s -> %s",
+                    self.train_id,
+                    old_cab,
+                    self.active_cab,
+                )
+
+            # Calculate handle position
+            if self.ato_running:
+                self.handle_position = self._ato_calculate_handle()
+                logger.debug(
+                    "[TrainController %s] ATO handle=%s target=%.2f",
+                    self.train_id,
+                    self.handle_position.value,
+                    self.target_speed,
+                )
+        else:
+            # Manual mode - ATC still enforces braking if overspeed
+            if train.current_speed > self.atc_speed_limit:
+                self.handle_position = self._calculate_braking_notch_for_speed(
+                    train.current_speed, self.atc_speed_limit
+                )
+                logger.debug(
+                    "[TrainController %s] Manual ATC brake: handle=%s",
+                    self.train_id,
+                    self.handle_position.value,
+                )
+
+        # ===== 7. EFFECTIVE LIMIT & TARGET SPEED =====
+        effective_limit = min(
+            train.max_speed,
+            self.atc_speed_limit,
+            self.current_block_speed_limit,
+        )
+        self.target_speed = effective_limit
         train.target_speed = self.target_speed
+        train.speed_limit_reason = self.speed_limit_reason
+        logger.debug(
+            "[TrainController %s] target_speed=%.2f effective_limit=%.2f",
+            self.train_id,
+            self.target_speed,
+            effective_limit,
+        )
+
+        # ===== 8. STATE TRANSITIONS =====
+        if self.state == TrainState.RUNNING_MOVING:
+            # Check for station arrival
+            if self._is_at_station():
+                self.state = TrainState.RUNNING_AT_STATION
+                train.state = TrainState.RUNNING_AT_STATION
+                self.ato_running = False
+                # RouteExecutor will handle dwell timing
+                logger.debug(
+                    "[TrainController %s] state -> RUNNING_AT_STATION",
+                    self.train_id,
+                )
+
+            # Check for obstruction
+            elif effective_limit <= STOPPED_SPEED_THRESHOLD_KMH:
+                if train.current_speed <= STOPPED_SPEED_THRESHOLD_KMH:
+                    self.state = TrainState.RUNNING_WAITING
+                    train.state = TrainState.RUNNING_WAITING
+                    train.wait_reason = self.speed_limit_reason or "Obstruction ahead"
+                    logger.debug(
+                        "[TrainController %s] state -> RUNNING_WAITING reason=%s",
+                        self.train_id,
+                        train.wait_reason,
+                    )
+
+        elif self.state == TrainState.RUNNING_WAITING:
+            # Check if path cleared AND train is ready to move
+            # Only auto-transition if: power is on, EB is not active, and obstruction cleared
+            if (
+                effective_limit > STOPPED_SPEED_THRESHOLD_KMH
+                and self.power_on
+                and not self.eb_active
+            ):
+                self.state = TrainState.RUNNING_MOVING
+                train.state = TrainState.RUNNING_MOVING
+                train.wait_reason = None
+                if self.control_mode == "ato":
+                    self.ato_running = True
+                logger.debug(
+                    "[TrainController %s] state -> RUNNING_MOVING",
+                    self.train_id,
+                )
+
+        # Other states (IDLE, STANDBY, AT_STATION, OFF) handled by commands
 
     # -------------------------------------------------------------------------
     # ATC (Automatic Train Control) Logic
@@ -400,15 +625,58 @@ class TrainController:
 
     def _get_current_block_id(self) -> Optional[str]:
         """Get the block ID where the train's head is located."""
-        train = self._get_train()
-        if not train or not train.current_pos or not self.network:
+        head_tile = self._get_head_tile()
+        if not head_tile or not self.network:
             return None
 
-        track = self.network.tracks.get(train.current_pos)
+        track = self.network.tracks.get(head_tile)
         if track:
             return track.block_section_id
 
         return None
+
+    def _get_head_tile(self) -> Optional[Tuple[int, int]]:
+        """Get the head tile for the train (TrainPosition preferred)."""
+        train = self._get_train()
+        if not train:
+            return None
+
+        if train.position:
+            return train.position.head_tile
+
+        return train.current_pos
+
+    def _get_head_distance_cm(self) -> float:
+        """Get head distance within the current tile in cm."""
+        train = self._get_train()
+        if not train:
+            return 0.0
+
+        if train.position:
+            return train.position.head_distance_cm
+
+        return train.distance_on_track
+
+    def _get_head_path_index(self, train: "Train", head_tile: Tuple[int, int]) -> int:
+        """Get the path index for the train head tile."""
+        if not train.current_path:
+            return -1
+
+        if 0 <= train.path_index < len(train.current_path):
+            path_tile = train.current_path[train.path_index]
+            if (path_tile[0], path_tile[1]) == head_tile:
+                return train.path_index
+
+        matches = [
+            i for i, (x, y, _) in enumerate(train.current_path) if (x, y) == head_tile
+        ]
+        if not matches:
+            return -1
+
+        if train.path_index >= 0:
+            return min(matches, key=lambda i: abs(i - train.path_index))
+
+        return matches[0]
 
     def _get_remaining_distance_in_current_block(self) -> float:
         """
@@ -428,8 +696,25 @@ class TrainController:
         if not block or not block.length_cm:
             return 0.0
 
-        if not train.current_pos or not train.current_path:
+        head_tile = self._get_head_tile()
+        if not head_tile:
             return block.length_cm
+
+        if train.position and train.current_path:
+            head_index = self._get_head_path_index(train, head_tile)
+            if head_index < 0:
+                return block.length_cm
+
+            head_tile_length = self.network._get_tile_length_cm(*head_tile)
+            remaining = max(0.0, head_tile_length - train.position.head_distance_cm)
+
+            for x, y, _ in train.current_path[head_index + 1 :]:
+                track = self.network.get_track(x, y)
+                if not track or track.block_section_id != current_block_id:
+                    break
+                remaining += self.network._get_tile_length_cm(x, y)
+
+            return remaining
 
         block_positions = self.network.get_block_positions(current_block_id)
         if not block_positions:
@@ -443,7 +728,7 @@ class TrainController:
 
         current_tile_index = -1
         for i, (bx, by) in enumerate(block_positions):
-            if (bx, by) == train.current_pos:
+            if (bx, by) == head_tile:
                 current_tile_index = i
                 break
 
@@ -452,12 +737,13 @@ class TrainController:
 
         remaining_tiles_after_current = tile_count - current_tile_index - 1
 
-        current_track = self.network.get_track(*train.current_pos)
+        current_track = self.network.get_track(*head_tile)
         fraction_through_tile = 0.0
         if current_track:
-            track_length_cm = self.network._get_tile_length_cm(*train.current_pos)
+            track_length_cm = self.network._get_tile_length_cm(*head_tile)
             if track_length_cm > 0:
-                fraction_through_tile = train.distance_on_track / track_length_cm
+                head_distance_cm = self._get_head_distance_cm()
+                fraction_through_tile = head_distance_cm / track_length_cm
                 fraction_through_tile = max(0.0, min(1.0, fraction_through_tile))
 
         remaining_in_current_tile = (1.0 - fraction_through_tile) * per_tile_length
@@ -573,11 +859,11 @@ class TrainController:
         """
         Get speed limit for current block.
         """
-        train = self._get_train()
-        if not train or not train.current_pos or not self.network:
+        head_tile = self._get_head_tile()
+        if not head_tile or not self.network:
             return float("inf")
 
-        track = self.network.tracks.get(train.current_pos)
+        track = self.network.tracks.get(head_tile)
         if not track:
             return float("inf")
 
@@ -595,6 +881,236 @@ class TrainController:
         Check if it's safe for the train to move.
         """
         return self.clearance_ahead_cm > ATC_MIN_CLEARANCE_CM
+
+    # -------------------------------------------------------------------------
+    # Lookahead Calculation (shared by ATC and ATO)
+    # -------------------------------------------------------------------------
+
+    def _calculate_lookahead(self) -> List[LookaheadPoint]:
+        """
+        Calculate lookahead points from the train's current path.
+
+        Generates a list of LookaheadPoint objects representing blocks ahead,
+        with distance, speed limit, signal state, and station info.
+
+        This is the shared lookahead used by both ATC (for safety speed calculation)
+        and ATO (for navigation).
+
+        Returns:
+            List of LookaheadPoint objects ordered by distance from train head
+        """
+        train = self._get_train()
+        if not train or not self.network:
+            return []
+
+        lookahead_points: List[LookaheadPoint] = []
+        current_distance = 0.0
+
+        # Get current block and remaining distance
+        current_block_id = self._get_current_block_id()
+        if current_block_id:
+            remaining_in_current = self._get_remaining_distance_in_current_block()
+            current_block = self.network.blocks.get(current_block_id)
+            if current_block:
+                # Get signal for this block (for display only)
+                signal_state = self._get_signal_state_for_block(current_block_id)
+                # Get station if present
+                station_id = self._get_station_in_block(current_block_id)
+
+                lookahead_points.append(
+                    LookaheadPoint(
+                        distance_cm=0.0,  # Current position
+                        speed_limit_kmh=current_block.max_speed_kmh or float("inf"),
+                        block_id=current_block_id,
+                        signal_state=signal_state,
+                        station_id=station_id,
+                        is_path_end=False,
+                    )
+                )
+                current_distance = remaining_in_current
+
+        # Get blocks ahead in path
+        blocks_ahead = self._get_blocks_ahead()
+
+        if not blocks_ahead:
+            # No path ahead - add end point
+            if current_block_id:
+                lookahead_points.append(
+                    LookaheadPoint(
+                        distance_cm=current_distance,
+                        speed_limit_kmh=0.0,  # Must stop at path end
+                        block_id=current_block_id,
+                        signal_state=None,
+                        station_id=None,
+                        is_path_end=True,
+                    )
+                )
+            return lookahead_points
+
+        for i, block_id in enumerate(blocks_ahead):
+            block = self.network.blocks.get(block_id)
+            if not block:
+                continue
+
+            # Get signal for this block (for display only)
+            signal_state = self._get_signal_state_for_block(block_id)
+            # Get station if present
+            station_id = self._get_station_in_block(block_id)
+            # Check if this is the last block
+            is_last = i == len(blocks_ahead) - 1
+
+            lookahead_points.append(
+                LookaheadPoint(
+                    distance_cm=current_distance,
+                    speed_limit_kmh=block.max_speed_kmh or float("inf"),
+                    block_id=block_id,
+                    signal_state=signal_state,
+                    station_id=station_id,
+                    is_path_end=is_last,
+                )
+            )
+
+            current_distance += block.length_cm
+
+        return lookahead_points
+
+    def _get_signal_state_for_block(self, block_id: str) -> Optional[SignalState]:
+        """Get the signal state for a block (for display purposes only)."""
+        if not self.network:
+            return None
+
+        for signal_id, signal in self.network.signals.items():
+            if (
+                hasattr(signal, "monitored_block_id")
+                and signal.monitored_block_id == block_id
+            ):
+                return signal.state
+
+        return None
+
+    def _get_station_in_block(self, block_id: str) -> Optional[str]:
+        """Check if a block contains a station and return station ID."""
+        if not self.network:
+            return None
+
+        # Get block's tracks and check for stations
+        for track in self.network.tracks.values():
+            if track.block_section_id == block_id and track.station_id:
+                return track.station_id
+
+        return None
+
+    # -------------------------------------------------------------------------
+    # ATO Info Calculation
+    # -------------------------------------------------------------------------
+
+    def _calculate_ato_info(self) -> Optional[ATOInfo]:
+        """
+        Calculate ATO navigation information from the train's assigned path.
+
+        Returns:
+            ATOInfo with path/destination details, or None if no path assigned
+        """
+        train = self._get_train()
+        if not train or not self.network:
+            return None
+
+        # Get assigned path
+        path_id = train.assigned_path_id or self.ato_path_id
+        if not path_id:
+            return None
+
+        # Get path from network
+        path = None
+        if hasattr(self.network, "paths"):
+            path = self.network.paths.get(path_id)
+
+        if not path:
+            return ATOInfo(path_id=path_id)
+
+        # Determine path heading and required cab
+        path_heading = "a"  # Default
+        required_cab = "A"  # Default
+
+        # Check path direction to determine which cab should be active
+        if hasattr(path, "end_a") and hasattr(path, "end_b"):
+            # Path has defined ends - determine which end we're heading toward
+            if train.current_pos:
+                # If train is closer to end_a, we're heading to end_b
+                # This is simplified - real implementation would trace path direction
+                path_heading = "b"
+                required_cab = "A"  # Cab A faces forward
+
+        # Get destination info
+        destination_block_id = None
+        destination_station_name = None
+
+        if self.lookahead:
+            # Find last station in lookahead
+            for lp in reversed(self.lookahead):
+                if lp.station_id:
+                    destination_block_id = lp.block_id
+                    # Get station name
+                    station = self.network.stations.get(lp.station_id)
+                    if station:
+                        destination_station_name = station.name
+                    break
+
+        return ATOInfo(
+            path_id=path_id,
+            destination_block_id=destination_block_id,
+            destination_station_name=destination_station_name,
+            path_heading=path_heading,
+            required_cab=required_cab,
+        )
+
+    # -------------------------------------------------------------------------
+    # Station Detection
+    # -------------------------------------------------------------------------
+
+    def _is_at_station(self) -> bool:
+        """
+        Check if the train is currently at a station (for state transition).
+
+        A train is "at station" if:
+        - It's in a block that contains a station
+        - It's stopped (speed near zero)
+        - The station is a scheduled stop on its route
+
+        Returns:
+            True if train is at a scheduled station stop
+        """
+        train = self._get_train()
+        if not train or not self.network:
+            return False
+
+        # Must be stopped or nearly stopped
+        if train.current_speed > STOPPED_SPEED_THRESHOLD_KMH:
+            return False
+
+        # Check if current block has a station
+        current_block_id = self._get_current_block_id()
+        if not current_block_id:
+            return False
+
+        station_id = self._get_station_in_block(current_block_id)
+        if not station_id:
+            return False
+
+        # Check if this station is a scheduled stop on the train's route
+        if train.assigned_route_id and hasattr(self.network, "routes"):
+            route = self.network.routes.get(train.assigned_route_id)
+            if route:
+                # Check if station is in the route's waypoints
+                for waypoint in route.waypoints:
+                    if (
+                        hasattr(waypoint, "station_id")
+                        and waypoint.station_id == station_id
+                    ):
+                        return True
+
+        # If no route, consider any station as a potential stop
+        return True
 
     # -------------------------------------------------------------------------
     # ATO (Automatic Train Operation) Logic
@@ -669,13 +1185,19 @@ class TrainController:
 
     def _calculate_braking_notch(self, current_speed: float) -> HandlePosition:
         """Calculate appropriate braking notch to stop."""
-        if current_speed > 60:
+        if current_speed > 30:
             return HandlePosition.B8
-        elif current_speed > 40:
-            return HandlePosition.B6
+        elif current_speed > 25:
+            return HandlePosition.B7
         elif current_speed > 20:
-            return HandlePosition.B4
+            return HandlePosition.B6
+        elif current_speed > 14:
+            return HandlePosition.B5
         elif current_speed > 10:
+            return HandlePosition.B4
+        elif current_speed > 5:
+            return HandlePosition.B3
+        elif current_speed > 2:
             return HandlePosition.B2
         else:
             return HandlePosition.B1
@@ -686,14 +1208,41 @@ class TrainController:
         """Calculate braking notch to reduce to target speed."""
         speed_diff = current_speed - target_speed
 
-        if speed_diff > 20:
+        if speed_diff > 30:
+            return HandlePosition.B8
+        elif speed_diff > 25:
+            return HandlePosition.B7
+        elif speed_diff > 20:
             return HandlePosition.B6
+        elif speed_diff > 14:
+            return HandlePosition.B5
         elif speed_diff > 10:
             return HandlePosition.B4
         elif speed_diff > 5:
+            return HandlePosition.B3
+        elif speed_diff > 2:
             return HandlePosition.B2
         else:
             return HandlePosition.B1
+
+    # -------------------------------------------------------------------------
+    # Power Commands
+    # -------------------------------------------------------------------------
+    # Notification Methods
+    # -------------------------------------------------------------------------
+
+    def get_and_clear_notifications(self) -> List[str]:
+        """
+        Get pending notifications and clear them.
+
+        Called by frontend to retrieve toast messages.
+
+        Returns:
+            List of notification messages
+        """
+        notifications = self.pending_notifications.copy()
+        self.pending_notifications.clear()
+        return notifications
 
     # -------------------------------------------------------------------------
     # Power Commands
@@ -753,7 +1302,7 @@ class TrainController:
         """
         train = self._get_train()
 
-        self.emergency_stop_active = True
+        self.eb_active = True
         self.handle_position = HandlePosition.EB
         self.ato_running = False
 
@@ -793,7 +1342,7 @@ class TrainController:
                 False, "Handle must be in N or B before releasing emergency"
             )
 
-        self.emergency_stop_active = False
+        self.eb_active = False
         if train:
             train.emergency_brake = False
         self.handle_position = HandlePosition.N
@@ -820,7 +1369,7 @@ class TrainController:
         if position == HandlePosition.EB:
             return self.emergency_stop_cmd()
 
-        if self.emergency_stop_active:
+        if self.eb_active:
             return CommandResult(False, "Release emergency stop first")
 
         if self.control_mode == "ato" and self.ato_running:
@@ -856,23 +1405,6 @@ class TrainController:
         if old_cab in ("A", "B") and cab in ("A", "B") and old_cab != cab:
             if train.facing_direction:
                 train.facing_direction = train.facing_direction.opposite()
-
-            # Also swap position data
-            if train.position:
-                # Swap tiles
-                temp_tile = train.position.end_a_tile
-                train.position.end_a_tile = train.position.end_b_tile
-                train.position.end_b_tile = temp_tile
-
-                # Swap distances
-                temp_distance = train.position.end_a_distance_cm
-                train.position.end_a_distance_cm = train.position.end_b_distance_cm
-                train.position.end_b_distance_cm = temp_distance
-
-                # Swap entry edges
-                temp_entry = train.position.end_a_entry_edge
-                train.position.end_a_entry_edge = train.position.end_b_entry_edge
-                train.position.end_b_entry_edge = temp_entry
 
         self.active_cab = cab
 
@@ -1177,19 +1709,32 @@ class TrainController:
 
     def turn_around(self) -> bool:
         """
-        Flip facing direction (cab switch). Only allowed when stopped.
+        Flip facing direction by switching cab. Only allowed when stopped.
 
-        Used by RouteExecutor when train needs to reverse direction
-        to reach the next waypoint.
+        Unlike set_cab(), this method is used when the train needs to reverse
+        direction to reach the next waypoint. It:
+        - Flips the facing direction
+        - Switches the active cab (A <-> B)
+        - Updates leading_end to match new cab
+
+        Does NOT swap end_a/end_b position data - those stay with physical ends.
 
         Returns:
-            True if successful, False if train is moving or no facing direction
+            True if successful, False if preconditions not met
+
+        Preconditions:
+        - Train must be stopped
+        - ATO must not be actively running (ato_running == False)
+        - Train must have a facing direction
         """
         train = self._get_train()
         if train is None:
             return False
 
         if not train.is_stopped():
+            return False
+
+        if self.ato_running:
             return False
 
         if train.facing_direction is None:
@@ -1202,31 +1747,13 @@ class TrainController:
         if self.active_cab == "A":
             self.active_cab = "B"
             train.active_cab = "B"
+            if train.position:
+                train.position.leading_end = "b"
         elif self.active_cab == "B":
             self.active_cab = "A"
             train.active_cab = "A"
-
-        # Swap position data
-        if train.position:
-            # Swap tiles
-            temp_tile = train.position.end_a_tile
-            train.position.end_a_tile = train.position.end_b_tile
-            train.position.end_b_tile = temp_tile
-
-            # Swap distances
-            temp_distance = train.position.end_a_distance_cm
-            train.position.end_a_distance_cm = train.position.end_b_distance_cm
-            train.position.end_b_distance_cm = temp_distance
-
-            # Swap entry edges
-            temp_entry = train.position.end_a_entry_edge
-            train.position.end_a_entry_edge = train.position.end_b_entry_edge
-            train.position.end_b_entry_edge = temp_entry
-
-            # Swap leading end
-            train.position.leading_end = (
-                "b" if train.position.leading_end == "a" else "a"
-            )
+            if train.position:
+                train.position.leading_end = "a"
 
         return True
 
@@ -1383,10 +1910,18 @@ class TrainController:
         """Convert controller state to dictionary for JSON serialization."""
         train = self._get_train()
 
+        # Helper to convert infinity to None for JSON serialization
+        def safe_float(value: float) -> Optional[float]:
+            if value == float("inf") or value == float("-inf"):
+                return None
+            return value
+
         return {
             "train_id": self.train_id,
             "power_on": self.power_on,
-            "emergency_stop_active": self.emergency_stop_active,
+            "eb_active": self.eb_active,
+            "atc_warning_active": self.atc_warning_active,
+            "pending_notifications": self.pending_notifications.copy(),
             "active_cab": self.active_cab,
             "control_mode": self.control_mode,
             "travel_direction": self.travel_direction,
@@ -1396,10 +1931,32 @@ class TrainController:
             "ato_running": self.ato_running,
             "ato_destination_id": self.ato_destination_id,
             "ato_path_id": self.ato_path_id,
-            "clearance_ahead_cm": self.clearance_ahead_cm,
-            "atc_speed_limit": self.atc_speed_limit,
-            "current_block_speed_limit": self.current_block_speed_limit,
+            "clearance_ahead_cm": safe_float(self.clearance_ahead_cm),
+            "atc_speed_limit": safe_float(self.atc_speed_limit),
+            "current_block_speed_limit": safe_float(self.current_block_speed_limit),
             "speed_limit_reason": self.speed_limit_reason,
+            # Include lookahead for display
+            "lookahead": [
+                {
+                    "distance_cm": lp.distance_cm,
+                    "speed_limit_kmh": safe_float(lp.speed_limit_kmh),
+                    "block_id": lp.block_id,
+                    "signal_state": lp.signal_state.value if lp.signal_state else None,
+                    "station_id": lp.station_id,
+                    "is_path_end": lp.is_path_end,
+                }
+                for lp in self.lookahead
+            ],
+            # Include ATO info
+            "ato_info": {
+                "path_id": self.ato_info.path_id,
+                "destination_block_id": self.ato_info.destination_block_id,
+                "destination_station_name": self.ato_info.destination_station_name,
+                "path_heading": self.ato_info.path_heading,
+                "required_cab": self.ato_info.required_cab,
+            }
+            if self.ato_info
+            else None,
             # Include some train state for convenience
             "current_speed": train.current_speed if train else 0.0,
             "is_stopped": train.is_stopped() if train else True,
@@ -1426,7 +1983,8 @@ class TrainController:
             train_id=data["train_id"],
             network=network,
             power_on=data.get("power_on", False),
-            emergency_stop_active=data.get("emergency_stop_active", False),
+            eb_active=data.get("eb_active", data.get("emergency_stop_active", False)),
+            atc_warning_active=data.get("atc_warning_active", False),
             active_cab=data.get("active_cab"),
             control_mode=data.get("control_mode", "ato"),
             travel_direction=data.get("travel_direction", "forward"),

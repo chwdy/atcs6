@@ -16,12 +16,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, TYPE_CHECKING
 
-from train_config import (
-    MAX_TRACK_VOLTAGE,
-    MIN_TRACK_VOLTAGE,
-    DEFAULT_LIGHTING_VOLTAGE,
-)
 from enums import TrainState
+
+MAX_TRACK_VOLTAGE = 12.0
+MIN_TRACK_VOLTAGE = 0.0
+DEFAULT_LIGHTING_VOLTAGE = 2.5
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -161,9 +160,11 @@ class BlockPowerController:
             return
 
         # Check if we should use opposite polarity for IDLE state
-        if (train.state == TrainState.IDLE and
-            len(occupied_blocks) >= 2 and
-            train.is_opposite_polarity_safe(self.network)):
+        if (
+            train.state == TrainState.IDLE
+            and len(occupied_blocks) >= 2
+            and train.is_opposite_polarity_safe(self.network)
+        ):
             # Opposite polarity: first block gets positive, last gets negative
             # This shows red lights on both ends
             lighting_voltage = self.default_lighting_voltage

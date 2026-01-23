@@ -754,13 +754,12 @@ from block_power import (
     OutputInterface,
 )
 from block import Block
-from train_controller import calculate_max_safe_speed
-from train_config import (
-    MAX_TRACK_VOLTAGE,
-    DEFAULT_LIGHTING_VOLTAGE,
+from train_controller import (
+    calculate_max_safe_speed,
     ATC_SAFETY_MARGIN_CM,
     YELLOW_SIGNAL_SPEED_KMH,
 )
+from block_power import MAX_TRACK_VOLTAGE, DEFAULT_LIGHTING_VOLTAGE
 
 
 class TestSimulatedOutputInterface:
@@ -991,28 +990,19 @@ class TestCalculateMaxSafeSpeed:
 # See train_controller.py for the new implementation.
 
 
-class TestTrainConfig:
-    """Tests for train_config module."""
+class TestModelScale:
+    """Tests for model_scale module."""
 
-    def test_constants_exist(self):
-        """Test configuration constants are defined."""
-        from train_config import (
-            DEFAULT_MAX_SPEED_KMH,
-            YELLOW_SIGNAL_SPEED_KMH,
-            ATC_SAFETY_MARGIN_CM,
-            MAX_TRACK_VOLTAGE,
-            DEFAULT_LIGHTING_VOLTAGE,
-        )
+    def test_scale_presets_exist(self):
+        """Test scale presets are defined."""
+        from model_scale import SCALE_PRESETS
 
-        assert DEFAULT_MAX_SPEED_KMH == 100.0
-        assert YELLOW_SIGNAL_SPEED_KMH == 40.0
-        assert ATC_SAFETY_MARGIN_CM == 25.0  # Updated: reduced safety margin
-        assert MAX_TRACK_VOLTAGE == 12.0
-        assert DEFAULT_LIGHTING_VOLTAGE == 2.5
+        assert SCALE_PRESETS["1:160"] == 160.0
+        assert SCALE_PRESETS["1:87"] == 87.0
 
     def test_unit_conversions(self):
         """Test unit conversion functions."""
-        from train_config import kmh_to_cm_per_sec, cm_per_sec_to_kmh
+        from model_scale import kmh_to_cm_per_sec, cm_per_sec_to_kmh
 
         # 1 km/h ≈ 27.78 cm/s (at 1:1 scale, apply_scale=False)
         cm_s = kmh_to_cm_per_sec(1.0, apply_scale=False)
@@ -1025,6 +1015,18 @@ class TestTrainConfig:
         # Roundtrip (with scale)
         kmh = cm_per_sec_to_kmh(cm_s_scaled, apply_scale=True)
         assert 0.99 < kmh < 1.01
+
+    def test_scale_setter_updates_conversion(self):
+        """Test setting model scale affects conversion factor."""
+        from model_scale import get_model_scale, set_model_scale, kmh_to_cm_per_sec
+
+        original_scale = get_model_scale()
+        try:
+            set_model_scale(100.0)
+            cm_s_scaled = kmh_to_cm_per_sec(1.0, apply_scale=True)
+            assert 0.27 < cm_s_scaled < 0.28  # 27.78 / 100 ≈ 0.277
+        finally:
+            set_model_scale(original_scale)
 
 
 # =============================================================================
@@ -1349,7 +1351,7 @@ class TestTrainStateTransitions:
         train.target_speed = 80.0
         result = controller.emergency_stop_cmd()
         assert result.success is True
-        assert controller.emergency_stop_active is True
+        assert controller.eb_active is True
         assert train.emergency_brake is True
 
     def test_emergency_stop_cmd_always_allowed(self):
@@ -1359,7 +1361,7 @@ class TestTrainStateTransitions:
         )
         result = controller.emergency_stop_cmd()
         assert result.success is True
-        assert controller.emergency_stop_active is True
+        assert controller.eb_active is True
 
     def test_enable_manual_from_idle(self):
         """Test enable_manual() from IDLE when stopped."""
@@ -1665,7 +1667,7 @@ class TestCompleteStateFlows:
         # Emergency stop
         result = controller.emergency_stop_cmd()
         assert result.success is True
-        assert controller.emergency_stop_active is True
+        assert controller.eb_active is True
         assert train.emergency_brake is True
         # Emergency stop sets handle to EB
         assert controller.handle_position.value == "EB"
@@ -1676,7 +1678,7 @@ class TestCompleteStateFlows:
         controller.handle_position = HandlePosition.N
         result = controller.release_emergency_cmd()
         assert result.success is True
-        assert controller.emergency_stop_active is False
+        assert controller.eb_active is False
 
     def test_shutdown_flow(self):
         """Test complete shutdown flow."""

@@ -45,7 +45,7 @@ from path import (
 )
 from enums import BlockState, Direction, direction_from_delta, DIRECTION_OFFSETS
 from track import OPPOSITE_EDGE, EDGE_MASKS, BIT_TO_EDGES
-from train_config import kmh_to_cm_per_sec
+from model_scale import kmh_to_cm_per_sec
 
 if TYPE_CHECKING:
     from network import RailwayNetwork

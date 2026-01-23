@@ -23,7 +23,7 @@ Architecture:
 
 import logging
 from datetime import datetime
-from typing import Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from network import RailwayNetwork
 from train import Train
@@ -151,3 +151,34 @@ class SimulationController:
         """Remove all simulation instances for a train."""
         self.remove_train_controller(train_id)
         self.remove_train_physics(train_id)
+
+
+def build_network_payload(
+    network: RailwayNetwork,
+    sim_controller: Optional["SimulationController"],
+) -> Dict[str, Any]:
+    """Build network payload with onboard controller snapshots.
+
+    Args:
+        network: Railway network instance.
+        sim_controller: Simulation controller for train controllers.
+
+    Returns:
+        Network dictionary with per-train onboard controller state.
+    """
+    payload = network.to_dict()
+
+    if not sim_controller:
+        return payload
+
+    trains = payload.get("trains", [])
+    train_lookup = {train_data.get("id"): train_data for train_data in trains}
+
+    for train in network.trains.values():
+        train_data = train_lookup.get(train.train_id)
+        if not train_data:
+            continue
+        controller = sim_controller._get_or_create_controller(train)
+        train_data["onboard"] = controller.to_dict()
+
+    return payload

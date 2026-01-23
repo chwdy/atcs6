@@ -1414,6 +1414,7 @@ class Train:
             "state": self.state.value,
             "speed_profile_id": self.speed_profile_id,
             "assigned_route_id": self.assigned_route_id,
+            "assigned_path_id": self.assigned_path_id,
             "target_speed": self.target_speed,
             "manual_target_speed": self.manual_target_speed,
             "wait_reason": self.wait_reason,

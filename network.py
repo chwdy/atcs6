@@ -32,6 +32,7 @@ from signal_validation import (
 
 
 DEFAULT_TILE_LENGTH_CM = 50.0
+DEFAULT_TRAIN_LENGTH_CM = 50.0
 
 
 class RailwayNetwork:
@@ -1947,8 +1948,6 @@ class RailwayNetwork:
 
     def _get_train_length_cm(self, train: Train) -> float:
         """Get train length in cm."""
-        from train_config import DEFAULT_TRAIN_LENGTH_CM
-
         if train.consist:
             total_length = sum(car.length for car in train.consist)
             return total_length
