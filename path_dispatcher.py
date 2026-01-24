@@ -1105,6 +1105,71 @@ class PathDispatcher:
 
         return True
 
+    def on_train_advances_from_physics(
+        self, path_id: str, entered_block_id: str
+    ) -> bool:
+        """Advance path position without modifying block states.
+
+        Args:
+            path_id: The path
+            entered_block_id: The block just entered
+
+        Returns:
+            True if successful
+        """
+        path = self.active_paths.get(path_id)
+        if not path:
+            return False
+
+        if entered_block_id in path.block_sequence:
+            path.current_block_index = path.block_sequence.index(entered_block_id)
+
+        if entered_block_id == path.block_sequence[-1]:
+            path.status = PathStatus.CLEARING
+
+        return True
+
+    def on_train_progress_from_physics(self, path_id: str) -> bool:
+        """Update cleared blocks/switches using physics-driven positions.
+
+        Args:
+            path_id: Path to update
+
+        Returns:
+            True if the path was updated, False if not applicable
+        """
+        path = self.active_paths.get(path_id)
+        if not path or path.status not in (
+            PathStatus.SET,
+            PathStatus.ACTIVE,
+            PathStatus.CLEARING,
+        ):
+            return False
+
+        if not path.train_id:
+            return False
+
+        train = self.network.trains.get(path.train_id)
+        if not train or not train.position:
+            return False
+
+        occupied_block_ids = set(train.position.occupied_blocks)
+
+        for i, block_id in enumerate(path.block_sequence):
+            if i >= path.current_block_index:
+                break
+            if block_id in path.blocks_cleared:
+                continue
+            if block_id in occupied_block_ids:
+                continue
+            block = self.network.blocks.get(block_id)
+            if not block or block.state != BlockState.FREE:
+                continue
+            path.blocks_cleared.add(block_id)
+            self._release_switches_for_block(path, block_id)
+
+        return True
+
     def on_train_progress(self, path_id: str) -> bool:
         """Update block releases based on current train position.
 
@@ -1169,7 +1234,6 @@ class PathDispatcher:
                         self.network.block_manager.set_block_to_caution(block_id)
                     else:
                         block.set_to_caution()
-                    self._release_switches_for_block(path, block_id)
                 elif block.state == BlockState.CAUTION:
                     # CAUTION → FREE (safety margin satisfied, complete release)
                     if self.network.block_manager:

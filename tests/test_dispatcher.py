@@ -32,7 +32,6 @@ from path import (
 )
 from path_dispatcher import PathDispatcher
 from network import RailwayNetwork
-from simulation import SimulationController
 from track import (
     TrackSegment,
     TRACK_NS,
@@ -1902,22 +1901,70 @@ class TestSimulationPathAdvancement:
 
         assert path.current_block_index == 1
 
+    def test_simulation_does_not_clear_caution_same_tick(
+        self, simple_linear_network, dispatcher
+    ):
+        """Physics-driven updates should not clear CAUTION immediately."""
+        network = simple_linear_network
+        dispatcher.network = network
+        sim = SimulationController(network, dispatcher)
+
+        train = Train(
+            train_id="TRAIN_CAUTION",
+            consist=[TrainCar("CAR", "LOCOMOTIVE", 50.0)],
+            max_speed=60.0,
+        )
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 0.0
+        train.position = TrainPosition(
+            end_a_tile=(1, 0),
+            end_a_distance_cm=5.0,
+            end_a_entry_edge="W",
+            end_b_tile=(1, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(1, 0)],
+            occupied_blocks=["BLOCK_B"],
+        )
+        network.add_train(train)
+
+        result = dispatcher.create_path("BLOCK_A", "BLOCK_C", train_id=train.train_id)
+        assert result.success
+        path = result.path
+        train.assigned_path_id = path.path_id
+
+        controller = sim._get_or_create_controller(train)
+        controller.power_on = True
+        controller.state = TrainState.RUNNING_MOVING
+        controller.active_cab = "A"
+        controller.handle_position = HandlePosition.N
+
+        network.block_manager.occupy_block("BLOCK_A", train.train_id)
+
+        physics = sim._get_or_create_physics(train)
+        physics._last_occupied_blocks = {"BLOCK_A"}
+
+        sim._update_train(train, 0.1)
+
+        assert network.blocks["BLOCK_A"].state == BlockState.CAUTION
+
 
 class TestPathSwitchUnlockBugFix:
     """
     Comprehensive tests for switch unlock timing fix (2026-01-23).
 
-    BUG: Switch locks were released only after a block transitioned from CAUTION
-    to FREE, leaving switches locked even when they were one block behind the
-    train tail.
+    BUG: Switch locks were released as soon as a block entered CAUTION, which
+    unlocked switches before the safety margin was fully cleared.
 
-    FIX: Release switches as soon as the tail clears a block (OCCUPIED → CAUTION).
+    FIX: Release switches only after the block transitions from CAUTION to FREE.
     """
 
-    def test_switch_unlocks_when_tail_clears_block(
+    def test_switch_unlocks_after_block_clears_to_free(
         self, network_with_switch, dispatcher
     ):
-        """Switch unlocks when the block behind the tail enters CAUTION."""
+        """Switch unlocks after CAUTION transitions to FREE."""
         network = network_with_switch
         dispatcher.network = network
 
@@ -1964,4 +2011,9 @@ class TestPathSwitchUnlockBugFix:
         dispatcher.on_train_advances(path.path_id, "BLOCK_B")
 
         assert network.blocks["BLOCK_A"].state == BlockState.CAUTION
+        assert switch_track.is_locked_by_path()
+
+        dispatcher._release_blocks_behind_train(path)
+
+        assert network.blocks["BLOCK_A"].state == BlockState.FREE
         assert not switch_track.is_locked_by_path()
