@@ -1149,6 +1149,7 @@ class PathDispatcher:
                         self.network.block_manager.set_block_to_caution(block_id)
                     else:
                         block.set_to_caution()
+                    self._release_switches_for_block(path, block_id)
                 elif block.state == BlockState.CAUTION:
                     # CAUTION → FREE (safety margin satisfied, complete release)
                     if self.network.block_manager:

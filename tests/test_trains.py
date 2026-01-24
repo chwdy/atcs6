@@ -999,6 +999,174 @@ class TestTrainPhysicsBlockCautionReleaseBugFix:
         assert block.state == BlockState.FREE
 
 
+class TestTrainPhysicsCautionHoldBugFix:
+    """
+    Comprehensive tests for TrainPhysics caution hold bug fix (2026-01-23).
+
+    BUG: TrainPhysics._update_block_occupancy() clears CAUTION blocks on the
+    next tick even when the train has not vacated another block. This causes
+    the block behind the train to become FREE while the train is still moving.
+
+    FIX: Keep the last vacated block in CAUTION until another block is vacated
+    or the train leaves the track entirely.
+    """
+
+    def test_caution_persists_until_next_block_vacated(self):
+        """The last vacated block should remain CAUTION while train stays in place."""
+        network = RailwayNetwork()
+        track_a = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        track_b = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        track_a.block_section_id = "B1"
+        track_b.block_section_id = "B2"
+        network.add_track(track_a)
+        network.add_track(track_b)
+
+        block_a = network.create_block("B1", "Block 1")
+        network.create_block("B2", "Block 2")
+        network.block_manager.occupy_block("B1", "TRAIN_1")
+        assert block_a.state == BlockState.OCCUPIED
+
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_1", consist=[car], max_speed=60.0)
+        train.current_speed = 10.0
+        train.position = TrainPosition(
+            end_a_tile=(1, 0),
+            end_a_distance_cm=5.0,
+            end_a_entry_edge="W",
+            end_b_tile=(1, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(1, 0)],
+        )
+        network.add_train(train)
+
+        sim = SimulationController(network)
+        physics = sim._get_or_create_physics(train)
+        physics._last_occupied_blocks = {"B1"}
+
+        physics._update_block_occupancy(train)
+        assert block_a.state == BlockState.CAUTION
+
+        physics._update_block_occupancy(train)
+        assert block_a.state == BlockState.CAUTION
+
+    def test_previous_caution_clears_when_next_block_vacated(self):
+        """Previous CAUTION block should clear once a new block is vacated."""
+        network = RailwayNetwork()
+        track_a = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        track_b = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        track_c = TrackSegment(x=2, y=0, track_bits=TRACK_EW)
+        track_a.block_section_id = "B1"
+        track_b.block_section_id = "B2"
+        track_c.block_section_id = "B3"
+        network.add_track(track_a)
+        network.add_track(track_b)
+        network.add_track(track_c)
+
+        block_a = network.create_block("B1", "Block 1")
+        block_b = network.create_block("B2", "Block 2")
+        block_c = network.create_block("B3", "Block 3")
+        network.block_manager.occupy_block("B1", "TRAIN_1")
+
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_1", consist=[car], max_speed=60.0)
+        train.position = TrainPosition(
+            end_a_tile=(1, 0),
+            end_a_distance_cm=5.0,
+            end_a_entry_edge="W",
+            end_b_tile=(1, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(1, 0)],
+        )
+        network.add_train(train)
+
+        sim = SimulationController(network)
+        physics = sim._get_or_create_physics(train)
+        physics._last_occupied_blocks = {"B1"}
+
+        physics._update_block_occupancy(train)
+        assert block_a.state == BlockState.CAUTION
+        assert block_b.state == BlockState.OCCUPIED
+
+        train.position = TrainPosition(
+            end_a_tile=(2, 0),
+            end_a_distance_cm=5.0,
+            end_a_entry_edge="W",
+            end_b_tile=(2, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(2, 0)],
+        )
+
+        physics._update_block_occupancy(train)
+        assert block_a.state == BlockState.FREE
+        assert block_b.state == BlockState.CAUTION
+        assert block_c.state == BlockState.OCCUPIED
+
+
+class TestTrainPhysicsCautionStoppedReleaseBugFix:
+    """
+    Comprehensive tests for TrainPhysics caution release on stop (2026-01-23).
+
+    BUG: TrainPhysics keeps the CAUTION block indefinitely when the train stops,
+    even though the block behind the occupied block should be clearable once the
+    train is stationary.
+
+    FIX: If the train is stopped, clear CAUTION blocks that are no longer occupied.
+    """
+
+    def test_caution_clears_when_train_stopped(self):
+        """CAUTION block clears when train is stopped and not occupying it."""
+        network = RailwayNetwork()
+        track_a = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        track_b = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        track_a.block_section_id = "B1"
+        track_b.block_section_id = "B2"
+        network.add_track(track_a)
+        network.add_track(track_b)
+
+        block_a = network.create_block("B1", "Block 1")
+        block_b = network.create_block("B2", "Block 2")
+
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_1", consist=[car], max_speed=60.0)
+        train.current_speed = 0.0
+        train.position = TrainPosition(
+            end_a_tile=(1, 0),
+            end_a_distance_cm=5.0,
+            end_a_entry_edge="W",
+            end_b_tile=(1, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(1, 0)],
+            occupied_blocks=["B2"],
+        )
+        network.add_train(train)
+
+        network.block_manager.occupy_block("B1", train.train_id)
+        network.block_manager.set_block_to_caution("B1")
+        network.block_manager.occupy_block("B2", train.train_id)
+
+        sim = SimulationController(network)
+        physics = sim._get_or_create_physics(train)
+        physics._last_occupied_blocks = {"B2"}
+        physics._caution_blocks = {"B1"}
+
+        physics._update_block_occupancy(train)
+
+        assert block_a.state == BlockState.FREE
+        assert block_b.state == BlockState.OCCUPIED
+
+
 class TestTrainControlPanelDataBugFix:
     """
     Comprehensive tests for train control panel data propagation fix (2026-01-22).

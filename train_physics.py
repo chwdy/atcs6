@@ -648,6 +648,12 @@ class TrainPhysics:
 
         old_occupied = self._last_occupied_blocks
 
+        newly_vacated = old_occupied - new_occupied
+
+        should_clear_caution = (
+            bool(newly_vacated) or not new_occupied or train.is_stopped()
+        )
+
         # Clear caution blocks once the train has fully left them
         # A block should only be cleared from CAUTION to FREE when:
         # 1. The train has fully exited the block (not in new_occupied)
@@ -655,6 +661,9 @@ class TrainPhysics:
         for block_id in list(self._caution_blocks):
             if block_id in new_occupied:
                 # Train still in this block, keep in CAUTION state
+                continue
+            if not should_clear_caution:
+                # Keep the last vacated block in CAUTION until another block is vacated
                 continue
             block = block_manager.blocks.get(block_id)
             if not block:
@@ -676,7 +685,7 @@ class TrainPhysics:
             block_manager.occupy_block(block_id, train.train_id)
 
         # Release old blocks (tail has exited)
-        for block_id in old_occupied - new_occupied:
+        for block_id in newly_vacated:
             # Use set_block_to_caution for proper safety transition
             # (OCCUPIED -> CAUTION -> FREE, not OCCUPIED -> FREE)
             # The block will be cleared to FREE on a subsequent tick

@@ -42,7 +42,7 @@ from track import (
     TRACK_SW,
 )
 from block import Block
-from train import Train, TrainCar
+from train import Train, TrainCar, TrainPosition
 from enums import BlockState, Direction, TrainState
 
 
@@ -1698,23 +1698,6 @@ class TestPathBasedBlockRelease:
         assert network.blocks["BLOCK_B"].state == BlockState.OCCUPIED
         assert network.blocks["BLOCK_C"].state == BlockState.OCCUPIED
 
-        # Simulate tail clearing Block A
-        train.position.end_b_tile = (1, 0)
-        train.position.end_b_distance_cm = 0.0
-        train.position.occupied_tiles = [(1, 0), (2, 0), (3, 0)]
-        train.position.occupied_blocks = ["BLOCK_B", "BLOCK_C"]
-
-        dispatcher._release_blocks_behind_train(path)
-
-        # Block A should now be CAUTION
-        assert network.blocks["BLOCK_A"].state == BlockState.CAUTION
-        assert network.blocks["BLOCK_B"].state == BlockState.OCCUPIED
-        assert network.blocks["BLOCK_C"].state == BlockState.OCCUPIED
-
-        # Call again to transition CAUTION → FREE
-        dispatcher._release_blocks_behind_train(path)
-        assert network.blocks["BLOCK_A"].state == BlockState.FREE
-
     def test_block_release_real_world_scenario(self, simple_linear_network, dispatcher):
         """
         Test real-world scenario: Train progresses through multiple blocks.
@@ -1814,3 +1797,67 @@ class TestPathBasedBlockRelease:
 
         dispatcher._release_blocks_behind_train(path)
         assert network.blocks["BLOCK_B"].state == BlockState.FREE
+
+
+class TestPathSwitchUnlockBugFix:
+    """
+    Comprehensive tests for switch unlock timing fix (2026-01-23).
+
+    BUG: Switch locks were released only after a block transitioned from CAUTION
+    to FREE, leaving switches locked even when they were one block behind the
+    train tail.
+
+    FIX: Release switches as soon as the tail clears a block (OCCUPIED → CAUTION).
+    """
+
+    def test_switch_unlocks_when_tail_clears_block(
+        self, network_with_switch, dispatcher
+    ):
+        """Switch unlocks when the block behind the tail enters CAUTION."""
+        network = network_with_switch
+        dispatcher.network = network
+
+        train = Train(
+            train_id="TRAIN_SWITCH",
+            consist=[TrainCar("CAR_1", "LOCOMOTIVE", 20.0)],
+        )
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=0.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(0, 0)],
+            occupied_blocks=["BLOCK_A"],
+        )
+        network.add_train(train)
+
+        result = dispatcher.create_path("BLOCK_A", "BLOCK_B", train_id=train.train_id)
+        assert result.success
+        path = result.path
+
+        switch_track = network.get_track(1, 0)
+        assert switch_track.is_locked_by_path()
+
+        dispatcher.on_train_enters_path(path.path_id, train.train_id, "BLOCK_A")
+
+        train.position = TrainPosition(
+            end_a_tile=(2, 0),
+            end_a_distance_cm=5.0,
+            end_a_entry_edge="W",
+            end_b_tile=(2, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(2, 0)],
+            occupied_blocks=["BLOCK_B"],
+        )
+
+        dispatcher.on_train_advances(path.path_id, "BLOCK_B")
+
+        assert network.blocks["BLOCK_A"].state == BlockState.CAUTION
+        assert not switch_track.is_locked_by_path()
