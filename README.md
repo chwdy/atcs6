@@ -103,7 +103,6 @@ atcs6/
 ├── network.py               # Railway network management
 ├── pathfinder.py            # A* pathfinding for trains
 ├── dispatcher.py            # Train dispatching system
-├── dispatcher_interface.py  # Route dispatcher interface
 ├── path_dispatcher.py       # Block/switch reservation for paths
 ├── route_executor.py        # Route and waypoint execution
 ├── railway_signal.py        # Signal entity class
