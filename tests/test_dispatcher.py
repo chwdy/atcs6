@@ -32,6 +32,7 @@ from path import (
 )
 from path_dispatcher import PathDispatcher
 from network import RailwayNetwork
+from simulation import SimulationController
 from track import (
     TrackSegment,
     TRACK_NS,
@@ -42,8 +43,8 @@ from track import (
     TRACK_SW,
 )
 from block import Block
-from train import Train, TrainCar
-from enums import BlockState, Direction, TrainState
+from train import Train, TrainCar, TrainPosition
+from enums import BlockState, Direction, TrainState, HandlePosition
 
 
 # ============================================================================
@@ -1814,3 +1815,105 @@ class TestPathBasedBlockRelease:
 
         dispatcher._release_blocks_behind_train(path)
         assert network.blocks["BLOCK_B"].state == BlockState.FREE
+
+
+class TestPathDispatcherProgress:
+    """Tests for PathDispatcher progress updates."""
+
+    def test_on_train_progress_releases_blocks(self, simple_linear_network, dispatcher):
+        """Progress update should release blocks behind the tail."""
+        network = simple_linear_network
+        dispatcher.network = network
+
+        train = Train(
+            train_id="TRAIN_PROGRESS",
+            consist=[TrainCar("CAR", "LOCOMOTIVE", 50.0)],
+        )
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=0.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(0, 0)],
+            occupied_blocks=["BLOCK_A"],
+        )
+        network.add_train(train)
+
+        result = dispatcher.create_path("BLOCK_A", "BLOCK_C", train_id=train.train_id)
+        assert result.success
+        path = result.path
+
+        dispatcher.on_train_enters_path(path.path_id, train.train_id, "BLOCK_A")
+        dispatcher.on_train_advances(path.path_id, "BLOCK_B")
+
+        train.position = TrainPosition(
+            end_a_tile=(1, 0),
+            end_a_distance_cm=10.0,
+            end_a_entry_edge="W",
+            end_b_tile=(1, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(1, 0)],
+            occupied_blocks=["BLOCK_B"],
+        )
+
+        dispatcher.on_train_progress(path.path_id)
+
+        assert network.blocks["BLOCK_A"].state == BlockState.CAUTION
+
+
+class TestSimulationPathAdvancement:
+    """Tests for SimulationController path advancement integration."""
+
+    def test_simulation_advances_path_on_block_entry(
+        self, simple_linear_network, dispatcher
+    ):
+        """Simulation should notify PathDispatcher when blocks are entered."""
+        network = simple_linear_network
+        dispatcher.network = network
+        sim = SimulationController(network, dispatcher)
+
+        train = Train(
+            train_id="TRAIN_SIM",
+            consist=[TrainCar("CAR", "LOCOMOTIVE", 50.0)],
+            max_speed=60.0,
+        )
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 0.0
+        train.position = TrainPosition(
+            end_a_tile=(1, 0),
+            end_a_distance_cm=5.0,
+            end_a_entry_edge="W",
+            end_b_tile=(1, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(1, 0)],
+            occupied_blocks=["BLOCK_B"],
+        )
+        network.add_train(train)
+
+        result = dispatcher.create_path("BLOCK_A", "BLOCK_C", train_id=train.train_id)
+        assert result.success
+        path = result.path
+        train.assigned_path_id = path.path_id
+
+        controller = sim._get_or_create_controller(train)
+        controller.power_on = True
+        controller.state = TrainState.RUNNING_MOVING
+        controller.active_cab = "A"
+        controller.handle_position = HandlePosition.N
+
+        physics = sim._get_or_create_physics(train)
+        physics._last_occupied_blocks = {"BLOCK_A"}
+
+        sim._update_train(train, 0.1)
+
+        assert path.current_block_index == 1

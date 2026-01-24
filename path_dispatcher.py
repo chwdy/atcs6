@@ -1105,6 +1105,26 @@ class PathDispatcher:
 
         return True
 
+    def on_train_progress(self, path_id: str) -> bool:
+        """Update block releases based on current train position.
+
+        Args:
+            path_id: Path to update
+
+        Returns:
+            True if the path was updated, False if not applicable
+        """
+        path = self.active_paths.get(path_id)
+        if not path or path.status not in (
+            PathStatus.SET,
+            PathStatus.ACTIVE,
+            PathStatus.CLEARING,
+        ):
+            return False
+
+        self._release_blocks_behind_train(path)
+        return True
+
     def _release_blocks_behind_train(self, path: Path) -> None:
         """
         Release blocks behind the train tail while maintaining safety distance.

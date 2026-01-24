@@ -999,6 +999,51 @@ class TestTrainPhysicsBlockCautionReleaseBugFix:
         assert block.state == BlockState.FREE
 
 
+class TestTrainPhysicsTransitions:
+    """Tests for TrainPhysics block transition reporting."""
+
+    def test_train_physics_reports_block_transitions(self):
+        """TrainPhysics should expose entered and vacated blocks per update."""
+        network = RailwayNetwork()
+        track_a = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        track_b = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        track_a.block_section_id = "B1"
+        track_b.block_section_id = "B2"
+        network.add_track(track_a)
+        network.add_track(track_b)
+
+        network.create_block("B1", "Block 1")
+        network.create_block("B2", "Block 2")
+
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_1", consist=[car], max_speed=60.0)
+        train.position = TrainPosition(
+            end_a_tile=(1, 0),
+            end_a_distance_cm=5.0,
+            end_a_entry_edge="W",
+            end_b_tile=(1, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(1, 0)],
+            occupied_blocks=["B2"],
+        )
+        network.add_train(train)
+
+        network.block_manager.occupy_block("B1", train.train_id)
+
+        from train_physics import TrainPhysics
+
+        physics = TrainPhysics(train_id=train.train_id, network=network)
+        physics._last_occupied_blocks = {"B1"}
+
+        physics._update_block_occupancy(train)
+
+        assert physics.last_block_transitions["entered"] == {"B2"}
+        assert physics.last_block_transitions["vacated"] == {"B1"}
+
+
 class TestTrainControlPanelDataBugFix:
     """
     Comprehensive tests for train control panel data propagation fix (2026-01-22).

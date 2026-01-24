@@ -102,6 +102,13 @@ class SimulationController:
         # Tick physics (moves train, manages blocks, sets voltage)
         physics.tick(delta_seconds)
 
+        if self.path_dispatcher and train.assigned_path_id:
+            transitions = getattr(physics, "last_block_transitions", {})
+            for block_id in transitions.get("entered", set()):
+                self.path_dispatcher.on_train_advances(train.assigned_path_id, block_id)
+            if transitions.get("vacated"):
+                self.path_dispatcher.on_train_progress(train.assigned_path_id)
+
         # Sync controller state back to train (controller is source of truth)
         train.state = controller.state
 

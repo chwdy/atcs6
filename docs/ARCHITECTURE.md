@@ -113,7 +113,6 @@
 |--------|---------|
 | `dispatcher.py` | Legacy train dispatcher (replaced by path_dispatcher.py) |
 | `interlocking.py` | Alternative route locking (not integrated) |
-| `dispatcher_interface.py` | Legacy dispatcher interface (not active) |
 
 ## Frontend Architecture
 

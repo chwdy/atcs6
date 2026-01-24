@@ -118,9 +118,6 @@ This document specifies the Train System for the railway management platform, en
 |---------|-----|
 | `Route` (dispatcher) | `Path` |
 | `RouteStatus` | `PathStatus` |
-| `RouteDispatcher` | `PathDispatcher` |
-| `route.py` | `path.py` |
-| `route_dispatcher.py` | `path_dispatcher.py` |
 
 ---
 

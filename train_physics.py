@@ -106,6 +106,9 @@ class TrainPhysics:
     # Track last occupied blocks for delta calculations
     _last_occupied_blocks: Set[str] = field(default_factory=set)
     _caution_blocks: Set[str] = field(default_factory=set)
+    last_block_transitions: Dict[str, Set[str]] = field(
+        default_factory=lambda: {"entered": set(), "vacated": set()}
+    )
 
     # =========================================================================
     # Internal Helpers
@@ -640,13 +643,21 @@ class TrainPhysics:
         - Release old blocks as tail exits them
         """
         block_manager = self._get_block_manager()
-        if not block_manager:
-            return
 
         # Calculate current occupied blocks from position
         new_occupied = self._get_blocks_for_train(train)
 
         old_occupied = self._last_occupied_blocks
+        newly_entered = new_occupied - old_occupied
+        newly_vacated = old_occupied - new_occupied
+        self.last_block_transitions = {
+            "entered": newly_entered,
+            "vacated": newly_vacated,
+        }
+
+        if not block_manager:
+            self._last_occupied_blocks = new_occupied
+            return
 
         # Clear caution blocks once the train has fully left them
         # A block should only be cleared from CAUTION to FREE when:
