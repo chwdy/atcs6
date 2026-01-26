@@ -52,6 +52,15 @@ class TestAppSmoke:
         content = css_file.read_text()
         assert len(content) > 0, "style.css is empty"
 
+    def test_emergency_reset_button_exists(self):
+        """Ensure emergency reset button markup is present."""
+        editor_trains = PROJECT_ROOT / "static" / "js" / "editor-trains.js"
+        content = editor_trains.read_text()
+
+        assert "train-emergency-reset-btn" in content, (
+            "Emergency reset button markup is missing in editor-trains.js"
+        )
+
     def test_index_html_includes_all_scripts(self):
         """Test that index.html includes all required script tags"""
         index_file = PROJECT_ROOT / "static" / "index.html"

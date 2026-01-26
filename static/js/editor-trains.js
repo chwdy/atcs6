@@ -431,17 +431,17 @@ class TrainEditorHandler {
                 <!-- ONBOARD COMPUTER STATUS -->
                 <div class="info-box-block mb-12" style="border-left-color: ${powerOn ? (emergencyActive ? '#e83f5b' : '#04d361') : '#888'};">
                     <div class="text-xs text-muted uppercase tracking-wider mb-4">Onboard Computer</div>
-                    <div class="grid grid-cols-3 gap-4 text-center">
-                        <div>
-                            <div class="text-xs text-muted">Power</div>
+                    <div class="flex items-center justify-between gap-6 px-5">
+                        <div class="flex flex-col items-center gap-1 text-center">
+                            <span class="text-xs text-muted">Power</span>
                             <div class="text-sm font-mono obc-power-display" style="color: ${powerOn ? '#04d361' : '#888'};">${powerOn ? 'ON' : 'OFF'}</div>
                         </div>
-                        <div>
-                            <div class="text-xs text-muted">Mode</div>
+                        <div class="flex flex-col items-center gap-1 text-center">
+                            <span class="text-xs text-muted">Mode</span>
                             <div class="text-sm font-mono obc-mode-display" style="color: ${isManual ? '#e83f5b' : '#00d4ff'};">${controlMode.toUpperCase()}</div>
                         </div>
-                        <div>
-                            <div class="text-xs text-muted">Handle</div>
+                        <div class="flex flex-col items-center gap-1 text-center">
+                            <span class="text-xs text-muted">Handle</span>
                             <div class="text-sm font-mono obc-handle-display" style="color: ${handlePosition.startsWith('P') ? '#04d361' : (handlePosition.startsWith('B') || handlePosition === 'EB' ? '#e83f5b' : '#ffd93d')};">${handlePosition}</div>
                         </div>
                     </div>
@@ -468,9 +468,20 @@ class TrainEditorHandler {
                     
                     <!-- EMERGENCY STOP (prominent at top) -->
                     <div class="mb-16">
-                        <button id="train-emergency-btn" class="btn ${emergencyActive ? 'btn-warning' : 'btn-danger'} btn-full" style="font-size: 14px; padding: 12px;">
-                            ${emergencyActive ? '🔓 RELEASE EMERGENCY' : '🚨 EMERGENCY STOP'}
-                        </button>
+                        ${emergencyActive ? `
+                            <div class="flex items-center gap-8">
+                                <button id="train-emergency-btn" class="btn btn-danger flex-3" style="font-size: 14px; padding: 12px;">
+                                    🚨 EMERGENCY STOP
+                                </button>
+                                <button id="train-emergency-reset-btn" class="btn btn-warning flex-1" style="font-size: 14px; padding: 12px;">
+                                    RESET
+                                </button>
+                            </div>
+                        ` : `
+                            <button id="train-emergency-btn" class="btn btn-danger btn-full" style="font-size: 14px; padding: 12px;">
+                                🚨 EMERGENCY STOP
+                            </button>
+                        `}
                     </div>
                     
                     <!-- Power Control -->
@@ -813,20 +824,24 @@ class TrainEditorHandler {
         if (emergencyBtn) {
             emergencyBtn.onclick = async () => {
                 try {
-                    // Get current state to determine action
-                    const onboard = await window.api.getOnboardState(trainId);
-                    if (onboard.emergency_stop_active) {
-                        // Release emergency - set handle to N
-                        await executeAction('Release Emergency', 
-                            () => window.api.setHandle(trainId, 'N'));
-                    } else {
-                        // Activate emergency - set handle to EB
-                        await executeAction('Emergency Stop', 
-                            () => window.api.setHandle(trainId, 'EB'));
-                    }
+                    await executeAction('Emergency Stop', 
+                        () => window.api.setHandle(trainId, 'EB'));
                 } catch (err) {
                     console.error('[TrainControl] Emergency toggle failed:', err);
                     window.showToast(`Emergency: ${err.message}`, 'error', 5000);
+                }
+            };
+        }
+
+        const emergencyResetBtn = document.getElementById('train-emergency-reset-btn');
+        if (emergencyResetBtn) {
+            emergencyResetBtn.onclick = async () => {
+                try {
+                    await executeAction('Release Emergency', 
+                        () => window.api.setHandle(trainId, 'N'));
+                } catch (err) {
+                    console.error('[TrainControl] Emergency reset failed:', err);
+                    window.showToast(`Emergency Reset: ${err.message}`, 'error', 5000);
                 }
             };
         }

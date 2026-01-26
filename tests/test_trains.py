@@ -1246,6 +1246,36 @@ class TestTrainControlPanelDataBugFix:
         assert "ato_info" in train_data["onboard"]
 
 
+class TestEmergencyResetButtonDataBugFix:
+    """
+    Comprehensive tests for emergency reset button data fix (2026-01-24).
+
+    BUG: Onboard controller payload only included `eb_active`, while the
+    control panel expects `emergency_stop_active`, so the reset button never
+    appears even when emergency braking is active.
+
+    FIX: Provide `emergency_stop_active` in onboard snapshots alongside
+    `eb_active`.
+    """
+
+    def test_onboard_includes_emergency_stop_active(self):
+        """Onboard payload should expose emergency_stop_active for UI state."""
+        from simulation import build_network_payload
+
+        network = RailwayNetwork()
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        network.add_train(train)
+
+        sim_controller = SimulationController(network)
+        controller = sim_controller._get_or_create_controller(train)
+        controller.eb_active = True
+
+        payload = build_network_payload(network, sim_controller)
+        train_data = payload["trains"][0]
+        assert train_data["onboard"]["emergency_stop_active"] is True
+
+
 class TestTrainDebugLogging:
     """Regression tests for controller/physics debug logging (2026-01-22)."""
 

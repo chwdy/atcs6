@@ -1317,7 +1317,7 @@ class TrainController:
 
         Rules:
         - Train must be stopped
-        - Handle must be in N or B position
+        - Handle must be in N, EB, or B position
         """
         train = self._get_train()
         if train is None:
@@ -1328,6 +1328,7 @@ class TrainController:
 
         brake_positions = [
             HandlePosition.N,
+            HandlePosition.EB,
             HandlePosition.B1,
             HandlePosition.B2,
             HandlePosition.B3,
@@ -1339,7 +1340,7 @@ class TrainController:
         ]
         if self.handle_position not in brake_positions:
             return CommandResult(
-                False, "Handle must be in N or B before releasing emergency"
+                False, "Handle must be in N, EB, or B before releasing emergency"
             )
 
         self.eb_active = False
@@ -1370,6 +1371,19 @@ class TrainController:
             return self.emergency_stop_cmd()
 
         if self.eb_active:
+            brake_positions = [
+                HandlePosition.N,
+                HandlePosition.B1,
+                HandlePosition.B2,
+                HandlePosition.B3,
+                HandlePosition.B4,
+                HandlePosition.B5,
+                HandlePosition.B6,
+                HandlePosition.B7,
+                HandlePosition.B8,
+            ]
+            if position in brake_positions:
+                return self.release_emergency_cmd()
             return CommandResult(False, "Release emergency stop first")
 
         if self.control_mode == "ato" and self.ato_running:
@@ -1920,6 +1934,7 @@ class TrainController:
             "train_id": self.train_id,
             "power_on": self.power_on,
             "eb_active": self.eb_active,
+            "emergency_stop_active": self.eb_active,
             "atc_warning_active": self.atc_warning_active,
             "pending_notifications": self.pending_notifications.copy(),
             "active_cab": self.active_cab,

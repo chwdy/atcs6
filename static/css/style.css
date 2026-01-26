@@ -2496,6 +2496,7 @@ body {
 .p-8 { padding: 8px; }
 .p-10 { padding: 10px; }
 .p-12 { padding: 12px; }
+.px-5 { padding-left: 5px; padding-right: 5px; }
 
 /* Flex Utilities */
 .flex { display: flex; }
@@ -2589,6 +2590,7 @@ body {
 /* Flex utilities */
 .flex { display: flex; }
 .flex-1 { flex: 1; }
+.flex-3 { flex: 3; }
 .flex-col { flex-direction: column; }
 .items-center { align-items: center; }
 .justify-between { justify-content: space-between; }

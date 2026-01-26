@@ -316,7 +316,7 @@ def create_comprehensive_demo():
         block_id="BLOCK_EAST_BRANCH",
         positions=[(9, y) for y in range(1, 6)] + [(9, 6)],
         name="East Vertical Branch",
-        length_cm=240.0,
+        length_cm=260.0,
         max_speed_kmh=50.0,
     )
 

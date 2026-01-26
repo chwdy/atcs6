@@ -1701,3 +1701,77 @@ class TestCompleteStateFlows:
         assert result.success is True
         assert train.state == TrainState.OFF
         assert train.target_speed == 0.0
+
+
+class TestEmergencyResetButtonBugFix:
+    """
+    Comprehensive tests for emergency reset button bug fixed in 2026-01-24.
+
+    BUG: Emergency stop forces the handle to EB and TrainController.set_handle
+    rejects all handle changes while emergency braking is active. The UI
+    attempts to reset by sending set_handle('N'), which fails and leaves
+    the train stuck in emergency stop.
+
+    FIX: Allow release when the train is stopped, even if the handle is EB,
+    and let set_handle(N/B) trigger emergency release instead of rejecting it.
+    """
+
+    def test_release_allows_eb_handle_when_stopped(self):
+        """Release should succeed even when handle remains EB."""
+        train, controller, _ = create_test_train_with_controller(
+            state=TrainState.RUNNING_MOVING, current_speed=40.0
+        )
+
+        result = controller.emergency_stop_cmd()
+        assert result.success is True
+
+        train.current_speed = 0.0
+        result = controller.release_emergency_cmd()
+
+        assert result.success is True
+        assert controller.eb_active is False
+        assert train.emergency_brake is False
+
+    def test_set_handle_neutral_releases_emergency(self):
+        """UI reset via handle neutral should release emergency stop."""
+        train, controller, _ = create_test_train_with_controller(
+            state=TrainState.RUNNING_MOVING, current_speed=30.0
+        )
+
+        result = controller.emergency_stop_cmd()
+        assert result.success is True
+
+        train.current_speed = 0.0
+        result = controller.set_handle(HandlePosition.N)
+
+        assert result.success is True
+        assert controller.eb_active is False
+        assert train.emergency_brake is False
+
+    def test_set_handle_release_fails_when_moving(self):
+        """Release should still be blocked while the train is moving."""
+        train, controller, _ = create_test_train_with_controller(
+            state=TrainState.RUNNING_MOVING, current_speed=30.0
+        )
+
+        result = controller.emergency_stop_cmd()
+        assert result.success is True
+
+        result = controller.set_handle(HandlePosition.N)
+
+        assert result.success is False
+        assert controller.eb_active is True
+
+    def test_set_handle_release_rejects_power_position(self):
+        """Handle release should not accept power positions."""
+        train, controller, _ = create_test_train_with_controller(
+            state=TrainState.RUNNING_MOVING, current_speed=0.0
+        )
+
+        result = controller.emergency_stop_cmd()
+        assert result.success is True
+
+        result = controller.set_handle(HandlePosition.P1)
+
+        assert result.success is False
+        assert controller.eb_active is True
