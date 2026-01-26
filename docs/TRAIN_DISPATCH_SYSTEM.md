@@ -21,7 +21,8 @@ The train dispatch system is a comprehensive simulation of DC analog train contr
 - **SimulationController** - Main simulation loop coordinator
 - **RouteExecutor** - Waypoint and station arrival management
 - **PathDispatcher** - Infrastructure reservation and path planning
-- **TrainATC** - Automatic Train Control (speed limiting for safety)
+- **TrainController** - ATC + ATO decisions and command validation
+- **TrainPhysics** - Physical movement and block occupancy updates
 - **BlockPowerController** - DC voltage output to track blocks
 - **SpeedProfile** - Speed-to-voltage mapping and acceleration curves
 
@@ -29,7 +30,8 @@ The train dispatch system is a comprehensive simulation of DC analog train contr
 - `simulation.py` - SimulationController
 - `route_executor.py` - RouteExecutor
 - `path_dispatcher.py` - PathDispatcher
-- `train_atc.py` - TrainATC
+- `train_controller.py` - TrainController (ATC + ATO)
+- `train_physics.py` - TrainPhysics (movement + blocks)
 - `block_power.py` - BlockPowerController
 - `speed_profile.py` - SpeedProfile
 - `train.py` - Train class and state machine
@@ -41,61 +43,25 @@ The train dispatch system is a comprehensive simulation of DC analog train contr
 
 ### Overview
 
-Trains move through the layout by following a **path** - a sequence of `(x, y, direction)` tuples representing tiles and the direction to exit each tile.
+Trains move through the layout by following a **path** - a sequence of `(x, y, direction)` tuples representing tiles and the direction to exit each tile. Physical movement is executed by `TrainPhysics` which updates `TrainPosition` (head/tail distances and occupied tiles).
 
 ### Movement Algorithm
 
 ```python
-# Core movement loop (simulation.py:311-359)
-def _update_train_position(train, delta_seconds):
-    # 1. Calculate distance traveled this tick
-    speed_ms = train.current_speed / 3.6  # km/h → m/s
-    dist_m = speed_ms * delta_seconds
-    dist_cm = dist_m * 100.0  # Convert to centimeters (cm)
-    
-    # 2. Update distance on current track
-    train.distance_on_track += dist_cm
-    
-    # 3. Check if train has reached end of current tile
-    if train.distance_on_track >= current_track.length_cm:
-        advance_train_track(train)  # Move to next tile
+def tick(delta_seconds):
+    # 1. Convert speed to distance
+    distance_cm = kmh_to_cm_per_sec(train.current_speed) * delta_seconds
+
+    # 2. Advance head/tail along the path
+    train.position = advance_train_position(train.position, distance_cm)
+
+    # 3. Update block occupancy based on new occupied tiles
+    update_block_transitions(train.position.occupied_blocks)
 ```
 
 ### Tile Advancement
 
-When a train's `distance_on_track` exceeds the current tile's `length`, it advances to the next tile in its path:
-
-```python
-# simulation.py:360-378
-def _advance_train_track(train):
-    # 1. Check if at end of path
-    if train.path_index + 1 >= len(train.current_path):
-        # Reached destination
-        train.state = TrainState.RUNNING_AT_STATION
-        return
-    
-    # 2. Get next tile from path
-    next_x, next_y, next_dir = train.current_path[train.path_index + 1]
-    
-    # 3. Safety checks
-    # - Check signals (stop at red)
-    # - Check block occupancy (stop if occupied by another train)
-    
-    # 4. Update block occupancy
-    # Occupy next block
-    if next_track.block_section_id:
-        network.block_manager.occupy_block(next_track.block_section_id, train.train_id)
-    
-    # Release previous block (if different)
-    if old_block and old_block.block_id != block.block_id:
-        network.block_manager.release_block(old_block.block_id, train.train_id)
-    
-    # 5. Update train position
-    train.current_pos = (next_x, next_y)
-    train.current_direction = next_dir
-    train.path_index += 1
-    train.distance_on_track = 0.0  # Reset for new tile
-```
+TrainPosition stores entry edges and distances for both ends of the train. When the head crosses the current tile length, the head enters the next tile, entry/exit edges are recalculated from track geometry, and the set of `occupied_tiles`/`occupied_blocks` is refreshed.
 
 ### Path Structure
 
@@ -145,28 +111,7 @@ Train facing EAST, travel_direction="reverse" (MANUAL mode only)
 
 ### Manual Movement (No Path)
 
-In MANUAL mode without a path, trains use track connections to determine movement:
-
-```python
-# simulation.py:585-698
-def _advance_manual_train_no_path(train, effective_dir):
-    # 1. Get entry direction (opposite of travel)
-    entry_dir = effective_dir.opposite()
-    
-    # 2. Query current track for exit directions
-    exit_dirs = current_track.get_exit_directions(entry_dir)
-    
-    # 3. Choose first available exit
-    exit_dir = exit_dirs[0]
-    
-    # 4. Calculate next tile coordinates
-    dx, dy = direction_to_delta(exit_dir)
-    next_x = train.current_pos[0] + dx
-    next_y = train.current_pos[1] + dy
-    
-    # 5. Validate next tile and advance
-    # (same safety checks as path-based movement)
-```
+In MANUAL mode without a path, trains use track connections to determine movement. `TrainPhysics` selects a valid exit from the current tile based on track geometry and switch state, then advances TrainPosition using the same head/tail rules as path-based movement.
 
 ---
 
@@ -209,7 +154,8 @@ def _check_path_limits(train):
         next_tile = train.current_path[train.path_index + 1]
         
         # Check signals at current position
-        signals = network.get_signals_at(*train.current_pos)
+        head_tile = train.position.head_tile if train.position else None
+        signals = network.get_signals_at(*head_tile) if head_tile else []
         for signal in signals:
             if signal.detection_direction == train.direction:
                 if signal.state == SignalState.RED:
@@ -232,7 +178,7 @@ def _check_path_limits(train):
 ATC calculates safe speed based on clearance ahead using braking curves:
 
 ```python
-# train_atc.py:36-78
+# train_controller.py
 def calculate_max_safe_speed(clearance_cm, deceleration_rate):
     # Physics: v² = 2 * a * d
     # Solve for v: v = sqrt(2 * a * d)
@@ -253,7 +199,7 @@ def calculate_max_safe_speed(clearance_cm, deceleration_rate):
 **ATC Clearance Calculation:**
 
 ```python
-# train_atc.py:109-153
+# train_controller.py
 def get_clearance_ahead():
     clearance = 0.0
     
@@ -369,82 +315,40 @@ def speed_to_voltage(speed_kmh):
 
 ### Position Tracking
 
-Train position is tracked at multiple granularities:
+Train location is tracked using `TrainPosition`, which stores head/tail distances and the occupied tile list:
 
 ```python
-# train.py:298-306
 class Train:
-    position: Optional[TrainPosition] = None    # New TrainPosition system
-    current_pos: Optional[Tuple[int, int]] = None     # Legacy tile coordinates
-    current_direction: Optional[Direction] = None      # Travel direction
-    distance_on_track: float = 0.0                     # Distance within tile (cm)
-    occupied_tracks: List[Tuple[int, int]] = []        # All tiles train occupies
+    position: Optional[TrainPosition] = None
 ```
+
+`TrainPosition` fields include:
+- `end_a_tile`, `end_a_distance_cm`, `end_a_entry_edge`
+- `end_b_tile`, `end_b_distance_cm`, `end_b_entry_edge`
+- `leading_end` and `facing_direction`
+- `occupied_tiles` and `occupied_blocks`
 
 **Example:**
 ```
-Train at tile (5, 3), traveling EAST
-distance_on_track = 700.0 (700cm through tile)
-
-Position breakdown:
-- Tile: (5, 3)
-- Direction: EAST
-- Sub-position: 700cm from tile start
-- If tile length = 1000cm, train is at 70% of tile length
+Train head at tile (5, 3), tail at tile (4, 3)
+end_a_distance_cm = 900.0 (head near exit edge)
+end_b_distance_cm = 200.0 (tail near entry edge)
+occupied_tiles = [(5, 3), (4, 3)]
 ```
 
 ### Block Occupancy
 
-Trains occupy blocks (safety sections):
+TrainPhysics updates `BlockManager` based on the head/tail transitions in TrainPosition:
+- `occupy_block()` when the head enters a new block
+- `clear_block()` when the tail clears a block
 
-```python
-# simulation.py:425-448 (when advancing tiles)
-# 1. Occupy next block
-if next_track.block_section_id:
-    network.block_manager.occupy_block(next_track.block_section_id, train.train_id)
-
-# 2. Release previous block
-if old_track.block_section_id != next_track.block_section_id:
-    network.block_manager.release_block(old_track.block_section_id, train.train_id)
-```
-
-**Block States:**
-```python
-# block.py:116-127
-def occupy(train_id):
-    self.state = BlockState.OCCUPIED
-    self.occupied_by = train_id
-    return True
-
-def release():
-    self.state = BlockState.FREE
-    self.occupied_by = None
-    return True
-```
+Block state transitions are enforced by the `BlockManager` state machine:
+`FREE → RESERVED → OCCUPIED → CAUTION → FREE`
 
 ### Multi-Block Occupancy
 
-Long trains can occupy multiple blocks simultaneously:
-
-```python
-# train.py:1219-1311
-def get_occupied_blocks(network):
-    if not current_pos:
-        return []
-    
-    if length <= 1.0:
-        # Short train: single block
-        track = network.tracks[current_pos]
-        return [track.block_section_id]
-    
-    # Multi-block case
-    # Traces back along path to find all occupied blocks
-    # based on train length in cm
-    occupied = []
-    remaining_length_cm = train.length * 10000 # Convert to cm
-    
-    return occupied
-```
+Long trains can occupy multiple blocks simultaneously. The set of occupied blocks
+is derived from `TrainPosition.occupied_tiles` and updated each tick.
 
 ### Reserved Blocks
 
@@ -472,16 +376,10 @@ def create_path(start_block_id, end_block_id, train_id):
 
 ```mermaid
 graph TD
-    A[Simulation Tick] --> B[Update Speed]
-    B --> C[Calculate Distance Traveled]
-    C --> D{Distance >= Tile Length?}
-    D -->|No| E[Update distance_on_track]
-    D -->|Yes| F[Advance to Next Tile]
-    F --> G[Update current_pos]
-    F --> H[Update current_direction]
-    F --> I[Occupy Next Block]
-    F --> J[Release Previous Block]
-    G --> K[Reset distance_on_track = 0]
+    A[Simulation Tick] --> B[TrainController Updates Targets]
+    B --> C[TrainPhysics Advances TrainPosition]
+    C --> D[Update occupied_tiles/blocks]
+    D --> E[BlockManager Occupy/Clear Transitions]
 ```
 
 ---
@@ -557,7 +455,7 @@ def _is_train_at_station(train, station_id):
     
     # NEW: Check if at TARGET tile (last tile in travel direction)
     target_tile = _get_target_station_tile(train, station)
-    return train.current_pos == target_tile
+    return train.position and train.position.head_tile == target_tile
 
 def _get_target_station_tile(train, station):
     # Sort station tiles by travel direction
@@ -768,8 +666,8 @@ def _update_moving_train(train, delta_seconds):
     # 5. Update block voltage
     power_controller.update_for_train(train)
     
-    # 6. Update position
-    _update_train_position(train, delta_seconds)
+    # 6. Update position + blocks
+    train_physics.tick(delta_seconds)
     
     # 7. Check if stopped (transition to WAITING)
     if train.target_speed <= 0 and train.is_stopped():
@@ -792,9 +690,8 @@ signal = network.create_signal(0, 0, SignalType.AUTOMATIC, direction='E')
 
 # 3. Create train
 train = Train(train_id="TRAIN_01", max_speed=80.0)
-train.current_pos = (0, 0)
-train.facing_direction = Direction.EAST
 network.add_train(train)
+network.place_train(train, 0, 0, Direction.EAST)
 
 # 4. Setup simulation
 sim_controller = SimulationController(network)
@@ -866,7 +763,7 @@ while running:
 ATC clearance calculation can be expensive. Cache when possible:
 
 ```python
-# train_atc.py:104-107
+# train_controller.py
 _cached_clearance: float = 0.0  # Cached per tick
 _cached_speed_limit: float = 0.0
 ```
@@ -888,37 +785,18 @@ else:
 
 ### Block Occupancy Updates
 
-Block state changes are now centralized in `block_manager.py`. Simulation code should call `BlockManager` when the train head enters a new block and when the train tail clears a block. The legacy `train.update_occupancy()` method is retained for backward compatibility only and should not be used in the runtime loop because it can race with dispatcher reservations.
+Block state changes are centralized in `block_manager.py`. `TrainPhysics` should call `BlockManager` when the train head enters a new block and when the train tail clears a block.
 
 **Recommended Pattern:**
 
 ```python
 def on_train_enters_block(network, block_id, train_id):
     """Called when train head enters a new block"""
-    if network.block_manager:
-        network.block_manager.occupy_block(block_id, train_id)
-    else:
-        # Fallback for tests without block_manager
-        block = network.blocks.get(block_id)
-        if block:
-            block.occupy(train_id)
+    network.block_manager.occupy_block(block_id, train_id)
 
 def on_train_leaves_block(network, block_id, train_id):
     """Called when train tail clears a block"""
-    if network.block_manager:
-        network.block_manager.release_block(block_id, train_id)
-    else:
-        # Fallback for tests without block_manager
-        block = network.blocks.get(block_id)
-        if block:
-            block.release()
-```
-
-**DO NOT USE** (creates race conditions):
-
-```python
-# DEPRECATED - Causes race conditions with PathDispatcher
-train.update_occupancy(network)  # DO NOT CALL IN SIMULATION LOOP
+    network.block_manager.clear_block(block_id)
 ```
 
 ### Memory Usage
@@ -975,7 +853,7 @@ The train dispatch system integrates multiple components to provide realistic tr
 1. SimulationController coordinates all systems
 2. RouteExecutor handles high-level navigation
 3. PathDispatcher manages infrastructure
-4. TrainATC provides safety layer
+4. TrainController provides safety layer
 5. BlockPowerController outputs physical voltages
 
 **Future Enhancements:**

@@ -237,42 +237,12 @@ this.drawGridSegment(start, end, DEBUG_BLOCK_WIDTH * this.scale, e1, e2, blockCo
 
 ---
 
-## 4. Migration from RIBI (DEPRECATED)
-
-> **Note:** RIBI is now deprecated and has been removed from the codebase. Use `track_bits` with `EDGE_MASKS` instead.
-
-The old 4-bit RIBI system (Simutrans-style) only tracked which **edges** were connected:
-*   N=1, E=2, S=4, W=8 (total: 16 values 0-15)
-
-The new 6-bit system tracks which **segments** exist:
-*   NS=1, EW=2, NE=4, NW=8, SE=16, SW=32 (total: 64 values 0-63)
-
-**Key differences:**
-*   RIBI can't distinguish NE curve from NW curve (both have N connected)
-*   RIBI can't distinguish simple crossing from diamond crossing
-*   `track_bits` provides full geometric information
-
-**Conversion (for edge connectivity only):**
-```javascript
-function trackBitsToEdges(trackBits) {
-    const edges = new Set();
-    if (trackBits & 13) edges.add('N');  // EDGE_MASK_N
-    if (trackBits & 22) edges.add('E');  // EDGE_MASK_E
-    if (trackBits & 49) edges.add('S');  // EDGE_MASK_S
-    if (trackBits & 42) edges.add('W');  // EDGE_MASK_W
-    return edges;
-}
-```
-
----
-
 ## German-to-English Keyword Translation
 
 | German Term | English Meaning | Description |
 |:------------|:----------------|:------------|
 | `weg` | Way | Generic term for road/rail/path. |
 | `schiene` | Rail | Railway specific implementation. |
-| `ribi` | Direction Bits | **DEPRECATED**: Old 4-bit mask. Use `track_bits`. |
 | `weiche` | Switch | Railway switch/turnout. |
 | `kreuzung` | Crossing | Intersection of two ways. |
 | `bild` | Image | Sprite/Graphic. |

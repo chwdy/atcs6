@@ -30,7 +30,6 @@ from track import (
     FORBIDDEN_TRACK_BITS,
 )
 from train import Train, TrainCar, TrainSchedule, ScheduleStop
-from dispatcher import TrainDispatcher
 from path_dispatcher import PathDispatcher
 from route_executor import RouteExecutor
 from railway_signal import SignalType
@@ -600,8 +599,7 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
 
     # Sync train state to match controller (so SimulationController's controller will inherit it)
     demo_train.state = controller.state
-    # Note: SimulationController will create its own controller when it starts,
-    # and it will sync from the train's state via the dispatcher's _get_controller
+    # Note: SimulationController will create its own controller when it starts
 
 
 def create_track_showcase(network: RailwayNetwork):

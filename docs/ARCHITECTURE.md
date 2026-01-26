@@ -31,14 +31,14 @@
 │ (network.py) │    │ (simulation.py)    │   │(init data) │
 └──────┬───────┘    └────────┬───────────┘   └────────────┘
        │                     │
-       │         ┌───────────┼───────────┐
-       │         │           │           │
-       │    ┌────▼────┐ ┌────▼────┐ ┌────▼────┐
-       │    │TrainMover│ │TrainATC │ │BlockPwr │
-       │    │(train_   │ │(train_  │ │Controller│
-       │    │movement) │ │ atc.py) │ │(block_  │
-       │    └──────────┘ └─────────┘ │power.py)│
-       │                             └─────────┘
+        │         ┌───────────┼───────────┐
+        │         │           │           │
+        │  ┌──────▼──────┐ ┌──▼────────┐ ┌────▼────┐
+        │  │TrainController│ │TrainPhysics│ │BlockPwr │
+        │  │(train_       │ │(train_     │ │Controller│
+        │  │controller.py)│ │physics.py) │ │(block_  │
+        │  └──────────────┘ └───────────┘ │power.py)│
+        │                               └─────────┘
 ┌──────┴─────────────────────┴──────┐
 │                                   │
 ▼                                   ▼
@@ -83,8 +83,8 @@
 | Module | Purpose |
 |--------|---------|
 | `simulation.py` | SimulationController - tick loop, train updates, power control |
-| `train_movement.py` | TrainMover - track geometry, direction math, tile advancement |
-| `train_atc.py` | TrainATC - automatic train control, speed limits, clearance |
+| `train_controller.py` | TrainController - ATC + ATO decisions and command validation |
+| `train_physics.py` | TrainPhysics - movement, block occupancy, voltage output |
 | `block_power.py` | BlockPowerController - voltage management for blocks |
 | `speed_profile.py` | SpeedProfile - acceleration/deceleration curves |
 | `train_config.py` | Configuration constants (scale, margins, defaults) |
@@ -106,13 +106,6 @@
 | `persistence.py` | PersistenceManager - save/load network state to JSON |
 | `enums.py` | Shared enumerations (Direction, SignalState, BlockState, etc.) |
 | `path_utils.py` | Utilities for path/tile conversion |
-
-### Legacy (Not Active)
-
-| Module | Purpose |
-|--------|---------|
-| `dispatcher.py` | Legacy train dispatcher (replaced by path_dispatcher.py) |
-| `interlocking.py` | Alternative route locking (not integrated) |
 
 ## Frontend Architecture
 
@@ -204,7 +197,6 @@ The system uses standalone entity classes for signals, blocks, and stations, sto
 network.signals: Dict[str, Signal]      # signal_id -> Signal
 network.blocks: Dict[str, Block]        # block_id -> Block
 network.stations: Dict[str, Station]    # station_id -> Station
-network.block_sections: Dict[str, BlockSection]  # Legacy alias for blocks
 ```
 
 #### Signal Entity (`railway_signal.py`)
@@ -320,16 +312,15 @@ This design allows:
 ## Train Control Architecture (2026)
 
 ### Overview
-The train control refactor centralized block occupancy in `block_manager.py` to eliminate race conditions from the previous three-way updates (PathDispatcher reservations, `train.update_occupancy`, and manual block updates). This architecture fixed train teleporting, random slowdowns from block thrashing, and trains getting stuck on switches by enforcing a single state machine for blocks.
+The train control architecture centralizes block occupancy in `block_manager.py` and uses a single TrainPosition model for train placement and rendering. Train control decisions are separated from physical movement to keep block state transitions consistent and race-free.
 
 ### Architecture Summary
 ```
 SimulationController (simulation.py)
-    ├─ TrainMover (train_movement.py) - path-queue updates
-    ├─ TrainATC (train_atc.py) - speed limits
+    ├─ TrainController (train_controller.py) - ATC + ATO decisions
+    ├─ TrainPhysics (train_physics.py) - movement + block updates
     ├─ BlockPowerController (block_power.py) - voltage
-    ├─ RouteExecutor (route_executor.py) - route/schedule
-    └─ Legacy movement logic (_advance_*, distance_on_track)
+    └─ RouteExecutor (route_executor.py) - route/schedule
 
 RailwayNetwork (network.py) owns registries + BlockManager
 PathDispatcher (path_dispatcher.py) reserves blocks, locks switches
@@ -339,12 +330,11 @@ Block (block.py) stores state only
 ### Component Responsibilities
 - **RailwayNetwork** initializes `BlockManager` and holds tracks, blocks, trains, and paths.
 - **BlockManager** enforces `FREE → RESERVED → OCCUPIED → CAUTION → FREE` and provides atomic `occupy_block`/`clear_block` operations.
-- **PathDispatcher** reserves blocks and locks switches for a path. When a train advances along its path, PathDispatcher calls `BlockManager.occupy_block()` to transition blocks to OCCUPIED.
-- **SimulationController** runs the tick loop. It currently uses legacy movement logic in `_advance_train_track`/`_advance_through_block` and calls `TrainMover.update_train_path_position()` for the path-queue renderer migration.
-- **TrainMover** handles track geometry, direction math, and path-queue (head/tail) position updates for the renderer.
-- **Train** stores dual position systems:
-  - **Legacy**: `current_pos`, `current_direction`, `distance_on_track` (cm from entry edge)
-  - **New**: `TrainPosition` with `path_tiles`, `head_offset`, `tail_offset` for multi-tile rendering
+- **PathDispatcher** reserves blocks and locks switches for a path.
+- **SimulationController** runs the tick loop and coordinates TrainController and TrainPhysics updates per train.
+- **TrainController** handles ATC limits, ATO decisions, and operational state transitions.
+- **TrainPhysics** updates TrainPosition, advances along tracks, and applies BlockManager transitions as trains enter/leave blocks.
+- **Train** stores a single `TrainPosition` model for head/tail placement and occupied tiles.
 
 ### Block State Management Workflow
 
@@ -362,67 +352,40 @@ States:
 
 **Workflow Steps:**
 1. `PathDispatcher` reserves path blocks, setting them to `RESERVED`.
-2. `SimulationController` advances the train via legacy `_update_train_position` until it crosses a tile boundary.
-3. When the head enters a new block, `PathDispatcher.on_train_advances()` calls `BlockManager.occupy_block()` to transition it to `OCCUPIED`.
-4. When the train clears a block, `SimulationController` calls `BlockManager.clear_block()` to move it to `CAUTION` or `FREE`.
+2. `TrainPhysics` advances TrainPosition (head/tail distances) along the path tiles.
+3. When the head enters a new block, `BlockManager.occupy_block()` transitions it to `OCCUPIED`.
+4. When the tail clears a block, `BlockManager.clear_block()` moves it to `CAUTION` or `FREE`.
 5. `CAUTION` keeps a safety buffer behind the train for signals and following traffic.
 
 **Sequence (tick-level):**
 ```
 PathDispatcher → reserve blocks (RESERVED)
     ↓
-SimulationController → _update_train_position()
+TrainPhysics → advance TrainPosition
     ↓ (crossed boundary)
-PathDispatcher.on_train_advances() → BlockManager.occupy_block(new_block, train_id)
-SimulationController → BlockManager.clear_block(old_block, train_id)
-```
-
-### Deprecated `train.update_occupancy()`
-`train.update_occupancy()` remains for backward compatibility only. It can race with dispatcher reservations and manual block updates, causing out-of-order transitions and block thrashing. Production code should route all occupancy changes through `BlockManager`.
-
-**Correct usage:**
-```python
-# When train enters block
-network.block_manager.occupy_block(block_id, train_id)
-
-# When train leaves block  
-network.block_manager.clear_block(block_id, train_id)
-```
-
-**Incorrect (deprecated):**
-```python
-train.update_occupancy(network)  # DO NOT USE in new code
+TrainPhysics → BlockManager.occupy_block(new_block, train_id)
+TrainPhysics → BlockManager.clear_block(old_block, train_id)
 ```
 
 ### Train Movement and Rendering
-- `Train.distance_on_track` is the distance in **centimeters (cm)** from the entry edge.
-- `TrainMover.calculate_distance_to_advance()` updates this value based on speed and tick duration.
-- Scale is applied via `MODEL_SCALE` configuration in `train_config.py`.
-- When `distance_on_track >= track.length_cm`, the train advances one tile and resets `distance_on_track`.
-- The frontend renderer receives a normalized 0.0–1.0 position for smooth interpolation between tile centers.
-- Because position advances only when the distance threshold is met and block updates are atomic, trains no longer teleport or stall on switches.
+- Train position is represented by `TrainPosition` with head/tail distances in **centimeters (cm)** from entry edges.
+- `TrainPhysics` advances head and tail along `path_tiles` while updating `occupied_tiles` and block transitions.
+- The frontend renderer uses `path_tiles` and `path_tile_info` for smooth interpolation across occupied tiles.
 
 ### Design Principles
 1. **Single Authority:** Only `BlockManager` modifies block states.
 2. **Atomic Operations:** All transitions use `BlockManager` methods.
 3. **State Machine Enforcement:** Illegal transitions are rejected.
-4. **Separation of Concerns:** `Block` stores state, `BlockManager` manages transitions, `TrainMover` handles geometry.
+4. **Separation of Concerns:** `Block` stores state, `BlockManager` manages transitions, `TrainPhysics` handles geometry.
 
 ### Module References
 - `block_manager.py` - Centralized block state manager
-- `train_movement.py` - Train movement calculations and path-queue updates
-- `simulation.py` - Simulation tick loop with legacy movement logic
+- `train_controller.py` - ATC + ATO decisions and operational state
+- `train_physics.py` - Physical movement and block transitions
+- `simulation.py` - Simulation tick loop with controller + physics
 - `path_dispatcher.py` - Path reservation, switch locking, and occupancy transitions
-- `train_atc.py` - Automatic train control and speed limiting
 - `block_power.py` - Block voltage management
 - `route_executor.py` - Route and schedule execution
 - `network.py` - Infrastructure registry
-- `train.py` - Train entity with dual position systems
-- `static/js/renderer-trains.js` - Frontend interpolation using path-queue
-
-### Migration Notes
-The codebase is in a migration state:
-- **Legacy movement** (`simulation.py`): `_advance_train_track`, `_advance_through_block`, `distance_on_track`
-- **New path-queue** (`train_movement.py`): `TrainPosition`, `path_tiles`, `head_offset/tail_offset`
-- Both systems run in parallel; legacy drives physics, path-queue drives rendering
-- `train.update_occupancy()` is deprecated but still called in some API handlers
+- `train.py` - Train entity with TrainPosition and consist
+- `static/js/renderer-trains.js` - Frontend interpolation using path tiles

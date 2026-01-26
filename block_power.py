@@ -250,9 +250,9 @@ class BlockPowerController:
         if hasattr(train, "reserved_blocks") and train.reserved_blocks:
             return train.reserved_blocks
 
-        # Last fallback: get block from current position
-        if self.network and train.current_pos:
-            track = self.network.tracks.get(train.current_pos)
+        # Last fallback: get block from head position
+        if self.network and train.position:
+            track = self.network.tracks.get(train.position.head_tile)
             if track and track.block_section_id:
                 return [track.block_section_id]
 

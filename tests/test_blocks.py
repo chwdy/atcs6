@@ -20,6 +20,7 @@ from network import RailwayNetwork
 from block import Block
 from railway_signal import Signal, SignalType, SignalState
 from enums import BlockState, PlatformSide, Direction, TrainState
+from tests.train_test_helpers import make_train_position
 from block_validation import (
     validate_block_path,
     is_crossing,
@@ -306,10 +307,9 @@ class TestMultiBlockOccupancy:
             train_id="T1",
             consist=[TrainCar("CAR1", "LOCOMOTIVE", 5.0)],
         )
-        train._current_pos = (0, 0)
-        train.current_path = [(0, 0, Direction.EAST)]
-        train.path_index = 0
-        train._distance_on_track = 0.5
+        train.position = make_train_position(
+            (0, 0), Direction.EAST, occupied_blocks=["BLOCK_1"]
+        )
         occupied = train.get_occupied_blocks(network)
         assert len(occupied) == 1
         assert occupied[0] == "BLOCK_1"
@@ -333,10 +333,12 @@ class TestMultiBlockOccupancy:
             train_id="T1",
             consist=[TrainCar("CAR1", "LOCOMOTIVE", 15.0)],
         )
-        train._current_pos = (1, 0)
-        train.current_path = [(0, 0, Direction.EAST), (1, 0, Direction.EAST)]
-        train.path_index = 1
-        train._distance_on_track = 0.1
+        train.position = make_train_position(
+            (1, 0),
+            Direction.EAST,
+            occupied_tiles=[(0, 0), (1, 0)],
+            occupied_blocks=["BLOCK_1", "BLOCK_2"],
+        )
         occupied = train.get_occupied_blocks(network)
         assert len(occupied) == 2
         assert "BLOCK_1" in occupied

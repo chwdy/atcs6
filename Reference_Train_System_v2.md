@@ -290,17 +290,15 @@ The previous design had overlapping components (`Train`, `OnboardComputer`, `Tra
                                     └─────────────────────┘
 ```
 
-### 2.3 Files to Modify/Create
+### 2.3 Current Files
 
-| Action | File | Description |
-|--------|------|-------------|
-| **CREATE** | `train_controller.py` | New unified controller (merge OnboardComputer + TrainATC) |
-| **RENAME** | `train_movement.py` → `train_physics.py` | Rename and extend with block/voltage logic |
-| **DELETE** | `train_onboard.py` | Merged into TrainController |
-| **DELETE** | `train_atc.py` | Merged into TrainController |
-| **MODIFY** | `train.py` | Keep as data entity, remove duplicate methods |
-| **MODIFY** | `simulation.py` | Update to use new TrainController + TrainPhysics |
-| **MODIFY** | `server.py` | Update API endpoints to use TrainController |
+| File | Purpose |
+|------|---------|
+| `train_controller.py` | Unified ATC + ATO + command handling |
+| `train_physics.py` | Physical movement, block occupancy, voltage output |
+| `train.py` | Train data entity with TrainPosition |
+| `simulation.py` | SimulationController using TrainController + TrainPhysics |
+| `server.py` | REST API endpoints for train control |
 
 ### 2.4 What Was Removed (Consolidation)
 
@@ -4000,16 +3998,14 @@ OPPOSITE_EDGES = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}
 
 | File | Purpose | Status |
 |------|---------|--------|
-| `train_controller.py` | Combined ATC + ATO + command handling | **NEW** |
-| `train_physics.py` | Physical movement, block/voltage management | **NEW** (renamed from train_movement.py) |
-| `train.py` | Train data entity | **MODIFIED** (simplified) |
-| `speed_profile.py` | Speed-voltage mapping, dynamics | Existing |
-| `train_route.py` | Route and Waypoint classes | Existing |
-| `block_manager.py` | Block state management | Existing |
-| `block_power.py` | Voltage output control | Existing |
-| `simulation.py` | SimulationController | **MODIFIED** (uses new architecture) |
-| `train_onboard.py` | ~~OnboardComputer~~ | **DELETE** (merged into TrainController) |
-| `train_atc.py` | ~~TrainATC~~ | **DELETE** (merged into TrainController) |
+| `train_controller.py` | Combined ATC + ATO + command handling | Active |
+| `train_physics.py` | Physical movement, block/voltage management | Active |
+| `train.py` | Train data entity | Active |
+| `speed_profile.py` | Speed-voltage mapping, dynamics | Active |
+| `train_route.py` | Route and Waypoint classes | Active |
+| `block_manager.py` | Block state management | Active |
+| `block_power.py` | Voltage output control | Active |
+| `simulation.py` | SimulationController | Active |
 
 ---
 

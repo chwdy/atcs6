@@ -66,10 +66,10 @@ def prepare_path_for_train(
     if not path_tiles:
         return PathPrepareResult(success=False, error="Empty path")
 
-    if not train.current_pos:
+    if not train.position:
         return PathPrepareResult(success=False, error="Train has no position")
 
-    train_pos = train.current_pos
+    train_pos = train.position.head_tile
     path_start = (path_tiles[0][0], path_tiles[0][1])
 
     # Get block IDs for train position and path start

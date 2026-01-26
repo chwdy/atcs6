@@ -12,7 +12,7 @@ from network import RailwayNetwork
 from block import Block
 from enums import BlockState, Direction, TrainState, HandlePosition
 from train import Train, TrainCar, TrainPosition
-from dispatcher import TrainDispatcher
+from tests.train_test_helpers import make_train_position
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
 from switch import Switch
@@ -29,15 +29,6 @@ def straight_ew_track(network):
         track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
         network.add_track(track)
     return network
-
-
-class TestTrainDispatcher:
-    """Tests for TrainDispatcher class"""
-
-    def test_dispatcher_creation(self, network):
-        dispatcher = TrainDispatcher(network)
-        assert dispatcher is not None
-        assert dispatcher.network == network
 
 
 class TestSimulationController:
@@ -124,25 +115,25 @@ class TestTrainManualControlBugFixes:
 
 
 class TestTrainPlacementOccupancy:
-    """Tests for train placement and occupancy."""
+    """Tests for train placement and block occupancy."""
 
-    def test_train_update_occupancy_sets_block_occupied(self, network):
+    def test_train_placement_sets_block_occupied(self, network):
         track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
         network.add_track(track)
+        network.add_track(TrackSegment(x=1, y=0, track_bits=TRACK_EW))
         block = Block(block_id="BLK_001", name="Test Block")
         network.blocks["BLK_001"] = block
         block.tiles = [(0, 0)]
         track.block_section_id = "BLK_001"
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
-        train.set_position((0, 0), Direction.EAST)
         assert block.state == BlockState.FREE
         network.add_train(train)
-        train.update_occupancy(network)
+        network.place_train(train, 0, 0, Direction.EAST)
         assert block.state == BlockState.OCCUPIED
         assert block.occupied_by == "TRAIN_01"
 
-    def test_train_update_occupancy_with_multiple_tiles(self, network):
+    def test_train_placement_with_multiple_tiles(self, network):
         for x in range(3):
             track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
             network.add_track(track)
@@ -152,9 +143,8 @@ class TestTrainPlacementOccupancy:
         block.tiles = [(0, 0), (1, 0), (2, 0)]
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_03", consist=[car], max_speed=60.0)
-        train.set_position((1, 0), Direction.EAST)
         network.add_train(train)
-        train.update_occupancy(network)
+        network.place_train(train, 1, 0, Direction.EAST)
         assert block.state == BlockState.OCCUPIED
         assert block.occupied_by == "TRAIN_03"
 
@@ -199,10 +189,11 @@ class TestTrainPlacement:
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
         final_pos = network.place_train(train, 0, 0, Direction.EAST)
-        assert train.current_pos == (0, 0)
-        assert train.current_direction == Direction.EAST
+        assert train.position is not None
+        assert train.position.head_tile == (0, 0)
+        assert train.position.facing_direction == Direction.EAST
         tile_length_cm = network._get_tile_length_cm(0, 0)
-        assert train.distance_on_track == tile_length_cm
+        assert train.position.head_distance_cm == tile_length_cm
 
     def test_place_train_no_track_raises_error(self, network):
         car = TrainCar("CAR_1", "LOCOMOTIVE", length=30.0)
@@ -652,7 +643,9 @@ class TestRaceConditionFix:
         train = Train(train_id="TRAIN_TRANSITION_TEST", consist=[car], max_speed=60.0)
         train.state = TrainState.RUNNING_MOVING
         train.current_speed = 0.0  # Train is stopped
-        train.current_pos = (0, 0)
+        train.position = make_train_position(
+            (0, 0), Direction.EAST, occupied_blocks=["B1"]
+        )
         network.add_train(train)
 
         sim = SimulationController(network)
@@ -692,7 +685,9 @@ class TestRaceConditionFix:
         train = Train(train_id="TRAIN_NO_OBSTRUCTION", consist=[car], max_speed=60.0)
         train.state = TrainState.RUNNING_MOVING
         train.current_speed = 0.0  # Train is stopped, but path is clear
-        train.current_pos = (0, 0)  # Train is on the track
+        train.position = make_train_position(
+            (0, 0), Direction.EAST, occupied_blocks=["B1"]
+        )  # Train is on the track
         network.add_train(train)
 
         sim = SimulationController(network)
@@ -736,7 +731,9 @@ class TestRaceConditionFix:
         train = Train(train_id="TRAIN_WAITING_TEST", consist=[car], max_speed=60.0)
         train.state = TrainState.RUNNING_WAITING
         train.current_speed = 0.0  # Train is stopped
-        train.current_pos = (0, 0)
+        train.position = make_train_position(
+            (0, 0), Direction.EAST, occupied_blocks=["B1"]
+        )
         train.wait_reason = "Block B1 occupied by OTHER_TRAIN"
         network.add_train(train)
 
@@ -793,7 +790,9 @@ class TestRaceConditionFix:
         train = Train(train_id="TRAIN_OVERSPEED_TEST", consist=[car], max_speed=100.0)
         train.state = TrainState.RUNNING_MOVING
         train.current_speed = 37.0  # 7 km/h over limit (warning zone)
-        train.current_pos = (0, 0)
+        train.position = make_train_position(
+            (0, 0), Direction.EAST, occupied_blocks=["B1"]
+        )
         network.add_train(train)
 
         sim = SimulationController(network)
@@ -835,7 +834,9 @@ class TestRaceConditionFix:
         train = Train(train_id="TRAIN_EB_TEST", consist=[car], max_speed=100.0)
         train.state = TrainState.RUNNING_MOVING
         train.current_speed = 42.0  # 12 km/h over limit (EB zone)
-        train.current_pos = (0, 0)
+        train.position = make_train_position(
+            (0, 0), Direction.EAST, occupied_blocks=["B1"]
+        )
         network.add_train(train)
 
         sim = SimulationController(network)
@@ -1302,7 +1303,7 @@ class TestTrainClearancePrecisionBugFix:
     """
     Comprehensive tests for clearance precision bug fix (2026-01-22).
 
-    BUG: clearance uses legacy current_pos/distance_on_track and ignores TrainPosition,
+    BUG: clearance ignored TrainPosition head distance,
     causing clearance to jump when the head enters the last tile.
 
     FIX: clearance derives remaining distance from TrainPosition head location.
@@ -1324,7 +1325,6 @@ class TestTrainClearancePrecisionBugFix:
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=10.0)
         train = Train(train_id="TRAIN_CLEARANCE", consist=[car], max_speed=60.0)
-        train.current_pos = (0, 0)
         train.current_path = [(0, 0, Direction.EAST), (1, 0, Direction.EAST)]
 
         train.position = TrainPosition(
@@ -1537,10 +1537,10 @@ class TestTrainControllerBrakingNotches:
 
     def test_no_duplicate_controller_instances(self):
         """
-        Test that RouteExecutor and TrainDispatcher use the same TrainController
-        instances as SimulationController, not creating duplicates.
+        Test that RouteExecutor uses the same TrainController instances as
+        SimulationController, not creating duplicates.
 
-        BUG: route_executor.py:86-92 and dispatcher.py:54-60 create separate
+        BUG: route_executor.py:86-92 created a separate
         controller instances, causing desynchronization.
 
         FIX: All components should get controllers from SimulationController

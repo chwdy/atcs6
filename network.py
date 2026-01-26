@@ -3,8 +3,8 @@ Railway Network Management
 
 Definition:
 This module provides the RailwayNetwork class which manages the complete railway infrastructure
-including tracks, trains, block sections, interlocking routes, and schedules. It serves as the
-central repository and coordinator for all railway system components.
+including tracks, trains, block sections, and schedules. It serves as the central repository and
+coordinator for all railway system components.
 """
 
 from collections import deque
@@ -14,7 +14,6 @@ from track import TrackSegment
 from train import Train, TrainSchedule
 from block import Block
 from block_manager import BlockManager
-from interlocking import InterlockingSystem
 from enums import (
     TrackType,
     Direction,
@@ -40,7 +39,7 @@ class RailwayNetwork:
     Central railway network management system.
 
     Manages all railway infrastructure components including tracks, trains,
-    block sections, interlocking, and schedules.
+    block sections, and schedules.
     """
 
     def __init__(self):
@@ -50,7 +49,6 @@ class RailwayNetwork:
         self.signals: Dict[str, Signal] = {}
         self.stations: Dict[str, Station] = {}
         self.switches: Dict[str, "Switch"] = {}  # NEW: Switch entity management
-        self.interlocking: InterlockingSystem = InterlockingSystem()
         self.schedules: Dict[str, TrainSchedule] = {}
 
         self.speed_profiles: Dict[str, "SpeedProfile"] = {}
@@ -1821,10 +1819,9 @@ class RailwayNetwork:
 
         Train placement rules:
         1. Train HEAD (end_a) is always placed at the EXIT edge of the specified tile
-        2. distance_on_track = tile_length_cm (head at exit edge)
-        3. Train tail (end_b) extends backward - MUST fit on available track
-        4. Creates TrainPosition with both ends tracked precisely
-        5. Occupies all blocks the train covers
+        2. Train tail (end_b) extends backward - MUST fit on available track
+        3. Creates TrainPosition with both ends tracked precisely
+        4. Occupies all blocks the train covers
 
         Args:
             train: Train to place
@@ -1832,7 +1829,7 @@ class RailwayNetwork:
             direction: Direction the train will be heading (random if None)
 
         Returns:
-            Tuple of (final_tile_x, final_tile_y, distance_on_track in cm)
+            Tuple of (final_tile_x, final_tile_y, head_distance_cm)
 
         Raises:
             ValueError: If no track at position, or train doesn't fit on available track
@@ -1922,18 +1919,7 @@ class RailwayNetwork:
             occupied_blocks=occupied_blocks,
         )
 
-        # Also set legacy fields for backward compatibility
-        train._current_pos = head_tile
-        train._current_direction = direction
-        train._distance_on_track = head_distance_cm
-        train.occupied_tracks = occupied_tiles.copy()
         train.facing_direction = direction
-
-        # NOTE: We do NOT initialize path_tiles here because place_train() is used
-        # with the LEGACY movement system (current_pos, distance_on_track, path_index).
-        # path_tiles is only used by the NEW path-queue movement system.
-        # The TrainPosition object (train.position) is kept updated by recalculate_train_position()
-        # and is correctly serialized when path_tiles is empty.
 
         # Occupy all blocks the train covers
         if self.block_manager and occupied_blocks:
@@ -2163,128 +2149,6 @@ class RailwayNetwork:
             f"Unable to calculate tail position after {max_iterations} iterations"
         )
 
-    def recalculate_train_position(self, train: Train) -> bool:
-        """
-        Recalculate a train's full TrainPosition (end_b, occupied_tiles, occupied_blocks).
-
-        Call this after updating train.current_pos or train.distance_on_track to keep
-        the TrainPosition object in sync with the train's actual position.
-
-        Args:
-            train: Train to recalculate position for
-
-        Returns:
-            True if successful, False if unable to calculate (e.g., train too long)
-        """
-        if not train.position:
-            return False
-
-        if not train.current_pos:
-            return False
-
-        pos = train.position
-
-        # Get train length
-        train_length_cm = self._get_train_length_cm(train)
-
-        # Head position (end_a when leading_end='a')
-        head_tile = train.current_pos
-        head_distance_cm = train.distance_on_track
-
-        # Determine head entry edge from path or current direction
-        head_entry_edge = pos.end_a_entry_edge  # Keep existing if available
-
-        if train.current_path and train.path_index < len(train.current_path):
-            # Get entry edge from path direction
-            _, _, path_dir = train.current_path[train.path_index]
-            if path_dir:
-                # Direction is exit direction, entry is opposite
-                OPPOSITE_EDGE = {"N": "S", "S": "N", "E": "W", "W": "E"}
-                DIR_TO_EDGE = {
-                    Direction.NORTH: "N",
-                    Direction.SOUTH: "S",
-                    Direction.EAST: "E",
-                    Direction.WEST: "W",
-                }
-                if isinstance(path_dir, Direction):
-                    exit_edge = DIR_TO_EDGE.get(path_dir, "N")
-                else:
-                    exit_edge = str(path_dir).upper()[0]
-                head_entry_edge = OPPOSITE_EDGE.get(exit_edge, head_entry_edge)
-        elif train.current_direction:
-            # Use current direction - entry is opposite of facing
-            OPPOSITE_EDGE = {"N": "S", "S": "N", "E": "W", "W": "E"}
-            DIR_TO_EDGE = {
-                Direction.NORTH: "N",
-                Direction.SOUTH: "S",
-                Direction.EAST: "E",
-                Direction.WEST: "W",
-            }
-            facing_edge = DIR_TO_EDGE.get(train.current_direction, "N")
-            head_entry_edge = OPPOSITE_EDGE.get(facing_edge, head_entry_edge)
-
-        try:
-            # Calculate occupied tiles and tail position
-            (occupied_tiles, tail_tile, tail_distance_cm, tail_entry_edge) = (
-                self._calculate_occupied_tiles(
-                    head_tile, head_distance_cm, head_entry_edge, train_length_cm
-                )
-            )
-
-            # Calculate occupied blocks from occupied tiles
-            occupied_blocks = []
-            seen_blocks = set()
-            for tile in occupied_tiles:
-                tile_track = self.get_track(*tile)
-                if tile_track and tile_track.block_section_id:
-                    block_id = tile_track.block_section_id
-                    if block_id not in seen_blocks:
-                        occupied_blocks.append(block_id)
-                        seen_blocks.add(block_id)
-
-            # Occupy any newly entered blocks via BlockManager
-            if hasattr(self, "block_manager") and self.block_manager:
-                for block_id in occupied_blocks:
-                    block = self.blocks.get(block_id)
-                    if block and block.state == BlockState.FREE:
-                        self.block_manager.occupy_block(block_id, train.train_id)
-
-            # Update TrainPosition
-            # Assign head/tail to end_a/end_b based on leading_end
-            if pos.leading_end == "a":
-                # Head is end_a, tail is end_b
-                pos.end_a_tile = head_tile
-                pos.end_a_distance_cm = head_distance_cm
-                pos.end_a_entry_edge = head_entry_edge
-                pos.end_b_tile = tail_tile
-                pos.end_b_distance_cm = tail_distance_cm
-                pos.end_b_entry_edge = tail_entry_edge
-                # _calculate_occupied_tiles returns tiles in tail→head order = end_b→end_a
-                # We need end_a→end_b (head→tail), so reverse
-                occupied_tiles = list(reversed(occupied_tiles))
-            else:
-                # Head is end_b, tail is end_a
-                pos.end_b_tile = head_tile
-                pos.end_b_distance_cm = head_distance_cm
-                pos.end_b_entry_edge = head_entry_edge
-                pos.end_a_tile = tail_tile
-                pos.end_a_distance_cm = tail_distance_cm
-                pos.end_a_entry_edge = tail_entry_edge
-                # _calculate_occupied_tiles returns tiles in tail→head order = end_a→end_b
-                # This is already the order we want, no reversal needed
-                pass
-            pos.occupied_tiles = occupied_tiles
-            pos.occupied_blocks = occupied_blocks
-
-            # Also update legacy fields
-            train.occupied_tracks = occupied_tiles.copy()
-
-            return True
-
-        except ValueError:
-            # Train doesn't fit - keep existing position
-            return False
-
     def get_occupied_tiles_rich(self, train: Train) -> List[Dict[str, Any]]:
         """
         Get rich information about all tiles occupied by a train.
@@ -2395,7 +2259,6 @@ class RailwayNetwork:
 
         train.position.reverse()
         train.facing_direction = train.position.facing_direction
-        train._current_direction = train.position.facing_direction
         return True
 
     def remove_train(self, train_id: str) -> bool:
@@ -2403,8 +2266,8 @@ class RailwayNetwork:
         if not train:
             return False
 
-        if train.current_pos:
-            track = self.get_track(*train.current_pos)
+        if train.position:
+            track = self.get_track(*train.position.head_tile)
             if track:
                 if track.occupied_by == train.train_id:
                     track.occupied_by = None
@@ -2467,7 +2330,6 @@ class RailwayNetwork:
             "total_tracks": len(self.tracks),
             "total_trains": len(self.trains),
             "total_blocks": len(self.blocks),
-            "total_routes": len(self.interlocking.routes),
             "total_schedules": len(self.schedules),
         }
 
@@ -3405,7 +3267,6 @@ class RailwayNetwork:
         self.signals.clear()
         self.stations.clear()
         self.switches.clear()  # NEW: Clear switches
-        self.interlocking.routes.clear()
         self.schedules.clear()
 
         for block_id, block_data in data.get("blocks", {}).items():

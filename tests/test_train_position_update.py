@@ -39,11 +39,6 @@ class TestTrainPositionUpdates:
             max_speed=80.0,
         )
 
-        # Set initial position
-        train._current_pos = (0, 0)
-        train._current_direction = Direction.EAST
-        train._distance_on_track = 0.0
-
         # Create TrainPosition with initial end_a and end_b
         train.position = TrainPosition(
             end_a_tile=(0, 0),
@@ -93,7 +88,6 @@ class TestTrainPositionUpdates:
         print(f"  end_a.entry_edge: {demo_train.position.end_a_entry_edge}")
         print(f"  end_b.tile: {demo_train.position.end_b_tile}")
         print(f"  end_b.distance_cm: {demo_train.position.end_b_distance_cm}")
-        print(f"  distance_on_track: {demo_train.distance_on_track}")
 
         # Run simulation for 1 second (should move the train)
         sim.update(1.0)
@@ -104,7 +98,6 @@ class TestTrainPositionUpdates:
         print(f"  end_a.entry_edge: {demo_train.position.end_a_entry_edge}")
         print(f"  end_b.tile: {demo_train.position.end_b_tile}")
         print(f"  end_b.distance_cm: {demo_train.position.end_b_distance_cm}")
-        print(f"  distance_on_track: {demo_train.distance_on_track}")
 
         # Serialize to dict (what frontend sees)
         train_dict = demo_train.to_dict(simple_network)
@@ -112,11 +105,7 @@ class TestTrainPositionUpdates:
         print(f"\n[SERIALIZED TO FRONTEND]")
         print(f"  position.end_a: {train_dict.get('position', {}).get('end_a')}")
         print(f"  position.end_b: {train_dict.get('position', {}).get('end_b')}")
-        print(f"  position.distance: {train_dict.get('position', {}).get('distance')}")
-
         # ASSERTIONS
-        # The train should have moved (distance_on_track should change)
-        assert demo_train.distance_on_track != 0.0, "Train should have moved"
 
         # CRITICAL: end_a.distance_cm should have changed
         # This is the BUG - it likely won't change

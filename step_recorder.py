@@ -21,7 +21,9 @@ class StepRecorder:
 
     SCHEMA_VERSION = "1.0"
 
-    def generate_steps(self, network: 'RailwayNetwork', name: str = "", description: str = "") -> dict:
+    def generate_steps(
+        self, network: "RailwayNetwork", name: str = "", description: str = ""
+    ) -> dict:
         """
         Analyze network and generate ordered construction steps.
 
@@ -81,12 +83,12 @@ class StepRecorder:
             "created": now,
             "modified": now,
             "steps": steps,
-            "verification": self._generate_verification(network)
+            "verification": self._generate_verification(network),
         }
 
         return result
 
-    def generate_steps_list(self, network: 'RailwayNetwork') -> List[dict]:
+    def generate_steps_list(self, network: "RailwayNetwork") -> List[dict]:
         """
         Generate just the steps list without the full document wrapper.
         Used by save_merged_layout() for embedding in the main file.
@@ -121,7 +123,7 @@ class StepRecorder:
 
         return steps
 
-    def _generate_track_steps(self, network: 'RailwayNetwork') -> List[dict]:
+    def _generate_track_steps(self, network: "RailwayNetwork") -> List[dict]:
         """
         Generate track creation steps, grouped by block assignment.
 
@@ -155,33 +157,39 @@ class StepRecorder:
                         "op": "add_track",
                         "x": track.x,
                         "y": track.y,
-                        "track_bits": track.track_bits
+                        "track_bits": track.track_bits,
                     }
                     if track.switch_state != 0:
                         op["switch_state"] = track.switch_state
                     operations.append(op)
 
-                steps.append({
-                    "type": "track_group",
-                    "description": "Switches and junctions",
-                    "operations": operations
-                })
+                steps.append(
+                    {
+                        "type": "track_group",
+                        "description": "Switches and junctions",
+                        "operations": operations,
+                    }
+                )
 
             if non_switches:
                 operations = []
                 for track in sorted(non_switches, key=lambda t: (t.x, t.y)):
-                    operations.append({
-                        "op": "add_track",
-                        "x": track.x,
-                        "y": track.y,
-                        "track_bits": track.track_bits
-                    })
+                    operations.append(
+                        {
+                            "op": "add_track",
+                            "x": track.x,
+                            "y": track.y,
+                            "track_bits": track.track_bits,
+                        }
+                    )
 
-                steps.append({
-                    "type": "track_group",
-                    "description": "Unassigned tracks",
-                    "operations": operations
-                })
+                steps.append(
+                    {
+                        "type": "track_group",
+                        "description": "Unassigned tracks",
+                        "operations": operations,
+                    }
+                )
 
         # Then, handle tracks by block (but DON'T create tracks here - they're created with blocks)
         # We just record them for reference, the actual creation happens in block steps
@@ -191,23 +199,27 @@ class StepRecorder:
 
             operations = []
             for track in sorted(tracks, key=lambda t: (t.x, t.y)):
-                operations.append({
-                    "op": "add_track",
-                    "x": track.x,
-                    "y": track.y,
-                    "track_bits": track.track_bits
-                })
+                operations.append(
+                    {
+                        "op": "add_track",
+                        "x": track.x,
+                        "y": track.y,
+                        "track_bits": track.track_bits,
+                    }
+                )
 
-            steps.append({
-                "type": "track_group",
-                "description": f"Tracks for {block_name}",
-                "block_id": block_id,
-                "operations": operations
-            })
+            steps.append(
+                {
+                    "type": "track_group",
+                    "description": f"Tracks for {block_name}",
+                    "block_id": block_id,
+                    "operations": operations,
+                }
+            )
 
         return steps
 
-    def _generate_block_steps(self, network: 'RailwayNetwork') -> List[dict]:
+    def _generate_block_steps(self, network: "RailwayNetwork") -> List[dict]:
         """Generate block creation steps."""
         steps = []
 
@@ -225,7 +237,7 @@ class StepRecorder:
                 "op": "create_block_with_tracks",
                 "block_id": block_id,
                 "positions": positions,
-                "name": block.name
+                "name": block.name,
             }
 
             if block.length_cm > 0:
@@ -233,15 +245,17 @@ class StepRecorder:
             if block.max_speed_kmh is not None:
                 op["max_speed_kmh"] = block.max_speed_kmh
 
-            steps.append({
-                "type": "block",
-                "description": f"Block: {block.name or block_id}",
-                "operations": [op]
-            })
+            steps.append(
+                {
+                    "type": "block",
+                    "description": f"Block: {block.name or block_id}",
+                    "operations": [op],
+                }
+            )
 
         return steps
 
-    def _generate_signal_steps(self, network: 'RailwayNetwork') -> List[dict]:
+    def _generate_signal_steps(self, network: "RailwayNetwork") -> List[dict]:
         """Generate signal creation steps."""
         steps = []
 
@@ -250,7 +264,7 @@ class StepRecorder:
             detection_dir = signal.detection_direction
             if detection_dir is None:
                 detection_dir = "east"
-            elif hasattr(detection_dir, 'name'):
+            elif hasattr(detection_dir, "name"):
                 detection_dir = detection_dir.name.lower()
             else:
                 detection_dir = str(detection_dir).lower()
@@ -258,7 +272,7 @@ class StepRecorder:
             signal_type = signal.signal_type
             if signal_type is None:
                 signal_type = "block"
-            elif hasattr(signal_type, 'name'):
+            elif hasattr(signal_type, "name"):
                 signal_type = signal_type.name.lower()
             else:
                 signal_type = str(signal_type).lower()
@@ -268,7 +282,7 @@ class StepRecorder:
                 "x": signal.position[0],
                 "y": signal.position[1],
                 "detection_direction": detection_dir,
-                "signal_type": signal_type
+                "signal_type": signal_type,
             }
 
             if signal.name:
@@ -276,15 +290,17 @@ class StepRecorder:
             if signal.monitored_block_id:
                 op["monitored_block_id"] = signal.monitored_block_id
 
-            steps.append({
-                "type": "signal",
-                "description": f"Signal: {signal.name or signal_id}",
-                "operations": [op]
-            })
+            steps.append(
+                {
+                    "type": "signal",
+                    "description": f"Signal: {signal.name or signal_id}",
+                    "operations": [op],
+                }
+            )
 
         return steps
 
-    def _generate_station_steps(self, network: 'RailwayNetwork') -> List[dict]:
+    def _generate_station_steps(self, network: "RailwayNetwork") -> List[dict]:
         """Generate station creation steps."""
         steps = []
 
@@ -305,7 +321,7 @@ class StepRecorder:
                 "x": base_pos[0],
                 "y": base_pos[1],
                 "name": station.name,
-                "station_id": station.station_id
+                "station_id": station.station_id,
             }
 
             if station.length_cm > 0:
@@ -319,21 +335,25 @@ class StepRecorder:
 
             # Extension operations
             if extension_positions:
-                operations.append({
-                    "op": "extend_station",
-                    "station_id": station.station_id,
-                    "positions": [[p[0], p[1]] for p in extension_positions]
-                })
+                operations.append(
+                    {
+                        "op": "extend_station",
+                        "station_id": station.station_id,
+                        "positions": [[p[0], p[1]] for p in extension_positions],
+                    }
+                )
 
-            steps.append({
-                "type": "station",
-                "description": f"Station: {station.name or station_id}",
-                "operations": operations
-            })
+            steps.append(
+                {
+                    "type": "station",
+                    "description": f"Station: {station.name or station_id}",
+                    "operations": operations,
+                }
+            )
 
         return steps
 
-    def _generate_train_steps(self, network: 'RailwayNetwork') -> List[dict]:
+    def _generate_train_steps(self, network: "RailwayNetwork") -> List[dict]:
         """Generate train creation steps."""
         steps = []
 
@@ -341,27 +361,29 @@ class StepRecorder:
             op = {
                 "op": "add_train",
                 "train_id": train.train_id,
-                "max_speed": train.max_speed
+                "max_speed": train.max_speed,
             }
 
-            if train.current_pos:
+            if train.position:
                 op["position"] = {
-                    "x": train.current_pos[0],
-                    "y": train.current_pos[1]
+                    "x": train.position.head_tile[0],
+                    "y": train.position.head_tile[1],
                 }
 
-            if train.current_direction:
-                op["direction"] = train.current_direction.name
+                if train.position.facing_direction:
+                    op["direction"] = train.position.facing_direction.name
 
-            steps.append({
-                "type": "train",
-                "description": f"Train: {train_id}",
-                "operations": [op]
-            })
+            steps.append(
+                {
+                    "type": "train",
+                    "description": f"Train: {train_id}",
+                    "operations": [op],
+                }
+            )
 
         return steps
 
-    def _generate_verification(self, network: 'RailwayNetwork') -> dict:
+    def _generate_verification(self, network: "RailwayNetwork") -> dict:
         """
         Generate verification data for detecting replay mismatches.
 
@@ -398,5 +420,5 @@ class StepRecorder:
             "signal_count": len(network.signals),
             "station_count": len(network.stations),
             "train_count": len(network.trains),
-            "checksum": f"sha256:{checksum}"
+            "checksum": f"sha256:{checksum}",
         }

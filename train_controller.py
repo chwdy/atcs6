@@ -636,7 +636,7 @@ class TrainController:
         return None
 
     def _get_head_tile(self) -> Optional[Tuple[int, int]]:
-        """Get the head tile for the train (TrainPosition preferred)."""
+        """Get the head tile for the train."""
         train = self._get_train()
         if not train:
             return None
@@ -644,7 +644,7 @@ class TrainController:
         if train.position:
             return train.position.head_tile
 
-        return train.current_pos
+        return None
 
     def _get_head_distance_cm(self) -> float:
         """Get head distance within the current tile in cm."""
@@ -655,7 +655,7 @@ class TrainController:
         if train.position:
             return train.position.head_distance_cm
 
-        return train.distance_on_track
+        return 0.0
 
     def _get_head_path_index(self, train: "Train", head_tile: Tuple[int, int]) -> int:
         """Get the path index for the train head tile."""
@@ -1035,7 +1035,7 @@ class TrainController:
         # Check path direction to determine which cab should be active
         if hasattr(path, "end_a") and hasattr(path, "end_b"):
             # Path has defined ends - determine which end we're heading toward
-            if train.current_pos:
+            if train.position:
                 # If train is closer to end_a, we're heading to end_b
                 # This is simplified - real implementation would trace path direction
                 path_heading = "b"

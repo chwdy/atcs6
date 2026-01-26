@@ -1,5 +1,5 @@
 """
-Interlocking Tests - Switch locking, routes, and path operations
+Switch and Path Tests - Switch locking, routes, and path operations
 
 Run with: pytest tests/test_interlocking.py -v
 """
@@ -10,8 +10,8 @@ from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NE, TRACK_NW
 from network import RailwayNetwork
 from block import Block
 from enums import BlockState, Direction
-from interlocking import InterlockingSystem, InterlockingRoute
 from train import Train, TrainCar
+from tests.train_test_helpers import make_train_position
 from path_utils import (
     prepare_path_for_train,
     append_destination_block_tiles,
@@ -22,15 +22,6 @@ from path_utils import (
 @pytest.fixture
 def network():
     return RailwayNetwork()
-
-
-class TestInterlockingSystem:
-    """Tests for InterlockingSystem class"""
-
-    def test_interlocking_creation(self, network):
-        interlocking = InterlockingSystem()
-        assert interlocking is not None
-        assert interlocking.routes == {}
 
 
 class TestSwitchLocking:
@@ -195,7 +186,7 @@ class TestPathPrepending:
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
-        train.current_pos = (0, 0)
+        train.position = make_train_position((0, 0), Direction.EAST)
         train.facing_direction = Direction.EAST
         path_tiles = [
             (2, 0, Direction.EAST),
@@ -216,7 +207,7 @@ class TestPathPrepending:
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
-        train.current_pos = (0, 0)
+        train.position = make_train_position((0, 0), Direction.EAST)
         train.facing_direction = Direction.EAST
         path_tiles = [
             (0, 0, Direction.EAST),
@@ -241,7 +232,7 @@ class TestPathPrepending:
         network.blocks["BLK_B"] = Block(block_id="BLK_B")
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
-        train.current_pos = (0, 0)
+        train.position = make_train_position((0, 0), Direction.EAST)
         train.facing_direction = Direction.EAST
         path_tiles = [
             (3, 0, Direction.EAST),
@@ -260,7 +251,7 @@ class TestPathPrepending:
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
-        train.current_pos = (0, 0)
+        train.position = make_train_position((0, 0), Direction.EAST)
         train.facing_direction = Direction.EAST
         result = prepare_path_for_train(network, train, [])
         assert result.success is False

@@ -323,11 +323,12 @@ class TestStationStoppingBehavior:
         )
         from train import Train, TrainCar
         from enums import Direction
+        from tests.train_test_helpers import make_train_position
         from route_executor import RouteExecutor
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
-        train.current_pos = (1, 0)
+        train.position = make_train_position((1, 0), Direction.EAST)
         train.facing_direction = Direction.EAST
         executor = RouteExecutor(network)
         target_tile = executor._get_target_station_tile(train, station)

@@ -1720,7 +1720,6 @@ def create_train():
     else:
         network.add_train(train)
 
-    train.update_occupancy(network)
     network.update_signals_from_blocks()
 
     return jsonify({"status": "success", "train": train.to_dict(network)})
@@ -2105,34 +2104,14 @@ def delete_train(train_id):
     return jsonify({"status": "success", "message": f"Train {train_id} deleted"})
 
 
-@app.route("/api/trains/<train_id>", methods=["PATCH"])
-def update_train(train_id):
-    """Update train properties (deprecated - use specific endpoints instead)"""
-    train = network.trains.get(train_id)
-    if not train:
-        return jsonify({"error": "Train not found"}), 404
-
-    data = request.json or {}
-    # Allow updates to properties
-    if "current_speed" in data:
-        train.current_speed = float(data["current_speed"])
-    if "target_speed" in data:
-        train.target_speed = float(data["target_speed"])
-    if "num_cars" in data:
-        train.num_cars = int(data["num_cars"])
-
-    return jsonify(train.to_dict(network))
-
-
 @app.route("/api/trains/<train_id>/position", methods=["PUT"])
 def update_train_position(train_id: str):
     """Update train position.
 
     Request body:
     {
-        "current_pos": [x, y] (required),
-        "path_index": int (optional),
-        "distance_on_track": float (optional, 0.0-1.0)
+        "position": {"x": int, "y": int} (required),
+        "direction": "NORTH"|"EAST"|"SOUTH"|"WEST" (required)
     }
 
     Returns:
@@ -2147,32 +2126,35 @@ def update_train_position(train_id: str):
         if not train:
             return jsonify({"error": f"Train '{train_id}' not found"}), 404
 
-        current_pos = data.get("current_pos")
-        if not current_pos:
-            return jsonify({"error": "current_pos is required"}), 400
+        position = data.get("position")
+        if not isinstance(position, dict):
+            return jsonify({"error": "position is required"}), 400
 
-        if not isinstance(current_pos, list) or len(current_pos) != 2:
-            return jsonify({"error": "current_pos must be [x, y] array"}), 400
+        if "x" not in position or "y" not in position:
+            return jsonify({"error": "position must include x and y"}), 400
 
-        x, y = int(current_pos[0]), int(current_pos[1])
+        if not data.get("direction"):
+            return jsonify({"error": "direction is required"}), 400
+
+        try:
+            direction = Direction[data["direction"]]
+        except KeyError:
+            return jsonify({"error": f"Invalid direction: {data['direction']}"}), 400
+
+        x, y = int(position["x"]), int(position["y"])
 
         track = network.tracks.get((x, y))
         if not track:
             return jsonify({"error": f"No track at position ({x}, {y})"}), 400
 
-        train.current_pos = (x, y)
+        if train.position and network.block_manager:
+            for block_id in train.position.occupied_blocks:
+                network.block_manager.clear_block(block_id)
 
-        if "path_index" in data:
-            train.path_index = int(data["path_index"])
-
-        if "distance_on_track" in data:
-            distance_ratio = float(data["distance_on_track"])
-            if distance_ratio < 0.0 or distance_ratio > 1.0:
-                return jsonify({"error": "distance_on_track must be 0.0-1.0"}), 400
-            tile_length_cm = network._get_tile_length_cm(x, y)
-            train.distance_on_track = distance_ratio * tile_length_cm
-
-        train.update_occupancy(network)
+        try:
+            network.place_train(train, x, y, direction)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
 
     return jsonify(train.to_dict(network))
 
@@ -2738,7 +2720,6 @@ def clear_network():
             network.signals.clear()
             network.stations.clear()
             network.trains.clear()
-            network.interlocking.routes.clear()
             network.schedules.clear()
 
             # Update simulation controller reference

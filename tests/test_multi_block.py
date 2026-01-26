@@ -3,13 +3,13 @@ Tests for Phase 6 - Multi-Block Occupancy & IDLE Polarity
 
 This module tests:
 - Train.get_occupied_blocks() based on length
-- Train.update_occupancy() tracking
 - Train.is_opposite_polarity_safe() checks
 - BlockPowerController opposite polarity voltage output
 """
 
 import pytest
 from train import Train, TrainCar
+from tests.train_test_helpers import make_train_position
 from network import RailwayNetwork
 from block import Block
 from track import TrackSegment
@@ -68,35 +68,44 @@ class TestMultiBlockOccupancy:
         """Create a long train (spans multiple blocks)."""
         train = Train(train_id="T_LONG")
         # Add 3 cars, total 250cm = 2.5 meters
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=100.0))
-        train.consist.append(TrainCar(car_id="CAR_2", car_type="PASSENGER", length=100.0))
-        train.consist.append(TrainCar(car_id="CAR_3", car_type="PASSENGER", length=50.0))
+        train.consist.append(
+            TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=100.0)
+        )
+        train.consist.append(
+            TrainCar(car_id="CAR_2", car_type="PASSENGER", length=100.0)
+        )
+        train.consist.append(
+            TrainCar(car_id="CAR_3", car_type="PASSENGER", length=50.0)
+        )
         return train
 
     def test_short_train_single_block(self, simple_network, short_train):
         """Test short train occupies only one block."""
-        short_train.current_pos = (0, 0)
-        short_train.distance_on_track = 0.5
+        short_train.position = make_train_position(
+            (0, 0), Direction.EAST, occupied_blocks=["BLK_A"]
+        )
 
         occupied = short_train.get_occupied_blocks(simple_network)
 
-        assert len(occupied) >= 0  # May be empty or contain BLK_A depending on calc
+        assert occupied == ["BLK_A"]
 
     def test_long_train_multiple_blocks(self, simple_network, long_train):
         """Test long train occupies multiple blocks."""
-        long_train.current_pos = (1, 0)
-        long_train.distance_on_track = 0.8
-        # Manually set reserved blocks for multi-block test
-        long_train.reserved_blocks = ["BLK_A", "BLK_B"]
+        long_train.position = make_train_position(
+            (1, 0),
+            Direction.EAST,
+            occupied_tiles=[(0, 0), (1, 0), (2, 0)],
+            occupied_blocks=["BLK_A", "BLK_B", "BLK_C"],
+        )
 
         # Long train is 2.5 meters
         occupied = long_train.get_occupied_blocks(simple_network)
 
-        assert len(occupied) >= 1
+        assert occupied == ["BLK_A", "BLK_B", "BLK_C"]
 
     def test_get_occupied_blocks_no_position(self, simple_network, short_train):
         """Test get_occupied_blocks with no current position."""
-        short_train.current_pos = None
+        short_train.position = None
 
         occupied = short_train.get_occupied_blocks(simple_network)
 
@@ -104,35 +113,11 @@ class TestMultiBlockOccupancy:
 
     def test_get_occupied_blocks_no_network(self, short_train):
         """Test get_occupied_blocks with no network."""
-        short_train.current_pos = None
+        short_train.position = None
 
         occupied = short_train.get_occupied_blocks(None)
 
         assert occupied == []
-
-    def test_update_occupancy_new_block(self, simple_network, short_train):
-        """Test update_occupancy marks new block as occupied."""
-        short_train.current_pos = (0, 0)
-        short_train.reserved_blocks = []
-
-        short_train.update_occupancy(simple_network)
-
-        # Train should now have reserved blocks
-        assert len(short_train.reserved_blocks) >= 0  # May have blocks or be empty
-
-    def test_update_occupancy_release_old_block(self, simple_network, short_train):
-        """Test update_occupancy releases old block when train moves."""
-        # Start in BLK_A
-        short_train.current_pos = (0, 0)
-        short_train.reserved_blocks = ["BLK_A"]
-        simple_network.blocks["BLK_A"].occupy("T_SHORT")
-
-        # Move to BLK_B
-        short_train.current_pos = (1, 0)
-        short_train.update_occupancy(simple_network)
-
-        # Update should have happened
-        assert isinstance(short_train.reserved_blocks, list)
 
 
 class TestOppositePolaritySafety:
@@ -163,8 +148,10 @@ class TestOppositePolaritySafety:
     def test_opposite_polarity_safe_single_block(self, simple_network):
         """Test opposite polarity not safe with single block."""
         train = Train(train_id="T001")
-        train.current_pos = None
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0))
+        train.position = None
+        train.consist.append(
+            TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        )
 
         # Single block - not safe
         result = train.is_opposite_polarity_safe(simple_network)
@@ -173,9 +160,11 @@ class TestOppositePolaritySafety:
     def test_opposite_polarity_safe_single_car_two_blocks(self, simple_network):
         """Test opposite polarity safe with single car in two blocks."""
         train = Train(train_id="T001")
-        # Don't set current_pos - use reserved_blocks directly
-        train.current_pos = None
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0))
+        # Don't set position - use reserved_blocks directly
+        train.position = None
+        train.consist.append(
+            TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0)
+        )
         # Manually set reserved_blocks to simulate multi-block occupancy
         train.reserved_blocks = ["BLK_A", "BLK_B"]
 
@@ -187,9 +176,13 @@ class TestOppositePolaritySafety:
     def test_opposite_polarity_unsafe_multiple_cars(self, simple_network):
         """Test opposite polarity unsafe with multiple cars."""
         train = Train(train_id="T001")
-        train.current_pos = None
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=80.0))
-        train.consist.append(TrainCar(car_id="CAR_2", car_type="LOCOMOTIVE", length=80.0))
+        train.position = None
+        train.consist.append(
+            TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=80.0)
+        )
+        train.consist.append(
+            TrainCar(car_id="CAR_2", car_type="LOCOMOTIVE", length=80.0)
+        )
 
         # Multiple cars - conservative: not safe
         # (would need detailed position tracking)
@@ -199,7 +192,9 @@ class TestOppositePolaritySafety:
     def test_opposite_polarity_no_network(self):
         """Test opposite polarity check with no network."""
         train = Train(train_id="T001")
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0))
+        train.consist.append(
+            TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0)
+        )
 
         result = train.is_opposite_polarity_safe(None)
         assert result is False
@@ -248,8 +243,10 @@ class TestOppositePolarityVoltage:
 
         train = Train(train_id="T001")
         train.state = TrainState.IDLE
-        train.current_pos = None
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0))
+        train.position = None
+        train.consist.append(
+            TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0)
+        )
         train.reserved_blocks = ["BLK_A", "BLK_B"]
 
         # Update voltage
@@ -269,8 +266,10 @@ class TestOppositePolarityVoltage:
 
         train = Train(train_id="T001")
         train.state = TrainState.IDLE
-        train.current_pos = None
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=250.0))
+        train.position = None
+        train.consist.append(
+            TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=250.0)
+        )
         train.reserved_blocks = ["BLK_A", "BLK_B", "BLK_C"]
 
         # Update voltage
@@ -293,14 +292,16 @@ class TestOppositePolarityVoltage:
         train = Train(train_id="T001")
         train.state = TrainState.RUNNING_MOVING
         train.target_speed = 60.0
-        train.current_pos = None
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0))
+        train.position = None
+        train.consist.append(
+            TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=150.0)
+        )
         train.reserved_blocks = ["BLK_A", "BLK_B"]
 
         profile = SpeedProfile(
             profile_id="test",
             name="Test",
-            speed_voltage_curve=[(0, 0), (60, 8), (120, 12)]
+            speed_voltage_curve=[(0, 0), (60, 8), (120, 12)],
         )
 
         # Update voltage
@@ -319,8 +320,10 @@ class TestOppositePolarityVoltage:
 
         train = Train(train_id="T001")
         train.state = TrainState.IDLE
-        train.current_pos = None
-        train.consist.append(TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0))
+        train.position = None
+        train.consist.append(
+            TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        )
         train.reserved_blocks = ["BLK_A"]
 
         # Update voltage

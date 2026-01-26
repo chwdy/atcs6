@@ -47,7 +47,14 @@ Get complete railway network state.
   }],
   "trains": [{
     "id": "train_1",
-    "position": {"x": 0, "y": 0},
+    "position": {
+      "end_a": {"tile": [0, 0], "distance_cm": 50.0, "entry_edge": "W"},
+      "end_b": {"tile": [0, 0], "distance_cm": 10.0, "entry_edge": "W"},
+      "leading_end": "a",
+      "facing_direction": "NORTH",
+      "occupied_tiles": [[0, 0]],
+      "occupied_blocks": []
+    },
     "direction": "NORTH",
     "speed": 0
   }]
@@ -111,8 +118,6 @@ Update track properties.
 | dead_end_ports | array | Manual dead-end override |
 | station_name | string | Station name (or null to clear) |
 | block_section_id | string | Block ID (or null to clear) |
-
-**Note:** Signal management via /api/track is deprecated. Use `/api/signal` endpoints instead.
 
 **Response:**
 
@@ -221,7 +226,14 @@ Create a new train. Trains use a consist model where the train is composed of in
     "speed": 0,
     "max_speed": 100.0,
     "state": "off",
-    "position": {"x": 0, "y": 0},
+    "position": {
+      "end_a": {"tile": [0, 0], "distance_cm": 50.0, "entry_edge": "W"},
+      "end_b": {"tile": [0, 0], "distance_cm": 10.0, "entry_edge": "W"},
+      "leading_end": "a",
+      "facing_direction": "NORTH",
+      "occupied_tiles": [[0, 0]],
+      "occupied_blocks": []
+    },
     "direction": "NORTH",
     "facing_direction": "NORTH",
     "travel_direction": "forward",
@@ -242,7 +254,14 @@ List all trains in the network.
     {
       "id": "train_1",
       "state": "idle",
-      "position": {"x": 0, "y": 0},
+      "position": {
+        "end_a": {"tile": [0, 0], "distance_cm": 50.0, "entry_edge": "W"},
+        "end_b": {"tile": [0, 0], "distance_cm": 10.0, "entry_edge": "W"},
+        "leading_end": "a",
+        "facing_direction": "NORTH",
+        "occupied_tiles": [[0, 0]],
+        "occupied_blocks": []
+      },
       "facing_direction": "NORTH"
     }
   ]
@@ -511,22 +530,6 @@ Clear facing direction and transition back to IDLE state. Only works when train 
 
 **Error (400):** `{"error": "Cannot clear direction (train not in STANDBY state)"}`
 
-### PATCH /api/trains/{train_id}
-
-Update train properties directly. **Deprecated** - use specific state transition endpoints instead.
-
-**Request:**
-
-```json
-{
-  "current_speed": 50.0,
-  "target_speed": 60.0,
-  "num_cars": 5
-}
-```
-
-**Response:** Updated train object
-
 ### PUT /api/trains/{train_id}/position
 
 Update train position on the network.
@@ -535,17 +538,15 @@ Update train position on the network.
 
 ```json
 {
-  "current_pos": [5, 10],
-  "path_index": 0,
-  "distance_on_track": 0.5
+  "position": {"x": 5, "y": 10},
+  "direction": "EAST"
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| current_pos | array | Yes | `[x, y]` coordinates |
-| path_index | int | No | Index in current path |
-| distance_on_track | float | No | 0.0-1.0 ratio along tile |
+| position | object | Yes | `{x, y}` tile coordinates |
+| direction | string | Yes | `NORTH`, `EAST`, `SOUTH`, `WEST` |
 
 **Response:** Updated train object
 

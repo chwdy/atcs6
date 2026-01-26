@@ -18,7 +18,9 @@ class StepPlayer:
         """Initialize the StepPlayer."""
         self.context: Dict[str, Any] = {}  # For $prev references
 
-    def play(self, step_data: dict, network: 'RailwayNetwork', clear_first: bool = True) -> dict:
+    def play(
+        self, step_data: dict, network: "RailwayNetwork", clear_first: bool = True
+    ) -> dict:
         """
         Execute all steps on the network.
 
@@ -36,7 +38,6 @@ class StepPlayer:
             network.blocks.clear()
             network.signals.clear()
             network.stations.clear()
-            network.interlocking.routes.clear()
             network.schedules.clear()
 
         steps = step_data.get("steps", [])
@@ -47,11 +48,13 @@ class StepPlayer:
             try:
                 self.play_step(step, network)
             except Exception as e:
-                errors.append({
-                    "step_id": step.get("id"),
-                    "step_type": step.get("type"),
-                    "error": str(e)
-                })
+                errors.append(
+                    {
+                        "step_id": step.get("id"),
+                        "step_type": step.get("type"),
+                        "error": str(e),
+                    }
+                )
 
         # Verify result if verification data is present
         verification = step_data.get("verification", {})
@@ -61,10 +64,12 @@ class StepPlayer:
             "success": len(errors) == 0 and len(mismatches) == 0,
             "steps_played": len(steps),
             "errors": errors,
-            "verification_mismatches": mismatches
+            "verification_mismatches": mismatches,
         }
 
-    def play_steps(self, steps: List[dict], network: 'RailwayNetwork', clear_first: bool = True) -> dict:
+    def play_steps(
+        self, steps: List[dict], network: "RailwayNetwork", clear_first: bool = True
+    ) -> dict:
         """
         Execute a list of steps directly (without full document wrapper).
         Used for recovery when loading from merged format.
@@ -83,7 +88,6 @@ class StepPlayer:
             network.blocks.clear()
             network.signals.clear()
             network.stations.clear()
-            network.interlocking.routes.clear()
             network.schedules.clear()
 
         errors = []
@@ -93,19 +97,21 @@ class StepPlayer:
             try:
                 self.play_step(step, network)
             except Exception as e:
-                errors.append({
-                    "step_id": step.get("id"),
-                    "step_type": step.get("type"),
-                    "error": str(e)
-                })
+                errors.append(
+                    {
+                        "step_id": step.get("id"),
+                        "step_type": step.get("type"),
+                        "error": str(e),
+                    }
+                )
 
         return {
             "success": len(errors) == 0,
             "steps_played": len(steps),
-            "errors": errors
+            "errors": errors,
         }
 
-    def play_step(self, step: dict, network: 'RailwayNetwork') -> None:
+    def play_step(self, step: dict, network: "RailwayNetwork") -> None:
         """
         Execute a single step.
 
@@ -122,7 +128,7 @@ class StepPlayer:
             if result is not None:
                 self.context["$prev"] = result
 
-    def _execute_operation(self, op: dict, network: 'RailwayNetwork') -> Any:
+    def _execute_operation(self, op: dict, network: "RailwayNetwork") -> Any:
         """
         Execute a single operation.
 
@@ -159,7 +165,7 @@ class StepPlayer:
             raise ValueError(f"Unresolved reference: {ref_name}")
         return value
 
-    def _op_add_track(self, op: dict, network: 'RailwayNetwork') -> str:
+    def _op_add_track(self, op: dict, network: "RailwayNetwork") -> str:
         """Execute add_track operation."""
         x = op["x"]
         y = op["y"]
@@ -173,7 +179,7 @@ class StepPlayer:
         network.add_track(track)
         return f"{x},{y}"
 
-    def _op_create_block(self, op: dict, network: 'RailwayNetwork') -> str:
+    def _op_create_block(self, op: dict, network: "RailwayNetwork") -> str:
         """Execute create_block_with_tracks operation."""
         block_id = op["block_id"]
         positions = [tuple(p) for p in op["positions"]]
@@ -194,12 +200,12 @@ class StepPlayer:
             name=name,
             length_cm=length_cm,
             max_speed_kmh=max_speed_kmh,
-            validate=False  # Skip validation during replay
+            validate=False,  # Skip validation during replay
         )
 
         return block_id
 
-    def _op_add_signal(self, op: dict, network: 'RailwayNetwork') -> str:
+    def _op_add_signal(self, op: dict, network: "RailwayNetwork") -> str:
         """Execute add_signal operation."""
         x = op["x"]
         y = op["y"]
@@ -213,19 +219,21 @@ class StepPlayer:
             detection_direction=detection_direction,
             signal_type=signal_type,
             name=name,
-            auto_connect=True
+            auto_connect=True,
         )
 
         # If a specific monitored_block_id was recorded, try to connect it
         if "monitored_block_id" in op and op["monitored_block_id"]:
             try:
-                network.connect_signal_to_block(signal.signal_id, op["monitored_block_id"])
+                network.connect_signal_to_block(
+                    signal.signal_id, op["monitored_block_id"]
+                )
             except Exception:
                 pass  # Best effort
 
         return signal.signal_id
 
-    def _op_add_station(self, op: dict, network: 'RailwayNetwork') -> str:
+    def _op_add_station(self, op: dict, network: "RailwayNetwork") -> str:
         """Execute add_station operation."""
         x = op["x"]
         y = op["y"]
@@ -242,12 +250,12 @@ class StepPlayer:
             name=name,
             length_cm=length_cm,
             platform_side=platform_side,
-            top_speed_kmh=top_speed_kmh
+            top_speed_kmh=top_speed_kmh,
         )
 
         return station.station_id
 
-    def _op_extend_station(self, op: dict, network: 'RailwayNetwork') -> str:
+    def _op_extend_station(self, op: dict, network: "RailwayNetwork") -> str:
         """Execute extend_station operation."""
         station_id = self._resolve_ref(op["station_id"])
         positions = [tuple(p) for p in op["positions"]]
@@ -256,7 +264,7 @@ class StepPlayer:
 
         return station_id
 
-    def _op_add_train(self, op: dict, network: 'RailwayNetwork') -> str:
+    def _op_add_train(self, op: dict, network: "RailwayNetwork") -> str:
         """Execute add_train operation."""
         from train import Train
         from enums import Direction
@@ -264,26 +272,26 @@ class StepPlayer:
         train_id = op["train_id"]
         max_speed = op.get("max_speed", 100.0)
 
-        train = Train(
-            train_id=train_id,
-            max_speed=max_speed
-        )
+        train = Train(train_id=train_id, max_speed=max_speed)
 
-        if "position" in op:
-            pos = op["position"]
-            train.current_pos = (pos["x"], pos["y"])
-
+        direction = Direction.EAST
         if "direction" in op:
             try:
-                train.current_direction = Direction[op["direction"]]
+                direction = Direction[op["direction"]]
             except KeyError:
-                pass
+                direction = Direction.EAST
 
         network.add_train(train)
 
+        if "position" in op:
+            pos = op["position"]
+            network.place_train(train, pos["x"], pos["y"], direction)
+
         return train_id
 
-    def _verify_result(self, network: 'RailwayNetwork', verification: dict) -> List[dict]:
+    def _verify_result(
+        self, network: "RailwayNetwork", verification: dict
+    ) -> List[dict]:
         """
         Verify that the replayed network matches expected verification data.
 
@@ -300,35 +308,55 @@ class StepPlayer:
         mismatches = []
 
         expected_track_count = verification.get("track_count")
-        if expected_track_count is not None and len(network.tracks) != expected_track_count:
-            mismatches.append({
-                "field": "track_count",
-                "expected": expected_track_count,
-                "actual": len(network.tracks)
-            })
+        if (
+            expected_track_count is not None
+            and len(network.tracks) != expected_track_count
+        ):
+            mismatches.append(
+                {
+                    "field": "track_count",
+                    "expected": expected_track_count,
+                    "actual": len(network.tracks),
+                }
+            )
 
         expected_block_count = verification.get("block_count")
-        if expected_block_count is not None and len(network.blocks) != expected_block_count:
-            mismatches.append({
-                "field": "block_count",
-                "expected": expected_block_count,
-                "actual": len(network.blocks)
-            })
+        if (
+            expected_block_count is not None
+            and len(network.blocks) != expected_block_count
+        ):
+            mismatches.append(
+                {
+                    "field": "block_count",
+                    "expected": expected_block_count,
+                    "actual": len(network.blocks),
+                }
+            )
 
         expected_signal_count = verification.get("signal_count")
-        if expected_signal_count is not None and len(network.signals) != expected_signal_count:
-            mismatches.append({
-                "field": "signal_count",
-                "expected": expected_signal_count,
-                "actual": len(network.signals)
-            })
+        if (
+            expected_signal_count is not None
+            and len(network.signals) != expected_signal_count
+        ):
+            mismatches.append(
+                {
+                    "field": "signal_count",
+                    "expected": expected_signal_count,
+                    "actual": len(network.signals),
+                }
+            )
 
         expected_station_count = verification.get("station_count")
-        if expected_station_count is not None and len(network.stations) != expected_station_count:
-            mismatches.append({
-                "field": "station_count",
-                "expected": expected_station_count,
-                "actual": len(network.stations)
-            })
+        if (
+            expected_station_count is not None
+            and len(network.stations) != expected_station_count
+        ):
+            mismatches.append(
+                {
+                    "field": "station_count",
+                    "expected": expected_station_count,
+                    "actual": len(network.stations),
+                }
+            )
 
         return mismatches

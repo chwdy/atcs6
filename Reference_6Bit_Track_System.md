@@ -802,7 +802,6 @@ Dead-ends are **automatically detected** and stored as a cached field updated vi
 dead_end_ports: Set[str]  # Set of edge letters: {'N', 'E', 'S', 'W'}
 ```
 
-> **DEPRECATED**: The `add_dead_end()` method is deprecated. Dead-ends are now auto-detected during network propagation. Setting them manually is no longer necessary or recommended.
 
 ### Dead-End Detection Algorithm
 
@@ -849,21 +848,6 @@ def validate_dead_ends(track_bits: int, dead_end_ports: Set[str]) -> bool:
         if port not in connected_edges:
             return False  # Dead-end on edge with no path - invalid
     return True
-```
-
-### RIBI Computation (DEPRECATED)
-
-> **DEPRECATED**: RIBI is deprecated and has been removed from the codebase. Use `track_bits` and `EDGE_MASKS` directly instead. RIBI only tracked which edges were connected (4 bits, 16 values), while `track_bits` tracks which segments exist (6 bits, 64 values), providing complete geometric information.
-
-For reference, the old RIBI formula included all edges that have paths:
-
-```python
-# DEPRECATED - Use track_bits and EDGE_MASKS instead
-# EDGE_TO_RIBI = {'N': 1, 'E': 2, 'S': 4, 'W': 8}
-#
-# def compute_ribi(track_bits: int) -> int:
-#     edges = get_edges(track_bits)
-#     return sum(EDGE_TO_RIBI[e] for e in edges)
 ```
 
 ---
@@ -933,66 +917,11 @@ Whether traversal is a curve depends on the **neighbor's orientation group**, no
 
 ---
 
-## 11. Demo Migration Map
-
-Current demo configurations mapped to new `track_bits` values:
-
-### Dead-End Configurations
-
-| Current | New | Description |
-|---------|-----|-------------|
-| `ribi=2, dead_end` | `track_bits=0, dead_end_ports={'E'}` | Buffer stop facing East |
-| `ribi=8, dead_end` | `track_bits=0, dead_end_ports={'W'}` | Buffer stop facing West |
-| `ribi=4, dead_end` | `track_bits=0, dead_end_ports={'S'}` | Buffer stop facing South |
-| `ribi=1, dead_end` | `track_bits=0, dead_end_ports={'N'}` | Buffer stop facing North |
-
-### Straight Track
-
-| Current | New | Description |
-|---------|-----|-------------|
-| `ribi=10` (E+W) | `track_bits=2` | EW path (group: EW) |
-| `ribi=5` (N+S) | `track_bits=1` | NS path (group: NS) |
-
-### Diagonal Paths
-
-| Current | New | Description |
-|---------|-----|-------------|
-| `ribi=3` (N+E) | `track_bits=4` | NE path (group: NE+SW) |
-| `ribi=9` (N+W) | `track_bits=8` | NW path (group: NW+SE) |
-| `ribi=6` (E+S) | `track_bits=16` | SE path (group: NW+SE) |
-| `ribi=12` (S+W) | `track_bits=32` | SW path (group: NE+SW) |
-
-### Junction/Switch at (3,0)
-
-Current: `ribi=11` (N+E+W) with paths `[('E','W'), ('N','W')]`
-
-New: `track_bits=10` (TRACK_EW + TRACK_NW = 2 + 8)
-- Switch at W with exits [E, N]
-- `switch_states = {'W': 0}` for main (W→E), or `{'W': 1}` for diverge (W→N)
-
-### Code Migration Example
-
-```python
-# OLD: Creating a junction
-segment = TrackSegment(x=3, y=0)
-segment.add_path('EAST', 'WEST')
-segment.add_path('NORTH', 'WEST')
-
-# NEW: Creating same junction
-segment = TrackSegment(
-    x=3, y=0,
-    track_bits=10,  # TRACK_EW | TRACK_NW
-    switch_states={'W': 0}  # Main route: W→E
-)
-```
-
----
-
 ## 12. Engineering Checklist (handoff)
 
 1. **Store geometry**: Single integer `track_bits` (0-63). Reject if in `FORBIDDEN_TRACK_BITS` (28 values).
 2. **Dead-ends**: Cached field `dead_end_ports: Set[str]` auto-detected via propagation. Dead-ends occur when a path edge has no connecting neighbor. The `add_dead_end()` method is deprecated.
-3. **Edges**: `edges = {edge for edge, mask in EDGE_MASKS.items() if track_bits & mask}`. RIBI is deprecated - use `track_bits` and `EDGE_MASKS` directly.
+3. **Edges**: `edges = {edge for edge, mask in EDGE_MASKS.items() if track_bits & mask}`.
 4. **Switch points**: For each set bit, add exits to both edges; keep only edges with `len(exits) ≥ 2`.
 5. **Switch state**: Global per-tile `_switch_state: int` (0=MAIN, 1=DIVERGE). MAIN routes to long paths (NS/EW), DIVERGE routes to short paths (diagonals). For diagonal-only switches, uses clockwise ordering.
 6. **Classification**: Use `classify_track_type(track_bits)` table; feature overrides use `signal_ids` for signals and `station_id` for stations.
@@ -1005,7 +934,7 @@ segment = TrackSegment(
 ## 13. Propagation and Cache Refresh
 
 - Trigger: Any change to `track_bits` or `switch_states` on a tile, OR when a neighbor tile is added/removed/modified.
-- Local recompute: Rebuild derived data (switch points, `path_types`, exits, `ribi`, classification) from the tile's single source of truth.
+- Local recompute: Rebuild derived data (switch points, `path_types`, exits, classification) from the tile's single source of truth.
 - Dead-end recomputation: Each tile checks its neighbors to determine which path edges are dead-ends (no connection). This happens during the propagation wave.
 - DNS-style wave: Enqueue the four neighbors (N,E,S,W). For each dequeued neighbor, recompute its derived data if its connectivity or inbound acceptance changes; if it changes, enqueue its neighbors. Stop when the queue drains.
 - Cache refresh: After the wave completes, rebuild or invalidate cached routing graphs/spatial indices covering the affected tiles so pathfinding sees consistent topology.

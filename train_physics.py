@@ -50,6 +50,7 @@ TODO List:
 - [ ] Migrate SimulationController to use TrainPhysics
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
@@ -70,6 +71,8 @@ if TYPE_CHECKING:
     from train import Train
     from train_controller import TrainController
 
+
+logger = logging.getLogger(__name__)
 
 # Edge opposites for track geometry
 OPPOSITE_EDGES = {"N": "S", "S": "N", "E": "W", "W": "E"}
@@ -303,8 +306,10 @@ class TrainPhysics:
             distance_cm: Distance to move in cm
         """
         if not train.position:
-            # Fall back to legacy position system
-            self._move_train_legacy(train, distance_cm)
+            logger.warning(
+                "[TrainPhysics] Train %s missing TrainPosition; skipping move",
+                train.train_id,
+            )
             return
 
         position = train.position
@@ -415,86 +420,6 @@ class TrainPhysics:
             position.end_b_tile = new_tile
             position.end_b_distance_cm = new_distance
             position.end_b_entry_edge = new_entry_edge
-
-    def _move_train_legacy(self, train: "Train", distance_cm: float) -> None:
-        """
-        DEPRECATED: Move train using legacy position system (distance_on_track).
-
-        This is a fallback for trains without TrainPosition.
-        This method will be removed in a future version.
-        All trains should use TrainPosition for accurate head/tail tracking.
-        """
-        import warnings
-
-        warnings.warn(
-            f"Train {train.train_id} is using legacy position system. "
-            "Please migrate to TrainPosition.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-
-        if not train.current_pos:
-            return
-
-        # Update distance on current track
-        train.distance_on_track = getattr(train, "_distance_on_track", 0.0)
-        train.distance_on_track += distance_cm
-
-        # Check if we need to advance to next tile
-        tile_length = self._get_tile_length_cm(train.current_pos)
-
-        while train.distance_on_track >= tile_length and tile_length > 0:
-            train.distance_on_track -= tile_length
-
-            # Try to advance to next track
-            if not self._advance_train_to_next_track(train):
-                # End of track
-                train.distance_on_track = tile_length
-                train.current_speed = 0.0
-                break
-
-            tile_length = self._get_tile_length_cm(train.current_pos)
-
-    def _advance_train_to_next_track(self, train: "Train") -> bool:
-        """
-        Advance train to next connected track segment.
-
-        Returns:
-            True if successfully advanced, False if end of track
-        """
-        if not train.current_pos or not self.network:
-            return False
-
-        current_track = self.network.get_track(*train.current_pos)
-        if not current_track:
-            return False
-
-        # Get entry edge from direction
-        entry_edge = self._direction_to_edge(train.current_direction)
-        exit_edges = current_track.get_exits(entry_edge, use_switch_state=True)
-
-        if not exit_edges:
-            return False
-
-        exit_edge = exit_edges[0]
-
-        # Get neighbor tile
-        neighbor_info = self.network.get_neighbor(
-            train.current_pos[0], train.current_pos[1], exit_edge
-        )
-
-        if not neighbor_info or not neighbor_info[0]:
-            return False
-
-        neighbor_track, new_entry_edge = neighbor_info
-
-        # Update position
-        dx, dy = self._get_direction_delta(exit_edge)
-        train.current_pos = (train.current_pos[0] + dx, train.current_pos[1] + dy)
-        train.current_direction = self._edge_to_direction(new_entry_edge)
-        train.distance_on_track = 0.0
-
-        return True
 
     def _update_tail_position(self, train: "Train") -> None:
         """
@@ -715,7 +640,7 @@ class TrainPhysics:
         """
         Get all block IDs occupied by the train.
 
-        Uses occupied_tiles from TrainPosition or falls back to current_pos.
+        Uses occupied_tiles from TrainPosition.
         """
         blocks: Set[str] = set()
 
@@ -723,12 +648,9 @@ class TrainPhysics:
             return blocks
 
         # Get occupied tiles
-        if train.position and train.position.occupied_tiles:
-            tiles = train.position.occupied_tiles
-        elif train.current_pos:
-            tiles = [train.current_pos]
-        else:
+        if not train.position or not train.position.occupied_tiles:
             return blocks
+        tiles = train.position.occupied_tiles
 
         # Get block for each tile
         for tile in tiles:

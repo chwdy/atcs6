@@ -1073,8 +1073,6 @@ class TrainEditorHandler {
         if (positionEl && train.position && train.position.end_a) {
             const headEnd = train.position.leading_end === 'a' ? train.position.end_a : train.position.end_b;
             positionEl.textContent = `(${headEnd.tile[0]}, ${headEnd.tile[1]})`;
-        } else if (positionEl && train.position_legacy) {
-            positionEl.textContent = `(${train.position_legacy.x}, ${train.position_legacy.y})`;
         }
 
         const directionEl = panel.querySelector('.train-dir-display');
