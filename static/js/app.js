@@ -10,6 +10,8 @@ class App {
         this.lastLookaheadFetch = 0;
         this.lookaheadThrottleMs = 100;
         this.lastLookaheadData = null;  // Store last lookahead for panel rebuilds
+        this.lastLookaheadPayload = null;
+        this.trainMonitorUnsub = null;
 
         this.setupControls();
         this.setupDebugPanel();
@@ -434,11 +436,18 @@ class App {
     }
 
     selectTrain(trainId) {
-        if (!this.currentNetwork || !this.currentNetwork.trains) return;
+        console.log('[App] selectTrain called:', trainId);
+        if (!this.currentNetwork || !this.currentNetwork.trains) {
+            console.log('[App] selectTrain: no network or trains');
+            return;
+        }
         
         const train = this.currentNetwork.trains.find(t => t.id === trainId);
+        console.log('[App] selectTrain: found train?', !!train);
         if (train) {
             this.selectedTrainId = trainId;
+            this.lastLookaheadData = null;
+            this.lastLookaheadPayload = null;
             // Pan to train position using new TrainPosition format
             if (train.position && train.position.end_a) {
                 const headEnd = train.position.leading_end === 'a' ? train.position.end_a : train.position.end_b;
@@ -448,7 +457,10 @@ class App {
             }
             this.editor.showTrainControlPanel(trainId);
             this.trainMonitor.show(trainId, train.name || trainId);
-            this.fetchTrainLookahead(trainId);
+            console.log('[App] selectTrain: calling _subscribeTrainMonitor');
+            this._subscribeTrainMonitor(trainId);
+            console.log('[App] selectTrain: calling fetchTrainLookahead');
+            this.fetchTrainLookahead(trainId, train);
             this.updateTrainDebugPanel(train);
         }
     }
@@ -456,8 +468,43 @@ class App {
     deselectTrain() {
         this.selectedTrainId = null;
         this.lastLookaheadData = null;  // Clear stored lookahead
+        this.lastLookaheadPayload = null;
+        if (this.trainMonitorUnsub) {
+            this.trainMonitorUnsub();
+            this.trainMonitorUnsub = null;
+        }
         this.trainMonitor.hide();
         this.hideTrainDebugPanel();
+    }
+
+    _subscribeTrainMonitor(trainId) {
+        console.log('[App] _subscribeTrainMonitor called:', trainId);
+        console.log('[App] window.stateManager exists?', !!window.stateManager);
+        if (!window.stateManager) return;
+        if (this.trainMonitorUnsub) {
+            this.trainMonitorUnsub();
+            this.trainMonitorUnsub = null;
+        }
+
+        console.log('[App] _subscribeTrainMonitor: subscribing to trains:', trainId);
+        this.trainMonitorUnsub = window.stateManager.subscribe(
+            'trains',
+            trainId,
+            (newTrain) => {
+                console.log('[App] StateManager train update:', trainId, newTrain);
+                if (!newTrain) {
+                    this.deselectTrain();
+                    return;
+                }
+                if (this.trainMonitor.isVisible()) {
+                    this.trainMonitor.updateFromController(newTrain, this.lastLookaheadPayload);
+                }
+                console.log('[App] StateManager callback: calling fetchTrainLookahead');
+                this.fetchTrainLookahead(trainId, newTrain);
+            },
+            { immediate: true }
+        );
+        console.log('[App] _subscribeTrainMonitor: subscription created');
     }
     
     updateTrainDebugPanel(train) {
@@ -694,39 +741,51 @@ class App {
     }
 
     
-    async fetchTrainLookahead(trainId) {
-        if (!trainId) return;
+    async fetchTrainLookahead(trainId, train) {
+        console.log('[App] fetchTrainLookahead called:', trainId);
+        if (!trainId) {
+            console.log('[App] fetchTrainLookahead: no trainId, returning');
+            return;
+        }
         // Check if debug is enabled, otherwise we don't need to fetch
         const debugCheckbox = document.getElementById('debug-show-train-position');
-        if (debugCheckbox && !debugCheckbox.checked) return;
+        const monitorVisible = this.trainMonitor.isVisible();
+        console.log('[App] fetchTrainLookahead: debug checked?', debugCheckbox?.checked, 'monitor visible?', monitorVisible);
+        if (debugCheckbox && !debugCheckbox.checked && !monitorVisible) {
+            console.log('[App] fetchTrainLookahead: bailing due to debug/visibility check');
+            return;
+        }
         
         const now = Date.now();
-        if (now - this.lastLookaheadFetch < this.lookaheadThrottleMs) return;
+        if (now - this.lastLookaheadFetch < this.lookaheadThrottleMs) {
+            console.log('[App] fetchTrainLookahead: throttled');
+            return;
+        }
         this.lastLookaheadFetch = now;
         
+        console.log('[App] fetchTrainLookahead: proceeding to fetch');
         try {
-            // Use train data from network (which includes path_tile_info)
-            // The path_tile_info contains blocks, signals, switches, and stations ahead
-            if (!this.currentNetwork?.trains) return;
-            const train = this.currentNetwork.trains.find(t => t.id === trainId);
-            if (!train) return;
-            
             if (this.selectedTrainId === trainId) {
-                this.lastLookaheadData = train;  // Store for panel rebuilds
-                if (this.trainMonitor.isVisible()) {
-                    this.trainMonitor.update(train);
+                const trainSnapshot = train || this.currentNetwork?.trains?.find(t => t.id === trainId);
+                if (!trainSnapshot) {
+                    console.log('[App] fetchTrainLookahead: no train snapshot');
+                    return;
                 }
-                // Use trainMonitor's processed lookaheadData for debug panel
-                // This has the correctly named fields (current_speed_kmh, etc.)
+                console.log('[App] fetchTrainLookahead: calling api.getTrainLookahead');
+                const lookaheadPayload = await window.api.getTrainLookahead(trainId);
+                console.log('[App] fetchTrainLookahead: got payload', lookaheadPayload);
+                this.lastLookaheadPayload = lookaheadPayload;
+                if (this.trainMonitor.isVisible()) {
+                    this.trainMonitor.updateFromController(trainSnapshot, lookaheadPayload);
+                }
                 const lookaheadData = this.trainMonitor.lookaheadData;
                 if (lookaheadData) {
-                    // Add max_speed from train data
-                    lookaheadData.max_speed_kmh = train.max_speed || 0;
-                    // Add distance_to_next_tile_cm calculation
-                    if (train.path_tile_info && train.path_tile_info.length > 0) {
-                        const headIndex = train.leading_end === 'a' ? train.end_a_index : train.end_b_index;
-                        const headDistanceCm = train.leading_end === 'a' ? train.end_a_distance_cm : train.end_b_distance_cm;
-                        const headTileInfo = train.path_tile_info[headIndex];
+                    this.lastLookaheadData = lookaheadData;
+                    lookaheadData.max_speed_kmh = trainSnapshot.max_speed || 0;
+                    if (trainSnapshot.path_tile_info && trainSnapshot.path_tile_info.length > 0) {
+                        const headIndex = trainSnapshot.leading_end === 'a' ? trainSnapshot.end_a_index : trainSnapshot.end_b_index;
+                        const headDistanceCm = trainSnapshot.leading_end === 'a' ? trainSnapshot.end_a_distance_cm : trainSnapshot.end_b_distance_cm;
+                        const headTileInfo = trainSnapshot.path_tile_info[headIndex];
                         if (headTileInfo) {
                             lookaheadData.distance_to_next_tile_cm = (headTileInfo.length_cm || 50) - (headDistanceCm || 0);
                         }
@@ -803,7 +862,7 @@ class App {
                         this.updateTrainDebugPanel(train);
                         // Also trigger lookahead fetch immediately if checkbox is enabled
                         if (trainPosCheckbox.checked) {
-                            this.fetchTrainLookahead(this.selectedTrainId);
+                            this.fetchTrainLookahead(this.selectedTrainId, train);
                         }
                     }
                 } else {
@@ -998,8 +1057,7 @@ class App {
                     this.updateTrainDebugPanel(train);
                 }
                 
-                // Fetch lookahead for Monitor and Debug Panel
-                await this.fetchTrainLookahead(this.selectedTrainId);
+                // Train monitor lookahead updates via StateManager subscription
             }
         }, 200);
     }

@@ -1995,6 +1995,17 @@ def get_onboard_computer(train_id):
     return jsonify(controller.to_dict())
 
 
+@app.route("/api/trains/<train_id>/lookahead", methods=["GET"])
+def get_train_monitor_lookahead(train_id):
+    """Get Train Monitor lookahead data from TrainController."""
+    train = network.trains.get(train_id)
+    if not train:
+        return jsonify({"error": "Train not found"}), 404
+
+    controller = _get_train_controller(train)
+    return jsonify(controller.get_monitor_lookahead())
+
+
 @app.route("/api/trains/<train_id>/handle", methods=["POST"])
 def set_handle_position(train_id):
     """Set throttle/brake handle position."""

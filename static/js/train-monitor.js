@@ -391,6 +391,64 @@ class TrainMonitor {
         this.updateUpcomingElements(this.lookaheadData);
         this.render();
     }
+
+    updateFromController(train, payload) {
+        if (!train) {
+            console.warn('[TrainMonitor] No train data');
+            this.lookaheadData = null;
+            this.render();
+            return;
+        }
+
+        const lookahead = payload && payload.lookahead ? payload.lookahead : null;
+        this.lookaheadData = {
+            current_speed_kmh: train.speed || 0,
+            target_speed_kmh: train.target_speed || 0,
+            state: train.state,
+            wait_reason: train.wait_reason,
+            speed_limit_reason: train.speed_limit_reason,
+            blocks: lookahead?.blocks || [],
+            signals: lookahead?.signals || [],
+            switches: lookahead?.switches || [],
+            stations: lookahead?.stations || [],
+            distance_into_path_cm: 0,
+            clearance_cm: lookahead?.clearance_cm || 0
+        };
+
+        this.currentSpeedEl.textContent = Math.round(this.lookaheadData.current_speed_kmh || 0);
+        this.targetSpeedEl.textContent = Math.round(this.lookaheadData.target_speed_kmh || 0);
+
+        if (this.speedCmsEl) {
+            const speedCms = ((this.lookaheadData.current_speed_kmh || 0) * 27.78 / this.currentScale).toFixed(1);
+            this.speedCmsEl.textContent = speedCms;
+        }
+        if (this.clearanceEl) {
+            const clearanceM = ((this.lookaheadData.clearance_cm || 0) / 100).toFixed(1);
+            this.clearanceEl.textContent = clearanceM;
+        }
+
+        if (this.waitReasonEl) {
+            if (this.lookaheadData.state === 'running_waiting' && this.lookaheadData.wait_reason) {
+                this.waitReasonEl.textContent = this.lookaheadData.wait_reason;
+                this.waitReasonEl.classList.remove('hidden');
+            } else {
+                this.waitReasonEl.classList.add('hidden');
+            }
+        }
+
+        if (this.speedLimitReasonEl) {
+            const speedLimitReason = this.lookaheadData.speed_limit_reason;
+            if (speedLimitReason && this.lookaheadData.state !== 'running_waiting') {
+                this.speedLimitReasonEl.textContent = speedLimitReason;
+                this.speedLimitReasonEl.classList.remove('hidden');
+            } else {
+                this.speedLimitReasonEl.classList.add('hidden');
+            }
+        }
+
+        this.updateUpcomingElements(this.lookaheadData);
+        this.render();
+    }
     
     _displayConfigurationWarnings(warnings, trainId) {
         // Display configuration warnings via toast notifications.

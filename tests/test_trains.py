@@ -149,6 +149,109 @@ class TestTrainPlacementOccupancy:
         assert block.occupied_by == "TRAIN_03"
 
 
+class TestTrainControllerMonitorLookahead:
+    """
+    Tests for TrainController lookahead payload used by Train Monitor.
+
+    Ensures head-relative block offsets remain stable across tile transitions and
+    cab direction changes are reflected in the lookahead head tile.
+    """
+
+    def test_block_offsets_include_tiles_behind_head(self, network):
+        for x in range(3):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track.block_section_id = "BLOCK_MAIN"
+            network.add_track(track)
+
+        train = Train(train_id="TRAIN_LOOKAHEAD")
+        train.position = make_train_position(
+            head_tile=(1, 0),
+            facing_direction=Direction.EAST,
+            head_distance_cm=20.0,
+        )
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 1
+        network.add_train(train)
+
+        controller = TrainController(train_id=train.train_id, network=network)
+
+        payload = controller.get_monitor_lookahead()
+        blocks = payload["lookahead"]["blocks"]
+
+        assert blocks[0]["start_cm"] == pytest.approx(-70.0)
+        assert blocks[0]["end_cm"] == pytest.approx(80.0)
+
+    def test_block_offsets_reset_on_new_block(self, network):
+        for x in range(2):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track.block_section_id = "BLOCK_A"
+            network.add_track(track)
+
+        track = TrackSegment(x=2, y=0, track_bits=TRACK_EW)
+        track.block_section_id = "BLOCK_B"
+        network.add_track(track)
+
+        train = Train(train_id="TRAIN_LOOKAHEAD_RESET")
+        train.position = make_train_position(
+            head_tile=(1, 0),
+            facing_direction=Direction.EAST,
+            head_distance_cm=20.0,
+        )
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 1
+        network.add_train(train)
+
+        controller = TrainController(train_id=train.train_id, network=network)
+        payload = controller.get_monitor_lookahead()
+        blocks = payload["lookahead"]["blocks"]
+
+        assert blocks[1]["start_cm"] == pytest.approx(30.0)
+        assert blocks[1]["end_cm"] == pytest.approx(80.0)
+
+    def test_cab_switch_updates_head_tile(self, network):
+        for x in range(3):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track.block_section_id = "BLOCK_MAIN"
+            network.add_track(track)
+
+        train = Train(train_id="TRAIN_LOOKAHEAD_CAB")
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=10.0,
+            end_a_entry_edge="W",
+            end_b_tile=(2, 0),
+            end_b_distance_cm=10.0,
+            end_b_entry_edge="E",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+        )
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 0
+        network.add_train(train)
+
+        controller = TrainController(train_id=train.train_id, network=network)
+
+        controller.set_cab("A")
+        payload_a = controller.get_monitor_lookahead()
+        assert payload_a["head_tile"] == [0, 0]
+
+        controller.set_cab("B")
+        payload_b = controller.get_monitor_lookahead()
+        assert payload_b["head_tile"] == [2, 0]
+
+
 class TestTrainPropertyUpdate:
     """Tests for train property updates."""
 

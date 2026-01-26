@@ -1977,6 +1977,257 @@ class TrainController:
             "is_stopped": train.is_stopped() if train else True,
         }
 
+    def get_monitor_lookahead(self) -> Dict[str, Any]:
+        """Build Train Monitor lookahead payload from controller state."""
+        train = self._get_train()
+        if not train or not self.network:
+            return {
+                "train_id": self.train_id,
+                "head_tile": None,
+                "head_distance_cm": 0.0,
+                "travel_direction": None,
+                "cab": self.active_cab,
+                "lookahead": {
+                    "blocks": [],
+                    "signals": [],
+                    "switches": [],
+                    "stations": [],
+                    "clearance_cm": 0.0,
+                },
+            }
+
+        head_tile = self._get_head_tile()
+        head_distance_cm = self._get_head_distance_cm()
+        travel_direction = (
+            train.position.facing_direction.name
+            if train.position and train.position.facing_direction
+            else None
+        )
+
+        if not head_tile:
+            return {
+                "train_id": self.train_id,
+                "head_tile": None,
+                "head_distance_cm": head_distance_cm,
+                "travel_direction": travel_direction,
+                "cab": self.active_cab,
+                "lookahead": {
+                    "blocks": [],
+                    "signals": [],
+                    "switches": [],
+                    "stations": [],
+                    "clearance_cm": 0.0,
+                },
+            }
+
+        head_path_index = self._get_head_path_index(train, head_tile)
+        if head_path_index < 0 or not train.current_path:
+            return {
+                "train_id": self.train_id,
+                "head_tile": [head_tile[0], head_tile[1]],
+                "head_distance_cm": head_distance_cm,
+                "travel_direction": travel_direction,
+                "cab": self.active_cab,
+                "lookahead": {
+                    "blocks": [],
+                    "signals": [],
+                    "switches": [],
+                    "stations": [],
+                    "clearance_cm": 0.0,
+                },
+            }
+
+        blocks: List[Dict[str, Any]] = []
+        signals: List[Dict[str, Any]] = []
+        switches: List[Dict[str, Any]] = []
+        stations: List[Dict[str, Any]] = []
+
+        cumulative_distance_cm = -head_distance_cm
+
+        current_block_id = None
+        block_back_length_cm = 0.0
+        block_back_tile_count = 0
+        head_track = self.network.get_track(head_tile[0], head_tile[1])
+        if head_track:
+            current_block_id = head_track.block_section_id
+
+        if current_block_id:
+            for j in range(head_path_index - 1, -1, -1):
+                prev_entry = train.current_path[j]
+                prev_x, prev_y = prev_entry[0], prev_entry[1]
+                prev_track = self.network.get_track(prev_x, prev_y)
+                prev_block_id = prev_track.block_section_id if prev_track else None
+                if prev_block_id != current_block_id:
+                    break
+                block_back_length_cm += self.network._get_tile_length_cm(prev_x, prev_y)
+                block_back_tile_count += 1
+
+        current_block_start_cm = (
+            cumulative_distance_cm - block_back_length_cm
+            if current_block_id
+            else cumulative_distance_cm
+        )
+
+        seen_blocks: set[str] = set()
+        seen_signals: set[str] = set()
+        seen_switches: set[Tuple[int, int]] = set()
+        seen_stations: set[str] = set()
+
+        for i in range(head_path_index, len(train.current_path)):
+            path_entry = train.current_path[i]
+            x, y = path_entry[0], path_entry[1]
+            track = self.network.get_track(x, y)
+            tile_length = self.network._get_tile_length_cm(x, y) if track else 50.0
+            tile_block_id = track.block_section_id if track else None
+            travel_direction = (
+                path_entry[2].name
+                if len(path_entry) > 2 and hasattr(path_entry[2], "name")
+                else None
+            )
+            point_element_start = max(0.0, cumulative_distance_cm)
+
+            if tile_block_id and tile_block_id != current_block_id:
+                current_block_id = tile_block_id
+                current_block_start_cm = cumulative_distance_cm
+
+            if tile_block_id and tile_block_id not in seen_blocks:
+                seen_blocks.add(tile_block_id)
+                block_length = 0.0
+                tile_count = 0
+                for j in range(i, len(train.current_path)):
+                    next_entry = train.current_path[j]
+                    next_x, next_y = next_entry[0], next_entry[1]
+                    next_track = self.network.get_track(next_x, next_y)
+                    next_block_id = next_track.block_section_id if next_track else None
+                    if next_block_id != tile_block_id:
+                        break
+                    block_length += self.network._get_tile_length_cm(next_x, next_y)
+                    tile_count += 1
+
+                if (
+                    tile_block_id == current_block_id
+                    and i == head_path_index
+                    and block_back_length_cm > 0.0
+                ):
+                    block_length += block_back_length_cm
+                    tile_count += block_back_tile_count
+
+                block_state = None
+                block = self.network.blocks.get(tile_block_id)
+                if block and block.state:
+                    block_state = block.state.value
+
+                blocks.append(
+                    {
+                        "id": tile_block_id,
+                        "name": tile_block_id,
+                        "state": block_state or BlockState.FREE.value,
+                        "start_cm": current_block_start_cm,
+                        "end_cm": current_block_start_cm + block_length,
+                        "length_cm": block_length,
+                        "tile_count": tile_count,
+                    }
+                )
+
+            if track and track.signal_ids and travel_direction:
+                train_dir = travel_direction.upper()
+                for signal_id in track.signal_ids:
+                    if signal_id in seen_signals:
+                        continue
+                    signal = self.network.signals.get(signal_id)
+                    if not signal:
+                        continue
+                    sig_dir = (signal.detection_direction or "").upper()
+                    dir_matches = (
+                        sig_dir == train_dir
+                        or sig_dir == train_dir[:1]
+                        or sig_dir[:1] == train_dir[:1]
+                    )
+                    if not dir_matches:
+                        continue
+                    seen_signals.add(signal_id)
+                    signals.append(
+                        {
+                            "id": signal_id,
+                            "name": signal.name or signal_id,
+                            "state": signal.state.value if signal.state else "unknown",
+                            "distance_cm": point_element_start,
+                        }
+                    )
+
+            if track and track.is_switch:
+                switch_key = (x, y)
+                if switch_key not in seen_switches:
+                    seen_switches.add(switch_key)
+                    switch_entity = (
+                        self.network.get_switch_at(x, y)
+                        if hasattr(self.network, "get_switch_at")
+                        else None
+                    )
+                    switches.append(
+                        {
+                            "x": x,
+                            "y": y,
+                            "name": switch_entity.name
+                            if switch_entity and switch_entity.name
+                            else f"Switch ({x},{y})",
+                            "position": "main"
+                            if track.switch_state == 0
+                            else "diverging",
+                            "distance_cm": point_element_start,
+                            "locked": track.is_locked_by_path()
+                            if hasattr(track, "is_locked_by_path")
+                            else False,
+                        }
+                    )
+
+            if track and track.station_id:
+                station_id = track.station_id
+                if station_id not in seen_stations:
+                    seen_stations.add(station_id)
+                    station = self.network.stations.get(station_id)
+                    station_length = station.length_cm if station else 0.0
+                    station_tile_count = 0
+                    if not station_length:
+                        for j in range(i, len(train.current_path)):
+                            next_entry = train.current_path[j]
+                            next_x, next_y = next_entry[0], next_entry[1]
+                            next_track = self.network.get_track(next_x, next_y)
+                            if not next_track or next_track.station_id != station_id:
+                                break
+                            station_length += self.network._get_tile_length_cm(
+                                next_x, next_y
+                            )
+                            station_tile_count += 1
+                    stations.append(
+                        {
+                            "station_id": station_id,
+                            "name": station.name if station else station_id,
+                            "distance_cm": point_element_start,
+                            "length_cm": station_length,
+                            "tile_count": station_tile_count or 1,
+                        }
+                    )
+
+            cumulative_distance_cm += tile_length
+
+        clearance_cm = max(0.0, cumulative_distance_cm)
+
+        return {
+            "train_id": self.train_id,
+            "head_tile": [head_tile[0], head_tile[1]],
+            "head_distance_cm": head_distance_cm,
+            "travel_direction": travel_direction,
+            "cab": self.active_cab,
+            "lookahead": {
+                "blocks": blocks,
+                "signals": signals,
+                "switches": switches,
+                "stations": stations,
+                "clearance_cm": clearance_cm,
+            },
+        }
+
     @classmethod
     def from_dict(
         cls, data: Dict[str, Any], network: "RailwayNetwork"

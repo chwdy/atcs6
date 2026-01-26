@@ -1571,14 +1571,21 @@ class API {
 
     /**
      * Get train lookahead data (blocks, signals, etc. ahead of train).
-     * NOTE: Backend endpoint not yet implemented - returns null.
      * @param {string} trainId - Train ID
-     * @returns {Promise<object|null>} Lookahead data or null if not available
+     * @returns {Promise<object>} Lookahead data
      */
     async getTrainLookahead(trainId) {
-        // TODO: Implement backend endpoint /api/trains/{trainId}/lookahead
-        // For now, return null to indicate feature not available
-        return null;
+        try {
+            const response = await fetch(`${this.baseUrl}/trains/${trainId}/lookahead`);
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.error || 'Failed to get train lookahead');
+            }
+            return await response.json();
+        } catch (e) {
+            console.error('[API] getTrainLookahead failed:', e);
+            throw e;
+        }
     }
 }
 
