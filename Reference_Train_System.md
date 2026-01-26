@@ -12,7 +12,7 @@
 3. [Entity Relationships](#3-entity-relationships)
 4. [SpeedProfile Specification](#4-speedprofile-specification)
 5. [Route & Waypoint Specification](#5-route--waypoint-specification)
-6. [TrainATC Specification](#6-trainatc-specification)
+6. [ATC Specification (TrainController)](#6-atc-specification-traincontroller)
 7. [BlockPowerController Specification](#7-blockpowercontroller-specification)
 8. [Train Class Modifications](#8-train-class-modifications)
 9. [Block Class Modifications](#9-block-class-modifications)
@@ -102,7 +102,7 @@ This document specifies the Train System for the railway management platform, en
 | `TimingMode` | `train_route.py` | ABSOLUTE / RELATIVE / NONE |
 | `RouteMode` | `train_route.py` | ONE_WAY / LOOP / ROUND_TRIP |
 | `BlockPowerController` | `block_power.py` | Manages voltage output to blocks |
-| `TrainATC` | `train_atc.py` | Automatic speed control |
+| `TrainController` | `train_controller.py` | ATC + ATO decisions and command handling |
 
 ### 2.2 Modified Entities
 
@@ -163,7 +163,7 @@ This document specifies the Train System for the railway management platform, en
 ┌──────────────────────┐                         │ monitors
 │ BlockPowerController │                         │
 │ ──────────────────── │               ┌─────────────────────┐
-│ set_block_voltage()  │               │     TrainATC        │
+│ set_block_voltage()  │               │ TrainController (ATC)│
 │ get_block_voltage()  │               │   ───────────       │
 │ output_interface     │ ◄──────────── │   get_clearance()   │
 └──────────────────────┘   commands    │   calculate_limit() │
@@ -436,11 +436,11 @@ class Route:
 
 ---
 
-## 6. TrainATC Specification
+## 6. ATC Specification (TrainController)
 
 ### 6.1 Purpose
 
-Automatic Train Control (ATC) limits train speed based on the available clearance ahead. It prevents collisions by calculating safe braking curves.
+Automatic Train Control (ATC) limits train speed based on the available clearance ahead. It prevents collisions by calculating safe braking curves. ATC logic is implemented inside `TrainController`.
 
 ### 6.2 Core Algorithm
 
@@ -497,103 +497,21 @@ def calculate_max_safe_speed(
     return v_kmh
 ```
 
-### 6.4 Class Definition
+### 6.4 Controller Methods
 
 ```python
 @dataclass
-class TrainATC:
-    """Automatic Train Control - limits speed based on clearance."""
-    
-    train: 'Train'
-    network: 'RailwayNetwork'
-    
-    # Configuration
-    safety_margin_cm: float = 50.0  # Buffer before obstruction
-    signal_lookahead_blocks: int = 3  # How many blocks to check signals
-    
+class TrainController:
+    """ATC + ATO + command handling for a train."""
+
     def get_clearance_ahead(self) -> float:
-        """
-        Calculate available clearance in cm.
-        
-        Follows the train's current path forward, summing block lengths
-        until hitting an obstruction (occupied block, red signal, end of path).
-        
-        Returns:
-            Distance in cm until next obstruction
-        """
-        clearance = 0.0
-        
-        # Start from train's current position
-        current_block = self._get_current_block()
-        if not current_block:
-            return 0.0
-        
-        # Add remaining distance in current block
-        clearance += self._get_remaining_distance_in_block()
-        
-        # Follow path forward
-        for block_id in self._get_blocks_ahead():
-            block = self.network.blocks.get(block_id)
-            if not block:
-                break
-            
-            # Check if block is clear
-            if block.state == BlockState.OCCUPIED:
-                if block.occupied_by != self.train.train_id:
-                    break  # Another train ahead
-            
-            # Check signals
-            if self._is_signal_red_for_block(block_id):
-                break
-            
-            clearance += block.length_cm
-        
-        return clearance
-    
+        """Calculate available clearance in cm along the assigned path."""
+
     def get_speed_limit(self) -> float:
-        """
-        Get the current ATC speed limit.
-        
-        Considers:
-        - Clearance ahead (braking curve)
-        - Block speed limits
-        - Signal aspects (YELLOW = caution speed)
-        
-        Returns:
-            Maximum allowed speed in km/h
-        """
-        clearance = self.get_clearance_ahead()
-        profile = self._get_speed_profile()
-        
-        # Calculate max speed for braking curve
-        safe_speed = calculate_max_safe_speed(
-            clearance,
-            profile.deceleration_rate,
-            self.safety_margin_cm
-        )
-        
-        # Check for yellow signals (caution speed)
-        if self._is_approaching_yellow_signal():
-            safe_speed = min(safe_speed, YELLOW_SIGNAL_SPEED_KMH)
-        
-        # Check block speed limits
-        block_limit = self._get_current_block_speed_limit()
-        
-        return min(safe_speed, block_limit)
-    
+        """Calculate ATC speed limit using braking curves and signal states."""
+
     def get_target_speed(self) -> float:
-        """
-        Get the target speed for the train.
-        
-        Returns min of:
-        - Train's max_speed
-        - Current block's speed limit
-        - ATC calculated limit
-        """
-        return min(
-            self.train.max_speed,
-            self.get_speed_limit()
-        )
+        """Return the minimum of train max speed and ATC limits."""
 ```
 
 ---
@@ -995,33 +913,12 @@ class TrainPosition:
    - For head: typically near tile_length (at exit edge)
    - For tail: distance from entry edge to where tail stops
 
-**Backward Compatibility:**
-
-The Train class provides legacy properties that auto-sync with TrainPosition:
-
-```python
-@property
-def current_pos(self) -> Optional[Tuple[int, int]]:
-    """Get current head position (tile coordinates)."""
-    if self.position:
-        return self.position.head_tile
-    return self._current_pos
-
-@current_pos.setter
-def current_pos(self, value: Optional[Tuple[int, int]]):
-    """Set current position (updates both legacy and new position system)."""
-    self._current_pos = value
-    if self.position and value:
-        self.position.end_a_tile = value
-```
-
 **Frontend Data Format:**
 
-The `to_dict()` method outputs two position formats:
+The `to_dict()` method outputs TrainPosition data and renderer helpers:
 
 ```python
 {
-    # New format - full TrainPosition data
     "position": {
         "end_a": {"tile": [0, 0], "distance_cm": 50.0, "entry_edge": "W"},
         "end_b": {"tile": [0, 0], "distance_cm": 10.0, "entry_edge": "W"},
@@ -1030,17 +927,16 @@ The `to_dict()` method outputs two position formats:
         "occupied_tiles": [[0, 0]],
         "occupied_blocks": ["BLOCK_1"]
     },
-    
-    # Legacy format - for backward compatible frontend
-    "position_legacy": {
-        "x": 0, "y": 0,
-        "distance": 1.0,  # 0-1 ratio for frontend interpolation
-        "tile_length_cm": 50.0,
-        "entry_edge": "W",
-        "exit_edge": "E"
-    },
-    
-    # Rich tile data for rendering train on each occupied tile
+    "path_tiles": [[0, 0]],
+    "path_tile_info": [{"length_cm": 50.0}],
+    "end_a_index": 0,
+    "end_b_index": 0,
+    "end_a_distance_cm": 50.0,
+    "end_b_distance_cm": 10.0,
+    "end_a_entry_edge": "W",
+    "end_b_entry_edge": "W",
+    "leading_end": "a",
+    "direction": "EAST",
     "occupied_tiles_rich": [
         {
             "tile": [0, 0],
@@ -1083,56 +979,30 @@ def place_train(self, train, tile_x, tile_y, direction):
 ```
 
 ```python
-def get_occupied_blocks(self) -> List[str]:
+def get_occupied_blocks(self, network: RailwayNetwork) -> List[str]:
     """
     Get all blocks this train occupies based on its length.
     
-    Traces back from head position along the path for train.length distance.
+    Uses TrainPosition.occupied_tiles and block assignments when available.
     
     Returns:
         List of block IDs from head to tail
     """
     occupied = []
-    remaining_length = self.length * 100  # Convert to cm
-    
-    # Start at head position
-    current_pos = self.current_pos
-    
-    while remaining_length > 0 and current_pos:
-        block_id = self._get_block_at_position(current_pos)
-        if block_id and block_id not in occupied:
-            occupied.append(block_id)
-        
-        # Move backward along path
-        current_pos = self._get_previous_position(current_pos)
-        remaining_length -= self._get_track_length_at(current_pos)
-    
+    for tile in self.position.occupied_tiles:
+        track = network.tracks.get(tile)
+        if track and track.block_section_id and track.block_section_id not in occupied:
+            occupied.append(track.block_section_id)
     return occupied
 
-def update_block_occupancy(self, network: 'RailwayNetwork') -> None:
-    """
-    Update which blocks this train occupies based on position and length.
-    
-    - Occupy new blocks as head enters
-    - Release old blocks as tail exits
-    """
-    new_occupied = set(self.get_occupied_blocks())
-    old_occupied = set(self.occupied_blocks) if hasattr(self, 'occupied_blocks') else set()
-    
-    # Occupy new blocks
-    for block_id in new_occupied - old_occupied:
-        network.block_manager.occupy_block(block_id, self.train_id)
-    
-    # Release old blocks
-    for block_id in old_occupied - new_occupied:
-        network.block_manager.clear_block(block_id)
-    
-    self.occupied_blocks = list(new_occupied)
 ```
+
+Block occupancy transitions are handled by `TrainPhysics` using `BlockManager` when the
+head enters or the tail clears a block.
 
 ### 8.8 Updated to_dict
 
-Add serialization for new properties. `to_dict` requires the `network` object to calculate distance ratios for the frontend:
+`to_dict()` includes TrainPosition and renderer helpers used by the frontend:
 
 ```python
 def to_dict(self, network=None) -> dict:
@@ -1148,35 +1018,39 @@ def to_dict(self, network=None) -> dict:
         "target_speed": self.target_speed,
         "manual_target_speed": self.manual_target_speed,
     }
-    
-    # New TrainPosition format (contains both ends)
+
     if self.position:
-        data["position"] = self.position.to_dict()
+        pos = self.position
+        data["position"] = pos.to_dict()
+        data["path_tiles"] = [list(t) for t in pos.occupied_tiles]
+        data["end_a_index"] = 0
+        data["end_b_index"] = max(0, len(pos.occupied_tiles) - 1)
+        data["end_a_distance_cm"] = pos.end_a_distance_cm
+        data["end_b_distance_cm"] = pos.end_b_distance_cm
+        data["end_a_entry_edge"] = pos.end_a_entry_edge
+        data["end_b_entry_edge"] = pos.end_b_entry_edge
+        data["leading_end"] = pos.leading_end
+
+        if network:
+            data["path_tile_info"] = [
+                {"length_cm": network._get_tile_length_cm(tile[0], tile[1])}
+                for tile in pos.occupied_tiles
+            ]
+
         if network and hasattr(network, "get_occupied_tiles_rich"):
             data["occupied_tiles_rich"] = network.get_occupied_tiles_rich(self)
-    
-    # Legacy position format (for backward compatible frontends)
-    if self.current_pos:
-        tile_length_cm = network._get_tile_length_cm(*self.current_pos) if network else 0.0
-        distance_ratio = self.distance_on_track / tile_length_cm if tile_length_cm > 0 else 0.0
-        data["position_legacy"] = {
-            "x": self.current_pos[0],
-            "y": self.current_pos[1],
-            "distance": distance_ratio,  # 0.0-1.0 for frontend interpolation
-            "tile_length_cm": tile_length_cm,
-            "entry_edge": ...,  # Calculated from direction
-            "exit_edge": ...
-        }
-        
+
+        if pos.facing_direction:
+            data["direction"] = pos.facing_direction.name
+
     return data
 ```
 
 ### 8.9 Notes on Units
 
-- `distance_on_track` is stored in **centimeters (cm)** from the entry edge.
-- `length` is defined in meters, but occupancy calculation converts it to cm.
-- The frontend receives a `distance` ratio (0.0 to 1.0) for smooth interpolation between tiles.
-- Use `train_config.kmh_to_cm_per_sec()` for physics calculations.
+- TrainPosition distances (`end_a_distance_cm`, `end_b_distance_cm`) are stored in **centimeters (cm)**.
+- Train lengths are stored in meters but converted to cm for occupancy calculations.
+- Use `model_scale.kmh_to_cm_per_sec()` for physics calculations.
 
 ### 8.10 Error Handling: Path Not Found
 
@@ -1254,7 +1128,8 @@ class SimulationController:
         self.path_dispatcher = path_dispatcher
         self.power_controller = BlockPowerController(network)
         self.route_executor = RouteExecutor(network, path_dispatcher)
-        self.atc_instances: Dict[str, TrainATC] = {}  # train_id → ATC
+        self.controllers: Dict[str, TrainController] = {}  # train_id → controller
+        self.physics_instances: Dict[str, TrainPhysics] = {}  # train_id → physics
         self.speed_profile_registry = SpeedProfileRegistry()
         
         # Timing
@@ -1319,10 +1194,7 @@ def _update_moving_train(self, train: Train, delta_seconds: float):
     # 5. Update train position
     self._update_train_position(train, delta_seconds)
     
-    # 6. Update block occupancy (DEPRECATED - handled by BlockManager)
-    # DO NOT USE: train.update_occupancy(self.network)
-    # Block occupancy is now managed centrally by BlockManager in block_manager.py
-    # to prevent race conditions with PathDispatcher reservations.
+    # 6. Update block occupancy via BlockManager (handled by TrainPhysics)
 ```
 
 ---
@@ -1687,7 +1559,7 @@ POST   /api/blocks/emergency-stop
 - [ ] Add API endpoints for voltage queries
 
 ### Phase 3: ATC System
-- [ ] Create `train_atc.py` with TrainATC
+- [ ] Implement ATC logic in `train_controller.py`
 - [ ] Implement clearance calculation (follow path, sum distances)
 - [ ] Implement braking curve math
 - [ ] Add yellow signal speed reduction

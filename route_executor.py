@@ -178,8 +178,8 @@ class RouteExecutor:
             )
             controller.turn_around()
 
-        if self.path_dispatcher and train.current_pos:
-            current_track = self.network.get_track(*train.current_pos)
+        if self.path_dispatcher and train.position:
+            current_track = self.network.get_track(*train.position.head_tile)
             if not current_track or not current_track.block_section_id:
                 if train.state == TrainState.RUNNING_WAITING:
                     train.wait_reason = "Train is not in a block"
@@ -256,7 +256,7 @@ class RouteExecutor:
         Returns:
             True if turn-around needed
         """
-        if not train.current_pos or not train.facing_direction:
+        if not train.position or not train.facing_direction:
             return False
 
         # Get station position
@@ -266,8 +266,8 @@ class RouteExecutor:
         target_pos = target_station.positions[0]
 
         # Calculate direction to target
-        dx = target_pos[0] - train.current_pos[0]
-        dy = target_pos[1] - train.current_pos[1]
+        dx = target_pos[0] - train.position.head_tile[0]
+        dy = target_pos[1] - train.position.head_tile[1]
 
         # Determine required direction (simplified - just use primary axis)
         if abs(dx) > abs(dy):
@@ -454,7 +454,7 @@ class RouteExecutor:
         Returns:
             True if train is at the correct target tile
         """
-        if not train.current_pos:
+        if not train.position:
             return False
 
         station = self.network.stations.get(station_id)
@@ -465,7 +465,7 @@ class RouteExecutor:
         if not target_tile:
             return False
 
-        return train.current_pos == target_tile
+        return train.position.head_tile == target_tile
 
     def _get_station_block_id(self, station) -> Optional[str]:
         if hasattr(station, "positions") and station.positions:

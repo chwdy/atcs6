@@ -159,19 +159,17 @@ class TrainMonitor {
         // LOOKAHEAD DATA SOURCE
         // ========================================================================
         // Primary: lookahead_tile_info (new format with precise distances)
-        // Fallback: path_tile_info (legacy, now also includes lookahead)
         //
         // Data comes from Train.to_dict() which now builds lookahead from current_path
         // starting at path_index (train head position)
-        const pathInfo = train.lookahead_tile_info || train.path_tile_info || [];
-        const pathTiles = train.lookahead_tiles || train.path_tiles || [];
+        const pathInfo = train.lookahead_tile_info || [];
+        const pathTiles = train.lookahead_tiles || [];
         const hasPathData = pathInfo.length > 0;
         
         if (!hasPathData) {
-            console.warn('[TrainMonitor] Missing or empty lookahead/path_tile_info', {
+            console.warn('[TrainMonitor] Missing or empty lookahead data', {
                 trainId: train.id,
                 hasLookaheadTileInfo: !!train.lookahead_tile_info,
-                hasPathTileInfo: !!train.path_tile_info,
                 pathLength: train.path_length,
                 pathIndex: train.path_index
             });

@@ -70,7 +70,7 @@ This document provides the complete technical specification for implementing sig
 ### 1.4 Important Implementation Note
 
 > ⚠️ **All modifications to signals and blocks MUST go through the API/class methods.**  
-> Direct manipulation of track properties is DEPRECATED and will be rejected.
+> Direct manipulation of track properties is rejected.
 
 ---
 
@@ -1135,7 +1135,7 @@ Signal states are recalculated when:
 
 ### 7.3 Deprecated: Direct Track Manipulation
 
-> ⚠️ **DEPRECATED:** Modifying signal properties via `/api/track` is no longer supported.
+> ⚠️ Modifying signal properties via `/api/track` is not supported.
 
 The following track properties are **read-only** and synchronized from the authoritative signal/block objects:
 

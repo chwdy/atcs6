@@ -1564,29 +1564,9 @@ class Editor {
         try {
             const track = await this.api.getTrack(gridPos.x, gridPos.y);
             if (!track.error) {
-                // Handle signals - fetch full signal data for each signal
+                // Handle signals - refresh from API when available
                 if (track.signals && track.signals.length > 0) {
-                     // We already have signal objects in track.signals, but let's refresh them from API to be safe
-                     // or just trust what getTrack returned.
                      // The signals array contains {signal_id, direction, state, etc.}
-                } else if (track.signal_ids && track.signal_ids.length > 0) {
-                     // If we only have IDs (legacy/alt format), fetch them
-                     track.signals = [];
-                     for (const signalId of track.signal_ids) {
-                         const signal = await this.api.getSignal(signalId);
-                         if (signal && !signal.error) {
-                             track.signals.push(signal);
-                         }
-                     }
-                }
-
-                // If track has a signal state but no signals array (legacy single signal)
-                if (track.signal_state && (!track.signals || track.signals.length === 0)) {
-                    // Try to fetch signal at location
-                    const signal = await this.api.getSignalAt(gridPos.x, gridPos.y);
-                    if (signal && !signal.error) {
-                         track.signals = [signal];
-                    }
                 }
 
                 // Refresh blocks list to ensure dropdowns are up-to-date
@@ -1801,9 +1781,7 @@ class Editor {
                                 return headEnd.tile[0] === track.x && headEnd.tile[1] === track.y;
                             }
                         }
-                        // Legacy fallback
-                        const legacyPos = t.position_legacy || (t.position && typeof t.position.x === 'number' ? t.position : null);
-                        return legacyPos && legacyPos.x === track.x && legacyPos.y === track.y;
+                        return false;
                     })
                     : [];
                 if (trainsAtTile.length === 0) return '';
@@ -1949,9 +1927,7 @@ class Editor {
                         return headEnd.tile[0] === track.x && headEnd.tile[1] === track.y;
                     }
                 }
-                // Legacy fallback
-                const legacyPos = t.position_legacy || (t.position && typeof t.position.x === 'number' ? t.position : null);
-                return legacyPos && legacyPos.x === track.x && legacyPos.y === track.y;
+                return false;
             })
             : [];
         

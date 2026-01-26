@@ -13,6 +13,7 @@ import pytest
 from train_route import Route, Waypoint, TimingMode, RouteMode
 from route_executor import RouteExecutor, RouteExecutionState
 from train import Train
+from tests.train_test_helpers import make_train_position
 from network import RailwayNetwork
 from station import Station
 from enums import Direction, TrainState
@@ -32,7 +33,7 @@ class TestRouteAndWaypoint:
                 Waypoint(station_id="STA_A", dwell_time_sec=10.0),
                 Waypoint(station_id="STA_B", dwell_time_sec=15.0),
                 Waypoint(station_id="STA_C", dwell_time_sec=5.0),
-            ]
+            ],
         )
         return route
 
@@ -88,7 +89,7 @@ class TestRouteAndWaypoint:
                 Waypoint(station_id="STA_A"),
                 Waypoint(station_id="STA_B"),
                 Waypoint(station_id="STA_C"),
-            ]
+            ],
         )
 
         # Advance through waypoints
@@ -116,7 +117,7 @@ class TestRouteAndWaypoint:
                 Waypoint(station_id="STA_A"),
                 Waypoint(station_id="STA_B"),
                 Waypoint(station_id="STA_C"),
-            ]
+            ],
         )
 
         # Forward: A -> B -> C
@@ -147,24 +148,18 @@ class TestRouteAndWaypoint:
     def test_waypoint_dwell_time_none_mode(self):
         """Test waypoint dwell time with NONE timing mode."""
         waypoint = Waypoint(
-            station_id="STA_A",
-            dwell_time_sec=30.0,
-            timing_mode=TimingMode.NONE
+            station_id="STA_A", dwell_time_sec=30.0, timing_mode=TimingMode.NONE
         )
 
         # Arrived 10 seconds ago - should not depart yet
         should_depart = waypoint.should_depart(
-            time_at_station=10.0,
-            route_start_time=0.0,
-            simulation_time=10.0
+            time_at_station=10.0, route_start_time=0.0, simulation_time=10.0
         )
         assert should_depart is False
 
         # Arrived 30 seconds ago - should depart
         should_depart = waypoint.should_depart(
-            time_at_station=30.0,
-            route_start_time=0.0,
-            simulation_time=30.0
+            time_at_station=30.0, route_start_time=0.0, simulation_time=30.0
         )
         assert should_depart is True
 
@@ -174,22 +169,18 @@ class TestRouteAndWaypoint:
             station_id="STA_A",
             dwell_time_sec=10.0,
             timing_mode=TimingMode.RELATIVE,
-            target_time=60.0  # Depart 60 seconds after route start
+            target_time=60.0,  # Depart 60 seconds after route start
         )
 
         # Route started at time 100, now at time 140 (40 sec elapsed)
         should_depart = waypoint.should_depart(
-            time_at_station=5.0,
-            route_start_time=100.0,
-            simulation_time=140.0
+            time_at_station=5.0, route_start_time=100.0, simulation_time=140.0
         )
         assert should_depart is False  # Only 40 sec since route start
 
         # Now at time 160 (60 sec elapsed)
         should_depart = waypoint.should_depart(
-            time_at_station=25.0,
-            route_start_time=100.0,
-            simulation_time=160.0
+            time_at_station=25.0, route_start_time=100.0, simulation_time=160.0
         )
         assert should_depart is True
 
@@ -199,22 +190,18 @@ class TestRouteAndWaypoint:
             station_id="STA_A",
             dwell_time_sec=10.0,
             timing_mode=TimingMode.ABSOLUTE,
-            target_time=1000.0  # Depart at simulation time 1000
+            target_time=1000.0,  # Depart at simulation time 1000
         )
 
         # Current simulation time 900 - too early
         should_depart = waypoint.should_depart(
-            time_at_station=20.0,
-            route_start_time=0.0,
-            simulation_time=900.0
+            time_at_station=20.0, route_start_time=0.0, simulation_time=900.0
         )
         assert should_depart is False
 
         # Current simulation time 1000 - time to depart
         should_depart = waypoint.should_depart(
-            time_at_station=120.0,
-            route_start_time=0.0,
-            simulation_time=1000.0
+            time_at_station=120.0, route_start_time=0.0, simulation_time=1000.0
         )
         assert should_depart is True
 
@@ -246,7 +233,7 @@ class TestRouteAndWaypoint:
             station_id="STA_A",
             dwell_time_sec=45.0,
             timing_mode=TimingMode.RELATIVE,
-            target_time=120.0
+            target_time=120.0,
         )
 
         data = waypoint.to_dict()
@@ -261,7 +248,7 @@ class TestRouteAndWaypoint:
             "station_id": "STA_B",
             "dwell_time_sec": 60.0,
             "timing_mode": "absolute",
-            "target_time": 500.0
+            "target_time": 500.0,
         }
 
         waypoint = Waypoint.from_dict(data)
@@ -333,7 +320,7 @@ class TestRouteExecutor:
                 Waypoint(station_id="STA_A", dwell_time_sec=10.0),
                 Waypoint(station_id="STA_B", dwell_time_sec=15.0),
                 Waypoint(station_id="STA_C", dwell_time_sec=5.0),
-            ]
+            ],
         )
         return route
 
@@ -350,7 +337,7 @@ class TestRouteExecutor:
         train = Train(train_id="T001", current_speed=0.0)
         train.state = TrainState.IDLE
         train.facing_direction = Direction.EAST
-        train.current_pos = (0, 0)
+        train.position = make_train_position((0, 0), Direction.EAST)
 
         simple_network.routes[simple_route.route_id] = simple_route
 
@@ -383,7 +370,7 @@ class TestRouteExecutor:
         """Test checking if train is at station."""
         executor = RouteExecutor(simple_network)
         train = Train(train_id="T001")
-        train.current_pos = (0, 0)
+        train.position = make_train_position((0, 0), Direction.EAST)
 
         # Train is at STA_A
         assert executor._is_train_at_station(train, "STA_A") is True
@@ -392,7 +379,7 @@ class TestRouteExecutor:
         assert executor._is_train_at_station(train, "STA_B") is False
 
         # Move train to STA_B
-        train.current_pos = (1, 0)
+        train.position = make_train_position((1, 0), Direction.EAST)
         assert executor._is_train_at_station(train, "STA_B") is True
 
     def test_route_executor_get_execution_status(self, simple_network, simple_route):
@@ -421,10 +408,7 @@ class TestRouteExecutor:
 
     def test_execution_state_dataclass(self):
         """Test RouteExecutionState dataclass."""
-        state = RouteExecutionState(
-            train_id="T001",
-            route_id="R001"
-        )
+        state = RouteExecutionState(train_id="T001", route_id="R001")
 
         assert state.train_id == "T001"
         assert state.route_id == "R001"

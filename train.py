@@ -254,7 +254,6 @@ class Train:
 
     Position System:
     - position: TrainPosition with both ends tracked precisely (CURRENT SYSTEM)
-    - current_pos, distance_on_track: DEPRECATED - Legacy properties for backward compatibility only
 
     New in Phase 1:
     - model: Train model name (e.g., "BR 218", "Shinkansen E5")
@@ -297,14 +296,6 @@ class Train:
     # ========================================================================
     position: Optional[TrainPosition] = None
 
-    # Legacy position fields (DEPRECATED - use position property)
-    # These are kept for backward compatibility with old save files
-    # DO NOT USE IN NEW CODE - will be removed in future version
-    _current_pos: Optional[Tuple[int, int]] = field(default=None, repr=False)
-    _current_direction: Optional[Direction] = field(default=None, repr=False)
-    _distance_on_track: float = field(default=0.0, repr=False)
-    occupied_tracks: List[Tuple[int, int]] = field(default_factory=list)
-
     # Schedule management
     schedule: Optional[TrainSchedule] = None
 
@@ -334,10 +325,9 @@ class Train:
     # ========================================================================
     # PATH-QUEUE POSITION SYSTEM (Legacy - for future path-based renderer)
     # ========================================================================
-    # NOTE: This system is NOT currently active. The legacy movement system uses
-    # TrainPosition (updated by network.recalculate_train_position()).
-    # These fields are kept for future path-queue based rendering.
-    # For current train head/tail display, see TrainPosition class above.
+    # NOTE: This system is NOT currently active. The current renderer uses
+    # TrainPosition for head/tail display. These fields are kept for future
+    # path-queue based rendering.
     #
     # path_tiles: Flattened tile list for position queue (NOT used for lookahead)
     path_tiles: List[Tuple[int, int]] = field(default_factory=list)
@@ -394,61 +384,6 @@ class Train:
     def length_cm(self) -> float:
         """Total length of train in centimeters."""
         return sum(car.length for car in self.consist) if self.consist else 50.0
-
-    # ========================================================================
-    # Backward Compatibility Properties for Position
-    # These delegate to TrainPosition when available, fall back to legacy fields
-    # ========================================================================
-
-    @property
-    def current_pos(self) -> Optional[Tuple[int, int]]:
-        """Get current head position (tile coordinates)."""
-        if self.position:
-            return self.position.head_tile
-        return self._current_pos
-
-    @current_pos.setter
-    def current_pos(self, value: Optional[Tuple[int, int]]):
-        """Set current position (updates both legacy and new position system)."""
-        self._current_pos = value
-        # Also update TrainPosition if it exists
-        if self.position and value:
-            self.position.end_a_tile = value
-
-    @property
-    def current_direction(self) -> Optional[Direction]:
-        """Get current direction of travel."""
-        if self.position:
-            return self.position.facing_direction
-        return self._current_direction
-
-    @current_direction.setter
-    def current_direction(self, value: Optional[Direction]):
-        """Set current direction (updates both legacy and new position system)."""
-        self._current_direction = value
-        # Also update TrainPosition if it exists
-        if self.position and value:
-            self.position.facing_direction = value
-
-    @property
-    def distance_on_track(self) -> float:
-        """DEPRECATED: Use train.position instead. Legacy property for backward compatibility."""
-        import warnings
-
-        warnings.warn(
-            "distance_on_track is deprecated, use train.position instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._distance_on_track
-
-    @distance_on_track.setter
-    def distance_on_track(self, value: float):
-        """DEPRECATED: Use train.position instead. Legacy property for backward compatibility."""
-        self._distance_on_track = value
-        # Also update TrainPosition if it exists
-        if self.position:
-            self.position.end_a_distance_cm = value
 
     # Note: Mass-based calculations removed - using simplified physics model
 
@@ -616,67 +551,11 @@ class Train:
         self.end_a_entry_edge = None
         self.end_b_entry_edge = None
 
-    def update_physics(
-        self, delta_time: float, target_speed: float, track_length: float
-    ):
-        """
-        Update train physics (speed and position).
-
-        Args:
-            delta_time: Time step in seconds
-            target_speed: Target speed in km/h
-            track_length: Length of current track segment
-        """
-        # Update speed
-        if self.current_speed < target_speed:
-            # Accelerate
-            self.current_speed += (self.acceleration * 3.6) * delta_time
-            if self.current_speed > target_speed:
-                self.current_speed = target_speed
-        elif self.current_speed > target_speed:
-            # Decelerate
-            self.current_speed -= (self.acceleration * 3.6) * delta_time
-            if self.current_speed < target_speed:
-                self.current_speed = target_speed
-
-        # Update position
-        # Distance = speed * time
-        # speed in km/h, convert to track_units/sec?
-        # Let's assume 1 track unit = 100m for simulation scale
-        # speed (m/s) = km/h / 3.6
-        # distance (m) = speed * dt
-        # distance (units) = distance (m) / 100
-
-        speed_ms = self.current_speed / 3.6
-        dist_m = speed_ms * delta_time
-        dist_units = dist_m / 100.0
-
-        self.distance_on_track += dist_units
-
-        # Calculate energy consumption (simplified model without mass)
-        # Power (W) = Resistance * Velocity + Acceleration force * Velocity
-        g = 9.81
-        # Simplified resistance model without mass
-        resistance = 100.0 + 0.5 * 1.2 * 10 * speed_ms**2  # Base resistance + air drag
-
-        force = resistance
-        if self.current_speed < target_speed:
-            # Add simplified acceleration force (without mass dependency)
-            force += 1000.0 * self.acceleration  # Constant force factor
-
-        power_watts = force * speed_ms
-        if power_watts < 0:
-            power_watts = 0  # No regen braking for now
-
-        energy_joules = power_watts * delta_time
-        energy_kwh = energy_joules / 3600000.0
-
-        self.energy_consumed += energy_kwh / self.efficiency
-
     def is_at_station(self, station_pos: Tuple[int, int]) -> bool:
         """Check if train is currently at a specific station"""
         return (
-            self.current_pos == station_pos
+            self.position is not None
+            and self.position.head_tile == station_pos
             and self.state == TrainState.RUNNING_AT_STATION
         )
 
@@ -689,34 +568,15 @@ class Train:
 
     def is_delayed(self, current_time: datetime) -> bool:
         """Check if train is delayed according to its schedule"""
-        if not self.schedule or not self.current_pos:
+        if not self.schedule or not self.position:
             return False
-        return self.schedule.is_delayed(current_time, self.current_pos)
+        return self.schedule.is_delayed(current_time, self.position.head_tile)
 
     def get_next_scheduled_stop(self, current_time: datetime) -> Optional[ScheduleStop]:
         """Get the next stop in the train's schedule"""
         if self.schedule:
             return self.schedule.get_current_target(current_time)
         return None
-
-    def set_position(self, position: Tuple[int, int], direction: Direction):
-        """Update train's current position and direction"""
-        self.current_pos = position
-        self.current_direction = direction
-
-    def add_occupied_track(self, track_pos: Tuple[int, int]):
-        """Add a track to the list of tracks occupied by this train"""
-        if track_pos not in self.occupied_tracks:
-            self.occupied_tracks.append(track_pos)
-
-    def remove_occupied_track(self, track_pos: Tuple[int, int]):
-        """Remove a track from the list of occupied tracks"""
-        if track_pos in self.occupied_tracks:
-            self.occupied_tracks.remove(track_pos)
-
-    def clear_occupied_tracks(self):
-        """Clear all occupied tracks"""
-        self.occupied_tracks.clear()
 
     def has_path(self) -> bool:
         """Check if train has a planned path"""
@@ -1235,124 +1095,24 @@ class Train:
         Returns:
             List of block IDs from head to tail
         """
-        if not self.current_pos:
-            # No position - fall back to reserved_blocks if available
-            if self.reserved_blocks:
-                return self.reserved_blocks
-            return []
+        if not self.position:
+            return self.reserved_blocks if self.reserved_blocks else []
 
-        # If no network provided, can't calculate occupancy
+        if self.position.occupied_blocks:
+            return list(self.position.occupied_blocks)
+
         if not network:
-            if self.reserved_blocks:
-                return self.reserved_blocks
-            return []
+            return self.reserved_blocks if self.reserved_blocks else []
 
-        # Multi-block case: calculate based on length and path
         occupied = []
-        remaining_length_cm = self.length * 10000
-
-        # Find current position in path
-        if not self.current_path:
-            # No path - can't trace backward, use current block only
-            if self.current_pos:
-                track = network.tracks.get(self.current_pos)
-                if track and track.block_section_id:
-                    return [track.block_section_id]
-            return []
-
-        # Determine current path index
-        current_path_idx = self.path_index if hasattr(self, "path_index") else 0
-
-        # distance_on_track is already in cm
-        distance_in_current_tile_cm = self.distance_on_track
-
-        # Trace backward through path positions until train length is covered
-        visited_positions = set()
-
-        for i in range(current_path_idx, -1, -1):
-            if remaining_length_cm <= 0:
-                break
-
-            # Get position from path
-            if i >= len(self.current_path):
-                break
-
-            pos_x, pos_y, _ = self.current_path[i]
-            current_pos = (pos_x, pos_y)
-
-            if current_pos in visited_positions:
-                # Avoid infinite loop on circular paths
-                break
-            visited_positions.add(current_pos)
-
-            track = network.tracks.get(current_pos)
-            if not track:
-                break
-
-            # Add this block if it has one and not already in list
-            if track.block_section_id and track.block_section_id not in occupied:
+        for tile in self.position.occupied_tiles:
+            track = network.tracks.get(tile)
+            if not track or not track.block_section_id:
+                continue
+            if track.block_section_id not in occupied:
                 occupied.append(track.block_section_id)
 
-            # Get actual tile length from network
-            tile_length_cm = network._get_tile_length_cm(pos_x, pos_y)
-
-            # Calculate how much of train is in this track segment
-            if i == current_path_idx:
-                # Current position - train has traveled distance_on_track cm
-                block_coverage = min(remaining_length_cm, distance_in_current_tile_cm)
-            else:
-                # Previous track segments - train occupies full tile length
-                block_coverage = min(remaining_length_cm, tile_length_cm)
-
-            remaining_length_cm -= block_coverage
-
-        # If we got blocks from calculation, return them
-        if occupied:
-            return occupied
-
-        # Otherwise fall back to reserved_blocks
-        if self.reserved_blocks:
-            return self.reserved_blocks
-
-        return []
-
-    def update_occupancy(self, network) -> None:
-        """
-        Update which blocks this train occupies based on position and length.
-
-        DEPRECATED: This method creates race conditions when called alongside
-        PathDispatcher. Use BlockManager directly for production code.
-
-        This method is kept for backward compatibility. It delegates to BlockManager
-        when available. Avoid using in new production code.
-
-        Args:
-            network: Railway network
-        """
-        if not network or not hasattr(network, "blocks"):
-            return
-
-        new_occupied = set(self.get_occupied_blocks(network))
-        old_occupied = set(self.reserved_blocks) if self.reserved_blocks else set()
-
-        if hasattr(network, "block_manager") and network.block_manager:
-            for block_id in new_occupied - old_occupied:
-                network.block_manager.occupy_block(block_id, self.train_id)
-
-            for block_id in old_occupied - new_occupied:
-                network.block_manager.release_block(block_id, self.train_id)
-        else:
-            for block_id in new_occupied - old_occupied:
-                block = network.blocks.get(block_id)
-                if block and hasattr(block, "occupy"):
-                    block.occupy(self.train_id)
-
-            for block_id in old_occupied - new_occupied:
-                block = network.blocks.get(block_id)
-                if block and hasattr(block, "release"):
-                    block.release()
-
-        self.reserved_blocks = list(new_occupied)
+        return occupied
 
     def is_opposite_polarity_safe(self, network=None) -> bool:
         """
@@ -1403,7 +1163,6 @@ class Train:
             "speed": self.current_speed,
             "max_speed": self.max_speed,
             "num_cars": self.num_cars,
-            "occupied_tracks": self.occupied_tracks,
             "model": self.model,
             "min_radius_cm": self.min_radius_cm,
             "facing_direction": self.facing_direction.name
@@ -1422,7 +1181,6 @@ class Train:
             # Path info for debug
             "path_index": self.path_index,
             "path_length": len(self.current_path) if self.current_path else 0,
-            "distance_on_track_cm": self.distance_on_track,
             # Current path as list of tiles with direction
             "current_path": [
                 {"x": x, "y": y, "dir": d.name if d else None}
@@ -1431,58 +1189,29 @@ class Train:
         }
 
         # Position data for rendering
-        # Include BOTH legacy format (x, y, distance) AND new TrainPosition format
-        # for backward compatibility with renderer
-        if self.current_pos:
-            # Default tile length if network not available
-            tile_length_cm = 50.0
-            if network and hasattr(network, "_get_tile_length_cm"):
-                tile_length_cm = network._get_tile_length_cm(*self.current_pos)
+        if self.position:
+            pos = self.position
+            data["position"] = pos.to_dict()
+            data["path_tiles"] = [list(t) for t in pos.occupied_tiles]
+            data["end_a_index"] = 0
+            data["end_b_index"] = max(0, len(pos.occupied_tiles) - 1)
+            data["end_a_distance_cm"] = pos.end_a_distance_cm
+            data["end_b_distance_cm"] = pos.end_b_distance_cm
+            data["end_a_entry_edge"] = pos.end_a_entry_edge
+            data["end_b_entry_edge"] = pos.end_b_entry_edge
+            data["leading_end"] = pos.leading_end
 
-            distance_ratio = (
-                self.distance_on_track / tile_length_cm if tile_length_cm > 0 else 0.0
-            )
-            distance_ratio = max(0.0, min(1.0, distance_ratio))
+            if network:
+                data["path_tile_info"] = [
+                    {"length_cm": network._get_tile_length_cm(tile[0], tile[1])}
+                    for tile in pos.occupied_tiles
+                ]
 
-            # Legacy format for drawTrainLegacy
-            data["position"] = {
-                "x": self.current_pos[0],
-                "y": self.current_pos[1],
-                "distance": distance_ratio,
-                "tile_length_cm": tile_length_cm,
-            }  # NEW: Populate path_tiles from TrainPosition for path-based renderer
-            # This converts TrainPosition (which IS updated) into the format
-            # the path-based renderer expects
-            if self.position and self.position.occupied_tiles:
-                pos = self.position
-                # Sync TrainPosition -> path_tiles format for renderer
-                # Note: occupied_tiles is now guaranteed to be ordered from end_a to end_b
-                # (enforced by recalculate_train_position in network.py)
-                data["path_tiles"] = [list(t) for t in pos.occupied_tiles]
-                data["end_a_index"] = 0  # end_a is first (index 0) in occupied_tiles
-                data["end_b_index"] = len(pos.occupied_tiles) - 1  # end_b is last
-                data["end_a_distance_cm"] = pos.end_a_distance_cm
-                data["end_b_distance_cm"] = pos.end_b_distance_cm
-                data["end_a_entry_edge"] = pos.end_a_entry_edge
-                data["end_b_entry_edge"] = pos.end_b_entry_edge
-                data["leading_end"] = pos.leading_end
-
-                # Add path_tile_info for renderer (needs tile lengths)
-                if network:
-                    data["path_tile_info"] = [
-                        {"length_cm": network._get_tile_length_cm(tile[0], tile[1])}
-                        for tile in pos.occupied_tiles
-                    ]
-
-                # Merge full TrainPosition data into position dict
-                data["position"].update(pos.to_dict())
-
-            # Also include rich tile data if network available
             if network and hasattr(network, "get_occupied_tiles_rich"):
                 data["occupied_tiles_rich"] = network.get_occupied_tiles_rich(self)
 
-        if self.current_direction:
-            data["direction"] = self.current_direction.name
+            if pos.facing_direction:
+                data["direction"] = pos.facing_direction.name
 
         if self.schedule:
             # Simple schedule info
@@ -1518,7 +1247,9 @@ class Train:
 
             # Distance from train head to start of each tile
             # Starts negative (train head is already into first tile)
-            head_distance_into_tile = self.distance_on_track
+            head_distance_into_tile = (
+                self.position.head_distance_cm if self.position else 0.0
+            )
             cumulative_distance_cm = (
                 -head_distance_into_tile
             )  # Start from head position
@@ -1617,7 +1348,6 @@ class Train:
         Position handling:
         - Uses TrainPosition format (requires 'end_a' in position dict)
         - If position format is incompatible, train position is discarded
-        - path_tiles is NOT loaded (cleared) - legacy movement system uses TrainPosition
         """
         from enums import TrainState, Direction
 
@@ -1635,19 +1365,6 @@ class Train:
                 # New TrainPosition format
                 train.position = TrainPosition.from_dict(pos_data)
                 # If parsing failed, position will be None (incompatible format)
-
-        # Direction (current movement direction)
-        if "direction" in data:
-            try:
-                train._current_direction = Direction[data["direction"]]
-            except KeyError:
-                pass
-
-        # Occupied tracks
-        train.occupied_tracks = [
-            tuple(t) if isinstance(t, list) else t
-            for t in data.get("occupied_tracks", [])
-        ]
 
         # ========================================================================
         # NEW PROPERTIES (Phase 1 - Train System)
@@ -1690,7 +1407,7 @@ class Train:
 
         # IMPORTANT: Clear path_tiles data from saved files
         # path_tiles is only used by the NEW path-queue movement system
-        # Legacy movement (current system) uses TrainPosition updated by recalculate_train_position()
+        # TrainPosition is the current system for head/tail tracking
         train.path_tiles = []
         train.end_a_index = 0
         train.end_b_index = 0

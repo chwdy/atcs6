@@ -4,8 +4,8 @@ Block State Manager - Single Source of Truth for Block Occupancy
 Definition:
 This module provides the BlockManager class which serves as the centralized
 authority for all block state transitions in the railway network. It replaces
-the previous distributed block management where multiple components (PathDispatcher,
-Train.update_occupancy, manual fallback) competed for block state control.
+the previous distributed block management where multiple components
+competed for block state control.
 
 Architecture:
     SimulationController (Orchestrator)
@@ -33,7 +33,7 @@ TODO List:
 - [x] Integrate with RailwayNetwork
 - [x] Add comprehensive test suite (9 tests in test_backend.py)
 - [x] Migrate PathDispatcher to use BlockManager
-- [x] Avoid train.update_occupancy in production (kept for backward compatibility/tests)
+- [x] Avoid legacy train occupancy updates in production
 - [x] Document migration guide (see docs/ARCHITECTURE.md, AGENTS.md)
 """
 
