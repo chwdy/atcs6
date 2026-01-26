@@ -114,6 +114,78 @@ class TestTrainManualControlBugFixes:
         assert train.travel_direction == "reverse"
 
 
+class TestTrainMonitorBlockOffsetBugFix:
+    """
+    Comprehensive tests for Train Monitor block offset bug fixed in 2026-01-25.
+
+    BUG: Train monitor lookahead data starts at path_index, so the current block
+    appears to restart at each tile boundary, causing the monitor to jump back.
+    FIX: Include distance_to_block_start_cm so UI can render a stable block start
+    even when the train head advances to the next tile.
+    """
+
+    def test_distance_to_block_start_includes_tiles_behind_head(self):
+        """Head tile should include previous tiles in same block."""
+        network = RailwayNetwork()
+
+        for x in range(3):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track.block_section_id = "BLOCK_MAIN"
+            network.add_track(track)
+
+        train = Train(train_id="TRAIN_01")
+        train.position = make_train_position(
+            head_tile=(1, 0),
+            facing_direction=Direction.EAST,
+            head_distance_cm=20.0,
+        )
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 1
+
+        data = train.to_dict(network)
+        info = data["lookahead_tile_info"]
+
+        assert info[0]["distance_to_tile_cm"] == pytest.approx(-20.0)
+        assert info[0]["distance_to_block_start_cm"] == pytest.approx(-70.0)
+        assert info[1]["distance_to_block_start_cm"] == pytest.approx(-70.0)
+
+    def test_distance_to_block_start_resets_on_new_block(self):
+        """Next block start should align with its first tile start."""
+        network = RailwayNetwork()
+
+        for x in range(2):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track.block_section_id = "BLOCK_A"
+            network.add_track(track)
+
+        track = TrackSegment(x=2, y=0, track_bits=TRACK_EW)
+        track.block_section_id = "BLOCK_B"
+        network.add_track(track)
+
+        train = Train(train_id="TRAIN_02")
+        train.position = make_train_position(
+            head_tile=(1, 0),
+            facing_direction=Direction.EAST,
+            head_distance_cm=20.0,
+        )
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 1
+
+        data = train.to_dict(network)
+        info = data["lookahead_tile_info"]
+
+        assert info[1]["distance_to_tile_cm"] == pytest.approx(30.0)
+        assert info[1]["distance_to_block_start_cm"] == pytest.approx(30.0)
+
+
 class TestTrainPlacementOccupancy:
     """Tests for train placement and block occupancy."""
 

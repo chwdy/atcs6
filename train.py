@@ -1254,6 +1254,33 @@ class Train:
                 -head_distance_into_tile
             )  # Start from head position
 
+            current_block_id = None
+            block_back_length_cm = 0.0
+            if self.path_index < len(self.current_path):
+                head_entry = self.current_path[self.path_index]
+                head_x, head_y = head_entry[0], head_entry[1]
+                head_track = network.get_track(head_x, head_y)
+                current_block_id = head_track.block_section_id if head_track else None
+                if current_block_id:
+                    for j in range(self.path_index - 1, -1, -1):
+                        prev_entry = self.current_path[j]
+                        prev_x, prev_y = prev_entry[0], prev_entry[1]
+                        prev_track = network.get_track(prev_x, prev_y)
+                        if (
+                            not prev_track
+                            or prev_track.block_section_id != current_block_id
+                        ):
+                            break
+                        block_back_length_cm += network._get_tile_length_cm(
+                            prev_x, prev_y
+                        )
+
+            current_block_start_cm = (
+                cumulative_distance_cm - block_back_length_cm
+                if current_block_id
+                else cumulative_distance_cm
+            )
+
             # Iterate from current position to end of path
             for i in range(self.path_index, len(self.current_path)):
                 path_entry = self.current_path[i]
@@ -1268,14 +1295,24 @@ class Train:
 
                 track = network.get_track(x, y)
                 tile_length = network._get_tile_length_cm(x, y) if track else 50.0
+                tile_block_id = track.block_section_id if track else None
+
+                if tile_block_id and tile_block_id != current_block_id:
+                    current_block_id = tile_block_id
+                    current_block_start_cm = cumulative_distance_cm
 
                 tile_info = {
                     "tile": [x, y],
                     "length_cm": tile_length,
-                    "block_id": track.block_section_id if track else None,
+                    "block_id": tile_block_id,
                     # Distance from train head to START of this tile (cm)
                     # For first tile (head tile), this is negative
                     "distance_to_tile_cm": cumulative_distance_cm,
+                    # Distance from train head to START of this block (cm)
+                    # For current block, includes tiles behind head
+                    "distance_to_block_start_cm": (
+                        current_block_start_cm if tile_block_id else None
+                    ),
                     # Train's travel direction on this tile (N/E/S/W)
                     "travel_direction": travel_direction,
                 }

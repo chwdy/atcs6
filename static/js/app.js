@@ -436,14 +436,11 @@ class App {
     }
 
     selectTrain(trainId) {
-        console.log('[App] selectTrain called:', trainId);
         if (!this.currentNetwork || !this.currentNetwork.trains) {
-            console.log('[App] selectTrain: no network or trains');
             return;
         }
         
         const train = this.currentNetwork.trains.find(t => t.id === trainId);
-        console.log('[App] selectTrain: found train?', !!train);
         if (train) {
             this.selectedTrainId = trainId;
             this.lastLookaheadData = null;
@@ -457,9 +454,7 @@ class App {
             }
             this.editor.showTrainControlPanel(trainId);
             this.trainMonitor.show(trainId, train.name || trainId);
-            console.log('[App] selectTrain: calling _subscribeTrainMonitor');
             this._subscribeTrainMonitor(trainId);
-            console.log('[App] selectTrain: calling fetchTrainLookahead');
             this.fetchTrainLookahead(trainId, train);
             this.updateTrainDebugPanel(train);
         }
@@ -478,20 +473,16 @@ class App {
     }
 
     _subscribeTrainMonitor(trainId) {
-        console.log('[App] _subscribeTrainMonitor called:', trainId);
-        console.log('[App] window.stateManager exists?', !!window.stateManager);
         if (!window.stateManager) return;
         if (this.trainMonitorUnsub) {
             this.trainMonitorUnsub();
             this.trainMonitorUnsub = null;
         }
 
-        console.log('[App] _subscribeTrainMonitor: subscribing to trains:', trainId);
         this.trainMonitorUnsub = window.stateManager.subscribe(
             'trains',
             trainId,
             (newTrain) => {
-                console.log('[App] StateManager train update:', trainId, newTrain);
                 if (!newTrain) {
                     this.deselectTrain();
                     return;
@@ -499,12 +490,10 @@ class App {
                 if (this.trainMonitor.isVisible()) {
                     this.trainMonitor.updateFromController(newTrain, this.lastLookaheadPayload);
                 }
-                console.log('[App] StateManager callback: calling fetchTrainLookahead');
                 this.fetchTrainLookahead(trainId, newTrain);
             },
             { immediate: true }
         );
-        console.log('[App] _subscribeTrainMonitor: subscription created');
     }
     
     updateTrainDebugPanel(train) {
@@ -742,38 +731,29 @@ class App {
 
     
     async fetchTrainLookahead(trainId, train) {
-        console.log('[App] fetchTrainLookahead called:', trainId);
         if (!trainId) {
-            console.log('[App] fetchTrainLookahead: no trainId, returning');
             return;
         }
         // Check if debug is enabled, otherwise we don't need to fetch
         const debugCheckbox = document.getElementById('debug-show-train-position');
         const monitorVisible = this.trainMonitor.isVisible();
-        console.log('[App] fetchTrainLookahead: debug checked?', debugCheckbox?.checked, 'monitor visible?', monitorVisible);
         if (debugCheckbox && !debugCheckbox.checked && !monitorVisible) {
-            console.log('[App] fetchTrainLookahead: bailing due to debug/visibility check');
             return;
         }
         
         const now = Date.now();
         if (now - this.lastLookaheadFetch < this.lookaheadThrottleMs) {
-            console.log('[App] fetchTrainLookahead: throttled');
             return;
         }
         this.lastLookaheadFetch = now;
         
-        console.log('[App] fetchTrainLookahead: proceeding to fetch');
         try {
             if (this.selectedTrainId === trainId) {
                 const trainSnapshot = train || this.currentNetwork?.trains?.find(t => t.id === trainId);
                 if (!trainSnapshot) {
-                    console.log('[App] fetchTrainLookahead: no train snapshot');
                     return;
                 }
-                console.log('[App] fetchTrainLookahead: calling api.getTrainLookahead');
                 const lookaheadPayload = await window.api.getTrainLookahead(trainId);
-                console.log('[App] fetchTrainLookahead: got payload', lookaheadPayload);
                 this.lastLookaheadPayload = lookaheadPayload;
                 if (this.trainMonitor.isVisible()) {
                     this.trainMonitor.updateFromController(trainSnapshot, lookaheadPayload);

@@ -245,8 +245,6 @@ class TrainMonitor {
             const tile = pathTiles[i];
             if (!info) continue;
             
-            const tileLength = info.length_cm || 50;
-            
             // distance_to_tile_cm: distance from train head to START of this tile
             // For first tile (head tile), this is negative (head already into tile)
             // For subsequent tiles, this is positive
@@ -257,7 +255,7 @@ class TrainMonitor {
             
             // For blocks: use actual distance (can be negative for current block)
             // This allows the current block to scroll left as train advances
-            const blockTileStart = distanceToTileStart;
+            const blockTileStart = info.distance_to_block_start_cm;
             
             // For signals/switches: use max(0, dist) since they are point elements
             const pointElementStart = Math.max(0, distanceToTileStart);
@@ -271,7 +269,7 @@ class TrainMonitor {
                 let tileCount = 0;
                 for (let j = i; j < pathInfo.length; j++) {
                     if (pathInfo[j]?.block_id === info.block_id) {
-                        blockLength += pathInfo[j].length_cm || 50;
+                        blockLength += pathInfo[j].length_cm 
                         tileCount++;
                     } else {
                         break;
