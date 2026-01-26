@@ -34,4 +34,6 @@ archived/
 test_connectivity.py
 layouts
 plans
+!docs/plans/
+!docs/plans/**
 AGENTS.md
