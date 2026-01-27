@@ -3486,7 +3486,6 @@ body {
     border: 1px solid var(--border-color);
     border-radius: 4px;
     cursor: pointer;
-    margin-left: 8px;
     transition: all 0.2s;
 }
 
@@ -3598,10 +3597,25 @@ body {
     height: 100%;
 }
 
+.train-monitor-resizer {
+    width: 6px;
+    cursor: ew-resize;
+    flex-shrink: 0;
+    background: linear-gradient(to right, transparent, rgba(130, 87, 229, 0.35));
+    opacity: 0.6;
+    transition: opacity 0.2s;
+}
+
+.train-monitor-resizer:hover,
+.train-monitor-resizer.resizing {
+    opacity: 1;
+    background: linear-gradient(to right, transparent, rgba(130, 87, 229, 0.65));
+}
+
 .train-monitor-upcoming {
-    width: 200px;
-    min-width: 140px;
-    max-width: 320px;
+    width: 400px;
+    min-width: 280px;
+    max-width: 640px;
     padding: 6px 10px;
     border-left: 1px solid var(--border-color);
     display: flex;

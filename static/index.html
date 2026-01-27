@@ -251,8 +251,8 @@
                             <button class="view-dist-btn active" data-distance="500">5m</button>
                             <button class="view-dist-btn" data-distance="1000">10m</button>
                             <button class="view-dist-btn" data-distance="0">All</button>
+                            <button class="view-lookahead-btn text-primary" id="view-lookahead-btn" title="View raw lookahead data">📋 JSON</button>
                         </div>
-                        <button class="view-lookahead-btn" id="view-lookahead-btn" title="View raw lookahead data">📋</button>
                         
                         <button class="train-monitor-close" id="train-monitor-close" title="Close">×</button>
                     </div>
@@ -280,6 +280,7 @@
                             <div class="train-wait-reason text-xs text-secondary mt-2 hidden" id="monitor-wait-reason"></div>
                         </div>
                         <canvas id="train-monitor-canvas" class="train-monitor-canvas"></canvas>
+                        <div class="train-monitor-resizer" id="train-monitor-resizer" aria-hidden="true"></div>
                         <div class="train-monitor-upcoming" id="monitor-upcoming-container">
                             <div class="upcoming-header">Upcoming</div>
                             <div class="upcoming-list" id="monitor-upcoming"></div>

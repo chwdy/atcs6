@@ -11,6 +11,9 @@ class TrainMonitor {
         this.speedCmsEl = document.getElementById('monitor-speed-cms');
         this.clearanceEl = document.getElementById('monitor-clearance');
         this.upcomingEl = document.getElementById('monitor-upcoming');
+        this.upcomingContainer = document.getElementById('monitor-upcoming-container');
+        this.monitorContent = document.querySelector('.train-monitor-content');
+        this.resizerEl = document.getElementById('train-monitor-resizer');
         this.closeBtn = document.getElementById('train-monitor-close');
         
         this.lookaheadData = null;
@@ -22,8 +25,10 @@ class TrainMonitor {
         this.viewDistance = 500; // Default to 5m
         this.hoveredBlock = null;
         this.blockRects = [];
+        this.isColumnResizing = false;
         
         this.initViewDistanceButtons();
+        this.initColumnResizer();
         
         this.viewLookaheadBtn = document.getElementById('view-lookahead-btn');
         if (this.viewLookaheadBtn) {
@@ -84,6 +89,43 @@ class TrainMonitor {
                 this.viewDistance = parseInt(btn.dataset.distance, 10);
                 this.render();
             });
+        });
+    }
+
+    initColumnResizer() {
+        if (!this.resizerEl || !this.upcomingContainer || !this.monitorContent) {
+            return;
+        }
+
+        const onMouseMove = (e) => {
+            if (!this.isColumnResizing) return;
+
+            const contentRect = this.monitorContent.getBoundingClientRect();
+            const minWidth = parseInt(getComputedStyle(this.upcomingContainer).minWidth, 10) || 140;
+            const maxWidth = parseInt(getComputedStyle(this.upcomingContainer).maxWidth, 10) || 320;
+            let newWidth = contentRect.right - e.clientX;
+
+            newWidth = Math.max(minWidth, Math.min(maxWidth, newWidth));
+            this.upcomingContainer.style.width = `${newWidth}px`;
+            this.upcomingContainer.style.flex = `0 0 ${newWidth}px`;
+            this.resizeCanvas();
+        };
+
+        this.resizerEl.addEventListener('mousedown', (e) => {
+            this.isColumnResizing = true;
+            this.resizerEl.classList.add('resizing');
+            document.body.style.cursor = 'ew-resize';
+            document.body.style.userSelect = 'none';
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', () => {
+            if (!this.isColumnResizing) return;
+            this.isColumnResizing = false;
+            this.resizerEl.classList.remove('resizing');
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
         });
     }
 
@@ -399,12 +441,14 @@ class TrainMonitor {
         }
 
         const lookahead = payload && payload.lookahead ? payload.lookahead : null;
+        const speedLimitReason = payload?.speed_limit_reason ?? train.speed_limit_reason;
+
         this.lookaheadData = {
             current_speed_kmh: train.speed || 0,
             target_speed_kmh: train.target_speed || 0,
             state: train.state,
             wait_reason: train.wait_reason,
-            speed_limit_reason: train.speed_limit_reason,
+            speed_limit_reason: speedLimitReason,
             blocks: lookahead?.blocks || [],
             signals: lookahead?.signals || [],
             switches: lookahead?.switches || [],
@@ -555,7 +599,7 @@ class TrainMonitor {
             return a.distance - b.distance;
         });
         
-        const upcoming = elements.slice(0, 3);
+        const upcoming = elements;
         
         if (upcoming.length === 0) {
             this.upcomingEl.innerHTML = '<span class="text-secondary">No elements ahead</span>';
@@ -596,6 +640,24 @@ class TrainMonitor {
                 </div>
             </div>`;
         }).join('');
+    }
+
+    fitTextToWidth(text, maxWidth) {
+        if (!text || maxWidth <= 0) return '';
+        if (this.ctx.measureText(text).width <= maxWidth) {
+            return text;
+        }
+
+        const ellipsis = '...';
+        let end = text.length;
+        while (end > 0) {
+            const candidate = text.slice(0, end).trimEnd() + ellipsis;
+            if (this.ctx.measureText(candidate).width <= maxWidth) {
+                return candidate;
+            }
+            end -= 1;
+        }
+        return '';
     }
     
     getMaxDistanceAhead(data, trainDist) {
@@ -769,12 +831,15 @@ class TrainMonitor {
             
             if (blockWidth > 30) {
                 const name = block.name || block.id || '';
-                const displayName = name.length > 12 ? name.substring(0, 10) + '..' : name;
                 this.ctx.font = '9px Inter, sans-serif';
-                this.ctx.fillStyle = '#fff';
-                this.ctx.textAlign = 'center';
-                this.ctx.textBaseline = 'middle';
-                this.ctx.fillText(displayName, startX + blockWidth/2, trackY);
+                const labelMaxWidth = Math.max(0, blockWidth - 6);
+                const displayName = this.fitTextToWidth(name, labelMaxWidth);
+                if (displayName) {
+                    this.ctx.fillStyle = '#fff';
+                    this.ctx.textAlign = 'center';
+                    this.ctx.textBaseline = 'middle';
+                    this.ctx.fillText(displayName, startX + blockWidth / 2, trackY);
+                }
             }
             
             const labelY = trackY + blockHeight/2 + 12;

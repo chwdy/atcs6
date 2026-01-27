@@ -2122,6 +2122,7 @@ class TrainController:
                 "head_distance_cm": 0.0,
                 "travel_direction": None,
                 "cab": self.active_cab,
+                "speed_limit_reason": self.speed_limit_reason,
                 "lookahead": {
                     "blocks": [],
                     "signals": [],
@@ -2146,6 +2147,7 @@ class TrainController:
                 "head_distance_cm": head_distance_cm,
                 "travel_direction": travel_direction,
                 "cab": self.active_cab,
+                "speed_limit_reason": self.speed_limit_reason,
                 "lookahead": {
                     "blocks": [],
                     "signals": [],
@@ -2163,6 +2165,7 @@ class TrainController:
                 "head_distance_cm": head_distance_cm,
                 "travel_direction": travel_direction,
                 "cab": self.active_cab,
+                "speed_limit_reason": self.speed_limit_reason,
                 "lookahead": {
                     "blocks": [],
                     "signals": [],
@@ -2354,6 +2357,7 @@ class TrainController:
             "head_distance_cm": head_distance_cm,
             "travel_direction": travel_direction,
             "cab": self.active_cab,
+            "speed_limit_reason": self.speed_limit_reason,
             "lookahead": {
                 "blocks": blocks,
                 "signals": signals,
