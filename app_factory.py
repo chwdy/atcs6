@@ -6,7 +6,7 @@ This module provides a factory function for creating the Flask application
 with shared configuration and URL converters.
 
 TODO List:
-- [ ] Register route modules during server breakdown
+- [x] Register route modules during server breakdown
 - [ ] Accept optional runtime configuration inputs
 """
 
@@ -15,6 +15,7 @@ from flask_cors import CORS
 from werkzeug.routing import IntegerConverter
 
 from app_state import AppState
+from routes import register_all
 
 
 class SignedIntConverter(IntegerConverter):
@@ -37,5 +38,8 @@ def create_app(state: AppState) -> Flask:
     CORS(app)
     app.url_map.converters["sint"] = SignedIntConverter
     app.extensions["state"] = state
+
+    # Register route modules
+    register_all(app, state)
 
     return app
