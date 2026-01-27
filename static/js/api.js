@@ -269,18 +269,6 @@ class API {
         }, 'canExtendBlock');
     }
 
-    /**
-     * Remove tracks from a block.
-     * @param {string} blockId - Block ID
-     * @param {Array} positions - Array of {x, y} or [x, y]
-     * @returns {Promise<object>} Result
-     */
-    async removeTracksFromBlock(blockId, positions) {
-        return this._request(`/blocks/${encodeURIComponent(blockId)}/tracks`, {
-            method: 'DELETE',
-            body: { positions }
-        }, 'removeTracksFromBlock');
-    }
 
     // === Signal Management ===
 
@@ -581,30 +569,6 @@ class API {
     }
 
     /**
-     * Set train direction (legacy).
-     * @param {string} trainId - Train ID
-     * @param {string} direction - Direction
-     * @returns {Promise<object>} Result
-     */
-    async trainSetDirection(trainId, direction) {
-        return this._request(`/trains/${encodeURIComponent(trainId)}/set-direction`, {
-            method: 'POST',
-            body: { direction }
-        }, 'trainSetDirection');
-    }
-
-    /**
-     * Clear train direction (legacy).
-     * @param {string} trainId - Train ID
-     * @returns {Promise<object>} Result
-     */
-    async trainClearDirection(trainId) {
-        return this._request(`/trains/${encodeURIComponent(trainId)}/clear-direction`, {
-            method: 'POST'
-        }, 'trainClearDirection');
-    }
-
-    /**
      * Set active cab.
      * @param {string} trainId - Train ID
      * @param {string} cab - 'A' or 'B'
@@ -617,60 +581,6 @@ class API {
         }, 'trainSetCab');
     }
 
-    /**
-     * Signal train departure.
-     * @param {string} trainId - Train ID
-     * @returns {Promise<object>} Result
-     */
-    async trainDepart(trainId) {
-        return this._request(`/trains/${encodeURIComponent(trainId)}/depart`, {
-            method: 'POST'
-        }, 'trainDepart');
-    }
-
-    /**
-     * Signal train arrival.
-     * @param {string} trainId - Train ID
-     * @returns {Promise<object>} Result
-     */
-    async trainArrive(trainId) {
-        return this._request(`/trains/${encodeURIComponent(trainId)}/arrive`, {
-            method: 'POST'
-        }, 'trainArrive');
-    }
-
-    /**
-     * Turn train around.
-     * @param {string} trainId - Train ID
-     * @returns {Promise<object>} Result
-     */
-    async trainTurnAround(trainId) {
-        return this._request(`/trains/${encodeURIComponent(trainId)}/turn-around`, {
-            method: 'POST'
-        }, 'trainTurnAround');
-    }
-
-    /**
-     * Enable manual control.
-     * @param {string} trainId - Train ID
-     * @returns {Promise<object>} Result
-     */
-    async trainEnableManual(trainId) {
-        return this._request(`/trains/${encodeURIComponent(trainId)}/enable-manual`, {
-            method: 'POST'
-        }, 'trainEnableManual');
-    }
-
-    /**
-     * Disable manual control.
-     * @param {string} trainId - Train ID
-     * @returns {Promise<object>} Result
-     */
-    async trainDisableManual(trainId) {
-        return this._request(`/trains/${encodeURIComponent(trainId)}/disable-manual`, {
-            method: 'POST'
-        }, 'trainDisableManual');
-    }
 
     /**
      * Set manual speed.
@@ -698,27 +608,6 @@ class API {
         }, 'trainSetTravelDirection');
     }
 
-    /**
-     * Trigger emergency stop.
-     * @param {string} trainId - Train ID
-     * @returns {Promise<object>} Result
-     */
-    async trainEmergencyStop(trainId) {
-        return this._request(`/trains/${encodeURIComponent(trainId)}/emergency-stop`, {
-            method: 'POST'
-        }, 'trainEmergencyStop');
-    }
-
-    /**
-     * Stop train.
-     * @param {string} trainId - Train ID
-     * @returns {Promise<object>} Result
-     */
-    async trainStop(trainId) {
-        return this._request(`/trains/${encodeURIComponent(trainId)}/stop`, {
-            method: 'POST'
-        }, 'trainStop');
-    }
 
     // === OnboardComputer API (New Train Control Architecture) ===
     
@@ -791,28 +680,6 @@ class API {
         return result.schedules || [];
     }
 
-    /**
-     * Get a schedule by ID.
-     * @param {string} scheduleId - Schedule ID
-     * @returns {Promise<object>} Schedule object
-     */
-    async getSchedule(scheduleId) {
-        return this._request(`/schedules/${encodeURIComponent(scheduleId)}`, {}, 'getSchedule');
-    }
-
-    /**
-     * Create a new schedule.
-     * @param {string} trainId - Train ID
-     * @param {Array} stops - List of stops
-     * @param {number} priority - Priority (0-10)
-     * @returns {Promise<object>} Created schedule
-     */
-    async createSchedule(trainId, stops, priority = 0) {
-        return this._request('/schedules', {
-            method: 'POST',
-            body: { train_id: trainId, stops, priority }
-        }, 'createSchedule');
-    }
 
     /**
      * Delete a schedule.
@@ -911,17 +778,6 @@ class API {
         }, 'setScale');
     }
 
-    /**
-     * Set scale from preset.
-     * @param {string} preset - Preset name (e.g. "1:160")
-     * @returns {Promise<object>} Updated scale
-     */
-    async setScalePreset(preset) {
-        return this._request('/scale', {
-            method: 'PUT',
-            body: { preset }
-        }, 'setScalePreset');
-    }
 
     // === Path Dispatcher API ===
 
@@ -994,16 +850,6 @@ class API {
         }, 'extendPath');
     }
 
-    /**
-     * Mark a path as completed and release all resources.
-     * @param {string} pathId - Path ID to complete
-     * @returns {Promise<object>} Success message or error
-     */
-    async completePath(pathId) {
-        return this._request(`/paths/${encodeURIComponent(pathId)}/complete`, {
-            method: 'POST'
-        }, 'completePath');
-    }
 
     /**
      * Get all blocks reachable from a starting block.
@@ -1035,35 +881,9 @@ class API {
         );
     }
 
-    /**
-     * Find all possible paths between two blocks.
-     * @param {string} startBlockId - Starting block ID
-     * @param {string} endBlockId - Destination block ID
-     * @param {string|null} trainId - Optional train ID for validation
-     * @returns {Promise<object>} { paths: [], count }
-     */
-    async findPaths(startBlockId, endBlockId, trainId = null) {
-        const body = {
-            start_block_id: startBlockId,
-            end_block_id: endBlockId
-        };
-        if (trainId) body.train_id = trainId;
-        
-        return this._request('/dispatcher/paths', {
-            method: 'POST',
-            body: body
-        }, 'findPaths');
-    }
 
     // === Switch Management API ===
 
-    /**
-     * Get all switches.
-     * @returns {Promise<Array>} List of switch objects
-     */
-    async getSwitches() {
-        return this._request('/switches', {}, 'getSwitches');
-    }
 
     /**
      * Get a specific switch.
