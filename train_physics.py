@@ -46,8 +46,8 @@ TODO List:
 - [x] Implement position movement
 - [x] Implement block occupancy management
 - [x] Implement voltage output
-- [ ] Add comprehensive test suite
-- [ ] Migrate SimulationController to use TrainPhysics
+- [x] Add comprehensive test suite (see tests/test_trains.py)
+- [x] Migrate SimulationController to use TrainPhysics (see simulation.py)
 """
 
 import logging

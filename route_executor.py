@@ -119,7 +119,7 @@ class RouteExecutor:
         train_id: str,
         path_id: str,
         end_tile: Tuple[int, int],
-        event_time: Optional[datetime],
+        _event_time: Optional[datetime],
     ) -> bool:
         """Handle a path completion event from PathDispatcher.
 
@@ -127,7 +127,7 @@ class RouteExecutor:
             train_id: Train that completed the path
             path_id: Completed path ID
             end_tile: End tile where completion occurred
-            event_time: Event timestamp (unused; keep as-is)
+            _event_time: Event timestamp (unused; reserved for future metrics)
 
         Returns:
             True if handled, False if not applicable

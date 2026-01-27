@@ -262,7 +262,7 @@ def _sort_block_positions_for_direction(
 
 
 def _positions_to_path_tiles(
-    positions: List[Tuple[int, int]], default_direction: Optional[Direction], network
+    positions: List[Tuple[int, int]], default_direction: Optional[Direction], _network
 ) -> List[Tuple[int, int, Direction]]:
     """
     Convert position list to path tile format with directions.
@@ -276,7 +276,7 @@ def _positions_to_path_tiles(
     Args:
         positions: List of (x, y) positions
         default_direction: Fallback direction if can't infer
-        network: RailwayNetwork (unused but available for future)
+        _network: RailwayNetwork (unused; reserved for future track-aware inference)
 
     Returns:
         List of (x, y, Direction) tuples

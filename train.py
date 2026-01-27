@@ -1153,7 +1153,9 @@ class Train:
 
         # For multi-car consists, we'd need to check if any car bridges blocks
         # For now, conservative approach: only allow for single-unit trains
-        # TODO: Implement detailed car position checking
+        # Note: Full per-car boundary checking requires per-car position tracking
+        # which is not currently implemented. This simplified check is safe but
+        # conservative - it may reject some valid multi-car opposite-polarity cases.
         return len(self.consist) == 1
 
     def to_dict(self, network=None) -> dict:
