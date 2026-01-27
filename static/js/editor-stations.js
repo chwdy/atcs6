@@ -60,12 +60,14 @@ class StationEditorHandler {
                 <!-- MIDDLE: TILE EDITING TOOLS -->
                 <div class="control-section">
                     <h4 class="text-sm text-muted mb-8">Tiles</h4>
-                    ${renderTileListWithBlocks(station.sorted_positions, station.block_assignments_sorted, blocks, {
+                    ${renderTileList(station.sorted_positions, {
                         entityType: 'station',
                         extendStartBtnId: 'extend-start-btn',
                         extendEndBtnId: 'extend-end-btn',
                         removeBtnClass: 'delete-tile-btn',
-                        assignBtnClass: 'assign-block-btn'
+                        assignBtnClass: 'assign-block-btn',
+                        blockAssignments: station.block_assignments_sorted,
+                        blocks: blocks
                     })}
                 </div>
                 
@@ -73,7 +75,7 @@ class StationEditorHandler {
                 <div class="control-section mt-12 pt-12" style="border-top: 1px solid var(--border-color);">
                     <h4 class="text-sm text-muted mb-8">Properties</h4>
                     
-                    ${renderTextInput('station-name-input', 'Station Name', station.name || '', 'Enter station name...')}
+                    ${renderTextInput('station-name-input', 'Station Name', station.name || '', { placeholder: 'Enter station name...' })}
                     ${renderNumberInput('station-length-input', 'Platform Length (cm)', station.length_cm || 0, { min: 0, step: 10 })}
                     ${renderDropdown('station-side-input', 'Platform Side', station.platform_side, [
                         { value: 'both', label: 'Both Sides' },

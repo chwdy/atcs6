@@ -94,8 +94,7 @@ class TrainEditorHandler {
 
         let trains = [];
         try {
-            const result = await this.api.getTrains();
-            trains = result.trains || [];
+            trains = await this.api.getTrains();
         } catch (err) {
             console.error('[TrainEditorHandler] Failed to load trains:', err);
             window.showToast('Failed to load trains: ' + err.message, 'error', 5000);

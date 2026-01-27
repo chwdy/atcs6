@@ -3,288 +3,239 @@ class API {
         this.baseUrl = baseUrl;
     }
 
-    async getNetwork() {
+    /**
+     * Centralized request handler to reduce boilerplate.
+     * @param {string} endpoint - API endpoint (e.g., '/network')
+     * @param {object} options - Fetch options (method, headers, body, etc.)
+     * @param {string} caller - Name of the calling method for logging
+     * @returns {Promise<any>} JSON response or null
+     */
+    async _request(endpoint, options = {}, caller = 'request') {
+        const url = `${this.baseUrl}${endpoint}`;
+        const config = {
+            method: 'GET',
+            headers: {},
+            ...options
+        };
+
+        // Handle body serialization and Content-Type
+        if (config.body && typeof config.body !== 'string') {
+            config.headers['Content-Type'] = 'application/json';
+            config.body = JSON.stringify(config.body);
+        }
+
+        // Helper options (not passed to fetch)
+        const returnNullOn404 = config.returnNullOn404;
+        delete config.returnNullOn404;
+
         try {
-            const response = await fetch(`${this.baseUrl}/network`);
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            const response = await fetch(url, config);
+
+            if (response.status === 404 && returnNullOn404) {
+                return null;
             }
-            const data = await response.json();
-            return data;
+
+            if (!response.ok) {
+                let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                try {
+                    const data = await response.json();
+                    if (data.error) errorMessage = data.error;
+                } catch (e) {
+                    try {
+                        const text = await response.text();
+                        if (text) errorMessage = `HTTP ${response.status}: ${text}`;
+                    } catch (e2) {}
+                }
+                throw new Error(errorMessage);
+            }
+
+            if (response.status === 204) return null;
+
+            return await response.json();
         } catch (e) {
-            console.error('[API] getNetwork failed:', e);
+            console.error(`[API] ${caller} failed:`, e);
             throw e;
         }
+    }
+
+    async getNetwork() {
+        return this._request('/network', {}, 'getNetwork');
     }
 
     // Individual track operations
 
     async getTrack(x, y) {
-        try {
-            const response = await fetch(`${this.baseUrl}/track/${x}/${y}`);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getTrack failed:', e);
-            throw e;
-        }
+        return this._request(`/track/${x}/${y}`, {}, 'getTrack');
     }
 
     async updateTrack(x, y, updates) {
-        try {
-            const response = await fetch(`${this.baseUrl}/track/${x}/${y}`, {
-                method: 'PATCH',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(updates)
-            });
-            if (!response.ok) {
-                const text = await response.text();
-                throw new Error(`HTTP ${response.status}: ${text}`);
-            }
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] updateTrack failed:', e);
-            throw e;
-        }
+        return this._request(`/track/${x}/${y}`, {
+            method: 'PATCH',
+            body: updates
+        }, 'updateTrack');
     }
 
     async deleteTrack(x, y) {
-        try {
-            const response = await fetch(`${this.baseUrl}/track/${x}/${y}`, {
-                method: 'DELETE'
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] deleteTrack failed:', e);
-            throw e;
-        }
+        return this._request(`/track/${x}/${y}`, {
+            method: 'DELETE'
+        }, 'deleteTrack');
     }
 
     async addTracksBulk(tracks) {
-        try {
-            const response = await fetch(`${this.baseUrl}/tracks/bulk`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ tracks })
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] addTracksBulk failed:', e);
-            throw e;
-        }
+        return this._request('/tracks/bulk', {
+            method: 'POST',
+            body: { tracks }
+        }, 'addTracksBulk');
     }
 
     async deleteTracksBulk(positions) {
-        try {
-            const response = await fetch(`${this.baseUrl}/tracks/bulk-delete`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ positions })
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] deleteTracksBulk failed:', e);
-            throw e;
-        }
+        return this._request('/tracks/bulk-delete', {
+            method: 'POST',
+            body: { positions }
+        }, 'deleteTracksBulk');
     }
 
     async createTrain(trainData) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(trainData)
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] createTrain failed:', e);
-            throw e;
-        }
+        return this._request('/trains', {
+            method: 'POST',
+            body: trainData
+        }, 'createTrain');
     }
 
+    /**
+     * Get all trains in the network.
+     * @returns {Promise<Array>} List of train objects
+     */
     async getTrains() {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains`);
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getTrains failed:', e);
-            throw e;
-        }
+        const result = await this._request('/trains', {}, 'getTrains');
+        return result.trains || [];
     }
 
+    /**
+     * Delete a train.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} Result
+     */
     async deleteTrain(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}`, {
-                method: 'DELETE'
-            });
-            if (!response.ok) {
-                const result = await response.json();
-                throw new Error(result.error || `HTTP ${response.status}: ${response.statusText}`);
-            }
-            return await response.json();
-        } catch (e) {
-            console.error('[API] deleteTrain failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}`, {
+            method: 'DELETE'
+        }, 'deleteTrain');
     }
 
+    /**
+     * Update train properties.
+     * @param {string} trainId - Train ID
+     * @param {object} updates - Properties to update
+     * @returns {Promise<object>} Updated train
+     */
     async updateTrain(trainId, updates) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(updates)
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to update train');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] updateTrain failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}`, {
+            method: 'PATCH',
+            body: updates
+        }, 'updateTrain');
     }
 
+    /**
+     * Control simulation state.
+     * @param {string} action - 'start', 'stop', 'reset', 'set_speed'
+     * @param {number|null} speed - Simulation speed multiplier
+     * @returns {Promise<object>} Simulation status
+     */
     async controlSimulation(action, speed = null) {
         const data = { action };
         if (speed !== null) {
             data.speed = speed;
         }
-
-        try {
-            const response = await fetch(`${this.baseUrl}/simulation/control`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(data)
-            });
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] controlSimulation failed:', e);
-            throw e;
-        }
+        return this._request('/simulation/control', {
+            method: 'POST',
+            body: data
+        }, 'controlSimulation');
     }
 
     // === Block Management ===
 
+    /**
+     * Get all blocks.
+     * @returns {Promise<Array>} List of block objects
+     */
     async getBlocks() {
-        try {
-            const response = await fetch(`${this.baseUrl}/blocks`);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getBlocks failed:', e);
-            throw e;
-        }
+        return this._request('/blocks', {}, 'getBlocks');
     }
 
+    /**
+     * Create a new block.
+     * @param {string|null} blockId - Optional Block ID
+     * @param {string} name - Block name
+     * @param {object} options - Additional options (length, speed, etc.)
+     * @returns {Promise<object>} Created block
+     */
     async createBlock(blockId = null, name = '', options = {}) {
-        try {
-            const response = await fetch(`${this.baseUrl}/blocks`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    block_id: blockId,
-                    name,
-                    ...options
-                })
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] createBlock failed:', e);
-            throw e;
-        }
+        return this._request('/blocks', {
+            method: 'POST',
+            body: {
+                block_id: blockId,
+                name,
+                ...options
+            }
+        }, 'createBlock');
     }
 
+    /**
+     * Get a single block by ID.
+     * @param {string} blockId - Block ID
+     * @returns {Promise<object>} Block object
+     */
     async getBlock(blockId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/blocks/${blockId}`);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getBlock failed:', e);
-            throw e;
-        }
+        return this._request(`/blocks/${encodeURIComponent(blockId)}`, {}, 'getBlock');
     }
 
+    /**
+     * Update block properties.
+     * @param {string} blockId - Block ID
+     * @param {object} data - Properties to update
+     * @returns {Promise<object>} Updated block
+     */
     async updateBlock(blockId, data) {
-        try {
-            const response = await fetch(`${this.baseUrl}/blocks/${blockId}`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] updateBlock failed:', e);
-            throw e;
-        }
+        return this._request(`/blocks/${encodeURIComponent(blockId)}`, {
+            method: 'PATCH',
+            body: data
+        }, 'updateBlock');
     }
 
+    /**
+     * Delete a block.
+     * @param {string} blockId - Block ID
+     * @returns {Promise<object>} Result
+     */
     async deleteBlock(blockId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/blocks/${blockId}`, {
-                method: 'DELETE'
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] deleteBlock failed:', e);
-            throw e;
-        }
+        return this._request(`/blocks/${encodeURIComponent(blockId)}`, {
+            method: 'DELETE'
+        }, 'deleteBlock');
     }
 
+    /**
+     * Cycle block state (debug/testing).
+     * @param {string} blockId - Block ID
+     * @returns {Promise<object>} Updated block
+     */
     async cycleBlockState(blockId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/blocks/${blockId}/cycle-state`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] cycleBlockState failed:', e);
-            throw e;
-        }
+        return this._request(`/blocks/${encodeURIComponent(blockId)}/cycle-state`, {
+            method: 'POST'
+        }, 'cycleBlockState');
     }
 
+    /**
+     * Add tracks to a block.
+     * @param {string} blockId - Block ID
+     * @param {Array} positions - Array of {x, y} or [x, y]
+     * @param {boolean} force - Force reassignment from other blocks
+     * @returns {Promise<object>} Result
+     */
     async addTracksToBlock(blockId, positions, force = false) {
-        try {
-            const response = await fetch(`${this.baseUrl}/blocks/${blockId}/tracks`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ positions, force })
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] addTracksToBlock failed:', e);
-            throw e;
-        }
+        return this._request(`/blocks/${encodeURIComponent(blockId)}/tracks`, {
+            method: 'POST',
+            body: { positions, force }
+        }, 'addTracksToBlock');
     }
 
     /**
@@ -298,637 +249,475 @@ class API {
      * @returns {Promise<Object>} Block data with optional invalidated_signals array
      */
     async extendBlock(blockId, positions, force = false, forceOverwrite = false) {
-        try {
-            const response = await fetch(`${this.baseUrl}/blocks/${blockId}/extend`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ positions, force, force_overwrite: forceOverwrite })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to extend block');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] extendBlock failed:', e);
-            throw e;
-        }
+        return this._request(`/blocks/${encodeURIComponent(blockId)}/extend`, {
+            method: 'POST',
+            body: { positions, force, force_overwrite: forceOverwrite }
+        }, 'extendBlock');
     }
 
+    /**
+     * Check if a block can be extended to a specific position.
+     * @param {string} blockId - Block ID
+     * @param {number} x - X coordinate
+     * @param {number} y - Y coordinate
+     * @returns {Promise<object>} Validation result
+     */
     async canExtendBlock(blockId, x, y) {
-        try {
-            const response = await fetch(`${this.baseUrl}/blocks/${blockId}/can_extend`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ x, y })
-            });
-            const result = await response.json();
-            if (!response.ok && response.status !== 200) {
-                console.error('[API] canExtendBlock error:', result);
-                throw new Error(result.error || 'Failed to check block extension');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] canExtendBlock failed:', e);
-            throw e;
-        }
+        return this._request(`/blocks/${encodeURIComponent(blockId)}/can_extend`, {
+            method: 'POST',
+            body: { x, y }
+        }, 'canExtendBlock');
     }
 
+    /**
+     * Remove tracks from a block.
+     * @param {string} blockId - Block ID
+     * @param {Array} positions - Array of {x, y} or [x, y]
+     * @returns {Promise<object>} Result
+     */
     async removeTracksFromBlock(blockId, positions) {
-        try {
-            const response = await fetch(`${this.baseUrl}/blocks/${blockId}/tracks`, {
-                method: 'DELETE',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ positions })
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] removeTracksFromBlock failed:', e);
-            throw e;
-        }
+        return this._request(`/blocks/${encodeURIComponent(blockId)}/tracks`, {
+            method: 'DELETE',
+            body: { positions }
+        }, 'removeTracksFromBlock');
     }
 
     // === Signal Management ===
 
+    /**
+     * Create a new signal.
+     * @param {number} x - X coordinate
+     * @param {number} y - Y coordinate
+     * @param {string} detectionDirection - Direction to detect trains from
+     * @param {string} signalType - 'block', 'chain', etc.
+     * @param {string|null} name - Signal name
+     * @param {boolean} autoConnect - Auto-connect to block logic
+     * @returns {Promise<object>} Created signal
+     */
     async createSignal(x, y, detectionDirection, signalType = 'block', name = null, autoConnect = true) {
-        try {
-            const response = await fetch(`${this.baseUrl}/signal`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    x,
-                    y,
-                    detection_direction: detectionDirection,
-                    signal_type: signalType,
-                    name,
-                    auto_connect: autoConnect
-                })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                console.error('[API] createSignal error:', result);
-                throw new Error(result.error || 'Failed to create signal');
+        return this._request('/signal', {
+            method: 'POST',
+            body: {
+                x,
+                y,
+                detection_direction: detectionDirection,
+                signal_type: signalType,
+                name,
+                auto_connect: autoConnect
             }
-            return result;
-        } catch (e) {
-            console.error('[API] createSignal failed:', e);
-            throw e;
-        }
+        }, 'createSignal');
     }
 
+    /**
+     * Get a signal by ID.
+     * @param {string} signalId - Signal ID
+     * @returns {Promise<object>} Signal object
+     */
     async getSignal(signalId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/signal/${signalId}`);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getSignal failed:', e);
-            throw e;
-        }
+        return this._request(`/signal/${encodeURIComponent(signalId)}`, {}, 'getSignal');
     }
 
+    /**
+     * Get a signal at specific coordinates.
+     * @param {number} x - X coordinate
+     * @param {number} y - Y coordinate
+     * @returns {Promise<object|null>} Signal object or null
+     */
     async getSignalAt(x, y) {
-        try {
-            const response = await fetch(`${this.baseUrl}/signal/${x}/${y}`);
-            if (response.status === 404) {
-                return null;
-            }
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getSignalAt failed:', e);
-            throw e;
-        }
+        return this._request(`/signal/${x}/${y}`, {
+            returnNullOn404: true
+        }, 'getSignalAt');
     }
 
+    /**
+     * Update signal properties.
+     * @param {string} signalId - Signal ID
+     * @param {object} updates - Properties to update
+     * @returns {Promise<object>} Updated signal
+     */
     async updateSignal(signalId, updates) {
-        try {
-            const response = await fetch(`${this.baseUrl}/signal/${signalId}`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(updates)
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                console.error('[API] updateSignal error:', result);
-                throw new Error(result.error || 'Failed to update signal');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] updateSignal failed:', e);
-            throw e;
-        }
+        return this._request(`/signal/${encodeURIComponent(signalId)}`, {
+            method: 'PATCH',
+            body: updates
+        }, 'updateSignal');
     }
 
+    /**
+     * Delete a signal.
+     * @param {string} signalId - Signal ID
+     * @returns {Promise<object>} Result
+     */
     async deleteSignal(signalId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/signal/${signalId}`, {
-                method: 'DELETE'
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] deleteSignal failed:', e);
-            throw e;
-        }
+        return this._request(`/signal/${encodeURIComponent(signalId)}`, {
+            method: 'DELETE'
+        }, 'deleteSignal');
     }
 
+    /**
+     * Delete signal at specific coordinates.
+     * @param {number} x - X coordinate
+     * @param {number} y - Y coordinate
+     * @returns {Promise<object>} Result
+     */
     async deleteSignalAt(x, y) {
-        try {
-            const response = await fetch(`${this.baseUrl}/signal/${x}/${y}`, {
-                method: 'DELETE'
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] deleteSignalAt failed:', e);
-            throw e;
-        }
+        return this._request(`/signal/${x}/${y}`, {
+            method: 'DELETE'
+        }, 'deleteSignalAt');
     }
 
+    /**
+     * Validate signal placement.
+     * @param {number} x - X coordinate
+     * @param {number} y - Y coordinate
+     * @returns {Promise<object>} Validation result
+     */
     async validateSignalPlacement(x, y) {
-        try {
-            const response = await fetch(`${this.baseUrl}/signal/validate/${x}/${y}`);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] validateSignalPlacement failed:', e);
-            throw e;
-        }
+        return this._request(`/signal/validate/${x}/${y}`, {}, 'validateSignalPlacement');
     }
 
+    /**
+     * Get blocks reachable from a signal.
+     * @param {string} signalId - Signal ID
+     * @returns {Promise<object>} Reachable blocks
+     */
     async getReachableBlocks(signalId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/signal/${signalId}/reachable-blocks`);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getReachableBlocks failed:', e);
-            throw e;
-        }
+        return this._request(`/signal/${encodeURIComponent(signalId)}/reachable-blocks`, {}, 'getReachableBlocks');
     }
 
     // === Station API Methods ===
 
+    /**
+     * Create a new station.
+     * @param {number} x - X coordinate
+     * @param {number} y - Y coordinate
+     * @param {string} name - Station name
+     * @param {number} lengthCm - Platform length
+     * @param {string} platformSide - 'left', 'right', 'both'
+     * @param {number} topSpeedKmh - Speed limit
+     * @param {string|null} stationId - Optional station ID
+     * @returns {Promise<object>} Created station
+     */
     async createStation(x, y, name, lengthCm, platformSide, topSpeedKmh, stationId = null) {
-        try {
-            const response = await fetch(`${this.baseUrl}/station`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    x, y, name,
-                    length_cm: lengthCm,
-                    platform_side: platformSide,
-                    top_speed_kmh: topSpeedKmh,
-                    station_id: stationId
-                })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                console.error('[API] createStation error:', result);
-                throw new Error(result.error || 'Failed to create station');
+        return this._request('/station', {
+            method: 'POST',
+            body: {
+                x, y, name,
+                length_cm: lengthCm,
+                platform_side: platformSide,
+                top_speed_kmh: topSpeedKmh,
+                station_id: stationId
             }
-            return result;
-        } catch (e) {
-            console.error('[API] createStation failed:', e);
-            throw e;
-        }
+        }, 'createStation');
     }
 
+    /**
+     * Get a station by ID.
+     * @param {string} stationId - Station ID
+     * @returns {Promise<object>} Station object
+     */
     async getStation(stationId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/station/${stationId}`);
-            if (response.status === 404) {
-                return null;
-            }
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getStation failed:', e);
-            throw e;
-        }
+        return this._request(`/station/${encodeURIComponent(stationId)}`, {
+            returnNullOn404: true
+        }, 'getStation');
     }
 
+    /**
+     * Update station properties.
+     * @param {string} stationId - Station ID
+     * @param {object} updates - Properties to update
+     * @returns {Promise<object>} Updated station
+     */
     async updateStation(stationId, updates) {
-        try {
-            const response = await fetch(`${this.baseUrl}/station/${stationId}`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(updates)
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                console.error('[API] updateStation error:', result);
-                throw new Error(result.error || 'Failed to update station');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] updateStation failed:', e);
-            throw e;
-        }
+        return this._request(`/station/${encodeURIComponent(stationId)}`, {
+            method: 'PATCH',
+            body: updates
+        }, 'updateStation');
     }
 
+    /**
+     * Delete a station.
+     * @param {string} stationId - Station ID
+     * @returns {Promise<object>} Result
+     */
     async deleteStation(stationId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/station/${stationId}`, {
-                method: 'DELETE'
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] deleteStation failed:', e);
-            throw e;
-        }
+        return this._request(`/station/${encodeURIComponent(stationId)}`, {
+            method: 'DELETE'
+        }, 'deleteStation');
     }
 
+    /**
+     * Validate station placement.
+     * @param {number} x - X coordinate
+     * @param {number} y - Y coordinate
+     * @returns {Promise<object>} Validation result
+     */
     async validateStationPlacement(x, y) {
-        try {
-            const response = await fetch(`${this.baseUrl}/station/validate/${x}/${y}`);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] validateStationPlacement failed:', e);
-            throw e;
-        }
+        return this._request(`/station/validate/${x}/${y}`, {}, 'validateStationPlacement');
     }
 
+    /**
+     * Extend a station.
+     * @param {string} stationId - Station ID
+     * @param {Array} positions - Positions to add
+     * @returns {Promise<object>} Updated station
+     */
     async extendStation(stationId, positions) {
-        try {
-            const response = await fetch(`${this.baseUrl}/station/${stationId}/extend`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ positions })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                console.error('[API] extendStation error:', result);
-                throw new Error(result.error || 'Failed to extend station');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] extendStation failed:', e);
-            throw e;
-        }
+        return this._request(`/station/${encodeURIComponent(stationId)}/extend`, {
+            method: 'POST',
+            body: { positions }
+        }, 'extendStation');
     }
 
+    /**
+     * Remove a tile from a station.
+     * @param {string} stationId - Station ID
+     * @param {number} x - X coordinate
+     * @param {number} y - Y coordinate
+     * @returns {Promise<object>} Updated station
+     */
     async removeStationTile(stationId, x, y) {
-        try {
-            const response = await fetch(`${this.baseUrl}/station/${stationId}/remove_tile`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ x, y })
-            });
-            const result = await response.json();
-            if (!response.ok && response.status !== 200) {
-                console.error('[API] removeStationTile error:', result);
-                throw new Error(result.error || 'Failed to remove station tile');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] removeStationTile failed:', e);
-            throw e;
-        }
+        return this._request(`/station/${encodeURIComponent(stationId)}/remove_tile`, {
+            method: 'POST',
+            body: { x, y }
+        }, 'removeStationTile');
     }
 
+    /**
+     * Check if station can be extended to position.
+     * @param {string} stationId - Station ID
+     * @param {number} x - X coordinate
+     * @param {number} y - Y coordinate
+     * @returns {Promise<object>} Validation result
+     */
     async canExtendStation(stationId, x, y) {
-        try {
-            const response = await fetch(`${this.baseUrl}/station/${stationId}/can_extend`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ x, y })
-            });
-            const result = await response.json();
-            if (!response.ok && response.status !== 200) {
-                console.error('[API] canExtendStation error:', result);
-                throw new Error(result.error || 'Failed to check station extension');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] canExtendStation failed:', e);
-            throw e;
-        }
+        return this._request(`/station/${encodeURIComponent(stationId)}/can_extend`, {
+            method: 'POST',
+            body: { x, y }
+        }, 'canExtendStation');
     }
 
+    /**
+     * Assign a station tile to a block.
+     * @param {string} stationId - Station ID
+     * @param {number} x - X coordinate
+     * @param {number} y - Y coordinate
+     * @param {string} blockId - Block ID
+     * @returns {Promise<object>} Result
+     */
     async assignTileToBlock(stationId, x, y, blockId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/station/${stationId}/assign_tile`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ x, y, block_id: blockId })
-            });
-            const result = await response.json();
-            if (!response.ok && response.status !== 200) {
-                console.error('[API] assignTileToBlock error:', result);
-                throw new Error(result.error || 'Failed to assign tile to block');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] assignTileToBlock failed:', e);
-            throw e;
-        }
+        return this._request(`/station/${encodeURIComponent(stationId)}/assign_tile`, {
+            method: 'POST',
+            body: { x, y, block_id: blockId }
+        }, 'assignTileToBlock');
     }
 
+    /**
+     * Unassign a station tile from a block.
+     * @param {string} stationId - Station ID
+     * @param {number} x - X coordinate
+     * @param {number} y - Y coordinate
+     * @returns {Promise<object>} Result
+     */
     async unassignTileFromBlock(stationId, x, y) {
-        try {
-            const response = await fetch(`${this.baseUrl}/station/${stationId}/unassign_tile`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ x, y })
-            });
-            const result = await response.json();
-            if (!response.ok && response.status !== 200) {
-                console.error('[API] unassignTileFromBlock error:', result);
-                throw new Error(result.error || 'Failed to unassign tile from block');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] unassignTileFromBlock failed:', e);
-            throw e;
-        }
+        return this._request(`/station/${encodeURIComponent(stationId)}/unassign_tile`, {
+            method: 'POST',
+            body: { x, y }
+        }, 'unassignTileFromBlock');
     }
 
+    /**
+     * Get block assignments for a station.
+     * @param {string} stationId - Station ID
+     * @returns {Promise<object>} Block assignments
+     */
     async getBlockAssignments(stationId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/station/${stationId}/block_assignments`);
-            const result = await response.json();
-            if (!response.ok) {
-                console.error('[API] getBlockAssignments error:', result);
-                throw new Error(result.error || 'Failed to get block assignments');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] getBlockAssignments failed:', e);
-            throw e;
-        }
+        return this._request(`/station/${encodeURIComponent(stationId)}/block_assignments`, {}, 'getBlockAssignments');
     }
 
+    /**
+     * Remove tiles from a block.
+     * @param {string} blockId - Block ID
+     * @param {Array} positions - Positions to remove
+     * @returns {Promise<object>} Result
+     */
     async removeBlockTiles(blockId, positions) {
-        try {
-            const response = await fetch(`${this.baseUrl}/blocks/${blockId}/tracks`, {
-                method: 'DELETE',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ positions })
-            });
-            const result = await response.json();
-            if (!response.ok && response.status !== 200) {
-                console.error('[API] removeBlockTiles error:', result);
-                throw new Error(result.error || 'Failed to remove block tiles');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] removeBlockTiles failed:', e);
-            throw e;
-        }
+        return this._request(`/blocks/${encodeURIComponent(blockId)}/tracks`, {
+            method: 'DELETE',
+            body: { positions }
+        }, 'removeBlockTiles');
     }
 
+    /**
+     * Get a specific train.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} Train object
+     */
     async getTrain(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}`);
-            const result = await response.json();
-            if (!response.ok) {
-                console.error('[API] getTrain error:', result);
-                throw new Error(result.error || 'Failed to get train');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] getTrain failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}`, {}, 'getTrain');
     }
 
     // === Train Control API ===
 
+    /**
+     * Turn train power on.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} Result
+     */
     async trainPowerOn(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/power-on`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to power on train');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] trainPowerOn failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/power-on`, {
+            method: 'POST'
+        }, 'trainPowerOn');
     }
 
+    /**
+     * Turn train power off.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} Result
+     */
     async trainPowerOff(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/power-off`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to power off train');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] trainPowerOff failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/power-off`, {
+            method: 'POST'
+        }, 'trainPowerOff');
     }
 
+    /**
+     * Set train direction (legacy).
+     * @param {string} trainId - Train ID
+     * @param {string} direction - Direction
+     * @returns {Promise<object>} Result
+     */
     async trainSetDirection(trainId, direction) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/set-direction`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ direction })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to set train direction');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] trainSetDirection failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/set-direction`, {
+            method: 'POST',
+            body: { direction }
+        }, 'trainSetDirection');
     }
 
+    /**
+     * Clear train direction (legacy).
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} Result
+     */
     async trainClearDirection(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/clear-direction`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to clear train direction');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] trainClearDirection failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/clear-direction`, {
+            method: 'POST'
+        }, 'trainClearDirection');
     }
 
+    /**
+     * Set active cab.
+     * @param {string} trainId - Train ID
+     * @param {string} cab - 'A' or 'B'
+     * @returns {Promise<object>} Result
+     */
     async trainSetCab(trainId, cab) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/set-cab`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ cab })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to set train cab');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] trainSetCab failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/set-cab`, {
+            method: 'POST',
+            body: { cab }
+        }, 'trainSetCab');
     }
 
+    /**
+     * Signal train departure.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} Result
+     */
     async trainDepart(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/depart`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to depart train');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] trainDepart failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/depart`, {
+            method: 'POST'
+        }, 'trainDepart');
     }
 
+    /**
+     * Signal train arrival.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} Result
+     */
     async trainArrive(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/arrive`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to arrive train');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] trainArrive failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/arrive`, {
+            method: 'POST'
+        }, 'trainArrive');
     }
 
+    /**
+     * Turn train around.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} Result
+     */
     async trainTurnAround(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/turn-around`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to turn around train');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] trainTurnAround failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/turn-around`, {
+            method: 'POST'
+        }, 'trainTurnAround');
     }
 
+    /**
+     * Enable manual control.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} Result
+     */
     async trainEnableManual(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/enable-manual`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to enable manual mode');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] trainEnableManual failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/enable-manual`, {
+            method: 'POST'
+        }, 'trainEnableManual');
     }
 
+    /**
+     * Disable manual control.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} Result
+     */
     async trainDisableManual(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/disable-manual`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to disable manual mode');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] trainDisableManual failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/disable-manual`, {
+            method: 'POST'
+        }, 'trainDisableManual');
     }
 
+    /**
+     * Set manual speed.
+     * @param {string} trainId - Train ID
+     * @param {number} speed - Speed
+     * @returns {Promise<object>} Result
+     */
     async trainSetManualSpeed(trainId, speed) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/manual-speed`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ speed })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to set manual speed');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] trainSetManualSpeed failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/manual-speed`, {
+            method: 'POST',
+            body: { speed }
+        }, 'trainSetManualSpeed');
     }
 
+    /**
+     * Set travel direction.
+     * @param {string} trainId - Train ID
+     * @param {string} direction - 'forward' or 'reverse'
+     * @returns {Promise<object>} Result
+     */
     async trainSetTravelDirection(trainId, direction) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/travel-direction`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ direction })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to set travel direction');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] trainSetTravelDirection failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/travel-direction`, {
+            method: 'POST',
+            body: { direction }
+        }, 'trainSetTravelDirection');
     }
 
+    /**
+     * Trigger emergency stop.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} Result
+     */
     async trainEmergencyStop(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/emergency-stop`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to emergency stop train');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] trainEmergencyStop failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/emergency-stop`, {
+            method: 'POST'
+        }, 'trainEmergencyStop');
     }
 
+    /**
+     * Stop train.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} Result
+     */
     async trainStop(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/stop`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to stop train');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] trainStop failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/stop`, {
+            method: 'POST'
+        }, 'trainStop');
     }
 
     // === OnboardComputer API (New Train Control Architecture) ===
@@ -940,17 +729,7 @@ class API {
      * @returns {Promise<object>} OnboardComputer state
      */
     async getOnboardState(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/onboard`);
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to get onboard state');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] getOnboardState failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/onboard`, {}, 'getOnboardState');
     }
 
     /**
@@ -960,21 +739,10 @@ class API {
      * @returns {Promise<object>} { status, onboard }
      */
     async setHandle(trainId, position) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/handle`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ position })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to set handle position');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] setHandle failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/handle`, {
+            method: 'POST',
+            body: { position }
+        }, 'setHandle');
     }
 
     /**
@@ -984,21 +752,10 @@ class API {
      * @returns {Promise<object>} { status, onboard }
      */
     async setControlMode(trainId, mode) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/mode`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ mode })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to set control mode');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] setControlMode failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/mode`, {
+            method: 'POST',
+            body: { mode }
+        }, 'setControlMode');
     }
 
     /**
@@ -1007,19 +764,9 @@ class API {
      * @returns {Promise<object>} { status, onboard }
      */
     async atoGo(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/ato-go`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to start ATO');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] atoGo failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/ato-go`, {
+            method: 'POST'
+        }, 'atoGo');
     }
 
     /**
@@ -1028,219 +775,152 @@ class API {
      * @returns {Promise<object>} { status, onboard }
      */
     async atoStop(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/ato-stop`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to stop ATO');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] atoStop failed:', e);
-            throw e;
-        }
+        return this._request(`/trains/${encodeURIComponent(trainId)}/ato-stop`, {
+            method: 'POST'
+        }, 'atoStop');
     }
 
     // === Schedule API ===
 
+    /**
+     * Get all schedules.
+     * @returns {Promise<Array>} List of schedules
+     */
     async getSchedules() {
-        try {
-            const response = await fetch(`${this.baseUrl}/schedules`);
-            const result = await response.json();
-            return result.schedules || [];
-        } catch (e) {
-            console.error('[API] getSchedules failed:', e);
-            throw e;
-        }
+        const result = await this._request('/schedules', {}, 'getSchedules');
+        return result.schedules || [];
     }
 
+    /**
+     * Get a schedule by ID.
+     * @param {string} scheduleId - Schedule ID
+     * @returns {Promise<object>} Schedule object
+     */
     async getSchedule(scheduleId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/schedules/${encodeURIComponent(scheduleId)}`);
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to get schedule');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] getSchedule failed:', e);
-            throw e;
-        }
+        return this._request(`/schedules/${encodeURIComponent(scheduleId)}`, {}, 'getSchedule');
     }
 
+    /**
+     * Create a new schedule.
+     * @param {string} trainId - Train ID
+     * @param {Array} stops - List of stops
+     * @param {number} priority - Priority (0-10)
+     * @returns {Promise<object>} Created schedule
+     */
     async createSchedule(trainId, stops, priority = 0) {
-        try {
-            const response = await fetch(`${this.baseUrl}/schedules`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ train_id: trainId, stops, priority })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to create schedule');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] createSchedule failed:', e);
-            throw e;
-        }
+        return this._request('/schedules', {
+            method: 'POST',
+            body: { train_id: trainId, stops, priority }
+        }, 'createSchedule');
     }
 
+    /**
+     * Delete a schedule.
+     * @param {string} scheduleId - Schedule ID
+     * @returns {Promise<object>} Result
+     */
     async deleteSchedule(scheduleId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/schedules/${encodeURIComponent(scheduleId)}`, {
-                method: 'DELETE'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to delete schedule');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] deleteSchedule failed:', e);
-            throw e;
-        }
+        return this._request(`/schedules/${encodeURIComponent(scheduleId)}`, {
+            method: 'DELETE'
+        }, 'deleteSchedule');
     }
 
     // === Layout Persistence API ===
 
+    /**
+     * Get list of saved layouts.
+     * @returns {Promise<Array>} List of layout objects
+     */
     async getLayouts() {
-        try {
-            const response = await fetch(`${this.baseUrl}/layouts`);
-            const result = await response.json();
-            return result.layouts || [];
-        } catch (e) {
-            console.error('[API] getLayouts failed:', e);
-            throw e;
-        }
+        const result = await this._request('/layouts', {}, 'getLayouts');
+        return result.layouts || [];
     }
 
+    /**
+     * Save current layout.
+     * @param {string} name - Layout name
+     * @param {string} description - Description
+     * @returns {Promise<object>} Save result
+     */
     async saveLayout(name, description = '') {
-        try {
-            const response = await fetch(`${this.baseUrl}/layouts`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, description })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to save layout');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] saveLayout failed:', e);
-            throw e;
-        }
+        return this._request('/layouts', {
+            method: 'POST',
+            body: { name, description }
+        }, 'saveLayout');
     }
 
+    /**
+     * Load a saved layout.
+     * @param {string} name - Layout name
+     * @returns {Promise<object>} Load result
+     */
     async loadLayout(name) {
-        try {
-            const response = await fetch(`${this.baseUrl}/layouts/${encodeURIComponent(name)}/load`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to load layout');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] loadLayout failed:', e);
-            throw e;
-        }
+        return this._request(`/layouts/${encodeURIComponent(name)}/load`, {
+            method: 'POST'
+        }, 'loadLayout');
     }
 
+    /**
+     * Delete a saved layout.
+     * @param {string} name - Layout name
+     * @returns {Promise<object>} Result
+     */
     async deleteLayout(name) {
-        try {
-            const response = await fetch(`${this.baseUrl}/layouts/${encodeURIComponent(name)}`, {
-                method: 'DELETE'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to delete layout');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] deleteLayout failed:', e);
-            throw e;
-        }
+        return this._request(`/layouts/${encodeURIComponent(name)}`, {
+            method: 'DELETE'
+        }, 'deleteLayout');
     }
 
+    /**
+     * Clear the entire network.
+     * @returns {Promise<object>} Cleared stats
+     */
     async clearNetwork() {
-        try {
-            const response = await fetch(`${this.baseUrl}/network/clear`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to clear network');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] clearNetwork failed:', e);
-            throw e;
-        }
+        return this._request('/network/clear', {
+            method: 'POST'
+        }, 'clearNetwork');
     }
 
+    /**
+     * Get network statistics.
+     * @returns {Promise<object>} Stats object
+     */
     async getNetworkStats() {
-        try {
-            const response = await fetch(`${this.baseUrl}/network/stats`);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getNetworkStats failed:', e);
-            throw e;
-        }
+        return this._request('/network/stats', {}, 'getNetworkStats');
     }
 
     // === Scale Configuration API ===
 
+    /**
+     * Get current scale configuration.
+     * @returns {Promise<object>} Scale settings
+     */
     async getScale() {
-        try {
-            const response = await fetch(`${this.baseUrl}/scale`);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getScale failed:', e);
-            throw e;
-        }
+        return this._request('/scale', {}, 'getScale');
     }
 
+    /**
+     * Set custom scale.
+     * @param {number} scale - Scale ratio (e.g. 160)
+     * @returns {Promise<object>} Updated scale
+     */
     async setScale(scale) {
-        try {
-            const response = await fetch(`${this.baseUrl}/scale`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ scale })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to set scale');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] setScale failed:', e);
-            throw e;
-        }
+        return this._request('/scale', {
+            method: 'PUT',
+            body: { scale }
+        }, 'setScale');
     }
 
+    /**
+     * Set scale from preset.
+     * @param {string} preset - Preset name (e.g. "1:160")
+     * @returns {Promise<object>} Updated scale
+     */
     async setScalePreset(preset) {
-        try {
-            const response = await fetch(`${this.baseUrl}/scale`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ preset })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to set scale preset');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] setScalePreset failed:', e);
-            throw e;
-        }
+        return this._request('/scale', {
+            method: 'PUT',
+            body: { preset }
+        }, 'setScalePreset');
     }
 
     // === Path Dispatcher API ===
@@ -1253,46 +933,30 @@ class API {
      * @returns {Promise<object>} PathResult with success flag and path or error
      */
     async createPath(startBlockId, endBlockId, options = {}) {
-        try {
-            const response = await fetch(`${this.baseUrl}/paths`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    start_block_id: startBlockId,
-                    end_block_id: endBlockId,
-                    ...options
-                })
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] createPath failed:', e);
-            throw e;
-        }
+        return this._request('/paths', {
+            method: 'POST',
+            body: {
+                start_block_id: startBlockId,
+                end_block_id: endBlockId,
+                ...options
+            }
+        }, 'createPath');
     }
 
     /**
      * Get list of active paths.
      * @param {object} filters - Optional filters: { train_id, block_id, status }
-     * @returns {Promise<object>} { paths: [], count }
+     * @returns {Promise<Array>} List of path objects
      */
     async getPaths(filters = {}) {
-        try {
-            const params = new URLSearchParams();
-            if (filters.train_id) params.append('train_id', filters.train_id);
-            if (filters.block_id) params.append('block_id', filters.block_id);
-            if (filters.status) params.append('status', filters.status);
-            
-            const url = params.toString() 
-                ? `${this.baseUrl}/paths?${params}` 
-                : `${this.baseUrl}/paths`;
-            const response = await fetch(url);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getPaths failed:', e);
-            throw e;
-        }
+        const params = new URLSearchParams();
+        if (filters.train_id) params.append('train_id', filters.train_id);
+        if (filters.block_id) params.append('block_id', filters.block_id);
+        if (filters.status) params.append('status', filters.status);
+        
+        const queryString = params.toString() ? `?${params}` : '';
+        const result = await this._request(`/paths${queryString}`, {}, 'getPaths');
+        return result.paths || [];
     }
 
     /**
@@ -1301,14 +965,7 @@ class API {
      * @returns {Promise<object>} Path object or error
      */
     async getPath(pathId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/paths/${encodeURIComponent(pathId)}`);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getPath failed:', e);
-            throw e;
-        }
+        return this._request(`/paths/${encodeURIComponent(pathId)}`, {}, 'getPath');
     }
 
     /**
@@ -1318,17 +975,10 @@ class API {
      * @returns {Promise<object>} CancellationResult
      */
     async cancelPath(pathId, force = false) {
-        try {
-            const url = force 
-                ? `${this.baseUrl}/paths/${encodeURIComponent(pathId)}?force=true`
-                : `${this.baseUrl}/paths/${encodeURIComponent(pathId)}`;
-            const response = await fetch(url, { method: 'DELETE' });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] cancelPath failed:', e);
-            throw e;
-        }
+        const query = force ? '?force=true' : '';
+        return this._request(`/paths/${encodeURIComponent(pathId)}${query}`, {
+            method: 'DELETE'
+        }, 'cancelPath');
     }
 
     /**
@@ -1338,18 +988,10 @@ class API {
      * @returns {Promise<object>} ExtensionResult
      */
     async extendPath(pathId, newEndBlockId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/paths/${encodeURIComponent(pathId)}/extend`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ new_end_block_id: newEndBlockId })
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] extendPath failed:', e);
-            throw e;
-        }
+        return this._request(`/paths/${encodeURIComponent(pathId)}/extend`, {
+            method: 'PUT',
+            body: { new_end_block_id: newEndBlockId }
+        }, 'extendPath');
     }
 
     /**
@@ -1358,16 +1000,9 @@ class API {
      * @returns {Promise<object>} Success message or error
      */
     async completePath(pathId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/paths/${encodeURIComponent(pathId)}/complete`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] completePath failed:', e);
-            throw e;
-        }
+        return this._request(`/paths/${encodeURIComponent(pathId)}/complete`, {
+            method: 'POST'
+        }, 'completePath');
     }
 
     /**
@@ -1377,18 +1012,11 @@ class API {
      * @returns {Promise<object>} { start_block_id, reachable_endpoints: [], count }
      */
     async getReachableEndpoints(blockId, includeStations = true) {
-        try {
-            const url = `${this.baseUrl}/dispatcher/reachable/${encodeURIComponent(blockId)}?include_stations=${includeStations}`;
-            const response = await fetch(url);
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to get reachable endpoints');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] getReachableEndpoints failed:', e);
-            throw e;
-        }
+        return this._request(
+            `/dispatcher/reachable/${encodeURIComponent(blockId)}?include_stations=${includeStations}`,
+            {},
+            'getReachableEndpoints'
+        );
     }
 
     /**
@@ -1400,18 +1028,11 @@ class API {
      * @returns {Promise<object>} { path_id, reachable_endpoints: [], count, exit_direction, error }
      */
     async getPathReachableExtensions(pathId, includeStations = true) {
-        try {
-            const url = `${this.baseUrl}/paths/${encodeURIComponent(pathId)}/reachable-extensions?include_stations=${includeStations}`;
-            const response = await fetch(url);
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to get reachable extensions');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] getPathReachableExtensions failed:', e);
-            throw e;
-        }
+        return this._request(
+            `/paths/${encodeURIComponent(pathId)}/reachable-extensions?include_stations=${includeStations}`,
+            {},
+            'getPathReachableExtensions'
+        );
     }
 
     /**
@@ -1422,79 +1043,59 @@ class API {
      * @returns {Promise<object>} { paths: [], count }
      */
     async findPaths(startBlockId, endBlockId, trainId = null) {
-        try {
-            const body = {
-                start_block_id: startBlockId,
-                end_block_id: endBlockId
-            };
-            if (trainId) body.train_id = trainId;
-            
-            const response = await fetch(`${this.baseUrl}/dispatcher/paths`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] findPaths failed:', e);
-            throw e;
-        }
+        const body = {
+            start_block_id: startBlockId,
+            end_block_id: endBlockId
+        };
+        if (trainId) body.train_id = trainId;
+        
+        return this._request('/dispatcher/paths', {
+            method: 'POST',
+            body: body
+        }, 'findPaths');
     }
 
     // === Switch Management API ===
 
+    /**
+     * Get all switches.
+     * @returns {Promise<Array>} List of switch objects
+     */
     async getSwitches() {
-        try {
-            const response = await fetch(`${this.baseUrl}/switches`);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getSwitches failed:', e);
-            throw e;
-        }
+        return this._request('/switches', {}, 'getSwitches');
     }
 
+    /**
+     * Get a specific switch.
+     * @param {string} switchId - Switch ID
+     * @returns {Promise<object>} Switch object
+     */
     async getSwitch(switchId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/switches/${encodeURIComponent(switchId)}`);
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] getSwitch failed:', e);
-            throw e;
-        }
+        return this._request(`/switches/${encodeURIComponent(switchId)}`, {}, 'getSwitch');
     }
 
+    /**
+     * Update a switch.
+     * @param {string} switchId - Switch ID
+     * @param {object} updates - Updates
+     * @returns {Promise<object>} Updated switch
+     */
     async updateSwitch(switchId, updates) {
-        try {
-            const response = await fetch(`${this.baseUrl}/switches/${encodeURIComponent(switchId)}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(updates)
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to update switch');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] updateSwitch failed:', e);
-            throw e;
-        }
+        return this._request(`/switches/${encodeURIComponent(switchId)}`, {
+            method: 'PUT',
+            body: updates
+        }, 'updateSwitch');
     }
 
+    /**
+     * Delete a switch.
+     * @param {string} switchId - Switch ID
+     * @returns {Promise<object>} Result
+     */
     async deleteSwitch(switchId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/switches/${encodeURIComponent(switchId)}`, {
-                method: 'DELETE'
-            });
-            const result = await response.json();
-            return result;
-        } catch (e) {
-            console.error('[API] deleteSwitch failed:', e);
-            throw e;
-        }
+        return this._request(`/switches/${encodeURIComponent(switchId)}`, {
+            method: 'DELETE'
+        }, 'deleteSwitch');
     }
 
     /**
@@ -1505,89 +1106,12 @@ class API {
      * @returns {Promise<object>} { success, message, switch }
      */
     async setSwitchState(switchId, state) {
-        try {
-            const response = await fetch(`${this.baseUrl}/switches/${encodeURIComponent(switchId)}/state`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ state })
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Failed to change switch state');
-            }
-            return result;
-        } catch (e) {
-            console.error('[API] setSwitchState failed:', e);
-            throw e;
-        }
-    }
-
-    /**
-     * Toggle switch state between MAIN and DIVERGE.
-     * Uses track endpoint for simple state toggle.
-     * @param {number} x - Track X coordinate
-     * @param {number} y - Track Y coordinate
-     * @returns {Promise<object>} Updated track data
-     */
-    async toggleSwitchState(x, y) {
-        try {
-            const track = await this.getTrack(x, y);
-            if (!track || !track.is_switch) {
-                throw new Error('Track is not a switch');
-            }
-            const newState = track.switch_state === 0 ? 1 : 0;
-            return await this.updateTrack(x, y, { switch_state: newState });
-        } catch (e) {
-            console.error('[API] toggleSwitchState failed:', e);
-            throw e;
-        }
-    }
-
-    /**
-     * Create a switch entity for a track tile.
-     * This should be called when placing a switch track.
-     * @param {number} x - Track X coordinate
-     * @param {number} y - Track Y coordinate
-     * @param {object} options - Optional switch configuration
-     * @returns {Promise<object>} Created switch data
-     */
-    async createSwitchAt(x, y, options = {}) {
-        try {
-            const response = await fetch(`${this.baseUrl}/tracks/${x}/${y}/switch`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(options)
-            });
-            if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.error || 'Failed to create switch');
-            }
-            return await response.json();
-        } catch (e) {
-            console.error('[API] createSwitchAt failed:', e);
-            throw e;
-        }
-    }
-
-    /**
-     * Get train lookahead data (blocks, signals, etc. ahead of train).
-     * @param {string} trainId - Train ID
-     * @returns {Promise<object>} Lookahead data
-     */
-    async getTrainLookahead(trainId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/trains/${trainId}/lookahead`);
-            if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.error || 'Failed to get train lookahead');
-            }
-            return await response.json();
-        } catch (e) {
-            console.error('[API] getTrainLookahead failed:', e);
-            throw e;
-        }
+        return this._request(`/switches/${encodeURIComponent(switchId)}/state`, {
+            method: 'PUT',
+            body: { state }
+        }, 'setSwitchState');
     }
 }
 
-// Export as global
+// Export API instance
 window.api = new API();

@@ -140,7 +140,7 @@ class BlockEditorHandler {
                 <div class="control-section mt-12 pt-12" style="border-top: 1px solid var(--border-color);">
                     <h4 class="text-sm text-muted mb-8">Properties</h4>
                     
-                    ${renderTextInput('block-name-input', 'Block Name', block.name || '', 'Enter block name...')}
+                    ${renderTextInput('block-name-input', 'Block Name', block.name || '', { placeholder: 'Enter block name...' })}
                     
                     <div class="grid grid-cols-2 gap-8 mb-8">
                         <div class="form-group mb-0">

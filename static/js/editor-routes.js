@@ -246,8 +246,7 @@ class RouteEditorHandler {
         this.editor._currentEditorId = null;
 
         try {
-            const result = await this.api.getPaths();
-            this.cachedPaths = result.paths || [];
+            this.cachedPaths = await this.api.getPaths();
         } catch (err) {
             console.error('[Editor] Failed to load paths:', err);
             window.showToast('Failed to load paths: ' + err.message, 'error', 5000);
@@ -602,8 +601,7 @@ class RouteEditorHandler {
         }
 
         try {
-            const result = await this.api.getPaths();
-            const paths = result.paths || [];
+            const paths = await this.api.getPaths();
             
             const matchingPaths = paths.filter(p => 
                 p.end_block_id === blockId && 
@@ -790,8 +788,7 @@ class RouteEditorHandler {
         }
 
         try {
-            const result = await this.api.getPaths();
-            const paths = result.paths || [];
+            const paths = await this.api.getPaths();
             
             const matchingPaths = paths.filter(p => 
                 p.block_sequence?.includes(blockId) && 
