@@ -373,6 +373,12 @@ class Train:
     # Emergency control
     emergency_brake: bool = False  # Emergency braking active
 
+    # ATO state (for persistence across controller recreation)
+    # When demo_main creates a temporary controller and calls depart(),
+    # this field stores the ATO running state so SimulationController's
+    # controller can inherit it.
+    ato_running: bool = False
+
     @property
     def length(self) -> float:
         """Total length of train in meters (approx track units for now)"""

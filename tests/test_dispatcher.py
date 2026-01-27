@@ -15,8 +15,6 @@ See docs/DISPATCHER_DESIGN.md for full specification.
 """
 
 import pytest
-from datetime import datetime
-from typing import Dict, List, Tuple
 
 from path import (
     Path,
@@ -42,8 +40,9 @@ from track import (
     TRACK_SW,
 )
 from block import Block
-from train import Train, TrainCar
+from train import Train, TrainCar, TrainPosition
 from tests.train_test_helpers import make_train_position
+from train_route import Route, RouteMode, Waypoint
 from enums import BlockState, Direction, TrainState, HandlePosition
 from simulation import SimulationController
 
@@ -877,6 +876,49 @@ class TestPathLifecycle:
                 assert block.reserved_by_path is None
                 # Block state depends on whether train is still physically in it
                 # Since this test doesn't track train position, blocks may still be OCCUPIED
+
+    def test_complete_path_on_head_arrival_releases_unoccupied_blocks(
+        self, simple_linear_network, dispatcher, train
+    ):
+        """Test path completion on head arrival releases unoccupied blocks."""
+        dispatcher.network = simple_linear_network
+        simple_linear_network.add_train(train)
+
+        result = dispatcher.create_path("BLOCK_A", "BLOCK_C", train_id=train.train_id)
+        assert result.success
+        path = result.path
+        path_id = path.path_id
+
+        end_tile = path.path_tiles[-1]
+        train.position = make_train_position(
+            end_tile, Direction.EAST, occupied_blocks=["BLOCK_C"]
+        )
+        train.facing_direction = Direction.EAST
+
+        block_c = simple_linear_network.blocks.get("BLOCK_C")
+        assert block_c is not None
+        block_c.occupy(train.train_id)
+
+        updated = dispatcher.on_train_progress_from_physics(path_id)
+
+        assert updated
+        assert dispatcher.get_path(path_id) is None
+
+        block_a = simple_linear_network.blocks.get("BLOCK_A")
+        block_b = simple_linear_network.blocks.get("BLOCK_B")
+        assert block_a is not None
+        assert block_b is not None
+
+        assert block_a.state == BlockState.FREE
+        assert block_b.state == BlockState.FREE
+        assert block_c.state == BlockState.OCCUPIED
+
+        events = dispatcher.get_and_clear_completion_events()
+        assert len(events) == 1
+        assert events[0]["train_id"] == train.train_id
+        assert events[0]["path_id"] == path_id
+        assert events[0]["end_tile"] == end_tile
+        assert events[0]["time"] is not None
 
 
 # ============================================================================
@@ -1901,6 +1943,114 @@ class TestSimulationPathAdvancement:
 
         assert network.blocks["BLOCK_A"].state == BlockState.CAUTION
 
+    def test_route_executor_path_completion_advances_waypoint(
+        self, simple_linear_network, dispatcher, train
+    ):
+        """Path completion advances to next waypoint without dwell."""
+        network = simple_linear_network
+        dispatcher.network = network
+        sim = SimulationController(network, dispatcher)
+
+        route = Route(
+            route_id="ROUTE_001",
+            mode=RouteMode.ONE_WAY,
+            waypoints=[
+                Waypoint(station_id="STA_A", dwell_time_sec=20.0),
+                Waypoint(station_id="STA_B", dwell_time_sec=20.0),
+            ],
+        )
+        network.routes[route.route_id] = route
+
+        train.state = TrainState.IDLE
+        train.facing_direction = Direction.EAST
+        train.position = make_train_position((0, 0), Direction.EAST)
+        network.add_train(train)
+
+        sim.route_executor.activate_route(train, route)
+
+        controller = sim._get_or_create_controller(train)
+        controller.power_on = True
+        controller.state = TrainState.RUNNING_MOVING
+        controller.active_cab = "A"
+        controller.handle_position = HandlePosition.N
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 0.0
+
+        result = dispatcher.create_path("BLOCK_A", "BLOCK_C", train_id=train.train_id)
+        assert result.success
+        path = result.path
+        train.assigned_path_id = path.path_id
+
+        end_tile = path.path_tiles[-1]
+        train.position = make_train_position(
+            end_tile, Direction.EAST, occupied_blocks=["BLOCK_C"]
+        )
+
+        dispatcher.on_train_progress_from_physics(path.path_id)
+
+        sim.update(0.0)
+
+        assert train.assigned_path_id is None
+        assert train.current_path is None
+        assert train.state == TrainState.STANDBY
+        assert route.is_active
+        assert route.current_waypoint_index == 1
+        assert route.get_current_waypoint().station_id == "STA_B"
+
+        exec_state = sim.route_executor.execution_states.get(train.train_id)
+        assert exec_state is not None
+        assert exec_state.arrived_at_station_time is None
+
+    def test_route_executor_path_completion_clears_route_on_final_waypoint(
+        self, simple_linear_network, dispatcher, train
+    ):
+        """Path completion on final waypoint clears route assignment."""
+        network = simple_linear_network
+        dispatcher.network = network
+        sim = SimulationController(network, dispatcher)
+
+        route = Route(
+            route_id="ROUTE_FINAL",
+            mode=RouteMode.ONE_WAY,
+            waypoints=[Waypoint(station_id="STA_FINAL", dwell_time_sec=20.0)],
+        )
+        network.routes[route.route_id] = route
+
+        train.state = TrainState.IDLE
+        train.facing_direction = Direction.EAST
+        train.position = make_train_position((0, 0), Direction.EAST)
+        network.add_train(train)
+
+        sim.route_executor.activate_route(train, route)
+
+        controller = sim._get_or_create_controller(train)
+        controller.power_on = True
+        controller.state = TrainState.RUNNING_MOVING
+        controller.active_cab = "A"
+        controller.handle_position = HandlePosition.N
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 0.0
+
+        result = dispatcher.create_path("BLOCK_A", "BLOCK_C", train_id=train.train_id)
+        assert result.success
+        path = result.path
+        train.assigned_path_id = path.path_id
+
+        end_tile = path.path_tiles[-1]
+        train.position = make_train_position(
+            end_tile, Direction.EAST, occupied_blocks=["BLOCK_C"]
+        )
+
+        dispatcher.on_train_progress_from_physics(path.path_id)
+
+        sim.update(0.0)
+
+        assert train.assigned_path_id is None
+        assert train.assigned_route_id is None
+        assert train.state == TrainState.STANDBY
+        assert not route.is_active
+        assert sim.route_executor.execution_states.get(train.train_id) is None
+
 
 class TestPathSwitchUnlockBugFix:
     """
@@ -1968,3 +2118,213 @@ class TestPathSwitchUnlockBugFix:
 
         assert network.blocks["BLOCK_A"].state == BlockState.FREE
         assert not switch_track.is_locked_by_path()
+
+
+class TestPathExtensionForMultiTileStations:
+    """
+    Tests for path extension to include all tiles of multi-tile stations.
+
+    BUG: When a path ends at a multi-tile station, the pathfinder stops at the
+    first tile of the station block. The train's current_path is extended by
+    assign_complete_path_to_train(), but the Path object in PathDispatcher still
+    has the original tiles. This causes the path to be marked complete when the
+    train enters the first station tile, preventing it from continuing to the
+    remaining platform tiles.
+
+    FIX: When the train path is extended, update Path.path_tiles in PathDispatcher
+    so that path completion is only triggered when the train reaches the actual
+    end of the extended path.
+    """
+
+    def test_path_includes_all_station_tiles(self):
+        """
+        When creating a path to a multi-tile station, the Path object should
+        include all tiles of the station block, not just the first one.
+
+        Scenario:
+        - Station block has tiles (0,3) and (0,4)
+        - Path from (0,0) to station should end at (0,4), not (0,3)
+        """
+        from path_utils import assign_complete_path_to_train
+        from switch import Switch
+
+        network = RailwayNetwork()
+
+        # Create a vertical track layout
+        for y in range(5):
+            track = TrackSegment(0, y, track_bits=TRACK_NS)
+            network.add_track(track)
+
+        # Create blocks
+        network.create_block_with_tracks(
+            block_id="BLOCK_START",
+            positions=[(0, 0)],
+            name="Start Block",
+        )
+        network.create_block_with_tracks(
+            block_id="BLOCK_MIDDLE",
+            positions=[(0, 1), (0, 2)],
+            name="Middle Block",
+        )
+        # Multi-tile station block (2 tiles)
+        network.create_block_with_tracks(
+            block_id="STATION_BLOCK",
+            positions=[(0, 3), (0, 4)],
+            name="Station Block",
+        )
+
+        # Create train at start
+        train = Train(
+            train_id="TEST_TRAIN",
+            consist=[TrainCar("CAR_1", "LOCOMOTIVE", 20.0)],
+        )
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=0.0,
+            end_a_entry_edge="S",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="S",
+            leading_end="a",
+            facing_direction=Direction.NORTH,
+            occupied_tiles=[(0, 0)],
+            occupied_blocks=["BLOCK_START"],
+        )
+        network.add_train(train)
+
+        # Create dispatcher and path
+        dispatcher = PathDispatcher(network)
+        result = dispatcher.create_path(
+            "BLOCK_START", "STATION_BLOCK", train_id=train.train_id
+        )
+
+        assert result.success, f"Path creation failed: {result.error}"
+        path = result.path
+
+        # The path should include ALL tiles of the station block
+        # Original behavior: path ends at (0,3) - first station tile
+        # Expected behavior: path ends at (0,4) - last station tile
+        path_positions = [(t[0], t[1]) for t in path.path_tiles]
+
+        assert (0, 4) in path_positions, (
+            f"Path should include all station tiles. "
+            f"Expected (0,4) in path, got: {path_positions}"
+        )
+        assert path.path_tiles[-1] == (0, 4), (
+            f"Path should end at last station tile (0,4), "
+            f"but ends at {path.path_tiles[-1]}"
+        )
+
+    def test_path_completion_waits_for_last_station_tile(self):
+        """
+        Path completion should only trigger when train reaches the LAST tile
+        of the station, not the first tile.
+
+        This tests the full flow:
+        1. Create path to multi-tile station
+        2. Move train to first station tile
+        3. Verify path is NOT completed yet
+        4. Move train to last station tile
+        5. Verify path IS completed
+        """
+        network = RailwayNetwork()
+
+        # Create a vertical track layout
+        for y in range(5):
+            track = TrackSegment(0, y, track_bits=TRACK_NS)
+            network.add_track(track)
+
+        # Create blocks
+        network.create_block_with_tracks(
+            block_id="BLOCK_START",
+            positions=[(0, 0)],
+            name="Start Block",
+        )
+        network.create_block_with_tracks(
+            block_id="BLOCK_MIDDLE",
+            positions=[(0, 1), (0, 2)],
+            name="Middle Block",
+        )
+        # Multi-tile station block (2 tiles)
+        network.create_block_with_tracks(
+            block_id="STATION_BLOCK",
+            positions=[(0, 3), (0, 4)],
+            name="Station Block",
+        )
+
+        # Create train at start
+        train = Train(
+            train_id="TEST_TRAIN",
+            consist=[TrainCar("CAR_1", "LOCOMOTIVE", 20.0)],
+        )
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=0.0,
+            end_a_entry_edge="S",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="S",
+            leading_end="a",
+            facing_direction=Direction.NORTH,
+            occupied_tiles=[(0, 0)],
+            occupied_blocks=["BLOCK_START"],
+        )
+        network.add_train(train)
+
+        # Create dispatcher and path
+        dispatcher = PathDispatcher(network)
+        result = dispatcher.create_path(
+            "BLOCK_START", "STATION_BLOCK", train_id=train.train_id
+        )
+        assert result.success
+        path = result.path
+
+        # Activate path
+        dispatcher.on_train_enters_path(path.path_id, train.train_id, "BLOCK_START")
+        assert path.status == PathStatus.ACTIVE
+
+        # Move train to FIRST station tile (0,3)
+        train.position = TrainPosition(
+            end_a_tile=(0, 3),
+            end_a_distance_cm=5.0,
+            end_a_entry_edge="S",
+            end_b_tile=(0, 3),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="S",
+            leading_end="a",
+            facing_direction=Direction.NORTH,
+            occupied_tiles=[(0, 3)],
+            occupied_blocks=["STATION_BLOCK"],
+        )
+
+        # Progress the path
+        dispatcher.on_train_progress_from_physics(path.path_id)
+
+        # Path should NOT be completed yet - train is only at first station tile
+        assert path.status == PathStatus.ACTIVE, (
+            f"Path should still be ACTIVE when train is at first station tile, "
+            f"but status is {path.status}"
+        )
+
+        # Move train to LAST station tile (0,4)
+        train.position = TrainPosition(
+            end_a_tile=(0, 4),
+            end_a_distance_cm=5.0,
+            end_a_entry_edge="S",
+            end_b_tile=(0, 4),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="S",
+            leading_end="a",
+            facing_direction=Direction.NORTH,
+            occupied_tiles=[(0, 4)],
+            occupied_blocks=["STATION_BLOCK"],
+        )
+
+        # Progress the path again
+        dispatcher.on_train_progress_from_physics(path.path_id)
+
+        # NOW path should be completed
+        assert path.status == PathStatus.COMPLETED, (
+            f"Path should be COMPLETED when train reaches last station tile, "
+            f"but status is {path.status}"
+        )

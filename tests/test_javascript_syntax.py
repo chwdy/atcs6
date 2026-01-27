@@ -94,6 +94,30 @@ class TestJavaScriptSyntax:
 
         assert "class App" in content, "app.js must define App class"
 
+    def test_editor_trains_waits_for_ato_stop(self):
+        """ATO stop should wait for train to fully stop before refresh."""
+        editor_trains_file = JS_DIR / "editor-trains.js"
+        content = editor_trains_file.read_text()
+
+        assert "waitForTrainStopped" in content, (
+            "editor-trains.js must define waitForTrainStopped helper"
+        )
+        assert "await waitForTrainStopped()" in content, (
+            "ATO Stop should wait for the train to stop before refresh"
+        )
+
+    def test_editor_trains_updates_cab_buttons_on_live_update(self):
+        """Train control panel should update cab buttons during live updates."""
+        editor_trains_file = JS_DIR / "editor-trains.js"
+        content = editor_trains_file.read_text()
+
+        assert "updateControlPanelValuesFromData" in content, (
+            "editor-trains.js must define updateControlPanelValuesFromData"
+        )
+        assert "updateCabButtons" in content, (
+            "Train control live update should include updateCabButtons helper"
+        )
+
     def test_no_duplicate_code_blocks(self):
         """Test that JavaScript files don't have obvious duplicate code blocks"""
         for js_file in get_all_js_files():

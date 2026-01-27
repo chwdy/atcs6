@@ -599,7 +599,7 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
 
     # Sync train state to match controller (so SimulationController's controller will inherit it)
     demo_train.state = controller.state
-    # Note: SimulationController will create its own controller when it starts
+    demo_train.ato_running = controller.ato_running  # Sync ATO running state
 
 
 def create_track_showcase(network: RailwayNetwork):

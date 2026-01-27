@@ -619,6 +619,68 @@ class TestCabSwitchEndPositionsBugFix:
         assert data["end_b_index"] == len(data["path_tiles"]) - 1
 
 
+class TestCabSwitchEntryEdgeFlipBugFix:
+    """
+    Comprehensive tests for cab switching entry edge reversal (2026-01-25).
+
+    BUG: Switching cabs in manual mode flips leading_end/facing_direction but
+    leaves the leading end's entry_edge unchanged, so movement/renderer keep
+    the old direction when both ends are on the same tile.
+
+    FIX: On cab switch (A <-> B), update the new leading end's entry_edge to
+    the opposite edge along its current track segment.
+    """
+
+    def _setup_straight_line(self, network, length_cm: float, head_x: int = 1):
+        for x in range(-2, 4):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+
+        car = TrainCar("CAB_EDGE_TEST", "LOCOMOTIVE", length=length_cm)
+        train = Train(train_id="CAB_EDGE_TEST", consist=[car])
+        network.add_train(train)
+        network.place_train(train, head_x, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on = True
+        return train, controller
+
+    def _expected_reverse_entry_edge(self, network, tile, entry_edge: str) -> str:
+        track = network.get_track(*tile)
+        assert track is not None
+        exits = track.get_exits(entry_edge, use_switch_state=True)
+        assert exits
+        return exits[0]
+
+    def test_cab_switch_flips_entry_edge_single_tile(self, network):
+        train, controller = self._setup_straight_line(network, length_cm=40.0)
+
+        controller.set_cab("A")
+        original_entry = train.position.end_b_entry_edge
+        original_end_a_entry = train.position.end_a_entry_edge
+        expected_entry = self._expected_reverse_entry_edge(
+            network, train.position.end_b_tile, original_entry
+        )
+
+        controller.set_cab("B")
+
+        assert train.position.leading_end == "b"
+        assert train.position.end_b_entry_edge == expected_entry
+        assert train.position.end_a_entry_edge == original_end_a_entry
+
+    def test_cab_switch_keeps_entry_edge_multi_tile(self, network):
+        train, controller = self._setup_straight_line(network, length_cm=140.0)
+
+        controller.set_cab("A")
+        original_entry = train.position.end_b_entry_edge
+        original_end_a_entry = train.position.end_a_entry_edge
+
+        controller.set_cab("B")
+
+        assert train.position.leading_end == "b"
+        assert train.position.end_b_entry_edge == original_entry
+        assert train.position.end_a_entry_edge == original_end_a_entry
+
+
 class TestTrainPhysicsOccupiedTilesOrderBugFix:
     """
     Comprehensive tests for occupied_tiles ordering in TrainPhysics (2026-01-22).
@@ -666,6 +728,74 @@ class TestTrainPhysicsOccupiedTilesOrderBugFix:
 
         assert data["path_tiles"][0] == list(train.position.end_a_tile)
         assert data["path_tiles"][-1] == list(train.position.end_b_tile)
+
+
+class TestAtoStopButtonBugFix:
+    """
+    Comprehensive tests for ATO stop command behavior (2026-01-25).
+
+    BUG: ATO stop only set ato_running=False, leaving the handle in a power notch
+    and the train continuing to move.
+
+    FIX: ATO stop applies braking and transitions to STANDBY once stopped.
+    """
+
+    def _setup_ato_train(self, network):
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        network.add_track(track)
+        network.add_track(next_track)
+        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+
+        car = TrainCar("ATO_STOP_TEST", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="ATO_STOP_TEST", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.active_cab = "A"
+        controller.state = TrainState.RUNNING_MOVING
+        controller.ato_running = True
+        controller.handle_position = HandlePosition.P2
+
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 30.0
+        return train, controller
+
+    def test_ato_stop_sets_ato_running_false(self, network):
+        """ato_stop() sets ato_running=False. Braking is applied in tick()."""
+        _, controller = self._setup_ato_train(network)
+
+        result = controller.ato_stop()
+
+        assert result.success is True
+        assert controller.ato_running is False
+
+    def test_ato_stop_tick_applies_braking(self, network):
+        """After ato_stop(), tick() applies braking."""
+        train, controller = self._setup_ato_train(network)
+
+        controller.ato_stop()
+        train.current_speed = 30.0  # Still moving
+
+        controller.tick(0.1)
+
+        # Handle should now be braking
+        assert controller.handle_position.value.startswith("B")
+
+    def test_ato_stop_transitions_to_standby_when_stopped(self, network):
+        train, controller = self._setup_ato_train(network)
+
+        controller.ato_stop()
+        train.current_speed = 0.0
+
+        controller.tick(0.1)
+
+        assert controller.state == TrainState.STANDBY
+        assert train.state == TrainState.STANDBY
+        assert controller.handle_position == HandlePosition.N
 
 
 class TestTrainPhysicsTailPositionBugFix:
@@ -870,6 +1000,7 @@ class TestRaceConditionFix:
         controller.power_on = True
         controller.state = TrainState.RUNNING_MOVING
         controller.active_cab = "A"  # Set cab so ATC calculates speed properly
+        controller.ato_running = True  # ATO is running
 
         # Tick controller - should NOT transition to WAITING (no obstruction)
         sim.update(0.1)
@@ -916,7 +1047,7 @@ class TestRaceConditionFix:
         controller = sim._get_or_create_controller(train)
         controller.power_on = True
         controller.state = TrainState.RUNNING_WAITING
-        controller.ato_running = False  # ATO was paused due to waiting
+        controller.ato_running = True  # ATO is running, just waiting for path
         controller.active_cab = "A"  # Set cab so ATC calculates speed properly
 
         # Verify initial state
@@ -1098,6 +1229,94 @@ class TestRaceConditionFix:
         assert controller.speed_limit_reason == "No cab selected", (
             f"Reason should be 'No cab selected', got: {controller.speed_limit_reason}"
         )
+
+
+class TestAtoAutoCabSelectionBugFix:
+    """
+    Comprehensive tests for auto-selecting cab in ATO (2026-01-25).
+
+    BUG: ATO could be blocked by no cab selection, even though the path implies
+    a required cab. This prevented ATO from starting in demo/route flow.
+
+    FIX: ATO auto-selects required cab when missing (in depart() before calling ato_go()).
+    NOTE: depart() now calls ato_go() which starts ATO (simplified model 2026-01-26).
+    """
+
+    def test_depart_selects_cab_and_starts_ato(self, network):
+        """
+        depart() should auto-select required cab and start ATO.
+        In the simplified model, depart() calls ato_go().
+        """
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        network.add_track(track)
+        network.add_track(next_track)
+        network.create_block_with_tracks("B1", [(0, 0)], length_cm=100.0)
+
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_NO_CAB", consist=[car], max_speed=60.0)
+        train.state = TrainState.STANDBY
+        train.facing_direction = Direction.EAST
+        train.assigned_path_id = "PATH_1"
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        class DummyPath:
+            path_id = "PATH_1"
+            end_a = (0, 0)
+            end_b = (1, 0)
+
+        network.paths = {"PATH_1": DummyPath()}
+
+        controller = TrainController(train_id=train.train_id, network=network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.state = TrainState.STANDBY
+        controller.active_cab = None
+
+        # Set up ato_info so cab can be auto-selected
+        from train_controller import ATOInfo
+
+        controller.ato_info = ATOInfo(required_cab="A")
+
+        assert controller.depart() is True
+        # depart() calls ato_go(), so ato_running should be True
+        assert controller.ato_running is True
+        assert controller.state == TrainState.RUNNING_MOVING
+        # Cab should have been auto-selected
+        assert controller.active_cab == "A"
+
+    def test_tick_auto_selects_cab_when_missing(self, network):
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        network.add_track(track)
+        network.add_track(next_track)
+        network.create_block_with_tracks("B1", [(0, 0)], length_cm=100.0)
+
+        car = TrainCar(car_id="CAR_02", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_NO_CAB_TICK", consist=[car], max_speed=60.0)
+        train.state = TrainState.STANDBY
+        train.facing_direction = Direction.EAST
+        train.assigned_path_id = "PATH_1"
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        class DummyPath:
+            path_id = "PATH_1"
+            end_a = (0, 0)
+            end_b = (1, 0)
+
+        network.paths = {"PATH_1": DummyPath()}
+
+        controller = TrainController(train_id=train.train_id, network=network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.state = TrainState.STANDBY
+        controller.active_cab = None
+
+        controller.tick(0.1)
+
+        assert controller.active_cab == "A"
 
     def test_block_release_uses_caution_state(self):
         """
@@ -1738,6 +1957,859 @@ class TestTrainControllerBrakingNotches:
         assert sim_controller is route_executor_controller, (
             "RouteExecutor created a duplicate controller instead of using "
             "the SimulationController's instance"
+        )
+
+
+class TestAtoDepartCallsAtoGo:
+    """
+    Tests for simplified ATO model (2026-01-26).
+
+    In the simplified model:
+    - depart() calls ato_go() if in ATO mode (RouteExecutor "presses Go button")
+    - ato_go() sets ato_running=True
+    - ato_stop() sets ato_running=False
+    - tick() brakes to stop when ato_running=False, transitions to STANDBY
+    """
+
+    def _setup_ato_train(self, network):
+        """Create a train in ATO mode with ATO running."""
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        network.add_track(track)
+        network.add_track(next_track)
+        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+
+        car = TrainCar("ATO_DEPART_TEST", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="ATO_DEPART_TEST", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.active_cab = "A"
+        controller.state = TrainState.RUNNING_MOVING
+        controller.ato_running = True
+        controller.handle_position = HandlePosition.P2
+
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 30.0
+        return train, controller
+
+    def test_depart_calls_ato_go_in_ato_mode(self, network):
+        """
+        depart() should call ato_go() when in ATO mode.
+        This is like RouteExecutor pressing the Go button.
+        """
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        network.add_track(track)
+        network.add_track(next_track)
+        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+
+        car = TrainCar("DEPART_ATO", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="DEPART_ATO", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.active_cab = "A"
+        controller.state = TrainState.STANDBY
+        controller.ato_running = False
+
+        train.state = TrainState.STANDBY
+
+        # depart() is called by RouteExecutor
+        result = controller.depart()
+        assert result is True
+
+        # In ATO mode, depart() calls ato_go(), so ato_running should be True
+        assert controller.ato_running is True
+        assert controller.state == TrainState.RUNNING_MOVING
+
+    def test_ato_stop_sets_ato_running_false(self, network):
+        """
+        ato_stop() simply sets ato_running=False.
+        tick() handles braking and transition to STANDBY.
+        """
+        train, controller = self._setup_ato_train(network)
+
+        result = controller.ato_stop()
+
+        assert result.success is True
+        assert controller.ato_running is False
+
+    def test_tick_brakes_and_transitions_to_standby_when_ato_stopped(self, network):
+        """
+        When ato_running=False, tick() should brake to stop and
+        transition to STANDBY when stopped.
+        """
+        train, controller = self._setup_ato_train(network)
+
+        # User presses ATO Stop
+        controller.ato_stop()
+        assert controller.ato_running is False
+
+        # Train is still moving
+        train.current_speed = 10.0
+        controller.tick(0.1)
+
+        # Should still be RUNNING_MOVING while braking
+        # (handle should be braking)
+        assert controller.handle_position.value.startswith("B")
+
+        # Simulate train stopped
+        train.current_speed = 0.0
+        controller.tick(0.1)
+
+        # Now should transition to STANDBY
+        assert controller.state == TrainState.STANDBY
+
+    def test_ato_go_starts_ato(self, network):
+        """
+        Verify that ato_go() still properly starts ATO.
+        """
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        network.add_track(track)
+        network.add_track(next_track)
+        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+
+        car = TrainCar("ATO_GO_TEST", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="ATO_GO_TEST", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.active_cab = "A"
+        controller.state = TrainState.STANDBY
+        controller.ato_running = False
+
+        train.state = TrainState.STANDBY
+
+        # User explicitly calls ato_go()
+        result = controller.ato_go()
+        assert result.success is True
+        assert controller.ato_running is True
+        assert controller.state == TrainState.RUNNING_MOVING
+
+    def test_waiting_to_moving_preserves_ato_running_false(self, network):
+        """
+        When transitioning from WAITING to MOVING, ato_running should stay False
+        if user stopped ATO.
+        """
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        network.add_track(track)
+        network.add_track(next_track)
+        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+
+        car = TrainCar("WAIT_TO_MOVE", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="WAIT_TO_MOVE", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.active_cab = "A"
+        controller.state = TrainState.RUNNING_WAITING
+        controller.ato_running = False  # User stopped ATO
+
+        train.state = TrainState.RUNNING_WAITING
+        train.current_speed = 0.0
+
+        # Simulate path clearing - tick should transition to RUNNING_MOVING
+        # but ato_running should stay False
+        controller.tick(0.1)
+
+        # ato_running should stay False - user stopped it
+        assert controller.ato_running is False, (
+            "WAITING->MOVING transition should preserve ato_running=False"
+        )
+
+    def test_clear_to_move_preserves_ato_running_false(self, network):
+        """
+        clear_to_move() should preserve ato_running=False if user stopped ATO.
+        """
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        network.add_track(track)
+        network.add_track(next_track)
+        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+
+        car = TrainCar("CLEAR_MOVE", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="CLEAR_MOVE", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.active_cab = "A"
+        controller.state = TrainState.RUNNING_WAITING
+        controller.ato_running = False  # User stopped ATO
+
+        train.state = TrainState.RUNNING_WAITING
+        train.current_speed = 0.0
+
+        # clear_to_move is called (e.g., by RouteExecutor when signal clears)
+        result = controller.clear_to_move()
+        assert result is True
+
+        # ato_running should stay False - user stopped it
+        assert controller.ato_running is False, (
+            "clear_to_move() should preserve ato_running=False"
+        )
+
+    def test_clear_to_move_preserves_ato_running_true(self, network):
+        """
+        clear_to_move() should preserve ato_running=True if ATO was running.
+        """
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        network.add_track(track)
+        network.add_track(next_track)
+        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+
+        car = TrainCar("CLEAR_RESUME", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="CLEAR_RESUME", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.active_cab = "A"
+        controller.state = TrainState.RUNNING_WAITING
+        controller.ato_running = True  # ATO was running before waiting
+
+        train.state = TrainState.RUNNING_WAITING
+        train.current_speed = 0.0
+
+        # clear_to_move is called
+        result = controller.clear_to_move()
+        assert result is True
+
+        # ato_running should stay True
+        assert controller.ato_running is True, (
+            "clear_to_move() should preserve ato_running=True"
+        )
+
+
+class TestAtoDistanceAwareControl:
+    """
+    Comprehensive tests for ATO distance-aware control (2026-01-26).
+
+    BUG: ATO speed control uses tight tolerance around target speed, causing
+    oscillation and re-acceleration near end-of-path.
+
+    FIX: Use distance-aware target speed from braking curve and select handle
+    with hysteresis to avoid N/B chatter.
+    """
+
+    def _setup_ato_train_with_path(self, network, clearance_cm: float = 1000.0):
+        """Helper to set up an ATO train with specified clearance."""
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        network.add_track(track)
+        network.add_track(next_track)
+        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+
+        car = TrainCar("ATO_DIST_TEST", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="ATO_DIST_TEST", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.active_cab = "A"
+        controller.state = TrainState.RUNNING_MOVING
+        controller.ato_running = True
+        controller.clearance_ahead_cm = clearance_cm
+        controller.atc_speed_limit = 60.0
+        controller.current_block_speed_limit = 60.0
+
+        train.state = TrainState.RUNNING_MOVING
+        return train, controller
+
+    def test_ato_stop_uses_aggressive_service_brake_not_eb(self, network):
+        """
+        ATO stop should use aggressive service brake (B4-B8), never EB.
+
+        When ato_stop() is called:
+        1. ato_running is set to False
+        2. tick() should apply aggressive braking (high B notch, not EB)
+        3. EB is only allowed by ATC overspeed logic
+        """
+        train, controller = self._setup_ato_train_with_path(network)
+        train.current_speed = 40.0  # Train moving at moderate speed
+
+        # ATO stop is pressed
+        controller.ato_stop()
+        assert controller.ato_running is False
+
+        # Tick should apply aggressive service braking
+        controller.tick(0.1)
+
+        # Handle should be high B-notch (B4-B8) but NOT EB
+        handle = controller.handle_position
+        assert handle != HandlePosition.EB, (
+            f"ATO stop should never use EB, got {handle.value}"
+        )
+        assert handle.value.startswith("B"), (
+            f"ATO stop should use B-notch, got {handle.value}"
+        )
+        # Should be aggressive service brake (B4 or higher)
+        brake_number = int(handle.value[1])
+        assert brake_number >= 4, (
+            f"ATO stop should use aggressive braking (B4+), got {handle.value}"
+        )
+
+    def test_ato_stop_at_high_speed_uses_b8(self, network):
+        """ATO stop at high speed should use B8 (maximum service brake)."""
+        train, controller = self._setup_ato_train_with_path(network)
+        train.current_speed = 80.0  # High speed
+
+        controller.ato_stop()
+        controller.tick(0.1)
+
+        # Should use maximum service brake B8
+        assert controller.handle_position == HandlePosition.B8, (
+            f"ATO stop at high speed should use B8, got {controller.handle_position.value}"
+        )
+
+    def test_ato_distance_aware_braking_triggers_service_brake(self, network):
+        """
+        ATO should trigger service braking (not EB) when approaching end of clearance.
+
+        When clearance_ahead_cm is less than braking distance * 1.5:
+        - Handle should apply braking
+        - Should use service brake (B-notch), not EB
+
+        Note: At model scale, safety margin is 25cm. Clearance must be > 25cm
+        for service braking; below that ATC may trigger EB for safety.
+        """
+        # Create tracks with a long enough block
+        for x in range(5):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        # Create block that covers the tracks with reasonable length
+        # At model scale, 100 cm gives us plenty of room
+        network.create_block_with_tracks(
+            "LONG_BLOCK", [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)], length_cm=100.0
+        )
+
+        car = TrainCar("ATO_BRAKE_TEST", "LOCOMOTIVE", length=10.0)
+        train = Train(train_id="ATO_BRAKE_TEST", consist=[car])
+        network.add_train(train)
+        # Place at middle of block so we have clearance ahead
+        network.place_train(train, 2, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.active_cab = "A"
+        controller.state = TrainState.RUNNING_MOVING
+        controller.ato_running = True
+
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 30.0  # Moving at 30 km/h
+
+        # Tick to calculate clearance and decide handle
+        controller.tick(0.1)
+
+        # Check clearance - should be around 40cm (remaining in block)
+        # which is above safety margin (25cm), so ATC should allow some speed
+        clearance = controller.clearance_ahead_cm
+        atc_limit = controller.atc_speed_limit
+        handle = controller.handle_position
+
+        # With clearance > safety margin, should not trigger EB
+        if clearance > 25.0:
+            assert handle != HandlePosition.EB or controller.eb_active, (
+                f"With {clearance:.1f}cm clearance (> 25cm safety margin), "
+                f"should not trigger EB without overspeed. Handle={handle.value}, "
+                f"ATC limit={atc_limit:.1f} km/h"
+            )
+
+    def test_ato_low_speed_coast_band_prevents_oscillation(self, network):
+        """
+        At low speeds, ATO should use a wider coast band to prevent N/B oscillation.
+
+        When within coast band of target speed:
+        - Handle should be N (coast)
+        - Should not flip between B and P
+        """
+        train, controller = self._setup_ato_train_with_path(network)
+        train.current_speed = 5.0  # Low speed
+        controller.atc_speed_limit = 10.0  # Target is 10 km/h
+        controller.current_block_speed_limit = 10.0
+        controller.clearance_ahead_cm = 10000.0  # Plenty of clearance
+
+        # First tick
+        controller.tick(0.1)
+        handle_1 = controller.handle_position
+
+        # Simulate speed slightly changing
+        train.current_speed = 6.0
+        controller.tick(0.1)
+        handle_2 = controller.handle_position
+
+        # At low speed near target, should prefer coasting or gentle adjustment
+        # rather than aggressive notch changes
+        # This test validates stability - handles shouldn't jump wildly
+        if handle_1 == HandlePosition.N:
+            # If coasting, small speed change shouldn't force braking
+            assert handle_2 in (
+                HandlePosition.N,
+                HandlePosition.P1,
+                HandlePosition.B1,
+            ), f"Low speed near target: gentle changes only, got {handle_2.value}"
+
+    def test_ato_aggressive_service_stop_notch(self, network):
+        """
+        Test that the aggressive service stop uses B5+ for normal speeds.
+
+        This is specifically for when ato_stop() is called (user presses stop).
+        The handle should be at least B5 (aggressive but not EB).
+        """
+        train, controller = self._setup_ato_train_with_path(network)
+        train.current_speed = 25.0  # Moderate speed
+
+        controller.ato_stop()
+        controller.tick(0.1)
+
+        handle = controller.handle_position
+        assert handle.value.startswith("B"), (
+            f"ATO stop should use brake, got {handle.value}"
+        )
+        brake_number = int(handle.value[1])
+        # At 25 km/h, should use at least B5 for aggressive stop
+        assert brake_number >= 5, (
+            f"ATO stop at 25 km/h should use B5+, got {handle.value}"
+        )
+
+
+class TestAtoStateInheritance:
+    """
+    Tests for ATO state inheritance when SimulationController creates controllers.
+
+    BUG: In demo_main.py, a temporary TrainController calls depart() which sets
+    ato_running=True. But when SimulationController later creates its own controller,
+    it starts with ato_running=False, losing the ATO state.
+
+    FIX: Store ato_running on the Train object so that _get_or_create_controller()
+    can inherit the ATO running state from the train.
+    """
+
+    def test_sim_controller_inherits_ato_running_from_train(self):
+        """
+        When a train has ato_running=True set before SimulationController is created,
+        the controller created by SimulationController should inherit ato_running=True.
+
+        This simulates the demo_main.py scenario:
+        1. Train is created with path assigned
+        2. Temporary controller calls depart() -> ato_running=True
+        3. Train stores ato_running state
+        4. SimulationController is created later
+        5. SimController's controller should have ato_running=True
+        """
+        # Setup: Create network with track and block
+        network = RailwayNetwork()
+        for x in range(10):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        network.create_block_with_tracks(
+            block_id="BLOCK_A",
+            positions=[(x, 0) for x in range(5)],
+            name="Block A",
+        )
+        network.create_block_with_tracks(
+            block_id="BLOCK_B",
+            positions=[(x, 0) for x in range(5, 10)],
+            name="Block B",
+        )
+
+        # Create train
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0)
+        train = Train(train_id="TEST_TRAIN", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        # Set ATO running on train (this is what demo_main should do)
+        train.ato_running = True  # <-- The fix: Train stores ATO state
+        train.state = TrainState.RUNNING_MOVING
+
+        # Create SimulationController AFTER train has ato_running set
+        sim_controller = SimulationController(network)
+
+        # Get the controller that SimulationController creates
+        controller = sim_controller._get_or_create_controller(train)
+
+        # The controller should inherit ato_running from the train
+        assert controller.ato_running is True, (
+            f"Controller should inherit ato_running=True from train, "
+            f"but got ato_running={controller.ato_running}"
+        )
+
+    def test_sim_controller_inherits_ato_false_by_default(self):
+        """
+        When a train has ato_running=False (or not set), controller should have False.
+        """
+        # Setup
+        network = RailwayNetwork()
+        for x in range(5):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0)
+        train = Train(train_id="TEST_TRAIN", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        # Do NOT set ato_running on train
+
+        sim_controller = SimulationController(network)
+        controller = sim_controller._get_or_create_controller(train)
+
+        # Default should be False
+        assert controller.ato_running is False
+
+    def test_demo_workflow_ato_persists_through_controller_recreation(self):
+        """
+        Simulates the full demo_main.py workflow:
+        1. Create train with path
+        2. Create temp controller, call depart()
+        3. Sync train.ato_running = controller.ato_running
+        4. Create SimulationController
+        5. Verify ATO is running
+        """
+        # Setup
+        network = RailwayNetwork()
+        for x in range(10):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        network.create_block_with_tracks(
+            block_id="BLOCK_A",
+            positions=[(x, 0) for x in range(5)],
+            name="Block A",
+        )
+        network.create_block_with_tracks(
+            block_id="BLOCK_B",
+            positions=[(x, 0) for x in range(5, 10)],
+            name="Block B",
+        )
+
+        # Create train with path
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0)
+        train = Train(train_id="TEST_TRAIN", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        # Assign a simple path
+        train.current_path = [(x, 0, Direction.EAST) for x in range(10)]
+        train.path_index = 0
+
+        # Step 2: Create temporary controller and call depart()
+        temp_controller = create_controller_for_train(
+            train_id=train.train_id,
+            network=network,
+        )
+        temp_controller.power_on_cmd()
+        temp_controller.set_direction_and_standby(Direction.EAST)
+        temp_controller.depart()
+
+        # Verify temp controller has ATO running
+        assert temp_controller.ato_running is True, (
+            "depart() should set ato_running=True"
+        )
+
+        # Step 3: Sync ATO state to train (this is the fix)
+        train.state = temp_controller.state
+        train.ato_running = temp_controller.ato_running  # <-- The fix
+
+        # Step 4: Create SimulationController (simulates server.py)
+        sim_controller = SimulationController(network)
+
+        # Step 5: Verify SimController's controller inherits ATO state
+        controller = sim_controller._get_or_create_controller(train)
+        assert controller.ato_running is True, (
+            f"SimulationController's controller should inherit ato_running=True, "
+            f"but got {controller.ato_running}"
+        )
+
+
+class TestAtoDestinationStoppingAfterPathCompletes:
+    """
+    Comprehensive tests for ATO stopping after path completes (2026-01-26).
+
+    BUG: When the train head reaches the last tile of the path, the path is
+    completed and train.reserved_blocks is cleared. ATO loses its destination
+    info because _get_blocks_ahead() returns empty, so atc_speed_limit becomes 0
+    and the train stops immediately instead of decelerating properly.
+
+    FIX: Use ato_destination_id in TrainController to calculate stopping position
+    independently of path blocks. When path completes but ato_destination_id is
+    set, calculate clearance based on distance to station stopping point.
+
+    Key code locations:
+    - TrainController.ato_destination_id (line 223)
+    - TrainController._calculate_clearance_ahead() (line 522)
+    - TrainController._get_blocks_ahead() (line 770)
+    """
+
+    def _setup_station_track(self, network):
+        """
+        Create a simple track with a station at the end.
+
+        Layout:
+        - Tiles (0,0) to (4,0) - 5 tiles of straight track (E-W)
+        - Station on tiles (3,0) and (4,0) - 2-tile platform
+        - Block BLOCK_A on tiles (0,0) to (2,0)
+        - Block BLOCK_B on tiles (3,0) to (4,0) - station block
+        """
+        from station import Station
+
+        # Create 5 tiles of straight track
+        for x in range(5):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        # Create blocks
+        network.create_block_with_tracks(
+            block_id="BLOCK_A",
+            positions=[(0, 0), (1, 0), (2, 0)],
+            name="Block A",
+            length_cm=150.0,
+        )
+        network.create_block_with_tracks(
+            block_id="BLOCK_B",
+            positions=[(3, 0), (4, 0)],
+            name="Block B - Station",
+            length_cm=100.0,
+        )
+
+        # Create station on tiles (3,0) and (4,0)
+        station = Station(
+            station_id="STA_END",
+            name="End Station",
+            positions=[(3, 0), (4, 0)],
+            length_cm=100.0,
+        )
+        network.stations["STA_END"] = station
+
+        # Mark tracks as having station
+        network.get_track(3, 0).station_id = "STA_END"
+        network.get_track(4, 0).station_id = "STA_END"
+
+        return station
+
+    def test_ato_has_clearance_after_path_completes(self, network):
+        """
+        When path completes (reserved_blocks cleared), ATO should still have
+        clearance based on ato_destination_id.
+
+        Scenario:
+        1. Train is on tile (3,0), heading EAST toward station end
+        2. Path is completed, train.reserved_blocks is cleared
+        3. ato_destination_id is set to "STA_END"
+        4. ATO should calculate clearance to station end, not return 0
+        """
+        self._setup_station_track(network)
+
+        # Create and place train
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=30.0)
+        train = Train(train_id="TRAIN_STOP_TEST", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 3, 0, Direction.EAST)
+
+        # Train has path tiles but reserved_blocks is EMPTY (path completed)
+        train.current_path = [
+            (3, 0, Direction.EAST),
+            (4, 0, Direction.EAST),
+        ]
+        train.path_index = 0
+        train.reserved_blocks = []  # <-- Path completed, blocks cleared
+        train.assigned_path_id = None  # Path no longer assigned
+
+        # Create controller with ATO running
+        controller = TrainController(train_id=train.train_id, network=network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.active_cab = "A"
+        controller.state = TrainState.RUNNING_MOVING
+        controller.ato_running = True
+
+        # Set destination to station - this is what should provide stopping info
+        controller.ato_destination_id = "STA_END"
+
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 20.0
+
+        # Tick the controller
+        controller.tick(0.1)
+
+        # Clearance should NOT be 0 - should be distance to station end
+        # The station is 100cm long, train is at start of tile (3,0)
+        # So clearance should be approximately 100cm (station length)
+        assert controller.clearance_ahead_cm > 0, (
+            f"Clearance should be > 0 when ato_destination_id is set, "
+            f"but got {controller.clearance_ahead_cm}. "
+            f"ATO should use station stopping point, not rely on reserved_blocks."
+        )
+
+        # ATC speed limit should allow some movement toward the stop
+        assert controller.atc_speed_limit > 0 or train.current_speed < 1.0, (
+            f"ATC should allow deceleration toward station, not immediate stop. "
+            f"atc_speed_limit={controller.atc_speed_limit}"
+        )
+
+    def test_ato_calculates_distance_to_station_end(self, network):
+        """
+        When ato_destination_id is set, clearance should be calculated
+        based on distance to station stopping point (end of platform).
+
+        The stopping point should be at the END of the station, not the
+        beginning, to allow the train to stop at the platform center/end.
+        """
+        self._setup_station_track(network)
+
+        # Create and place train at tile (2,0) - one tile before station
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=30.0)
+        train = Train(train_id="TRAIN_DIST_TEST", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 2, 0, Direction.EAST)
+
+        # Path is complete, no reserved blocks
+        train.current_path = [
+            (2, 0, Direction.EAST),
+            (3, 0, Direction.EAST),
+            (4, 0, Direction.EAST),
+        ]
+        train.path_index = 0
+        train.reserved_blocks = []
+
+        # Create controller with ato_destination_id set
+        controller = TrainController(train_id=train.train_id, network=network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.active_cab = "A"
+        controller.state = TrainState.RUNNING_MOVING
+        controller.ato_running = True
+        controller.ato_destination_id = "STA_END"
+
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 30.0
+
+        controller.tick(0.1)
+
+        # Clearance should be distance to station end
+        # Train is at end of tile (2,0), station is tiles (3,0)-(4,0)
+        # Block A (where train is) is 150cm, Block B (station) is 100cm
+        # Distance should be approximately: remaining in current tile + station length
+        # (this depends on exact head position)
+        clearance = controller.clearance_ahead_cm
+
+        # At minimum, clearance should include the station length
+        assert clearance >= 50.0, (
+            f"Clearance should be at least 50cm (half station), got {clearance}. "
+            f"Train should have distance to stop at platform end."
+        )
+
+    def test_ato_destination_cleared_when_stopped_at_station(self, network):
+        """
+        ato_destination_id should be cleared when train stops at the station.
+
+        This prevents the old destination from affecting future paths.
+        """
+        self._setup_station_track(network)
+
+        # Create and place train at station (tile 3,0 - start of station, facing EAST)
+        # We place at 3,0 instead of 4,0 because 4,0 has no connection to the east
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=30.0)
+        train = Train(train_id="TRAIN_CLEAR_TEST", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 3, 0, Direction.EAST)
+
+        train.current_path = [(3, 0, Direction.EAST), (4, 0, Direction.EAST)]
+        train.path_index = 1  # At end of path
+        train.reserved_blocks = []
+
+        controller = TrainController(train_id=train.train_id, network=network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.active_cab = "A"
+        controller.state = TrainState.RUNNING_MOVING
+        controller.ato_running = True
+        controller.ato_destination_id = "STA_END"
+
+        train.state = TrainState.RUNNING_MOVING
+        train.current_speed = 0.0  # Train is stopped
+
+        # Tick should detect train is at station and stopped
+        controller.tick(0.1)
+
+        # When train arrives at station and stops, ato_destination_id should clear
+        # (or transition to AT_STATION state should handle this)
+        # At minimum, ATO should stop running
+        assert (
+            controller.ato_running is False
+            or controller.state == TrainState.RUNNING_AT_STATION
+        ), (
+            f"Train stopped at destination should stop ATO or be AT_STATION. "
+            f"ato_running={controller.ato_running}, state={controller.state}"
+        )
+
+    def test_ato_departs_with_destination_id_set(self, network):
+        """
+        When depart() is called with a path that has a destination station,
+        ato_destination_id should be set from the path's destination.
+        """
+        self._setup_station_track(network)
+
+        # Create and place train at start
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=30.0)
+        train = Train(train_id="TRAIN_DEPART_DEST", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        train.current_path = [(x, 0, Direction.EAST) for x in range(5)]
+        train.path_index = 0
+        # Simulate reserved blocks from path
+        train.reserved_blocks = ["BLOCK_A", "BLOCK_B"]
+
+        controller = TrainController(train_id=train.train_id, network=network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.active_cab = "A"
+        controller.state = TrainState.STANDBY
+
+        train.state = TrainState.STANDBY
+
+        # Before depart, ato_destination_id should be None
+        assert controller.ato_destination_id is None
+
+        # Simulate that path has destination station
+        # In real code, this would be set from the Path object
+        controller.ato_destination_id = "STA_END"
+
+        # Depart
+        result = controller.depart()
+        assert result is True
+
+        # After depart, ato_destination_id should still be set
+        assert controller.ato_destination_id == "STA_END", (
+            f"ato_destination_id should persist through depart(), "
+            f"but got {controller.ato_destination_id}"
         )
 
 

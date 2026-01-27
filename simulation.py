@@ -80,6 +80,16 @@ class SimulationController:
         for train in self.network.trains.values():
             self._update_train(train, delta_seconds)
 
+        if self.path_dispatcher:
+            events = self.path_dispatcher.get_and_clear_completion_events()
+            for event in events:
+                self.route_executor.handle_path_completion(
+                    train_id=event.get("train_id"),
+                    path_id=event.get("path_id"),
+                    end_tile=event.get("end_tile"),
+                    event_time=event.get("time"),
+                )
+
     def _update_train(self, train: Train, delta_seconds: float) -> None:
         """Update a single train using TrainController + TrainPhysics."""
         controller = self._get_or_create_controller(train)
@@ -118,12 +128,20 @@ class SimulationController:
         train.speed_limit_reason = controller.speed_limit_reason
 
     def _get_or_create_controller(self, train: Train) -> TrainController:
-        """Get or create a TrainController for the given train."""
+        """Get or create a TrainController for the given train.
+
+        If the train has ato_running=True (set by demo_main's temporary controller),
+        the newly created controller will inherit this state.
+        """
         if train.train_id not in self.controllers:
-            self.controllers[train.train_id] = create_controller_for_train(
+            controller = create_controller_for_train(
                 train_id=train.train_id,
                 network=self.network,
             )
+            # Inherit ATO state from train (for demo_main workflow)
+            if hasattr(train, "ato_running") and train.ato_running:
+                controller.ato_running = True
+            self.controllers[train.train_id] = controller
         return self.controllers[train.train_id]
 
     def _get_or_create_physics(self, train: Train) -> TrainPhysics:

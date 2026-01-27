@@ -13,6 +13,7 @@ The executor integrates with:
 """
 
 import logging
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple, TYPE_CHECKING
 from enums import TrainState, Direction, OPPOSITE_DIRECTIONS
@@ -112,6 +113,67 @@ class RouteExecutor:
                 route = routes.get(train.assigned_route_id)
                 if route and route.is_active:
                     self._execute_route_for_train(train, route)
+
+    def handle_path_completion(
+        self,
+        train_id: str,
+        path_id: str,
+        end_tile: Tuple[int, int],
+        event_time: Optional[datetime],
+    ) -> bool:
+        """Handle a path completion event from PathDispatcher.
+
+        Args:
+            train_id: Train that completed the path
+            path_id: Completed path ID
+            end_tile: End tile where completion occurred
+            event_time: Event timestamp (unused; keep as-is)
+
+        Returns:
+            True if handled, False if not applicable
+        """
+        train = self.network.trains.get(train_id)
+        if not train or train.assigned_path_id != path_id:
+            return False
+
+        train.assigned_path_id = None
+        train.current_path = None
+        train.path_index = 0
+        train.reserved_blocks = []
+
+        exec_state = self.execution_states.get(train_id)
+        if train.assigned_route_id and not exec_state:
+            exec_state = RouteExecutionState(
+                train_id=train_id, route_id=train.assigned_route_id
+            )
+            self.execution_states[train_id] = exec_state
+
+        if exec_state:
+            exec_state.waiting_for_path = False
+
+        controller = self._get_controller(train)
+        route = None
+        if train.assigned_route_id:
+            route = getattr(self.network, "routes", {}).get(train.assigned_route_id)
+
+        if route and route.is_active:
+            waypoint = route.get_current_waypoint()
+            if waypoint:
+                if exec_state:
+                    exec_state.arrived_at_station_time = None
+                    exec_state.last_waypoint_station_id = waypoint.station_id
+
+                next_waypoint = route.advance_to_next_waypoint()
+                if next_waypoint is None:
+                    route.deactivate()
+                    train.assigned_route_id = None
+                    if exec_state and train.train_id in self.execution_states:
+                        del self.execution_states[train.train_id]
+                controller.transition_to_standby()
+                return True
+
+        controller.transition_to_standby()
+        return True
 
     def _execute_route_for_train(self, train: "Train", route: "Route") -> None:
         """

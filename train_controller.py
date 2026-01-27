@@ -416,9 +416,14 @@ class TrainController:
                     old_cab,
                     self.active_cab,
                 )
+                if train:
+                    train.active_cab = self.active_cab
+                    if train.position:
+                        train.position.leading_end = self.active_cab.lower()
 
-            # Calculate handle position
+            # Calculate handle position based on ato_running
             if self.ato_running:
+                # ATO is running - calculate handle to reach target speed
                 self.handle_position = self._ato_calculate_handle()
                 logger.debug(
                     "[TrainController %s] ATO handle=%s target=%.2f",
@@ -426,6 +431,14 @@ class TrainController:
                     self.handle_position.value,
                     self.target_speed,
                 )
+            else:
+                # ATO stopped - brake to stop, then transition to STANDBY
+                self.handle_position = self._calculate_braking_notch_for_speed(
+                    train.current_speed, 0.0
+                )
+                if train.current_speed <= STOPPED_SPEED_THRESHOLD_KMH:
+                    self.transition_to_standby()
+                    self.handle_position = HandlePosition.N
         else:
             # Manual mode - ATC still enforces braking if overspeed
             if train.current_speed > self.atc_speed_limit:
@@ -444,7 +457,11 @@ class TrainController:
             self.atc_speed_limit,
             self.current_block_speed_limit,
         )
-        self.target_speed = effective_limit
+        # In ATO mode: if ato_running=False, target is 0 (braking to stop)
+        if self.control_mode == "ato" and not self.ato_running:
+            self.target_speed = 0.0
+        else:
+            self.target_speed = effective_limit
         train.target_speed = self.target_speed
         train.speed_limit_reason = self.speed_limit_reason
         logger.debug(
@@ -490,8 +507,7 @@ class TrainController:
                 self.state = TrainState.RUNNING_MOVING
                 train.state = TrainState.RUNNING_MOVING
                 train.wait_reason = None
-                if self.control_mode == "ato":
-                    self.ato_running = True
+                # ato_running stays as-is - if user stopped ATO, it stays stopped
                 logger.debug(
                     "[TrainController %s] state -> RUNNING_MOVING",
                     self.train_id,
@@ -513,6 +529,10 @@ class TrainController:
         - Block not reserved for this train's path
         - Red signal
         - End of path
+
+        When reserved_blocks is empty but ato_destination_id is set (path
+        completed but still approaching station), calculates distance to
+        the station stopping point using current_path.
 
         Returns:
             Distance in cm until next obstruction
@@ -549,6 +569,89 @@ class TrainController:
 
             # Add block length to clearance
             clearance += block.length_cm
+
+        # If no blocks ahead but ato_destination_id is set, use path-based
+        # clearance calculation to find distance to station stopping point
+        if not blocks_ahead and self.ato_destination_id:
+            clearance = self._calculate_clearance_to_destination(clearance)
+
+        return clearance
+
+    def _calculate_clearance_to_destination(self, base_clearance: float) -> float:
+        """
+        Calculate clearance to ato_destination_id station using current_path.
+
+        Called when reserved_blocks is empty (path completed) but we still
+        have a destination station to reach. Uses current_path to trace
+        ahead and sum tile lengths until reaching the station end.
+
+        Args:
+            base_clearance: Already calculated clearance from current block
+
+        Returns:
+            Total clearance to station stopping point
+        """
+        train = self._get_train()
+        if not train or not self.network:
+            return base_clearance
+
+        if not train.current_path or not self.ato_destination_id:
+            return base_clearance
+
+        # Get station
+        station = self.network.stations.get(self.ato_destination_id)
+        if not station:
+            return base_clearance
+
+        # Get head tile and path index
+        head_tile = self._get_head_tile()
+        if not head_tile:
+            return base_clearance
+
+        head_index = self._get_head_path_index(train, head_tile)
+        if head_index < 0:
+            return base_clearance
+
+        # Station positions set for fast lookup
+        station_positions = set(station.positions)
+
+        # Sum distances from current position to end of station
+        clearance = base_clearance
+        current_block_id = self._get_current_block_id()
+
+        # Start from next tile after head
+        for path_entry in train.current_path[head_index + 1 :]:
+            tile_x, tile_y = path_entry[0], path_entry[1]
+            tile_pos = (tile_x, tile_y)
+
+            # Get track at this tile
+            track = self.network.get_track(tile_x, tile_y)
+            if not track:
+                break
+
+            # Check if this tile's block is obstructed (occupied by another train)
+            if track.block_section_id and track.block_section_id != current_block_id:
+                block = self.network.blocks.get(track.block_section_id)
+                if block and self._is_block_obstructed(block, track.block_section_id):
+                    break
+                current_block_id = track.block_section_id
+
+            # Add tile length
+            tile_length = self.network._get_tile_length_cm(tile_x, tile_y)
+            clearance += tile_length
+
+            # If this is the last station tile, we've reached the stopping point
+            if tile_pos in station_positions:
+                # Check if this is the last station tile in the path
+                remaining_path = train.current_path[
+                    train.current_path.index(path_entry) + 1 :
+                ]
+                has_more_station_tiles = any(
+                    (p[0], p[1]) in station_positions for p in remaining_path
+                )
+                if not has_more_station_tiles:
+                    # This is the last station tile - stopping point reached
+                    break
 
         return clearance
 
@@ -1417,6 +1520,26 @@ class TrainController:
 
         # If switching between A and B, flip facing direction
         if old_cab in ("A", "B") and cab in ("A", "B") and old_cab != cab:
+            if train.position and self.network:
+                new_leading_end = cab.lower()
+                if train.position.end_a_tile == train.position.end_b_tile:
+                    if new_leading_end == "a":
+                        entry_edge = train.position.end_a_entry_edge
+                        end_tile = train.position.end_a_tile
+                    else:
+                        entry_edge = train.position.end_b_entry_edge
+                        end_tile = train.position.end_b_tile
+
+                    track = self.network.get_track(*end_tile) if end_tile else None
+                    if track and entry_edge:
+                        exits = track.get_exits(entry_edge, use_switch_state=True)
+                        if exits:
+                            reverse_entry_edge = exits[0]
+                            if new_leading_end == "a":
+                                train.position.end_a_entry_edge = reverse_entry_edge
+                            else:
+                                train.position.end_b_entry_edge = reverse_entry_edge
+
             if train.facing_direction:
                 train.facing_direction = train.facing_direction.opposite()
 
@@ -1527,20 +1650,24 @@ class TrainController:
         self.state = TrainState.RUNNING_MOVING
         train.state = TrainState.RUNNING_MOVING
         self.ato_running = True
-
         return CommandResult(True, "ATO started")
 
     def ato_stop(self) -> CommandResult:
         """
         Stop ATO movement (service stop, not emergency).
 
-        Train will decelerate to stop, then return to STANDBY.
+        Sets ato_running=False. The tick() will handle braking and
+        transitioning to STANDBY when stopped.
         """
+        train = self._get_train()
+        if train is None:
+            return CommandResult(False, "Train not found")
+
         if not self.ato_running:
             return CommandResult(False, "ATO not running")
 
+        # Just set ato_running=False - tick() handles the rest
         self.ato_running = False
-        # ATO controller will see ato_running=False and apply braking
 
         return CommandResult(True, "ATO stopping")
 
@@ -1602,7 +1729,7 @@ class TrainController:
         Start moving (STANDBY -> RUNNING_MOVING).
 
         Used by RouteExecutor when path is acquired and train should start moving.
-        Also starts ATO if in ATO mode.
+        If in ATO mode, this calls ato_go() to start ATO - like pressing the Go button.
 
         Returns:
             True if successful, False if preconditions not met
@@ -1617,14 +1744,24 @@ class TrainController:
         if train.facing_direction is None:
             return False
 
+        # If in ATO mode, just call ato_go() - RouteExecutor is "pressing the Go button"
+        if self.control_mode == "ato":
+            # Auto-select cab if needed
+            if self.active_cab is None:
+                if self.ato_info and self.ato_info.required_cab:
+                    self.active_cab = self.ato_info.required_cab
+                    if train:
+                        train.active_cab = self.active_cab
+                        if train.position:
+                            train.position.leading_end = self.active_cab.lower()
+
+            result = self.ato_go()
+            return result.success
+
+        # Manual mode - just transition state
         self.state = TrainState.RUNNING_MOVING
         train.state = TrainState.RUNNING_MOVING
         train.wait_reason = None
-
-        # Start ATO if in ATO mode
-        if self.control_mode == "ato":
-            self.ato_running = True
-
         return True
 
     def wait_for_path(self, reason: Optional[str] = None) -> bool:
@@ -1853,9 +1990,7 @@ class TrainController:
             train.state = TrainState.RUNNING_MOVING
             train.wait_reason = None
 
-        # Resume ATO if in ATO mode
-        if self.control_mode == "ato":
-            self.ato_running = True
+        # ato_running stays as-is - if user stopped ATO, it stays stopped
 
         return True
 

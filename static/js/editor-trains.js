@@ -501,7 +501,7 @@ class TrainEditorHandler {
                             <button id="train-cab-b-btn" class="btn btn-outline btn-sm flex-1 ${onboard?.active_cab === 'B' ? 'btn-active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>Cab B</button>
                             <button id="train-cab-off-btn" class="btn btn-outline btn-sm flex-1 ${!onboard?.active_cab ? 'btn-active' : ''}" ${!powerOn || !isStopped || !onboard?.active_cab ? 'disabled' : ''}>Off</button>
                         </div>
-                        <div class="text-xs text-center" style="color: ${onboard?.active_cab ? '#00d4ff' : '#ffd93d'};">
+                        <div id="train-cab-status" class="text-xs text-center" style="color: ${onboard?.active_cab ? '#00d4ff' : '#ffd93d'};">
                             ${onboard?.active_cab ? `Cab ${onboard.active_cab} Active` : 'No Cab Selected'}
                         </div>
                     </div>
@@ -650,6 +650,24 @@ class TrainEditorHandler {
                 window.showToast(`${actionName}: ${err.message}`, 'error', 5000);
             }
         };
+
+        const waitForTrainStopped = async (timeoutMs = 8000, intervalMs = 250) => {
+            const start = Date.now();
+            while (Date.now() - start < timeoutMs) {
+                try {
+                    const onboardState = await this.api.getOnboardState(trainId);
+                    if (onboardState?.is_stopped) {
+                        return true;
+                    }
+                } catch (err) {
+                    console.warn('[TrainControl] Failed to poll onboard state:', err);
+                }
+
+                await new Promise(resolve => setTimeout(resolve, intervalMs));
+            }
+
+            return false;
+        };
         
         // Handle position order for slider
         const handleOrder = ['P5', 'P4', 'P3', 'P2', 'P1', 'N', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'EB'];
@@ -725,7 +743,13 @@ class TrainEditorHandler {
         
         if (atoStopBtn) {
             atoStopBtn.onclick = () => executeAction('ATO Stop', 
-                () => window.api.atoStop(trainId));
+                async () => {
+                    const result = await window.api.atoStop(trainId);
+                    if (result && result.status === 'success') {
+                        await waitForTrainStopped();
+                    }
+                    return result;
+                });
         }
 
         // ═══════════════════════════════════════════════════════════════════
@@ -1166,7 +1190,71 @@ class TrainEditorHandler {
             speedSlider.value = train.manual_target_speed || 0;
         }
 
+        const powerOn = onboard?.power_on ?? false;
+        const controlMode = onboard?.control_mode || 'ato';
+        const isStopped = onboard?.is_stopped ?? true;
+        const activeCab = onboard?.active_cab || null;
+        const travelDirection = onboard?.travel_direction || train.travel_direction || 'forward';
+
+        this.updateCabButtons(panel, powerOn, isStopped, activeCab);
+        this.updateModeButtons(panel, isStopped, controlMode);
+        this.updateTravelButtons(panel, isStopped, controlMode, travelDirection);
+
         this.updateButtonStates(train);
+    }
+
+    updateCabButtons(panel, powerOn, isStopped, activeCab) {
+        const cabABtn = panel.querySelector('#train-cab-a-btn');
+        const cabBBtn = panel.querySelector('#train-cab-b-btn');
+        const cabOffBtn = panel.querySelector('#train-cab-off-btn');
+        const cabStatus = panel.querySelector('#train-cab-status');
+
+        if (cabABtn) {
+            cabABtn.disabled = !powerOn || !isStopped;
+            cabABtn.classList.toggle('btn-active', activeCab === 'A');
+        }
+        if (cabBBtn) {
+            cabBBtn.disabled = !powerOn || !isStopped;
+            cabBBtn.classList.toggle('btn-active', activeCab === 'B');
+        }
+        if (cabOffBtn) {
+            const isOff = !activeCab;
+            cabOffBtn.disabled = !powerOn || !isStopped || isOff;
+            cabOffBtn.classList.toggle('btn-active', isOff);
+        }
+        if (cabStatus) {
+            cabStatus.textContent = activeCab ? `Cab ${activeCab} Active` : 'No Cab Selected';
+            cabStatus.style.color = activeCab ? '#00d4ff' : '#ffd93d';
+        }
+    }
+
+    updateModeButtons(panel, isStopped, controlMode) {
+        const modeATOBtn = panel.querySelector('#train-mode-ato-btn');
+        const modeManualBtn = panel.querySelector('#train-mode-manual-btn');
+
+        if (modeATOBtn) {
+            modeATOBtn.disabled = !isStopped;
+            modeATOBtn.classList.toggle('btn-active', controlMode === 'ato');
+        }
+        if (modeManualBtn) {
+            modeManualBtn.disabled = !isStopped;
+            modeManualBtn.classList.toggle('btn-active', controlMode === 'manual');
+        }
+    }
+
+    updateTravelButtons(panel, isStopped, controlMode, travelDirection) {
+        const travelFwdBtn = panel.querySelector('#train-travel-fwd-btn');
+        const travelRevBtn = panel.querySelector('#train-travel-rev-btn');
+        const isManual = controlMode === 'manual';
+
+        if (travelFwdBtn) {
+            travelFwdBtn.disabled = !isManual || !isStopped;
+            travelFwdBtn.classList.toggle('btn-active', travelDirection === 'forward');
+        }
+        if (travelRevBtn) {
+            travelRevBtn.disabled = !isManual || !isStopped;
+            travelRevBtn.classList.toggle('btn-active', travelDirection === 'reverse');
+        }
     }
 
     updateButtonStates(train) {

@@ -36,15 +36,10 @@ from path import (
     PathResult,
     ExtensionResult,
     CancellationResult,
-    ConflictResolution,
-    ConflictResolutionType,
     DEFAULT_PATH_PRIORITY,
-    REAR_SAFETY_DISTANCE_CM,
-    OVERLAP_DISTANCE_CM,
-    FLANK_PROTECTION_DISTANCE_CM,
 )
-from enums import BlockState, Direction, direction_from_delta, DIRECTION_OFFSETS
-from track import OPPOSITE_EDGE, EDGE_MASKS, BIT_TO_EDGES
+from enums import BlockState, direction_from_delta, DIRECTION_OFFSETS
+from track import OPPOSITE_EDGE
 from model_scale import kmh_to_cm_per_sec
 
 if TYPE_CHECKING:
@@ -73,6 +68,7 @@ class PathDispatcher:
         self.network = network
         self.active_paths: Dict[str, Path] = {}
         self.path_sequence_counter: int = 0
+        self.completed_path_events: List[Dict[str, Any]] = []
 
     # ========================================================================
     # Path ID Generation
@@ -793,6 +789,12 @@ class PathDispatcher:
                 )
 
                 if success:
+                    # Extend path tiles to include all tiles of destination block
+                    # This ensures multi-tile stations are fully traversed
+                    extended_tiles = self._extend_path_to_destination_end(
+                        path_segment.tiles, end_block_id
+                    )
+
                     # Create path object
                     path = Path(
                         path_id=path_id,
@@ -800,7 +802,7 @@ class PathDispatcher:
                         priority=priority,
                         start_block_id=start_block_id,
                         end_block_id=end_block_id,
-                        path_tiles=path_segment.tiles,
+                        path_tiles=extended_tiles,
                         block_sequence=path_segment.blocks,
                         switch_positions=path_segment.required_switches,
                         train_id=train_id,
@@ -897,7 +899,7 @@ class PathDispatcher:
 
             return True
 
-        except Exception as e:
+        except Exception:
             # Rollback
             for block_id in reserved_blocks:
                 block = self.network.blocks.get(block_id)
@@ -936,7 +938,6 @@ class PathDispatcher:
             return block_directions
 
         # For each pair of consecutive tiles, determine direction
-        current_block_id = None
         for i in range(len(path.tiles) - 1):
             curr_tile = path.tiles[i]
             next_tile = path.tiles[i + 1]
@@ -1054,6 +1055,11 @@ class PathDispatcher:
             # Wrong train!
             return False
 
+        elif path.status == PathStatus.SET:
+            # Path was pre-assigned to this train but not yet activated
+            path.status = PathStatus.ACTIVE
+            path.activated_at = datetime.now()
+
         # Update block state using BlockManager
         if self.network.block_manager:
             self.network.block_manager.occupy_block(block_id, train_id)
@@ -1153,6 +1159,13 @@ class PathDispatcher:
         if not train or not train.position:
             return False
 
+        if not path.path_tiles:
+            return False
+
+        if train.position.head_tile == path.path_tiles[-1]:
+            self._complete_path_on_head_arrival(path, train)
+            return True
+
         occupied_block_ids = set(train.position.occupied_blocks)
 
         for i, block_id in enumerate(path.block_sequence):
@@ -1169,6 +1182,76 @@ class PathDispatcher:
             self._release_switches_for_block(path, block_id)
 
         return True
+
+    def get_and_clear_completion_events(self) -> List[Dict[str, Any]]:
+        """Return completion events and clear the queue."""
+        events = list(self.completed_path_events)
+        self.completed_path_events.clear()
+        return events
+
+    def _complete_path_on_head_arrival(self, path: Path, train: "Train") -> None:
+        """Complete path when train head reaches the end tile."""
+        path.status = PathStatus.COMPLETED
+        path.completed_at = datetime.now()
+
+        occupied_block_ids = set(train.position.occupied_blocks)
+
+        for block_id in path.block_sequence:
+            block = self.network.blocks.get(block_id)
+            if not block:
+                continue
+
+            if block_id not in occupied_block_ids:
+                if self.network.block_manager:
+                    self.network.block_manager.clear_block(block_id)
+                else:
+                    block.release()
+
+            block.reserved_by_path = None
+            block.reserved_direction = None
+
+        for block_id in path.overlap_blocks:
+            block = self.network.blocks.get(block_id)
+            if not block:
+                continue
+
+            if block_id not in occupied_block_ids:
+                if self.network.block_manager:
+                    self.network.block_manager.clear_block(block_id)
+                else:
+                    block.release()
+
+            block.reserved_by_path = None
+            block.reserved_direction = None
+
+        for pos in path.path_tiles:
+            track = self.network.get_track(*pos)
+            if track:
+                track.path_direction = None
+
+        for pos in path.switch_positions:
+            track = self.network.get_track(*pos)
+            if track:
+                track.unlock_for_path(path.path_id)
+
+        for pos in path.flank_protection_switches:
+            track = self.network.get_track(*pos)
+            if track:
+                track.unlock_for_path(path.path_id)
+
+        self._record_completion_event(path, train.position.head_tile)
+        del self.active_paths[path.path_id]
+
+    def _record_completion_event(self, path: Path, end_tile: Tuple[int, int]) -> None:
+        """Record a completion event for consumption by other systems."""
+        self.completed_path_events.append(
+            {
+                "train_id": path.train_id,
+                "path_id": path.path_id,
+                "end_tile": end_tile,
+                "time": datetime.now(),
+            }
+        )
 
     def on_train_progress(self, path_id: str) -> bool:
         """Update block releases based on current train position.
@@ -1256,8 +1339,6 @@ class PathDispatcher:
 
     def _release_switches_for_block(self, path: Path, block_id: str) -> None:
         """Release switches that are only associated with a cleared block."""
-        block_positions = set(self.network.get_block_positions(block_id))
-
         for pos in list(path.switch_positions.keys()):
             track = self.network.get_track(*pos)
             if track:
@@ -1835,3 +1916,78 @@ class PathDispatcher:
             for p in self.active_paths.values()
             if position in p.switch_positions or position in p.flank_protection_switches
         ]
+
+    # ========================================================================
+    # Path Extension for Multi-Tile Destinations
+    # ========================================================================
+
+    def _extend_path_to_destination_end(
+        self,
+        path_tiles: List[Tuple[int, int]],
+        end_block_id: str,
+    ) -> List[Tuple[int, int]]:
+        """
+        Extend path tiles to include all tiles of the destination block.
+
+        When a path ends at a multi-tile block (e.g., a station platform),
+        the pathfinder stops at the first tile of that block. This method
+        extends the path to include all remaining tiles of the destination
+        block, ensuring the train can traverse the entire platform.
+
+        Args:
+            path_tiles: Original path tiles from pathfinder
+            end_block_id: Destination block ID
+
+        Returns:
+            Extended path tiles including all destination block tiles
+        """
+        if not path_tiles:
+            return path_tiles
+
+        # Get all positions in the destination block
+        dest_block_positions = self.network.get_block_positions(end_block_id)
+        if not dest_block_positions or len(dest_block_positions) <= 1:
+            return path_tiles  # Single tile block, nothing to extend
+
+        # Find which destination tiles are already in the path
+        path_set = set(path_tiles)
+        remaining_dest_tiles = [
+            pos for pos in dest_block_positions if pos not in path_set
+        ]
+
+        if not remaining_dest_tiles:
+            return path_tiles  # All destination tiles already in path
+
+        # Determine travel direction from the last few tiles
+        if len(path_tiles) >= 2:
+            prev_tile = path_tiles[-2]
+            last_tile = path_tiles[-1]
+            dx = last_tile[0] - prev_tile[0]
+            dy = last_tile[1] - prev_tile[1]
+        else:
+            # Single tile path - try to infer from block layout
+            dx, dy = 0, 0
+
+        # Sort remaining destination tiles in travel direction
+        if dy > 0:
+            # Moving north - sort by y ascending
+            remaining_dest_tiles.sort(key=lambda pos: pos[1])
+        elif dy < 0:
+            # Moving south - sort by y descending
+            remaining_dest_tiles.sort(key=lambda pos: -pos[1])
+        elif dx > 0:
+            # Moving east - sort by x ascending
+            remaining_dest_tiles.sort(key=lambda pos: pos[0])
+        elif dx < 0:
+            # Moving west - sort by x descending
+            remaining_dest_tiles.sort(key=lambda pos: -pos[0])
+        else:
+            # No clear direction - sort by distance from last tile
+            last_tile = path_tiles[-1]
+            remaining_dest_tiles.sort(
+                key=lambda pos: abs(pos[0] - last_tile[0]) + abs(pos[1] - last_tile[1])
+            )
+
+        # Extend path with remaining destination tiles
+        extended_path = list(path_tiles) + remaining_dest_tiles
+        return extended_path
