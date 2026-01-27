@@ -97,8 +97,8 @@ atcs6/
 ├── interlocking.py          # Interlocking and route management
 ├── train.py                 # Train and schedule definitions
 ├── train_config.py          # Train physics configuration
-├── train_movement.py        # Train movement calculations
-├── train_atc.py             # Automatic Train Control (speed limiting)
+├── train_physics.py         # Train movement and block occupancy
+├── train_controller.py      # Train state machine and control
 ├── train_route.py           # Route and waypoint definitions
 ├── network.py               # Railway network management
 ├── pathfinder.py            # A* pathfinding for trains
@@ -112,8 +112,13 @@ atcs6/
 ├── speed_profile.py         # Speed-to-voltage mapping
 ├── block_power.py           # DC voltage output to blocks
 ├── simulation.py            # Background simulation loop
+├── bootstrap.py             # Network initialization (demo/empty)
+├── runtime.py               # Background thread management
+├── app_factory.py           # Flask application factory
+├── app_state.py             # Shared runtime state container
 ├── server.py                # Flask REST API server
 ├── demo_main.py             # Main demonstration script
+├── routes/                  # API route modules (modular)
 ├── docs/                    # API and architecture documentation
 ├── static/                  # Web frontend (HTML, CSS, JS)
 └── tests/                   # Test suites
