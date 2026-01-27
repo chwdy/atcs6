@@ -1,11 +1,42 @@
-import time
-import threading
+"""
+Railway Server API and Runtime
+
+Definition:
+This module defines the Flask API routes and runtime setup for the railway
+management system, including demo initialization and background threads.
+
+TODO List:
+- [ ] Move route definitions into dedicated routes modules
+- [ ] Move startup tests, demo boot, and threads behind main/CLI flags
+- [ ] Keep side-effectful initialization behind the app factory entrypoint
+"""
+
+from datetime import datetime, timedelta
 import json
+import threading
+import time
 import uuid
+
 from flask import Flask, jsonify, request, send_from_directory
-from flask_cors import CORS
-from werkzeug.routing import IntegerConverter
+
+from app_factory import create_app
+from app_state import AppState
+import demo_main
+from enums import (
+    Direction,
+    TrackType,
+    TrainState,
+    SignalState as EnumSignalState,
+    SwitchPosition,
+)
 from network import RailwayNetwork
+from path_dispatcher import PathDispatcher
+from path_utils import assign_path_to_train_with_prepend, assign_complete_path_to_train
+from persistence import PersistenceManager
+from railway_signal import Signal, SignalType, SignalState
+from signal_validation import validate_signal_placement, get_valid_directions
+from simulation import SimulationController, build_network_payload
+from speed_profile import SpeedProfile, SpeedProfileRegistry
 from track import (
     TrackSegment,
     FORBIDDEN_TRACK_BITS,
@@ -17,43 +48,16 @@ from track import (
     TRACK_SW,
 )
 from train import Train, TrainSchedule, ScheduleStop, TrainCar
-from train_route import Route, Waypoint, TimingMode, RouteMode
-from path_utils import assign_path_to_train_with_prepend, assign_complete_path_to_train
-from enums import (
-    Direction,
-    TrackType,
-    TrainState,
-    SignalState as EnumSignalState,
-    SwitchPosition,
-)
-from railway_signal import Signal, SignalType, SignalState
-from signal_validation import validate_signal_placement, get_valid_directions
-from datetime import datetime, timedelta
-import demo_main
-from persistence import PersistenceManager
-from path_dispatcher import PathDispatcher
-
-from speed_profile import SpeedProfile, SpeedProfileRegistry
-
-app = Flask(__name__, static_folder="static")
-CORS(app)
-
-
-# Custom converter for signed integers (supports negative coordinates)
-class SignedIntConverter(IntegerConverter):
-    regex = r"-?\d+"
-
-
-app.url_map.converters["sint"] = SignedIntConverter
-
-from simulation import SimulationController, build_network_payload
 from train_controller import TrainController
+from train_route import Route, Waypoint, TimingMode, RouteMode
 
 # Global state
 network = RailwayNetwork()
 speed_profile_registry = SpeedProfileRegistry()
 # Initialize with demo data for now so it's not empty
 # In a real app, we might want to start empty or load from save
+app: Flask | None = None
+state: AppState | None = None
 
 
 def run_startup_tests():
@@ -130,22 +134,52 @@ def run_startup_tests():
     print("=" * 70)
 
 
-# Run startup tests
-run_startup_tests()
+def _build_state_and_app() -> tuple[AppState, Flask]:
+    global app
+    global state
+    global network
+    global path_dispatcher
+    global sim_controller
+    global persistence_manager
+    global simulation_lock
+    global simulation_running
+    global simulation_speed
+    global last_update_time
 
-# After tests pass, create demo network
+    if app is not None and state is not None:
+        return state, app
 
-network = demo_main.create_comprehensive_demo()
-network = demo_main.create_track_showcase(network)
+    run_startup_tests()
 
-path_dispatcher = PathDispatcher(network)
-demo_main.setup_demo_train(network, path_dispatcher)
-sim_controller = SimulationController(network, path_dispatcher)
-persistence_manager = PersistenceManager()
-simulation_lock = threading.Lock()
-simulation_running = False
-simulation_speed = 1.0
-last_update_time = datetime.now()
+    network = demo_main.create_comprehensive_demo()
+    network = demo_main.create_track_showcase(network)
+
+    path_dispatcher = PathDispatcher(network)
+    demo_main.setup_demo_train(network, path_dispatcher)
+    sim_controller = SimulationController(network, path_dispatcher)
+    persistence_manager = PersistenceManager()
+    simulation_lock = threading.Lock()
+    simulation_running = False
+    simulation_speed = 1.0
+    last_update_time = datetime.now()
+
+    state = AppState(
+        network=network,
+        path_dispatcher=path_dispatcher,
+        sim_controller=sim_controller,
+        persistence_manager=persistence_manager,
+        simulation_lock=simulation_lock,
+        simulation_running=simulation_running,
+        simulation_speed=simulation_speed,
+        last_update_time=last_update_time,
+    )
+
+    app = create_app(state)
+
+    return state, app
+
+
+state, app = _build_state_and_app()
 
 
 def simulation_loop():
@@ -3567,5 +3601,10 @@ def unlock_switch(switch_id: str):
         return jsonify({"error": str(e)}), 500
 
 
-if __name__ == "__main__":
+def main() -> None:
+    _build_state_and_app()
     app.run(debug=True, port=5001)
+
+
+if __name__ == "__main__":
+    main()

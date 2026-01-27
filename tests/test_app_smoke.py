@@ -7,8 +7,14 @@ This catches basic issues before attempting to run the server.
 Critical: These tests MUST pass before any commit.
 """
 
-import pytest
+from datetime import datetime
 from pathlib import Path
+import threading
+
+import pytest
+
+from app_factory import create_app
+from app_state import AppState
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -16,6 +22,23 @@ PROJECT_ROOT = Path(__file__).parent.parent
 
 class TestAppSmoke:
     """Smoke tests for the application"""
+
+    def test_app_factory_attaches_state(self):
+        """App factory should store state in extensions."""
+        state = AppState(
+            network=object(),
+            path_dispatcher=object(),
+            sim_controller=object(),
+            persistence_manager=object(),
+            simulation_lock=threading.Lock(),
+            simulation_running=False,
+            simulation_speed=1.0,
+            last_update_time=datetime.now(),
+        )
+
+        app = create_app(state)
+
+        assert app.extensions.get("state") is state
 
     def test_static_directory_exists(self):
         """Test that the static directory exists"""
@@ -101,8 +124,22 @@ class TestAppSmoke:
         assert server_file.exists(), "server.py is missing"
 
         content = server_file.read_text()
-        assert "Flask" in content, "server.py doesn't import Flask"
-        assert "app = Flask" in content, "server.py doesn't create Flask app"
+        assert "create_app" in content, "server.py doesn't use the app factory"
+
+    def test_server_py_defines_main(self):
+        """Server entrypoint should define a main() function."""
+        server_file = PROJECT_ROOT / "server.py"
+        content = server_file.read_text()
+
+        assert "def main(" in content, "server.py is missing a main() entrypoint"
+
+    def test_app_factory_and_state_exist(self):
+        """Test that app factory and app state modules exist"""
+        app_factory_file = PROJECT_ROOT / "app_factory.py"
+        app_state_file = PROJECT_ROOT / "app_state.py"
+
+        assert app_factory_file.exists(), "app_factory.py is missing"
+        assert app_state_file.exists(), "app_state.py is missing"
 
     def test_python_backend_files_exist(self):
         """Test that core Python backend files exist"""
