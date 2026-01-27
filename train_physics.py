@@ -204,33 +204,39 @@ class TrainPhysics:
             new_speed = max(0.0, new_speed - friction_decel)
 
         speed_delta = new_speed - previous_speed
-        print(
-            f"[TrainPhysics {self.train_id}] speed update: new_speed={new_speed:.2f} "
-            f"delta={delta:.2f} speed_delta={speed_delta:.2f}"
+        logger.debug(
+            "[TrainPhysics %s] speed update: new_speed=%.2f delta=%.2f speed_delta=%.2f",
+            self.train_id,
+            new_speed,
+            delta,
+            speed_delta,
         )
 
         train.current_speed = new_speed
 
         # 7. Calculate distance to move
         distance_cm = self._speed_to_distance(new_speed, delta)
-        print(f"[TrainPhysics {self.train_id}] distance_cm={distance_cm:.2f}")
+        logger.debug("[TrainPhysics %s] distance_cm=%.2f", self.train_id, distance_cm)
 
         # 8. Move train position
         if distance_cm > 0:
             self._move_train(train, distance_cm)
-            print(f"[TrainPhysics {self.train_id}] moved distance_cm={distance_cm:.2f}")
+            logger.debug(
+                "[TrainPhysics %s] moved distance_cm=%.2f", self.train_id, distance_cm
+            )
 
         # 9. Update block occupancy
         self._update_block_occupancy(train)
-        print(
-            f"[TrainPhysics {self.train_id}] occupied_blocks="
-            f"{sorted(self._get_blocks_for_train(train))} "
-            f"caution_blocks={sorted(self._caution_blocks)}"
+        logger.debug(
+            "[TrainPhysics %s] occupied_blocks=%s caution_blocks=%s",
+            self.train_id,
+            sorted(self._get_blocks_for_train(train)),
+            sorted(self._caution_blocks),
         )
 
         # 10. Output voltage to occupied blocks
         self._update_voltage_output(train, controller)
-        print(f"[TrainPhysics {self.train_id}] voltage update complete")
+        logger.debug("[TrainPhysics %s] voltage update complete", self.train_id)
 
     # =========================================================================
     # Speed and Acceleration

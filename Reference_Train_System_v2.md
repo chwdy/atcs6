@@ -1,5 +1,8 @@
 # Technical Specification: Train System v2
 
+> **STATUS: AUTHORITATIVE SPECIFICATION**  
+> This is the current, implemented train system architecture. See `archive/Reference_Train_System.md` for the previous version.
+
 > **Document Type:** Technical Implementation Specification  
 > **Version:** 2.0  
 > **Created:** January 2026  

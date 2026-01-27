@@ -1,4 +1,9 @@
 """
+DEPRECATED: This pathfinder is used only for UI/editor operations.
+Train navigation uses routes + path_dispatcher (BFS), NOT dynamic A* pathfinding.
+See docs/PRIORITY_2_NECESSITY_ANALYSIS.md for details.
+"""
+"""
 Railway Pathfinding System
 
 Definition:
@@ -15,11 +20,14 @@ TODO List:
 - [ ] Add support for multi-train coordinated pathfinding
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 import heapq
 from enums import Direction, TrackType, SignalState
 from train import Train
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -122,8 +130,7 @@ class RailwayPathfinder:
         heapq.heappush(open_set, start_node)
         
         while open_set:
-            print("start with open set:", open_set)
-            print("closed set:", closed_set)
+            logger.debug("Pathfinding: open_set size=%d, closed_set size=%d", len(open_set), len(closed_set))
             current = heapq.heappop(open_set)
             
             if (current.x, current.y) == goal_pos:
@@ -136,7 +143,7 @@ class RailwayPathfinder:
             closed_set.add(node_key)
             
             neighbors = self._get_valid_neighbors(current, train)
-            print("valid neighbors:", neighbors)
+            logger.debug("Pathfinding: valid neighbors count=%d", len(neighbors))
             for neighbor_pos, movement_direction, move_cost in neighbors:
                 nx, ny = neighbor_pos
                 # Convert movement direction to entry direction for the neighbor track
@@ -170,13 +177,19 @@ class RailwayPathfinder:
         neighbors = []
         current_movement_dir = current.movement_direction
         possible_exits = current_track.get_exit_directions(current_movement_dir.opposite())
-        print(f"From ({current.x},{current.y}) moving {current_movement_dir.name}, possible exits: {[d.name for d in possible_exits]}")
+        logger.debug(
+            "From (%d,%d) moving %s, possible exits: %s",
+            current.x,
+            current.y,
+            current_movement_dir.name,
+            [d.name for d in possible_exits]
+        )
         
         for exit_dir in possible_exits:
             dx, dy = exit_dir.value
             next_x, next_y = current.x + dx, current.y + dy
             next_track = self.network.get_track(next_x, next_y)
-            print(f"  Checking exit {exit_dir.name} to ({next_x},{next_y})")
+            logger.debug("  Checking exit %s to (%d,%d)", exit_dir.name, next_x, next_y)
             if not next_track:
                 continue
             
