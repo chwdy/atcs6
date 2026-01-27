@@ -3602,8 +3602,76 @@ def unlock_switch(switch_id: str):
 
 
 def main() -> None:
-    _build_state_and_app()
-    app.run(debug=True, port=5001)
+    """Main entrypoint with CLI flag support.
+
+    Flags:
+        --no-demo: Start with empty network instead of demo data
+        --skip-startup-tests: Skip running tests on startup
+        --no-sim: Don't start simulation thread
+        --no-autosave: Don't start autosave thread
+        --port: Port to run on (default: 5001)
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Railway Server")
+    parser.add_argument(
+        "--no-demo", action="store_true", help="Start with empty network"
+    )
+    parser.add_argument(
+        "--skip-startup-tests", action="store_true", help="Skip startup tests"
+    )
+    parser.add_argument(
+        "--no-sim", action="store_true", help="Don't start simulation thread"
+    )
+    parser.add_argument(
+        "--no-autosave", action="store_true", help="Don't start autosave thread"
+    )
+    parser.add_argument("--port", type=int, default=5001, help="Port to run on")
+    args = parser.parse_args()
+
+    # For now, still use _build_state_and_app() which runs tests and creates demo
+    # Future: use bootstrap.py and runtime.py directly based on flags
+    if not args.skip_startup_tests:
+        run_startup_tests()
+
+    global network, path_dispatcher, sim_controller, persistence_manager
+    global simulation_lock, simulation_running, simulation_speed, last_update_time
+    global state, app
+
+    from bootstrap import bootstrap_runtime
+    from runtime import start_all_threads
+
+    network, path_dispatcher, sim_controller, persistence_manager = bootstrap_runtime(
+        demo=not args.no_demo,
+        setup_train=not args.no_demo,
+    )
+
+    simulation_lock = threading.Lock()
+    simulation_running = False
+    simulation_speed = 1.0
+    last_update_time = datetime.now()
+
+    state = AppState(
+        network=network,
+        path_dispatcher=path_dispatcher,
+        sim_controller=sim_controller,
+        persistence_manager=persistence_manager,
+        simulation_lock=simulation_lock,
+        simulation_running=simulation_running,
+        simulation_speed=simulation_speed,
+        last_update_time=last_update_time,
+    )
+
+    app = create_app(state)
+
+    # Start background threads based on flags
+    start_all_threads(
+        state,
+        simulation=not args.no_sim,
+        autosave=not args.no_autosave,
+    )
+
+    app.run(debug=True, port=args.port)
 
 
 if __name__ == "__main__":
