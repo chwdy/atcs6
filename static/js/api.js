@@ -544,6 +544,15 @@ class API {
         return this._request(`/trains/${encodeURIComponent(trainId)}`, {}, 'getTrain');
     }
 
+    /**
+     * Get train lookahead data for the train monitor.
+     * @param {string} trainId - Train ID
+     * @returns {Promise<object>} Lookahead data with blocks, signals, switches, stations
+     */
+    async getTrainLookahead(trainId) {
+        return this._request(`/trains/${encodeURIComponent(trainId)}/lookahead`, {}, 'getTrainLookahead');
+    }
+
     // === Train Control API ===
 
     /**

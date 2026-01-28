@@ -18,6 +18,7 @@ from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
+from speed_profile import SpeedProfileRegistry
 
 
 @dataclass
@@ -28,7 +29,9 @@ class AppState:
     path_dispatcher: PathDispatcher
     sim_controller: SimulationController
     persistence_manager: PersistenceManager
+    speed_profile_registry: SpeedProfileRegistry
     simulation_lock: threading.Lock
     simulation_running: bool
     simulation_speed: float
     last_update_time: datetime
+    last_autosave_time: float = 0.0

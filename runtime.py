@@ -35,16 +35,23 @@ def create_simulation_loop(state: AppState) -> Callable[[], None]:
     def simulation_loop() -> None:
         last_update_time = datetime.now()
         while True:
-            current_time = datetime.now()
-            delta_seconds = (current_time - last_update_time).total_seconds()
-            last_update_time = current_time
+            try:
+                current_time = datetime.now()
+                delta_seconds = (current_time - last_update_time).total_seconds()
+                last_update_time = current_time
 
-            if state.simulation_running:
-                sim_delta = delta_seconds * state.simulation_speed
-                with state.simulation_lock:
-                    state.sim_controller.update(sim_delta)
+                if state.simulation_running:
+                    sim_delta = delta_seconds * state.simulation_speed
+                    with state.simulation_lock:
+                        state.sim_controller.update(sim_delta)
 
-            time.sleep(0.1)
+                time.sleep(0.1)
+            except Exception as e:
+                print(f"[SimulationLoop] ERROR: {e}")
+                import traceback
+
+                traceback.print_exc()
+                print("[SimulationLoop] Continuing despite error...")
 
     return simulation_loop
 

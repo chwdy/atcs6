@@ -83,12 +83,16 @@ class SimulationController:
         if self.path_dispatcher:
             events = self.path_dispatcher.get_and_clear_completion_events()
             for event in events:
-                self.route_executor.handle_path_completion(
-                    train_id=event.get("train_id"),
-                    path_id=event.get("path_id"),
-                    end_tile=event.get("end_tile"),
-                    event_time=event.get("time"),
-                )
+                train_id = event.get("train_id")
+                path_id = event.get("path_id")
+                end_tile = event.get("end_tile")
+                if train_id and path_id and end_tile:
+                    self.route_executor.handle_path_completion(
+                        train_id=train_id,
+                        path_id=path_id,
+                        end_tile=end_tile,
+                        _event_time=event.get("time"),
+                    )
 
     def _update_train(self, train: Train, delta_seconds: float) -> None:
         """Update a single train using TrainController + TrainPhysics."""

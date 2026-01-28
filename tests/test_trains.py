@@ -42,6 +42,64 @@ class TestSimulationController:
         assert simulation.route_executor is not None
         assert simulation.speed_profile_registry is not None
 
+    def test_simulation_update_without_crash(self, network):
+        """Test that simulation.update() can run without crashing (regression test)."""
+        simulation = SimulationController(network)
+
+        # Should not crash even with no trains
+        simulation.update(0.1)
+
+        # Add a train and update again
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
+        network.add_train(train)
+
+        # Should not crash with train present
+        simulation.update(0.1)
+        simulation.update(0.1)
+
+    def test_simulation_handles_path_completion_events(self, network):
+        """Test that simulation correctly handles path completion events from PathDispatcher.
+
+        This is a regression test for the bug where simulation.update() crashed with:
+        TypeError: RouteExecutor.handle_path_completion() got an unexpected keyword argument 'event_time'
+
+        The fix changed event_time to _event_time to match the method signature.
+        """
+        from path_dispatcher import PathDispatcher
+        from datetime import datetime
+
+        simulation = SimulationController(network)
+        simulation.path_dispatcher = PathDispatcher(network)
+
+        # Simulate scenario with path completion event
+        # Even if event data is incomplete, it should not crash with TypeError
+        completion_event = {
+            "train_id": "NONEXISTENT",
+            "path_id": "PATH_001",
+            "end_tile": (0, 0),
+            "time": datetime.now(),
+        }
+
+        # Directly append event to test the code path
+        if hasattr(simulation.path_dispatcher, "_completion_events"):
+            simulation.path_dispatcher._completion_events.append(completion_event)
+
+        # This should not crash with "unexpected keyword argument 'event_time'"
+        try:
+            simulation.update(0.1)
+            passed = True
+        except TypeError as e:
+            if "event_time" in str(e) and "unexpected keyword argument" in str(e):
+                passed = False
+            else:
+                # Some other TypeError - re-raise
+                raise
+
+        assert passed, (
+            "Simulation crashed with event_time parameter mismatch (regression detected)"
+        )
+
 
 class TestTrainManualControlBugFixes:
     """Tests for train manual control and ATC fallback fixes via TrainController."""
