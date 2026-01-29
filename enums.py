@@ -204,6 +204,26 @@ HANDLE_ORDER = [
     "EB",
 ]
 
+HANDLE_POSITION_INDEX = {
+    HandlePosition.P5: 0,
+    HandlePosition.P4: 1,
+    HandlePosition.P3: 2,
+    HandlePosition.P2: 3,
+    HandlePosition.P1: 4,
+    HandlePosition.N: 5,
+    HandlePosition.B1: 6,
+    HandlePosition.B2: 7,
+    HandlePosition.B3: 8,
+    HandlePosition.B4: 9,
+    HandlePosition.B5: 10,
+    HandlePosition.B6: 11,
+    HandlePosition.B7: 12,
+    HandlePosition.B8: 13,
+    HandlePosition.EB: 14,
+}
+
+INDEX_TO_HANDLE_POSITION = {v: k for k, v in HANDLE_POSITION_INDEX.items()}
+
 
 # Acceleration multipliers for power notches
 POWER_MULTIPLIERS = {

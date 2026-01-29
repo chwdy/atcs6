@@ -50,7 +50,7 @@ class SpeedProfile:
     emergency_brake_rate: float = 30.0  # km/h per second
     friction_rate: float = 0.5  # km/h per second (coasting deceleration)
     operational_decel_ratio: float = (
-        0.5  # Use 50% of max brake for ATC operational braking
+        0.7  # Use 70% of max brake for ATC operational braking
     )
 
     def __post_init__(self):

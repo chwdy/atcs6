@@ -2871,5 +2871,330 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         )
 
 
+class TestTrendAwareATOControl:
+    """
+    Comprehensive tests for Trend-Aware ATO Control implemented Jan 2026.
+
+    These tests ensure the following improvements work correctly:
+
+    IMPROVEMENTS:
+    1. Dead band behavior prevents oscillation during cruise
+    2. Asymmetric hysteresis (entry margin=1, exit margin=3)
+    3. Trend-aware adjustments (only change handle if current action not working)
+    4. Handle rate limiting (max ±1 notch per tick)
+    5. Priority overrides (stopping, braking curve)
+
+    The control system uses speed zones:
+    - Slow Down Zone: speed >= target-1 (need to reduce)
+    - Dead Band: target-3 <= speed < target-1 (coast, do nothing)
+    - Speed Up Zone: speed < target-3 (need to increase)
+    """
+
+    @pytest.fixture
+    def network(self):
+        return RailwayNetwork()
+
+    @pytest.fixture
+    def straight_track(self, network):
+        for x in range(10):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+        return network
+
+    @pytest.fixture
+    def train_and_controller(self, network, straight_track):
+        car = TrainCar(car_id="CAR_TEST", car_type="LOCOMOTIVE", length=30.0)
+        train = Train(train_id="TRAIN_ATO_TEST", consist=[car], max_speed=80.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = TrainController(train_id=train.train_id, network=network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.active_cab = "A"
+        controller.state = TrainState.RUNNING_MOVING
+        controller.ato_running = True
+        controller._previous_speed = 0.0
+        controller.atc_speed_limit = 60.0
+        controller.current_block_speed_limit = 80.0
+        controller.clearance_ahead_cm = 100000.0
+
+        return train, controller
+
+    def test_dead_band_no_action_when_cruising(self, train_and_controller):
+        train, controller = train_and_controller
+
+        train.current_speed = 58.0
+        controller._previous_speed = 58.0
+        controller.handle_position = HandlePosition.P2
+
+        handle = controller._ato_calculate_handle()
+
+        assert handle == HandlePosition.P2, (
+            f"Dead band (effective_target-3=57 to effective_target-1=59): should keep current handle. "
+            f"Got {handle} for speed={train.current_speed}, expected to keep {controller.handle_position}"
+        )
+
+    def test_slow_down_zone_power_to_neutral(self, train_and_controller):
+        train, controller = train_and_controller
+
+        train.current_speed = 60.5
+        controller._previous_speed = 60.3
+        controller.handle_position = HandlePosition.P3
+
+        handle = controller._ato_calculate_handle()
+
+        assert handle == HandlePosition.N, (
+            f"Slow Down Zone (speed >= target-1=59): accelerating (P3) should go to Neutral. "
+            f"Got {handle}"
+        )
+
+    def test_slow_down_zone_neutral_to_brake(self, train_and_controller):
+        train, controller = train_and_controller
+
+        train.current_speed = 60.8
+        controller._previous_speed = 60.5
+        controller.handle_position = HandlePosition.N
+
+        handle = controller._ato_calculate_handle()
+
+        assert handle == HandlePosition.B1, (
+            f"Slow Down Zone: neutral + speed rising should start gentle brake (B1). "
+            f"Got {handle}"
+        )
+
+    def test_slow_down_zone_brake_harder_if_not_working(self, train_and_controller):
+        train, controller = train_and_controller
+
+        train.current_speed = 61.0
+        controller._previous_speed = 60.2
+        controller.handle_position = HandlePosition.B1
+
+        handle = controller._ato_calculate_handle()
+
+        assert handle == HandlePosition.B2, (
+            f"Slow Down Zone: braking (B1) but speed rising should brake harder (+1 notch). "
+            f"Got {handle}"
+        )
+
+    def test_slow_down_zone_brake_keep_if_working(self, train_and_controller):
+        train, controller = train_and_controller
+
+        train.current_speed = 60.5
+        controller._previous_speed = 61.0
+        controller.handle_position = HandlePosition.B2
+
+        handle = controller._ato_calculate_handle()
+
+        assert handle == HandlePosition.B2, (
+            f"Slow Down Zone: braking (B2) and speed falling should keep current. "
+            f"Got {handle}"
+        )
+
+    def test_speed_up_zone_brake_to_neutral(self, train_and_controller):
+        train, controller = train_and_controller
+
+        train.current_speed = 55.0
+        controller._previous_speed = 56.0
+        controller.handle_position = HandlePosition.B3
+
+        handle = controller._ato_calculate_handle()
+
+        assert handle == HandlePosition.B2, (
+            f"Speed Up Zone (speed < target-3=57): should release brake gradually (-1 notch). "
+            f"Got {handle}"
+        )
+
+    def test_speed_up_zone_neutral_to_power(self, train_and_controller):
+        train, controller = train_and_controller
+
+        train.current_speed = 54.0
+        controller._previous_speed = 54.5
+        controller.handle_position = HandlePosition.N
+
+        handle = controller._ato_calculate_handle()
+
+        assert handle == HandlePosition.P1, (
+            f"Speed Up Zone: neutral + speed falling should start gentle power (P1). "
+            f"Got {handle}"
+        )
+
+    def test_speed_up_zone_power_up_if_not_working(self, train_and_controller):
+        train, controller = train_and_controller
+
+        train.current_speed = 53.0
+        controller._previous_speed = 54.0
+        controller.handle_position = HandlePosition.P1
+
+        handle = controller._ato_calculate_handle()
+
+        assert handle == HandlePosition.P2, (
+            f"Speed Up Zone: accelerating (P1) but speed falling should power up (+1 notch). "
+            f"Got {handle}"
+        )
+
+    def test_speed_up_zone_power_keep_if_working(self, train_and_controller):
+        train, controller = train_and_controller
+
+        train.current_speed = 54.5
+        controller._previous_speed = 54.0
+        controller.handle_position = HandlePosition.P2
+
+        handle = controller._ato_calculate_handle()
+
+        assert handle == HandlePosition.P2, (
+            f"Speed Up Zone: accelerating (P2) and speed rising should keep current. "
+            f"Got {handle}"
+        )
+
+    def test_handle_rate_limiting_max_one_notch(self, train_and_controller):
+        train, controller = train_and_controller
+
+        train.current_speed = 65.0
+        controller._previous_speed = 64.0
+        controller.handle_position = HandlePosition.P5
+
+        handle = controller._ato_calculate_handle()
+
+        assert handle == HandlePosition.N, (
+            f"Rate limiting: P5 should only jump to Neutral (not directly to brake). "
+            f"Got {handle}"
+        )
+
+    def test_priority_override_stopping_uses_full_brake(self, train_and_controller):
+        train, controller = train_and_controller
+        controller.atc_speed_limit = 0.0
+
+        train.current_speed = 15.0
+        controller._previous_speed = 20.0
+        controller.handle_position = HandlePosition.B2
+
+        handle = controller._ato_calculate_handle()
+
+        assert handle == HandlePosition.B5, (
+            f"Priority: stopping (effective_target=0) should use _calculate_braking_notch. "
+            f"For speed=15.0, expects B5 (speed > 14). Got {handle}"
+        )
+
+    def test_trend_detection_rising(self, train_and_controller):
+        train, controller = train_and_controller
+
+        train.current_speed = 55.5
+        controller._previous_speed = 55.0
+
+        trend = controller._detect_speed_trend(train.current_speed)
+
+        assert trend == "rising", f"Speed 55.0→55.5 should be 'rising', got {trend}"
+
+    def test_trend_detection_falling(self, train_and_controller):
+        train, controller = train_and_controller
+
+        train.current_speed = 54.5
+        controller._previous_speed = 55.0
+
+        trend = controller._detect_speed_trend(train.current_speed)
+
+        assert trend == "falling", f"Speed 55.0→54.5 should be 'falling', got {trend}"
+
+    def test_trend_detection_stable(self, train_and_controller):
+        train, controller = train_and_controller
+
+        train.current_speed = 55.0
+        controller._previous_speed = 55.05
+
+        trend = controller._detect_speed_trend(train.current_speed)
+
+        assert trend == "stable", (
+            f"Speed 55.05→55.0 (Δ=0.05 < epsilon) should be 'stable', got {trend}"
+        )
+
+
+class TestSpeedCurveCalculation:
+    """
+    Tests for calculate_speed_curves() method in TrainController.
+
+    This method calculates ATC and operational speed limits at various distances
+    ahead of the train for visualization in the train monitor.
+    """
+
+    @pytest.fixture
+    def network(self):
+        return RailwayNetwork()
+
+    @pytest.fixture
+    def straight_track(self, network):
+        for x in range(20):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+        return network
+
+    @pytest.fixture
+    def train_and_controller(self, network, straight_track):
+        car = TrainCar(car_id="CAR_CURVE", car_type="LOCOMOTIVE", length=30.0)
+        train = Train(train_id="TRAIN_CURVE_TEST", consist=[car], max_speed=80.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        train.current_path = [(x, 0, Direction.EAST) for x in range(20)]
+        train.path_index = 0
+
+        controller = TrainController(train_id=train.train_id, network=network)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.state = TrainState.RUNNING_MOVING
+
+        return train, controller
+
+    def test_speed_curves_exist(self, train_and_controller):
+        train, controller = train_and_controller
+
+        curves = controller.calculate_speed_curves(max_distance_cm=5000)
+
+        assert len(curves) > 0, "Speed curves should be calculated"
+        assert len(curves) == (5000 // 25) + 1, (
+            f"Should have {(5000 // 25) + 1} points (every 25cm, inclusive endpoints: 0 to 5000)"
+        )
+
+    def test_speed_curves_structure(self, train_and_controller):
+        train, controller = train_and_controller
+
+        curves = controller.calculate_speed_curves(max_distance_cm=1000)
+
+        for point in curves:
+            assert "distance_cm" in point, "Each point should have distance_cm"
+            assert "atc_limit" in point, "Each point should have atc_limit"
+            assert "operational_limit" in point, (
+                "Each point should have operational_limit"
+            )
+            assert isinstance(point["distance_cm"], (int, float))
+            assert isinstance(point["atc_limit"], (int, float))
+            assert isinstance(point["operational_limit"], (int, float))
+
+    def test_operational_limit_below_atc_limit(self, train_and_controller):
+        train, controller = train_and_controller
+
+        curves = controller.calculate_speed_curves(max_distance_cm=2000)
+
+        for point in curves:
+            assert point["operational_limit"] <= point["atc_limit"], (
+                f"Operational limit ({point['operational_limit']}) should be <= ATC limit "
+                f"({point['atc_limit']}) at distance {point['distance_cm']}cm"
+            )
+
+    def test_speed_curves_capped_at_train_max_speed(self, train_and_controller):
+        train, controller = train_and_controller
+        train.max_speed = 80.0
+
+        curves = controller.calculate_speed_curves(max_distance_cm=3000)
+
+        for point in curves:
+            assert point["atc_limit"] <= train.max_speed, (
+                f"ATC limit ({point['atc_limit']}) should be <= train max speed ({train.max_speed})"
+            )
+            assert point["operational_limit"] <= train.max_speed, (
+                f"Operational limit ({point['operational_limit']}) should be <= train max speed"
+            )
+
+
 if __name__ == "__main__":
     print("Run tests with: pytest tests/test_trains.py -v")

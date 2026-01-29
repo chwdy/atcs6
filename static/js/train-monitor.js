@@ -454,7 +454,8 @@ class TrainMonitor {
             switches: lookahead?.switches || [],
             stations: lookahead?.stations || [],
             distance_into_path_cm: 0,
-            clearance_cm: lookahead?.clearance_cm || 0
+            clearance_cm: lookahead?.clearance_cm || 0,
+            speed_curves: lookahead?.speed_curves || []
         };
 
         this.currentSpeedEl.textContent = Math.round(this.lookaheadData.current_speed_kmh || 0);
@@ -711,9 +712,10 @@ class TrainMonitor {
         
         this.ctx.clearRect(0, 0, width, height);
         
-        const padding = { left: 10, right: 10, top: 8, bottom: 50 };
-        const blockTrackY = height * 0.4;
-        const stationTrackY = height * 0.65;
+        const padding = { left: 40, right: 10, top: 8, bottom: 50 };
+        const speedCurveAreaHeight = 60;
+        const blockTrackY = height * 0.5;
+        const stationTrackY = height * 0.75;
         const trackWidth = width - padding.left - padding.right;
         
         const trainDist = data.distance_into_path_cm || 0;
@@ -730,6 +732,18 @@ class TrainMonitor {
         const visibleEndCm = trainDist + lookaheadDistance;
         const visibleRangeCm = visibleEndCm - visibleStartCm;
         const cmToX = (cm) => padding.left + ((cm - visibleStartCm) / visibleRangeCm) * trackWidth;
+        
+        // Draw speed curves (ATC and operational limits)
+        if (data.speed_curves && data.speed_curves.length > 0) {
+            this.drawSpeedCurves(
+                data.speed_curves,
+                cmToX,
+                data.current_speed_kmh,
+                data.target_speed_kmh,
+                padding,
+                speedCurveAreaHeight
+            );
+        }
         
         // Draw grey overlay beyond clearance distance (unknown territory)
         const clearanceCm = data.clearance_cm || 0;
@@ -1031,5 +1045,105 @@ class TrainMonitor {
         lines.forEach((line, i) => {
             this.ctx.fillText(line, x + padding, y + padding + i * lineHeight);
         });
+    }
+
+    drawSpeedCurves(speedCurves, cmToX, currentSpeed, targetSpeed, padding, areaHeight) {
+        if (!speedCurves || speedCurves.length === 0) return;
+        
+        const curveTop = padding.top;
+        const curveBottom = curveTop + areaHeight;
+        
+        let maxSpeed = 80;
+        speedCurves.forEach(p => {
+            maxSpeed = Math.max(maxSpeed, p.atc_limit, p.operational_limit);
+        });
+        maxSpeed = Math.ceil(maxSpeed / 10) * 10;
+        
+        const speedToY = (speed) => {
+            const ratio = speed / maxSpeed;
+            return curveBottom - ratio * areaHeight;
+        };
+        
+        this.ctx.font = '8px JetBrains Mono, monospace';
+        this.ctx.fillStyle = '#666';
+        this.ctx.textAlign = 'right';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.fillText(`${maxSpeed}`, padding.left - 5, curveTop);
+        this.ctx.fillText(`${Math.round(maxSpeed/2)}`, padding.left - 5, curveTop + areaHeight/2);
+        this.ctx.fillText('0', padding.left - 5, curveBottom);
+        
+        this.ctx.strokeStyle = '#333';
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        this.ctx.moveTo(padding.left, curveTop);
+        this.ctx.lineTo(padding.left, curveBottom);
+        this.ctx.stroke();
+        
+        this.ctx.strokeStyle = '#e83f5b';
+        this.ctx.lineWidth = 1.5;
+        this.ctx.beginPath();
+        speedCurves.forEach((point, i) => {
+            const x = cmToX(point.distance_cm);
+            const y = speedToY(point.atc_limit);
+            if (x < padding.left || x > this.canvas.width - padding.right) return;
+            if (i === 0) this.ctx.moveTo(x, y);
+            else this.ctx.lineTo(x, y);
+        });
+        this.ctx.stroke();
+        
+        this.ctx.strokeStyle = '#04d361';
+        this.ctx.lineWidth = 2;
+        this.ctx.beginPath();
+        speedCurves.forEach((point, i) => {
+            const x = cmToX(point.distance_cm);
+            const y = speedToY(point.operational_limit);
+            if (x < padding.left || x > this.canvas.width - padding.right) return;
+            if (i === 0) this.ctx.moveTo(x, y);
+            else this.ctx.lineTo(x, y);
+        });
+        this.ctx.stroke();
+        
+        if (currentSpeed > 0) {
+            const currentY = speedToY(currentSpeed);
+            this.ctx.strokeStyle = '#ffcd1e';
+            this.ctx.lineWidth = 1.5;
+            this.ctx.setLineDash([5, 3]);
+            this.ctx.beginPath();
+            this.ctx.moveTo(padding.left, currentY);
+            this.ctx.lineTo(this.canvas.width - padding.right, currentY);
+            this.ctx.stroke();
+            this.ctx.setLineDash([]);
+            
+            this.ctx.fillStyle = '#ffcd1e';
+            this.ctx.textAlign = 'left';
+            this.ctx.fillText(`${Math.round(currentSpeed)}`, this.canvas.width - padding.right + 3, currentY);
+        }
+        
+        if (targetSpeed > 0 && targetSpeed < maxSpeed) {
+            const targetY = speedToY(targetSpeed);
+            this.ctx.strokeStyle = '#00bcd4';
+            this.ctx.lineWidth = 1;
+            this.ctx.setLineDash([2, 4]);
+            this.ctx.beginPath();
+            this.ctx.moveTo(padding.left, targetY);
+            this.ctx.lineTo(this.canvas.width - padding.right, targetY);
+            this.ctx.stroke();
+            this.ctx.setLineDash([]);
+        }
+        
+        this.ctx.font = '8px Inter, sans-serif';
+        const legendX = padding.left + 10;
+        const legendY = curveTop + 8;
+        
+        this.ctx.fillStyle = '#e83f5b';
+        this.ctx.fillRect(legendX, legendY - 4, 12, 2);
+        this.ctx.fillStyle = '#999';
+        this.ctx.textAlign = 'left';
+        this.ctx.fillText('ATC', legendX + 15, legendY);
+        
+        this.ctx.fillStyle = '#04d361';
+        this.ctx.fillRect(legendX + 45, legendY - 4, 12, 2);
+        this.ctx.fillStyle = '#999';
+        this.ctx.fillText('ATO', legendX + 60, legendY);
     }
 }
