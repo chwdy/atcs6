@@ -301,9 +301,7 @@ class TestEdgeCases:
         network.add_track(TrackSegment(0, 0, TRACK_NS))
 
         # Create single-tile block with 100cm
-        block = network.create_block_with_tracks(
-            "BLK_001", [(0, 0)], length_cm=100.0
-        )
+        block = network.create_block_with_tracks("BLK_001", [(0, 0)], length_cm=100.0)
 
         # Place station on it
         station = network.add_station(
@@ -346,7 +344,7 @@ class TestEdgeCases:
             assert child_1.length_cm == 0.0
         if child_2:
             assert child_2.length_cm == 0.0
-        
+
         # Station block should use calculated length (0cm per tile)
         # since it was on an existing block, even though that block had zero length
         assert station_block.length_cm == 0.0
@@ -358,7 +356,7 @@ class TestRealWorldScenarios:
     def test_platform_in_middle_of_long_block(self):
         """
         Real scenario: Long mainline block with station in middle
-        
+
         Example: 1km mainline block with 200m platform station
         """
         network = RailwayNetwork()
@@ -395,15 +393,15 @@ class TestRealWorldScenarios:
 
         # This is tricky - station extended after creation, so initial split
         # would be different. Let me adjust the test to reflect actual behavior.
-        
+
         # After first station placement (0,4):
         # - BLK_MAINLINE_1: tiles 0-3 (4 tiles)
         # - STA_CENTRAL_BLOCK: tile 4 (1 tile initially)
         # - BLK_MAINLINE_2: tiles 5-9 (5 tiles)
-        
+
         # Then extending station to (0,5) removes that tile from BLK_MAINLINE_2
         # So we need to check final state
-        
+
         # Let's just verify the station block has correct tile assignment
         station_positions = network.get_block_positions(f"{station.station_id}_BLOCK")
         assert len(station_positions) == 2
@@ -443,3 +441,88 @@ class TestRealWorldScenarios:
 
         assert station_block_1.length_cm == 100.0  # 1 tile × 100cm
         assert station_block_2.length_cm == 100.0  # 1 tile × 100cm
+
+
+class TestStationBlockSpeedLimitInheritance:
+    """
+    Tests for station block speed limit inheritance from platform.
+
+    BUG FIX: Station blocks should inherit max_speed_kmh from platform's top_speed_kmh.
+    ATC/ATO uses block's max_speed_kmh (not station's top_speed_kmh) for speed enforcement.
+    """
+
+    def test_station_block_inherits_speed_limit(self):
+        """Station block should inherit max_speed_kmh from platform's top_speed_kmh"""
+        network = RailwayNetwork()
+        network.add_track(TrackSegment(0, 0, TRACK_NS))
+
+        station = network.add_station(
+            0,
+            0,
+            station_id="STA_SPEED",
+            name="Speed Limited Station",
+            length_cm=100.0,
+            top_speed_kmh=30.0,
+        )
+
+        # Check station block has inherited speed limit
+        station_block_id = f"{station.station_id}_BLOCK"
+        station_block = network.blocks[station_block_id]
+
+        assert station_block.max_speed_kmh == 30.0, (
+            f"Station block should inherit max_speed_kmh=30 from platform, "
+            f"got {station_block.max_speed_kmh}"
+        )
+
+    def test_station_block_no_speed_limit_when_none(self):
+        """Station block should have no speed limit when platform has none"""
+        network = RailwayNetwork()
+        network.add_track(TrackSegment(0, 0, TRACK_NS))
+
+        station = network.add_station(
+            0,
+            0,
+            station_id="STA_NOLIMIT",
+            name="No Limit Station",
+            length_cm=100.0,
+            top_speed_kmh=None,
+        )
+
+        # Check station block has no speed limit
+        station_block_id = f"{station.station_id}_BLOCK"
+        station_block = network.blocks[station_block_id]
+
+        assert station_block.max_speed_kmh is None, (
+            f"Station block should have no speed limit when platform has none, "
+            f"got {station_block.max_speed_kmh}"
+        )
+
+    def test_extended_station_block_keeps_speed_limit(self):
+        """Extended station block should maintain inherited speed limit"""
+        network = RailwayNetwork()
+
+        # Create 3-tile track
+        for y in range(3):
+            network.add_track(TrackSegment(0, y, TRACK_NS))
+
+        # Create station with speed limit on first tile
+        station = network.add_station(
+            0,
+            0,
+            station_id="STA_EXT",
+            name="Extended Station",
+            length_cm=100.0,
+            top_speed_kmh=25.0,
+        )
+
+        # Extend station to cover more tiles
+        network.extend_station(station.station_id, [(0, 1), (0, 2)])
+
+        # Check station block still has the speed limit
+        station_block_id = f"{station.station_id}_BLOCK"
+        station_block = network.blocks[station_block_id]
+
+        assert station_block.max_speed_kmh == 25.0, (
+            f"Extended station block should maintain max_speed_kmh=25, "
+            f"got {station_block.max_speed_kmh}"
+        )

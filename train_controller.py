@@ -80,6 +80,11 @@ ATO_SPEED_TOLERANCE = 2.0
 ATO_ENTRY_MARGIN = ATO_SPEED_TOLERANCE - 1.0
 ATO_EXIT_MARGIN = ATO_SPEED_TOLERANCE + 1.0
 
+# Speed curve constants
+CURVE_SAMPLE_RESOLUTION_CM = 5.0  # 5cm resolution for speed curves
+ATO_SPEED_MARGIN_KMH = 5.0  # ATO stays 5 km/h below ATC limit
+REACTION_TIME_SECONDS = 2.0  # Look-ahead time for future-aware braking (increased for smoother anticipation)
+
 
 # =============================================================================
 # Data Structures for Lookahead and ATO
@@ -164,6 +169,45 @@ def calculate_max_safe_speed(
 
     # Convert back to km/h
     v_kmh = v_cm_s / km_h_to_cm_s
+
+    return v_kmh
+
+
+def calculate_speed_for_target(
+    distance_cm: float,
+    target_speed_kmh: float,
+    deceleration_rate: float,
+) -> float:
+    """
+    Calculate maximum speed that allows decelerating to target speed within distance.
+
+    Uses physics formula: v_final^2 = v_initial^2 - 2 * a * d
+    Rearranged: v_initial = sqrt(v_final^2 + 2 * a * d)
+
+    Args:
+        distance_cm: Available distance before reaching target
+        target_speed_kmh: Required speed at end of distance
+        deceleration_rate: Braking rate in km/h per second
+
+    Returns:
+        Maximum initial speed in km/h that allows reaching target_speed_kmh
+    """
+    if distance_cm <= 0:
+        return target_speed_kmh
+
+    if deceleration_rate <= 0:
+        return target_speed_kmh
+
+    km_h_to_cm_s = get_speed_conversion_factor()
+    decel_cm_s2 = deceleration_rate * km_h_to_cm_s
+    target_cm_s = target_speed_kmh * km_h_to_cm_s
+
+    # v_initial^2 = v_final^2 + 2 * a * d
+    v_initial_squared = target_cm_s * target_cm_s + 2 * decel_cm_s2 * distance_cm
+    v_initial_cm_s = math.sqrt(v_initial_squared)
+
+    # Convert back to km/h
+    v_kmh = v_initial_cm_s / km_h_to_cm_s
 
     return v_kmh
 
@@ -721,6 +765,14 @@ class TrainController:
         if not train or not self.network:
             return self.safety_margin_cm
 
+        # Check if train's head is currently in a station
+        # This handles the fallback case (no path) when train is in station
+        head_tile = self._get_head_tile()
+        if head_tile:
+            head_track = self.network.tracks.get(head_tile)
+            if head_track and head_track.station_id:
+                return ATC_PLATFORM_SAFETY_MARGIN_CM
+
         # Check if we're in the last block and it contains a station
         blocks_ahead = self._get_blocks_ahead()
         if not blocks_ahead:
@@ -1268,7 +1320,123 @@ class TrainController:
             HandlePosition.B8,
         )
 
+    # -------------------------------------------------------------------------
+    # Future-Aware ATO Helpers
+    # -------------------------------------------------------------------------
+
+    def _get_reaction_distance_cm(self, current_speed_kmh: float) -> float:
+        """
+        Calculate reaction distance based on current speed.
+
+        The train will travel this distance during the reaction time
+        (controller tick + brake application delay).
+
+        Args:
+            current_speed_kmh: Current train speed in km/h
+
+        Returns:
+            Distance in cm the train will travel during reaction time
+        """
+        # Convert km/h to cm/s
+        km_h_to_cm_s = get_speed_conversion_factor()
+        speed_cm_s = current_speed_kmh * km_h_to_cm_s
+        return speed_cm_s * REACTION_TIME_SECONDS
+
+    def _sample_curve_at(
+        self, curve: List[Dict], distance_cm: float, key: str = "operational_limit"
+    ) -> float:
+        """
+        Sample a speed curve at a specific distance with linear interpolation.
+
+        Args:
+            curve: List of curve points [{distance_cm, atc_limit, operational_limit}, ...]
+            distance_cm: Distance to sample at
+            key: Which limit to sample ('atc_limit' or 'operational_limit')
+
+        Returns:
+            Interpolated speed limit at the given distance
+        """
+        if not curve:
+            return 0.0
+
+        # Handle edge cases
+        if distance_cm <= curve[0].get("distance_cm", 0):
+            return curve[0].get(key, 0.0)
+
+        if distance_cm >= curve[-1].get("distance_cm", 0):
+            return curve[-1].get(key, 0.0)
+
+        # Find bracketing points and interpolate
+        for i in range(len(curve) - 1):
+            d1 = curve[i].get("distance_cm", 0)
+            d2 = curve[i + 1].get("distance_cm", 0)
+            if d1 <= distance_cm <= d2:
+                v1 = curve[i].get(key, 0.0)
+                v2 = curve[i + 1].get(key, 0.0)
+                # Linear interpolation
+                t = (distance_cm - d1) / (d2 - d1) if d2 != d1 else 0
+                return v1 + t * (v2 - v1)
+
+        return curve[-1].get(key, 0.0)
+
+    def _get_future_aware_target(self, current_speed_kmh: float) -> float:
+        """
+        Get future-aware target speed by looking ahead in the ATO curve.
+
+        Instead of just using the current curve value, look ahead by
+        reaction distance and use the MINIMUM. This creates anticipatory
+        braking before speed restrictions.
+
+        Args:
+            current_speed_kmh: Current train speed
+
+        Returns:
+            Future-aware target speed in km/h
+        """
+        train = self._get_train()
+        if not train:
+            return 0.0
+
+        # Get the speed curves from lookahead
+        lookahead = self.get_monitor_lookahead()
+        curves = lookahead.get("lookahead", {}).get("speed_curves", [])
+
+        if not curves:
+            # Fall back to current limits
+            return min(
+                train.max_speed,
+                self.atc_speed_limit,
+                self.current_block_speed_limit,
+            )
+
+        # Sample at current position (distance = 0)
+        current_limit = self._sample_curve_at(curves, 0.0, "operational_limit")
+
+        # Sample at reaction distance ahead
+        reaction_dist = self._get_reaction_distance_cm(current_speed_kmh)
+        future_limit = self._sample_curve_at(curves, reaction_dist, "operational_limit")
+
+        # Use the minimum for anticipatory braking
+        effective_target = min(current_limit, future_limit)
+
+        # Also respect train max speed
+        effective_target = min(effective_target, train.max_speed)
+
+        return max(0.0, effective_target)
+
     def _ato_calculate_handle(self) -> HandlePosition:
+        """
+        ATO handle calculation with future-aware braking.
+
+        Uses future-aware target speed by looking ahead in the ATO curve
+        and starting braking BEFORE speed restrictions are reached.
+
+        The control logic is:
+        1. Future-aware target: min(current_curve, future_curve) where future
+           is sampled at reaction distance ahead
+        2. Trend-aware control: adjusts handle based on speed trend to avoid
+           oscillation and ensure smooth approach to target
+        """
         train = self._get_train()
         if not train:
             return HandlePosition.N
@@ -1276,7 +1444,12 @@ class TrainController:
         current_speed = train.current_speed
         current_handle = self.handle_position
 
+        # Use future-aware target for anticipatory braking
+        effective_target = self._get_future_aware_target(current_speed)
+
+        # Also cap at traditional limits as fallback
         effective_target = min(
+            effective_target,
             train.max_speed,
             self.atc_speed_limit,
             self.current_block_speed_limit,
@@ -1297,29 +1470,98 @@ class TrainController:
         if self.clearance_ahead_cm < braking_distance * 1.2:
             return self._calculate_braking_notch(current_speed)
 
+        # Slow Down Zone: speed >= target - ATO_ENTRY_MARGIN (e.g., target - 1)
+        # Use trend-aware control for smooth approach to target
         if current_speed >= effective_target - ATO_ENTRY_MARGIN:
-            if self._is_power_handle(current_handle):
-                return HandlePosition.N
-            elif current_handle == HandlePosition.N:
-                return HandlePosition.B1
-            elif self._is_brake_handle(current_handle):
-                if trend == "rising":
-                    return self._adjust_handle_toward_brake(current_handle)
-                else:
+            # Calculate how far above target we are
+            speed_overshoot = current_speed - effective_target
+
+            # CRITICAL FIX: If target is 0 (stopping) and we're moving significantly,
+            # skip rate limiting and apply proportional braking immediately.
+            # This prevents the train from coasting when it needs to stop.
+            if (
+                effective_target <= STOPPED_SPEED_THRESHOLD_KMH
+                and speed_overshoot > 5.0
+            ):
+                # Must stop and going too fast - apply proportional braking immediately
+                return self._calculate_braking_notch(current_speed)
+
+            # For large overshoot (>5 km/h), apply immediate proportional braking
+            # Skip rate limiting to avoid delayed response
+            if speed_overshoot > 5.0:
+                return self._calculate_braking_notch_for_speed(
+                    current_speed, effective_target
+                )
+            elif speed_overshoot > 2.0:
+                # Moderate overshoot: apply medium braking
+                if self._is_power_handle(current_handle):
+                    return HandlePosition.B3  # Skip neutral, go straight to brake
+                elif current_handle == HandlePosition.N:
+                    return HandlePosition.B3
+                elif self._is_brake_handle(current_handle):
+                    # Maintain or increase braking if speed still rising
+                    if trend == "rising":
+                        return self._adjust_handle_toward_brake(current_handle)
+                    return current_handle
+            else:
+                # Small overshoot (within 2 km/h): use gentle trend-aware control
+                if self._is_power_handle(current_handle):
+                    return HandlePosition.N
+                elif current_handle == HandlePosition.N:
+                    # At target with neutral, apply light brake only if rising
+                    if trend == "rising":
+                        return HandlePosition.B1
+                    return HandlePosition.N
+                elif self._is_brake_handle(current_handle):
+                    # When within 2 km/h of target, start releasing brakes if falling
+                    if trend == "falling" and current_speed <= effective_target + 1.0:
+                        return self._adjust_handle_toward_power(current_handle)
+                    elif trend == "rising":
+                        return self._adjust_handle_toward_brake(current_handle)
                     return current_handle
 
+        # Hysteresis band: speed in [target - ATO_EXIT_MARGIN, target - ATO_ENTRY_MARGIN)
+        # Maintain current handle to avoid oscillation
         elif current_speed >= effective_target - ATO_EXIT_MARGIN:
             return current_handle
 
+        # Speed Up Zone: speed < target - ATO_EXIT_MARGIN (e.g., target - 3)
+        # Use calculated power notch for large speed gaps, gradual for small gaps
         else:
+            speed_diff = effective_target - current_speed
+            optimal_notch = self._calculate_power_notch(current_speed, effective_target)
+
             if self._is_brake_handle(current_handle):
+                # Release brake gradually (one notch toward power)
                 return self._adjust_handle_toward_power(current_handle)
             elif current_handle == HandlePosition.N:
-                return HandlePosition.P1
+                # For large speed difference (>10 km/h), jump to optimal power
+                # For small difference, start gentle (P1)
+                if speed_diff > 10:
+                    return optimal_notch
+                else:
+                    return HandlePosition.P1
             elif self._is_power_handle(current_handle):
+                # Trend-aware power: increase if still falling, keep if rising
                 if trend == "falling":
+                    # For large gap, jump faster toward optimal
+                    if speed_diff > 10:
+                        from enums import HANDLE_POSITION_INDEX
+
+                        current_idx = HANDLE_POSITION_INDEX.get(current_handle, 5)
+                        optimal_idx = HANDLE_POSITION_INDEX.get(optimal_notch, 0)
+                        # Jump to optimal if it's more aggressive
+                        if optimal_idx < current_idx:
+                            return optimal_notch
                     return self._adjust_handle_toward_power(current_handle)
                 else:
+                    # If trend matches expectation (rising) and we've overrun target
+                    # reduce handle toward neutral
+                    if (
+                        trend == "rising"
+                        and current_speed > effective_target - ATO_ENTRY_MARGIN
+                    ):
+                        return self._adjust_handle_toward_brake(current_handle)
                     return current_handle
 
         return current_handle
@@ -1390,76 +1632,182 @@ class TrainController:
         lookahead_signals: Optional[List[Dict]] = None,
         lookahead_stations: Optional[List[Dict]] = None,
     ) -> List[Dict]:
+        """
+        Calculate ATC and ATO speed limit curves at 5cm resolution.
+
+        For each sample point at distance d from train head, calculate:
+        - Braking curve to path end (stop at max_distance_cm)
+        - Braking curves to each speed restriction ahead
+        - Take the minimum of all curves
+
+        This creates the characteristic "speed envelope" where the curve
+        shows what speed you can be at each point while still being able
+        to stop or slow down before any restriction ahead.
+
+        ATC Curve: Uses 100% of service braking (B8), NOT emergency brake.
+                   This ensures EB can always stop the train if ATC is exceeded.
+
+        ATO Curve: Uses 70% braking for comfort + stays 5 km/h below ATC.
+
+        Args:
+            max_distance_cm: Total clearance/path end distance (cm)
+            lookahead_blocks: Block info with speed limits
+            lookahead_signals: Signal info
+            lookahead_stations: Station info (for tighter safety margin)
+
+        Returns:
+            List of dicts with distance_cm, atc_limit, operational_limit
+        """
         train = self._get_train()
         if not train:
             return []
 
         profile = self._get_speed_profile()
         max_speed = train.max_speed
+        decel_rate = profile.deceleration_rate
+        operational_decel = decel_rate * profile.operational_decel_ratio
+
+        # Build list of speed restrictions ahead
+        # Each restriction: (distance_cm, speed_limit_kmh, safety_margin_cm)
+        restrictions: List[Tuple[float, float, float]] = []
+
+        # Add path end as a stop (speed 0)
+        # Determine safety margin for path end (tighter if station)
+        path_end_safety_margin = self.safety_margin_cm
+        if lookahead_stations:
+            # Check if there's a station near the end
+            for station in lookahead_stations:
+                station_start = station.get("distance_cm", float("inf"))
+                station_length = station.get("length_cm", 0)
+                station_end = station_start + station_length
+                # If station is at or near path end, use tighter margin
+                if station_end >= max_distance_cm - 50:
+                    path_end_safety_margin = ATC_PLATFORM_SAFETY_MARGIN_CM
+                    break
+        restrictions.append((max_distance_cm, 0.0, path_end_safety_margin))
+
+        # Add block speed limits
+        if lookahead_blocks:
+            for block in lookahead_blocks:
+                block_start = block.get("start_cm", 0)
+                block_speed = block.get("speed_limit_kmh")  # None if no limit
+                if block_speed is not None and block_speed < max_speed:
+                    # Need to slow down to block_speed at block_start
+                    restrictions.append((block_start, block_speed, 0.0))
+
+        # Add signal restrictions
+        if lookahead_signals:
+            for signal in lookahead_signals:
+                signal_dist = signal.get("distance_cm", float("inf"))
+                signal_state = signal.get("state", "green")
+                if signal_state == "red":
+                    restrictions.append((signal_dist, 0.0, self.safety_margin_cm))
+                elif signal_state in ("yellow", "double_yellow"):
+                    restrictions.append((signal_dist, YELLOW_SIGNAL_SPEED_KMH, 0.0))
+
+        # NOTE: Station speed limits are NOT added as restrictions here.
+        # ATC/ATO only cares about BLOCKS, not platforms. Station speed limits
+        # are applied through the block's max_speed_kmh property, not the station's
+        # top_speed_kmh which is for visualization/informational purposes only.
 
         curves = []
 
-        step = 25.0
-        distance = 0.0
-        while distance <= max_distance_cm:
-            safety_margin = self.safety_margin_cm
-            if lookahead_stations:
-                for station in lookahead_stations:
-                    station_dist = station.get("distance_cm", float("inf"))
-                    if abs(station_dist - distance) < 100:
-                        safety_margin = ATC_PLATFORM_SAFETY_MARGIN_CM
-                        break
+        # Use 5cm resolution for smooth curves
+        step = CURVE_SAMPLE_RESOLUTION_CM
+        sample_distance = 0.0
+        while sample_distance <= max_distance_cm:
+            # For this sample point, find the minimum speed limit
+            # considering all restrictions ahead
 
-            atc_limit = calculate_max_safe_speed(
-                distance, profile.deceleration_rate, safety_margin
-            )
+            atc_limits: List[float] = [max_speed]
+            operational_limits: List[float] = [max_speed]
 
-            operational_limit = calculate_max_safe_speed(
-                distance,
-                profile.deceleration_rate * profile.operational_decel_ratio,
-                safety_margin,
-            )
+            for restriction_dist, restriction_speed, restriction_safety in restrictions:
+                # Distance from sample point to this restriction
+                dist_to_restriction = restriction_dist - sample_distance
 
-            atc_limit = min(atc_limit, max_speed)
-            operational_limit = min(operational_limit, max_speed)
+                # Handle being AT or PAST a stop restriction (speed=0)
+                # At or past the path end, speed must be 0
+                if dist_to_restriction <= 0 and restriction_speed <= 0:
+                    atc_limits.append(0.0)
+                    operational_limits.append(0.0)
+                    continue
 
+                # Apply braking curve when BEFORE the restriction point
+                # Once past non-stop restrictions, the speed limit comes from block/station
+                # position checks below
+                if dist_to_restriction > 0:
+                    # Sample point is before restriction
+                    # Calculate braking curve back from restriction
+
+                    if restriction_speed <= 0:
+                        # Must stop: use stopping distance formula
+                        effective_dist = dist_to_restriction - restriction_safety
+                        if effective_dist <= 0:
+                            atc_limits.append(0.0)
+                            operational_limits.append(0.0)
+                        else:
+                            atc_limit = calculate_max_safe_speed(
+                                effective_dist + restriction_safety,
+                                decel_rate,
+                                restriction_safety,
+                            )
+                            operational_limit = calculate_max_safe_speed(
+                                effective_dist + restriction_safety,
+                                operational_decel,
+                                restriction_safety,
+                            )
+                            atc_limits.append(atc_limit)
+                            operational_limits.append(operational_limit)
+                    else:
+                        # Must slow to target speed: use decel to target formula
+                        atc_limit = calculate_speed_for_target(
+                            dist_to_restriction, restriction_speed, decel_rate
+                        )
+                        operational_limit = calculate_speed_for_target(
+                            dist_to_restriction, restriction_speed, operational_decel
+                        )
+                        atc_limits.append(atc_limit)
+                        operational_limits.append(operational_limit)
+
+            # Also apply block speed limit at current position
             if lookahead_blocks:
                 for block in lookahead_blocks:
                     block_start = block.get("start_cm", 0)
                     block_end = block.get("end_cm", 0)
-                    if block_start <= distance < block_end:
-                        block_speed_limit = block.get("speed_limit_kmh", float("inf"))
-                        if block_speed_limit < float("inf"):
-                            atc_limit = min(atc_limit, block_speed_limit)
-                            operational_limit = min(
-                                operational_limit, block_speed_limit
-                            )
+                    if block_start <= sample_distance < block_end:
+                        block_speed = block.get("speed_limit_kmh")  # None if no limit
+                        if block_speed is not None:
+                            atc_limits.append(block_speed)
+                            operational_limits.append(block_speed)
                         break
 
-            if lookahead_signals:
-                for signal in lookahead_signals:
-                    signal_dist = signal.get("distance_cm", float("inf"))
-                    signal_state = signal.get("state", "green")
+            # NOTE: Station speed limits are NOT applied here.
+            # ATC/ATO only cares about BLOCKS. Station's top_speed_kmh is for
+            # visualization only. Block speed limits (if any) are enforced above.
 
-                    if distance >= signal_dist:
-                        if signal_state == "yellow":
-                            atc_limit = min(atc_limit, YELLOW_SIGNAL_SPEED_KMH)
-                            operational_limit = min(
-                                operational_limit, YELLOW_SIGNAL_SPEED_KMH
-                            )
-                        elif signal_state == "red":
-                            atc_limit = 0.0
-                            operational_limit = 0.0
+            # Take minimum of all limits
+            atc_limit = min(atc_limits)
+            operational_limit = min(operational_limits)
+
+            # Cap at train max speed
+            atc_limit = min(atc_limit, max_speed)
+            operational_limit = min(operational_limit, max_speed)
+
+            # Ensure ATO limit stays ATO_SPEED_MARGIN_KMH below ATC
+            operational_limit = min(
+                operational_limit, max(0.0, atc_limit - ATO_SPEED_MARGIN_KMH)
+            )
 
             curves.append(
                 {
-                    "distance_cm": distance,
+                    "distance_cm": sample_distance,
                     "atc_limit": atc_limit,
                     "operational_limit": operational_limit,
                 }
             )
 
-            distance += step
+            sample_distance += step
 
         return curves
 
@@ -2247,6 +2595,185 @@ class TrainController:
             "is_stopped": train.is_stopped() if train else True,
         }
 
+    def _build_fallback_lookahead(
+        self,
+        train: "Train",
+        head_tile: Tuple[int, int],
+        head_distance_cm: float,
+        travel_direction: Optional[str],
+    ) -> Dict[str, Any]:
+        """
+        Build lookahead data when no path is available.
+
+        This is used when:
+        - Train is first placed (no path yet)
+        - Path is canceled (train must stop safely)
+        - Train enters last tile and path is cleared
+
+        The lookahead is built from the train's occupied blocks and facing direction,
+        calculating clearance to the end of the current block.
+        """
+        blocks: List[Dict[str, Any]] = []
+        signals: List[Dict[str, Any]] = []
+        switches: List[Dict[str, Any]] = []
+        stations: List[Dict[str, Any]] = []
+
+        # Get current block from head tile
+        head_track = (
+            self.network.get_track(head_tile[0], head_tile[1]) if self.network else None
+        )
+        current_block_id = head_track.block_section_id if head_track else None
+
+        clearance_cm = 0.0
+        block_length_cm = 0.0
+        tile_count = 1
+
+        # If controller has a known clearance (from simulation), use it as baseline
+        # This ensures we don't underestimate clearance when path is temporarily unavailable
+        if self.clearance_ahead_cm > 0:
+            clearance_cm = self.clearance_ahead_cm
+
+        if current_block_id and self.network and train.position:
+            block = self.network.blocks.get(current_block_id)
+            facing_dir = train.position.facing_direction
+
+            # Calculate remaining distance in current tile
+            current_tile_length = self.network._get_tile_length_cm(
+                head_tile[0], head_tile[1]
+            )
+            remaining_in_tile = max(0, current_tile_length - head_distance_cm)
+
+            # Calculate remaining distance in the ENTIRE block (not just current tile)
+            # This is critical for first placement in multi-tile blocks
+            if clearance_cm == 0 and block and block.length_cm > 0:
+                # Get all tiles in the block to calculate proper remaining distance
+                block_positions = self.network.get_block_positions(current_block_id)
+                if block_positions:
+                    tile_count = len(block_positions)
+                    per_tile_length = block.length_cm / tile_count
+
+                    # Calculate how far into the block the train is
+                    # We need to find where head_tile is in the block
+                    # and sum the lengths of tiles behind + distance in current tile
+                    distance_into_block = head_distance_cm
+
+                    # For tiles the train has already passed through in this block
+                    # (tiles in occupied_tiles that are in this block, before head tile)
+                    if train.position.occupied_tiles:
+                        for tile in train.position.occupied_tiles:
+                            if tile == head_tile:
+                                break
+                            tile_track = self.network.get_track(tile[0], tile[1])
+                            if (
+                                tile_track
+                                and tile_track.block_section_id == current_block_id
+                            ):
+                                distance_into_block += self.network._get_tile_length_cm(
+                                    tile[0], tile[1]
+                                )
+
+                    # Remaining distance = total block length - distance already traveled
+                    clearance_cm = max(0.0, block.length_cm - distance_into_block)
+                    block_length_cm = block.length_cm
+                else:
+                    # Fallback: use remaining in tile if we can't get block positions
+                    clearance_cm = remaining_in_tile
+                    block_length_cm = current_tile_length
+            elif clearance_cm == 0:
+                # No block info available, use remaining in tile as minimum
+                clearance_cm = remaining_in_tile
+                block_length_cm = current_tile_length
+            else:
+                # We have clearance from simulation, just get block length for info
+                if block and block.length_cm > 0:
+                    block_length_cm = block.length_cm
+                    block_positions = self.network.get_block_positions(current_block_id)
+                    if block_positions:
+                        tile_count = len(block_positions)
+                else:
+                    block_length_cm = current_tile_length
+
+            # The clearance is the remaining distance in the current block
+            # For safety, we use the remaining tile distance as minimum
+            # This ensures the train stops before the end of the known track
+
+            # Build block info
+            block_state = None
+            block_speed_limit: Optional[float] = None
+            if block:
+                if block.state:
+                    block_state = block.state.value
+                if block.max_speed_kmh and block.max_speed_kmh < float("inf"):
+                    block_speed_limit = block.max_speed_kmh
+
+            blocks.append(
+                {
+                    "id": current_block_id,
+                    "name": current_block_id,
+                    "state": block_state or BlockState.OCCUPIED.value,
+                    "start_cm": -head_distance_cm,  # Block starts behind train
+                    "end_cm": clearance_cm,
+                    "length_cm": block_length_cm
+                    if block_length_cm > 0
+                    else head_distance_cm + clearance_cm,
+                    "tile_count": tile_count,
+                    "speed_limit_kmh": block_speed_limit,
+                }
+            )
+
+            # Check if there's a station in this block
+            if head_track and head_track.station_id:
+                station = self.network.stations.get(head_track.station_id)
+                if station:
+                    # Get station length from station positions
+                    station_tile_count = (
+                        len(station.positions) if station.positions else 1
+                    )
+                    station_length_cm = (
+                        station.length_cm if station.length_cm > 0 else block_length_cm
+                    )
+                    stations.append(
+                        {
+                            "station_id": head_track.station_id,
+                            "name": station.name if station else head_track.station_id,
+                            "distance_cm": 0,  # We're already in the station
+                            "length_cm": station_length_cm,
+                            "tile_count": station_tile_count,
+                            "top_speed_kmh": station.top_speed_kmh if station else None,
+                        }
+                    )
+
+        # Calculate safety margin
+        effective_safety_margin = self._get_effective_safety_margin()
+        target_stop_cm = max(0.0, clearance_cm - effective_safety_margin)
+
+        # Calculate speed curves for the available clearance
+        speed_curves = self.calculate_speed_curves(
+            max_distance_cm=clearance_cm if clearance_cm > 0 else 50.0,
+            lookahead_blocks=blocks,
+            lookahead_signals=signals,
+            lookahead_stations=stations,
+        )
+
+        return {
+            "train_id": self.train_id,
+            "head_tile": [head_tile[0], head_tile[1]],
+            "head_distance_cm": head_distance_cm,
+            "travel_direction": travel_direction,
+            "cab": self.active_cab,
+            "speed_limit_reason": self.speed_limit_reason,
+            "lookahead": {
+                "blocks": blocks,
+                "signals": signals,
+                "switches": switches,
+                "stations": stations,
+                "clearance_cm": clearance_cm,
+                "safety_margin_cm": effective_safety_margin,
+                "target_stop_cm": target_stop_cm,
+                "speed_curves": speed_curves,
+            },
+        }
+
     def get_monitor_lookahead(self) -> Dict[str, Any]:
         train = self._get_train()
         if not train or not self.network:
@@ -2295,22 +2822,11 @@ class TrainController:
 
         head_path_index = self._get_head_path_index(train, head_tile)
         if head_path_index < 0 or not train.current_path:
-            return {
-                "train_id": self.train_id,
-                "head_tile": [head_tile[0], head_tile[1]],
-                "head_distance_cm": head_distance_cm,
-                "travel_direction": travel_direction,
-                "cab": self.active_cab,
-                "speed_limit_reason": self.speed_limit_reason,
-                "lookahead": {
-                    "blocks": [],
-                    "signals": [],
-                    "switches": [],
-                    "stations": [],
-                    "clearance_cm": 0.0,
-                    "speed_curves": [],
-                },
-            }
+            # No path available - build lookahead from occupied blocks
+            # This handles: initial placement, path canceled, entering last tile
+            return self._build_fallback_lookahead(
+                train, head_tile, head_distance_cm, travel_direction
+            )
 
         blocks: List[Dict[str, Any]] = []
         signals: List[Dict[str, Any]] = []
@@ -2388,9 +2904,13 @@ class TrainController:
                     tile_count += block_back_tile_count
 
                 block_state = None
+                block_speed_limit: Optional[float] = None  # None means no limit
                 block = self.network.blocks.get(tile_block_id)
-                if block and block.state:
-                    block_state = block.state.value
+                if block:
+                    if block.state:
+                        block_state = block.state.value
+                    if block.max_speed_kmh and block.max_speed_kmh < float("inf"):
+                        block_speed_limit = block.max_speed_kmh
 
                 blocks.append(
                     {
@@ -2401,6 +2921,7 @@ class TrainController:
                         "end_cm": current_block_start_cm + block_length,
                         "length_cm": block_length,
                         "tile_count": tile_count,
+                        "speed_limit_kmh": block_speed_limit,  # None if no limit
                     }
                 )
 
@@ -2481,12 +3002,18 @@ class TrainController:
                             "distance_cm": point_element_start,
                             "length_cm": station_length,
                             "tile_count": station_tile_count or 1,
+                            "top_speed_kmh": station.top_speed_kmh if station else None,
                         }
                     )
 
             cumulative_distance_cm += tile_length
 
         clearance_cm = max(0.0, cumulative_distance_cm)
+
+        # Calculate effective safety margin (5cm for platform, 25cm otherwise)
+        effective_safety_margin = self._get_effective_safety_margin()
+        # Target stop point is clearance minus safety margin
+        target_stop_cm = max(0.0, clearance_cm - effective_safety_margin)
 
         speed_curves = self.calculate_speed_curves(
             max_distance_cm=clearance_cm if clearance_cm > 0 else 500.0,
@@ -2508,6 +3035,8 @@ class TrainController:
                 "switches": switches,
                 "stations": stations,
                 "clearance_cm": clearance_cm,
+                "safety_margin_cm": effective_safety_margin,
+                "target_stop_cm": target_stop_cm,
                 "speed_curves": speed_curves,
             },
         }

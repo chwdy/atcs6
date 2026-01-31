@@ -2986,9 +2986,11 @@ class TestTrendAwareATOControl:
 
         handle = controller._ato_calculate_handle()
 
-        assert handle == HandlePosition.B2, (
-            f"Slow Down Zone: braking (B2) and speed falling should keep current. "
-            f"Got {handle}"
+        # With improved brake release: when speed is falling and close to target,
+        # start releasing brakes to avoid over-braking
+        assert handle == HandlePosition.B1, (
+            f"Slow Down Zone: braking (B2) and speed falling close to target should "
+            f"start releasing (B2->B1). Got {handle}"
         )
 
     def test_speed_up_zone_brake_to_neutral(self, train_and_controller):
@@ -3056,8 +3058,10 @@ class TestTrendAwareATOControl:
 
         handle = controller._ato_calculate_handle()
 
-        assert handle == HandlePosition.N, (
-            f"Rate limiting: P5 should only jump to Neutral (not directly to brake). "
+        # With improved braking response: when overshoot is 5+ km/h,
+        # apply braking immediately instead of rate-limiting through neutral
+        assert handle == HandlePosition.B3, (
+            f"Fast response: P5 with 5 km/h overshoot should apply B3 immediately. "
             f"Got {handle}"
         )
 
@@ -3151,8 +3155,10 @@ class TestSpeedCurveCalculation:
         curves = controller.calculate_speed_curves(max_distance_cm=5000)
 
         assert len(curves) > 0, "Speed curves should be calculated"
-        assert len(curves) == (5000 // 25) + 1, (
-            f"Should have {(5000 // 25) + 1} points (every 25cm, inclusive endpoints: 0 to 5000)"
+        # Uses 5cm resolution per CURVE_SAMPLE_RESOLUTION_CM
+        expected_points = (5000 // 5) + 1  # 1001 points (0, 5, 10, ..., 5000)
+        assert len(curves) == expected_points, (
+            f"Should have {expected_points} points (every 5cm, inclusive endpoints: 0 to 5000)"
         )
 
     def test_speed_curves_structure(self, train_and_controller):
@@ -3194,6 +3200,392 @@ class TestSpeedCurveCalculation:
             assert point["operational_limit"] <= train.max_speed, (
                 f"Operational limit ({point['operational_limit']}) should be <= train max speed"
             )
+
+    def test_ato_limit_5kmh_below_atc(self, train_and_controller):
+        """ATO limit should be at least 5 km/h below ATC (per ATO_SPEED_MARGIN_KMH)."""
+        train, controller = train_and_controller
+        train.max_speed = 100.0
+
+        curves = controller.calculate_speed_curves(max_distance_cm=2000)
+
+        # Check points where both limits are > 0 (not at very end)
+        for point in curves:
+            atc = point["atc_limit"]
+            ato = point["operational_limit"]
+            if atc > 5.0:  # Only check where ATC > 5 km/h
+                assert ato <= atc - 5.0, (
+                    f"ATO ({ato}) should be at least 5 km/h below ATC ({atc}) "
+                    f"at distance {point['distance_cm']}cm"
+                )
+
+
+class TestFutureAwareATOBraking:
+    """
+    Tests for future-aware ATO braking.
+
+    These tests verify that the ATO looks ahead in the speed curve
+    and starts braking before restrictions, not after.
+    """
+
+    @pytest.fixture
+    def network_with_train(self):
+        """Create network with train and controller."""
+        from network import RailwayNetwork
+        from train import Train, TrainPosition
+        from train_controller import TrainController
+        from enums import Direction
+
+        network = RailwayNetwork()
+
+        # Create a simple track
+        from track import TrackSegment, TRACK_EW
+
+        for x in range(10):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        train = Train(train_id="T1", max_speed=60.0)
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=10.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=5.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(0, 0)],
+            occupied_blocks=[],
+        )
+        train.current_speed = 30.0
+        network.add_train(train)
+
+        controller = TrainController(train_id="T1", network=network)
+        controller.power_on = True
+        controller.active_cab = "A"
+        controller.ato_running = True
+        controller.clearance_ahead_cm = 500.0
+        controller.current_block_speed_limit = 60.0
+        controller.atc_speed_limit = 60.0
+
+        return network, train, controller
+
+    def test_reaction_distance_scales_with_speed(self, network_with_train):
+        """Reaction distance should increase with speed."""
+        _, train, controller = network_with_train
+
+        # At 0 speed, reaction distance should be 0
+        dist_0 = controller._get_reaction_distance_cm(0.0)
+        assert dist_0 == 0.0, "Reaction distance at 0 speed should be 0"
+
+        # At higher speed, reaction distance should be larger
+        dist_30 = controller._get_reaction_distance_cm(30.0)
+        dist_60 = controller._get_reaction_distance_cm(60.0)
+
+        assert dist_60 > dist_30 > 0, "Reaction distance should increase with speed"
+
+    def test_sample_curve_at_interpolates(self, network_with_train):
+        """Curve sampling should interpolate between points."""
+        _, _, controller = network_with_train
+
+        # Create a simple test curve
+        test_curve = [
+            {"distance_cm": 0.0, "operational_limit": 60.0, "atc_limit": 65.0},
+            {"distance_cm": 100.0, "operational_limit": 40.0, "atc_limit": 45.0},
+            {"distance_cm": 200.0, "operational_limit": 20.0, "atc_limit": 25.0},
+        ]
+
+        # Sample at exact points
+        assert controller._sample_curve_at(test_curve, 0.0) == 60.0
+        assert controller._sample_curve_at(test_curve, 100.0) == 40.0
+        assert controller._sample_curve_at(test_curve, 200.0) == 20.0
+
+        # Sample at midpoint - should interpolate
+        mid = controller._sample_curve_at(test_curve, 50.0)
+        assert 45.0 < mid < 55.0, f"Midpoint should be interpolated: {mid}"
+
+
+class TestBlockTileSyncValidation:
+    """
+    Tests for block-tile position sync validation.
+
+    These tests verify that the sync validation detects and corrects
+    desyncs between tiles and blocks.
+    """
+
+    @pytest.fixture
+    def physics_setup(self):
+        """Create network, train, and physics."""
+        from network import RailwayNetwork
+        from train import Train, TrainPosition
+        from train_physics import TrainPhysics
+        from train_controller import TrainController
+        from block import Block
+        from enums import Direction, BlockState
+
+        network = RailwayNetwork()
+
+        # Create track with blocks
+        from track import TrackSegment, TRACK_EW
+
+        block = Block(block_id="B1", length_cm=300.0, state=BlockState.FREE)
+        network.blocks["B1"] = block
+
+        for x in range(6):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW, block_section_id="B1")
+            network.add_track(track)
+
+        train = Train(train_id="T1", max_speed=60.0)
+        train.position = TrainPosition(
+            end_a_tile=(2, 0),
+            end_a_distance_cm=25.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=10.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            facing_direction=Direction.EAST,
+            occupied_tiles=[(0, 0), (1, 0), (2, 0)],
+            occupied_blocks=["B1"],
+        )
+        train.current_speed = 0.0
+        network.add_train(train)
+
+        controller = TrainController(train_id="T1", network=network)
+        physics = TrainPhysics(train_id="T1", network=network, controller=controller)
+
+        return network, train, physics
+
+    def test_sync_validation_returns_true_when_synced(self, physics_setup):
+        """Validation should return True when tiles and blocks match."""
+        _, train, physics = physics_setup
+
+        # Position is synced by default
+        result = physics._validate_position_sync(train)
+        assert result is True, "Should return True when synced"
+
+    def test_sync_validation_detects_desync(self, physics_setup):
+        """Validation should detect when blocks don't match tiles."""
+        _, train, physics = physics_setup
+
+        # Create a desync: tiles say B1, but occupied_blocks is empty
+        train.position.occupied_blocks = []
+
+        result = physics._validate_position_sync(train)
+        assert result is False, "Should return False when desynced"
+
+    def test_sync_validation_auto_corrects(self, physics_setup):
+        """Validation should auto-correct occupied_blocks from tiles."""
+        _, train, physics = physics_setup
+
+        # Create a desync
+        train.position.occupied_blocks = []
+
+        # Validate (which should correct)
+        physics._validate_position_sync(train)
+
+        # Should now have B1 in occupied_blocks
+        assert "B1" in train.position.occupied_blocks, (
+            "Should auto-correct to include B1"
+        )
+
+
+class TestFallbackLookaheadMultiTileBlock:
+    """
+    Tests for fallback lookahead calculation in multi-tile blocks.
+
+    Fixed bug: When train is first placed in a multi-tile block (no path yet),
+    the fallback lookahead was only calculating remaining distance in the
+    current TILE, not the remaining distance in the entire BLOCK.
+
+    This caused the destination line to appear at the wrong position
+    (middle of block instead of end of block).
+    """
+
+    @pytest.fixture
+    def multi_tile_block_network(self):
+        """Create network with a 3-tile block for testing."""
+        network = RailwayNetwork()
+
+        # Create a 3-tile block (simulates terminal station)
+        block = Block(block_id="TERMINAL", length_cm=150.0, state=BlockState.OCCUPIED)
+        network.blocks["TERMINAL"] = block
+
+        for x in range(3):
+            track = TrackSegment(
+                x=x, y=0, track_bits=TRACK_EW, block_section_id="TERMINAL"
+            )
+            network.add_track(track)
+
+        return network
+
+    def test_fallback_calculates_full_block_clearance(self, multi_tile_block_network):
+        """
+        When train is placed on first tile of multi-tile block,
+        clearance should include remaining distance to end of block.
+        """
+        network = multi_tile_block_network
+
+        # Place train on first tile (x=0), facing EAST
+        # Train head at tile (0,0) at the exit edge (distance = tile_length)
+        train = Train(train_id="TRAIN_FALLBACK_TEST")
+
+        # Each tile is 150/3 = 50 cm long
+        per_tile_length = 50.0
+
+        train.position = make_train_position(
+            head_tile=(0, 0),
+            facing_direction=Direction.EAST,
+            head_distance_cm=per_tile_length,  # At exit edge of first tile
+        )
+        train.position.occupied_tiles = [(0, 0)]
+        train.position.occupied_blocks = ["TERMINAL"]
+
+        # NO current_path - simulates first placement
+        train.current_path = None
+        train.reserved_blocks = []
+
+        network.add_train(train)
+
+        controller = TrainController(train_id=train.train_id, network=network)
+
+        # Get lookahead WITHOUT calling update() first
+        # This simulates the API call on first placement
+        lookahead = controller.get_monitor_lookahead()
+
+        # The clearance should be the remaining distance to end of block
+        # Block is 150cm, train has traveled 50cm (one tile), so remaining = 100cm
+        clearance_cm = lookahead["lookahead"]["clearance_cm"]
+
+        # Should be ~100cm (2 tiles remaining), not just 0cm (no remaining in current tile)
+        assert clearance_cm >= 95.0, (
+            f"Clearance should be ~100cm (2 tiles remaining), but got {clearance_cm}. "
+            "The fallback lookahead should calculate remaining distance in ENTIRE block, "
+            "not just current tile."
+        )
+
+    def test_fallback_mid_block_placement(self, multi_tile_block_network):
+        """
+        Train placed in middle tile of block should have correct remaining distance.
+        """
+        network = multi_tile_block_network
+        per_tile_length = 50.0  # 150cm / 3 tiles
+
+        train = Train(train_id="TRAIN_MID_BLOCK")
+        train.position = make_train_position(
+            head_tile=(1, 0),  # Middle tile
+            facing_direction=Direction.EAST,
+            head_distance_cm=25.0,  # Halfway through middle tile
+        )
+        train.position.occupied_tiles = [(0, 0), (1, 0)]
+        train.position.occupied_blocks = ["TERMINAL"]
+        train.current_path = None
+        train.reserved_blocks = []
+
+        network.add_train(train)
+        controller = TrainController(train_id=train.train_id, network=network)
+
+        lookahead = controller.get_monitor_lookahead()
+        clearance_cm = lookahead["lookahead"]["clearance_cm"]
+
+        # Train at (1,0), 25cm into tile
+        # Tiles behind train in block: (0,0) = 50cm
+        # Distance into current tile: 25cm
+        # Total distance into block: 50 + 25 = 75cm
+        # Remaining in block: 150 - 75 = 75cm
+        assert 70.0 <= clearance_cm <= 80.0, (
+            f"Clearance should be ~75cm, but got {clearance_cm}"
+        )
+
+    def test_fallback_last_tile_placement(self, multi_tile_block_network):
+        """
+        Train at end of block should have minimal clearance (just remaining in last tile).
+        """
+        network = multi_tile_block_network
+        per_tile_length = 50.0
+
+        train = Train(train_id="TRAIN_LAST_TILE")
+        train.position = make_train_position(
+            head_tile=(2, 0),  # Last tile
+            facing_direction=Direction.EAST,
+            head_distance_cm=40.0,  # Near end of last tile
+        )
+        train.position.occupied_tiles = [(0, 0), (1, 0), (2, 0)]
+        train.position.occupied_blocks = ["TERMINAL"]
+        train.current_path = None
+        train.reserved_blocks = []
+
+        network.add_train(train)
+        controller = TrainController(train_id=train.train_id, network=network)
+
+        lookahead = controller.get_monitor_lookahead()
+        clearance_cm = lookahead["lookahead"]["clearance_cm"]
+
+        # Train at (2,0), 40cm into tile
+        # Tiles behind: (0,0) + (1,0) = 100cm
+        # Distance into current: 40cm
+        # Total into block: 140cm
+        # Remaining: 150 - 140 = 10cm
+        assert clearance_cm <= 15.0, (
+            f"Clearance should be ~10cm (near end of block), but got {clearance_cm}"
+        )
+
+    def test_fallback_uses_correct_block_length(self, multi_tile_block_network):
+        """
+        The fallback should report the correct block length in the block info.
+        """
+        network = multi_tile_block_network
+
+        train = Train(train_id="TRAIN_BLOCK_INFO")
+        train.position = make_train_position(
+            head_tile=(0, 0),
+            facing_direction=Direction.EAST,
+            head_distance_cm=25.0,
+        )
+        train.position.occupied_tiles = [(0, 0)]
+        train.position.occupied_blocks = ["TERMINAL"]
+        train.current_path = None
+        train.reserved_blocks = []
+
+        network.add_train(train)
+        controller = TrainController(train_id=train.train_id, network=network)
+
+        lookahead = controller.get_monitor_lookahead()
+        blocks = lookahead["lookahead"]["blocks"]
+
+        assert len(blocks) == 1
+        assert blocks[0]["id"] == "TERMINAL"
+        assert blocks[0]["length_cm"] == pytest.approx(150.0)
+        assert blocks[0]["tile_count"] == 3
+
+    def test_fallback_with_prior_clearance(self, multi_tile_block_network):
+        """
+        If controller has a prior clearance value, fallback should use it.
+        """
+        network = multi_tile_block_network
+
+        train = Train(train_id="TRAIN_PRIOR_CLEARANCE")
+        train.position = make_train_position(
+            head_tile=(0, 0),
+            facing_direction=Direction.EAST,
+            head_distance_cm=25.0,
+        )
+        train.position.occupied_tiles = [(0, 0)]
+        train.position.occupied_blocks = ["TERMINAL"]
+        train.current_path = None
+        train.reserved_blocks = []
+
+        network.add_train(train)
+        controller = TrainController(train_id=train.train_id, network=network)
+
+        # Set a prior clearance (simulating simulation update ran earlier)
+        controller.clearance_ahead_cm = 200.0
+
+        lookahead = controller.get_monitor_lookahead()
+        clearance_cm = lookahead["lookahead"]["clearance_cm"]
+
+        # Should use the prior clearance value
+        assert clearance_cm == 200.0
 
 
 if __name__ == "__main__":

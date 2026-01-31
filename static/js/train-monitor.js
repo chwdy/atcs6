@@ -455,6 +455,8 @@ class TrainMonitor {
             stations: lookahead?.stations || [],
             distance_into_path_cm: 0,
             clearance_cm: lookahead?.clearance_cm || 0,
+            safety_margin_cm: lookahead?.safety_margin_cm || 25,
+            target_stop_cm: lookahead?.target_stop_cm || (lookahead?.clearance_cm || 0) - 25,
             speed_curves: lookahead?.speed_curves || []
         };
 
@@ -754,6 +756,31 @@ class TrainMonitor {
                 this.ctx.fillStyle = '#1a1a1a';
                 this.ctx.fillRect(clearanceX, 0, greyWidth, height - padding.bottom);
             }
+        }
+        
+        // Draw safety margin indicator (target stop point)
+        const targetStopCm = data.target_stop_cm || (clearanceCm - 25);
+        const safetyMarginCm = data.safety_margin_cm || 25;
+        if (targetStopCm > 0 && targetStopCm < lookaheadDistance) {
+            const targetStopX = cmToX(trainDist + targetStopCm);
+            // Draw vertical dashed line at target stop point
+            this.ctx.save();
+            this.ctx.strokeStyle = '#ff6b6b';
+            this.ctx.lineWidth = 1.5;
+            this.ctx.setLineDash([4, 3]);
+            this.ctx.beginPath();
+            this.ctx.moveTo(targetStopX, padding.top);
+            this.ctx.lineTo(targetStopX, height - padding.bottom);
+            this.ctx.stroke();
+            this.ctx.setLineDash([]);
+            
+            // Draw safety margin zone (between target stop and clearance)
+            if (clearanceCm > targetStopCm) {
+                const clearanceX = cmToX(trainDist + clearanceCm);
+                this.ctx.fillStyle = 'rgba(255, 107, 107, 0.15)';
+                this.ctx.fillRect(targetStopX, padding.top, clearanceX - targetStopX, speedCurveAreaHeight);
+            }
+            this.ctx.restore();
         }
         
         this.drawTrackLine(padding.left, blockTrackY, trackWidth, '#333');
@@ -1117,6 +1144,15 @@ class TrainMonitor {
             this.ctx.fillStyle = '#ffcd1e';
             this.ctx.textAlign = 'left';
             this.ctx.fillText(`${Math.round(currentSpeed)}`, this.canvas.width - padding.right + 3, currentY);
+            
+            // Draw green speed indicator dot on the vertical axis
+            this.ctx.beginPath();
+            this.ctx.arc(padding.left, currentY, 5, 0, Math.PI * 2);
+            this.ctx.fillStyle = '#04d361';  // Green to match ATO curve
+            this.ctx.fill();
+            this.ctx.strokeStyle = '#fff';
+            this.ctx.lineWidth = 1;
+            this.ctx.stroke();
         }
         
         if (targetSpeed > 0 && targetSpeed < maxSpeed) {

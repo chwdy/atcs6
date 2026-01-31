@@ -112,6 +112,9 @@ class TrainPhysics:
     last_block_transitions: Dict[str, Set[str]] = field(
         default_factory=lambda: {"entered": set(), "vacated": set()}
     )
+    # Tick counter for periodic sync validation
+    _tick_count: int = 0
+    _sync_validation_interval: int = 10  # Validate every N ticks
 
     # =========================================================================
     # Internal Helpers
@@ -234,7 +237,13 @@ class TrainPhysics:
             sorted(self._caution_blocks),
         )
 
-        # 10. Output voltage to occupied blocks
+        # 10. Periodic position sync validation (every N ticks)
+        self._tick_count += 1
+        if self._tick_count >= self._sync_validation_interval:
+            self._validate_position_sync(train)
+            self._tick_count = 0
+
+        # 11. Output voltage to occupied blocks
         self._update_voltage_output(train, controller)
         logger.debug("[TrainPhysics %s] voltage update complete", self.train_id)
 
@@ -665,6 +674,56 @@ class TrainPhysics:
                 blocks.add(track.block_section_id)
 
         return blocks
+
+    def _validate_position_sync(self, train: "Train") -> bool:
+        """
+        Validate that tile positions and block occupancy are in sync.
+
+        Called periodically as a safety check. If desync detected,
+        auto-corrects by using tile-derived blocks as the source of truth.
+
+        Args:
+            train: Train to validate
+
+        Returns:
+            True if in sync, False if desync was detected and corrected
+        """
+        if not train.position:
+            return True
+
+        # Calculate expected blocks from tiles (source of truth)
+        expected_blocks = self._get_blocks_for_train(train)
+
+        # Get recorded occupied blocks
+        actual_blocks = (
+            set(train.position.occupied_blocks)
+            if train.position.occupied_blocks
+            else set()
+        )
+
+        if expected_blocks != actual_blocks:
+            logger.warning(
+                "[TrainPhysics %s] Position desync detected! "
+                "Expected blocks (from tiles): %s, Actual recorded: %s. "
+                "Auto-correcting to tile-derived blocks.",
+                train.train_id,
+                sorted(expected_blocks),
+                sorted(actual_blocks),
+            )
+
+            # Auto-correct: update TrainPosition.occupied_blocks
+            train.position.occupied_blocks = list(expected_blocks)
+
+            # Also update BlockManager to match
+            block_manager = self._get_block_manager()
+            if block_manager:
+                # Occupy blocks that should be occupied but aren't
+                for block_id in expected_blocks - actual_blocks:
+                    block_manager.occupy_block(block_id, train.train_id)
+
+            return False
+
+        return True
 
     # =========================================================================
     # Voltage Output

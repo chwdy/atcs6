@@ -2472,6 +2472,11 @@ class RailwayNetwork:
         # Set the calculated length on the block
         station_block.length_cm = station_block_length_cm
 
+        # Inherit speed limit from platform to station block
+        # ATC/ATO uses block's max_speed_kmh, not station's top_speed_kmh
+        if top_speed_kmh is not None:
+            station_block.max_speed_kmh = top_speed_kmh
+
         # Assign station tile to station block
         track.block_section_id = station_block_id
 
