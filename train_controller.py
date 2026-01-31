@@ -1457,8 +1457,6 @@ class TrainController:
 
         trend = self._detect_speed_trend(current_speed)
 
-        self._previous_speed = current_speed
-
         if effective_target <= STOPPED_SPEED_THRESHOLD_KMH:
             if current_speed > STOPPED_SPEED_THRESHOLD_KMH:
                 return self._calculate_braking_notch(current_speed)
@@ -1564,6 +1562,7 @@ class TrainController:
                         return self._adjust_handle_toward_brake(current_handle)
                     return current_handle
 
+        self._previous_speed = current_speed
         return current_handle
 
     def _calculate_power_notch(
