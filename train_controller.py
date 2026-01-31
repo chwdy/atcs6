@@ -83,7 +83,10 @@ ATO_EXIT_MARGIN = ATO_SPEED_TOLERANCE + 1.0
 # Speed curve constants
 CURVE_SAMPLE_RESOLUTION_CM = 5.0  # 5cm resolution for speed curves
 ATO_SPEED_MARGIN_KMH = 5.0  # ATO stays 5 km/h below ATC limit
-REACTION_TIME_SECONDS = 2.0  # Look-ahead time for future-aware braking (increased for smoother anticipation)
+REACTION_TIME_SECONDS = (
+    2.0  # Look-ahead time for future-aware braking (increased for smoother
+)
+# anticipation)
 
 
 # =============================================================================
@@ -758,30 +761,26 @@ class TrainController:
         """
         Get the effective safety margin based on destination type.
 
+        The safety margin is constant and determined by the destination type:
+        - 5cm if destination (ato_destination_id) is a station
+        - 25cm otherwise
+
+        This does NOT change as the train moves - it's fixed when the path
+        is assigned based on where the train is going.
+
         Returns:
-            5cm if approaching a platform/station, 25cm otherwise
+            5cm if destination is a station/platform, 25cm otherwise
         """
         train = self._get_train()
         if not train or not self.network:
             return self.safety_margin_cm
 
-        # Check if train's head is currently in a station
-        # This handles the fallback case (no path) when train is in station
-        head_tile = self._get_head_tile()
-        if head_tile:
-            head_track = self.network.tracks.get(head_tile)
-            if head_track and head_track.station_id:
+        # Check if we have a destination station set
+        # Safety margin is constant based on destination type
+        if self.ato_destination_id:
+            station = self.network.stations.get(self.ato_destination_id)
+            if station:
                 return ATC_PLATFORM_SAFETY_MARGIN_CM
-
-        # Check if we're in the last block and it contains a station
-        blocks_ahead = self._get_blocks_ahead()
-        if not blocks_ahead:
-            # No blocks ahead - we're in the last block
-            if train.current_path and len(train.current_path) > 0:
-                last_tile = train.current_path[-1]
-                last_track = self.network.tracks.get((last_tile[0], last_tile[1]))
-                if last_track and last_track.station_id:
-                    return ATC_PLATFORM_SAFETY_MARGIN_CM
 
         return self.safety_margin_cm
 
@@ -1630,6 +1629,7 @@ class TrainController:
         lookahead_blocks: Optional[List[Dict]] = None,
         lookahead_signals: Optional[List[Dict]] = None,
         lookahead_stations: Optional[List[Dict]] = None,
+        target_stop_cm: Optional[float] = None,
     ) -> List[Dict]:
         """
         Calculate ATC and ATO speed limit curves at 5cm resolution.
@@ -1653,6 +1653,8 @@ class TrainController:
             lookahead_blocks: Block info with speed limits
             lookahead_signals: Signal info
             lookahead_stations: Station info (for tighter safety margin)
+            target_stop_cm: Target stopping distance (clearance - safety_margin) for explicit stop
+                point
 
         Returns:
             List of dicts with distance_cm, atc_limit, operational_limit
@@ -1808,10 +1810,43 @@ class TrainController:
 
             sample_distance += step
 
+        # Add explicit curve points for cleaner visualization
+        # 1. Target stop point (where train actually stops)
+        if target_stop_cm is not None and target_stop_cm > 0:
+            # Check if we already have a point at target_stop_cm (within step tolerance)
+            has_target_point = any(
+                abs(point["distance_cm"] - target_stop_cm) < step / 2
+                for point in curves
+            )
+            if not has_target_point:
+                # Add explicit stop point at target_stop_cm with speed 0
+                curves.append(
+                    {
+                        "distance_cm": target_stop_cm,
+                        "atc_limit": 0.0,
+                        "operational_limit": 0.0,
+                    }
+                )
+
+        # 2. Clearance end point (end of available distance)
+        # Always add this to show the clearance boundary
+        has_clearance_point = any(
+            abs(point["distance_cm"] - max_distance_cm) < step / 2 for point in curves
+        )
+        if not has_clearance_point:
+            curves.append(
+                {
+                    "distance_cm": max_distance_cm,
+                    "atc_limit": 0.0,
+                    "operational_limit": 0.0,
+                }
+            )
+
+        # Sort by distance to ensure proper curve drawing
+        curves.sort(key=lambda p: p["distance_cm"])
+
         return curves
 
-    # -------------------------------------------------------------------------
-    # Power Commands
     # -------------------------------------------------------------------------
     # Notification Methods
     # -------------------------------------------------------------------------
@@ -2752,6 +2787,7 @@ class TrainController:
             lookahead_blocks=blocks,
             lookahead_signals=signals,
             lookahead_stations=stations,
+            target_stop_cm=target_stop_cm,
         )
 
         return {
@@ -3019,6 +3055,7 @@ class TrainController:
             lookahead_blocks=blocks,
             lookahead_signals=signals,
             lookahead_stations=stations,
+            target_stop_cm=target_stop_cm,
         )
 
         return {

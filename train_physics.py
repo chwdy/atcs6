@@ -52,7 +52,7 @@ TODO List:
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Set, Tuple
 
 from enums import (
     BRAKE_MULTIPLIERS,
@@ -354,7 +354,6 @@ class TrainPhysics:
         # Recalculate tail position based on train length
         self._update_tail_position(train)
 
-        # Update occupied tiles list
         self._update_occupied_tiles(train)
 
     def _advance_end(
@@ -605,10 +604,10 @@ class TrainPhysics:
             bool(newly_vacated) or not new_occupied or train.is_stopped()
         )
 
-        # Clear caution blocks once the train has fully left them
+        # Clear caution blocks once the train has fully left them.
         # A block should only be cleared from CAUTION to FREE when:
         # 1. The train has fully exited the block (not in new_occupied)
-        # 2. The block is still in CAUTION state (not already freed by another train)
+        # 2. The block is still in CAUTION state (not freed by another train)
         for block_id in list(self._caution_blocks):
             if block_id in new_occupied:
                 # Train still in this block, keep in CAUTION state
