@@ -152,6 +152,7 @@ class RouteExecutor:
             exec_state.waiting_for_path = False
 
         controller = self._get_controller(train)
+
         route = None
         if train.assigned_route_id:
             route = getattr(self.network, "routes", {}).get(train.assigned_route_id)
@@ -169,7 +170,28 @@ class RouteExecutor:
                     train.assigned_route_id = None
                     if exec_state and train.train_id in self.execution_states:
                         del self.execution_states[train.train_id]
+
+                # Don't transition to standby immediately if in ATO mode with destination
+                # Let ATO handle stopping at the destination block end
+                if (
+                    controller.control_mode == "ato"
+                    and controller.ato_destination_block_id
+                ):
+                    # Check if we're already in the destination block
+                    current_block_id = self._get_current_block_id(train)
+                    if current_block_id == controller.ato_destination_block_id:
+                        # Stay in RUNNING_MOVING with ATO active - let ATO stop the train
+                        return True
+
                 controller.transition_to_standby()
+                return True
+
+        # No active route/waypoint - but still check if in ATO mode with destination
+        # Don't transition to standby if ATO should handle stopping at destination
+        if controller.control_mode == "ato" and controller.ato_destination_block_id:
+            current_block_id = self._get_current_block_id(train)
+            if current_block_id == controller.ato_destination_block_id:
+                # Stay in ATO mode - let ATO handle stopping
                 return True
 
         controller.transition_to_standby()
@@ -551,6 +573,21 @@ class RouteExecutor:
             raise ValueError("Cannot determine train direction for single-tile path")
 
         return convert_tiles_to_train_path(tiles)
+
+    def _get_current_block_id(self, train: "Train") -> Optional[str]:
+        """Get the current block ID based on train's head position."""
+        if not train.position:
+            return None
+
+        head_tile = train.position.head_tile
+        if not head_tile:
+            return None
+
+        track = self.network.get_track(*head_tile)
+        if not track:
+            return None
+
+        return track.block_section_id
 
     def activate_route(self, train: "Train", route: "Route") -> bool:
         """

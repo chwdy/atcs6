@@ -567,6 +567,8 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
         )
     network.update_signals_from_blocks()
 
+    # Create path to destination
+    path_result = None
     if start_track and start_track.block_section_id and target_block_id:
         path_result = path_dispatcher.create_path(
             start_block_id=start_track.block_section_id,
@@ -593,6 +595,12 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
         train_id=demo_train.train_id,
         network=network,
     )
+
+    # Set ATO destination block from the path's end block
+    # This is critical for proper stopping position calculation
+    if path_result and path_result.success and path_result.path:
+        controller.ato_destination_block_id = path_result.path.end_block_id
+
     controller.power_on_cmd()
     controller.set_direction_and_standby(Direction.EAST)
     controller.depart()
@@ -600,6 +608,9 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
     # Sync train state to match controller (so SimulationController's controller will inherit it)
     demo_train.state = controller.state
     demo_train.ato_running = controller.ato_running  # Sync ATO running state
+    demo_train.ato_destination_block_id = (
+        controller.ato_destination_block_id
+    )  # Sync destination
 
 
 def create_track_showcase(network: RailwayNetwork):

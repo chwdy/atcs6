@@ -1267,6 +1267,8 @@ class TestTrainStateTransitions:
             state=TrainState.STANDBY
         )
         train.facing_direction = Direction.NORTH
+        # Use manual mode to test depart transition (not ATO auto-cab logic)
+        controller.control_mode = "manual"
         result = controller.depart()
         assert result is True
         assert train.state == TrainState.RUNNING_MOVING
@@ -1597,7 +1599,8 @@ class TestCompleteStateFlows:
         assert train.state == TrainState.STANDBY
         assert train.facing_direction == Direction.NORTH
 
-        # Depart
+        # Depart (manual mode to bypass ATO auto-cab selection)
+        controller.control_mode = "manual"
         assert controller.depart() is True
         assert train.state == TrainState.RUNNING_MOVING
 
@@ -1621,6 +1624,8 @@ class TestCompleteStateFlows:
         # Simulate moving and arriving at final station
         # Need to set controller state too for proper flow
         train.facing_direction = Direction.NORTH
+        # Use manual mode to test depart (not ATO auto-cab logic)
+        controller.control_mode = "manual"
         controller.depart()
         assert train.state == TrainState.RUNNING_MOVING
 

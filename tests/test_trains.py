@@ -2615,14 +2615,14 @@ class TestAtoDestinationStoppingAfterPathCompletes:
     info because _get_blocks_ahead() returns empty, so atc_speed_limit becomes 0
     and the train stops immediately instead of decelerating properly.
 
-    FIX: Use ato_destination_id in TrainController to calculate stopping position
-    independently of path blocks. When path completes but ato_destination_id is
-    set, calculate clearance based on distance to station stopping point.
+    FIX: Use ato_destination_block_id in TrainController to calculate stopping position
+    independently of path blocks. When path completes but ato_destination_block_id is
+    set, calculate clearance based on distance to destination block end.
 
     Key code locations:
-    - TrainController.ato_destination_id (line 223)
-    - TrainController._calculate_clearance_ahead() (line 522)
-    - TrainController._get_blocks_ahead() (line 770)
+    - TrainController.ato_destination_block_id (line ~277)
+    - TrainController._calculate_clearance_ahead() (line ~522)
+    - TrainController._get_blocks_ahead() (line ~770)
     """
 
     def _setup_station_track(self, network):
@@ -2674,13 +2674,13 @@ class TestAtoDestinationStoppingAfterPathCompletes:
     def test_ato_has_clearance_after_path_completes(self, network):
         """
         When path completes (reserved_blocks cleared), ATO should still have
-        clearance based on ato_destination_id.
+        clearance based on ato_destination_block_id.
 
         Scenario:
         1. Train is on tile (3,0), heading EAST toward station end
         2. Path is completed, train.reserved_blocks is cleared
-        3. ato_destination_id is set to "STA_END"
-        4. ATO should calculate clearance to station end, not return 0
+        3. ato_destination_block_id is set to "BLOCK_B" (the station block)
+        4. ATO should calculate clearance to block end, not return 0
         """
         self._setup_station_track(network)
 
@@ -2707,8 +2707,8 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
 
-        # Set destination to station - this is what should provide stopping info
-        controller.ato_destination_id = "STA_END"
+        # Set destination to station block - this is what should provide stopping info
+        controller.ato_destination_block_id = "BLOCK_B"
 
         train.state = TrainState.RUNNING_MOVING
         train.current_speed = 20.0
@@ -2716,13 +2716,13 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         # Tick the controller
         controller.tick(0.1)
 
-        # Clearance should NOT be 0 - should be distance to station end
-        # The station is 100cm long, train is at start of tile (3,0)
-        # So clearance should be approximately 100cm (station length)
+        # Clearance should NOT be 0 - should be distance to block end
+        # The station block is 100cm long, train is at start of tile (3,0)
+        # So clearance should be approximately 100cm (block length)
         assert controller.clearance_ahead_cm > 0, (
-            f"Clearance should be > 0 when ato_destination_id is set, "
+            f"Clearance should be > 0 when ato_destination_block_id is set, "
             f"but got {controller.clearance_ahead_cm}. "
-            f"ATO should use station stopping point, not rely on reserved_blocks."
+            f"ATO should use block end stopping point, not rely on reserved_blocks."
         )
 
         # ATC speed limit should allow some movement toward the stop
@@ -2733,8 +2733,8 @@ class TestAtoDestinationStoppingAfterPathCompletes:
 
     def test_ato_calculates_distance_to_station_end(self, network):
         """
-        When ato_destination_id is set, clearance should be calculated
-        based on distance to station stopping point (end of platform).
+        When ato_destination_block_id is set, clearance should be calculated
+        based on distance to block/station stopping point (end of platform).
 
         The stopping point should be at the END of the station, not the
         beginning, to allow the train to stop at the platform center/end.
@@ -2756,14 +2756,14 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         train.path_index = 0
         train.reserved_blocks = []
 
-        # Create controller with ato_destination_id set
+        # Create controller with ato_destination_block_id set
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
         controller.control_mode = "ato"
         controller.active_cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
-        controller.ato_destination_id = "STA_END"
+        controller.ato_destination_block_id = "BLOCK_B"
 
         train.state = TrainState.RUNNING_MOVING
         train.current_speed = 30.0
@@ -2785,7 +2785,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
 
     def test_ato_destination_cleared_when_stopped_at_station(self, network):
         """
-        ato_destination_id should be cleared when train stops at the station.
+        ato_destination_block_id should be cleared when train stops at the station.
 
         This prevents the old destination from affecting future paths.
         """
@@ -2808,7 +2808,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         controller.active_cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
-        controller.ato_destination_id = "STA_END"
+        controller.ato_destination_block_id = "BLOCK_B"
 
         train.state = TrainState.RUNNING_MOVING
         train.current_speed = 0.0  # Train is stopped
@@ -2816,7 +2816,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         # Tick should detect train is at station and stopped
         controller.tick(0.1)
 
-        # When train arrives at station and stops, ato_destination_id should clear
+        # When train arrives at station and stops, ato_destination_block_id should clear
         # (or transition to AT_STATION state should handle this)
         # At minimum, ATO should stop running
         assert (
@@ -2827,10 +2827,10 @@ class TestAtoDestinationStoppingAfterPathCompletes:
             f"ato_running={controller.ato_running}, state={controller.state}"
         )
 
-    def test_ato_departs_with_destination_id_set(self, network):
+    def test_ato_departs_with_destination_block_id_set(self, network):
         """
-        When depart() is called with a path that has a destination station,
-        ato_destination_id should be set from the path's destination.
+        When depart() is called with a path that has a destination block,
+        ato_destination_block_id should be set from the path's end_block_id.
         """
         self._setup_station_track(network)
 
@@ -2853,21 +2853,140 @@ class TestAtoDestinationStoppingAfterPathCompletes:
 
         train.state = TrainState.STANDBY
 
-        # Before depart, ato_destination_id should be None
-        assert controller.ato_destination_id is None
+        # Before depart, ato_destination_block_id should be None
+        assert controller.ato_destination_block_id is None
 
-        # Simulate that path has destination station
-        # In real code, this would be set from the Path object
-        controller.ato_destination_id = "STA_END"
+        # Simulate that path has destination block
+        # In real code, this would be set from the Path object's end_block_id
+        controller.ato_destination_block_id = "BLOCK_B"
 
         # Depart
         result = controller.depart()
         assert result is True
 
-        # After depart, ato_destination_id should still be set
-        assert controller.ato_destination_id == "STA_END", (
-            f"ato_destination_id should persist through depart(), "
-            f"but got {controller.ato_destination_id}"
+        # After depart, ato_destination_block_id should still be set
+        assert controller.ato_destination_block_id == "BLOCK_B", (
+            f"ato_destination_block_id should persist through depart(), "
+            f"but got {controller.ato_destination_block_id}"
+        )
+
+
+class TestShorterMarginWithStationEnd:
+    """
+    Test that safety margin is 5cm (not 25cm) when destination is a station block.
+
+    This test specifically mimics the demo_main.py setup to ensure the safety margin
+    calculation works correctly in production code. This issue has occurred multiple
+    times, so we need a regression test.
+
+    The bug was: demo_main.py sets ato_destination_block_id on a temporary controller,
+    but SimulationController creates a new controller that doesn't inherit it.
+
+    The fix: Sync ato_destination_block_id to the train object, and make
+    SimulationController inherit it when creating controllers.
+    """
+
+    @pytest.fixture
+    def network(self):
+        return RailwayNetwork()
+
+    def test_safety_margin_5cm_for_station_destination(self, network):
+        """
+        Safety margin should be 5cm when ato_destination_block_id points to a station block.
+
+        This mimics the demo_main.py workflow:
+        1. Create train and path to station
+        2. Create temporary controller and set ato_destination_block_id
+        3. Sync ato_destination_block_id to train object
+        4. SimulationController creates new controller and inherits ato_destination_block_id
+        5. Safety margin should be 5cm (platform margin)
+        """
+        from station import Station
+        from simulation import SimulationController
+        from path_dispatcher import PathDispatcher
+
+        # Create simple 5-tile track with station at end
+        for x in range(5):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        # Create blocks
+        network.create_block_with_tracks(
+            block_id="BLOCK_START",
+            positions=[(0, 0), (1, 0), (2, 0)],
+            name="Start Block",
+            length_cm=150.0,
+        )
+
+        # Station block (destination)
+        network.create_block_with_tracks(
+            block_id="BLOCK_STATION",
+            positions=[(3, 0), (4, 0)],
+            name="Station Block",
+            length_cm=100.0,
+        )
+
+        # Add station
+        station = Station(
+            station_id="STA_END",
+            name="End Station",
+            positions=[(3, 0), (4, 0)],
+            length_cm=100.0,
+        )
+        network.stations["STA_END"] = station
+        network.get_track(3, 0).station_id = "STA_END"
+        network.get_track(4, 0).station_id = "STA_END"
+
+        # Create train
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=30.0)
+        train = Train(train_id="TEST_TRAIN", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        # Create path
+        pd = PathDispatcher(network)
+        path_result = pd.create_path(
+            start_block_id="BLOCK_START",
+            end_block_id="BLOCK_STATION",
+            train_id=train.train_id,
+        )
+        assert path_result.success
+
+        # Mimic demo_main.py workflow: create temporary controller
+        temp_controller = TrainController(train_id=train.train_id, network=network)
+        temp_controller.ato_destination_block_id = path_result.path.end_block_id
+        temp_controller.power_on = True
+        temp_controller.control_mode = "ato"
+        temp_controller.active_cab = "A"
+        temp_controller.ato_running = True
+
+        # CRITICAL: Sync ato_destination_block_id to train (this is the fix)
+        train.ato_destination_block_id = temp_controller.ato_destination_block_id
+        train.ato_running = temp_controller.ato_running
+
+        # Create SimulationController (creates new controller instances)
+        sim_ctrl = SimulationController(network, pd)
+
+        # Get controller from simulation (should inherit ato_destination_block_id)
+        controller = sim_ctrl._get_or_create_controller(train)
+
+        # Verify ato_destination_block_id was inherited
+        assert controller.ato_destination_block_id == "BLOCK_STATION", (
+            f"ato_destination_block_id not inherited! "
+            f"Got {controller.ato_destination_block_id}, expected BLOCK_STATION"
+        )
+
+        # Verify station is detected in destination block
+        station_id = controller._get_station_in_block("BLOCK_STATION")
+        assert station_id == "STA_END", (
+            f"Station not found in block! Got {station_id}, expected STA_END"
+        )
+
+        # THE KEY TEST: Safety margin should be 5cm for platform
+        safety_margin = controller._get_effective_safety_margin()
+        assert safety_margin == 5.0, (
+            f"Safety margin WRONG! Got {safety_margin} cm, expected 5.0 cm. "
+            f"Station destination should use platform margin (5cm), not default (25cm)."
         )
 
 
@@ -3155,10 +3274,11 @@ class TestSpeedCurveCalculation:
         curves = controller.calculate_speed_curves(max_distance_cm=5000)
 
         assert len(curves) > 0, "Speed curves should be calculated"
-        # Uses 5cm resolution per CURVE_SAMPLE_RESOLUTION_CM
-        expected_points = (5000 // 5) + 1  # 1001 points (0, 5, 10, ..., 5000)
+        # Uses 3cm resolution per CURVE_SAMPLE_RESOLUTION_CM
+        # Points at 0, 3, 6, ..., 4998, 5000 = 1667 steps + 1 endpoint = 1668 points
+        expected_points = (5000 // 3) + 2  # 1668 points (0, 3, 6, ..., 4998, 5000)
         assert len(curves) == expected_points, (
-            f"Should have {expected_points} points (every 5cm, inclusive endpoints: 0 to 5000)"
+            f"Should have {expected_points} points (every 3cm, inclusive endpoints: 0 to 5000)"
         )
 
     def test_speed_curves_structure(self, train_and_controller):

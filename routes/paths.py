@@ -68,6 +68,15 @@ def register(app, state: AppState) -> None:
                             train.current_path = raw_path
                             train.path_index = 0
                         train.assigned_path_id = result.path.path_id
+
+                        # Set ato_destination_block_id on controller for proper stopping
+                        controller = state.sim_controller._get_or_create_controller(
+                            train
+                        )
+                        if controller and result.path.end_block_id:
+                            controller.ato_destination_block_id = (
+                                result.path.end_block_id
+                            )
             return jsonify(result.to_dict()), 200 if result.success else 400
         except Exception as e:
             return jsonify({"error": str(e)}), 500

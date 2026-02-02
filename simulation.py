@@ -135,7 +135,7 @@ class SimulationController:
         """Get or create a TrainController for the given train.
 
         If the train has ato_running=True (set by demo_main's temporary controller),
-        the newly created controller will inherit this state.
+        the newly created controller will inherit this state, along with ato_destination_block_id.
         """
         if train.train_id not in self.controllers:
             controller = create_controller_for_train(
@@ -145,6 +145,16 @@ class SimulationController:
             # Inherit ATO state from train (for demo_main workflow)
             if hasattr(train, "ato_running") and train.ato_running:
                 controller.ato_running = True
+            # Inherit destination block for proper safety margin calculation
+            if (
+                hasattr(train, "ato_destination_block_id")
+                and train.ato_destination_block_id
+            ):
+                controller.ato_destination_block_id = train.ato_destination_block_id
+            # Inherit controller state from train state
+            # This ensures the controller starts in the correct state (e.g., RUNNING_MOVING)
+            # when demo_main pre-configures the train
+            controller.state = train.state
             self.controllers[train.train_id] = controller
         return self.controllers[train.train_id]
 

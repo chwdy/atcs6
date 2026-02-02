@@ -81,12 +81,11 @@ ATO_ENTRY_MARGIN = ATO_SPEED_TOLERANCE - 1.0
 ATO_EXIT_MARGIN = ATO_SPEED_TOLERANCE + 1.0
 
 # Speed curve constants
-CURVE_SAMPLE_RESOLUTION_CM = 5.0  # 5cm resolution for speed curves
-ATO_SPEED_MARGIN_KMH = 5.0  # ATO stays 5 km/h below ATC limit
-REACTION_TIME_SECONDS = (
-    2.0  # Look-ahead time for future-aware braking (increased for smoother
+CURVE_SAMPLE_RESOLUTION_CM = (
+    3.0  # 3cm resolution for speed curves (balance between precision and performance)
 )
-# anticipation)
+ATO_SPEED_MARGIN_KMH = 5.0  # ATO stays 5 km/h below ATC limit
+REACTION_TIME_SECONDS = 2.0  # Look-ahead time for future-aware braking (increased for smoother anticipation)
 
 
 # =============================================================================
@@ -272,7 +271,7 @@ class TrainController:
     # ATO State
     # -------------------------------------------------------------------------
     ato_running: bool = False
-    ato_destination_id: Optional[str] = None
+    ato_destination_block_id: Optional[str] = None  # Destination block ID (not station)
     ato_path_id: Optional[str] = None
 
     # -------------------------------------------------------------------------
@@ -529,8 +528,18 @@ class TrainController:
         if self.state == TrainState.RUNNING_MOVING:
             # Check for station arrival
             if self._is_at_station():
+                logger.warning(
+                    f"[ATO_DEBUG] State transition to RUNNING_AT_STATION for train {self.train_id}: "
+                    f"ato_running BEFORE={self.ato_running}, "
+                    f"ato_destination_block_id={self.ato_destination_block_id}, "
+                    f"current_block={self._get_current_block_id()}"
+                )
                 self.state = TrainState.RUNNING_AT_STATION
                 train.state = TrainState.RUNNING_AT_STATION
+                if self.ato_running:
+                    logger.warning(
+                        f"[ATO_DEBUG] Setting ato_running=False at station arrival for train {self.train_id}"
+                    )
                 self.ato_running = False
                 # RouteExecutor will handle dwell timing
                 logger.debug(
@@ -624,38 +633,55 @@ class TrainController:
             # Add block length to clearance
             clearance += block.length_cm
 
-        # If no blocks ahead but ato_destination_id is set, use path-based
-        # clearance calculation to find distance to station stopping point
-        if not blocks_ahead and self.ato_destination_id:
+        # If no blocks ahead but ato_destination_block_id is set, use path-based
+        # clearance calculation to find distance to destination block end
+        if not blocks_ahead and self.ato_destination_block_id:
             clearance = self._calculate_clearance_to_destination(clearance)
 
         return clearance
 
     def _calculate_clearance_to_destination(self, base_clearance: float) -> float:
         """
-        Calculate clearance to ato_destination_id station using current_path.
+        Calculate clearance to ato_destination_block_id.
 
-        Called when reserved_blocks is empty (path completed) but we still
-        have a destination station to reach. Uses current_path to trace
-        ahead and sum tile lengths until reaching the station end.
+        Handles two scenarios:
+        1. Train has current_path: uses path to trace ahead to destination block
+        2. Train already IN destination block (path cleared): calculates remaining
+           distance to end of current block, considering station position if present
+
+        If the destination block contains a station, stops at the end of station.
 
         Args:
             base_clearance: Already calculated clearance from current block
 
         Returns:
-            Total clearance to station stopping point
+            Total clearance to destination stopping point
         """
         train = self._get_train()
         if not train or not self.network:
             return base_clearance
 
-        if not train.current_path or not self.ato_destination_id:
+        if not self.ato_destination_block_id:
             return base_clearance
 
-        # Get station
-        station = self.network.stations.get(self.ato_destination_id)
-        if not station:
+        dest_block_id = self.ato_destination_block_id
+        current_block_id = self._get_current_block_id()
+
+        # Check if we're already in the destination block
+        if current_block_id == dest_block_id:
+            return self._calculate_clearance_to_end_of_current_block()
+
+        # Not in destination block yet - need current_path to trace forward
+        if not train.current_path:
             return base_clearance
+
+        # Check if destination block has a station (for precise stopping)
+        station_id = self._get_station_in_block(dest_block_id)
+        station_positions: set = set()
+        if station_id:
+            station = self.network.stations.get(station_id)
+            if station:
+                station_positions = set(station.positions)
 
         # Get head tile and path index
         head_tile = self._get_head_tile()
@@ -666,12 +692,9 @@ class TrainController:
         if head_index < 0:
             return base_clearance
 
-        # Station positions set for fast lookup
-        station_positions = set(station.positions)
-
-        # Sum distances from current position to end of station
+        # Sum distances from current position to end of destination block
         clearance = base_clearance
-        current_block_id = self._get_current_block_id()
+        in_dest_block = False
 
         # Start from next tile after head
         for path_entry in train.current_path[head_index + 1 :]:
@@ -690,12 +713,16 @@ class TrainController:
                     break
                 current_block_id = track.block_section_id
 
+            # Track if we've entered the destination block
+            if track.block_section_id == dest_block_id:
+                in_dest_block = True
+
             # Add tile length
             tile_length = self.network._get_tile_length_cm(tile_x, tile_y)
             clearance += tile_length
 
-            # If this is the last station tile, we've reached the stopping point
-            if tile_pos in station_positions:
+            # If destination has a station, stop at end of station tiles
+            if station_positions and tile_pos in station_positions:
                 # Check if this is the last station tile in the path
                 remaining_path = train.current_path[
                     train.current_path.index(path_entry) + 1 :
@@ -706,8 +733,92 @@ class TrainController:
                 if not has_more_station_tiles:
                     # This is the last station tile - stopping point reached
                     break
+            # If no station, stop at end of destination block
+            elif in_dest_block and track.block_section_id != dest_block_id:
+                # We've exited the destination block
+                break
 
         return clearance
+
+    def _calculate_clearance_to_end_of_current_block(self) -> float:
+        """
+        Calculate remaining distance to end of current block.
+
+        Used when train is already in the destination block. Considers station
+        position for precise stopping at end of station tiles.
+
+        Returns:
+            Remaining distance in cm to the stopping point
+        """
+        train = self._get_train()
+        if not train or not self.network:
+            return 0.0
+
+        current_block_id = self._get_current_block_id()
+        if not current_block_id:
+            return 0.0
+
+        block = self.network.blocks.get(current_block_id)
+        if not block:
+            return 0.0
+
+        head_tile = self._get_head_tile()
+        if not head_tile:
+            return block.length_cm if block.length_cm else 0.0
+
+        # Check if this block has a station
+        station_id = self._get_station_in_block(current_block_id)
+        station_positions: set = set()
+        if station_id:
+            station = self.network.stations.get(station_id)
+            if station:
+                station_positions = set(station.positions)
+
+        head_distance_cm = train.position.head_distance_cm if train.position else 0.0
+
+        block_positions = self.network.get_block_positions(current_block_id)
+        if not block_positions:
+            # Fall back to simple remaining calculation
+            tile_length = self.network._get_tile_length_cm(*head_tile)
+            return max(0.0, tile_length - head_distance_cm)
+
+        # Find current position within block
+        try:
+            current_idx = block_positions.index(head_tile)
+        except ValueError:
+            current_idx = -1
+
+        if current_idx < 0:
+            # Head tile not in block positions - use fallback
+            tile_length = self.network._get_tile_length_cm(*head_tile)
+            return max(0.0, tile_length - head_distance_cm)
+
+        # Calculate remaining distance
+        remaining = 0.0
+
+        for i in range(current_idx, len(block_positions)):
+            tile = block_positions[i]
+            tile_length = self.network._get_tile_length_cm(*tile)
+
+            if i == current_idx:
+                # Current tile: remaining from current position to end
+                remaining += max(0.0, tile_length - head_distance_cm)
+            else:
+                # Subsequent tiles: full length
+                remaining += tile_length
+
+            # Check if this is the last station tile (for station blocks)
+            if station_positions and tile in station_positions:
+                # Check if there are more station tiles after this
+                has_more_station_tiles = any(
+                    block_positions[j] in station_positions
+                    for j in range(i + 1, len(block_positions))
+                )
+                if not has_more_station_tiles:
+                    # Stop at end of this tile (last station tile)
+                    break
+
+        return remaining
 
     def _calculate_atc_speed_limit(self) -> Tuple[float, Optional[str]]:
         """
@@ -775,11 +886,10 @@ class TrainController:
         if not train or not self.network:
             return self.safety_margin_cm
 
-        # Check if we have a destination station set
-        # Safety margin is constant based on destination type
-        if self.ato_destination_id:
-            station = self.network.stations.get(self.ato_destination_id)
-            if station:
+        # Check if destination block contains a station - use platform margin
+        if self.ato_destination_block_id:
+            station_id = self._get_station_in_block(self.ato_destination_block_id)
+            if station_id:
                 return ATC_PLATFORM_SAFETY_MARGIN_CM
 
         return self.safety_margin_cm
@@ -1202,20 +1312,23 @@ class TrainController:
                 path_heading = "b"
                 required_cab = "A"  # Cab A faces forward
 
-        # Get destination info
-        destination_block_id = None
+        # Get destination info - simple logic:
+        # 1. Use ato_destination_block_id if set
+        # 2. Fallback: use current block in heading direction (no path case)
+        destination_block_id = self.ato_destination_block_id
         destination_station_name = None
 
-        if self.lookahead:
-            # Find last station in lookahead
-            for lp in reversed(self.lookahead):
-                if lp.station_id:
-                    destination_block_id = lp.block_id
-                    # Get station name
-                    station = self.network.stations.get(lp.station_id)
-                    if station:
-                        destination_station_name = station.name
-                    break
+        # If no destination block set, fallback to current block
+        if not destination_block_id:
+            destination_block_id = self._get_current_block_id()
+
+        # Derive station name from destination block
+        if destination_block_id:
+            station_id = self._get_station_in_block(destination_block_id)
+            if station_id:
+                station = self.network.stations.get(station_id)
+                if station:
+                    destination_station_name = station.name
 
         return ATOInfo(
             path_id=path_id,
@@ -1632,7 +1745,7 @@ class TrainController:
         target_stop_cm: Optional[float] = None,
     ) -> List[Dict]:
         """
-        Calculate ATC and ATO speed limit curves at 5cm resolution.
+        Calculate ATC and ATO speed limit curves at 3cm resolution.
 
         For each sample point at distance d from train head, calculate:
         - Braking curve to path end (stop at max_distance_cm)
@@ -1673,21 +1786,15 @@ class TrainController:
         restrictions: List[Tuple[float, float, float]] = []
 
         # Add path end as a stop (speed 0)
-        # Determine safety margin for path end (tighter if station)
-        path_end_safety_margin = self.safety_margin_cm
-        if lookahead_stations:
-            # Check if there's a station near the end
-            for station in lookahead_stations:
-                station_start = station.get("distance_cm", float("inf"))
-                station_length = station.get("length_cm", 0)
-                station_end = station_start + station_length
-                # If station is at or near path end, use tighter margin
-                if station_end >= max_distance_cm - 50:
-                    path_end_safety_margin = ATC_PLATFORM_SAFETY_MARGIN_CM
-                    break
+        # Use effective safety margin based on destination type:
+        # - 5cm if ato_destination_id is a station
+        # - 25cm otherwise
+        # This ensures the curve matches what _get_effective_safety_margin() returns
+        path_end_safety_margin = self._get_effective_safety_margin()
         restrictions.append((max_distance_cm, 0.0, path_end_safety_margin))
 
-        # Add block speed limits
+        # Add block speed limits as restrictions (for braking curve calculation)
+        # This creates braking curves to slow down BEFORE entering speed-limited blocks
         if lookahead_blocks:
             for block in lookahead_blocks:
                 block_start = block.get("start_cm", 0)
@@ -1696,15 +1803,21 @@ class TrainController:
                     # Need to slow down to block_speed at block_start
                     restrictions.append((block_start, block_speed, 0.0))
 
-        # Add signal restrictions
-        if lookahead_signals:
-            for signal in lookahead_signals:
-                signal_dist = signal.get("distance_cm", float("inf"))
-                signal_state = signal.get("state", "green")
-                if signal_state == "red":
-                    restrictions.append((signal_dist, 0.0, self.safety_margin_cm))
-                elif signal_state in ("yellow", "double_yellow"):
-                    restrictions.append((signal_dist, YELLOW_SIGNAL_SPEED_KMH, 0.0))
+        # Signal restrictions are intentionally NOT used for ATC/ATO speed calculation.
+        # This is a CBTC block-based system where:
+        # - Speed control comes from BLOCKS (clearance distance, max_speed_kmh)
+        # - Signals are visual indicators of block state only (for display in UI)
+        # - Train stopping is enforced by block reservation, not signal aspects
+        # See docs/ARCHITECTURE.md "CBTC Block-Based Signaling System" for details.
+        #
+        # if lookahead_signals:
+        #     for signal in lookahead_signals:
+        #         signal_dist = signal.get("distance_cm", float("inf"))
+        #         signal_state = signal.get("state", "green")
+        #         if signal_state == "red":
+        #             restrictions.append((signal_dist, 0.0, path_end_safety_margin))
+        #         elif signal_state in ("yellow", "double_yellow"):
+        #             restrictions.append((signal_dist, YELLOW_SIGNAL_SPEED_KMH, 0.0))
 
         # NOTE: Station speed limits are NOT added as restrictions here.
         # ATC/ATO only cares about BLOCKS, not platforms. Station speed limits
@@ -2098,8 +2211,16 @@ class TrainController:
         self.control_mode = mode
 
         if mode == "manual":
+            logger.warning(
+                f"[ATO_DEBUG] switch_mode to MANUAL for train {self.train_id}: "
+                f"ato_running BEFORE={self.ato_running}"
+            )
             self.state = TrainState.MANUAL
             train.state = TrainState.MANUAL
+            if self.ato_running:
+                logger.warning(
+                    f"[ATO_DEBUG] Setting ato_running=False in switch_mode(MANUAL) for train {self.train_id}"
+                )
             self.ato_running = False
         else:
             # Return to STANDBY or IDLE based on cab
@@ -2183,8 +2304,15 @@ class TrainController:
         if not self.ato_running:
             return CommandResult(False, "ATO not running")
 
+        logger.warning(
+            f"[ATO_DEBUG] ato_stop called for train {self.train_id}: "
+            f"ato_running BEFORE={self.ato_running}"
+        )
         # Just set ato_running=False - tick() handles the rest
         self.ato_running = False
+        logger.warning(
+            f"[ATO_DEBUG] Setting ato_running=False in ato_stop for train {self.train_id}"
+        )
 
         return CommandResult(True, "ATO stopping")
 
@@ -2218,7 +2346,19 @@ class TrainController:
     def transition_to_standby(self) -> None:
         """Transition to STANDBY state."""
         train = self._get_train()
+        logger.warning(
+            f"[ATO_DEBUG] transition_to_standby called for train {self.train_id}: "
+            f"control_mode={self.control_mode}, "
+            f"ato_running BEFORE={self.ato_running}, "
+            f"ato_destination_block_id={self.ato_destination_block_id}, "
+            f"current_block={self._get_current_block_id()}, "
+            f"state={self.state.value}"
+        )
         self.state = TrainState.STANDBY
+        if self.ato_running:
+            logger.warning(
+                f"[ATO_DEBUG] Setting ato_running=False in transition_to_standby for train {self.train_id}"
+            )
         self.ato_running = False
         if train:
             train.state = TrainState.STANDBY
@@ -2227,7 +2367,15 @@ class TrainController:
     def transition_to_idle(self) -> None:
         """Transition to IDLE state (route complete, no direction)."""
         train = self._get_train()
+        logger.warning(
+            f"[ATO_DEBUG] transition_to_idle called for train {self.train_id}: "
+            f"ato_running BEFORE={self.ato_running}"
+        )
         self.state = TrainState.IDLE
+        if self.ato_running:
+            logger.warning(
+                f"[ATO_DEBUG] Setting ato_running=False in transition_to_idle for train {self.train_id}"
+            )
         self.ato_running = False
         self.active_cab = None
         if train:
@@ -2325,8 +2473,17 @@ class TrainController:
         if self.state != TrainState.RUNNING_MOVING:
             return False
 
+        logger.warning(
+            f"[ATO_DEBUG] arrive_at_station called for train {self.train_id}: "
+            f"ato_running BEFORE={self.ato_running}, "
+            f"ato_destination_block_id={self.ato_destination_block_id}"
+        )
         self.state = TrainState.RUNNING_AT_STATION
         self.target_speed = 0.0
+        if self.ato_running:
+            logger.warning(
+                f"[ATO_DEBUG] Setting ato_running=False in arrive_at_station for train {self.train_id}"
+            )
         self.ato_running = False  # Stop ATO at station
         if train:
             train.state = TrainState.RUNNING_AT_STATION
@@ -2363,7 +2520,15 @@ class TrainController:
                 train.state = TrainState.STANDBY
         else:
             # Route complete - unassign route and go to IDLE
+            logger.warning(
+                f"[ATO_DEBUG] depart_from_station (route complete) for train {self.train_id}: "
+                f"ato_running BEFORE={self.ato_running}"
+            )
             self.state = TrainState.IDLE
+            if self.ato_running:
+                logger.warning(
+                    f"[ATO_DEBUG] Setting ato_running=False in depart_from_station(route complete) for train {self.train_id}"
+                )
             self.ato_running = False
             if train:
                 train.state = TrainState.IDLE
@@ -2528,8 +2693,16 @@ class TrainController:
         if self.state == TrainState.OFF:
             return False
 
+        logger.warning(
+            f"[ATO_DEBUG] enable_manual for train {self.train_id}: "
+            f"ato_running BEFORE={self.ato_running}"
+        )
         self.state = TrainState.MANUAL
         self.control_mode = "manual"
+        if self.ato_running:
+            logger.warning(
+                f"[ATO_DEBUG] Setting ato_running=False in enable_manual for train {self.train_id}"
+            )
         self.ato_running = False
         if train:
             train.state = TrainState.MANUAL
@@ -2596,7 +2769,7 @@ class TrainController:
             "target_speed": self.target_speed,
             "handle_position": self.handle_position.value,
             "ato_running": self.ato_running,
-            "ato_destination_id": self.ato_destination_id,
+            "ato_destination_block_id": self.ato_destination_block_id,
             "ato_path_id": self.ato_path_id,
             "clearance_ahead_cm": safe_float(self.clearance_ahead_cm),
             "atc_speed_limit": safe_float(self.atc_speed_limit),
@@ -3107,7 +3280,7 @@ class TrainController:
             target_speed=data.get("target_speed", 0.0),
             handle_position=handle,
             ato_running=data.get("ato_running", False),
-            ato_destination_id=data.get("ato_destination_id"),
+            ato_destination_block_id=data.get("ato_destination_block_id"),
             ato_path_id=data.get("ato_path_id"),
         )
 

@@ -389,3 +389,7 @@ TrainPhysics → BlockManager.clear_block(old_block, train_id)
 - `network.py` - Infrastructure registry
 - `train.py` - Train entity with TrainPosition and consist
 - `static/js/renderer-trains.js` - Frontend interpolation using path tiles
+
+---
+
+*For detailed documentation on TrainController, ATC/ATO logic, and the CBTC block-based signaling design, see `Reference_Train_System_v2.md`.*

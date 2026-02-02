@@ -2657,6 +2657,8 @@ class RailwayNetwork:
             raise ValueError(f"Station would not be continuous: {', '.join(errors)}")
 
         # Add positions to station
+        station_block_id = f"{station_id}_BLOCK"
+
         for x, y in new_positions:
             if (x, y) not in station.positions:
                 station.add_position(x, y)
@@ -2666,7 +2668,6 @@ class RailwayNetwork:
                     if track.block_section_id:
                         self.remove_tile_from_block(x, y)
                     # Assign to station's block
-                    station_block_id = f"{station_id}_BLOCK"
                     if station_block_id in self.blocks:
                         track.block_section_id = station_block_id
                     track.station_id = station_id

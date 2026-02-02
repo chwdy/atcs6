@@ -375,8 +375,13 @@ Think of it like the cab computer in a real train that:
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `ato_running` | `bool` | `False` | Whether ATO is actively running |
-| `ato_destination_id` | `Optional[str]` | `None` | Target station/block for ATO |
+| `ato_destination_block_id` | `Optional[str]` | `None` | Destination block ID for ATO stopping |
 | `ato_path_id` | `Optional[str]` | `None` | Assigned path ID from dispatcher |
+
+**Destination Logic (Simplified):**
+- **If path exists**: `ato_destination_block_id` = `path.end_block_id`
+- **If no path**: `ato_destination_block_id` = current block (train only owns the block it occupies)
+- **Station name**: Derived by looking up which station is in the destination block
 
 #### 3.3.5 ATC State (calculated each tick)
 
@@ -643,6 +648,47 @@ def tick(self, delta: float) -> None:
 
 ### 3.8 ATC (Automatic Train Control) Logic
 
+#### CBTC Block-Based Signaling Design
+
+ATCS6 implements a **CBTC-like (Communications-Based Train Control) block-based system**. This design is driven by the model train constraint: trains are controlled by **track voltage**, not individual train communication.
+
+**Key Principle: Signals Are Readers, Not Enforcers**
+
+Signals do NOT control train speed or movement. They are purely **visual indicators** that display block status.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CBTC BLOCK-BASED CONTROL                                               │
+│                                                                         │
+│  ATC/ATO Speed Control:                                                 │
+│    ✅ Block clearance (distance to occupied/end)                        │
+│    ✅ Block speed limits (max_speed_kmh property)                       │
+│    ✅ Path end / destination                                            │
+│    ❌ Signal aspects (RED/YELLOW/GREEN) - NOT used for speed calc       │
+│                                                                         │
+│  Signals:                                                               │
+│    - Display block state visually (for humans/UI)                       │
+│    - Appear in lookahead for visualization                              │
+│    - Do NOT affect ATC speed limit calculation                          │
+│    - Do NOT trigger braking or stopping                                 │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Why This Design?**
+
+1. **Model Train Voltage Control**: Real model trains are controlled by track section voltage. Unlike real trains with cab signaling, model trains cannot receive individual commands. The block's power state (on/off, voltage level) is what actually controls movement.
+
+2. **Block-Based Safety**: Safety is enforced by block state, not signal state. A train cannot enter an occupied block because:
+   - PathDispatcher won't reserve an occupied block
+   - BlockManager prevents illegal state transitions
+   - BlockPowerController can cut power to prevent entry
+
+3. **Signal as Block Status Reader**: Each signal "monitors" a block and displays its state:
+   - RED: Monitored block is OCCUPIED
+   - YELLOW: Next block ahead is OCCUPIED (or CAUTION state)
+   - GREEN: Path is clear
+
 #### 3.8.1 Clearance Calculation
 
 ```python
@@ -880,7 +926,7 @@ class TrainController:
     # ATO State
     # ─────────────────────────────────────────────────────────────────
     ato_running: bool = False
-    ato_destination_id: Optional[str] = None
+    ato_destination_block_id: Optional[str] = None  # Destination block ID
     ato_path_id: Optional[str] = None
     
     # ─────────────────────────────────────────────────────────────────
@@ -991,7 +1037,7 @@ class TrainController:
             'target_speed': self.target_speed,
             'handle_position': self.handle_position.value,
             'ato_running': self.ato_running,
-            'ato_destination_id': self.ato_destination_id,
+            'ato_destination_block_id': self.ato_destination_block_id,
             'clearance_ahead_cm': self.clearance_ahead_cm,
             'atc_speed_limit': self.atc_speed_limit,
         }
@@ -3282,7 +3328,7 @@ All train control endpoints forward to TrainController via SimulationController.
 {
     "success": true,
     "train_id": "TRAIN_001",
-    "ato_destination_id": "STATION_002"
+    "ato_destination_block_id": "BLOCK_002"
 }
 ```
 
@@ -3327,7 +3373,7 @@ All train control endpoints forward to TrainController via SimulationController.
         "target_speed": 60.0,
         "handle_position": "P3",
         "ato_running": true,
-        "ato_destination_id": "STATION_002",
+        "ato_destination_block_id": "BLOCK_002",
         "clearance_ahead_cm": 450.0,
         "atc_speed_limit": 80.0
     }
@@ -3714,8 +3760,8 @@ POST /api/train/TRAIN_001/cab  {"cab": "A"}
 
 Step 3: Set Destination
 ────────────────────────
-POST /api/train/TRAIN_001/ato/destination  {"station_id": "STATION_002"}
-→ ato_destination_id: STATION_002
+POST /api/train/TRAIN_001/ato/destination  {"block_id": "BLOCK_002"}
+→ ato_destination_block_id: BLOCK_002
 
 Step 4: Depart (ATO Go)
 ────────────────────────
