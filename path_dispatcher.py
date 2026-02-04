@@ -1339,21 +1339,39 @@ class PathDispatcher:
 
     def _release_switches_for_block(self, path: Path, block_id: str) -> None:
         """Release switches that are only associated with a cleared block."""
+        if not path.path_tiles:
+            return
+
+        # Get current position index in path_tiles based on current block
+        current_pos_index = 0
+        current_block = path.get_current_block()
+        if current_block:
+            # Find first tile of current block in path_tiles
+            for i, tile in enumerate(path.path_tiles):
+                track = self.network.get_track(*tile)
+                if track and track.block_section_id == current_block:
+                    current_pos_index = i
+                    break
+
         for pos in list(path.switch_positions.keys()):
             track = self.network.get_track(*pos)
-            if track:
-                # Only release if not needed for remaining blocks
-                can_release = True
-                for remaining_block in path.get_remaining_blocks():
-                    remaining_positions = set(
-                        self.network.get_block_positions(remaining_block)
-                    )
-                    if pos in remaining_positions:
-                        can_release = False
-                        break
+            if not track:
+                continue
 
-                if can_release:
-                    track.unlock_for_path(path.path_id)
+            # Check if switch is still ahead in the path
+            # A switch is still needed if it appears in path_tiles at or after current position
+            can_release = True
+            try:
+                switch_index = path.path_tiles.index(pos)
+                # If switch is at or after current position, don't release
+                if switch_index >= current_pos_index:
+                    can_release = False
+            except ValueError:
+                # Switch not in path_tiles - shouldn't happen, but be safe
+                can_release = True
+
+            if can_release:
+                track.unlock_for_path(path.path_id)
 
     def complete_path(self, path_id: str) -> bool:
         """

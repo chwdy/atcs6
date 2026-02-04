@@ -3105,11 +3105,11 @@ class TestTrendAwareATOControl:
 
         handle = controller._ato_calculate_handle()
 
-        # With improved brake release: when speed is falling and close to target,
-        # start releasing brakes to avoid over-braking
-        assert handle == HandlePosition.B1, (
-            f"Slow Down Zone: braking (B2) and speed falling close to target should "
-            f"start releasing (B2->B1). Got {handle}"
+        # With improved brake release: when speed is falling and close to target (< 2 km/h),
+        # jump to Neutral to avoid over-braking
+        assert handle == HandlePosition.N, (
+            f"Slow Down Zone: braking (B2) and speed falling close to target (overshoot < 2) should "
+            f"release to Neutral. Got {handle}"
         )
 
     def test_speed_up_zone_brake_to_neutral(self, train_and_controller):
@@ -3135,8 +3135,10 @@ class TestTrendAwareATOControl:
 
         handle = controller._ato_calculate_handle()
 
-        assert handle == HandlePosition.P1, (
-            f"Speed Up Zone: neutral + speed falling should start gentle power (P1). "
+        # With simplified power notch: speed diff is 6 km/h (60-54),
+        # which is > 5, so we use full power (P5) for quick acceleration
+        assert handle == HandlePosition.P5, (
+            f"Speed Up Zone: neutral with 6 km/h gap (>5) should use full power (P5). "
             f"Got {handle}"
         )
 
@@ -3149,8 +3151,9 @@ class TestTrendAwareATOControl:
 
         handle = controller._ato_calculate_handle()
 
-        assert handle == HandlePosition.P2, (
-            f"Speed Up Zone: accelerating (P1) but speed falling should power up (+1 notch). "
+        # Speed diff is 7 km/h (60-53), which is > 5, so use P5
+        assert handle == HandlePosition.P5, (
+            f"Speed Up Zone: with 7 km/h gap (>5) should use full power (P5). "
             f"Got {handle}"
         )
 
@@ -3163,8 +3166,9 @@ class TestTrendAwareATOControl:
 
         handle = controller._ato_calculate_handle()
 
-        assert handle == HandlePosition.P2, (
-            f"Speed Up Zone: accelerating (P2) and speed rising should keep current. "
+        # Speed diff is 5.5 km/h (60-54.5), which is > 5, so use P5
+        assert handle == HandlePosition.P5, (
+            f"Speed Up Zone: with 5.5 km/h gap (>5) should use full power (P5). "
             f"Got {handle}"
         )
 
@@ -3177,10 +3181,10 @@ class TestTrendAwareATOControl:
 
         handle = controller._ato_calculate_handle()
 
-        # With improved braking response: when overshoot is 5+ km/h,
-        # apply braking immediately instead of rate-limiting through neutral
-        assert handle == HandlePosition.B3, (
-            f"Fast response: P5 with 5 km/h overshoot should apply B3 immediately. "
+        # With improved braking response: when overshoot is 3+ km/h (lowered from 5),
+        # apply B2 immediately (lowered from B3 to leave room for ATC)
+        assert handle == HandlePosition.B2, (
+            f"Fast response: P5 with 5 km/h overshoot should apply B2 immediately. "
             f"Got {handle}"
         )
 
@@ -3391,18 +3395,28 @@ class TestFutureAwareATOBraking:
         return network, train, controller
 
     def test_reaction_distance_scales_with_speed(self, network_with_train):
-        """Reaction distance should increase with speed."""
+        """Reaction distance should increase with speed, with minimum floor."""
         _, train, controller = network_with_train
 
-        # At 0 speed, reaction distance should be 0
+        # At 0 speed, reaction distance should be the minimum floor (30cm)
+        # This ensures we can see ahead even when starting from a stop
         dist_0 = controller._get_reaction_distance_cm(0.0)
-        assert dist_0 == 0.0, "Reaction distance at 0 speed should be 0"
+        assert dist_0 == 30.0, (
+            "Reaction distance at 0 speed should be minimum floor (30cm)"
+        )
 
-        # At higher speed, reaction distance should be larger
+        # At higher speed, reaction distance should be larger (once above the floor)
         dist_30 = controller._get_reaction_distance_cm(30.0)
         dist_60 = controller._get_reaction_distance_cm(60.0)
+        dist_90 = controller._get_reaction_distance_cm(90.0)
 
-        assert dist_60 > dist_30 > 0, "Reaction distance should increase with speed"
+        # At moderate speeds, might still be at floor, but high speeds should exceed it
+        assert dist_60 >= dist_30 >= dist_0, (
+            "Reaction distance should not decrease with speed"
+        )
+        assert dist_90 > dist_60, (
+            "At high speeds, quadratic scaling should exceed floor"
+        )
 
     def test_sample_curve_at_interpolates(self, network_with_train):
         """Curve sampling should interpolate between points."""

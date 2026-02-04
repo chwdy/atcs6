@@ -3591,6 +3591,11 @@ body {
     white-space: nowrap;
 }
 
+.train-handle-reason {
+    color: #888;
+    font-style: italic;
+}
+
 .train-monitor-canvas {
     flex: 1;
     min-width: 0;
@@ -3613,9 +3618,9 @@ body {
 }
 
 .train-monitor-upcoming {
-    width: 400px;
-    min-width: 280px;
-    max-width: 640px;
+    width: 280px;
+    min-width: 200px;
+    max-width: 400px;
     padding: 6px 10px;
     border-left: 1px solid var(--border-color);
     display: flex;

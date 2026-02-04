@@ -206,6 +206,21 @@ class TrainPhysics:
             friction_decel = profile.friction_rate * delta
             new_speed = max(0.0, new_speed - friction_decel)
 
+        # 6a. Apply air resistance to ALL running trains (simulation feature)
+        # Air drag increases with speed squared for realistic physics
+        # Can be disabled by setting air_resistance_enabled=False in profile
+        if (
+            profile.air_resistance_enabled
+            and train.current_speed > 0
+            and profile.reference_speed_kmh > 0
+        ):
+            # Calculate drag force: F_drag ~ v^2
+            # Convert to deceleration: a_drag = F_drag / mass ~ v^2 / mass
+            # Using profile's reference_speed to normalize
+            speed_ratio = train.current_speed / profile.reference_speed_kmh
+            drag_decel = profile.drag_coefficient * (speed_ratio**2) * delta
+            new_speed = max(0.0, new_speed - drag_decel)
+
         speed_delta = new_speed - previous_speed
         logger.debug(
             "[TrainPhysics %s] speed update: new_speed=%.2f delta=%.2f speed_delta=%.2f",

@@ -353,8 +353,9 @@ class TrainEditorHandler {
         // Get path and destination info for ATO section
         const onboardAto = onboard?.ato_info;
         const assignedPathId = onboardAto?.path_id || train.assigned_path_id;
-        let pathName = onboardAto?.path_id || 'No path';
-        let destinationName = onboardAto?.destination_station_name || onboardAto?.destination_block_id || 'No path';
+        let pathName = 'No path';
+        let destinationName = 'No path';
+        
         if (assignedPathId) {
             try {
                 const path = await this.api.getPath(assignedPathId);
@@ -371,6 +372,16 @@ class TrainEditorHandler {
                 }
             } catch (err) {
                 console.warn('[TrainEditorHandler] Failed to fetch path info:', err);
+                // Fallback to onboard info if available
+                pathName = onboardAto?.path_id || assignedPathId;
+                destinationName = onboardAto?.destination_station_name || onboardAto?.destination_block_id || 'No path';
+            }
+        } else {
+            // No path assigned - check if onboard has destination info anyway
+            if (onboardAto?.destination_station_name) {
+                destinationName = onboardAto.destination_station_name;
+            } else if (onboardAto?.destination_block_id) {
+                destinationName = onboardAto.destination_block_id;
             }
         }
 
@@ -559,6 +570,9 @@ class TrainEditorHandler {
                                           handlePosition.startsWith('P') ? `Power ${handlePosition.slice(1)} - Accelerating` :
                                           handlePosition === 'EB' ? 'Emergency Brake' :
                                           `Brake ${handlePosition.slice(1)} - Decelerating`}
+                                    </span>
+                                    <span class="text-xs block mt-4 train-handle-reason" id="handle-reason">
+                                        ${onboard?.handle_reason || ''}
                                     </span>
                                 </div>
                             </div>
@@ -1179,6 +1193,12 @@ class TrainEditorHandler {
                 } else {
                     handleDesc.textContent = `Brake ${handlePosition.slice(1)} - Decelerating`;
                 }
+            }
+
+            // Update handle reason (ATO diagnostic)
+            const handleReason = document.getElementById('handle-reason');
+            if (handleReason) {
+                handleReason.textContent = onboard?.handle_reason || '';
             }
         }
 

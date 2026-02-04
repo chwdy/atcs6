@@ -185,14 +185,14 @@ class TestAppSmoke:
         assert ".train-monitor-upcoming" in content, (
             "Train monitor upcoming styles missing"
         )
-        assert "width: 400px" in content, (
-            "Train monitor upcoming default width should be 400px"
+        assert "width: 280px" in content, (
+            "Train monitor upcoming default width should be 280px"
         )
-        assert "min-width: 280px" in content, (
-            "Train monitor upcoming min width should be 280px"
+        assert "min-width: 200px" in content, (
+            "Train monitor upcoming min width should be 200px"
         )
-        assert "max-width: 640px" in content, (
-            "Train monitor upcoming max width should be 640px"
+        assert "max-width: 400px" in content, (
+            "Train monitor upcoming max width should be 400px"
         )
 
     def test_train_monitor_json_button_order(self):

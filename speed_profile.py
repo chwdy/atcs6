@@ -49,16 +49,33 @@ class SpeedProfile:
     deceleration_rate: float = 15.0  # km/h per second (service brake)
     emergency_brake_rate: float = 30.0  # km/h per second
     friction_rate: float = 0.5  # km/h per second (coasting deceleration)
-    operational_decel_ratio: float = (
-        0.7  # Use 70% of max brake for ATC operational braking
-    )
+    operational_decel_ratio: float = 0.6  # Use 60% of max brake for smoother ATO curve
+    # Air resistance simulation (quadratic drag model)
+    # Applied to all running trains for realistic simulation
+    # Set air_resistance_enabled=False or drag_coefficient=0.0 to disable (for real train operation)
+    air_resistance_enabled: bool = True  # Master switch
+    drag_coefficient: float = 0.001  # Quadratic drag coefficient
+    reference_speed_kmh: float = 100.0  # Speed at which drag = drag_coefficient km/h/s
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Ensure speed_voltage_curve is sorted by speed."""
         if self.speed_voltage_curve:
             self.speed_voltage_curve = sorted(
                 self.speed_voltage_curve, key=lambda x: x[0]
             )
+
+    def disable_air_resistance(self) -> None:
+        """Disable air resistance for real train operation.
+
+        Call this method on a train's speed profile when connecting to a real train
+        to disable simulation-only air resistance.
+
+        Example:
+            profile = network.speed_profile_registry.get("my_profile")
+            profile.disable_air_resistance()
+        """
+        self.air_resistance_enabled = False
+        self.drag_coefficient = 0.0
 
     def speed_to_voltage(self, speed_kmh: float) -> float:
         """
@@ -274,6 +291,9 @@ class SpeedProfile:
             "emergency_brake_rate": self.emergency_brake_rate,
             "friction_rate": self.friction_rate,
             "operational_decel_ratio": self.operational_decel_ratio,
+            "air_resistance_enabled": self.air_resistance_enabled,
+            "drag_coefficient": self.drag_coefficient,
+            "reference_speed_kmh": self.reference_speed_kmh,
         }
 
     @classmethod
@@ -293,7 +313,10 @@ class SpeedProfile:
             deceleration_rate=float(data.get("deceleration_rate", 15.0)),
             emergency_brake_rate=float(data.get("emergency_brake_rate", 30.0)),
             friction_rate=float(data.get("friction_rate", 0.5)),
-            operational_decel_ratio=float(data.get("operational_decel_ratio", 0.5)),
+            operational_decel_ratio=float(data.get("operational_decel_ratio", 0.6)),
+            air_resistance_enabled=bool(data.get("air_resistance_enabled", True)),
+            drag_coefficient=float(data.get("drag_coefficient", 0.001)),
+            reference_speed_kmh=float(data.get("reference_speed_kmh", 100.0)),
         )
 
 

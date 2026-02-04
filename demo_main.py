@@ -556,6 +556,9 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
         emergency_brake_rate=5,
         friction_rate=DEFAULT_SPEED_PROFILE.friction_rate,
         operational_decel_ratio=DEFAULT_SPEED_PROFILE.operational_decel_ratio,
+        air_resistance_enabled=True,
+        drag_coefficient=0.001,
+        reference_speed_kmh=100.0,
     )
     network.speed_profiles[demo_profile.profile_id] = demo_profile
     demo_train.speed_profile_id = demo_profile.profile_id

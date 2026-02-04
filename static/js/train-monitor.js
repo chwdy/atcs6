@@ -443,6 +443,11 @@ class TrainMonitor {
         const lookahead = payload && payload.lookahead ? payload.lookahead : null;
         const speedLimitReason = payload?.speed_limit_reason ?? train.speed_limit_reason;
 
+        const safetyMarginCm = lookahead?.safety_margin_cm ?? 25;
+        const clearanceCm = lookahead?.clearance_cm || 0;
+        const rawTargetStopCm = lookahead?.target_stop_cm ?? (clearanceCm - safetyMarginCm);
+        const targetStopCm = Math.max(0, rawTargetStopCm);
+
         this.lookaheadData = {
             current_speed_kmh: train.speed || 0,
             target_speed_kmh: train.target_speed || 0,
@@ -454,9 +459,9 @@ class TrainMonitor {
             switches: lookahead?.switches || [],
             stations: lookahead?.stations || [],
             distance_into_path_cm: 0,
-            clearance_cm: lookahead?.clearance_cm || 0,
-            safety_margin_cm: lookahead?.safety_margin_cm || 25,
-            target_stop_cm: lookahead?.target_stop_cm || (lookahead?.clearance_cm || 0) - 25,
+            clearance_cm: clearanceCm,
+            safety_margin_cm: safetyMarginCm,
+            target_stop_cm: targetStopCm,
             speed_curves: lookahead?.speed_curves || []
         };
 
@@ -470,6 +475,17 @@ class TrainMonitor {
         if (this.clearanceEl) {
             const clearanceM = ((this.lookaheadData.clearance_cm || 0) / 100).toFixed(1);
             this.clearanceEl.textContent = clearanceM;
+        }
+        
+        // Update distance to next destination (target stop point)
+        const nextDestContainer = document.getElementById('monitor-next-dest-container');
+        const nextDestEl = document.getElementById('monitor-next-dest-dist');
+        if (nextDestContainer && nextDestEl && this.lookaheadData.target_stop_cm > 0) {
+            const targetStopM = (this.lookaheadData.target_stop_cm / 100).toFixed(1);
+            nextDestEl.textContent = targetStopM;
+            nextDestContainer.classList.remove('hidden');
+        } else if (nextDestContainer) {
+            nextDestContainer.classList.add('hidden');
         }
 
         if (this.waitReasonEl) {
@@ -714,10 +730,34 @@ class TrainMonitor {
         
         this.ctx.clearRect(0, 0, width, height);
         
-        const padding = { left: 40, right: 10, top: 8, bottom: 50 };
-        const speedCurveAreaHeight = 60;
-        const blockTrackY = height * 0.5;
-        const stationTrackY = height * 0.75;
+        const padding = { left: 30, right: 10, top: 15, bottom: 25 };
+        
+        // Even spacing layout with consistent gaps
+        const availableHeight = height - padding.top - padding.bottom;
+        const sectionGap = 8;
+        
+        // Station section: 15% at bottom
+        const stationHeight = Math.max(availableHeight * 0.15, 28);
+        const stationEndY = height - padding.bottom;
+        const stationStartY = stationEndY - stationHeight;
+        const stationTrackY = stationStartY + (stationHeight / 2);
+        
+        // Block section: fixed height to fit content (block + 2 lines of text)
+        // Block rect: 16px centered at trackY (8px above, 8px below)
+        // Text line 1: at trackY + 18 (10px below block bottom)
+        // Text line 2: at trackY + 28 (20px below block bottom)
+        // Need 8px margin at bottom after text
+        // Total: trackY + 28 + 8 = trackY + 36
+        // If trackY is centered at 24px: section = 24 + 36 = 60px
+        const blockHeight = 60;
+        const blockStartY = stationStartY - sectionGap - blockHeight;
+        const blockTrackY = blockStartY + 24;  // Centered at 24px from section top
+        
+        // ATC section: from top padding to block section, respecting 55% target
+        const targetAtcHeight = availableHeight * 0.55;
+        const maxAtcEndY = blockStartY - sectionGap;
+        const atcEndY = Math.min(padding.top + targetAtcHeight, maxAtcEndY);
+        const speedCurveAreaHeight = atcEndY - padding.top;
         const trackWidth = width - padding.left - padding.right;
         
         const trainDist = data.distance_into_path_cm || 0;
@@ -747,6 +787,14 @@ class TrainMonitor {
             );
         }
         
+        // Draw grey overlay for area already passed (behind train, negative distances)
+        const trainX = cmToX(trainDist);
+        if (trainX > padding.left) {
+            const passedWidth = trainX - padding.left;
+            this.ctx.fillStyle = '#1a1a1a';
+            this.ctx.fillRect(padding.left, 0, passedWidth, height - padding.bottom);
+        }
+        
         // Draw grey overlay beyond clearance distance (unknown territory)
         const clearanceCm = data.clearance_cm || 0;
         if (clearanceCm > 0 && clearanceCm < lookaheadDistance) {
@@ -759,8 +807,9 @@ class TrainMonitor {
         }
         
         // Draw safety margin indicator (target stop point)
-        const targetStopCm = data.target_stop_cm || (clearanceCm - 25);
         const safetyMarginCm = data.safety_margin_cm || 25;
+        const rawTargetStopCm = data.target_stop_cm ?? (clearanceCm - safetyMarginCm);
+        const targetStopCm = Math.max(0, rawTargetStopCm);
         if (targetStopCm > 0 && targetStopCm < lookaheadDistance) {
             const targetStopX = cmToX(trainDist + targetStopCm);
             // Draw vertical dashed line at target stop point
@@ -793,7 +842,6 @@ class TrainMonitor {
             this.drawStations(data.stations || [], cmToX, stationTrackY);
         }
         
-        const trainX = cmToX(trainDist);
         this.drawTrainPosition(trainX, blockTrackY);
         if ((data.stations || []).length > 0) {
             this.drawTrainPosition(trainX, stationTrackY);
@@ -870,20 +918,22 @@ class TrainMonitor {
                 this.ctx.globalAlpha = 1.0;
             }
             
+            // Draw block name (similar to station graph)
+            const name = block.name || block.id || '';
+            this.ctx.font = '9px Inter, sans-serif';
             if (blockWidth > 30) {
-                const name = block.name || block.id || '';
-                this.ctx.font = '9px Inter, sans-serif';
                 const labelMaxWidth = Math.max(0, blockWidth - 6);
                 const displayName = this.fitTextToWidth(name, labelMaxWidth);
                 if (displayName) {
                     this.ctx.fillStyle = '#fff';
                     this.ctx.textAlign = 'center';
                     this.ctx.textBaseline = 'middle';
-                    this.ctx.fillText(displayName, startX + blockWidth / 2, trackY);
+                    this.ctx.fillText(displayName, startX + blockWidth/2, trackY);
                 }
             }
             
-            const labelY = trackY + blockHeight/2 + 12;
+            // Draw measurements below the block
+            const labelY = trackY + blockHeight/2 + 10;
             
             const lengthM = (block.length_cm / 100).toFixed(1);
             const lengthLabel = `${lengthM}m (${tileCount} tile${tileCount > 1 ? 's' : ''})`;
@@ -1008,12 +1058,17 @@ class TrainMonitor {
             }
             
             const name = station.name || station.station_id || 'Station';
-            const displayName = name.length > 12 ? name.substring(0, 10) + '..' : name;
             this.ctx.font = '9px Inter, sans-serif';
-            this.ctx.fillStyle = '#fff';
-            this.ctx.textAlign = 'center';
-            this.ctx.textBaseline = 'middle';
-            this.ctx.fillText(displayName, startX + stationWidth/2, trackY);
+            if (stationWidth > 30) {
+                const labelMaxWidth = Math.max(0, stationWidth - 6);
+                const displayName = this.fitTextToWidth(name, labelMaxWidth);
+                if (displayName) {
+                    this.ctx.fillStyle = '#fff';
+                    this.ctx.textAlign = 'center';
+                    this.ctx.textBaseline = 'middle';
+                    this.ctx.fillText(displayName, startX + stationWidth/2, trackY);
+                }
+            }
         });
     }
     
@@ -1106,6 +1161,34 @@ class TrainMonitor {
         this.ctx.lineTo(padding.left, curveBottom);
         this.ctx.stroke();
         
+        // Draw horizontal reference lines every 20km/h
+        this.ctx.strokeStyle = '#444';
+        this.ctx.lineWidth = 0.5;
+        this.ctx.setLineDash([2, 3]);
+        for (let speed = 20; speed < maxSpeed; speed += 20) {
+            const y = speedToY(speed);
+            this.ctx.beginPath();
+            this.ctx.moveTo(padding.left, y);
+            this.ctx.lineTo(this.canvas.width - padding.right, y);
+            this.ctx.stroke();
+            
+            // Draw speed label on the left with same color/size as y-axis labels
+            this.ctx.font = '8px JetBrains Mono, monospace';
+            this.ctx.fillStyle = '#666';
+            this.ctx.textAlign = 'right';
+            this.ctx.textBaseline = 'middle';
+            this.ctx.fillText(`${speed}`, padding.left - 5, y);
+        }
+        this.ctx.setLineDash([]);
+        
+        // Draw solid reference line at 0 km/h (bottom of the speed curve area)
+        this.ctx.strokeStyle = '#555';
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        this.ctx.moveTo(padding.left, curveBottom);
+        this.ctx.lineTo(this.canvas.width - padding.right, curveBottom);
+        this.ctx.stroke();
+        
         this.ctx.strokeStyle = '#e83f5b';
         this.ctx.lineWidth = 1.5;
         this.ctx.beginPath();
@@ -1132,27 +1215,35 @@ class TrainMonitor {
         
         if (currentSpeed > 0) {
             const currentY = speedToY(currentSpeed);
+            const triangleSize = 6;
+            const labelAreaWidth = 25;
+            const tipX = padding.left - labelAreaWidth;
+            const lineExtension = labelAreaWidth + 2;
+            
+            // Draw yellow line extending across the full y-axis label width and 2px into graph
+            this.ctx.beginPath();
             this.ctx.strokeStyle = '#ffcd1e';
             this.ctx.lineWidth = 1.5;
-            this.ctx.setLineDash([5, 3]);
-            this.ctx.beginPath();
-            this.ctx.moveTo(padding.left, currentY);
-            this.ctx.lineTo(this.canvas.width - padding.right, currentY);
+            this.ctx.moveTo(tipX, currentY);
+            this.ctx.lineTo(tipX + lineExtension, currentY);
             this.ctx.stroke();
-            this.ctx.setLineDash([]);
             
-            this.ctx.fillStyle = '#ffcd1e';
-            this.ctx.textAlign = 'left';
-            this.ctx.fillText(`${Math.round(currentSpeed)}`, this.canvas.width - padding.right + 3, currentY);
-            
-            // Draw green speed indicator dot on the vertical axis
+            // Draw yellow triangle indicator on the left of y-axis
             this.ctx.beginPath();
-            this.ctx.arc(padding.left, currentY, 5, 0, Math.PI * 2);
-            this.ctx.fillStyle = '#04d361';  // Green to match ATO curve
+            this.ctx.moveTo(tipX, currentY);
+            this.ctx.lineTo(tipX - triangleSize, currentY - triangleSize/2);
+            this.ctx.lineTo(tipX - triangleSize, currentY + triangleSize/2);
+            this.ctx.closePath();
+            this.ctx.fillStyle = '#ffcd1e';  // Yellow
             this.ctx.fill();
             this.ctx.strokeStyle = '#fff';
             this.ctx.lineWidth = 1;
             this.ctx.stroke();
+            
+            // Draw current speed value on the right
+            this.ctx.fillStyle = '#ffcd1e';
+            this.ctx.textAlign = 'left';
+            this.ctx.fillText(`${Math.round(currentSpeed)}`, this.canvas.width - padding.right + 3, currentY);
         }
         
         if (targetSpeed > 0 && targetSpeed < maxSpeed) {
