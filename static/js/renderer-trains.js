@@ -243,7 +243,10 @@ class RendererTrainHandler {
         const pathPoints = [];
         pathPoints.push({ x: tailPos.x, y: tailPos.y });
         
-        if (occupiedTileCount === 1) {
+        if (!hasLeadingEnd) {
+            // No cab active: simple direct line between ends regardless of track path
+            pathPoints.push({ x: headPos.x, y: headPos.y });
+        } else if (occupiedTileCount === 1) {
             // Same tile - direct line
             pathPoints.push({ x: headPos.x, y: headPos.y });
         } else if (occupiedTileCount === 2) {
@@ -354,14 +357,20 @@ class RendererTrainHandler {
         drawBodySegments('#333', 5 * s);
         drawBodySegments('#ffffff', 3 * s);
         
-        // === Draw tail square (only when cab is active) ===
+        // === Draw end markers ===
         if (hasLeadingEnd) {
+            // Cab is active: draw tail square and head triangle
             this.drawTailMarker(tailPos.x, tailPos.y, tailPos.rotation, train);
-        }
-        
-        // === Draw head triangle (only when cab is active) ===
-        if (hasLeadingEnd) {
             this.drawHeadMarker(headPos.x, headPos.y, headPos.rotation);
+        } else {
+            // No cab active: draw square markers at both ends with end identifiers
+            // Calculate rotation pointing from tail to head for consistent body direction
+            const dx = headPos.x - tailPos.x;
+            const dy = headPos.y - tailPos.y;
+            const rotationToHead = Math.atan2(dy, dx);
+            const rotationToTail = rotationToHead + Math.PI;
+            this.drawEndMarker(tailPos.x, tailPos.y, rotationToTail, train, 'B');
+            this.drawEndMarker(headPos.x, headPos.y, rotationToHead, train, 'A');
         }
 
         // === Draw label ===
@@ -451,6 +460,56 @@ class RendererTrainHandler {
             this.ctx.textAlign = 'center';
             this.ctx.textBaseline = 'middle';
             this.ctx.fillText(train.num_cars.toString(), 0, 0);
+            this.ctx.restore();
+        }
+
+        this.ctx.restore();
+    }
+
+    /**
+     * Draw end marker (white square with dark border and train ID + end identifier).
+     * Used when no cab is active to label both ends (e.g., "2A", "3B").
+     * @param {number} x - Screen X position
+     * @param {number} y - Screen Y position
+     * @param {number} rotation - Rotation angle in radians
+     * @param {Object} train - Train object
+     * @param {string} endId - End identifier ('A' or 'B')
+     */
+    drawEndMarker(x, y, rotation = 0, train = null, endId = 'A') {
+        const s = this.scale;
+        const squareSize = 10 * s;
+
+        // Offset forward so the back edge aligns with the position
+        const offsetDistance = squareSize / 2;
+        const offsetX = Math.cos(rotation) * offsetDistance;
+        const offsetY = Math.sin(rotation) * offsetDistance;
+
+        const drawX = x + offsetX;
+        const drawY = y + offsetY;
+
+        this.ctx.save();
+        this.ctx.translate(drawX, drawY);
+        this.ctx.rotate(rotation);
+
+        // Draw white background square
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.fillRect(-squareSize / 2, -squareSize / 2, squareSize, squareSize);
+
+        // Draw dark border
+        this.ctx.strokeStyle = '#333';
+        this.ctx.lineWidth = 1 * s;
+        this.ctx.strokeRect(-squareSize / 2, -squareSize / 2, squareSize, squareSize);
+
+        // Draw car number + end identifier (e.g., "2A", "3B")
+        if (train && train.num_cars) {
+            this.ctx.save();
+            // Counter-rotate to keep text upright
+            this.ctx.rotate(-rotation);
+            this.ctx.fillStyle = '#333';
+            this.ctx.font = `bold ${5 * s}px sans-serif`;
+            this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'middle';
+            this.ctx.fillText(`${train.num_cars}${endId}`, 0, 0);
             this.ctx.restore();
         }
 

@@ -55,6 +55,7 @@ class RailwayNetwork:
         self.routes: Dict[str, "Route"] = {}
 
         self.block_manager: Optional[BlockManager] = None
+        self.power_controller: Optional["BlockPowerController"] = None
 
     def _ensure_block_manager(self):
         if self.block_manager is None:

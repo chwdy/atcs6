@@ -39,15 +39,6 @@ Design Principles:
 4. Writes to World: Updates BlockManager states, BlockPowerController voltages
 5. No Decision Making: Doesn't decide speed limits or handle positions
 
-TODO List:
-- [x] Define TrainPhysics class with core methods
-- [x] Implement tick() method
-- [x] Implement speed calculation from handle
-- [x] Implement position movement
-- [x] Implement block occupancy management
-- [x] Implement voltage output
-- [x] Add comprehensive test suite (see tests/test_trains.py)
-- [x] Migrate SimulationController to use TrainPhysics (see simulation.py)
 """
 
 import logging

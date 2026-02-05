@@ -104,11 +104,11 @@ class SwitchEditorHandler {
                 <div class="property-grid" style="gap: 12px;">
                     <div class="property-item">
                         <label class="property-label">MAIN Path Length</label>
-                        <input type="number" id="switch-main-length" class="value-input" value="${switchData.main_length_cm || 0}" min="0" step="0.1" placeholder="Length in cm">
+                        <input type="number" id="switch-main-length" class="property-input" value="${switchData.main_length_cm || 0}" min="0" step="0.1" placeholder="Length in cm">
                     </div>
                     <div class="property-item">
                         <label class="property-label">DIVERGE Path Length</label>
-                        <input type="number" id="switch-diverge-length" class="value-input" value="${switchData.diverge_length_cm || 0}" min="0" step="0.1" placeholder="Length in cm">
+                        <input type="number" id="switch-diverge-length" class="property-input" value="${switchData.diverge_length_cm || 0}" min="0" step="0.1" placeholder="Length in cm">
                     </div>
                 </div>
             </div>
@@ -119,11 +119,11 @@ class SwitchEditorHandler {
                 <div class="property-grid" style="gap: 12px;">
                     <div class="property-item">
                         <label class="property-label">MAIN Path Radius</label>
-                        <input type="number" id="switch-main-radius" class="value-input" value="${switchData.main_radius_cm || ''}" min="0" step="0.1" placeholder="None (straight)">
+                        <input type="number" id="switch-main-radius" class="property-input" value="${switchData.main_radius_cm || ''}" min="0" step="0.1" placeholder="None (straight)">
                     </div>
                     <div class="property-item">
                         <label class="property-label">DIVERGE Path Radius</label>
-                        <input type="number" id="switch-diverge-radius" class="value-input" value="${switchData.diverge_radius_cm || ''}" min="0" step="0.1" placeholder="None (straight)">
+                        <input type="number" id="switch-diverge-radius" class="property-input" value="${switchData.diverge_radius_cm || ''}" min="0" step="0.1" placeholder="None (straight)">
                     </div>
                 </div>
             </div>
@@ -134,11 +134,11 @@ class SwitchEditorHandler {
                 <div class="property-grid" style="gap: 12px;">
                     <div class="property-item">
                         <label class="property-label">Name</label>
-                        <input type="text" id="switch-name" class="value-input" value="${switchData.name || ''}" placeholder="Switch name...">
+                        <input type="text" id="switch-name" class="property-input" value="${switchData.name || ''}" placeholder="Switch name...">
                     </div>
                     <div class="property-item">
                         <label class="property-label">Notes</label>
-                        <input type="text" id="switch-notes" class="value-input" value="${switchData.notes || ''}" placeholder="Notes...">
+                        <input type="text" id="switch-notes" class="property-input" value="${switchData.notes || ''}" placeholder="Notes...">
                     </div>
                 </div>
 

@@ -463,7 +463,7 @@ class RouteEditorHandler {
                                 ➕ Extend
                             </button>
                         ` : ''}
-                        <button id="cancel-path-btn" class="btn btn-danger btn-sm flex-1" style="background-color: var(--danger-color);">
+                        <button id="cancel-path-btn" class="btn btn-danger btn-sm flex-1 text-white" style="background-color: var(--danger-color);">
                             ❌ Cancel
                         </button>
                     </div>

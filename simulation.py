@@ -67,6 +67,7 @@ class SimulationController:
 
         # Initialize components with shared controllers
         self.power_controller = BlockPowerController(network)
+        network.power_controller = self.power_controller
         self.route_executor = RouteExecutor(network, path_dispatcher, self.controllers)
         self.speed_profile_registry = SpeedProfileRegistry()
         self.simulation_time: float = 0.0
