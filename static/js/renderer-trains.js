@@ -186,12 +186,15 @@ class RendererTrainHandler {
         const pathTiles = train.path_tiles;
         const pathInfo = train.path_tile_info || [];
         // Determine head and tail based on leading_end
-        const headIndex = train.leading_end === 'a' ? train.end_a_index : train.end_b_index;
-        const tailIndex = train.leading_end === 'a' ? train.end_b_index : train.end_a_index;
-        const headDistanceCm = train.leading_end === 'a' ? train.end_a_distance_cm : train.end_b_distance_cm;
-        const tailDistanceCm = train.leading_end === 'a' ? train.end_b_distance_cm : train.end_a_distance_cm;
-        const headEntryEdge = train.leading_end === 'a' ? train.end_a_entry_edge : train.end_b_entry_edge;
-        const tailEntryEdge = train.leading_end === 'a' ? train.end_b_entry_edge : train.end_a_entry_edge;
+        // When leading_end is null/undefined (no cab selected), treat train as symmetric
+        // Use end_a as "head" position for rendering purposes
+        const hasLeadingEnd = train.leading_end === 'a' || train.leading_end === 'b';
+        const headIndex = train.leading_end === 'b' ? train.end_b_index : train.end_a_index;
+        const tailIndex = train.leading_end === 'b' ? train.end_a_index : train.end_b_index;
+        const headDistanceCm = train.leading_end === 'b' ? train.end_b_distance_cm : train.end_a_distance_cm;
+        const tailDistanceCm = train.leading_end === 'b' ? train.end_a_distance_cm : train.end_b_distance_cm;
+        const headEntryEdge = train.leading_end === 'b' ? train.end_b_entry_edge : train.end_a_entry_edge;
+        const tailEntryEdge = train.leading_end === 'b' ? train.end_a_entry_edge : train.end_b_entry_edge;
         
         // Validate indices - enhanced bounds checking
         if (headIndex === undefined || headIndex === null || 
@@ -351,11 +354,15 @@ class RendererTrainHandler {
         drawBodySegments('#333', 5 * s);
         drawBodySegments('#ffffff', 3 * s);
         
-        // === Draw tail square ===
-        this.drawTailMarker(tailPos.x, tailPos.y, tailPos.rotation, train);
+        // === Draw tail square (only when cab is active) ===
+        if (hasLeadingEnd) {
+            this.drawTailMarker(tailPos.x, tailPos.y, tailPos.rotation, train);
+        }
         
-        // === Draw head triangle ===
-        this.drawHeadMarker(headPos.x, headPos.y, headPos.rotation);
+        // === Draw head triangle (only when cab is active) ===
+        if (hasLeadingEnd) {
+            this.drawHeadMarker(headPos.x, headPos.y, headPos.rotation);
+        }
 
         // === Draw label ===
         const headTrackBits = getTrackBits(headTile);

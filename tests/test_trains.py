@@ -194,7 +194,7 @@ class TestTrainMonitorBlockOffsetBugFix:
         train = Train(train_id="TRAIN_01")
         train.position = make_train_position(
             head_tile=(1, 0),
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=20.0,
         )
         train.current_path = [
@@ -227,7 +227,7 @@ class TestTrainMonitorBlockOffsetBugFix:
         train = Train(train_id="TRAIN_02")
         train.position = make_train_position(
             head_tile=(1, 0),
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=20.0,
         )
         train.current_path = [
@@ -296,7 +296,7 @@ class TestTrainControllerMonitorLookahead:
         train = Train(train_id="TRAIN_LOOKAHEAD")
         train.position = make_train_position(
             head_tile=(1, 0),
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=20.0,
         )
         train.current_path = [
@@ -328,7 +328,7 @@ class TestTrainControllerMonitorLookahead:
         train = Train(train_id="TRAIN_LOOKAHEAD_RESET")
         train.position = make_train_position(
             head_tile=(1, 0),
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=20.0,
         )
         train.current_path = [
@@ -347,6 +347,7 @@ class TestTrainControllerMonitorLookahead:
         assert blocks[1]["end_cm"] == pytest.approx(80.0)
 
     def test_cab_switch_updates_head_tile(self, network):
+        """When switching cabs, head tile should reflect the new cab position."""
         for x in range(3):
             track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
             track.block_section_id = "BLOCK_MAIN"
@@ -361,7 +362,7 @@ class TestTrainControllerMonitorLookahead:
             end_b_distance_cm=10.0,
             end_b_entry_edge="E",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
         )
         train.current_path = [
             (0, 0, Direction.EAST),
@@ -375,10 +376,14 @@ class TestTrainControllerMonitorLookahead:
 
         controller.set_cab("A")
         payload_a = controller.get_monitor_lookahead()
+        # With Cab A active, head is at end_a which is (0, 0)
         assert payload_a["head_tile"] == [0, 0]
 
         controller.set_cab("B")
         payload_b = controller.get_monitor_lookahead()
+        # After switching to Cab B, tiles don't swap - physical train doesn't move
+        # end_a stays at (0, 0) and end_b stays at (2, 0)
+        # With Cab B active and leading_end="b", head is at end_b which is (2, 0)
         assert payload_b["head_tile"] == [2, 0]
 
 
@@ -448,7 +453,7 @@ class TestTrainPosition:
             end_b_distance_cm=10.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(0, 0), (1, 0)],
             occupied_blocks=["BLOCK_1"],
         )
@@ -465,7 +470,7 @@ class TestTrainPosition:
             end_b_distance_cm=10.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
         )
         assert pos.head_tile == (1, 0)
         assert pos.head_distance_cm == 50.0
@@ -481,7 +486,7 @@ class TestTrainPosition:
             end_b_distance_cm=10.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
         )
         pos.reverse()
         assert pos.leading_end == "b"
@@ -498,7 +503,7 @@ class TestTrainPosition:
             end_b_distance_cm=10.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(0, 0), (1, 0)],
             occupied_blocks=["BLOCK_1"],
         )
@@ -606,15 +611,16 @@ class TestTrainReverse:
 
 class TestCabSwitchEndPositionsBugFix:
     """
-    Comprehensive tests for cab switching end position swaps (2026-01-22).
+    Comprehensive tests for cab switching behavior (corrected 2026-02-04).
 
-    BUG: TrainController.set_cab() swapped end_a/end_b positions when switching
-    cabs, causing occupied_tiles to stay in the old order. This inverted the
-    renderer's head/tail selection when using path_tiles + leading_end.
-
-    FIX: Switching cabs only flips leading_end and facing_direction. Physical
-    end_a/end_b positions and occupied_tiles ordering (end_a -> end_b) remain
-    unchanged.
+    When switching cabs (A <-> B), the physical train DOES NOT MOVE:
+    - end_a_tile and end_b_tile stay at their original locations
+    - The driver conceptually walks to the other cab
+    - Only leading_end changes (from "a" to "b" or vice versa)
+    - Entry edges flip for BOTH ends (train will travel opposite direction)
+    - Distances flip for BOTH ends (measured from opposite edge now)
+    - occupied_tiles order stays the same (train hasn't moved)
+    - facing_direction reverses (EAST -> WEST or vice versa)
     """
 
     def _setup_two_tile_train(self, network):
@@ -631,24 +637,53 @@ class TestCabSwitchEndPositionsBugFix:
 
         return train, controller
 
-    def test_cab_switch_keeps_end_positions(self, network):
+    def test_cab_switch_tiles_dont_move(self, network):
+        """When switching cabs, tiles stay in place - physical train doesn't move."""
         train, controller = self._setup_two_tile_train(network)
 
         controller.set_cab("A")
         original_end_a = train.position.end_a_tile
         original_end_b = train.position.end_b_tile
-        original_entry_a = train.position.end_a_entry_edge
-        original_entry_b = train.position.end_b_entry_edge
 
         controller.set_cab("B")
 
+        # Tiles should NOT change - physical train stays in place
         assert train.position.leading_end == "b"
-        assert train.position.end_a_tile == original_end_a
-        assert train.position.end_b_tile == original_end_b
-        assert train.position.end_a_entry_edge == original_entry_a
-        assert train.position.end_b_entry_edge == original_entry_b
+        assert train.position.end_a_tile == original_end_a  # unchanged
+        assert train.position.end_b_tile == original_end_b  # unchanged
+
+    def test_cab_switch_flips_entry_edges_for_both_ends(self, network):
+        """When switching cabs, entry edges flip for BOTH ends."""
+        train, controller = self._setup_two_tile_train(network)
+
+        controller.set_cab("A")
+        original_entry_a = train.position.end_a_entry_edge
+        original_entry_b = train.position.end_b_entry_edge
+
+        # Calculate expected flipped entries using track geometry
+        track_a = network.get_track(*train.position.end_a_tile)
+        track_b = network.get_track(*train.position.end_b_tile)
+
+        expected_new_entry_a = original_entry_a
+        if track_a:
+            exits = track_a.get_exits(original_entry_a, use_switch_state=True)
+            if exits:
+                expected_new_entry_a = exits[0]
+
+        expected_new_entry_b = original_entry_b
+        if track_b:
+            exits = track_b.get_exits(original_entry_b, use_switch_state=True)
+            if exits:
+                expected_new_entry_b = exits[0]
+
+        controller.set_cab("B")
+
+        # BOTH ends should have flipped entry edges
+        assert train.position.end_a_entry_edge == expected_new_entry_a
+        assert train.position.end_b_entry_edge == expected_new_entry_b
 
     def test_cab_switch_preserves_occupied_tiles_order(self, network):
+        """occupied_tiles order stays the same - physical train didn't move."""
         train, controller = self._setup_two_tile_train(network)
 
         controller.set_cab("A")
@@ -656,11 +691,15 @@ class TestCabSwitchEndPositionsBugFix:
 
         controller.set_cab("B")
 
+        # occupied_tiles should NOT change - train didn't physically move
         assert train.position.occupied_tiles == original_occupied
+        # First tile is still end_a
         assert train.position.occupied_tiles[0] == train.position.end_a_tile
+        # Last tile is still end_b
         assert train.position.occupied_tiles[-1] == train.position.end_b_tile
 
     def test_cab_switch_renderer_serialization_order(self, network):
+        """Renderer receives unchanged path_tiles after cab switch."""
         train, controller = self._setup_two_tile_train(network)
 
         controller.set_cab("A")
@@ -671,22 +710,35 @@ class TestCabSwitchEndPositionsBugFix:
         data = train.to_dict(network)
 
         assert data["leading_end"] == "b"
+        # path_tiles order unchanged - train didn't move
         assert data["path_tiles"][0] == list(original_end_a)
         assert data["path_tiles"][-1] == list(original_end_b)
         assert data["end_a_index"] == 0
         assert data["end_b_index"] == len(data["path_tiles"]) - 1
 
+    def test_cab_switch_reverses_facing_direction(self, network):
+        """Switching cabs reverses facing_direction."""
+        train, controller = self._setup_two_tile_train(network)
+
+        controller.set_cab("A")
+        assert train.position.facing_direction == Direction.EAST
+
+        controller.set_cab("B")
+        assert train.position.facing_direction == Direction.WEST
+
+        controller.set_cab("A")
+        assert train.position.facing_direction == Direction.EAST
+
 
 class TestCabSwitchEntryEdgeFlipBugFix:
     """
-    Comprehensive tests for cab switching entry edge reversal (2026-01-25).
+    Comprehensive tests for cab switching entry edge reversal (corrected 2026-02-04).
 
     BUG: Switching cabs in manual mode flips leading_end/facing_direction but
-    leaves the leading end's entry_edge unchanged, so movement/renderer keep
-    the old direction when both ends are on the same tile.
+    leaves entry_edges unchanged, so movement/renderer keep the old direction.
 
-    FIX: On cab switch (A <-> B), update the new leading end's entry_edge to
-    the opposite edge along its current track segment.
+    FIX: On cab switch (A <-> B), flip entry_edge for BOTH ends since the train
+    will now travel in the opposite direction on the track.
     """
 
     def _setup_straight_line(self, network, length_cm: float, head_x: int = 1):
@@ -710,33 +762,49 @@ class TestCabSwitchEntryEdgeFlipBugFix:
         return exits[0]
 
     def test_cab_switch_flips_entry_edge_single_tile(self, network):
+        """Single-tile train: BOTH ends flip entry edges on cab switch."""
         train, controller = self._setup_straight_line(network, length_cm=40.0)
 
         controller.set_cab("A")
-        original_entry = train.position.end_b_entry_edge
-        original_end_a_entry = train.position.end_a_entry_edge
-        expected_entry = self._expected_reverse_entry_edge(
-            network, train.position.end_b_tile, original_entry
+        original_entry_a = train.position.end_a_entry_edge
+        original_entry_b = train.position.end_b_entry_edge
+
+        # Both entries should flip
+        expected_entry_a = self._expected_reverse_entry_edge(
+            network, train.position.end_a_tile, original_entry_a
+        )
+        expected_entry_b = self._expected_reverse_entry_edge(
+            network, train.position.end_b_tile, original_entry_b
         )
 
         controller.set_cab("B")
 
         assert train.position.leading_end == "b"
-        assert train.position.end_b_entry_edge == expected_entry
-        assert train.position.end_a_entry_edge == original_end_a_entry
+        # BOTH ends flip their entry edges
+        assert train.position.end_a_entry_edge == expected_entry_a
+        assert train.position.end_b_entry_edge == expected_entry_b
 
-    def test_cab_switch_keeps_entry_edge_multi_tile(self, network):
+    def test_cab_switch_flips_entry_edge_multi_tile(self, network):
+        """Multi-tile train: BOTH ends flip entry edges on cab switch."""
         train, controller = self._setup_straight_line(network, length_cm=140.0)
 
         controller.set_cab("A")
-        original_entry = train.position.end_b_entry_edge
-        original_end_a_entry = train.position.end_a_entry_edge
+        original_entry_a = train.position.end_a_entry_edge
+        original_entry_b = train.position.end_b_entry_edge
+
+        expected_entry_a = self._expected_reverse_entry_edge(
+            network, train.position.end_a_tile, original_entry_a
+        )
+        expected_entry_b = self._expected_reverse_entry_edge(
+            network, train.position.end_b_tile, original_entry_b
+        )
 
         controller.set_cab("B")
 
         assert train.position.leading_end == "b"
-        assert train.position.end_b_entry_edge == original_entry
-        assert train.position.end_a_entry_edge == original_end_a_entry
+        # BOTH ends flip their entry edges
+        assert train.position.end_a_entry_edge == expected_entry_a
+        assert train.position.end_b_entry_edge == expected_entry_b
 
 
 class TestTrainPhysicsOccupiedTilesOrderBugFix:
@@ -1344,7 +1412,18 @@ class TestAtoAutoCabSelectionBugFix:
         # Cab should have been auto-selected
         assert controller.active_cab == "A"
 
-    def test_tick_auto_selects_cab_when_missing(self, network):
+    def test_tick_does_not_auto_select_cab_when_missing(self, network):
+        """
+        Test that tick() does NOT auto-select cab.
+
+        Previously, tick() would auto-select cab which caused state corruption
+        because it only updated active_cab/leading_end without flipping
+        facing_direction and entry edges.
+
+        The proper place for cab selection is:
+        1. Manual selection by operator (set_cab())
+        2. Auto-selection in depart() when called by RouteExecutor
+        """
         track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
         next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
         network.add_track(track)
@@ -1374,7 +1453,8 @@ class TestAtoAutoCabSelectionBugFix:
 
         controller.tick(0.1)
 
-        assert controller.active_cab == "A"
+        # tick() should NOT auto-select cab - that's done in depart()
+        assert controller.active_cab is None
 
     def test_block_release_uses_caution_state(self):
         """
@@ -1489,7 +1569,7 @@ class TestTrainPhysicsCautionHoldBugFix:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(1, 0)],
         )
         network.add_train(train)
@@ -1532,7 +1612,7 @@ class TestTrainPhysicsCautionHoldBugFix:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(1, 0)],
         )
         network.add_train(train)
@@ -1553,7 +1633,7 @@ class TestTrainPhysicsCautionHoldBugFix:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(2, 0)],
         )
 
@@ -1589,7 +1669,7 @@ class TestTrainPhysicsTransitions:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(1, 0)],
             occupied_blocks=["B2"],
         )
@@ -1643,7 +1723,7 @@ class TestTrainPhysicsCautionStoppedReleaseBugFix:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(1, 0)],
             occupied_blocks=["B2"],
         )
@@ -1787,7 +1867,7 @@ class TestTrainClearancePrecisionBugFix:
             end_b_distance_cm=5.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(1, 0), (0, 0)],
         )
 
@@ -3377,7 +3457,7 @@ class TestFutureAwareATOBraking:
             end_b_distance_cm=5.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(0, 0)],
             occupied_blocks=[],
         )
@@ -3478,7 +3558,7 @@ class TestBlockTileSyncValidation:
             end_b_distance_cm=10.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(0, 0), (1, 0), (2, 0)],
             occupied_blocks=["B1"],
         )
@@ -3569,7 +3649,7 @@ class TestFallbackLookaheadMultiTileBlock:
 
         train.position = make_train_position(
             head_tile=(0, 0),
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=per_tile_length,  # At exit edge of first tile
         )
         train.position.occupied_tiles = [(0, 0)]
@@ -3608,7 +3688,7 @@ class TestFallbackLookaheadMultiTileBlock:
         train = Train(train_id="TRAIN_MID_BLOCK")
         train.position = make_train_position(
             head_tile=(1, 0),  # Middle tile
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=25.0,  # Halfway through middle tile
         )
         train.position.occupied_tiles = [(0, 0), (1, 0)]
@@ -3641,7 +3721,7 @@ class TestFallbackLookaheadMultiTileBlock:
         train = Train(train_id="TRAIN_LAST_TILE")
         train.position = make_train_position(
             head_tile=(2, 0),  # Last tile
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=40.0,  # Near end of last tile
         )
         train.position.occupied_tiles = [(0, 0), (1, 0), (2, 0)]
@@ -3673,7 +3753,7 @@ class TestFallbackLookaheadMultiTileBlock:
         train = Train(train_id="TRAIN_BLOCK_INFO")
         train.position = make_train_position(
             head_tile=(0, 0),
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=25.0,
         )
         train.position.occupied_tiles = [(0, 0)]
@@ -3701,7 +3781,7 @@ class TestFallbackLookaheadMultiTileBlock:
         train = Train(train_id="TRAIN_PRIOR_CLEARANCE")
         train.position = make_train_position(
             head_tile=(0, 0),
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=25.0,
         )
         train.position.occupied_tiles = [(0, 0)]

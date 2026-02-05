@@ -1914,7 +1914,7 @@ class RailwayNetwork:
             end_b_distance_cm=tail_distance_cm,
             end_b_entry_edge=tail_entry_edge,
             leading_end="a",  # end_a is head
-            facing_direction=direction,
+            _facing_direction_legacy=direction,  # Fallback for single-tile trains
             occupied_tiles=occupied_tiles_end_a_to_b,
             occupied_blocks=occupied_blocks,
         )

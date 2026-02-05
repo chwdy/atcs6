@@ -461,23 +461,13 @@ class TrainController:
 
         # ===== 6. ATO ACTION (skip if manual) =====
         if self.control_mode == "ato":
-            # Check cab matches path direction
-            if self.ato_info and self.active_cab != self.ato_info.required_cab:
-                old_cab = self.active_cab
-                self.active_cab = self.ato_info.required_cab
-                self.pending_notifications.append(
-                    f"Cab switched from {old_cab} to {self.active_cab}"
-                )
-                logger.debug(
-                    "[TrainController %s] ATO cab switch: %s -> %s",
-                    self.train_id,
-                    old_cab,
-                    self.active_cab,
-                )
-                if train:
-                    train.active_cab = self.active_cab
-                    if train.position:
-                        train.position.leading_end = self.active_cab.lower()
+            # NOTE: We no longer auto-correct cab during tick().
+            # Previously, this would partially update cab (leading_end only) without
+            # flipping facing_direction and entry edges, causing state corruption.
+            # Cab selection should be done:
+            # 1. Manually by the operator before starting ATO
+            # 2. Automatically in ato_go() when cab is None (using required_cab)
+            # The operator can freely change cab when ato_running=False.
 
             # Calculate handle position based on ato_running
             if self.ato_running:
@@ -533,18 +523,8 @@ class TrainController:
         if self.state == TrainState.RUNNING_MOVING:
             # Check for station arrival
             if self._is_at_station():
-                logger.warning(
-                    f"[ATO_DEBUG] State transition to RUNNING_AT_STATION for train {self.train_id}: "
-                    f"ato_running BEFORE={self.ato_running}, "
-                    f"ato_destination_block_id={self.ato_destination_block_id}, "
-                    f"current_block={self._get_current_block_id()}"
-                )
                 self.state = TrainState.RUNNING_AT_STATION
                 train.state = TrainState.RUNNING_AT_STATION
-                if self.ato_running:
-                    logger.warning(
-                        f"[ATO_DEBUG] Setting ato_running=False at station arrival for train {self.train_id}"
-                    )
                 self.ato_running = False
                 # RouteExecutor will handle dwell timing
                 logger.debug(
@@ -2410,44 +2390,71 @@ class TrainController:
 
         old_cab = self.active_cab
 
-        # If switching between A and B, flip facing direction
-        if old_cab in ("A", "B") and cab in ("A", "B") and old_cab != cab:
-            if train.position and self.network:
-                new_leading_end = cab.lower()
-                if train.position.end_a_tile == train.position.end_b_tile:
-                    if new_leading_end == "a":
-                        entry_edge = train.position.end_a_entry_edge
-                        end_tile = train.position.end_a_tile
-                    else:
-                        entry_edge = train.position.end_b_entry_edge
-                        end_tile = train.position.end_b_tile
-
-                    track = self.network.get_track(*end_tile) if end_tile else None
-                    if track and entry_edge:
-                        exits = track.get_exits(entry_edge, use_switch_state=True)
-                        if exits:
-                            reverse_entry_edge = exits[0]
-                            if new_leading_end == "a":
-                                train.position.end_a_entry_edge = reverse_entry_edge
-                            else:
-                                train.position.end_b_entry_edge = reverse_entry_edge
-
-            if train.facing_direction:
-                train.facing_direction = train.facing_direction.opposite()
-
         self.active_cab = cab
 
         # Update train state
         if cab is None:
             self.state = TrainState.IDLE
-            train.state = TrainState.IDLE
-            train.active_cab = None
+            train.set_cab(None)
         else:
             self.state = TrainState.STANDBY
-            train.state = TrainState.STANDBY
-            train.active_cab = cab
-            if train.position:
-                train.position.leading_end = cab.lower()
+            train.set_cab(cab)  # This only updates leading_end and state
+
+            # When switching cabs (A <-> B), the physical train doesn't move.
+            # The driver walks to the other end. What changes:
+            # 1. leading_end flips (done by train.set_cab)
+            # 2. facing_direction reverses
+            # 3. entry_edge for BOTH ends flips (since train will travel opposite direction)
+            # 4. distance_cm for BOTH ends flips (10cm from W = tile_length - 10cm from E)
+            if old_cab in ("A", "B") and old_cab != cab:
+                # Flip facing_direction
+                if train.facing_direction is None:
+                    return CommandResult(
+                        False,
+                        f"Cannot switch cab from {old_cab} to {cab}: train has no facing direction",
+                    )
+                new_direction = train.facing_direction.opposite()
+                train.facing_direction = new_direction
+                if train.position:
+                    train.position.facing_direction = new_direction
+
+                # Flip entry edges and distances for BOTH ends
+                if train.position and self.network:
+                    # Flip end_a entry edge
+                    if train.position.end_a_tile and train.position.end_a_entry_edge:
+                        track_a = self.network.get_track(*train.position.end_a_tile)
+                        if track_a:
+                            exits_a = track_a.get_exits(
+                                train.position.end_a_entry_edge, use_switch_state=True
+                            )
+                            if exits_a:
+                                train.position.end_a_entry_edge = exits_a[0]
+                            # Flip distance: new_distance = tile_length - old_distance
+                            tile_length = self.network._get_tile_length_cm(
+                                train.position.end_a_tile[0],
+                                train.position.end_a_tile[1],
+                            )
+                            train.position.end_a_distance_cm = (
+                                tile_length - train.position.end_a_distance_cm
+                            )
+
+                    # Flip end_b entry edge
+                    if train.position.end_b_tile and train.position.end_b_entry_edge:
+                        track_b = self.network.get_track(*train.position.end_b_tile)
+                        if track_b:
+                            exits_b = track_b.get_exits(
+                                train.position.end_b_entry_edge, use_switch_state=True
+                            )
+                            if exits_b:
+                                train.position.end_b_entry_edge = exits_b[0]
+                            # Flip distance
+                            tile_length = self.network._get_tile_length_cm(
+                                train.position.end_b_tile[0],
+                                train.position.end_b_tile[1],
+                            )
+                            train.position.end_b_distance_cm = (
+                                tile_length - train.position.end_b_distance_cm
+                            )
 
         return CommandResult(True, f"Cab set to {cab}")
 
@@ -2473,16 +2480,8 @@ class TrainController:
         self.control_mode = mode
 
         if mode == "manual":
-            logger.warning(
-                f"[ATO_DEBUG] switch_mode to MANUAL for train {self.train_id}: "
-                f"ato_running BEFORE={self.ato_running}"
-            )
             self.state = TrainState.MANUAL
             train.state = TrainState.MANUAL
-            if self.ato_running:
-                logger.warning(
-                    f"[ATO_DEBUG] Setting ato_running=False in switch_mode(MANUAL) for train {self.train_id}"
-                )
             self.ato_running = False
         else:
             # Return to STANDBY or IDLE based on cab
@@ -2533,6 +2532,10 @@ class TrainController:
         - Must be in ATO mode
         - Active cab must be set
         - Train must be in STANDBY state
+
+        ATO Automation:
+        - Automatically checks and corrects cab direction to match path
+        - Uses set_cab() for proper state updates (facing_direction, entry edges, etc.)
         """
         train = self._get_train()
         if train is None:
@@ -2546,6 +2549,27 @@ class TrainController:
 
         if self.state != TrainState.STANDBY:
             return CommandResult(False, f"Train not in STANDBY (is {self.state.value})")
+
+        # ATO Auto-correction: Check and adjust cab to match path direction
+        if self.ato_info and self.ato_info.required_cab:
+            required_cab = self.ato_info.required_cab
+            if self.active_cab != required_cab:
+                # Cab doesn't match path direction - ATO should auto-correct
+                logger.info(
+                    "[TrainController %s] ATO auto-correcting cab: %s -> %s",
+                    self.train_id,
+                    self.active_cab,
+                    required_cab,
+                )
+                result = self.set_cab(required_cab)
+                if not result.success:
+                    return CommandResult(
+                        False,
+                        f"ATO cannot start: cab auto-correction failed - {result.message}",
+                    )
+                self.pending_notifications.append(
+                    f"ATO auto-switched cab to {required_cab} for path direction"
+                )
 
         self.state = TrainState.RUNNING_MOVING
         train.state = TrainState.RUNNING_MOVING
@@ -2566,15 +2590,8 @@ class TrainController:
         if not self.ato_running:
             return CommandResult(False, "ATO not running")
 
-        logger.warning(
-            f"[ATO_DEBUG] ato_stop called for train {self.train_id}: "
-            f"ato_running BEFORE={self.ato_running}"
-        )
         # Just set ato_running=False - tick() handles the rest
         self.ato_running = False
-        logger.warning(
-            f"[ATO_DEBUG] Setting ato_running=False in ato_stop for train {self.train_id}"
-        )
 
         return CommandResult(True, "ATO stopping")
 
@@ -2608,19 +2625,7 @@ class TrainController:
     def transition_to_standby(self) -> None:
         """Transition to STANDBY state."""
         train = self._get_train()
-        logger.warning(
-            f"[ATO_DEBUG] transition_to_standby called for train {self.train_id}: "
-            f"control_mode={self.control_mode}, "
-            f"ato_running BEFORE={self.ato_running}, "
-            f"ato_destination_block_id={self.ato_destination_block_id}, "
-            f"current_block={self._get_current_block_id()}, "
-            f"state={self.state.value}"
-        )
         self.state = TrainState.STANDBY
-        if self.ato_running:
-            logger.warning(
-                f"[ATO_DEBUG] Setting ato_running=False in transition_to_standby for train {self.train_id}"
-            )
         self.ato_running = False
         if train:
             train.state = TrainState.STANDBY
@@ -2629,15 +2634,7 @@ class TrainController:
     def transition_to_idle(self) -> None:
         """Transition to IDLE state (route complete, no direction)."""
         train = self._get_train()
-        logger.warning(
-            f"[ATO_DEBUG] transition_to_idle called for train {self.train_id}: "
-            f"ato_running BEFORE={self.ato_running}"
-        )
         self.state = TrainState.IDLE
-        if self.ato_running:
-            logger.warning(
-                f"[ATO_DEBUG] Setting ato_running=False in transition_to_idle for train {self.train_id}"
-            )
         self.ato_running = False
         self.active_cab = None
         if train:
@@ -2735,17 +2732,8 @@ class TrainController:
         if self.state != TrainState.RUNNING_MOVING:
             return False
 
-        logger.warning(
-            f"[ATO_DEBUG] arrive_at_station called for train {self.train_id}: "
-            f"ato_running BEFORE={self.ato_running}, "
-            f"ato_destination_block_id={self.ato_destination_block_id}"
-        )
         self.state = TrainState.RUNNING_AT_STATION
         self.target_speed = 0.0
-        if self.ato_running:
-            logger.warning(
-                f"[ATO_DEBUG] Setting ato_running=False in arrive_at_station for train {self.train_id}"
-            )
         self.ato_running = False  # Stop ATO at station
         if train:
             train.state = TrainState.RUNNING_AT_STATION
@@ -2782,15 +2770,7 @@ class TrainController:
                 train.state = TrainState.STANDBY
         else:
             # Route complete - unassign route and go to IDLE
-            logger.warning(
-                f"[ATO_DEBUG] depart_from_station (route complete) for train {self.train_id}: "
-                f"ato_running BEFORE={self.ato_running}"
-            )
             self.state = TrainState.IDLE
-            if self.ato_running:
-                logger.warning(
-                    f"[ATO_DEBUG] Setting ato_running=False in depart_from_station(route complete) for train {self.train_id}"
-                )
             self.ato_running = False
             if train:
                 train.state = TrainState.IDLE
@@ -2955,16 +2935,8 @@ class TrainController:
         if self.state == TrainState.OFF:
             return False
 
-        logger.warning(
-            f"[ATO_DEBUG] enable_manual for train {self.train_id}: "
-            f"ato_running BEFORE={self.ato_running}"
-        )
         self.state = TrainState.MANUAL
         self.control_mode = "manual"
-        if self.ato_running:
-            logger.warning(
-                f"[ATO_DEBUG] Setting ato_running=False in enable_manual for train {self.train_id}"
-            )
         self.ato_running = False
         if train:
             train.state = TrainState.MANUAL

@@ -50,10 +50,12 @@ class TrainPosition:
     end_b_entry_edge: str
 
     # Which end is leading (front of travel direction)
-    leading_end: str = "a"  # "a" or "b"
+    # "a" or "b" when cab is active, None when no cab selected
+    leading_end: Optional[str] = "a"
 
-    # Direction train is facing
-    facing_direction: Optional[Direction] = None
+    # Legacy field - kept for backward compatibility but computed_facing_direction is preferred
+    # This field is no longer authoritative - facing_direction is computed from occupied_tiles
+    _facing_direction_legacy: Optional[Direction] = field(default=None, repr=False)
 
     # Tiles occupied (ordered from end_a to end_b)
     occupied_tiles: List[Tuple[int, int]] = field(default_factory=list)
@@ -103,11 +105,100 @@ class TrainPosition:
             self.end_b_entry_edge if self.leading_end == "a" else self.end_a_entry_edge
         )
 
+    @property
+    def facing_direction(self) -> Optional[Direction]:
+        """
+        Compute train's facing direction from the physical structure.
+
+        The train is physically connected from end_a to end_b.
+        For the leading end (head), the "forward" direction is AWAY from the other end.
+
+        Logic:
+        - If leading_end == "a": forward = direction FROM end_b TOWARD end_a (away from train body)
+        - If leading_end == "b": forward = direction FROM end_a TOWARD end_b (away from train body)
+
+        For adjacent tiles on the same position (single-tile train), fall back to legacy value.
+        """
+        # Use end_a_tile and end_b_tile directly (more reliable than occupied_tiles order)
+        if self.end_a_tile != self.end_b_tile:
+            if self.leading_end == "a":
+                # end_a is head - direction is FROM end_b TOWARD end_a
+                # We need the adjacent tile to end_a (not necessarily end_b if train spans multiple tiles)
+                # For multi-tile trains, find the tile adjacent to head in occupied_tiles
+                if len(self.occupied_tiles) >= 2:
+                    # Find index of end_a_tile in occupied_tiles
+                    try:
+                        head_idx = self.occupied_tiles.index(self.end_a_tile)
+                        # Adjacent tile is the next one in the chain toward end_b
+                        if head_idx == 0:
+                            adjacent_tile = self.occupied_tiles[1]
+                        else:
+                            adjacent_tile = self.occupied_tiles[head_idx - 1]
+                    except ValueError:
+                        # end_a_tile not in occupied_tiles, use end_b as fallback
+                        adjacent_tile = self.end_b_tile
+                else:
+                    adjacent_tile = self.end_b_tile
+                head_tile = self.end_a_tile
+            else:
+                # end_b is head - direction is FROM end_a TOWARD end_b
+                if len(self.occupied_tiles) >= 2:
+                    try:
+                        head_idx = self.occupied_tiles.index(self.end_b_tile)
+                        if head_idx == len(self.occupied_tiles) - 1:
+                            adjacent_tile = self.occupied_tiles[-2]
+                        else:
+                            adjacent_tile = self.occupied_tiles[head_idx + 1]
+                    except ValueError:
+                        adjacent_tile = self.end_a_tile
+                else:
+                    adjacent_tile = self.end_a_tile
+                head_tile = self.end_b_tile
+
+            # Calculate vector from adjacent to head (direction train is facing)
+            dx = head_tile[0] - adjacent_tile[0]
+            dy = head_tile[1] - adjacent_tile[1]
+
+            # Map to Direction enum
+            for direction in Direction:
+                if direction.value == (dx, dy):
+                    return direction
+
+        # Single-tile train or no difference: fall back to legacy or derive from entry edge
+        if self._facing_direction_legacy:
+            return self._facing_direction_legacy
+
+        # Last resort: derive from head's entry edge (opposite of entry = forward)
+        head_edge = self.head_entry_edge
+        edge_to_direction = {
+            "N": Direction.SOUTH,  # Entered from N, so facing S (away from entry)
+            "S": Direction.NORTH,
+            "E": Direction.WEST,
+            "W": Direction.EAST,
+        }
+        return edge_to_direction.get(head_edge)
+
+    @facing_direction.setter
+    def facing_direction(self, value: Optional[Direction]) -> None:
+        """
+        Setter for backward compatibility. Stores value in legacy field.
+
+        Note: The getter now computes facing_direction from occupied_tiles,
+        so this setter mainly exists to not break existing code that sets it.
+        The stored value is used as fallback for single-tile trains.
+        """
+        self._facing_direction_legacy = value
+
     def reverse(self) -> None:
-        """Swap leading end (train reverses direction)."""
+        """Swap leading end (train reverses direction).
+
+        Note: facing_direction is now computed from occupied_tiles and leading_end,
+        so changing leading_end automatically changes facing_direction.
+        """
         self.leading_end = "b" if self.leading_end == "a" else "a"
-        if self.facing_direction:
-            self.facing_direction = self.facing_direction.opposite()
+        # Also flip legacy value for single-tile train fallback
+        if self._facing_direction_legacy:
+            self._facing_direction_legacy = self._facing_direction_legacy.opposite()
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -152,7 +243,7 @@ class TrainPosition:
                 end_b_distance_cm=float(end_b.get("distance_cm", 0.0)),
                 end_b_entry_edge=end_b.get("entry_edge", "W"),
                 leading_end=data.get("leading_end", "a"),
-                facing_direction=facing_dir,
+                _facing_direction_legacy=facing_dir,
                 occupied_tiles=[tuple(t) for t in data.get("occupied_tiles", [])],
                 occupied_blocks=data.get("occupied_blocks", []),
             )
@@ -1051,24 +1142,11 @@ class Train:
             if self.position:
                 new_leading_end = cab.lower()  # "A" -> "a", "B" -> "b"
 
-                # If switching cabs (A to B or B to A), swap ALL position data
-                # between end_a and end_b. This is because the physical train
-                # doesn't move, but the designation of which end is A or B swaps.
-                if old_cab and old_cab != cab:
-                    # Swap tiles
-                    temp_tile = self.position.end_a_tile
-                    self.position.end_a_tile = self.position.end_b_tile
-                    self.position.end_b_tile = temp_tile
-
-                    # Swap distances
-                    temp_distance = self.position.end_a_distance_cm
-                    self.position.end_a_distance_cm = self.position.end_b_distance_cm
-                    self.position.end_b_distance_cm = temp_distance
-
-                    # Swap entry edges
-                    temp_entry = self.position.end_a_entry_edge
-                    self.position.end_a_entry_edge = self.position.end_b_entry_edge
-                    self.position.end_b_entry_edge = temp_entry
+                # Switching cabs does NOT move the physical train.
+                # end_a stays at its physical location, end_b stays at its physical location.
+                # Only leading_end changes to indicate which end is now "front".
+                # The entry_edge and distance flipping is handled by the controller
+                # since it requires access to the track network.
 
                 self.position.leading_end = new_leading_end
 
@@ -1081,6 +1159,9 @@ class Train:
             self.active_cab = None
             self.facing_direction = None
             self.state = TrainState.IDLE
+            # Clear leading_end when no cab selected - train has no "front"
+            if self.position:
+                self.position.leading_end = None
             return True
         return False
 

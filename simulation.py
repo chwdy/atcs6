@@ -151,6 +151,12 @@ class SimulationController:
                 and train.ato_destination_block_id
             ):
                 controller.ato_destination_block_id = train.ato_destination_block_id
+            # Inherit active_cab from train (for demo_main workflow)
+            if hasattr(train, "active_cab") and train.active_cab:
+                controller.active_cab = train.active_cab
+            # Inherit control_mode from train if set
+            if hasattr(train, "control_mode") and train.control_mode:
+                controller.control_mode = train.control_mode
             # Inherit controller state from train state
             # This ensures the controller starts in the correct state (e.g., RUNNING_MOVING)
             # when demo_main pre-configures the train

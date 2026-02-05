@@ -405,7 +405,7 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "success", "onboard": controller.to_dict()})
         return jsonify({"error": result.message}), 400
 
-    @app.route("/api/trains/<train_id>/mode", methods=["PATCH"])
+    @app.route("/api/trains/<train_id>/mode", methods=["POST"])
     def set_control_mode(train_id):
         """Set control mode (ATO or Manual)."""
         train = state.network.trains.get(train_id)
