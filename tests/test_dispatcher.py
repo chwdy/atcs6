@@ -2186,7 +2186,7 @@ class TestPathExtensionForMultiTileStations:
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
             leading_end="a",
-            facing_direction=Direction.NORTH,
+            _facing_direction_legacy=Direction.NORTH,
             occupied_tiles=[(0, 0)],
             occupied_blocks=["BLOCK_START"],
         )
@@ -2328,3 +2328,77 @@ class TestPathExtensionForMultiTileStations:
             f"Path should be COMPLETED when train reaches last station tile, "
             f"but status is {path.status}"
         )
+
+
+class TestPathCompletionAtStoppedDestination:
+    """
+    Comprehensive tests for destination-stop completion fixed in 2026-02-08.
+
+    BUG:
+    Path completion required train.head_tile == path.path_tiles[-1]. If ATO stopped
+    in the destination block before the exact final tile, the path never completed
+    and remained active/locked.
+
+    FIX:
+    When a path is in CLEARING and the train is stopped in the destination block,
+    complete the path and release resources.
+    """
+
+    def test_clearing_path_completes_when_stopped_in_end_block_before_last_tile(self):
+        """Stopped train in end block should complete path even before final tile."""
+        network = RailwayNetwork()
+
+        for y in range(5):
+            network.add_track(TrackSegment(0, y, track_bits=TRACK_NS))
+
+        network.create_block_with_tracks("BLOCK_START", [(0, 0)], name="Start")
+        network.create_block_with_tracks("BLOCK_MIDDLE", [(0, 1), (0, 2)], name="Mid")
+        network.create_block_with_tracks("BLOCK_END", [(0, 3), (0, 4)], name="End")
+
+        train = Train(
+            train_id="TRAIN_STOP_DEST",
+            consist=[TrainCar("CAR_1", "LOCOMOTIVE", 20.0)],
+        )
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=0.0,
+            end_a_entry_edge="S",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="S",
+            leading_end="a",
+            facing_direction=Direction.NORTH,
+            occupied_tiles=[(0, 0)],
+            occupied_blocks=["BLOCK_START"],
+        )
+        network.add_train(train)
+
+        dispatcher = PathDispatcher(network)
+        result = dispatcher.create_path(
+            "BLOCK_START", "BLOCK_END", train_id=train.train_id
+        )
+        assert result.success, f"Path creation failed: {result.error}"
+        path = result.path
+
+        dispatcher.on_train_enters_path(path.path_id, train.train_id, "BLOCK_START")
+        dispatcher.on_train_advances_from_physics(path.path_id, "BLOCK_END")
+        assert path.status == PathStatus.CLEARING
+
+        train.current_speed = 0.0
+        train.position = TrainPosition(
+            end_a_tile=(0, 3),
+            end_a_distance_cm=10.0,
+            end_a_entry_edge="S",
+            end_b_tile=(0, 3),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="S",
+            leading_end="a",
+            _facing_direction_legacy=Direction.NORTH,
+            occupied_tiles=[(0, 3)],
+            occupied_blocks=["BLOCK_END"],
+        )
+
+        updated = dispatcher.on_train_progress_from_physics(path.path_id)
+        assert updated is True
+        assert path.status == PathStatus.COMPLETED
+        assert path.path_id not in dispatcher.active_paths

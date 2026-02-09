@@ -1162,6 +1162,16 @@ class PathDispatcher:
         if not path.path_tiles:
             return False
 
+        # If the train has entered the destination block (CLEARING) and is fully
+        # stopped there, complete the path even if it has not reached the exact
+        # final tile. This matches station-stop behavior where ATO may stop before
+        # the physical end tile of the block.
+        if path.status == PathStatus.CLEARING and train.is_stopped():
+            head_track = self.network.get_track(*train.position.head_tile)
+            if head_track and head_track.block_section_id == path.end_block_id:
+                self._complete_path_on_head_arrival(path, train)
+                return True
+
         if train.position.head_tile == path.path_tiles[-1]:
             self._complete_path_on_head_arrival(path, train)
             return True

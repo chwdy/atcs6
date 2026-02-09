@@ -1168,11 +1168,22 @@ class TrainEditorHandler {
 
             const pathDisplay = panel.querySelector('.train-ato-path-display');
             const destinationDisplay = panel.querySelector('.train-ato-destination-display');
+            const resolvedPathId = onboard.ato_info?.path_id || train.assigned_path_id || null;
             if (pathDisplay) {
-                pathDisplay.textContent = onboard.ato_info?.path_id || train.assigned_path_id || 'No path';
+                pathDisplay.textContent = resolvedPathId || 'No path';
             }
             if (destinationDisplay) {
-                destinationDisplay.textContent = onboard.ato_info?.destination_station_name || onboard.ato_info?.destination_block_id || 'No path';
+                const onboardDestination = onboard.ato_info?.destination_station_name || onboard.ato_info?.destination_block_id || train.ato_destination_block_id || null;
+                if (onboardDestination) {
+                    destinationDisplay.textContent = onboardDestination;
+                } else if (resolvedPathId) {
+                    const previousDestination = (destinationDisplay.textContent || '').trim();
+                    destinationDisplay.textContent = previousDestination && previousDestination !== 'No path'
+                        ? previousDestination
+                        : 'Resolving...';
+                } else {
+                    destinationDisplay.textContent = 'No path';
+                }
             }
 
             const handleSlider = document.getElementById('train-handle-slider');

@@ -77,6 +77,7 @@ def register(app, state: AppState) -> None:
                             controller.ato_destination_block_id = (
                                 result.path.end_block_id
                             )
+                            train.ato_destination_block_id = result.path.end_block_id
             return jsonify(result.to_dict()), 200 if result.success else 400
         except Exception as e:
             return jsonify({"error": str(e)}), 500

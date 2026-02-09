@@ -469,6 +469,7 @@ class Train:
     # this field stores the ATO running state so SimulationController's
     # controller can inherit it.
     ato_running: bool = False
+    ato_destination_block_id: Optional[str] = None
 
     @property
     def length(self) -> float:
@@ -1263,6 +1264,7 @@ class Train:
             "speed_profile_id": self.speed_profile_id,
             "assigned_route_id": self.assigned_route_id,
             "assigned_path_id": self.assigned_path_id,
+            "ato_destination_block_id": self.ato_destination_block_id,
             "target_speed": self.target_speed,
             "manual_target_speed": self.manual_target_speed,
             "wait_reason": self.wait_reason,
@@ -1530,6 +1532,7 @@ class Train:
         train.manual_target_speed = float(data.get("manual_target_speed", 0.0))
         train.wait_reason = data.get("wait_reason")
         train.speed_limit_reason = data.get("speed_limit_reason")
+        train.ato_destination_block_id = data.get("ato_destination_block_id")
 
         # IMPORTANT: Clear path_tiles data from saved files
         # path_tiles is only used by the NEW path-queue movement system

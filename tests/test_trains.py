@@ -676,6 +676,95 @@ class TestTrainControllerMonitorLookahead:
         assert block_ids_b == ["BLOCK_2", "BLOCK_1", "BLOCK_0"]
 
 
+class TestLookaheadTrackUsabilityBugFix:
+    """
+    Comprehensive tests for lookahead usability checks fixed in 2026-02-08.
+
+    BUG:
+    After switching cabs at terminal/end-of-path situations, lookahead scanned all
+    tiles in the stored path even when the route was physically unusable (switch set
+    against movement) or not owned (locked by another path).
+
+    FIX:
+    Lookahead traversal now validates each path step against active switch state and
+    path ownership/locks. It stops at the first unusable step so ATO braking curves
+    are based on truly reachable track only.
+    """
+
+    def _build_three_tile_with_switch(self, network: RailwayNetwork) -> Train:
+        """Create 0-1-2 path where tile 1 is an EW/NW switch."""
+        track_0 = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        track_0.block_section_id = "BLOCK_0"
+        network.add_track(track_0)
+
+        track_1 = TrackSegment(x=1, y=0, track_bits=TRACK_EW | TRACK_NW)
+        track_1.block_section_id = "BLOCK_1"
+        track_1.switch_state = 0
+        network.add_track(track_1)
+
+        track_2 = TrackSegment(x=2, y=0, track_bits=TRACK_EW)
+        track_2.block_section_id = "BLOCK_2"
+        network.add_track(track_2)
+
+        for block_id in ("BLOCK_0", "BLOCK_1", "BLOCK_2"):
+            network.blocks[block_id] = Block(block_id=block_id, name=block_id)
+
+        train = Train(train_id="TRAIN_LOOKAHEAD_USABILITY")
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=10.0,
+            end_a_entry_edge="W",
+            end_b_tile=(2, 0),
+            end_b_distance_cm=10.0,
+            end_b_entry_edge="E",
+            leading_end="a",
+            _facing_direction_legacy=Direction.EAST,
+        )
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 0
+        train.assigned_path_id = "PATH_OWN"
+        network.add_train(train)
+        return train
+
+    def test_lookahead_stops_before_wrong_side_switch_after_cab_change(self, network):
+        """Switch set against movement must truncate reverse lookahead at current tile."""
+        train = self._build_three_tile_with_switch(network)
+        network.get_track(1, 0).switch_state = 1
+
+        controller = TrainController(train_id=train.train_id, network=network)
+        controller.set_cab("A")
+        controller.set_cab("B")
+
+        payload = controller.get_monitor_lookahead()
+        block_ids = [block["id"] for block in payload["lookahead"]["blocks"]]
+
+        assert payload["head_tile"] == [2, 0]
+        assert block_ids == ["BLOCK_2"], (
+            f"Lookahead should stop at wrong-side switch. Got blocks: {block_ids}"
+        )
+
+    def test_lookahead_stops_before_switch_locked_by_other_path(self, network):
+        """Lookahead must not traverse a switch locked by another path."""
+        train = self._build_three_tile_with_switch(network)
+        switch_track = network.get_track(1, 0)
+        switch_track.lock_for_path("PATH_OTHER", 0)
+
+        controller = TrainController(train_id=train.train_id, network=network)
+        controller.set_cab("A")
+
+        payload = controller.get_monitor_lookahead()
+        block_ids = [block["id"] for block in payload["lookahead"]["blocks"]]
+
+        assert payload["head_tile"] == [0, 0]
+        assert block_ids == ["BLOCK_0"], (
+            f"Lookahead should stop before foreign-locked switch. Got blocks: {block_ids}"
+        )
+
+
 class TestTrainPropertyUpdate:
     """Tests for train property updates."""
 
@@ -3238,6 +3327,71 @@ class TestAtoDestinationStoppingAfterPathCompletes:
             f"ato_destination_block_id should persist through depart(), "
             f"but got {controller.ato_destination_block_id}"
         )
+
+
+class TestAtoInfoPersistenceWithoutActivePath:
+    """
+    Comprehensive tests for onboard ATO info persistence fixed in 2026-02-08.
+
+    BUG:
+    `TrainController._calculate_ato_info()` returned None when `assigned_path_id`
+    was cleared, even if destination intent (`ato_destination_block_id`) still
+    existed. This caused panels to show "No path"/missing destination while the
+    onboard controller should still expose destination context.
+
+    FIX:
+    Build `ato_info` from destination block even without active path ID.
+    """
+
+    def test_ato_info_keeps_destination_when_path_id_cleared(self, network):
+        for x in range(2):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track.block_section_id = "BLOCK_DEST"
+            network.add_track(track)
+
+        network.blocks["BLOCK_DEST"] = Block(block_id="BLOCK_DEST", name="Destination")
+
+        train = Train(train_id="TRAIN_ATO_INFO")
+        train.position = make_train_position(
+            head_tile=(0, 0),
+            _facing_direction_legacy=Direction.EAST,
+            head_distance_cm=10.0,
+        )
+        train.assigned_path_id = None
+        train.ato_destination_block_id = "BLOCK_DEST"
+        network.add_train(train)
+
+        controller = TrainController(train_id=train.train_id, network=network)
+        controller.ato_destination_block_id = "BLOCK_DEST"
+        controller.ato_info = controller._calculate_ato_info()
+
+        assert controller.ato_info is not None
+        assert controller.ato_info.destination_block_id == "BLOCK_DEST"
+
+    def test_simulation_controller_inherits_destination_from_train_field(self, network):
+        for x in range(2):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track.block_section_id = "BLOCK_DEST"
+            network.add_track(track)
+
+        network.blocks["BLOCK_DEST"] = Block(block_id="BLOCK_DEST", name="Destination")
+
+        train = Train(train_id="TRAIN_ATO_INFO_SIM")
+        train.position = make_train_position(
+            head_tile=(0, 0),
+            _facing_direction_legacy=Direction.EAST,
+            head_distance_cm=10.0,
+        )
+        train.ato_destination_block_id = "BLOCK_DEST"
+        network.add_train(train)
+
+        sim = SimulationController(network)
+        controller = sim._get_or_create_controller(train)
+        controller.ato_info = controller._calculate_ato_info()
+
+        assert controller.ato_destination_block_id == "BLOCK_DEST"
+        assert controller.ato_info is not None
+        assert controller.ato_info.destination_block_id == "BLOCK_DEST"
 
 
 class TestShorterMarginWithStationEnd:

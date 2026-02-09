@@ -66,6 +66,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+OPPOSITE_EDGES = {"N": "S", "S": "N", "E": "W", "W": "E"}
+
 
 ATC_SAFETY_MARGIN_CM = 25.0
 ATC_PLATFORM_SAFETY_MARGIN_CM = 5.0
@@ -951,6 +953,100 @@ class TrainController:
             return Direction.SOUTH
         return None
 
+    def _direction_to_edge(self, direction: Direction) -> Optional[str]:
+        """Convert Direction enum to edge token (N/E/S/W)."""
+        if direction == Direction.NORTH:
+            return "N"
+        if direction == Direction.EAST:
+            return "E"
+        if direction == Direction.SOUTH:
+            return "S"
+        if direction == Direction.WEST:
+            return "W"
+        return None
+
+    def _get_head_entry_edge(self, train: "Train") -> Optional[str]:
+        """Get the current head tile entry edge based on leading end."""
+        if not train.position:
+            return None
+
+        if train.position.leading_end == "a":
+            return train.position.end_a_entry_edge
+        if train.position.leading_end == "b":
+            return train.position.end_b_entry_edge
+        return None
+
+    def _can_traverse_path_step(
+        self,
+        train: "Train",
+        from_tile: Tuple[int, int],
+        to_tile: Tuple[int, int],
+        entry_edge_into_from: Optional[str],
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Check whether traversal from one path tile to the next is currently usable.
+
+        Returns:
+            (is_traversable, entry_edge_into_to_tile)
+        """
+        if not self.network:
+            return False, None
+
+        from_track = self.network.get_track(from_tile[0], from_tile[1])
+        to_track = self.network.get_track(to_tile[0], to_tile[1])
+        if not from_track or not to_track:
+            return False, None
+
+        direction = self._direction_between_tiles(from_tile, to_tile)
+        if direction is None:
+            return False, None
+
+        exit_edge = self._direction_to_edge(direction)
+        if not exit_edge:
+            return False, None
+
+        to_entry_edge = OPPOSITE_EDGES.get(exit_edge)
+        if not to_entry_edge:
+            return False, None
+
+        assigned_path_id = train.assigned_path_id
+
+        for tile_track in (from_track, to_track):
+            if tile_track.is_switch and tile_track.is_locked_by_path():
+                if (
+                    not assigned_path_id
+                    or tile_track.locked_by_path != assigned_path_id
+                ):
+                    return False, None
+
+        if (
+            to_track.block_section_id
+            and self.network
+            and to_track.block_section_id in self.network.blocks
+        ):
+            target_block = self.network.blocks[to_track.block_section_id]
+            if target_block.reserved_by_path:
+                if (
+                    not assigned_path_id
+                    or target_block.reserved_by_path != assigned_path_id
+                ):
+                    return False, None
+
+        if entry_edge_into_from:
+            from_exits = from_track.get_exits(
+                entry_edge_into_from, use_switch_state=True
+            )
+            if exit_edge not in from_exits:
+                return False, None
+        elif exit_edge not in from_track.edges:
+            return False, None
+
+        to_exits = to_track.get_exits(to_entry_edge, use_switch_state=True)
+        if not to_exits:
+            return False, None
+
+        return True, to_entry_edge
+
     def _get_path_scan_step(self, train: "Train", head_path_index: int) -> int:
         """
         Determine whether lookahead should scan path forward (+1) or backward (-1).
@@ -1370,9 +1466,15 @@ class TrainController:
         if not train or not self.network:
             return None
 
-        # Get assigned path
+        # Path ID is helpful for display, but destination should remain available
+        # even when the active path has already been cleared.
         path_id = train.assigned_path_id or self.ato_path_id
-        if not path_id:
+
+        destination_block_id = self.ato_destination_block_id or getattr(
+            train, "ato_destination_block_id", None
+        )
+
+        if not path_id and not destination_block_id:
             return None
 
         # Get path from network
@@ -1380,7 +1482,7 @@ class TrainController:
         if hasattr(self.network, "paths"):
             path = self.network.paths.get(path_id)
 
-        if not path:
+        if path_id and not path and not destination_block_id:
             return ATOInfo(path_id=path_id)
 
         # Determine path heading and required cab
@@ -1397,9 +1499,8 @@ class TrainController:
                 required_cab = "A"  # Cab A faces forward
 
         # Get destination info - simple logic:
-        # 1. Use ato_destination_block_id if set
-        # 2. Fallback: use current block in heading direction (no path case)
-        destination_block_id = self.ato_destination_block_id
+        # 1. Use ato_destination_block_id if set (controller/train)
+        # 2. Fallback: use current block in heading direction (no destination case)
         destination_station_name = None
 
         # If no destination block set, fallback to current block
@@ -3403,6 +3504,7 @@ class TrainController:
         seen_signals: set[str] = set()
         seen_switches: set[Tuple[int, int]] = set()
         seen_stations: set[str] = set()
+        current_entry_edge: Optional[str] = None
 
         loop_end = len(train.current_path) if path_scan_step == 1 else -1
         for i in range(head_path_index, loop_end, path_scan_step):
@@ -3559,7 +3661,21 @@ class TrainController:
                         }
                     )
 
-            cumulative_distance_cm += tile_length
+            next_index = i + path_scan_step
+            if 0 <= next_index < len(train.current_path):
+                next_entry = train.current_path[next_index]
+                can_traverse, next_entry_edge = self._can_traverse_path_step(
+                    train,
+                    (x, y),
+                    (next_entry[0], next_entry[1]),
+                    current_entry_edge,
+                )
+                cumulative_distance_cm += tile_length
+                if not can_traverse:
+                    break
+                current_entry_edge = next_entry_edge
+            else:
+                cumulative_distance_cm += tile_length
 
         clearance_cm = max(0.0, cumulative_distance_cm)
 
