@@ -1,6 +1,18 @@
 class EditorUIHandler {
     constructor(editor) {
         this.editor = editor;
+        this.secondaryPanelHistoryBack = [];
+        this.secondaryPanelHistoryForward = [];
+        this.currentSecondaryPanel = null;
+        this.isHistoryNavigation = false;
+        this.isTabNavigation = false;
+        this.maxSecondaryHistory = 50;
+        this.currentBreadcrumbSegments = [];
+        this.secondaryTabs = [];
+        this.activeSecondaryTabId = null;
+        this.maxSecondaryTabs = 8;
+        this.secondaryPanelPinned = false;
+        this.secondaryInspectorStorageKey = 'secondaryInspectorStateV1';
     }
 
     get selectedTool() { return this.editor.selectedTool; }
@@ -8,8 +20,81 @@ class EditorUIHandler {
     setupSecondarySidebar() {
         const closeBtn = document.getElementById('close-secondary-sidebar');
         if (closeBtn) {
-            closeBtn.addEventListener('click', () => this.hideSecondarySidebar());
+            closeBtn.addEventListener('click', async () => {
+                if (this.activeSecondaryTabId) {
+                    await this.closeSecondaryTab(this.activeSecondaryTabId);
+                    return;
+                }
+                await this.hideSecondarySidebar();
+            });
         }
+
+        const backBtn = document.getElementById('secondary-nav-back');
+        if (backBtn) {
+            backBtn.addEventListener('click', async () => {
+                await this.goBackSecondaryPanel();
+            });
+        }
+
+        const forwardBtn = document.getElementById('secondary-nav-forward');
+        if (forwardBtn) {
+            forwardBtn.addEventListener('click', async () => {
+                await this.goForwardSecondaryPanel();
+            });
+        }
+
+        const pinBtn = document.getElementById('secondary-nav-pin');
+        if (pinBtn) {
+            pinBtn.addEventListener('click', () => {
+                this.secondaryPanelPinned = !this.secondaryPanelPinned;
+                this.updateSecondaryNavigationState();
+                this.persistSecondaryInspectorState();
+            });
+        }
+
+        const tabsEl = document.getElementById('secondary-sidebar-tabs');
+        if (tabsEl) {
+            tabsEl.addEventListener('click', async (event) => {
+                const closeBtn = event.target.closest('.secondary-tab-close[data-tab-id]');
+                if (closeBtn) {
+                    event.stopPropagation();
+                    const tabId = closeBtn.dataset.tabId;
+                    if (tabId) {
+                        await this.closeSecondaryTab(tabId);
+                    }
+                    return;
+                }
+
+                const labelBtn = event.target.closest('.secondary-tab-label[data-tab-id]');
+                if (labelBtn) {
+                    const tabId = labelBtn.dataset.tabId;
+                    if (tabId) {
+                        await this.activateSecondaryTab(tabId);
+                    }
+                }
+            });
+        }
+
+        const breadcrumb = document.getElementById('secondary-sidebar-breadcrumb');
+        if (breadcrumb) {
+            breadcrumb.addEventListener('click', async (event) => {
+                const target = event.target.closest('.secondary-breadcrumb-segment[data-breadcrumb-index]');
+                if (!target) {
+                    return;
+                }
+                const index = parseInt(target.dataset.breadcrumbIndex, 10);
+                if (Number.isNaN(index)) {
+                    return;
+                }
+                await this.navigateBreadcrumbSegment(index);
+            });
+        }
+
+        this.updateSecondaryNavigationState();
+        this.loadSecondaryInspectorState();
+        setTimeout(async () => {
+            await this.restoreSecondaryInspectorState();
+        }, 0);
     }
 
     setupCollapsibleCategories() {
@@ -97,6 +182,15 @@ class EditorUIHandler {
         const contentEl = document.getElementById('secondary-sidebar-content');
 
         if (sidebar && titleEl && contentEl) {
+            if (!this.isHistoryNavigation && !this.isTabNavigation && sidebar.classList.contains('visible') && this.currentSecondaryPanel) {
+                const currentKey = `${this.currentSecondaryPanel.editorType || '__none__'}:${this.currentSecondaryPanel.editorId || '__none__'}`;
+                const nextKey = `${this.editor._currentEditorType || '__none__'}:${this.editor._currentEditorId || '__none__'}`;
+                if (currentKey !== nextKey) {
+                    this.pushSecondaryHistoryBack(this.currentSecondaryPanel);
+                    this.secondaryPanelHistoryForward = [];
+                }
+            }
+
             titleEl.textContent = title;
             contentEl.innerHTML = content;
             
@@ -104,16 +198,348 @@ class EditorUIHandler {
             
             
             sidebar.classList.add('visible');
+
+            this.currentSecondaryPanel = {
+                title,
+                content,
+                editorType: this.editor._currentEditorType,
+                editorId: this.editor._currentEditorId,
+            };
+            this.syncSecondaryTabsWithCurrentPanel();
+            this.renderSecondaryTabs();
+            this.renderSecondaryBreadcrumb();
+            this.updateSecondaryNavigationState();
+            this.persistSecondaryInspectorState();
         }
     }
 
-    hideSecondarySidebar() {
+    async hideSecondarySidebar() {
         const sidebar = document.getElementById('secondary-sidebar');
         if (sidebar) {
             sidebar.classList.remove('visible');
             sidebar.classList.remove('compact');
         }
+
+        this.cleanupSecondaryPanelSubscriptions();
+
+        this.secondaryPanelHistoryBack = [];
+        this.secondaryPanelHistoryForward = [];
+        this.currentSecondaryPanel = null;
+        this.currentBreadcrumbSegments = [];
+        this.secondaryTabs = [];
+        this.activeSecondaryTabId = null;
+        this.renderSecondaryTabs();
+        this.renderSecondaryBreadcrumb();
+        this.updateSecondaryNavigationState();
+        this.persistSecondaryInspectorState();
         
+        this.editor._currentEditorType = null;
+        this.editor._currentEditorId = null;
+    }
+
+    async goBackSecondaryPanel() {
+        if (this.secondaryPanelHistoryBack.length === 0) {
+            return;
+        }
+
+        const previousPanel = this.secondaryPanelHistoryBack.pop();
+        if (this.currentSecondaryPanel) {
+            this.secondaryPanelHistoryForward.push(this.currentSecondaryPanel);
+        }
+        await this.restoreSecondaryHistoryPanel(previousPanel);
+        this.persistSecondaryInspectorState();
+    }
+
+    async goForwardSecondaryPanel() {
+        if (this.secondaryPanelHistoryForward.length === 0) {
+            return;
+        }
+
+        const nextPanel = this.secondaryPanelHistoryForward.pop();
+        if (this.currentSecondaryPanel) {
+            this.pushSecondaryHistoryBack(this.currentSecondaryPanel);
+        }
+        await this.restoreSecondaryHistoryPanel(nextPanel);
+        this.persistSecondaryInspectorState();
+    }
+
+    async navigateBreadcrumbSegment(index) {
+        if (!this.currentSecondaryPanel || index < 0 || index >= this.currentBreadcrumbSegments.length) {
+            return;
+        }
+        if (index === this.currentBreadcrumbSegments.length - 1) {
+            return;
+        }
+
+        const segment = this.currentBreadcrumbSegments[index];
+        if (!segment || !segment.editorType) {
+            return;
+        }
+
+        const targetPanel = {
+            title: segment.label,
+            editorType: segment.editorType,
+            editorId: segment.editorId || null,
+            content: '',
+        };
+
+        this.pushSecondaryHistoryBack(this.currentSecondaryPanel);
+        this.secondaryPanelHistoryForward = [];
+        await this.restoreSecondaryHistoryPanel(targetPanel);
+        this.persistSecondaryInspectorState();
+    }
+
+    pushSecondaryHistoryBack(panelSnapshot) {
+        this.secondaryPanelHistoryBack.push(panelSnapshot);
+        if (this.secondaryPanelHistoryBack.length > this.maxSecondaryHistory) {
+            this.secondaryPanelHistoryBack.shift();
+        }
+    }
+
+    async restoreSecondaryHistoryPanel(panelSnapshot) {
+        this.cleanupSecondaryPanelSubscriptions();
+        this.isHistoryNavigation = true;
+        try {
+            const restored = await this.editor.restoreSecondaryPanel(panelSnapshot);
+            if (!restored) {
+                this.editor._currentEditorType = panelSnapshot.editorType || null;
+                this.editor._currentEditorId = panelSnapshot.editorId || null;
+                this.showSecondarySidebar(panelSnapshot.title || 'Editor', panelSnapshot.content || '');
+            }
+        } finally {
+            this.isHistoryNavigation = false;
+            this.updateSecondaryNavigationState();
+        }
+    }
+
+    makeSecondaryPanelKey(panelSnapshot) {
+        const type = panelSnapshot?.editorType || '__none__';
+        const id = panelSnapshot?.editorId || '__none__';
+        return `${type}:${id}`;
+    }
+
+    createSecondaryTabSnapshot(panelSnapshot) {
+        const type = panelSnapshot?.editorType || null;
+        const id = panelSnapshot?.editorId || null;
+        const key = this.makeSecondaryPanelKey(panelSnapshot);
+        return {
+            tabId: `${type || 'panel'}:${id || Date.now()}`,
+            key,
+            title: panelSnapshot?.title || 'Editor',
+            editorType: type,
+            editorId: id,
+            content: panelSnapshot?.content || '',
+        };
+    }
+
+    syncSecondaryTabsWithCurrentPanel() {
+        if (!this.currentSecondaryPanel || this.isTabNavigation) {
+            return;
+        }
+
+        const key = this.makeSecondaryPanelKey(this.currentSecondaryPanel);
+        const existingTab = this.secondaryTabs.find(tab => tab.key === key);
+
+        if (existingTab) {
+            existingTab.title = this.currentSecondaryPanel.title;
+            existingTab.editorType = this.currentSecondaryPanel.editorType;
+            existingTab.editorId = this.currentSecondaryPanel.editorId;
+            existingTab.content = this.currentSecondaryPanel.content;
+            this.activeSecondaryTabId = existingTab.tabId;
+            return;
+        }
+
+        const nextTab = this.createSecondaryTabSnapshot(this.currentSecondaryPanel);
+        this.secondaryTabs.push(nextTab);
+        if (this.secondaryTabs.length > this.maxSecondaryTabs) {
+            const removeIndex = this.secondaryTabs.findIndex(tab => tab.tabId !== this.activeSecondaryTabId);
+            if (removeIndex >= 0) {
+                this.secondaryTabs.splice(removeIndex, 1);
+            } else {
+                this.secondaryTabs.shift();
+            }
+        }
+        this.activeSecondaryTabId = nextTab.tabId;
+        this.persistSecondaryInspectorState();
+    }
+
+    renderSecondaryTabs() {
+        const tabsEl = document.getElementById('secondary-sidebar-tabs');
+        if (!tabsEl) {
+            return;
+        }
+
+        if (this.secondaryTabs.length === 0) {
+            tabsEl.innerHTML = '';
+            return;
+        }
+
+        tabsEl.innerHTML = this.secondaryTabs.map(tab => {
+            const safeTitle = this.escapeHtml(tab.title || 'Editor');
+            const activeClass = tab.tabId === this.activeSecondaryTabId ? ' active' : '';
+            return `<div class="secondary-tab${activeClass}" title="${safeTitle}">`
+                + `<button class="secondary-tab-label" data-tab-id="${tab.tabId}">${safeTitle}</button>`
+                + `<button class="secondary-tab-close" data-tab-id="${tab.tabId}" title="Close tab">×</button>`
+                + `</div>`;
+        }).join('');
+    }
+
+    async activateSecondaryTab(tabId) {
+        const tab = this.secondaryTabs.find(t => t.tabId === tabId);
+        if (!tab) {
+            return;
+        }
+
+        if (tab.tabId === this.activeSecondaryTabId) {
+            return;
+        }
+
+        if (this.currentSecondaryPanel) {
+            const currentTab = this.secondaryTabs.find(t => t.tabId === this.activeSecondaryTabId);
+            if (currentTab) {
+                currentTab.title = this.currentSecondaryPanel.title;
+                currentTab.editorType = this.currentSecondaryPanel.editorType;
+                currentTab.editorId = this.currentSecondaryPanel.editorId;
+                currentTab.content = this.currentSecondaryPanel.content;
+            }
+        }
+
+        this.activeSecondaryTabId = tab.tabId;
+        this.renderSecondaryTabs();
+
+        await this.restoreSecondaryTabPanel(tab);
+        this.persistSecondaryInspectorState();
+    }
+
+    async closeSecondaryTab(tabId) {
+        const index = this.secondaryTabs.findIndex(t => t.tabId === tabId);
+        if (index < 0) {
+            return;
+        }
+
+        const wasActive = this.secondaryTabs[index].tabId === this.activeSecondaryTabId;
+        this.secondaryTabs.splice(index, 1);
+
+        if (this.secondaryTabs.length === 0) {
+            this.activeSecondaryTabId = null;
+            this.renderSecondaryTabs();
+            await this.hideSecondarySidebar();
+            return;
+        }
+
+        if (wasActive) {
+            const nextIndex = Math.min(index, this.secondaryTabs.length - 1);
+            this.activeSecondaryTabId = this.secondaryTabs[nextIndex].tabId;
+            this.renderSecondaryTabs();
+            await this.restoreSecondaryTabPanel(this.secondaryTabs[nextIndex]);
+            this.persistSecondaryInspectorState();
+            return;
+        }
+
+        this.renderSecondaryTabs();
+        this.persistSecondaryInspectorState();
+    }
+
+    async restoreSecondaryTabPanel(tabSnapshot) {
+        this.cleanupSecondaryPanelSubscriptions();
+        this.isTabNavigation = true;
+        try {
+            const restored = await this.editor.restoreSecondaryPanel(tabSnapshot);
+            if (!restored) {
+                this.editor._currentEditorType = tabSnapshot.editorType || null;
+                this.editor._currentEditorId = tabSnapshot.editorId || null;
+                this.showSecondarySidebar(tabSnapshot.title || 'Editor', tabSnapshot.content || '');
+            }
+        } finally {
+            this.isTabNavigation = false;
+            this.renderSecondaryTabs();
+            this.updateSecondaryNavigationState();
+        }
+    }
+
+    isSecondaryPanelPinned() {
+        return this.secondaryPanelPinned;
+    }
+
+    closeActiveSecondaryTab() {
+        if (!this.activeSecondaryTabId) {
+            return this.hideSecondarySidebar();
+        }
+        return this.closeSecondaryTab(this.activeSecondaryTabId);
+    }
+
+    persistSecondaryInspectorState() {
+        const tabs = this.secondaryTabs.map(tab => ({
+            tabId: tab.tabId,
+            key: tab.key,
+            title: tab.title,
+            editorType: tab.editorType,
+            editorId: tab.editorId,
+        }));
+
+        const payload = {
+            pinned: this.secondaryPanelPinned,
+            activeTabId: this.activeSecondaryTabId,
+            tabs,
+        };
+
+        try {
+            localStorage.setItem(this.secondaryInspectorStorageKey, JSON.stringify(payload));
+        } catch (e) {
+        }
+    }
+
+    loadSecondaryInspectorState() {
+        try {
+            const raw = localStorage.getItem(this.secondaryInspectorStorageKey);
+            if (!raw) {
+                return;
+            }
+
+            const parsed = JSON.parse(raw);
+            this.secondaryPanelPinned = parsed?.pinned === true;
+
+            const tabs = Array.isArray(parsed?.tabs) ? parsed.tabs : [];
+            this.secondaryTabs = tabs
+                .filter(tab => tab && tab.editorType)
+                .slice(0, this.maxSecondaryTabs)
+                .map(tab => ({
+                    tabId: tab.tabId || `${tab.editorType}:${tab.editorId || Date.now()}`,
+                    key: tab.key || this.makeSecondaryPanelKey(tab),
+                    title: tab.title || 'Editor',
+                    editorType: tab.editorType,
+                    editorId: tab.editorId || null,
+                    content: '',
+                }));
+
+            if (this.secondaryTabs.length > 0) {
+                const activeId = parsed?.activeTabId;
+                const activeExists = this.secondaryTabs.some(tab => tab.tabId === activeId);
+                this.activeSecondaryTabId = activeExists ? activeId : this.secondaryTabs[0].tabId;
+            } else {
+                this.activeSecondaryTabId = null;
+            }
+
+            this.renderSecondaryTabs();
+            this.updateSecondaryNavigationState();
+        } catch (e) {
+        }
+    }
+
+    async restoreSecondaryInspectorState() {
+        if (!this.activeSecondaryTabId || this.secondaryTabs.length === 0) {
+            return;
+        }
+
+        const activeTab = this.secondaryTabs.find(tab => tab.tabId === this.activeSecondaryTabId);
+        if (!activeTab) {
+            return;
+        }
+
+        await this.restoreSecondaryTabPanel(activeTab);
+    }
+
+    cleanupSecondaryPanelSubscriptions() {
         // Phase 3-4: Cleanup subscriptions for all handlers
         if (this.editor.trainHandler?._cleanup) this.editor.trainHandler._cleanup();
         if (this.editor.signalHandler?._cleanup) this.editor.signalHandler._cleanup();
@@ -121,9 +547,76 @@ class EditorUIHandler {
         if (this.editor.blockHandler?._cleanup) this.editor.blockHandler._cleanup();
         if (this.editor.platformHandler?._cleanup) this.editor.platformHandler._cleanup();
         if (this.editor.stationGroupHandler?._cleanup) this.editor.stationGroupHandler._cleanup();
-        
-        this.editor._currentEditorType = null;
-        this.editor._currentEditorId = null;
+    }
+
+    renderSecondaryBreadcrumb() {
+        const breadcrumbEl = document.getElementById('secondary-sidebar-breadcrumb');
+        if (!breadcrumbEl) {
+            return;
+        }
+
+        if (!this.currentSecondaryPanel) {
+            breadcrumbEl.innerHTML = '';
+            this.currentBreadcrumbSegments = [];
+            return;
+        }
+
+        const segments = this.editor.getBreadcrumbForEntityView(this.currentSecondaryPanel) || [];
+        this.currentBreadcrumbSegments = segments;
+
+        if (segments.length === 0) {
+            breadcrumbEl.innerHTML = '';
+            return;
+        }
+
+        let html = '';
+        for (let i = 0; i < segments.length; i++) {
+            const segment = segments[i];
+            const isLast = i === segments.length - 1;
+            const segmentLabel = this.escapeHtml(segment.label || 'Editor');
+
+            if (isLast || !segment.editorType) {
+                html += `<span class="secondary-breadcrumb-current">${segmentLabel}</span>`;
+            } else {
+                html += `<button class="secondary-breadcrumb-segment" data-breadcrumb-index="${i}">${segmentLabel}</button>`;
+                html += `<span class="secondary-breadcrumb-separator">></span>`;
+            }
+        }
+
+        breadcrumbEl.innerHTML = html;
+    }
+
+    escapeHtml(text) {
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    updateSecondaryNavigationState() {
+        const closeBtn = document.getElementById('close-secondary-sidebar');
+        if (!closeBtn) {
+            return;
+        }
+        closeBtn.title = 'Close';
+
+        const backBtn = document.getElementById('secondary-nav-back');
+        if (backBtn) {
+            backBtn.disabled = this.secondaryPanelHistoryBack.length === 0;
+        }
+
+        const forwardBtn = document.getElementById('secondary-nav-forward');
+        if (forwardBtn) {
+            forwardBtn.disabled = this.secondaryPanelHistoryForward.length === 0;
+        }
+
+        const pinBtn = document.getElementById('secondary-nav-pin');
+        if (pinBtn) {
+            pinBtn.classList.toggle('active', this.secondaryPanelPinned);
+            pinBtn.title = this.secondaryPanelPinned ? 'Unpin inspector' : 'Pin inspector';
+        }
     }
 
     showFullJSONViewer(data, title = 'JSON Viewer') {

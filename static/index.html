@@ -227,9 +227,16 @@
                     <!-- Secondary sidebar for editors (block, signal details) - positioned to the right of main sidebar -->
                     <aside class="secondary-sidebar" id="secondary-sidebar">
                         <div class="secondary-sidebar-header">
+                            <div class="secondary-sidebar-nav">
+                                <button class="secondary-nav-btn" id="secondary-nav-back" title="Back" aria-label="Go back">←</button>
+                                <button class="secondary-nav-btn" id="secondary-nav-forward" title="Forward" aria-label="Go forward">→</button>
+                                <button class="secondary-nav-btn" id="secondary-nav-pin" title="Pin inspector" aria-label="Pin inspector">📌</button>
+                            </div>
                             <h3 id="secondary-sidebar-title">Editor</h3>
                             <button class="close-btn" id="close-secondary-sidebar" title="Close">×</button>
                         </div>
+                        <div class="secondary-sidebar-tabs" id="secondary-sidebar-tabs"></div>
+                        <div class="secondary-sidebar-breadcrumb" id="secondary-sidebar-breadcrumb"></div>
                         <div class="secondary-sidebar-content" id="secondary-sidebar-content">
                             <!-- Dynamic content will be injected here -->
                         </div>

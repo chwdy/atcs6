@@ -20,6 +20,7 @@ class RouteEditorHandler {
         this.currentRouteStatus = null;
         this.waypointClickMode = false;
         this.viabilityResults = new Map(); // Cache viability results
+        this.waypointHighlightTimeout = null;
     }
 
     get api() { return this.editor.api; }
@@ -27,6 +28,7 @@ class RouteEditorHandler {
     get cachedNetwork() { return this.editor.cachedNetwork; }
 
     rerenderRouteEditor() {
+        this.normalizeWaypointFlexibility();
         const content = this.buildRouteEditorHTML();
         this.editor.showSecondarySidebar('🛤️ Route Editor', content);
         setTimeout(() => this.initRouteEditorHandlers(), 0);
@@ -276,34 +278,41 @@ class RouteEditorHandler {
 
     renderRouteHeader(route) {
         const modeOptions = [
-            { value: 'one_off', label: 'One-off' },
-            { value: 'circular', label: 'Circular' },
-            { value: 'round_trip', label: 'Round-trip' }
+            { value: 'one_off', label: 'One-off Run' },
+            { value: 'circular', label: 'Circular Loop' },
+            { value: 'round_trip', label: 'Round-trip Shuttle' }
         ];
-
+        
         const modeSelect = modeOptions.map(opt => 
             `<option value="${opt.value}" ${route.mode === opt.value ? 'selected' : ''}>${opt.label}</option>`
         ).join('');
 
+        const waypointCount = route.waypoints?.length || 0;
+        const assignedCount = route.assigned_train_ids?.length || 0;
+
         return `
-            <div class="route-header">
-                <div class="property-item mb-12">
-                    <label class="property-label">Route Name</label>
-                    <input type="text" id="route-name-input" class="property-input" 
-                           value="${route.name || ''}" placeholder="Enter route name">
+            <div class="route-editor-header">
+                <div class="route-header-row">
+                    <div class="route-header-col">
+                        <label class="property-label">Route Name</label>
+                        <input type="text" id="route-name-input" class="property-input" 
+                               value="${route.name || ''}" placeholder="Enter name">
+                    </div>
                 </div>
-                
-                <div class="property-item">
-                    <label class="property-label">Mode</label>
-                    <select id="route-mode-select" class="property-input">
-                        ${modeSelect}
-                    </select>
-                </div>
-                
-                <div class="text-xs text-muted mt-8" style="line-height: 1.4;">
-                    ${route.mode === 'one_off' ? 'Train runs once through all waypoints then stops' : ''}
-                    ${route.mode === 'circular' ? 'Train continuously cycles through waypoints' : ''}
-                    ${route.mode === 'round_trip' ? 'Train bounces back and forth between endpoints' : ''}
+
+                <div class="route-header-row">
+                    <div class="route-header-col">
+                        <label class="property-label">Mode</label>
+                        <select id="route-mode-select" class="property-input">
+                            ${modeSelect}
+                        </select>
+                    </div>
+                    <div class="route-header-col narrow">
+                         <label class="property-label">Statistics</label>
+                         <div class="property-value" style="padding: 10px 12px; height: 38px; display: flex; align-items: center;">
+                            <span class="text-xs text-muted">${waypointCount} stops · ${assignedCount} trains</span>
+                         </div>
+                    </div>
                 </div>
             </div>
         `;
@@ -315,74 +324,236 @@ class RouteEditorHandler {
         
         if (index > 0) {
             if (viability === undefined) {
-                viabilityHtml = '<span class="text-muted">Checking...</span>';
+                viabilityHtml = '<span class="text-muted" title="Checking path...">⏳</span>';
             } else if (viability.viable) {
-                viabilityHtml = `<span class="text-success">✓ ${viability.hop_count} blocks</span>`;
+                viabilityHtml = `<span class="text-success" title="Path viable: ${viability.hop_count} blocks">✓ ${viability.hop_count} blk</span>`;
             } else {
-                viabilityHtml = `<span class="text-danger">✗ ${viability.error || 'No path'}</span>`;
+                viabilityHtml = `<span class="text-danger" title="${viability.error || 'No path'}">✗ Error</span>`;
             }
-        } else {
-            viabilityHtml = '<span class="text-muted">Start</span>';
         }
 
-        const platformName = waypoint.platform_id || 'Unknown';
+        const platformInfo = this.getPlatformInfo(waypoint.platform_id);
+        const platformName = platformInfo.name || waypoint.platform_id || 'Unknown';
+        const platformId = waypoint.platform_id || 'Unknown';
+        
         const dwellTime = waypoint.dwell_time_sec || 30;
-        const isFlexible = waypoint.flexible_platform || false;
+        const supportsFlexible = this.canUseFlexiblePlatform(waypoint.platform_id);
+        const isFlexible = supportsFlexible && !!waypoint.flexible_platform;
         const requiredSide = waypoint.required_platform_side || 'either';
         const directionPolicy = waypoint.travel_direction_policy || 'either';
+        
+        const stationGroup = this.getStationGroupForPlatform(waypoint.platform_id);
+        const stationGroupName = stationGroup?.name || stationGroup?.station_id || 'Ungrouped';
+        const stationHint = stationGroup 
+            ? `${stationGroupName}`
+            : `ID: ${platformId}`;
 
+        // Flexible controls in a dedicated, visually distinct area
+        const flexibleOptionsHtml = isFlexible
+            ? `
+                <div class="waypoint-flexible-area">
+                    <div class="flex gap-8">
+                        <div class="flex-1">
+                            <label class="property-label mb-4">Platform Side</label>
+                            <select class="property-input input-compact waypoint-side-select" data-index="${index}">
+                                <option value="either" ${requiredSide === 'either' ? 'selected' : ''}>Any Side</option>
+                                <option value="left" ${requiredSide === 'left' ? 'selected' : ''}>Left</option>
+                                <option value="right" ${requiredSide === 'right' ? 'selected' : ''}>Right</option>
+                                <option value="both" ${requiredSide === 'both' ? 'selected' : ''}>Both</option>
+                            </select>
+                        </div>
+                        <div class="flex-1">
+                            <label class="property-label mb-4">Direction</label>
+                            <select class="property-input input-compact waypoint-direction-select" data-index="${index}">
+                                <option value="either" ${directionPolicy === 'either' ? 'selected' : ''}>Any Dir</option>
+                                <option value="preserve" ${directionPolicy === 'preserve' ? 'selected' : ''}>Keep</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            ` : '';
+
+        // Standardized card layout
         return `
-            <div class="waypoint-item mb-8 p-8 bg-input rounded-lg" data-index="${index}">
-                <div class="flex justify-between items-start mb-8">
-                    <div class="flex items-center gap-8">
-                        <span class="text-lg font-bold text-info">${index + 1}</span>
-                        <span class="font-mono text-white">${platformName}</span>
+            <div class="waypoint-item mb-8 p-8 bg-input rounded-lg" data-index="${index}" style="border: 1px solid #3a3a4e;">
+                <div class="waypoint-item-header">
+                    <div class="flex flex-col">
+                        <div class="flex items-center gap-8">
+                            <span class="text-lg font-bold text-info">${index + 1}</span>
+                            <span class="waypoint-title">${platformName}</span>
+                        </div>
+                        <div class="text-xs text-muted mt-2">${stationHint} · ${viabilityHtml}</div>
                     </div>
                     <div class="flex gap-4">
-                        ${index > 0 ? `<button class="btn btn-xs btn-secondary move-waypoint-up" data-index="${index}">↑</button>` : ''}
-                        ${index < this.currentRoute.waypoints.length - 1 ? `<button class="btn btn-xs btn-secondary move-waypoint-down" data-index="${index}">↓</button>` : ''}
-                        <button class="btn btn-xs btn-danger delete-waypoint" data-index="${index}">🗑</button>
+                        <button class="btn btn-xs btn-secondary btn-icon-only locate-waypoint-btn" data-index="${index}" title="Locate on Map">📍</button>
+                        <button class="btn btn-xs btn-danger btn-icon-only delete-waypoint" data-index="${index}" title="Remove Stop">×</button>
                     </div>
                 </div>
                 
-                <div class="text-xs mb-8 ${isFlexible ? 'text-success' : 'text-muted'}">
-                    ${isFlexible ? '🔀 Flexible Platform' : 'Fixed Platform'}
+                <div class="waypoint-controls-row">
+                    <div class="waypoint-control-group">
+                        <label>Dwell (s)</label>
+                        <input type="number" min="0" step="1" 
+                               class="property-input input-compact input-tiny waypoint-dwell-input" 
+                               data-index="${index}" value="${dwellTime}">
+                    </div>
+
+                    <div class="waypoint-control-group flex-1">
+                         <!-- Spacer or future controls -->
+                    </div>
+
+                    <div class="waypoint-control-group">
+                        <label>Order</label>
+                        <div class="flex gap-2">
+                             <button class="btn btn-xs btn-secondary btn-icon-only move-waypoint-up" data-index="${index}" ${index === 0 ? 'disabled' : ''}>↑</button>
+                             <button class="btn btn-xs btn-secondary btn-icon-only move-waypoint-down" data-index="${index}" ${index >= this.currentRoute.waypoints.length - 1 ? 'disabled' : ''}>↓</button>
+                        </div>
+                    </div>
+
+                    <div class="waypoint-control-group">
+                        <label>Options</label>
+                        <label class="btn btn-xs ${isFlexible ? 'btn-success' : 'btn-secondary'} btn-icon-only flex items-center gap-4" 
+                               style="height: 32px; padding: 0 10px;"
+                               title="${supportsFlexible ? 'Enable flexible platform assignment' : 'Flexible assignment unavailable (single platform station)'}">
+                            <input type="checkbox" class="waypoint-flexible-toggle" 
+                                   style="margin: 0;"
+                                   data-index="${index}" ${isFlexible ? 'checked' : ''} 
+                                   ${supportsFlexible ? '' : 'disabled'}>
+                            <span style="font-size: 11px;">Flex</span>
+                        </label>
+                    </div>
                 </div>
 
-                <div class="mb-8">
-                    <label class="property-label">Dwell (sec)</label>
-                    <input type="number" min="0" step="1" class="property-input waypoint-dwell-input" data-index="${index}" value="${dwellTime}">
-                </div>
-
-                <label class="flex items-center gap-6 mb-8 text-xs text-muted">
-                    <input type="checkbox" class="waypoint-flexible-toggle" data-index="${index}" ${isFlexible ? 'checked' : ''}>
-                    Flexible platform
-                </label>
-
-                <div class="mb-8">
-                    <label class="property-label">Required Side</label>
-                    <select class="property-input waypoint-side-select" data-index="${index}" ${isFlexible ? '' : 'disabled'}>
-                        <option value="either" ${requiredSide === 'either' ? 'selected' : ''}>Either</option>
-                        <option value="left" ${requiredSide === 'left' ? 'selected' : ''}>Left</option>
-                        <option value="right" ${requiredSide === 'right' ? 'selected' : ''}>Right</option>
-                        <option value="both" ${requiredSide === 'both' ? 'selected' : ''}>Both</option>
-                    </select>
-                </div>
-
-                <div class="mb-8">
-                    <label class="property-label">Direction Policy</label>
-                    <select class="property-input waypoint-direction-select" data-index="${index}" ${isFlexible ? '' : 'disabled'}>
-                        <option value="either" ${directionPolicy === 'either' ? 'selected' : ''}>Either</option>
-                        <option value="preserve" ${directionPolicy === 'preserve' ? 'selected' : ''}>Preserve</option>
-                    </select>
-                </div>
-                
-                <div class="flex justify-between items-center text-xs">
-                    <span class="text-muted">⏱ ${dwellTime}s dwell</span>
-                    <span>${viabilityHtml}</span>
-                </div>
+                ${flexibleOptionsHtml}
             </div>
         `;
+    }
+
+    getPlatforms() {
+        if (Array.isArray(this.cachedNetwork?.platforms)) {
+            return this.cachedNetwork.platforms;
+        }
+        if (this.cachedNetwork?.platforms && typeof this.cachedNetwork.platforms === 'object') {
+            return Object.values(this.cachedNetwork.platforms);
+        }
+        return [];
+    }
+
+    getStationGroups() {
+        if (Array.isArray(this.cachedNetwork?.station_groups)) {
+            return this.cachedNetwork.station_groups;
+        }
+        if (this.cachedNetwork?.station_groups && typeof this.cachedNetwork.station_groups === 'object') {
+            return Object.values(this.cachedNetwork.station_groups);
+        }
+        return [];
+    }
+
+    getPlatformId(platform) {
+        return platform?.platform_id || platform?.station_id || '';
+    }
+
+    getPlatformInfo(platformId) {
+        const platform = this.getPlatforms().find(p => this.getPlatformId(p) === platformId);
+        return {
+            id: platformId || 'Unknown',
+            name: platform?.name || '',
+            positions: Array.isArray(platform?.positions) ? platform.positions : []
+        };
+    }
+
+    getStationGroupForPlatform(platformId) {
+        return this.getStationGroups().find(group =>
+            Array.isArray(group?.platform_ids) && group.platform_ids.includes(platformId)
+        ) || null;
+    }
+
+    canUseFlexiblePlatform(platformId) {
+        const stationGroup = this.getStationGroupForPlatform(platformId);
+        const platformCount = stationGroup?.platform_ids?.length || 0;
+        return platformCount > 1;
+    }
+
+    getFlexiblePlatformContext(platformId) {
+        const stationGroup = this.getStationGroupForPlatform(platformId);
+        const platformCount = stationGroup?.platform_ids?.length || 0;
+        const stationName = stationGroup?.name || stationGroup?.station_id || 'station';
+        return `${platformCount} platforms in ${stationName}`;
+    }
+
+    normalizeWaypointFlexibility() {
+        const waypoints = this.currentRoute?.waypoints || [];
+        waypoints.forEach(waypoint => {
+            if (!this.canUseFlexiblePlatform(waypoint.platform_id)) {
+                waypoint.flexible_platform = false;
+                waypoint.required_platform_side = 'either';
+                waypoint.travel_direction_policy = 'either';
+            }
+        });
+    }
+
+    getPlatformPositionSet(platformIds) {
+        const ids = new Set(platformIds);
+        const positions = new Set();
+        this.getPlatforms().forEach(platform => {
+            const platformId = this.getPlatformId(platform);
+            if (!ids.has(platformId)) return;
+            (platform.positions || []).forEach(pos => {
+                if (Array.isArray(pos) && pos.length >= 2) {
+                    positions.add(`${pos[0]},${pos[1]}`);
+                }
+            });
+        });
+        return positions;
+    }
+
+    clearWaypointLocationHighlight() {
+        if (this.waypointHighlightTimeout) {
+            clearTimeout(this.waypointHighlightTimeout);
+            this.waypointHighlightTimeout = null;
+        }
+        if (this.renderer.setReachableHighlights) {
+            this.renderer.setReachableHighlights(new Set());
+        }
+        if (this.cachedNetwork) {
+            this.renderer.drawNetwork(this.cachedNetwork);
+        }
+    }
+
+    highlightPlatformLocations(platformIds, autoClearMs = 0) {
+        const positions = this.getPlatformPositionSet(platformIds);
+        if (this.renderer.setReachableHighlights) {
+            this.renderer.setReachableHighlights(positions);
+        }
+        if (this.cachedNetwork) {
+            this.renderer.drawNetwork(this.cachedNetwork);
+        }
+
+        if (this.waypointHighlightTimeout) {
+            clearTimeout(this.waypointHighlightTimeout);
+            this.waypointHighlightTimeout = null;
+        }
+
+        if (autoClearMs > 0) {
+            this.waypointHighlightTimeout = setTimeout(() => {
+                this.clearWaypointLocationHighlight();
+            }, autoClearMs);
+        }
+    }
+
+    focusWaypointLocation(index) {
+        const waypoint = this.currentRoute?.waypoints?.[index];
+        if (!waypoint) return;
+
+        const platformInfo = this.getPlatformInfo(waypoint.platform_id);
+        if (!platformInfo.positions.length) {
+            window.showToast(`No map geometry found for ${waypoint.platform_id}`, 'warning', 3000);
+            return;
+        }
+
+        this.highlightPlatformLocations([waypoint.platform_id], 5000);
+        const displayName = platformInfo.name || waypoint.platform_id;
+        document.getElementById('status-state').textContent = `Route Editor: Highlighting waypoint ${index + 1} (${displayName})`;
     }
 
     renderTrainAssignmentSection() {
@@ -409,7 +580,7 @@ class RouteEditorHandler {
                         </div>
                         <div class="flex items-center gap-8 text-xs">
                             <span class="text-muted">${wpText}</span>
-                            <input type="number" min="1" step="1" class="property-input set-waypoint-input" style="max-width: 80px;" value="${(trainStatus?.current_waypoint_index || 0) + 1}" data-train-id="${trainId}">
+                            <input type="number" min="1" step="1" class="property-input route-input-compact route-number-input set-waypoint-input" value="${(trainStatus?.current_waypoint_index || 0) + 1}" data-train-id="${trainId}">
                             <button class="btn btn-xs btn-secondary set-waypoint-btn" data-train-id="${trainId}">Set WP</button>
                         </div>
                     </div>
@@ -421,24 +592,32 @@ class RouteEditorHandler {
         }
 
         // Get available trains (not assigned to this route)
-        const allTrains = this.cachedNetwork?.trains || [];
-        const availableTrains = allTrains.filter(t => !assignedTrains.includes(t.train_id));
+        const allTrainsRaw = Array.isArray(this.cachedNetwork?.trains)
+            ? this.cachedNetwork.trains
+            : Object.values(this.cachedNetwork?.trains || {});
+        const availableTrains = allTrainsRaw
+            .map(t => ({
+                train_id: t?.train_id || t?.id || '',
+                model: t?.model || ''
+            }))
+            .filter(t => t.train_id && !assignedTrains.includes(t.train_id));
 
         let trainSelectHtml = '<option value="">Select train...</option>';
         availableTrains.forEach(train => {
-            trainSelectHtml += `<option value="${train.train_id}">${train.train_id}</option>`;
+            const label = train.model ? `${train.train_id} (${train.model})` : train.train_id;
+            trainSelectHtml += `<option value="${train.train_id}">${label}</option>`;
         });
 
         return `
             ${assignedHtml}
             <div class="flex gap-8">
-                <select id="assign-train-select" class="property-input flex-1">
+                <select id="assign-train-select" class="property-input route-input-compact flex-1">
                     ${trainSelectHtml}
                 </select>
                 <button id="assign-train-btn" class="btn btn-sm btn-primary">Assign</button>
             </div>
-            <label class="flex items-center gap-6 mt-8 text-xs text-muted">
-                <input type="checkbox" id="assign-train-force"> Force reassign
+            <label class="flex items-center gap-6 mt-8 text-xs text-muted route-option-hint">
+                <input type="checkbox" id="assign-train-force" class="route-inline-checkbox"> Force reassign
             </label>
         `;
     }
@@ -512,6 +691,13 @@ class RouteEditorHandler {
             };
         });
 
+        document.querySelectorAll('.locate-waypoint-btn').forEach(btn => {
+            btn.onclick = (e) => {
+                const index = parseInt(e.currentTarget.dataset.index, 10);
+                this.focusWaypointLocation(index);
+            };
+        });
+
         document.querySelectorAll('.waypoint-dwell-input').forEach(input => {
             input.onchange = (e) => {
                 const index = parseInt(e.target.dataset.index, 10);
@@ -527,7 +713,17 @@ class RouteEditorHandler {
         document.querySelectorAll('.waypoint-flexible-toggle').forEach(toggle => {
             toggle.onchange = (e) => {
                 const index = parseInt(e.target.dataset.index, 10);
-                this.currentRoute.waypoints[index].flexible_platform = !!e.target.checked;
+                const waypoint = this.currentRoute.waypoints[index];
+                if (!waypoint) return;
+
+                if (!this.canUseFlexiblePlatform(waypoint.platform_id)) {
+                    waypoint.flexible_platform = false;
+                    e.target.checked = false;
+                    window.showToast('Flexible platform is only available for stations with multiple platforms.', 'warning', 3000);
+                    return;
+                }
+
+                waypoint.flexible_platform = !!e.target.checked;
                 this.rerenderRouteEditor();
             };
         });
@@ -575,12 +771,9 @@ class RouteEditorHandler {
     enterWaypointClickMode() {
         this.waypointClickMode = true;
         document.getElementById('status-state').textContent = 'Route Editor: Click on a platform to add waypoint';
-        
-        // Highlight all platforms
-        if (this.renderer.highlightPlatforms) {
-            const platforms = this.cachedNetwork?.platforms || this.cachedNetwork?.stations || [];
-            this.renderer.highlightPlatforms(platforms.map(p => p.platform_id || p.station_id));
-        }
+
+        const platformIds = this.getPlatforms().map(p => this.getPlatformId(p)).filter(Boolean);
+        this.highlightPlatformLocations(platformIds);
     }
 
     /**
@@ -589,10 +782,8 @@ class RouteEditorHandler {
     exitWaypointClickMode() {
         this.waypointClickMode = false;
         document.getElementById('status-state').textContent = 'Ready';
-        
-        if (this.renderer.clearPlatformHighlights) {
-            this.renderer.clearPlatformHighlights();
-        }
+
+        this.clearWaypointLocationHighlight();
     }
 
     /**
@@ -634,10 +825,11 @@ class RouteEditorHandler {
      * Find platform at a grid position
      */
     findPlatformAtPosition(x, y) {
-        const platforms = this.cachedNetwork?.platforms || this.cachedNetwork?.stations || [];
-        return platforms.find(p => 
-            p.positions?.some(pos => pos[0] === x && pos[1] === y)
-        );
+        const track = this.cachedNetwork?.tracks?.find(t => t.x === x && t.y === y);
+        const platformId = track?.station_id;
+        if (!platformId) return null;
+
+        return this.getPlatforms().find(p => this.getPlatformId(p) === platformId) || null;
     }
 
     /**

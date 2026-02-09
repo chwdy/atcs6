@@ -103,8 +103,146 @@ class Editor {
         return this.uiHandler.showSecondarySidebar(title, content);
     }
 
-    hideSecondarySidebar() {
-        return this.uiHandler.hideSecondarySidebar();
+    hideSecondarySidebar(options = {}) {
+        return this.uiHandler.hideSecondarySidebar(options);
+    }
+
+    goBackSecondaryPanel() {
+        return this.uiHandler.goBackSecondaryPanel();
+    }
+
+    goForwardSecondaryPanel() {
+        return this.uiHandler.goForwardSecondaryPanel();
+    }
+
+    closeActiveSecondaryTab() {
+        return this.uiHandler.closeActiveSecondaryTab();
+    }
+
+    async restoreSecondaryPanel(snapshot) {
+        const type = snapshot?.editorType;
+        const id = snapshot?.editorId;
+
+        switch (type) {
+            case 'block':
+                if (!id) return false;
+                await this.showBlockEditor(id);
+                return true;
+            case 'signal':
+                if (!id) return false;
+                await this.showSignalEditor(id);
+                return true;
+            case 'platform':
+                if (!id) return false;
+                await this.showPlatformEditor(id);
+                return true;
+            case 'switch':
+                if (!id) return false;
+                await this.showSwitchEditor(id);
+                return true;
+            case 'train-control':
+                if (!id) return false;
+                await this.showTrainControlPanel(id);
+                return true;
+            case 'trains-list':
+                await this.showTrainsPanel();
+                return true;
+            case 'schedules-list':
+                await this.showSchedulesPanel();
+                return true;
+            case 'paths-list':
+                await this.showPathsPanel();
+                return true;
+            case 'path':
+                if (!id) return false;
+                await this.showPathEditor(id);
+                return true;
+            case 'path-setup':
+                this.showRoutePrioritySelector();
+                return true;
+            case 'extend-path-setup':
+                this.showExtendRoutePanel();
+                return true;
+            case 'station-group':
+            case 'station-group-list':
+                await this.showStationsPanel();
+                return true;
+            case 'routes-list':
+                await this.showRoutesPanel();
+                return true;
+            case 'route-editor':
+                if (!id) return false;
+                await this.routeHandler.showRouteEditor(id);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    getBreadcrumbForEntityView(entityView) {
+        const type = entityView?.editorType || entityView?.type || null;
+        const id = entityView?.editorId || entityView?.id || null;
+
+        switch (type) {
+            case 'block':
+                return [
+                    { label: 'Blocks', editorType: null, editorId: null },
+                    { label: id || 'Block', editorType: 'block', editorId: id },
+                ];
+            case 'signal':
+                return [
+                    { label: 'Signals', editorType: null, editorId: null },
+                    { label: id || 'Signal', editorType: 'signal', editorId: id },
+                ];
+            case 'platform':
+                return [
+                    { label: 'Platforms', editorType: null, editorId: null },
+                    { label: id || 'Platform', editorType: 'platform', editorId: id },
+                ];
+            case 'switch':
+                return [
+                    { label: 'Switches', editorType: null, editorId: null },
+                    { label: id || 'Switch', editorType: 'switch', editorId: id },
+                ];
+            case 'trains-list':
+                return [{ label: 'Trains', editorType: 'trains-list', editorId: null }];
+            case 'train-control':
+                return [
+                    { label: 'Trains', editorType: 'trains-list', editorId: null },
+                    { label: id || 'Train', editorType: 'train-control', editorId: id },
+                ];
+            case 'schedules-list':
+                return [{ label: 'Schedules', editorType: 'schedules-list', editorId: null }];
+            case 'paths-list':
+                return [{ label: 'Paths', editorType: 'paths-list', editorId: null }];
+            case 'path':
+                return [
+                    { label: 'Paths', editorType: 'paths-list', editorId: null },
+                    { label: id || 'Path', editorType: 'path', editorId: id },
+                ];
+            case 'path-setup':
+                return [
+                    { label: 'Paths', editorType: 'paths-list', editorId: null },
+                    { label: 'Create Path', editorType: 'path-setup', editorId: null },
+                ];
+            case 'extend-path-setup':
+                return [
+                    { label: 'Paths', editorType: 'paths-list', editorId: null },
+                    { label: 'Extend Path', editorType: 'extend-path-setup', editorId: id || null },
+                ];
+            case 'routes-list':
+                return [{ label: 'Routes', editorType: 'routes-list', editorId: null }];
+            case 'route-editor':
+                return [
+                    { label: 'Routes', editorType: 'routes-list', editorId: null },
+                    { label: id || 'Route', editorType: 'route-editor', editorId: id },
+                ];
+            case 'station-group-list':
+            case 'station-group':
+                return [{ label: 'Stations', editorType: 'station-group-list', editorId: null }];
+            default:
+                return [{ label: entityView?.title || 'Editor', editorType: type, editorId: id }];
+        }
     }
 
     showFullJSONViewer(data, title = 'JSON Viewer') {
@@ -650,6 +788,36 @@ class Editor {
                 if (this.isDraggingBuild) {
                     this.updatePreviewPath();
                 }
+            }
+        });
+
+        // Inspector navigation shortcuts
+        document.addEventListener('keydown', async (e) => {
+            const activeElement = document.activeElement;
+            const inInput = activeElement && (
+                activeElement.tagName === 'INPUT' ||
+                activeElement.tagName === 'TEXTAREA' ||
+                activeElement.tagName === 'SELECT'
+            );
+
+            if (!inInput && e.altKey && !e.metaKey && !e.ctrlKey && e.key === 'ArrowLeft') {
+                e.preventDefault();
+                await this.goBackSecondaryPanel();
+                return;
+            }
+
+            if (!inInput && e.altKey && !e.metaKey && !e.ctrlKey && e.key === 'ArrowRight') {
+                e.preventDefault();
+                await this.goForwardSecondaryPanel();
+                return;
+            }
+
+            if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'w') {
+                if (inInput) {
+                    return;
+                }
+                e.preventDefault();
+                await this.closeActiveSecondaryTab();
             }
         });
 
@@ -1606,7 +1774,9 @@ class Editor {
                 this.updatePropertiesPanel(track);
 
                 // Update secondary editor based on new tile's content
-                this.updateSecondaryEditorForTile(track);
+                if (!this.uiHandler.isSecondaryPanelPinned()) {
+                    this.updateSecondaryEditorForTile(track);
+                }
             } else {
                 // Create virtual tile for empty position
                 this.selectedElement = {
@@ -1620,7 +1790,9 @@ class Editor {
                 this.updatePropertiesPanel(this.selectedElement);
 
                 // Close secondary editor for empty tile
-                this.updateSecondaryEditorForTile(this.selectedElement);
+                if (!this.uiHandler.isSecondaryPanelPinned()) {
+                    this.updateSecondaryEditorForTile(this.selectedElement);
+                }
             }
         } catch (err) {
             // On network error, also create virtual tile
@@ -1635,7 +1807,9 @@ class Editor {
             this.updatePropertiesPanel(this.selectedElement);
 
             // Close secondary editor for error/empty tile
-            this.updateSecondaryEditorForTile(this.selectedElement);
+            if (!this.uiHandler.isSecondaryPanelPinned()) {
+                this.updateSecondaryEditorForTile(this.selectedElement);
+            }
         }
     }
 
