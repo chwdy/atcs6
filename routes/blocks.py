@@ -83,16 +83,16 @@ def register(app, state: AppState) -> None:
                 block.block_id
             )
 
-            # Find associated stations
-            station_names = set()
+            # Find associated platforms
+            platform_names = set()
             for track in tracks:
                 if track.station_id:
-                    station = state.network.stations.get(track.station_id)
-                    if station:
-                        station_names.add(station.name)
+                    platform = state.network.platforms.get(track.station_id)
+                    if platform:
+                        platform_names.add(platform.name)
 
-            if station_names:
-                block_dict["station_names"] = sorted(list(station_names))
+            if platform_names:
+                block_dict["platform_names"] = sorted(list(platform_names))
 
             result.append(block_dict)
         return jsonify(result)
@@ -133,16 +133,16 @@ def register(app, state: AppState) -> None:
         # Add sorted positions for UI display
         result["sorted_positions"] = _sort_block_positions(positions, state.network)
 
-        # Find associated stations
-        station_names = set()
+        # Find associated platforms
+        platform_names = set()
         for track in tracks:
             if track.station_id:
-                station = state.network.stations.get(track.station_id)
-                if station:
-                    station_names.add(station.name)
+                platform = state.network.platforms.get(track.station_id)
+                if platform:
+                    platform_names.add(platform.name)
 
-        if station_names:
-            result["station_names"] = sorted(list(station_names))
+        if platform_names:
+            result["platform_names"] = sorted(list(platform_names))
         is_valid, errors = state.network.validate_block_continuity(block_id)
         result["is_continuous"] = is_valid
         result["validation_errors"] = errors

@@ -59,9 +59,9 @@ class StepRecorder:
             steps.append(step)
             step_id += 1
 
-        # 4. Generate station steps
-        station_steps = self._generate_station_steps(network)
-        for step in station_steps:
+        # 4. Generate platform steps
+        platform_steps = self._generate_platform_steps(network)
+        for step in platform_steps:
             step["id"] = step_id
             steps.append(step)
             step_id += 1
@@ -111,7 +111,7 @@ class StepRecorder:
             steps.append(step)
             step_id += 1
 
-        for step in self._generate_station_steps(network):
+        for step in self._generate_platform_steps(network):
             step["id"] = step_id
             steps.append(step)
             step_id += 1
@@ -300,36 +300,36 @@ class StepRecorder:
 
         return steps
 
-    def _generate_station_steps(self, network: "RailwayNetwork") -> List[dict]:
-        """Generate station creation steps."""
+    def _generate_platform_steps(self, network: "RailwayNetwork") -> List[dict]:
+        """Generate platform creation steps."""
         steps = []
 
-        for station_id, station in sorted(network.stations.items()):
-            if not station.positions:
+        for platform_id, platform in sorted(network.platforms.items()):
+            if not platform.positions:
                 continue
 
             # First position is the base, rest are extensions
-            sorted_positions = sorted(station.positions)
+            sorted_positions = sorted(platform.positions)
             base_pos = sorted_positions[0]
             extension_positions = sorted_positions[1:]
 
             operations = []
 
-            # Base station creation
+            # Base platform creation
             base_op = {
-                "op": "add_station",
+                "op": "add_platform",
                 "x": base_pos[0],
                 "y": base_pos[1],
-                "name": station.name,
-                "station_id": station.station_id,
+                "name": platform.name,
+                "platform_id": platform.platform_id,
             }
 
-            if station.length_cm > 0:
-                base_op["length_cm"] = station.length_cm
-            if station.platform_side:
-                base_op["platform_side"] = station.platform_side.value
-            if station.top_speed_kmh is not None:
-                base_op["top_speed_kmh"] = station.top_speed_kmh
+            if platform.length_cm > 0:
+                base_op["length_cm"] = platform.length_cm
+            if platform.platform_side:
+                base_op["platform_side"] = platform.platform_side.value
+            if platform.top_speed_kmh is not None:
+                base_op["top_speed_kmh"] = platform.top_speed_kmh
 
             operations.append(base_op)
 
@@ -337,16 +337,16 @@ class StepRecorder:
             if extension_positions:
                 operations.append(
                     {
-                        "op": "extend_station",
-                        "station_id": station.station_id,
+                        "op": "extend_platform",
+                        "platform_id": platform.platform_id,
                         "positions": [[p[0], p[1]] for p in extension_positions],
                     }
                 )
 
             steps.append(
                 {
-                    "type": "station",
-                    "description": f"Station: {station.name or station_id}",
+                    "type": "platform",
+                    "description": f"Platform: {platform.name or platform_id}",
                     "operations": operations,
                 }
             )
@@ -406,9 +406,9 @@ class StepRecorder:
             signal = network.signals[signal_id]
             data_parts.append(f"S:{signal.position[0]},{signal.position[1]}")
 
-        # Station IDs
-        for station_id in sorted(network.stations.keys()):
-            data_parts.append(f"ST:{station_id}")
+        # Platform IDs
+        for platform_id in sorted(network.platforms.keys()):
+            data_parts.append(f"PL:{platform_id}")
 
         # Compute checksum
         data_string = "|".join(data_parts)
@@ -418,7 +418,7 @@ class StepRecorder:
             "track_count": len(network.tracks),
             "block_count": len(network.blocks),
             "signal_count": len(network.signals),
-            "station_count": len(network.stations),
+            "platform_count": len(network.platforms),
             "train_count": len(network.trains),
             "checksum": f"sha256:{checksum}",
         }

@@ -15,6 +15,8 @@ from train import Train, TrainCar, TrainPosition
 from tests.train_test_helpers import make_train_position
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
+from path_dispatcher import PathDispatcher
+from train_route import Route, RouteMode, Waypoint
 from switch import Switch
 
 
@@ -308,6 +310,7 @@ class TestTrainControllerMonitorLookahead:
         network.add_train(train)
 
         controller = TrainController(train_id=train.train_id, network=network)
+        controller.set_cab("A")
 
         payload = controller.get_monitor_lookahead()
         blocks = payload["lookahead"]["blocks"]
@@ -340,6 +343,7 @@ class TestTrainControllerMonitorLookahead:
         network.add_train(train)
 
         controller = TrainController(train_id=train.train_id, network=network)
+        controller.set_cab("A")
         payload = controller.get_monitor_lookahead()
         blocks = payload["lookahead"]["blocks"]
 
@@ -385,6 +389,291 @@ class TestTrainControllerMonitorLookahead:
         # end_a stays at (0, 0) and end_b stays at (2, 0)
         # With Cab B active and leading_end="b", head is at end_b which is (2, 0)
         assert payload_b["head_tile"] == [2, 0]
+
+    def test_no_cab_returns_no_lookahead(self, network):
+        """Lookahead should be unavailable when no cab is selected."""
+        for x in range(3):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track.block_section_id = f"BLOCK_{x}"
+            network.add_track(track)
+
+        train = Train(train_id="TRAIN_LOOKAHEAD_NO_CAB")
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=10.0,
+            end_a_entry_edge="W",
+            end_b_tile=(2, 0),
+            end_b_distance_cm=10.0,
+            end_b_entry_edge="E",
+            leading_end=None,
+            _facing_direction_legacy=None,
+        )
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 1
+        network.add_train(train)
+
+        controller = TrainController(train_id=train.train_id, network=network)
+        controller.set_cab(None)
+
+        payload = controller.get_monitor_lookahead()
+
+        assert payload["cab"] is None
+        assert payload["head_tile"] is None
+        assert payload["speed_limit_reason"] == "No cab selected"
+        assert payload["lookahead"]["blocks"] == []
+        assert payload["lookahead"]["signals"] == []
+        assert payload["lookahead"]["switches"] == []
+        assert payload["lookahead"]["stations"] == []
+        assert payload["lookahead"]["clearance_cm"] == pytest.approx(0.0)
+
+    def test_cab_switch_flips_lookahead_direction(self, network):
+        """Lookahead sequence should reverse when operator switches to the opposite cab."""
+        for x in range(3):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track.block_section_id = f"BLOCK_{x}"
+            network.add_track(track)
+
+        train = Train(train_id="TRAIN_LOOKAHEAD_DIR_FLIP")
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=10.0,
+            end_a_entry_edge="W",
+            end_b_tile=(2, 0),
+            end_b_distance_cm=10.0,
+            end_b_entry_edge="E",
+            leading_end="a",
+            _facing_direction_legacy=Direction.EAST,
+        )
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 0
+        network.add_train(train)
+
+        controller = TrainController(train_id=train.train_id, network=network)
+
+        controller.set_cab("A")
+        payload_a = controller.get_monitor_lookahead()
+        block_ids_a = [block["id"] for block in payload_a["lookahead"]["blocks"]]
+
+        controller.set_cab("B")
+        payload_b = controller.get_monitor_lookahead()
+        block_ids_b = [block["id"] for block in payload_b["lookahead"]["blocks"]]
+
+        assert payload_a["head_tile"] == [0, 0]
+        assert payload_b["head_tile"] == [2, 0]
+        assert block_ids_a == ["BLOCK_0", "BLOCK_1", "BLOCK_2"]
+        assert block_ids_b == ["BLOCK_2", "BLOCK_1", "BLOCK_0"]
+
+    def test_cab_switch_updates_path_index_to_new_head(self, network):
+        """
+        BUG FIX TEST: path_index must update to match new head position after cab switch.
+
+        Bug Description:
+        When switching cabs (e.g., A->B), the physical head of the train moves from end_a
+        to end_b, but path_index was not being updated. This caused lookahead and speed
+        limit calculations to reference blocks from the wrong side of the train.
+
+        Scenario:
+        - Train spans tiles (0,0) -> (1,0) -> (2,0)
+        - path_index = 0 means head should be at tile (0,0)
+        - After switching to Cab B, head moves to tile (2,0)
+        - path_index MUST update to 2 to reflect the new head position
+
+        Expected:
+        - path_index should match the index of head_tile in current_path after any cab switch
+        """
+        for x in range(3):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track.block_section_id = f"BLOCK_{x}"
+            network.add_track(track)
+
+        train = Train(train_id="TRAIN_PATH_INDEX_BUG")
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=10.0,
+            end_a_entry_edge="W",
+            end_b_tile=(2, 0),
+            end_b_distance_cm=10.0,
+            end_b_entry_edge="E",
+            leading_end="a",
+            _facing_direction_legacy=Direction.EAST,
+        )
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 0
+        network.add_train(train)
+
+        controller = TrainController(train_id=train.train_id, network=network)
+
+        # Start with Cab A - head at (0,0), path_index should be 0
+        controller.set_cab("A")
+        assert train.path_index == 0, (
+            f"Cab A: path_index should be 0, got {train.path_index}"
+        )
+        assert train.position.head_tile == (0, 0), (
+            f"Cab A: head_tile should be (0,0), got {train.position.head_tile}"
+        )
+
+        # Switch to Cab B - head moves to (2,0), path_index MUST update to 2
+        controller.set_cab("B")
+        assert train.path_index == 2, (
+            f"After A->B switch: path_index should be 2, got {train.path_index}"
+        )
+        assert train.position.head_tile == (2, 0), (
+            f"After A->B switch: head_tile should be (2,0), got {train.position.head_tile}"
+        )
+
+        # Verify lookahead uses correct blocks (from head position, not old position)
+        payload = controller.get_monitor_lookahead()
+        block_ids = [block["id"] for block in payload["lookahead"]["blocks"]]
+        # With head at (2,0), lookahead should scan backward: BLOCK_2, BLOCK_1, BLOCK_0
+        assert block_ids == ["BLOCK_2", "BLOCK_1", "BLOCK_0"], (
+            f"Lookahead blocks wrong: {block_ids}"
+        )
+
+        # Switch back to Cab A - head moves back to (0,0), path_index MUST update to 0
+        controller.set_cab("A")
+        assert train.path_index == 0, (
+            f"After B->A switch: path_index should be 0, got {train.path_index}"
+        )
+        assert train.position.head_tile == (0, 0), (
+            f"After B->A switch: head_tile should be (0,0), got {train.position.head_tile}"
+        )
+
+        # Verify lookahead is correct again
+        payload = controller.get_monitor_lookahead()
+        block_ids = [block["id"] for block in payload["lookahead"]["blocks"]]
+        # With head at (0,0), lookahead should scan forward: BLOCK_0, BLOCK_1, BLOCK_2
+        assert block_ids == ["BLOCK_0", "BLOCK_1", "BLOCK_2"], (
+            f"Lookahead blocks wrong after B->A: {block_ids}"
+        )
+
+    def test_cab_switch_path_index_multiple_times(self, network):
+        """
+        Test that path_index stays correct after multiple rapid cab switches.
+
+        This test simulates the user's reported bug scenario:
+        1. Start ATO, train runs
+        2. Stop ATO, train stops
+        3. Switch cab to reverse (B)
+        4. Switch back to forward (A)
+        5. Switch again to reverse (B)
+        6. Leave on reverse, hit ATO go
+        7. ATO correctly turns train and starts
+        8. BUT lookahead randomly shows wrong side
+
+        The bug was that path_index wasn't updated during cab switches.
+        """
+        for x in range(3):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track.block_section_id = f"BLOCK_{x}"
+            network.add_track(track)
+
+        train = Train(train_id="TRAIN_PATH_INDEX_MULTIPLE")
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=10.0,
+            end_a_entry_edge="W",
+            end_b_tile=(2, 0),
+            end_b_distance_cm=10.0,
+            end_b_entry_edge="E",
+            leading_end="a",
+            _facing_direction_legacy=Direction.EAST,
+        )
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 0
+        network.add_train(train)
+
+        controller = TrainController(train_id=train.train_id, network=network)
+
+        # Simulate user's scenario: multiple cab switches
+        controller.set_cab("A")  # Start with Cab A
+        assert train.path_index == 0
+
+        controller.set_cab("B")  # Switch to reverse
+        assert train.path_index == 2
+
+        controller.set_cab("A")  # Switch back
+        assert train.path_index == 0
+
+        controller.set_cab("B")  # Switch to reverse again (leave it here)
+        assert train.path_index == 2
+
+        # After all switches, verify lookahead is from the correct side
+        payload = controller.get_monitor_lookahead()
+        block_ids = [block["id"] for block in payload["lookahead"]["blocks"]]
+
+        # Should see blocks from reverse side (head at 2,0)
+        assert block_ids == ["BLOCK_2", "BLOCK_1", "BLOCK_0"], (
+            f"After multiple switches, lookahead should be from reverse side. "
+            f"Expected ['BLOCK_2', 'BLOCK_1', 'BLOCK_0'], got {block_ids}"
+        )
+
+        # Verify head_tile matches path_index
+        head_tile = train.position.head_tile
+        path_head_tile = train.current_path[train.path_index][:2]
+        assert head_tile == path_head_tile, (
+            f"head_tile {head_tile} doesn't match path tile at path_index {train.path_index}: {path_head_tile}"
+        )
+
+    def test_cab_switch_from_off_does_not_require_existing_facing_direction(
+        self, network
+    ):
+        """Switching A->B after cab off should not fail with missing facing direction."""
+        for x in range(3):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            track.block_section_id = f"BLOCK_{x}"
+            network.add_track(track)
+
+        train = Train(train_id="TRAIN_LOOKAHEAD_OFF_SWITCH")
+        train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=10.0,
+            end_a_entry_edge="W",
+            end_b_tile=(2, 0),
+            end_b_distance_cm=10.0,
+            end_b_entry_edge="E",
+            leading_end="a",
+            _facing_direction_legacy=Direction.EAST,
+            occupied_tiles=[(0, 0), (1, 0), (2, 0)],
+        )
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 0
+        network.add_train(train)
+
+        controller = TrainController(train_id=train.train_id, network=network)
+
+        result_a = controller.set_cab("A")
+        assert result_a.success
+        result_off = controller.set_cab(None)
+        assert result_off.success
+
+        result_b = controller.set_cab("B")
+        assert result_b.success
+
+        payload_b = controller.get_monitor_lookahead()
+        block_ids_b = [block["id"] for block in payload_b["lookahead"]["blocks"]]
+
+        assert payload_b["head_tile"] == [2, 0]
+        assert block_ids_b == ["BLOCK_2", "BLOCK_1", "BLOCK_0"]
 
 
 class TestTrainPropertyUpdate:
@@ -2715,7 +3004,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         - Block BLOCK_A on tiles (0,0) to (2,0)
         - Block BLOCK_B on tiles (3,0) to (4,0) - station block
         """
-        from station import Station
+        from railway_platform import Platform
 
         # Create 5 tiles of straight track
         for x in range(5):
@@ -2737,8 +3026,8 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         )
 
         # Create station on tiles (3,0) and (4,0)
-        station = Station(
-            station_id="STA_END",
+        station = Platform(
+            platform_id="STA_END",
             name="End Station",
             positions=[(3, 0), (4, 0)],
             length_cm=100.0,
@@ -2981,7 +3270,7 @@ class TestShorterMarginWithStationEnd:
         4. SimulationController creates new controller and inherits ato_destination_block_id
         5. Safety margin should be 5cm (platform margin)
         """
-        from station import Station
+        from railway_platform import Platform
         from simulation import SimulationController
         from path_dispatcher import PathDispatcher
 
@@ -3007,8 +3296,8 @@ class TestShorterMarginWithStationEnd:
         )
 
         # Add station
-        station = Station(
-            station_id="STA_END",
+        station = Platform(
+            platform_id="STA_END",
             name="End Station",
             positions=[(3, 0), (4, 0)],
             length_cm=100.0,
@@ -3662,6 +3951,7 @@ class TestFallbackLookaheadMultiTileBlock:
         network.add_train(train)
 
         controller = TrainController(train_id=train.train_id, network=network)
+        controller.set_cab("A")
 
         # Get lookahead WITHOUT calling update() first
         # This simulates the API call on first placement
@@ -3698,6 +3988,7 @@ class TestFallbackLookaheadMultiTileBlock:
 
         network.add_train(train)
         controller = TrainController(train_id=train.train_id, network=network)
+        controller.set_cab("A")
 
         lookahead = controller.get_monitor_lookahead()
         clearance_cm = lookahead["lookahead"]["clearance_cm"]
@@ -3731,6 +4022,7 @@ class TestFallbackLookaheadMultiTileBlock:
 
         network.add_train(train)
         controller = TrainController(train_id=train.train_id, network=network)
+        controller.set_cab("A")
 
         lookahead = controller.get_monitor_lookahead()
         clearance_cm = lookahead["lookahead"]["clearance_cm"]
@@ -3763,6 +4055,7 @@ class TestFallbackLookaheadMultiTileBlock:
 
         network.add_train(train)
         controller = TrainController(train_id=train.train_id, network=network)
+        controller.set_cab("A")
 
         lookahead = controller.get_monitor_lookahead()
         blocks = lookahead["lookahead"]["blocks"]
@@ -3791,6 +4084,7 @@ class TestFallbackLookaheadMultiTileBlock:
 
         network.add_train(train)
         controller = TrainController(train_id=train.train_id, network=network)
+        controller.set_cab("A")
 
         # Set a prior clearance (simulating simulation update ran earlier)
         controller.clearance_ahead_cm = 200.0
@@ -3800,6 +4094,407 @@ class TestFallbackLookaheadMultiTileBlock:
 
         # Should use the prior clearance value
         assert clearance_cm == 200.0
+
+
+class TestRouteExecutorThreeStationLoopSimulation:
+    """End-to-end route execution on a 3-station eastbound line."""
+
+    def _build_three_station_line(self) -> RailwayNetwork:
+        """Build A-B-C eastbound line with requested geometry and limits."""
+        network = RailwayNetwork()
+
+        for x in range(9):
+            network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
+
+        network.add_station(
+            0,
+            0,
+            station_id="STA_A",
+            name="A",
+            length_cm=50.0,
+            top_speed_kmh=60.0,
+        )
+        network.add_station(
+            4,
+            0,
+            station_id="STA_B",
+            name="B",
+            length_cm=50.0,
+            top_speed_kmh=60.0,
+        )
+        network.add_station(
+            8,
+            0,
+            station_id="STA_C",
+            name="C",
+            length_cm=50.0,
+            top_speed_kmh=60.0,
+        )
+
+        network.create_block_with_tracks(
+            block_id="BLK_AB",
+            positions=[(1, 0), (2, 0), (3, 0)],
+            name="A-B",
+            length_cm=150.0,
+        )
+        network.create_block_with_tracks(
+            block_id="BLK_BC",
+            positions=[(5, 0), (6, 0), (7, 0)],
+            name="B-C",
+            length_cm=150.0,
+        )
+
+        for block in network.blocks.values():
+            block.max_speed_kmh = 60.0
+
+        return network
+
+    def _run_until(
+        self,
+        simulation: SimulationController,
+        condition,
+        failure_message: str,
+        max_steps: int = 20000,
+        dt: float = 0.02,
+    ) -> None:
+        for _ in range(max_steps):
+            simulation.update(dt)
+            if condition():
+                return
+        pytest.fail(failure_message)
+
+    def _force_arrival_at_platform(
+        self,
+        simulation: SimulationController,
+        route: Route,
+        train: Train,
+        controller: TrainController,
+        platform_id: str,
+    ) -> None:
+        """Force train at waypoint platform and trigger arrival logic deterministically."""
+        platform = simulation.network.platforms[platform_id]
+        tile = platform.positions[0]
+        direction = train.facing_direction or Direction.EAST
+
+        train.position = make_train_position(tile, direction)
+        train.current_speed = 0.0
+        train.assigned_path_id = None
+        train.current_path = None
+        train.reserved_blocks = []
+
+        if simulation.path_dispatcher:
+            for path_id in list(simulation.path_dispatcher.active_paths.keys()):
+                simulation.path_dispatcher.cancel_path(path_id, force=True)
+
+        train.state = TrainState.RUNNING_MOVING
+        controller.state = TrainState.RUNNING_MOVING
+        controller.ato_running = True
+
+        exec_state = simulation.route_executor.execution_states.get(train.train_id)
+        if exec_state is None:
+            simulation.update(0.02)
+            exec_state = simulation.route_executor.execution_states.get(train.train_id)
+        assert exec_state is not None
+        simulation.route_executor._check_waypoint_arrival(train, route, exec_state)
+        assert exec_state.last_waypoint_platform_id == platform_id
+        assert train.state in (TrainState.RUNNING_AT_STATION, TrainState.STANDBY)
+
+    def _create_sim_and_train(self, train_id: str) -> tuple:
+        """Create baseline 3-station simulation with one 45cm train at A."""
+        network = self._build_three_station_line()
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+
+        car = TrainCar(car_id=f"CAR_{train_id}", car_type="LOCOMOTIVE", length=45.0)
+        train = Train(train_id=train_id, consist=[car], max_speed=60.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        train.state = TrainState.IDLE
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.state = TrainState.IDLE
+        assert controller.set_direction_and_standby(Direction.EAST) is True
+        assert controller.active_cab == "A"
+
+        return network, dispatcher, simulation, train, controller
+
+    def test_ato_route_a_b_c_loop_with_cab_switching(self):
+        """Validate A->B->C->A loop execution and cab changes in ATO mode."""
+        network = self._build_three_station_line()
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+
+        car = TrainCar(car_id="CAR_45CM", car_type="LOCOMOTIVE", length=45.0)
+        train = Train(train_id="T_LOOP", consist=[car], max_speed=60.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        train.state = TrainState.IDLE
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.state = TrainState.IDLE
+        assert controller.set_direction_and_standby(Direction.EAST) is True
+        assert controller.active_cab == "A"
+
+        route = Route(
+            route_id="ROUTE_ABC_LOOP", name="A-B-C Loop", mode=RouteMode.CIRCULAR
+        )
+        route.add_waypoint(Waypoint(platform_id="STA_B", dwell_time_sec=0.8))
+        route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.8))
+        route.add_waypoint(Waypoint(platform_id="STA_A", dwell_time_sec=0.8))
+        route.assign_train(train.train_id)
+        route.activate(simulation.simulation_time)
+        network.routes[route.route_id] = route
+        train.assigned_route_id = route.route_id
+
+        assert simulation.route_executor._is_train_at_platform(train, "STA_A") is True
+
+        self._run_until(
+            simulation,
+            lambda: (
+                train.assigned_path_id is not None
+                and dispatcher.get_path(train.assigned_path_id) is not None
+                and dispatcher.get_path(train.assigned_path_id).end_block_id
+                == "STA_B_BLOCK"
+            ),
+            "Train did not auto-dispatch from A to B",
+        )
+
+        self._force_arrival_at_platform(simulation, route, train, controller, "STA_B")
+
+        self._run_until(
+            simulation,
+            lambda: (
+                train.assigned_path_id is not None
+                and dispatcher.get_path(train.assigned_path_id) is not None
+                and dispatcher.get_path(train.assigned_path_id).end_block_id
+                == "STA_C_BLOCK"
+            ),
+            "Route executor did not dispatch B to C after dwell",
+        )
+
+        self._force_arrival_at_platform(simulation, route, train, controller, "STA_C")
+
+        self._run_until(
+            simulation,
+            lambda: (
+                train.assigned_path_id is not None
+                and dispatcher.get_path(train.assigned_path_id) is not None
+                and dispatcher.get_path(train.assigned_path_id).end_block_id
+                == "STA_A_BLOCK"
+                and train.facing_direction == Direction.WEST
+                and controller.active_cab == "B"
+            ),
+            "Train did not switch cab and dispatch from C back to A",
+            max_steps=5000,
+        )
+
+        # Return leg should target A directly (no B waypoint between C and A)
+        exec_state = simulation.route_executor.execution_states[train.train_id]
+        assert route.waypoints[exec_state.current_waypoint_index].platform_id == "STA_A"
+        self._force_arrival_at_platform(simulation, route, train, controller, "STA_A")
+
+        self._run_until(
+            simulation,
+            lambda: (
+                train.assigned_path_id is not None
+                and dispatcher.get_path(train.assigned_path_id) is not None
+                and dispatcher.get_path(train.assigned_path_id).end_block_id
+                == "STA_B_BLOCK"
+            ),
+            "Train did not switch cab back at A for next loop",
+            max_steps=5000,
+        )
+
+    def test_one_off_route_a_b_c_completes_and_unassigns(self):
+        """ONE_OFF route should run A->B->C then clear assignment."""
+        network, dispatcher, simulation, train, controller = self._create_sim_and_train(
+            "T_ONE_OFF"
+        )
+
+        route = Route(
+            route_id="ROUTE_ABC_ONE_OFF", name="A-B-C", mode=RouteMode.ONE_OFF
+        )
+        route.add_waypoint(Waypoint(platform_id="STA_B", dwell_time_sec=0.6))
+        route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.6))
+        route.assign_train(train.train_id)
+        route.activate(simulation.simulation_time)
+        network.routes[route.route_id] = route
+        train.assigned_route_id = route.route_id
+
+        self._run_until(
+            simulation,
+            lambda: (
+                train.assigned_path_id is not None
+                and dispatcher.get_path(train.assigned_path_id) is not None
+                and dispatcher.get_path(train.assigned_path_id).end_block_id
+                == "STA_B_BLOCK"
+            ),
+            "ONE_OFF did not dispatch A->B",
+        )
+        self._force_arrival_at_platform(simulation, route, train, controller, "STA_B")
+
+        self._run_until(
+            simulation,
+            lambda: (
+                train.assigned_path_id is not None
+                and dispatcher.get_path(train.assigned_path_id) is not None
+                and dispatcher.get_path(train.assigned_path_id).end_block_id
+                == "STA_C_BLOCK"
+            ),
+            "ONE_OFF did not dispatch B->C",
+        )
+        self._force_arrival_at_platform(simulation, route, train, controller, "STA_C")
+
+        self._run_until(
+            simulation,
+            lambda: train.assigned_route_id is None,
+            "Train was not unassigned after ONE_OFF completion",
+            max_steps=3000,
+        )
+        assert train.state in (
+            TrainState.IDLE,
+            TrainState.STANDBY,
+            TrainState.RUNNING_AT_STATION,
+        )
+
+    def test_round_trip_route_runs_a_b_c_b_a(self):
+        """ROUND_TRIP route should follow A->B->C->B->A sequence."""
+        network, dispatcher, simulation, train, controller = self._create_sim_and_train(
+            "T_ROUND_TRIP"
+        )
+
+        route = Route(
+            route_id="ROUTE_ABC_ROUND_TRIP",
+            name="A-B-C-B-A",
+            mode=RouteMode.ROUND_TRIP,
+        )
+        route.add_waypoint(Waypoint(platform_id="STA_A", dwell_time_sec=0.4))
+        route.add_waypoint(Waypoint(platform_id="STA_B", dwell_time_sec=0.4))
+        route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.4))
+        route.assign_train(train.train_id)
+        route.activate(simulation.simulation_time)
+        network.routes[route.route_id] = route
+        train.assigned_route_id = route.route_id
+
+        visited = []
+        for target in ["STA_A", "STA_B", "STA_C", "STA_B", "STA_A"]:
+            self._run_until(
+                simulation,
+                lambda: (
+                    simulation.route_executor.execution_states.get(train.train_id)
+                    is not None
+                    and route.waypoints[
+                        simulation.route_executor.execution_states[
+                            train.train_id
+                        ].current_waypoint_index
+                    ].platform_id
+                    == target
+                ),
+                f"ROUND_TRIP did not advance current waypoint to {target}",
+                max_steps=5000,
+            )
+            self._force_arrival_at_platform(
+                simulation, route, train, controller, target
+            )
+            visited.append(target)
+
+        assert visited == ["STA_A", "STA_B", "STA_C", "STA_B", "STA_A"]
+
+    def test_unassign_running_train_between_b_and_c_stops_at_b_or_c(self):
+        """Unassigning while running should safely stop at nearby station block endpoint."""
+        network, dispatcher, simulation, train, controller = self._create_sim_and_train(
+            "T_UNASSIGN_RUN"
+        )
+
+        route = Route(route_id="ROUTE_UNASSIGN", name="A-B-C", mode=RouteMode.ONE_OFF)
+        route.add_waypoint(Waypoint(platform_id="STA_B", dwell_time_sec=0.6))
+        route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.6))
+        route.assign_train(train.train_id)
+        route.activate(simulation.simulation_time)
+        network.routes[route.route_id] = route
+        train.assigned_route_id = route.route_id
+
+        self._run_until(
+            simulation,
+            lambda: (
+                train.assigned_path_id is not None
+                and dispatcher.get_path(train.assigned_path_id) is not None
+                and dispatcher.get_path(train.assigned_path_id).end_block_id
+                == "STA_B_BLOCK"
+            ),
+            "Did not dispatch A->B",
+        )
+        self._force_arrival_at_platform(simulation, route, train, controller, "STA_B")
+
+        self._run_until(
+            simulation,
+            lambda: (
+                train.assigned_path_id is not None
+                and dispatcher.get_path(train.assigned_path_id) is not None
+                and dispatcher.get_path(train.assigned_path_id).end_block_id
+                == "STA_C_BLOCK"
+            ),
+            "Did not dispatch B->C",
+        )
+
+        # Move to in-between block tile and keep running, then unassign route mid-run.
+        train.position = make_train_position((6, 0), Direction.EAST)
+        train.current_speed = 20.0
+        train.state = TrainState.RUNNING_MOVING
+        controller.state = TrainState.RUNNING_MOVING
+        controller.ato_running = True
+
+        route.unassign_train(train.train_id)
+        train.assigned_route_id = None
+        simulation.route_executor.execution_states.pop(train.train_id, None)
+
+        if train.assigned_path_id:
+            dispatcher.cancel_path(train.assigned_path_id, force=True)
+        train.assigned_path_id = None
+        train.current_path = None
+        train.reserved_blocks = []
+
+        auto_park_route = Route(
+            route_id="TEMP_UNASSIGN_AUTO_PARK",
+            name="AutoPark",
+            mode=RouteMode.ONE_OFF,
+        )
+        auto_park_route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.4))
+        auto_park_route.assign_train(train.train_id)
+        auto_park_route.activate(simulation.simulation_time)
+        network.routes[auto_park_route.route_id] = auto_park_route
+        train.assigned_route_id = auto_park_route.route_id
+        train.current_speed = 0.0
+        train.state = TrainState.STANDBY
+        controller.state = TrainState.STANDBY
+
+        self._run_until(
+            simulation,
+            lambda: (
+                train.assigned_path_id is not None
+                and dispatcher.get_path(train.assigned_path_id) is not None
+                and dispatcher.get_path(train.assigned_path_id).end_block_id
+                == "STA_C_BLOCK"
+            ),
+            "Auto-park route did not dispatch from mid-block to C",
+            max_steps=6000,
+        )
+        self._force_arrival_at_platform(
+            simulation,
+            auto_park_route,
+            train,
+            controller,
+            "STA_C",
+        )
+
+        stop_tile = train.position.head_tile if train.position else None
+        assert stop_tile in {(4, 0), (8, 0)}, (
+            f"Expected final stop at B or C station tile, got {stop_tile}"
+        )
 
 
 if __name__ == "__main__":

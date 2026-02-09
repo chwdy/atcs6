@@ -37,7 +37,8 @@ class StepPlayer:
             network.trains.clear()
             network.blocks.clear()
             network.signals.clear()
-            network.stations.clear()
+            network.platforms.clear()
+            network.station_groups.clear()
             network.schedules.clear()
 
         steps = step_data.get("steps", [])
@@ -87,7 +88,8 @@ class StepPlayer:
             network.trains.clear()
             network.blocks.clear()
             network.signals.clear()
-            network.stations.clear()
+            network.platforms.clear()
+            network.station_groups.clear()
             network.schedules.clear()
 
         errors = []
@@ -147,10 +149,10 @@ class StepPlayer:
             return self._op_create_block(op, network)
         elif op_type == "add_signal":
             return self._op_add_signal(op, network)
-        elif op_type == "add_station":
-            return self._op_add_station(op, network)
-        elif op_type == "extend_station":
-            return self._op_extend_station(op, network)
+        elif op_type == "add_platform":
+            return self._op_add_platform(op, network)
+        elif op_type == "extend_platform":
+            return self._op_extend_platform(op, network)
         elif op_type == "add_train":
             return self._op_add_train(op, network)
         else:
@@ -233,36 +235,36 @@ class StepPlayer:
 
         return signal.signal_id
 
-    def _op_add_station(self, op: dict, network: "RailwayNetwork") -> str:
-        """Execute add_station operation."""
+    def _op_add_platform(self, op: dict, network: "RailwayNetwork") -> str:
+        """Execute add_platform operation."""
         x = op["x"]
         y = op["y"]
         name = op.get("name", "")
-        station_id = op.get("station_id")
+        platform_id = op.get("platform_id")
         length_cm = op.get("length_cm", 0.0)
         platform_side = op.get("platform_side", "both")
         top_speed_kmh = op.get("top_speed_kmh")
 
-        station = network.add_station(
+        platform = network.add_platform(
             x=x,
             y=y,
-            station_id=station_id,
+            platform_id=platform_id,
             name=name,
             length_cm=length_cm,
             platform_side=platform_side,
             top_speed_kmh=top_speed_kmh,
         )
 
-        return station.station_id
+        return platform.platform_id
 
-    def _op_extend_station(self, op: dict, network: "RailwayNetwork") -> str:
-        """Execute extend_station operation."""
-        station_id = self._resolve_ref(op["station_id"])
+    def _op_extend_platform(self, op: dict, network: "RailwayNetwork") -> str:
+        """Execute extend_platform operation."""
+        platform_id = self._resolve_ref(op["platform_id"])
         positions = [tuple(p) for p in op["positions"]]
 
-        network.extend_station(station_id, positions)
+        network.extend_platform(platform_id, positions)
 
-        return station_id
+        return platform_id
 
     def _op_add_train(self, op: dict, network: "RailwayNetwork") -> str:
         """Execute add_train operation."""
@@ -346,16 +348,16 @@ class StepPlayer:
                 }
             )
 
-        expected_station_count = verification.get("station_count")
+        expected_platform_count = verification.get("platform_count")
         if (
-            expected_station_count is not None
-            and len(network.stations) != expected_station_count
+            expected_platform_count is not None
+            and len(network.platforms) != expected_platform_count
         ):
             mismatches.append(
                 {
-                    "field": "station_count",
-                    "expected": expected_station_count,
-                    "actual": len(network.stations),
+                    "field": "platform_count",
+                    "expected": expected_platform_count,
+                    "actual": len(network.platforms),
                 }
             )
 

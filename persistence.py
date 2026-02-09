@@ -7,6 +7,7 @@ Saves both snapshot and steps in a single file:
 - Steps: Fallback for recovery if snapshot fails
 """
 
+import copy
 import json
 from datetime import datetime
 from pathlib import Path
@@ -122,11 +123,11 @@ class PersistenceManager:
 
         # Try snapshot first (new merged format)
         if "snapshot" in wrapper:
-            return wrapper["snapshot"]
+            return self._migrate_route_station_schema(wrapper["snapshot"])
 
         # Fall back to old format (data key)
         if "data" in wrapper:
-            return wrapper["data"]
+            return self._migrate_route_station_schema(wrapper["data"])
 
         raise ValueError(f"Layout '{name}' has no snapshot or data")
 
@@ -159,7 +160,9 @@ class PersistenceManager:
         snapshot_error = None
         if "snapshot" in wrapper:
             try:
-                network.from_dict(wrapper["snapshot"])
+                network.from_dict(
+                    self._migrate_route_station_schema(wrapper["snapshot"])
+                )
                 return {"success": True, "method": "snapshot", "error": None}
             except Exception as e:
                 snapshot_error = str(e)
@@ -168,7 +171,7 @@ class PersistenceManager:
         # Try old format (data key)
         elif "data" in wrapper:
             try:
-                network.from_dict(wrapper["data"])
+                network.from_dict(self._migrate_route_station_schema(wrapper["data"]))
                 return {"success": True, "method": "snapshot", "error": None}
             except Exception as e:
                 snapshot_error = str(e)
@@ -279,6 +282,46 @@ class PersistenceManager:
         try:
             file_major = int(version.split(".")[0])
             current_major = int(self.SCHEMA_VERSION.split(".")[0])
-            return file_major == current_major
+            return file_major == current_major or file_major == 1
         except (ValueError, IndexError):
             return False
+
+    def _migrate_route_station_schema(self, data: dict) -> dict:
+        """Migrate legacy station-shaped snapshots to platform schema."""
+        if not isinstance(data, dict):
+            return data
+
+        migrated = copy.deepcopy(data)
+
+        # Legacy layouts used `stations` for physical platforms.
+        # Current schema stores these under `platforms`.
+        if "platforms" not in migrated and "stations" in migrated:
+            legacy_stations = migrated.get("stations", [])
+            normalized_platforms = []
+
+            if isinstance(legacy_stations, dict):
+                iterable = legacy_stations.items()
+                for station_id, station_data in iterable:
+                    if not isinstance(station_data, dict):
+                        continue
+                    platform_data = dict(station_data)
+                    if "platform_id" not in platform_data:
+                        platform_data["platform_id"] = platform_data.get(
+                            "station_id", station_id
+                        )
+                    normalized_platforms.append(platform_data)
+            elif isinstance(legacy_stations, list):
+                for station_data in legacy_stations:
+                    if not isinstance(station_data, dict):
+                        continue
+                    platform_data = dict(station_data)
+                    if (
+                        "platform_id" not in platform_data
+                        and "station_id" in platform_data
+                    ):
+                        platform_data["platform_id"] = platform_data["station_id"]
+                    normalized_platforms.append(platform_data)
+
+            migrated["platforms"] = normalized_platforms
+
+        return migrated

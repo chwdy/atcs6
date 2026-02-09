@@ -366,7 +366,7 @@ function renderTileItem(x, y, index, total, assignedBlock, blocks, removeBtnClas
         }
 
         const assignButton = `
-            <button class="${assignBtnClass} btn btn-sm btn-info" data-x="${x}" data-y="${y}" data-index="${index}" title="Assign a block section to this station tile">
+            <button class="${assignBtnClass} btn btn-sm btn-info" data-x="${x}" data-y="${y}" data-index="${index}" title="Assign a block section to this platform tile">
                 ${assignedBlock ? 'Change Block' : 'Assign Block'}
             </button>
         `;
@@ -427,7 +427,7 @@ function renderTileList(sortedPositions, options) {
 
     return `
         <div class="property-item">
-            <label class="property-label">${entityType === 'station' ? 'Station' : 'Block'} Tiles (${sortedPositions.length})</label>
+            <label class="property-label">${entityType === 'platform' ? 'Platform' : 'Block'} Tiles (${sortedPositions.length})</label>
             <button id="${extendStartBtnId}" class="btn btn-secondary btn-full text-sm mb-8">➕ Extend Start</button>
             <div class="bg-input rounded-lg" style="max-height: 200px; overflow-y: auto; border: 1px solid #3a3a4e; padding: 8px;">
                 ${tileItems}

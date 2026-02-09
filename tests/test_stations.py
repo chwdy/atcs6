@@ -17,9 +17,16 @@ from track import (
 )
 from network import RailwayNetwork
 from station import Station
+from railway_platform import Platform
 from block import Block
 from railway_signal import Signal, SignalType
 from enums import BlockState, PlatformSide, Direction
+from persistence import PersistenceManager
+from route_executor import RouteExecutionState, RouteExecutor
+from step_player import StepPlayer
+from train import Train
+from train_route import TravelDirectionPolicy, Waypoint
+from tests.train_test_helpers import make_train_position
 
 
 @pytest.fixture
@@ -60,26 +67,26 @@ def zigzag_diagonal_ne_sw(network):
 
 
 class TestStation:
-    """Tests for Station class"""
+    """Tests for Platform class (formerly Station)"""
 
     def test_station_creation(self, straight_ns_track):
         network = straight_ns_track
-        station = Station(
-            station_id="STA_001",
+        station = Platform(
+            platform_id="PLT_001",
             name="Test Station",
             positions=[(0, 1)],
             length_cm=100,
             platform_side=PlatformSide.BOTH,
             top_speed_kmh=30,
         )
-        assert station.station_id == "STA_001"
+        assert station.platform_id == "PLT_001"
         assert station.name == "Test Station"
         assert (0, 1) in station.positions
 
     def test_orientation_detection_ns(self, straight_ns_track):
         network = straight_ns_track
-        station = Station(
-            station_id="STA_001",
+        station = Platform(
+            platform_id="PLT_001",
             name="NS Station",
             positions=[(0, 1)],
             length_cm=100,
@@ -91,8 +98,8 @@ class TestStation:
 
     def test_orientation_detection_ew(self, straight_ew_track):
         network = straight_ew_track
-        station = Station(
-            station_id="STA_001",
+        station = Platform(
+            platform_id="STA_001",
             name="EW Station",
             positions=[(1, 0)],
             length_cm=100,
@@ -104,8 +111,8 @@ class TestStation:
 
     def test_add_position(self, straight_ns_track):
         network = straight_ns_track
-        station = Station(
-            station_id="STA_001",
+        station = Platform(
+            platform_id="STA_001",
             name="Test Station",
             positions=[(0, 1)],
             length_cm=100,
@@ -117,8 +124,8 @@ class TestStation:
 
     def test_zigzag_diagonal_orientation_nw_se(self, zigzag_diagonal_nw_se):
         network = zigzag_diagonal_nw_se
-        station = Station(
-            station_id="STA_001",
+        station = Platform(
+            platform_id="STA_001",
             name="Diagonal Station",
             positions=[(0, 0)],
             length_cm=100,
@@ -130,8 +137,8 @@ class TestStation:
 
     def test_zigzag_diagonal_orientation_ne_sw(self, zigzag_diagonal_ne_sw):
         network = zigzag_diagonal_ne_sw
-        station = Station(
-            station_id="STA_001",
+        station = Platform(
+            platform_id="STA_001",
             name="Diagonal Station",
             positions=[(0, 0)],
             length_cm=100,
@@ -143,8 +150,8 @@ class TestStation:
 
     def test_serialization_with_orientation(self, straight_ns_track):
         network = straight_ns_track
-        station = Station(
-            station_id="STA_001",
+        station = Platform(
+            platform_id="STA_001",
             name="Test Station",
             positions=[(0, 1)],
             length_cm=100,
@@ -157,8 +164,8 @@ class TestStation:
         assert station_dict["orientation"] == "NS"
 
     def test_block_assignment_basic(self, straight_ns_track):
-        station = Station(
-            station_id="STA_001",
+        station = Platform(
+            platform_id="STA_001",
             name="Test Station",
             positions=[(0, 1), (0, 2), (0, 3)],
             length_cm=300,
@@ -172,8 +179,8 @@ class TestStation:
         assert station.get_block_for_tile(0, 3) == "BLK_002"
 
     def test_block_unassignment(self, straight_ns_track):
-        station = Station(
-            station_id="STA_001",
+        station = Platform(
+            platform_id="STA_001",
             name="Test Station",
             positions=[(0, 1), (0, 2)],
             length_cm=200,
@@ -184,8 +191,8 @@ class TestStation:
         assert station.get_block_for_tile(0, 1) is None
 
     def test_get_tiles_for_block(self, straight_ns_track):
-        station = Station(
-            station_id="STA_001",
+        station = Platform(
+            platform_id="STA_001",
             name="Test Station",
             positions=[(0, 1), (0, 2), (0, 3), (0, 4)],
             length_cm=400,
@@ -199,8 +206,8 @@ class TestStation:
         assert set(station.get_tiles_for_block("BLK_003")) == {(0, 4)}
 
     def test_get_all_assigned_blocks(self, straight_ns_track):
-        station = Station(
-            station_id="STA_001",
+        station = Platform(
+            platform_id="STA_001",
             name="Test Station",
             positions=[(0, 1), (0, 2), (0, 3)],
             length_cm=300,
@@ -263,7 +270,7 @@ class TestMultiBlockStationAPI:
         data = station.to_dict()
         assert "block_assignments" in data
         assert data["block_assignments"] == {"0,1": "BLK_001", "0,2": "BLK_001"}
-        station2 = Station.from_dict(data)
+        station2 = Platform.from_dict(data)
         assert station2.get_block_for_tile(0, 1) == "BLK_001"
         assert station2.get_block_for_tile(0, 2) == "BLK_001"
 
@@ -388,7 +395,7 @@ class TestBlockStationIntegration:
         network.add_track(TrackSegment(0, 2, TRACK_NS))
         station = network.add_station(0, 0, station_id="STATION_A", name="Station A")
         network.extend_station("STATION_A", [(0, 1), (0, 2)])
-        station_block_id = f"{station.station_id}_BLOCK"
+        station_block_id = f"{station.platform_id}_BLOCK"
         assert station_block_id in network.blocks
         block_positions = network.get_block_positions(station_block_id)
         assert len(block_positions) == 3
@@ -399,6 +406,243 @@ class TestBlockStationIntegration:
             track_0_2.block_section_id = None
         block_positions = network.get_block_positions(station_block_id)
         assert len(block_positions) == 2
+
+
+class TestTravelDirectionPolicyPreserve:
+    """Tests for preserve-direction filtering in flexible platform routing."""
+
+    def _build_grouped_platform_network(self) -> RailwayNetwork:
+        network = RailwayNetwork()
+
+        # Previous waypoint platform (outside target station group)
+        network.platforms["PLT_PREV"] = Platform(
+            platform_id="PLT_PREV",
+            name="Prev",
+            positions=[(0, 0)],
+            platform_side=PlatformSide.BOTH,
+        )
+
+        # Target station group with two alternatives
+        network.platforms["PLT_TARGET"] = Platform(
+            platform_id="PLT_TARGET",
+            name="Target",
+            positions=[(10, 0)],
+            platform_side=PlatformSide.BOTH,
+        )
+        network.platforms["PLT_ALT_WEST"] = Platform(
+            platform_id="PLT_ALT_WEST",
+            name="Alt West",
+            positions=[(-10, 0)],
+            platform_side=PlatformSide.BOTH,
+        )
+        network.platforms["PLT_ALT_EAST"] = Platform(
+            platform_id="PLT_ALT_EAST",
+            name="Alt East",
+            positions=[(11, 1)],
+            platform_side=PlatformSide.BOTH,
+        )
+
+        network.station_groups["STA_MAIN"] = Station(
+            station_id="STA_MAIN",
+            name="Main",
+            platform_ids=["PLT_TARGET", "PLT_ALT_WEST", "PLT_ALT_EAST"],
+        )
+
+        return network
+
+    def _make_train(self) -> Train:
+        train = Train(train_id="T-PRESERVE")
+        train.position = make_train_position((0, 0), Direction.EAST)
+        train.facing_direction = Direction.EAST
+        return train
+
+    def test_preserve_filters_out_wrong_direction_candidate(self, monkeypatch):
+        """PRESERVE should reject alternatives that reverse travel direction."""
+        network = self._build_grouped_platform_network()
+        executor = RouteExecutor(network)
+        train = self._make_train()
+
+        waypoint = Waypoint(
+            platform_id="PLT_TARGET",
+            flexible_platform=True,
+            travel_direction_policy=TravelDirectionPolicy.PRESERVE,
+        )
+        exec_state = RouteExecutionState(
+            train_id=train.train_id,
+            route_id="R1",
+            last_waypoint_platform_id="PLT_PREV",
+        )
+
+        # Force fallback away from target to test candidate filtering.
+        monkeypatch.setattr(
+            executor,
+            "_is_platform_available",
+            lambda platform_id, _train_id: platform_id != "PLT_TARGET",
+        )
+
+        resolved = executor._resolve_target_platform(train, waypoint, exec_state)
+        assert resolved == "PLT_ALT_EAST"
+
+    def test_either_policy_allows_first_available_alternative(self, monkeypatch):
+        """EITHER policy should not apply preserve-direction filtering."""
+        network = self._build_grouped_platform_network()
+        executor = RouteExecutor(network)
+        train = self._make_train()
+
+        waypoint = Waypoint(
+            platform_id="PLT_TARGET",
+            flexible_platform=True,
+            travel_direction_policy=TravelDirectionPolicy.EITHER,
+        )
+        exec_state = RouteExecutionState(
+            train_id=train.train_id,
+            route_id="R1",
+            last_waypoint_platform_id="PLT_PREV",
+        )
+
+        monkeypatch.setattr(
+            executor,
+            "_is_platform_available",
+            lambda platform_id, _train_id: platform_id != "PLT_TARGET",
+        )
+
+        resolved = executor._resolve_target_platform(train, waypoint, exec_state)
+        assert resolved == "PLT_ALT_WEST"
+
+    def test_preserve_falls_back_to_train_effective_direction(self, monkeypatch):
+        """PRESERVE should still filter using train direction without prior waypoint."""
+        network = self._build_grouped_platform_network()
+        executor = RouteExecutor(network)
+        train = self._make_train()
+
+        waypoint = Waypoint(
+            platform_id="PLT_TARGET",
+            flexible_platform=True,
+            travel_direction_policy=TravelDirectionPolicy.PRESERVE,
+        )
+        exec_state = RouteExecutionState(
+            train_id=train.train_id,
+            route_id="R1",
+            last_waypoint_platform_id=None,
+        )
+
+        monkeypatch.setattr(
+            executor,
+            "_is_platform_available",
+            lambda platform_id, _train_id: platform_id != "PLT_TARGET",
+        )
+
+        resolved = executor._resolve_target_platform(train, waypoint, exec_state)
+        assert resolved == "PLT_ALT_EAST"
+
+
+class TestStationPlatformSchemaBugFixes:
+    """
+    Comprehensive tests for station/platform schema and replay clearing bugs.
+
+    These tests prevent regressions for three issues:
+
+    BUG 1: Legacy snapshots with `stations` loaded as empty because only `platforms`
+           were read.
+    FIX 1: Persistence migration maps legacy `stations` -> `platforms`.
+
+    BUG 2: Step replay with clear_first=True left stale station_groups from previous
+           layouts.
+    FIX 2: StepPlayer now clears station_groups in both replay entry points.
+
+    BUG 3: PlatformSide.EITHER serialized as right-side only.
+    FIX 3: EITHER now serializes to both orientation sides.
+    """
+
+    def test_legacy_stations_list_migrates_to_platforms(self):
+        """Legacy list-shaped `stations` payload should load physical platforms."""
+        manager = PersistenceManager()
+        snapshot = {
+            "tracks": [],
+            "stations": [
+                {
+                    "station_id": "STA_LEGACY_1",
+                    "name": "Legacy Station 1",
+                    "positions": [[0, 0]],
+                    "length_cm": 100.0,
+                    "platform_side": "both",
+                }
+            ],
+        }
+
+        migrated = manager._migrate_route_station_schema(snapshot)
+        network = RailwayNetwork()
+        network.from_dict(migrated)
+
+        assert "platforms" in migrated
+        assert "STA_LEGACY_1" in network.platforms
+
+    def test_legacy_stations_dict_migrates_to_platforms(self):
+        """Legacy dict-shaped `stations` payload should preserve keyed IDs."""
+        manager = PersistenceManager()
+        snapshot = {
+            "tracks": [],
+            "stations": {
+                "STA_LEGACY_2": {
+                    "name": "Legacy Station 2",
+                    "positions": [[1, 0]],
+                    "length_cm": 120.0,
+                    "platform_side": "left",
+                }
+            },
+        }
+
+        migrated = manager._migrate_route_station_schema(snapshot)
+        network = RailwayNetwork()
+        network.from_dict(migrated)
+
+        assert "STA_LEGACY_2" in network.platforms
+        assert network.platforms["STA_LEGACY_2"].platform_side == PlatformSide.LEFT
+
+    def test_step_player_play_clears_station_groups_with_clear_first(self):
+        """play() should clear stale station_groups when loading a new layout."""
+        network = RailwayNetwork()
+        network.station_groups["STA_GROUP_OLD"] = Station(
+            station_id="STA_GROUP_OLD",
+            name="Old Group",
+            platform_ids=["PLT_OLD"],
+        )
+
+        player = StepPlayer()
+        player.play({"steps": []}, network, clear_first=True)
+
+        assert network.station_groups == {}
+
+    def test_step_player_play_steps_clears_station_groups_with_clear_first(self):
+        """play_steps() should clear stale station_groups in fallback replay mode."""
+        network = RailwayNetwork()
+        network.station_groups["STA_GROUP_OLD"] = Station(
+            station_id="STA_GROUP_OLD",
+            name="Old Group",
+            platform_ids=["PLT_OLD"],
+        )
+
+        player = StepPlayer()
+        player.play_steps([], network, clear_first=True)
+
+        assert network.station_groups == {}
+
+    def test_platform_side_either_serializes_to_both_orientation_sides(
+        self, straight_ns_track
+    ):
+        """EITHER should serialize as both sides, not right-side only."""
+        station = Platform(
+            platform_id="PLT_EITHER",
+            name="Flexible Side Platform",
+            positions=[(0, 1)],
+            length_cm=100,
+            platform_side=PlatformSide.EITHER,
+            initial_orientation="NS",
+        )
+
+        payload = station.to_dict_with_orientation(straight_ns_track)
+
+        assert payload["platform_sides"] == ["west", "east"]
 
 
 if __name__ == "__main__":

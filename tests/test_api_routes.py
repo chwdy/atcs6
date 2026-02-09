@@ -346,95 +346,162 @@ class TestSignalRoutes:
 
 
 # ============================================================================
-# Station Routes Tests (11 routes)
+# Platform Routes Tests (11 routes)
 # ============================================================================
 
 
-class TestStationRoutes:
-    """Test station management endpoints."""
+class TestPlatformRoutes:
+    """Test physical platform management endpoints."""
 
-    def test_create_station(self, client, network_with_tracks):
-        """POST /api/station should create station."""
+    def test_create_platform(self, client, network_with_tracks):
+        """POST /api/platform should create platform."""
         response = client.post(
-            "/api/station", json={"x": 0, "y": 0, "name": "Test Station"}
+            "/api/platform", json={"x": 0, "y": 0, "name": "Test Platform"}
         )
         assert response.status_code == 200
         data = response.get_json()
-        assert "station_id" in data
+        assert "platform_id" in data
 
-    def test_get_station(self, client, app_state, network_with_tracks):
-        """GET /api/station/<station_id> should return station."""
-        station = app_state.network.add_station(0, 0, name="Test")
-        response = client.get(f"/api/station/{station.station_id}")
+    def test_get_platform(self, client, app_state, network_with_tracks):
+        """GET /api/platform/<platform_id> should return platform."""
+        platform = app_state.network.add_platform(0, 0, name="Test")
+        response = client.get(f"/api/platform/{platform.platform_id}")
         assert response.status_code == 200
 
-    def test_update_station(self, client, app_state, network_with_tracks):
-        """PATCH /api/station/<station_id> should update station."""
-        station = app_state.network.add_station(0, 0, name="Test")
+    def test_update_platform(self, client, app_state, network_with_tracks):
+        """PATCH /api/platform/<platform_id> should update platform."""
+        platform = app_state.network.add_platform(0, 0, name="Test")
         response = client.patch(
-            f"/api/station/{station.station_id}", json={"name": "Updated"}
+            f"/api/platform/{platform.platform_id}", json={"name": "Updated"}
         )
         assert response.status_code == 200
 
-    def test_delete_station(self, client, app_state, network_with_tracks):
-        """DELETE /api/station/<station_id> should delete station."""
-        station = app_state.network.add_station(0, 0, name="Test")
-        response = client.delete(f"/api/station/{station.station_id}")
+    def test_delete_platform(self, client, app_state, network_with_tracks):
+        """DELETE /api/platform/<platform_id> should delete platform."""
+        platform = app_state.network.add_platform(0, 0, name="Test")
+        response = client.delete(f"/api/platform/{platform.platform_id}")
         assert response.status_code == 200
 
-    def test_validate_station_at(self, client, network_with_tracks):
-        """GET /api/station/validate/<x>/<y> should validate station placement."""
-        response = client.get("/api/station/validate/0/0")
+    def test_validate_platform_at(self, client, network_with_tracks):
+        """GET /api/platform/validate/<x>/<y> should validate platform placement."""
+        response = client.get("/api/platform/validate/0/0")
         assert response.status_code == 200
         data = response.get_json()
         assert "can_place" in data
 
-    def test_extend_station(self, client, app_state, network_with_tracks):
-        """POST /api/station/<station_id>/extend should extend station."""
-        station = app_state.network.add_station(0, 0, name="Test")
+    def test_extend_platform(self, client, app_state, network_with_tracks):
+        """POST /api/platform/<platform_id>/extend should extend platform."""
+        platform = app_state.network.add_platform(0, 0, name="Test")
         response = client.post(
-            f"/api/station/{station.station_id}/extend", json={"positions": [[1, 0]]}
+            f"/api/platform/{platform.platform_id}/extend", json={"positions": [[1, 0]]}
         )
         assert response.status_code == 200
 
-    def test_remove_station_tile(self, client, app_state, network_with_tracks):
-        """POST /api/station/<station_id>/remove_tile should remove tile."""
-        station = app_state.network.add_station(0, 0, name="Test")
-        app_state.network.extend_station(station.station_id, [(1, 0)])
+    def test_remove_platform_tile(self, client, app_state, network_with_tracks):
+        """POST /api/platform/<platform_id>/remove_tile should remove tile."""
+        platform = app_state.network.add_platform(0, 0, name="Test")
+        app_state.network.extend_platform(platform.platform_id, [(1, 0)])
         response = client.post(
-            f"/api/station/{station.station_id}/remove_tile", json={"x": 1, "y": 0}
+            f"/api/platform/{platform.platform_id}/remove_tile", json={"x": 1, "y": 0}
         )
         assert response.status_code == 200
 
-    def test_get_station_end_tiles(self, client, app_state, network_with_tracks):
-        """GET /api/station/<station_id>/end_tiles should return end tiles."""
-        station = app_state.network.add_station(0, 0, name="Test")
-        response = client.get(f"/api/station/{station.station_id}/end_tiles")
-        assert response.status_code == 200
+    def test_remove_platform_tile_clears_block_assignment(
+        self, client, app_state, network_with_tracks
+    ):
+        """Removing a platform tile should also remove stale tile block assignments."""
+        platform = app_state.network.add_platform(0, 0, name="Test")
+        app_state.network.extend_platform(platform.platform_id, [(1, 0)])
+        app_state.network.create_block("BLK_001", "Test")
 
-    def test_can_extend_station(self, client, app_state, network_with_tracks):
-        """POST /api/station/<station_id>/can_extend should validate extension."""
-        station = app_state.network.add_station(0, 0, name="Test")
+        assign_response = client.post(
+            f"/api/platform/{platform.platform_id}/assign_tile",
+            json={"x": 1, "y": 0, "block_id": "BLK_001"},
+        )
+        assert assign_response.status_code == 200
+
+        remove_response = client.post(
+            f"/api/platform/{platform.platform_id}/remove_tile", json={"x": 1, "y": 0}
+        )
+        assert remove_response.status_code == 200
+
+        assignments_response = client.get(
+            f"/api/platform/{platform.platform_id}/block_assignments"
+        )
+        assert assignments_response.status_code == 200
+        assignments = assignments_response.get_json()["assignments"]
+        assert {"x": 1, "y": 0, "block_id": "BLK_001"} not in assignments
+
+    def test_can_extend_platform(self, client, app_state, network_with_tracks):
+        """POST /api/platform/<platform_id>/can_extend should validate extension."""
+        platform = app_state.network.add_platform(0, 0, name="Test")
         response = client.post(
-            f"/api/station/{station.station_id}/can_extend", json={"x": 1, "y": 0}
+            f"/api/platform/{platform.platform_id}/can_extend", json={"x": 1, "y": 0}
         )
         assert response.status_code == 200
 
-    def test_assign_tile_to_block(self, client, app_state, network_with_tracks):
-        """POST /api/station/<station_id>/assign_tile should assign tile to block."""
-        station = app_state.network.add_station(0, 0, name="Test")
+    def test_assign_platform_tile_to_block(
+        self, client, app_state, network_with_tracks
+    ):
+        """POST /api/platform/<platform_id>/assign_tile should assign tile to block."""
+        platform = app_state.network.add_platform(0, 0, name="Test")
         block = app_state.network.create_block("BLK_001", "Test")
         response = client.post(
-            f"/api/station/{station.station_id}/assign_tile",
+            f"/api/platform/{platform.platform_id}/assign_tile",
             json={"x": 0, "y": 0, "block_id": "BLK_001"},
         )
         assert response.status_code == 200
 
-    def test_get_block_assignments(self, client, app_state, network_with_tracks):
-        """GET /api/station/<station_id>/block_assignments should return assignments."""
-        station = app_state.network.add_station(0, 0, name="Test")
-        response = client.get(f"/api/station/{station.station_id}/block_assignments")
+    def test_get_platform_block_assignments(
+        self, client, app_state, network_with_tracks
+    ):
+        """GET /api/platform/<platform_id>/block_assignments should return assignments."""
+        platform = app_state.network.add_platform(0, 0, name="Test")
+        response = client.get(f"/api/platform/{platform.platform_id}/block_assignments")
         assert response.status_code == 200
+
+
+class TestStationGroupRoutes:
+    """Test logical station-group endpoints."""
+
+    def test_create_station_group(self, client, app_state, network_with_tracks):
+        platform = app_state.network.add_platform(0, 0, platform_id="PLT_A", name="A")
+        response = client.post(
+            "/api/station",
+            json={
+                "station_id": "STA_MAIN",
+                "name": "Main",
+                "platform_ids": [platform.platform_id],
+            },
+        )
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["station_id"] == "STA_MAIN"
+        assert data["platform_ids"] == ["PLT_A"]
+
+    def test_add_and_remove_platform(self, client, app_state, network_with_tracks):
+        app_state.network.add_platform(0, 0, platform_id="PLT_A", name="A")
+        app_state.network.add_platform(1, 0, platform_id="PLT_B", name="B")
+        app_state.network.create_station_group("STA_MAIN", "Main", ["PLT_A"])
+
+        add_resp = client.post(
+            "/api/station/STA_MAIN/add-platform", json={"platform_id": "PLT_B"}
+        )
+        assert add_resp.status_code == 200
+        assert "PLT_B" in add_resp.get_json()["platform_ids"]
+
+        remove_resp = client.post(
+            "/api/station/STA_MAIN/remove-platform", json={"platform_id": "PLT_B"}
+        )
+        assert remove_resp.status_code == 200
+        assert "PLT_B" not in remove_resp.get_json()["platform_ids"]
+
+    def test_list_station_groups(self, client, app_state, network_with_tracks):
+        app_state.network.create_station_group("STA_MAIN", "Main", [])
+        response = client.get("/api/station")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert "stations" in data
 
 
 # ============================================================================
@@ -607,6 +674,114 @@ class TestMiscRoutes:
         """POST /api/network/clear should clear network."""
         response = client.post("/api/network/clear")
         assert response.status_code == 200
+
+
+class TestRouteRedesignApis:
+    """Coverage for newly added route-panel redesign APIs."""
+
+    def _create_train(self, app_state, train_id: str = "TRAIN_A"):
+        car = TrainCar(car_id=f"{train_id}_CAR", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id=train_id, consist=[car], max_speed=80.0)
+        app_state.network.add_train(train)
+
+    def _setup_connected_platforms(self, app_state, client):
+        for x in range(4):
+            app_state.network.add_track(TrackSegment(x=x, y=0, track_bits=2))
+
+        app_state.network.create_block_with_tracks(
+            block_id="BLK_A",
+            positions=[(0, 0), (1, 0)],
+            name="Block A",
+        )
+        app_state.network.create_block_with_tracks(
+            block_id="BLK_B",
+            positions=[(2, 0), (3, 0)],
+            name="Block B",
+        )
+
+        assert (
+            client.post(
+                "/api/platform",
+                json={
+                    "x": 0,
+                    "y": 0,
+                    "platform_id": "PLT_A",
+                    "name": "Platform A",
+                },
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/api/platform",
+                json={
+                    "x": 2,
+                    "y": 0,
+                    "platform_id": "PLT_B",
+                    "name": "Platform B",
+                },
+            ).status_code
+            == 200
+        )
+
+    def test_platform_endpoint_create_and_get(self, client, app_state):
+        app_state.network.add_track(TrackSegment(x=10, y=0, track_bits=2))
+        create_resp = client.post(
+            "/api/platform",
+            json={"x": 10, "y": 0, "platform_id": "PLT_001", "name": "P1"},
+        )
+        assert create_resp.status_code == 200
+
+        get_resp = client.get("/api/platform/PLT_001")
+        assert get_resp.status_code == 200
+        payload = get_resp.get_json()
+        assert payload["platform_id"] == "PLT_001"
+
+    def test_train_route_viability_endpoint(self, client, app_state):
+        self._setup_connected_platforms(app_state, client)
+        resp = client.post(
+            "/api/train-routes/check-viability",
+            json={"pairs": [["PLT_A", "PLT_B"]]},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "results" in data
+        assert len(data["results"]) == 1
+        assert data["results"][0]["from"] == "PLT_A"
+        assert data["results"][0]["to"] == "PLT_B"
+
+    def test_assign_route_with_next_waypoint_and_status(self, client, app_state):
+        self._setup_connected_platforms(app_state, client)
+        self._create_train(app_state, "TRAIN_A")
+
+        create_route_resp = client.post(
+            "/api/train-routes",
+            json={
+                "name": "Route A",
+                "mode": "one_off",
+                "waypoints": [
+                    {"platform_id": "PLT_A", "dwell_time_sec": 5},
+                    {"platform_id": "PLT_B", "dwell_time_sec": 5},
+                ],
+            },
+        )
+        assert create_route_resp.status_code == 200
+        route_id = create_route_resp.get_json()["route"]["route_id"]
+
+        assign_resp = client.put(
+            "/api/trains/TRAIN_A/assign-route",
+            json={"route_id": route_id, "next_waypoint_index": 1, "force": True},
+        )
+        assert assign_resp.status_code == 200
+
+        status_resp = client.get(f"/api/train-routes/{route_id}/status")
+        assert status_resp.status_code == 200
+        status_data = status_resp.get_json()
+        assert status_data["route_id"] == route_id
+        train_status = next(
+            t for t in status_data["trains"] if t["train_id"] == "TRAIN_A"
+        )
+        assert train_status["current_waypoint_index"] == 1
 
 
 # ============================================================================

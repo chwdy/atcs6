@@ -374,152 +374,209 @@ class API {
 
     // === Station API Methods ===
 
+    // === Platform API Methods (new naming, same physical entity) ===
+
+    async createPlatform(data) {
+        return this._request('/platform', {
+            method: 'POST',
+            body: data
+        }, 'createPlatform');
+    }
+
+    async getPlatform(platformId) {
+        return this._request(`/platform/${encodeURIComponent(platformId)}`, {
+            returnNullOn404: true
+        }, 'getPlatform');
+    }
+
+    async updatePlatform(platformId, updates) {
+        return this._request(`/platform/${encodeURIComponent(platformId)}`, {
+            method: 'PATCH',
+            body: updates
+        }, 'updatePlatform');
+    }
+
+    async deletePlatform(platformId) {
+        return this._request(`/platform/${encodeURIComponent(platformId)}`, {
+            method: 'DELETE'
+        }, 'deletePlatform');
+    }
+
+    async validatePlatformPlacement(x, y) {
+        return this._request(`/platform/validate/${x}/${y}`, {}, 'validatePlatformPlacement');
+    }
+
+    async extendPlatform(platformId, positions) {
+        return this._request(`/platform/${encodeURIComponent(platformId)}/extend`, {
+            method: 'POST',
+            body: { positions }
+        }, 'extendPlatform');
+    }
+
+    async removePlatformTile(platformId, x, y) {
+        return this._request(`/platform/${encodeURIComponent(platformId)}/remove_tile`, {
+            method: 'POST',
+            body: { x, y }
+        }, 'removePlatformTile');
+    }
+
+    async canExtendPlatform(platformId, x, y) {
+        return this._request(`/platform/${encodeURIComponent(platformId)}/can_extend`, {
+            method: 'POST',
+            body: { x, y }
+        }, 'canExtendPlatform');
+    }
+
+    async assignPlatformTileToBlock(platformId, x, y, blockId) {
+        return this._request(`/platform/${encodeURIComponent(platformId)}/assign_tile`, {
+            method: 'POST',
+            body: { x, y, block_id: blockId }
+        }, 'assignPlatformTileToBlock');
+    }
+
+    async unassignPlatformTileFromBlock(platformId, x, y) {
+        return this._request(`/platform/${encodeURIComponent(platformId)}/unassign_tile`, {
+            method: 'POST',
+            body: { x, y }
+        }, 'unassignPlatformTileFromBlock');
+    }
+
+    async getPlatformBlockAssignments(platformId) {
+        return this._request(`/platform/${encodeURIComponent(platformId)}/block_assignments`, {}, 'getPlatformBlockAssignments');
+    }
+
     /**
-     * Create a new station.
-     * @param {number} x - X coordinate
-     * @param {number} y - Y coordinate
-     * @param {string} name - Station name
-     * @param {number} lengthCm - Platform length
-     * @param {string} platformSide - 'left', 'right', 'both'
-     * @param {number} topSpeedKmh - Speed limit
-     * @param {string|null} stationId - Optional station ID
-     * @returns {Promise<object>} Created station
+     * Legacy compatibility wrapper: create physical platform.
      */
     async createStation(x, y, name, lengthCm, platformSide, topSpeedKmh, stationId = null) {
-        return this._request('/station', {
+        return this._request('/platform', {
             method: 'POST',
             body: {
                 x, y, name,
                 length_cm: lengthCm,
                 platform_side: platformSide,
                 top_speed_kmh: topSpeedKmh,
-                station_id: stationId
+                platform_id: stationId
             }
         }, 'createStation');
     }
 
-    /**
-     * Get a station by ID.
-     * @param {string} stationId - Station ID
-     * @returns {Promise<object>} Station object
-     */
+    /** Legacy compatibility wrapper: get physical platform by ID. */
     async getStation(stationId) {
-        return this._request(`/station/${encodeURIComponent(stationId)}`, {
+        return this._request(`/platform/${encodeURIComponent(stationId)}`, {
             returnNullOn404: true
         }, 'getStation');
     }
 
-    /**
-     * Update station properties.
-     * @param {string} stationId - Station ID
-     * @param {object} updates - Properties to update
-     * @returns {Promise<object>} Updated station
-     */
+    /** Legacy compatibility wrapper: update physical platform. */
     async updateStation(stationId, updates) {
-        return this._request(`/station/${encodeURIComponent(stationId)}`, {
+        return this._request(`/platform/${encodeURIComponent(stationId)}`, {
             method: 'PATCH',
             body: updates
         }, 'updateStation');
     }
 
-    /**
-     * Delete a station.
-     * @param {string} stationId - Station ID
-     * @returns {Promise<object>} Result
-     */
+    /** Legacy compatibility wrapper: delete physical platform. */
     async deleteStation(stationId) {
-        return this._request(`/station/${encodeURIComponent(stationId)}`, {
+        return this._request(`/platform/${encodeURIComponent(stationId)}`, {
             method: 'DELETE'
         }, 'deleteStation');
     }
 
-    /**
-     * Validate station placement.
-     * @param {number} x - X coordinate
-     * @param {number} y - Y coordinate
-     * @returns {Promise<object>} Validation result
-     */
+    /** Legacy compatibility wrapper: validate physical platform placement. */
     async validateStationPlacement(x, y) {
-        return this._request(`/station/validate/${x}/${y}`, {}, 'validateStationPlacement');
+        return this._request(`/platform/validate/${x}/${y}`, {}, 'validateStationPlacement');
     }
 
-    /**
-     * Extend a station.
-     * @param {string} stationId - Station ID
-     * @param {Array} positions - Positions to add
-     * @returns {Promise<object>} Updated station
-     */
+    /** Legacy compatibility wrapper: extend physical platform. */
     async extendStation(stationId, positions) {
-        return this._request(`/station/${encodeURIComponent(stationId)}/extend`, {
+        return this._request(`/platform/${encodeURIComponent(stationId)}/extend`, {
             method: 'POST',
             body: { positions }
         }, 'extendStation');
     }
 
-    /**
-     * Remove a tile from a station.
-     * @param {string} stationId - Station ID
-     * @param {number} x - X coordinate
-     * @param {number} y - Y coordinate
-     * @returns {Promise<object>} Updated station
-     */
+    /** Legacy compatibility wrapper: remove tile from physical platform. */
     async removeStationTile(stationId, x, y) {
-        return this._request(`/station/${encodeURIComponent(stationId)}/remove_tile`, {
+        return this._request(`/platform/${encodeURIComponent(stationId)}/remove_tile`, {
             method: 'POST',
             body: { x, y }
         }, 'removeStationTile');
     }
 
-    /**
-     * Check if station can be extended to position.
-     * @param {string} stationId - Station ID
-     * @param {number} x - X coordinate
-     * @param {number} y - Y coordinate
-     * @returns {Promise<object>} Validation result
-     */
+    /** Legacy compatibility wrapper: can extend physical platform. */
     async canExtendStation(stationId, x, y) {
-        return this._request(`/station/${encodeURIComponent(stationId)}/can_extend`, {
+        return this._request(`/platform/${encodeURIComponent(stationId)}/can_extend`, {
             method: 'POST',
             body: { x, y }
         }, 'canExtendStation');
     }
 
-    /**
-     * Assign a station tile to a block.
-     * @param {string} stationId - Station ID
-     * @param {number} x - X coordinate
-     * @param {number} y - Y coordinate
-     * @param {string} blockId - Block ID
-     * @returns {Promise<object>} Result
-     */
+    /** Legacy compatibility wrapper: assign platform tile to block. */
     async assignTileToBlock(stationId, x, y, blockId) {
-        return this._request(`/station/${encodeURIComponent(stationId)}/assign_tile`, {
+        return this._request(`/platform/${encodeURIComponent(stationId)}/assign_tile`, {
             method: 'POST',
             body: { x, y, block_id: blockId }
         }, 'assignTileToBlock');
     }
 
-    /**
-     * Unassign a station tile from a block.
-     * @param {string} stationId - Station ID
-     * @param {number} x - X coordinate
-     * @param {number} y - Y coordinate
-     * @returns {Promise<object>} Result
-     */
+    /** Legacy compatibility wrapper: unassign platform tile from block. */
     async unassignTileFromBlock(stationId, x, y) {
-        return this._request(`/station/${encodeURIComponent(stationId)}/unassign_tile`, {
+        return this._request(`/platform/${encodeURIComponent(stationId)}/unassign_tile`, {
             method: 'POST',
             body: { x, y }
         }, 'unassignTileFromBlock');
     }
 
-    /**
-     * Get block assignments for a station.
-     * @param {string} stationId - Station ID
-     * @returns {Promise<object>} Block assignments
-     */
+    /** Legacy compatibility wrapper: platform block assignments. */
     async getBlockAssignments(stationId) {
-        return this._request(`/station/${encodeURIComponent(stationId)}/block_assignments`, {}, 'getBlockAssignments');
+        return this._request(`/platform/${encodeURIComponent(stationId)}/block_assignments`, {}, 'getBlockAssignments');
+    }
+
+    // === Logical Station Group API Methods ===
+
+    async createStationGroup(data) {
+        return this._request('/station', {
+            method: 'POST',
+            body: data
+        }, 'createStationGroup');
+    }
+
+    async listStationGroups() {
+        return this._request('/station', {}, 'listStationGroups');
+    }
+
+    async getStationGroup(stationId) {
+        return this._request(`/station/${encodeURIComponent(stationId)}`, {
+            returnNullOn404: true
+        }, 'getStationGroup');
+    }
+
+    async updateStationGroup(stationId, updates) {
+        return this._request(`/station/${encodeURIComponent(stationId)}`, {
+            method: 'PATCH',
+            body: updates
+        }, 'updateStationGroup');
+    }
+
+    async deleteStationGroup(stationId) {
+        return this._request(`/station/${encodeURIComponent(stationId)}`, {
+            method: 'DELETE'
+        }, 'deleteStationGroup');
+    }
+
+    async addPlatformToStation(stationId, platformId) {
+        return this._request(`/station/${encodeURIComponent(stationId)}/add-platform`, {
+            method: 'POST',
+            body: { platform_id: platformId }
+        }, 'addPlatformToStation');
+    }
+
+    async removePlatformFromStation(stationId, platformId) {
+        return this._request(`/station/${encodeURIComponent(stationId)}/remove-platform`, {
+            method: 'POST',
+            body: { platform_id: platformId }
+        }, 'removePlatformFromStation');
     }
 
     /**
@@ -939,6 +996,136 @@ class API {
             method: 'PUT',
             body: { state }
         }, 'setSwitchState');
+    }
+
+    // === Train Routes (Route Editor) ===
+
+    /**
+     * Get all train routes.
+     * @returns {Promise<Array>} List of routes
+     */
+    async getRoutes() {
+        return this._request('/train-routes', {}, 'getRoutes');
+    }
+
+    /**
+     * Get a specific route.
+     * @param {string} routeId - Route ID
+     * @returns {Promise<object>} Route object
+     */
+    async getRoute(routeId) {
+        return this._request(`/train-routes/${encodeURIComponent(routeId)}`, {}, 'getRoute');
+    }
+
+    /**
+     * Create a new route.
+     * @param {object} routeData - Route data
+     * @returns {Promise<object>} Created route
+     */
+    async createRoute(routeData) {
+        return this._request('/train-routes', {
+            method: 'POST',
+            body: routeData
+        }, 'createRoute');
+    }
+
+    /**
+     * Update a route.
+     * @param {string} routeId - Route ID
+     * @param {object} updates - Properties to update
+     * @returns {Promise<object>} Updated route
+     */
+    async updateRoute(routeId, updates) {
+        return this._request(`/train-routes/${encodeURIComponent(routeId)}`, {
+            method: 'PUT',
+            body: updates
+        }, 'updateRoute');
+    }
+
+    /**
+     * Delete a route.
+     * @param {string} routeId - Route ID
+     * @returns {Promise<object>} Result
+     */
+    async deleteRoute(routeId) {
+        return this._request(`/train-routes/${encodeURIComponent(routeId)}`, {
+            method: 'DELETE'
+        }, 'deleteRoute');
+    }
+
+    /**
+     * Activate a route.
+     * @param {string} routeId - Route ID
+     * @returns {Promise<object>} Updated route
+     */
+    async activateRoute(routeId) {
+        return this._request(`/train-routes/${encodeURIComponent(routeId)}/activate`, {
+            method: 'POST'
+        }, 'activateRoute');
+    }
+
+    /**
+     * Deactivate a route.
+     * @param {string} routeId - Route ID
+     * @returns {Promise<object>} Updated route
+     */
+    async deactivateRoute(routeId) {
+        return this._request(`/train-routes/${encodeURIComponent(routeId)}/deactivate`, {
+            method: 'POST'
+        }, 'deactivateRoute');
+    }
+
+    /**
+     * Get route execution status.
+     * @param {string} routeId - Route ID
+     * @returns {Promise<object>} Route status with train execution states
+     */
+    async getRouteStatus(routeId) {
+        return this._request(`/train-routes/${encodeURIComponent(routeId)}/status`, {}, 'getRouteStatus');
+    }
+
+    /**
+     * Check viability between platform pairs.
+     * @param {Array} pairs - Array of [from_platform_id, to_platform_id] pairs
+     * @returns {Promise<object>} Viability results
+     */
+    async checkViability(pairs) {
+        return this._request('/train-routes/check-viability', {
+            method: 'POST',
+            body: { pairs }
+        }, 'checkViability');
+    }
+
+    /**
+     * Assign/unassign a train to/from a route.
+     * @param {string} trainId - Train ID
+     * @param {string|null} routeId - Route ID or null to unassign
+     * @param {object} options - Assignment options
+     * @returns {Promise<object>} Result
+     */
+    async assignRoute(trainId, routeId, options = {}) {
+        return this._request(`/trains/${encodeURIComponent(trainId)}/assign-route`, {
+            method: 'PUT',
+            body: {
+                route_id: routeId,
+                force: options.force || false,
+                auto_park: options.auto_park !== false,
+                next_waypoint_index: options.nextWaypointIndex
+            }
+        }, 'assignRoute');
+    }
+
+    /**
+     * Override a train's current waypoint index.
+     * @param {string} trainId - Train ID
+     * @param {number} waypointIndex - New waypoint index
+     * @returns {Promise<object>} Result
+     */
+    async setTrainWaypoint(trainId, waypointIndex) {
+        return this._request(`/trains/${encodeURIComponent(trainId)}/set-waypoint`, {
+            method: 'POST',
+            body: { waypoint_index: waypointIndex }
+        }, 'setTrainWaypoint');
     }
 }
 

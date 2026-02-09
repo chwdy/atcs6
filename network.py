@@ -22,6 +22,7 @@ from enums import (
 )
 from railway_signal import Signal, SignalType, SignalState
 from station import Station
+from railway_platform import Platform
 from signal_validation import (
     validate_signal_placement,
     get_valid_directions,
@@ -47,7 +48,9 @@ class RailwayNetwork:
         self.trains: Dict[str, Train] = {}
         self.blocks: Dict[str, Block] = {}
         self.signals: Dict[str, Signal] = {}
-        self.stations: Dict[str, Station] = {}
+        self.platforms: Dict[str, Platform] = {}
+        self.stations = self.platforms
+        self.station_groups: Dict[str, Station] = {}
         self.switches: Dict[str, "Switch"] = {}  # NEW: Switch entity management
         self.schedules: Dict[str, TrainSchedule] = {}
 
@@ -2377,7 +2380,7 @@ class RailwayNetwork:
         length_cm: float = 0.0,
         platform_side: str = "both",
         top_speed_kmh: Optional[float] = None,
-    ) -> Station:
+    ) -> Platform:
         """
         Create and add a station at the specified position.
 
@@ -2495,8 +2498,8 @@ class RailwayNetwork:
                 initial_orientation = group
                 break
 
-        station = Station(
-            station_id=station_id,
+        station = Platform(
+            platform_id=station_id,
             name=name,
             positions=[(x, y)],
             length_cm=length_cm,
@@ -2505,17 +2508,42 @@ class RailwayNetwork:
             initial_orientation=initial_orientation,
         )
 
-        # Store station
-        self.stations[station_id] = station
+        # Store physical platform (legacy station semantics)
+        self.platforms[station_id] = station
 
         # Update track's station reference
         track.station_id = station_id
 
         return station
 
-    def get_station(self, station_id: str) -> Optional[Station]:
-        """Get station by ID."""
-        return self.stations.get(station_id)
+    def add_platform(
+        self,
+        x: int,
+        y: int,
+        platform_id: Optional[str] = None,
+        name: str = "",
+        length_cm: float = 0.0,
+        platform_side: str = "both",
+        top_speed_kmh: Optional[float] = None,
+    ) -> Platform:
+        """Compatibility wrapper: create physical platform via station implementation."""
+        return self.add_station(
+            x=x,
+            y=y,
+            station_id=platform_id,
+            name=name,
+            length_cm=length_cm,
+            platform_side=platform_side,
+            top_speed_kmh=top_speed_kmh,
+        )
+
+    def get_station(self, station_id: str) -> Optional[Platform]:
+        """Get physical platform by legacy station ID."""
+        return self.platforms.get(station_id)
+
+    def get_platform(self, platform_id: str) -> Optional[Platform]:
+        """Get physical platform by ID."""
+        return self.platforms.get(platform_id)
 
     def delete_station(self, station_id: str) -> bool:
         """
@@ -2528,10 +2556,10 @@ class RailwayNetwork:
         Returns:
             True if deleted, False if not found
         """
-        if station_id not in self.stations:
+        if station_id not in self.platforms:
             return False
 
-        station = self.stations[station_id]
+        station = self.platforms[station_id]
 
         # Collect all blocks that are fully within this station
         # A block is "within the station" if ALL its tiles have station_id matching this station
@@ -2569,12 +2597,21 @@ class RailwayNetwork:
                 track.station_id = None
 
         # Delete from storage
-        del self.stations[station_id]
+        del self.platforms[station_id]
+
+        # Remove this platform from any logical station groups
+        for station_group in self.station_groups.values():
+            if station_id in station_group.platform_ids:
+                station_group.remove_platform(station_id)
         return True
+
+    def delete_platform(self, platform_id: str) -> bool:
+        """Compatibility wrapper for physical platform deletion."""
+        return self.delete_station(platform_id)
 
     def extend_station(
         self, station_id: str, new_positions: List[Tuple[int, int]]
-    ) -> Station:
+    ) -> Platform:
         """
         Add adjacent continuous tiles to existing station.
 
@@ -2588,10 +2625,10 @@ class RailwayNetwork:
         Raises:
             ValueError: If validation fails or platform would be discontinuous
         """
-        if station_id not in self.stations:
+        if station_id not in self.platforms:
             raise ValueError(f"Station {station_id} not found")
 
-        station = self.stations[station_id]
+        station = self.platforms[station_id]
 
         # Validate each new position
         for x, y in new_positions:
@@ -2674,6 +2711,96 @@ class RailwayNetwork:
                     track.station_id = station_id
 
         return station
+
+    def extend_platform(
+        self, platform_id: str, new_positions: List[Tuple[int, int]]
+    ) -> Platform:
+        """Compatibility wrapper for physical platform extension."""
+        return self.extend_station(platform_id, new_positions)
+
+    def get_station_for_platform(self, platform_id: str) -> Optional[str]:
+        """Get logical station ID for a platform if station groups exist."""
+        for station_id, station in self.station_groups.items():
+            if platform_id in station.platform_ids:
+                return station_id
+        return None
+
+    def get_platforms_for_station(self, station_id: str) -> List[Platform]:
+        """Get physical platforms for a logical station."""
+        station = self.station_groups.get(station_id)
+        if not station:
+            return []
+
+        result = []
+        for pid in station.platform_ids:
+            platform = self.platforms.get(pid)
+            if platform:
+                result.append(platform)
+        return result
+
+    def create_station_group(
+        self,
+        station_id: Optional[str] = None,
+        name: str = "",
+        platform_ids: Optional[List[str]] = None,
+    ) -> Station:
+        """Create a logical station group for one or more platforms."""
+        if station_id is None:
+            station_id = f"STA_{uuid.uuid4().hex[:6].upper()}"
+        if station_id in self.station_groups:
+            raise ValueError(f"Station {station_id} already exists")
+
+        normalized_platform_ids: List[str] = []
+        for platform_id in platform_ids or []:
+            if platform_id not in self.platforms:
+                raise ValueError(f"Platform {platform_id} not found")
+            existing_station_id = self.get_station_for_platform(platform_id)
+            if existing_station_id:
+                raise ValueError(
+                    f"Platform {platform_id} already belongs to station {existing_station_id}"
+                )
+            if platform_id not in normalized_platform_ids:
+                normalized_platform_ids.append(platform_id)
+
+        station = Station(
+            station_id=station_id,
+            name=name,
+            platform_ids=normalized_platform_ids,
+        )
+        self.station_groups[station_id] = station
+        return station
+
+    def delete_station_group(self, station_id: str) -> bool:
+        """Delete a logical station group."""
+        if station_id not in self.station_groups:
+            return False
+        del self.station_groups[station_id]
+        return True
+
+    def add_platform_to_station_group(self, station_id: str, platform_id: str) -> bool:
+        """Add a platform to a logical station group."""
+        station = self.station_groups.get(station_id)
+        if not station:
+            raise ValueError(f"Station {station_id} not found")
+        if platform_id not in self.platforms:
+            raise ValueError(f"Platform {platform_id} not found")
+
+        existing_station_id = self.get_station_for_platform(platform_id)
+        if existing_station_id and existing_station_id != station_id:
+            raise ValueError(
+                f"Platform {platform_id} already belongs to station {existing_station_id}"
+            )
+
+        return station.add_platform(platform_id)
+
+    def remove_platform_from_station_group(
+        self, station_id: str, platform_id: str
+    ) -> bool:
+        """Remove a platform from a logical station group."""
+        station = self.station_groups.get(station_id)
+        if not station:
+            raise ValueError(f"Station {station_id} not found")
+        return station.remove_platform(platform_id)
 
     def _validate_station_continuity(
         self, positions: List[Tuple[int, int]]
@@ -3257,9 +3384,10 @@ class RailwayNetwork:
             "trains": [t.to_dict(self) for t in self.trains.values()],
             "blocks": {k: v.to_dict() for k, v in self.blocks.items()},
             "signals": {k: v.to_dict() for k, v in self.signals.items()},
-            "stations": [
-                s.to_dict_with_orientation(self) for s in self.stations.values()
+            "platforms": [
+                p.to_dict_with_orientation(self) for p in self.platforms.values()
             ],
+            "station_groups": [s.to_dict() for s in self.station_groups.values()],
             "switches": {
                 k: v.to_dict() for k, v in self.switches.items()
             },  # NEW: Switch persistence
@@ -3272,7 +3400,8 @@ class RailwayNetwork:
         self.trains.clear()
         self.blocks.clear()
         self.signals.clear()
-        self.stations.clear()
+        self.platforms.clear()
+        self.station_groups.clear()
         self.switches.clear()  # NEW: Clear switches
         self.schedules.clear()
 
@@ -3301,10 +3430,17 @@ class RailwayNetwork:
             switch = Switch.from_dict(switch_data)
             self.switches[switch_id] = switch
 
-        # Rebuild stations
-        for station_data in data.get("stations", []):
+        # Rebuild physical platforms
+        platforms_data = data.get("platforms", [])
+
+        for platform_data in platforms_data:
+            platform = Platform.from_dict(platform_data)
+            self.platforms[platform.platform_id] = platform
+
+        # Rebuild logical station groups (optional in legacy saves)
+        for station_data in data.get("station_groups", []):
             station = Station.from_dict(station_data)
-            self.stations[station.station_id] = station
+            self.station_groups[station.station_id] = station
 
         # Rebuild trains
         for train_data in data.get("trains", []):

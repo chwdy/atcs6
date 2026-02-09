@@ -359,12 +359,12 @@ class StateManager {
             }
             
             // ─────────────────────────────────────────────────────────
-            // UPDATE STATIONS
+            // UPDATE PLATFORMS (stored in stations map for compatibility)
             // ─────────────────────────────────────────────────────────
             const currentStationIds = new Set(this.state.stations.keys());
-            for (const station of network.stations || []) {
-                this.updateEntity('stations', station.station_id, station);
-                currentStationIds.delete(station.station_id);
+            for (const platform of network.platforms || []) {
+                this.updateEntity('stations', platform.platform_id, platform);
+                currentStationIds.delete(platform.platform_id);
             }
             for (const deletedId of currentStationIds) {
                 this.removeEntity('stations', deletedId);

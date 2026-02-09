@@ -5,6 +5,7 @@ Miscellaneous Routes - Static files, simulation control, persistence.
 import time
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from flask import send_from_directory, jsonify, request
 
@@ -186,7 +187,8 @@ def register(app, state: AppState) -> None:
                     "tracks": len(state.network.tracks),
                     "blocks": len(state.network.blocks),
                     "signals": len(state.network.signals),
-                    "stations": len(state.network.stations),
+                    "platforms": len(getattr(state.network, "platforms", {})),
+                    "stations": len(state.network.station_groups),
                     "trains": len(state.network.trains),
                 }
 
@@ -194,7 +196,9 @@ def register(app, state: AppState) -> None:
                 state.network.tracks.clear()
                 state.network.blocks.clear()
                 state.network.signals.clear()
-                state.network.stations.clear()
+                state.network.platforms.clear()
+                if hasattr(state.network, "station_groups"):
+                    state.network.station_groups.clear()
                 state.network.trains.clear()
                 state.network.schedules.clear()
 
@@ -216,7 +220,8 @@ def register(app, state: AppState) -> None:
                     "tracks": len(state.network.tracks),
                     "blocks": len(state.network.blocks),
                     "signals": len(state.network.signals),
-                    "stations": len(state.network.stations),
+                    "platforms": len(getattr(state.network, "platforms", {})),
+                    "stations": len(state.network.station_groups),
                     "trains": len(state.network.trains),
                     "is_empty": len(state.network.tracks) == 0,
                 }
@@ -235,41 +240,35 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/train-routes", methods=["POST"])
     def create_train_route():
-        from train_route import RouteMode, TimingMode
+        from train_route import RouteMode
 
         data = request.get_json() or {}
 
         route_id = data.get("route_id") or f"ROUTE-{uuid.uuid4().hex[:6].upper()}"
         name = data.get("name", "")
-        mode_str = data.get("mode", "one_way")
+        mode_str = data.get("mode", "one_off")
 
         try:
             mode = RouteMode(mode_str)
         except ValueError:
-            mode = RouteMode.ONE_WAY
+            mode_map = {
+                "one_way": RouteMode.ONE_OFF,
+                "loop": RouteMode.CIRCULAR,
+            }
+            mode = mode_map.get(mode_str, RouteMode.ONE_OFF)
 
         route = Route(route_id=route_id, name=name, mode=mode)
 
         waypoints_data = data.get("waypoints", [])
         for wp_data in waypoints_data:
-            station_id = wp_data.get("station_id", "")
-            dwell_time = float(wp_data.get("dwell_time_sec", 30.0))
-
-            timing_mode_str = wp_data.get("timing_mode", "none")
-            try:
-                timing_mode = TimingMode(timing_mode_str)
-            except ValueError:
-                timing_mode = TimingMode.NONE
-
-            target_time = wp_data.get("target_time")
-
-            waypoint = Waypoint(
-                station_id=station_id,
-                dwell_time_sec=dwell_time,
-                timing_mode=timing_mode,
-                target_time=target_time,
-            )
+            waypoint = Waypoint.from_dict(wp_data)
             route.add_waypoint(waypoint)
+
+        assigned_train_ids = data.get("assigned_train_ids", [])
+        for train_id in assigned_train_ids:
+            if train_id in state.network.trains:
+                route.assign_train(train_id)
+                state.network.trains[train_id].assigned_route_id = route.route_id
 
         state.network.routes[route_id] = route
 
@@ -289,10 +288,10 @@ def register(app, state: AppState) -> None:
         Request body:
         {
             "name": str (optional),
-            "mode": str (optional, "one_way"|"loop"|"round_trip"),
+            "mode": str (optional, "one_off"|"circular"|"round_trip"),
             "waypoints": [
                 {
-                    "station_id": str,
+                    "platform_id": str,
                     "dwell_time_sec": float,
                     "timing_mode": str ("none"|"relative"|"absolute"),
                     "target_time": float (optional)
@@ -306,7 +305,7 @@ def register(app, state: AppState) -> None:
             400 Bad Request if validation fails
             404 Not Found if route doesn't exist
         """
-        from train_route import RouteMode, TimingMode
+        from train_route import RouteMode
 
         with state.simulation_lock:
             route = state.network.routes.get(route_id)
@@ -323,41 +322,55 @@ def register(app, state: AppState) -> None:
                 try:
                     route.mode = RouteMode(mode_str)
                 except ValueError:
-                    return jsonify({"error": f"Invalid mode '{mode_str}'"}), 400
+                    mode_map = {
+                        "one_way": RouteMode.ONE_OFF,
+                        "loop": RouteMode.CIRCULAR,
+                    }
+                    if mode_str in mode_map:
+                        route.mode = mode_map[mode_str]
+                    else:
+                        return jsonify({"error": f"Invalid mode '{mode_str}'"}), 400
 
             if "waypoints" in data:
                 waypoints_data = data["waypoints"]
                 route.waypoints.clear()
 
                 for wp_data in waypoints_data:
-                    station_id = wp_data.get("station_id")
-                    if not station_id:
+                    platform_id = wp_data.get("platform_id")
+                    if not platform_id:
                         return jsonify(
-                            {"error": "station_id required for each waypoint"}
+                            {"error": "platform_id required for each waypoint"}
                         ), 400
 
-                    dwell_time = float(wp_data.get("dwell_time_sec", 30.0))
-
-                    timing_mode_str = wp_data.get("timing_mode", "none")
-                    try:
-                        timing_mode = TimingMode(timing_mode_str)
-                    except ValueError:
-                        timing_mode = TimingMode.NONE
-
-                    target_time = wp_data.get("target_time")
-
-                    waypoint = Waypoint(
-                        station_id=station_id,
-                        dwell_time_sec=dwell_time,
-                        timing_mode=timing_mode,
-                        target_time=target_time,
-                    )
+                    waypoint = Waypoint.from_dict(wp_data)
                     route.add_waypoint(waypoint)
 
-                if route.is_active:
-                    route.current_waypoint_index = min(
-                        route.current_waypoint_index, max(0, len(route.waypoints) - 1)
-                    )
+                if state.sim_controller and state.sim_controller.route_executor:
+                    for (
+                        exec_state
+                    ) in state.sim_controller.route_executor.execution_states.values():
+                        if exec_state.route_id == route_id:
+                            exec_state.current_waypoint_index = min(
+                                exec_state.current_waypoint_index,
+                                max(0, len(route.waypoints) - 1),
+                            )
+
+            if "assigned_train_ids" in data:
+                requested_train_ids = set(data.get("assigned_train_ids", []))
+                current_train_ids = set(route.assigned_train_ids)
+
+                for train_id in current_train_ids - requested_train_ids:
+                    route.unassign_train(train_id)
+                    train = state.network.trains.get(train_id)
+                    if train and train.assigned_route_id == route.route_id:
+                        train.assigned_route_id = None
+
+                for train_id in requested_train_ids - current_train_ids:
+                    if train_id in state.network.trains:
+                        route.assign_train(train_id)
+                        state.network.trains[
+                            train_id
+                        ].assigned_route_id = route.route_id
 
         return jsonify(route.to_dict())
 
@@ -366,9 +379,14 @@ def register(app, state: AppState) -> None:
         if route_id not in state.network.routes:
             return jsonify({"error": "Route not found"}), 404
 
+        route = state.network.routes[route_id]
         for train in state.network.trains.values():
             if train.assigned_route_id == route_id:
                 train.assigned_route_id = None
+
+        if state.sim_controller and state.sim_controller.route_executor:
+            for train_id in list(route.assigned_train_ids):
+                state.sim_controller.route_executor.execution_states.pop(train_id, None)
 
         del state.network.routes[route_id]
         return jsonify({"status": "success", "message": f"Route {route_id} deleted"})
@@ -390,6 +408,197 @@ def register(app, state: AppState) -> None:
 
         route.deactivate()
         return jsonify({"status": "success", "route": route.to_dict()})
+
+    @app.route("/api/train-routes/<route_id>/status", methods=["GET"])
+    def get_train_route_status(route_id):
+        """Get per-train execution status for a route."""
+        route = state.network.routes.get(route_id)
+        if not route:
+            return jsonify({"error": "Route not found"}), 404
+
+        route_executor = (
+            state.sim_controller.route_executor if state.sim_controller else None
+        )
+        trains_status = []
+
+        for train_id in route.assigned_train_ids:
+            train = state.network.trains.get(train_id)
+            if not train:
+                continue
+
+            status = {
+                "train_id": train_id,
+                "current_waypoint_index": 0,
+                "direction": 1,
+                "current_waypoint_platform_id": None,
+                "resolved_platform_id": None,
+                "at_platform": False,
+                "waiting_for_path": False,
+                "dwell_remaining_sec": None,
+            }
+
+            if route_executor:
+                exec_state = route_executor.execution_states.get(train_id)
+                if exec_state and exec_state.route_id == route.route_id:
+                    status["current_waypoint_index"] = exec_state.current_waypoint_index
+                    status["direction"] = exec_state.direction
+                    status["resolved_platform_id"] = exec_state.resolved_platform_id
+                    status["at_platform"] = (
+                        exec_state.arrived_at_platform_time is not None
+                    )
+                    status["waiting_for_path"] = exec_state.waiting_for_path
+
+                    waypoint = route.get_waypoint_at(exec_state.current_waypoint_index)
+                    if waypoint:
+                        status["current_waypoint_platform_id"] = waypoint.platform_id
+                        if exec_state.arrived_at_platform_time is not None:
+                            route_start = (
+                                exec_state.route_start_time
+                                or route.started_at
+                                or state.sim_controller.simulation_time
+                            )
+                            time_at_platform = (
+                                state.sim_controller.simulation_time
+                                - exec_state.arrived_at_platform_time
+                            )
+                            status["dwell_remaining_sec"] = (
+                                waypoint.get_remaining_dwell_time(
+                                    time_at_platform,
+                                    route_start,
+                                    state.sim_controller.simulation_time,
+                                )
+                            )
+
+            trains_status.append(status)
+
+        return jsonify(
+            {
+                "route_id": route.route_id,
+                "is_active": route.is_active,
+                "mode": route.mode.value,
+                "trains": trains_status,
+            }
+        )
+
+    @app.route("/api/train-routes/check-viability", methods=["POST"])
+    def check_train_route_viability():
+        """Check connectivity viability between platform waypoint pairs."""
+        data = request.get_json() or {}
+        pairs = data.get("pairs", [])
+
+        def get_platform(platform_id: str):
+            platforms = getattr(state.network, "platforms", None)
+            if isinstance(platforms, dict) and platform_id in platforms:
+                return platforms[platform_id]
+            return None
+
+        def get_platform_block_id(platform_id: str) -> Optional[str]:
+            platform = get_platform(platform_id)
+            if not platform:
+                return None
+
+            get_all_assigned_blocks = getattr(platform, "get_all_assigned_blocks", None)
+            if callable(get_all_assigned_blocks):
+                block_ids = get_all_assigned_blocks()
+                if isinstance(block_ids, (set, list, tuple)) and block_ids:
+                    return list(block_ids)[0]
+
+            for x, y in getattr(platform, "positions", []):
+                track = state.network.get_track(x, y)
+                if track and track.block_section_id:
+                    return track.block_section_id
+            return None
+
+        def build_block_graph() -> dict:
+            graph = {}
+            for (x, y), track in state.network.tracks.items():
+                block_id = track.block_section_id
+                if not block_id:
+                    continue
+                graph.setdefault(block_id, set())
+                for edge in track.edges:
+                    neighbor = state.network.get_neighbor(x, y, edge)
+                    if not neighbor or not neighbor.block_section_id:
+                        continue
+                    if neighbor.block_section_id != block_id:
+                        graph[block_id].add(neighbor.block_section_id)
+                        graph.setdefault(neighbor.block_section_id, set()).add(block_id)
+            return graph
+
+        def shortest_hops(
+            graph: dict, start_block: str, end_block: str
+        ) -> Optional[int]:
+            if start_block == end_block:
+                return 0
+            if start_block not in graph or end_block not in graph:
+                return None
+
+            queue = [(start_block, 0)]
+            visited = {start_block}
+            while queue:
+                current, hops = queue.pop(0)
+                for nxt in graph.get(current, set()):
+                    if nxt in visited:
+                        continue
+                    if nxt == end_block:
+                        return hops + 1
+                    visited.add(nxt)
+                    queue.append((nxt, hops + 1))
+            return None
+
+        graph = build_block_graph()
+        results = []
+
+        for pair in pairs:
+            if not isinstance(pair, list) or len(pair) != 2:
+                results.append(
+                    {
+                        "from": None,
+                        "to": None,
+                        "viable": False,
+                        "error": "Invalid pair format",
+                    }
+                )
+                continue
+
+            from_platform, to_platform = pair
+            from_block = get_platform_block_id(from_platform)
+            to_block = get_platform_block_id(to_platform)
+
+            if not from_block or not to_block:
+                results.append(
+                    {
+                        "from": from_platform,
+                        "to": to_platform,
+                        "viable": False,
+                        "error": "Missing platform or block assignment",
+                    }
+                )
+                continue
+
+            hops = shortest_hops(graph, from_block, to_block)
+            if hops is None:
+                results.append(
+                    {
+                        "from": from_platform,
+                        "to": to_platform,
+                        "viable": False,
+                        "error": "No path found",
+                    }
+                )
+                continue
+
+            results.append(
+                {
+                    "from": from_platform,
+                    "to": to_platform,
+                    "viable": True,
+                    "hop_count": hops,
+                    "distance_cm": float(hops * 50.0),
+                }
+            )
+
+        return jsonify({"results": results})
 
     # ========================================================================
     # Schedules API

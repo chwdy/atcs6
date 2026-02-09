@@ -118,6 +118,7 @@ class PlatformSide(Enum):
     LEFT = "left"
     RIGHT = "right"
     BOTH = "both"
+    EITHER = "either"  # For flexible platform selection
 
 
 def direction_from_delta(dx: int, dy: int) -> Optional[str]:

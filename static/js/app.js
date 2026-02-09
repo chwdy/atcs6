@@ -681,13 +681,13 @@ class App {
             extra += `</div>`;
         }
         
-        // Stations ahead
+        // Platforms ahead
         if (lookahead.stations && lookahead.stations.length > 0) {
             extra += `<div class="train-debug-subsection">`;
-            extra += `<div class="train-debug-subsection-title">Lookahead - Stations (${lookahead.stations.length})</div>`;
+            extra += `<div class="train-debug-subsection-title">Lookahead - Platforms (${lookahead.stations.length})</div>`;
             lookahead.stations.forEach((station, i) => {
                 extra += `<div class="train-debug-row">`;
-                extra += `<span class="train-debug-label">${station.name || station.station_id}:</span>`;
+                extra += `<span class="train-debug-label">${station.name || station.platform_id || station.station_id}:</span>`;
                 extra += `<span class="train-debug-value text-station">@ ${station.distance_cm?.toFixed(0)} cm (${station.length_cm?.toFixed(0)} cm long)</span>`;
                 extra += `</div>`;
             });

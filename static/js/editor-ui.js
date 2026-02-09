@@ -119,7 +119,8 @@ class EditorUIHandler {
         if (this.editor.signalHandler?._cleanup) this.editor.signalHandler._cleanup();
         if (this.editor.switchHandler?._cleanup) this.editor.switchHandler._cleanup();
         if (this.editor.blockHandler?._cleanup) this.editor.blockHandler._cleanup();
-        if (this.editor.stationHandler?._cleanup) this.editor.stationHandler._cleanup();
+        if (this.editor.platformHandler?._cleanup) this.editor.platformHandler._cleanup();
+        if (this.editor.stationGroupHandler?._cleanup) this.editor.stationGroupHandler._cleanup();
         
         this.editor._currentEditorType = null;
         this.editor._currentEditorId = null;
@@ -220,12 +221,17 @@ class EditorUIHandler {
                 }
                 break;
 
-            case 'station':
+            case 'platform':
                 if (track.station_id) {
-                    this.editor.showStationEditor(track.station_id);
+                    this.editor.showPlatformEditor(track.station_id);
                 } else {
                     this.hideSecondarySidebar();
                 }
+                break;
+
+            case 'station-group':
+            case 'station-group-list':
+                this.editor.showStationsPanel();
                 break;
         }
     }
@@ -239,13 +245,13 @@ class EditorUIHandler {
         }
     }
 
-    initStationButtonHandlers() {
-        const editStationBtns = document.querySelectorAll('.edit-station-btn');
-        editStationBtns.forEach(btn => {
+    initPlatformButtonHandlers() {
+        const editPlatformBtns = document.querySelectorAll('.edit-platform-btn');
+        editPlatformBtns.forEach(btn => {
             btn.onclick = () => {
-                const stationId = btn.dataset.stationId;
-                if (stationId) {
-                    this.editor.showStationEditor(stationId);
+                const platformId = btn.dataset.platformId;
+                if (platformId) {
+                    this.editor.showPlatformEditor(platformId);
                 }
             };
         });

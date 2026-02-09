@@ -1,832 +1,821 @@
+/**
+ * Route Editor Handler
+ * 
+ * Manages train routes - sequences of waypoints defining where trains should go.
+ * This is distinct from the Path Editor which handles block-level reservations.
+ * 
+ * Features:
+ * - Create/edit routes with waypoints
+ * - Click on platforms to add waypoints
+ * - Real-time viability checking between consecutive waypoints
+ * - Train assignment with multi-train support
+ * - Route activation/deactivation
+ */
+
 class RouteEditorHandler {
     constructor(editor) {
         this.editor = editor;
+        this.routes = [];
+        this.currentRoute = null;
+        this.currentRouteStatus = null;
+        this.waypointClickMode = false;
+        this.viabilityResults = new Map(); // Cache viability results
     }
 
     get api() { return this.editor.api; }
     get renderer() { return this.editor.renderer; }
     get cachedNetwork() { return this.editor.cachedNetwork; }
-    get cachedPaths() { return this.editor.cachedPaths; }
-    set cachedPaths(value) { this.editor.cachedPaths = value; }
-    get pathToolState() { return this.editor.pathToolState; }
-    set pathToolState(value) { this.editor.pathToolState = value; }
-    get extendPathState() { return this.editor.extendPathState; }
-    set extendPathState(value) { this.editor.extendPathState = value; }
 
-    enterRouteToolMode() {
-        this.pathToolState = {
-            active: false,
-            startBlockId: null,
-            startPosition: null,
-            reachableEndpoints: [],
-            reachablePositions: new Set(),
-            priority: 5,
-            trainId: null
-        };
-        document.getElementById('status-state').textContent = 'Path: Click start block';
+    rerenderRouteEditor() {
+        const content = this.buildRouteEditorHTML();
+        this.editor.showSecondarySidebar('🛤️ Route Editor', content);
+        setTimeout(() => this.initRouteEditorHandlers(), 0);
     }
 
-    exitRouteToolMode() {
-        this.resetRouteToolState();
-        document.getElementById('status-state').textContent = 'Ready';
-    }
-
-    resetRouteToolState() {
-        this.pathToolState = {
-            active: false,
-            startBlockId: null,
-            startPosition: null,
-            reachableEndpoints: [],
-            reachablePositions: new Set(),
-            priority: 5,
-            trainId: null
-        };
-        if (this.renderer.setReachableHighlights) {
-            this.renderer.setReachableHighlights(new Set());
-        }
-        if (this.renderer.clearRoutePreview) {
-            this.renderer.clearRoutePreview();
-        }
-        if (this.editor._currentEditorType === 'path-setup') {
-            this.editor.hideSecondarySidebar();
-        }
-        if (this.cachedNetwork) {
-            this.renderer.drawNetwork(this.cachedNetwork);
-        }
-        document.getElementById('status-state').textContent = 'Path: Click start block';
-    }
-
-    async handleRouteToolClick(gridPos) {
-        const track = this.cachedNetwork?.tracks?.find(t => t.x === gridPos.x && t.y === gridPos.y);
-        
-        if (!this.pathToolState.active) {
-            await this.handleRouteFirstClick(gridPos, track);
-        } else {
-            await this.handleRouteSecondClick(gridPos, track);
-        }
-    }
-
-    async handleRouteFirstClick(gridPos, track) {
-        if (!track) {
-            window.showToast('No track at this position', 'warning', 3000);
-            return;
-        }
-
-        const blockId = track.block_section_id;
-        if (!blockId) {
-            window.showToast('Must start path from a block', 'warning', 3000);
-            return;
-        }
-
-        this.pathToolState.startBlockId = blockId;
-        this.pathToolState.startPosition = { x: gridPos.x, y: gridPos.y };
-        this.pathToolState.active = true;
-
-        const block = this.cachedNetwork?.blocks?.[blockId];
-        if (block?.occupied_by) {
-            this.pathToolState.trainId = block.occupied_by;
-
-            const trains = this.cachedNetwork?.trains || [];
-            const train = trains.find(t => t.train_id === block.occupied_by);
-            if (train?.priority) {
-                this.pathToolState.priority = train.priority;
-            }
-        }
-
-        try {
-            document.getElementById('status-state').textContent = 'Path: Loading destinations...';
-            const result = await this.api.getReachableEndpoints(blockId);
-            this.pathToolState.reachableEndpoints = result.reachable_endpoints || [];
-
-            this.buildReachablePositionsSet();
-
-            const count = this.pathToolState.reachableEndpoints.length;
-            document.getElementById('status-state').textContent = `Path: Click destination (${count} reachable)`;
-
-            if (this.renderer.setReachableHighlights) {
-                this.renderer.setReachableHighlights(this.pathToolState.reachablePositions);
-            }
-
-            this.showRoutePrioritySelector();
-
-            if (this.cachedNetwork) {
-                this.renderer.drawNetwork(this.cachedNetwork);
-            }
-        } catch (err) {
-            console.error('[Editor] Failed to get reachable destinations:', err);
-            window.showToast('Failed to get reachable destinations: ' + err.message, 'error', 5000);
-            this.resetRouteToolState();
-        }
-    }
-
-    buildReachablePositionsSet() {
-        const positions = new Set();
-        const tracks = this.cachedNetwork?.tracks || [];
-
-        for (const endpoint of this.pathToolState.reachableEndpoints) {
-            for (const track of tracks) {
-                if (track.block_section_id === endpoint) {
-                    positions.add(`${track.x},${track.y}`);
-                }
-            }
-        }
-
-        this.pathToolState.reachablePositions = positions;
-    }
-
-    async handleRouteSecondClick(gridPos, track) {
-        if (!track) {
-            window.showToast('No track at this position', 'warning', 3000);
-            return;
-        }
-
-        const endBlockId = track.block_section_id;
-        if (!endBlockId) {
-            window.showToast('Must end path on a block', 'warning', 3000);
-            return;
-        }
-
-        if (!this.pathToolState.reachableEndpoints.includes(endBlockId)) {
-            window.showToast('Cannot reach this block from start', 'warning', 3000);
-            return;
-        }
-
-        try {
-            document.getElementById('status-state').textContent = 'Path: Creating...';
-            
-            const options = {
-                priority: this.pathToolState.priority
-            };
-            
-            if (this.pathToolState.trainId) {
-                options.train_id = this.pathToolState.trainId;
-            }
-
-            const result = await this.api.createPath(
-                this.pathToolState.startBlockId,
-                endBlockId,
-                options
-            );
-
-            if (result.success) {
-                window.showToast(`Path ${result.path.path_id} created`, 'success', 5000);
-                await window.app.refreshNetwork();
-                this.resetRouteToolState();
-            } else {
-                window.showToast(`Path failed: ${result.error}`, 'error', 5000);
-
-                if (result.conflict_tiles && this.renderer.flashConflictTiles) {
-                    this.renderer.flashConflictTiles(result.conflict_tiles, 2000);
-                }
-            }
-        } catch (err) {
-            console.error('[Editor] Failed to create path:', err);
-            window.showToast('Failed to create path: ' + err.message, 'error', 5000);
-        }
-    }
-
-    showRoutePrioritySelector() {
-        this.editor._currentEditorType = 'path-setup';
-        this.editor._currentEditorId = null;
-
-        const trainInfo = this.pathToolState.trainId
-            ? renderReadOnlyValue('Train', `🚂 ${this.pathToolState.trainId}`, 'text-info font-bold')
-            : '<div class="text-muted text-sm" style="padding: 8px 0;">No train at start block</div>';
-
-        const content = `
-            <div class="path-setup-panel">
-                ${renderHeaderId(this.pathToolState.startBlockId, '#00d4ff')}
-                
-                <div class="property-item">
-                    <label class="property-label">Priority (1-10)</label>
-                    <div class="flex items-center gap-12">
-                        <input type="range" id="path-priority-slider" 
-                               min="1" max="10" value="${this.pathToolState.priority}"
-                               class="property-input" style="flex: 1;">
-                        <span id="path-priority-value" class="text-lg font-bold text-track" style="min-width: 30px; text-align: center;">
-                            ${this.pathToolState.priority}
-                        </span>
-                    </div>
-                    <div class="text-xxs text-muted" style="margin-top: 4px;">
-                        5 = Normal, 10 = Critical
-                    </div>
-                </div>
-                
-                ${trainInfo}
-                
-                <div class="info-box text-sm" style="margin-top: 16px;">
-                    Click on an <span style="color: #ff9500;">orange</span> destination block to create path.
-                    <br><br>
-                    Right-click or press ESC to cancel.
-                </div>
-            </div>
-        `;
-
-        this.editor.showSecondarySidebar('🛤️ Create Path', content);
-        
-        const sidebar = document.getElementById('secondary-sidebar');
-        if (sidebar) {
-            sidebar.classList.add('compact');
-        }
-
-        setTimeout(() => {
-            const slider = document.getElementById('path-priority-slider');
-            const valueDisplay = document.getElementById('path-priority-value');
-            if (slider && valueDisplay) {
-                slider.addEventListener('input', (e) => {
-                    this.pathToolState.priority = parseInt(e.target.value);
-                    valueDisplay.textContent = e.target.value;
-                });
-            }
-        }, 0);
-    }
-
-    async showPathsPanel() {
-        this.editor._currentEditorType = 'paths-list';
+    /**
+     * Show the routes list panel
+     */
+    async showRoutesPanel() {
+        this.editor._currentEditorType = 'routes-list';
         this.editor._currentEditorId = null;
 
         try {
-            this.cachedPaths = await this.api.getPaths();
+            const result = await this.api.getRoutes();
+            // Handle both array response and {routes: [...]} response
+            this.routes = Array.isArray(result) ? result : (result?.routes || []);
         } catch (err) {
-            console.error('[Editor] Failed to load paths:', err);
-            window.showToast('Failed to load paths: ' + err.message, 'error', 5000);
-            return;
+            console.error('[RouteEditor] Failed to load routes:', err);
+            window.showToast('Failed to load routes: ' + err.message, 'error', 5000);
+            this.routes = [];
         }
 
         let content = `
-            <div class="paths-panel">
+            <div class="routes-panel">
                 <div class="flex gap-8 mb-16">
-                    <button id="refresh-paths-btn" class="btn btn-secondary btn-sm flex-1">
-                        🔄 Refresh
+                    <button id="create-route-btn" class="btn btn-primary btn-sm flex-1">
+                        + New Route
+                    </button>
+                    <button id="refresh-routes-btn" class="btn btn-secondary btn-sm">
+                        🔄
                     </button>
                 </div>
         `;
 
-        if (this.cachedPaths.length === 0) {
-            content += '<div class="text-muted text-center" style="padding: 32px 16px;">No active paths</div>';
+        if (this.routes.length === 0) {
+            content += `
+                <div class="text-muted text-center" style="padding: 32px 16px;">
+                    <div class="mb-8">No routes defined</div>
+                    <div class="text-sm">Click "New Route" to create a train route</div>
+                </div>
+            `;
         } else {
-            content += '<div class="paths-list">';
-            for (const path of this.cachedPaths) {
-                content += this.renderPathListItem(path);
+            content += '<div class="routes-list">';
+            for (const route of this.routes) {
+                content += this.renderRouteListItem(route);
             }
             content += '</div>';
         }
 
         content += '</div>';
 
-        this.editor.showSecondarySidebar('📋 Active Paths', content);
-        
+        this.editor.showSecondarySidebar('🛤️ Routes', content);
         setTimeout(() => this.initRoutesPanelHandlers(), 0);
     }
 
-    renderPathListItem(path) {
-        const statusColor = this.getPathStatusColor(path.status);
-        const progress = path.block_sequence?.length > 0
-            ? Math.round((path.current_block_index / path.block_sequence.length) * 100)
-            : 0;
+    renderRouteListItem(route) {
+        const isActive = route.is_active;
+        const statusColor = isActive ? '#00ff88' : '#888';
+        const statusText = isActive ? 'ACTIVE' : 'INACTIVE';
+        const trainCount = route.assigned_train_ids?.length || 0;
+        const waypointCount = route.waypoints?.length || 0;
 
         return `
-            <div class="train-summary-row mb-8">
+            <div class="train-summary-row mb-8" data-route-id="${route.route_id}">
                 <div class="flex items-center gap-12 w-full p-2">
                     <div class="flex flex-col items-center justify-center gap-2" style="min-width: 40px; padding-top: 4px;">
                         <div class="train-status-dot" style="background-color: ${statusColor}"></div>
                         <div class="text-xxs font-bold uppercase tracking-wider" style="color: ${statusColor}; font-size: 0.65rem; line-height: 1; padding: 4px 0; margin-top: 2px;">
-                            ${path.status.toUpperCase()}
+                            ${statusText}
                         </div>
-                        <div class="text-xxs font-bold text-muted" title="Priority" style="line-height: 1; padding-top: 2px;">P${path.priority}</div>
                     </div>
                     <div class="train-info flex-1" style="min-width: 0;">
                         <div class="flex flex-col gap-1 mb-6">
                             <div class="flex justify-between items-start gap-2">
-                                <span class="train-id font-mono font-bold text-white" style="word-break: break-all; line-height: 1.2;">${path.path_id}</span>
+                                <span class="train-id font-mono font-bold text-white" style="word-break: break-all; line-height: 1.2;">${route.name || route.route_id}</span>
                             </div>
                         </div>
                         <div class="flex justify-between items-end gap-2">
                             <div class="text-xs text-muted flex-1" style="min-width: 0;">
-                                <div style="word-break: break-word; line-height: 1.4; margin-bottom: 6px;">
-                                    <div class="font-mono text-white opacity-90">${path.start_block_id}</div>
-                                    <div class="text-xxs opacity-50 py-1" style="text-align: center; width: 20px;">↓</div>
-                                    <div class="font-mono text-white opacity-90">${path.end_block_id}</div>
-                                </div>
-                                <div style="margin-bottom: 4px;">${path.train_id ? `🚂 ${path.train_id}` : 'No Train'}</div>
-                                ${path.status === 'active' ? `
-                                    <div class="progress-container mt-1" style="width: 100%; max-width: 120px; height: 4px;">
-                                        <div class="progress-bar" style="width: ${progress}%; background-color: ${statusColor};"></div>
-                                    </div>
-                                ` : ''}
+                                <div class="mb-4">🚂 ${trainCount} train${trainCount !== 1 ? 's' : ''} assigned</div>
+                                <div>📍 ${waypointCount} waypoint${waypointCount !== 1 ? 's' : ''}</div>
+                                <div class="text-xxs mt-2 uppercase">${route.mode || 'one_off'}</div>
                             </div>
                             <div class="flex gap-4 flex-shrink-0">
-                                <button class="edit-btn btn-sm view-path-btn" data-path-id="${path.path_id}">View</button>
-                                <button class="btn btn-sm btn-danger text-white cancel-path-btn" style="background-color: var(--danger-color);" data-path-id="${path.path_id}">Cancel</button>
+                                <button class="edit-btn btn-sm edit-route-btn" data-route-id="${route.route_id}">Edit</button>
+                                <button class="btn btn-sm btn-danger text-white delete-route-btn" style="background-color: var(--danger-color);" data-route-id="${route.route_id}">Delete</button>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
         `;
-    }
-
-    getPathStatusColor(status) {
-        const colors = {
-            'pending': '#888',
-            'setting': '#ffd93d',
-            'set': '#04d361',
-            'active': '#00ff88',
-            'clearing': '#ff9500',
-            'completed': '#666',
-            'cancelled': '#e83f5b'
-        };
-        return colors[status] || '#888';
     }
 
     initRoutesPanelHandlers() {
-        const refreshBtn = document.getElementById('refresh-paths-btn');
-        if (refreshBtn) {
-            refreshBtn.onclick = async () => {
-                await this.showPathsPanel();
-            };
+        const createBtn = document.getElementById('create-route-btn');
+        if (createBtn) {
+            createBtn.onclick = () => this.createNewRoute();
         }
 
-        const viewBtns = document.querySelectorAll('.view-path-btn');
-        viewBtns.forEach(btn => {
-            btn.onclick = async () => {
-                const pathId = btn.dataset.pathId;
-                await this.showPathEditor(pathId);
+        const refreshBtn = document.getElementById('refresh-routes-btn');
+        if (refreshBtn) {
+            refreshBtn.onclick = () => this.showRoutesPanel();
+        }
+
+        const editBtns = document.querySelectorAll('.edit-route-btn');
+        editBtns.forEach(btn => {
+            btn.onclick = () => {
+                const routeId = btn.dataset.routeId;
+                this.showRouteEditor(routeId);
             };
         });
 
-        const cancelBtns = document.querySelectorAll('.cancel-path-btn');
-        cancelBtns.forEach(btn => {
+        const deleteBtns = document.querySelectorAll('.delete-route-btn');
+        deleteBtns.forEach(btn => {
             btn.onclick = async () => {
-                const pathId = btn.dataset.pathId;
-                if (!confirm(`Cancel path "${pathId}"?`)) return;
-                
+                const routeId = btn.dataset.routeId;
+                const route = this.routes.find(r => r.route_id === routeId);
+                if (!confirm(`Delete route "${route?.name || routeId}"?`)) return;
+
                 try {
-                    const result = await this.api.cancelPath(pathId);
-                    if (result.success) {
-                        window.showToast(`Path ${pathId} cancelled`, 'success', 5000);
-                        await window.app.refreshNetwork();
-                        await this.showPathsPanel();
-                    } else {
-                        window.showToast(`Failed to cancel: ${result.message || result.error}`, 'error', 5000);
-                    }
+                    await this.api.deleteRoute(routeId);
+                    window.showToast('Route deleted', 'success', 3000);
+                    await this.showRoutesPanel();
                 } catch (err) {
-                    console.error('[Editor] Failed to cancel path:', err);
-                    window.showToast('Failed to cancel path: ' + err.message, 'error', 5000);
+                    console.error('[RouteEditor] Failed to delete route:', err);
+                    window.showToast('Failed to delete route: ' + err.message, 'error', 5000);
                 }
             };
         });
     }
 
-    async showPathEditor(pathId) {
-        this.editor._currentEditorType = 'path';
-        this.editor._currentEditorId = pathId;
+    /**
+     * Create a new route
+     */
+    async createNewRoute() {
+        const routeId = `ROUTE_${Date.now()}`;
+        const newRoute = {
+            route_id: routeId,
+            name: `Route ${this.routes.length + 1}`,
+            mode: 'one_off',
+            waypoints: [],
+            assigned_train_ids: [],
+            is_active: false
+        };
 
-        let path;
         try {
-            path = await this.api.getPath(pathId);
-            if (path.error) throw new Error(path.error);
+            await this.api.createRoute(newRoute);
+            window.showToast('Route created', 'success', 3000);
+            await this.showRouteEditor(routeId);
         } catch (err) {
-            window.showToast('Path not found', 'error', 5000);
+            console.error('[RouteEditor] Failed to create route:', err);
+            window.showToast('Failed to create route: ' + err.message, 'error', 5000);
+        }
+    }
+
+    /**
+     * Show the route editor for a specific route
+     */
+    async showRouteEditor(routeId) {
+        this.editor._currentEditorType = 'route-editor';
+        this.editor._currentEditorId = routeId;
+
+        try {
+            this.currentRoute = await this.api.getRoute(routeId);
+            this.currentRouteStatus = await this.api.getRouteStatus(routeId);
+        } catch (err) {
+            console.error('[RouteEditor] Failed to load route:', err);
+            window.showToast('Failed to load route', 'error', 5000);
             return;
         }
 
-        const statusColor = this.getPathStatusColor(path.status);
-        const progress = path.block_sequence?.length > 0
-            ? Math.round((path.current_block_index / path.block_sequence.length) * 100)
-            : 0;
+        // Check viability for all consecutive waypoint pairs
+        await this.checkAllViability();
 
-        const blocksListHtml = (path.block_sequence || []).map((blockId, i) => {
-            const isCurrent = i === path.current_block_index;
-            const isCleared = path.blocks_cleared?.includes(blockId);
-            let cssClass = 'text-muted';
-            if (isCurrent) cssClass = 'text-success font-bold';
-            else if (isCleared) cssClass = 'text-muted';
-            
-            return `<div class="block-item text-xs ${cssClass}">
-                ${isCurrent ? '▶ ' : '  '}${blockId}${isCleared ? ' ✓' : ''}
-            </div>`;
-        }).join('');
+        this.rerenderRouteEditor();
+    }
 
-        const content = `
-            <div class="path-editor-panel" data-path-id="${pathId}">
-                ${renderHeaderId(path.path_id, statusColor)}
-                
-                <!-- INFO SECTION (Read-only, styled like Train Control) -->
-                <div class="info-box-track mb-12">
-                    <div class="flex justify-between items-start mb-4">
-                        <span class="text-xs text-muted uppercase tracking-wider">Status</span>
-                        <span class="text-xxs text-muted">P${path.priority}</span>
-                    </div>
-                    
-                    <div class="text-2xl font-bold mb-6 font-mono" style="color: ${statusColor}">
-                        ${path.status.toUpperCase()}
-                    </div>
-                    
-                    <div class="grid grid-cols-1 gap-y-4 text-sm font-mono">
-                        <div>
-                            <span class="text-muted text-xs block mb-2">Route</span>
-                            <div class="text-white" style="line-height: 1.4;">
-                                <div class="opacity-90">${path.start_block_id}</div>
-                                <div class="text-xxs text-muted py-1">↓</div>
-                                <div class="opacity-90">${path.end_block_id}</div>
-                            </div>
-                        </div>
-                        <div>
-                            <span class="text-muted text-xs block">Train</span>
-                            <span class="${path.train_id ? 'text-info' : 'text-muted'}">${path.train_id ? `🚂 ${path.train_id}` : 'None assigned'}</span>
-                        </div>
-                        ${path.status === 'active' ? `
-                        <div>
-                            <span class="text-muted text-xs block mb-1">Progress</span>
-                            <div class="progress-container" style="width: 100%; max-width: 150px; height: 6px;">
-                                <div class="progress-bar" style="width: ${progress}%; background-color: ${statusColor};"></div>
-                            </div>
-                            <span class="text-xxs text-muted mt-1">${progress}%</span>
-                        </div>
-                        ` : ''}
-                    </div>
-                    
-                    ${path.approach_locked_blocks?.length > 0 ? `
-                        <div class="mt-4 pt-4 border-t border-gray-700 text-xs text-warning">
-                            ⚠️ ${path.approach_locked_blocks.length} blocks approach-locked
-                        </div>
-                    ` : ''}
+    /**
+     * Build the route editor HTML
+     */
+    buildRouteEditorHTML() {
+        const route = this.currentRoute;
+        const isActive = route.is_active;
+
+        let waypointsHtml = '';
+        if (route.waypoints?.length > 0) {
+            waypointsHtml = '<div class="waypoints-list">';
+            route.waypoints.forEach((wp, index) => {
+                waypointsHtml += this.renderWaypointItem(wp, index);
+            });
+            waypointsHtml += '</div>';
+        } else {
+            waypointsHtml = `
+                <div class="text-muted text-center text-sm" style="padding: 24px 16px; border: 2px dashed #3a3a4e; border-radius: 8px;">
+                    Click "Add Waypoint" then click on a platform to add it to the route
                 </div>
-                
-                <!-- CONTROL BUTTONS -->
-                <div class="control-section mt-12">
-                    <h4 class="text-sm text-muted mb-8">Actions</h4>
-                    <div class="flex gap-8">
-                        ${(path.status === 'set' || path.status === 'active') ? `
-                            <button id="extend-path-btn" class="btn btn-primary btn-sm flex-1">
-                                ➕ Extend
-                            </button>
-                        ` : ''}
-                        <button id="cancel-path-btn" class="btn btn-danger btn-sm flex-1 text-white" style="background-color: var(--danger-color);">
-                            ❌ Cancel
+            `;
+        }
+
+        const trainAssignmentHtml = this.renderTrainAssignmentSection();
+
+        return `
+            <div class="route-editor" data-route-id="${route.route_id}">
+                <!-- Route Header -->
+                <div class="mb-16">
+                    ${this.renderRouteHeader(route)}
+                </div>
+
+                <!-- Waypoints Section -->
+                <div class="control-section mb-16">
+                    <div class="flex justify-between items-center mb-12">
+                        <h4 class="text-sm text-muted">Waypoints</h4>
+                        <button id="add-waypoint-btn" class="btn btn-sm btn-primary">
+                            + Add Waypoint
                         </button>
                     </div>
+                    ${waypointsHtml}
+                </div>
+
+                <!-- Train Assignment Section -->
+                <div class="control-section mb-16">
+                    <h4 class="text-sm text-muted mb-12">Assigned Trains</h4>
+                    ${trainAssignmentHtml}
+                </div>
+
+                <!-- Controls Section -->
+                <div class="control-section">
+                    <h4 class="text-sm text-muted mb-12">Controls</h4>
+                    <div class="flex gap-8 mb-12">
+                        ${isActive 
+                            ? `<button id="deactivate-route-btn" class="btn btn-danger btn-sm flex-1 text-white" style="background-color: var(--danger-color);">Deactivate</button>`
+                            : `<button id="activate-route-btn" class="btn btn-success btn-sm flex-1">Activate</button>`
+                        }
+                    </div>
+                    <div class="flex gap-8">
+                        <button id="save-route-btn" class="btn btn-primary btn-sm flex-1">Save</button>
+                        <button id="back-to-routes-btn" class="btn btn-secondary btn-sm flex-1">Back</button>
+                    </div>
+                    <div class="flex gap-8 mt-8">
+                        <button id="delete-route-btn" class="btn btn-danger btn-sm flex-1">Delete Route</button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    renderRouteHeader(route) {
+        const modeOptions = [
+            { value: 'one_off', label: 'One-off' },
+            { value: 'circular', label: 'Circular' },
+            { value: 'round_trip', label: 'Round-trip' }
+        ];
+
+        const modeSelect = modeOptions.map(opt => 
+            `<option value="${opt.value}" ${route.mode === opt.value ? 'selected' : ''}>${opt.label}</option>`
+        ).join('');
+
+        return `
+            <div class="route-header">
+                <div class="property-item mb-12">
+                    <label class="property-label">Route Name</label>
+                    <input type="text" id="route-name-input" class="property-input" 
+                           value="${route.name || ''}" placeholder="Enter route name">
                 </div>
                 
-                <!-- BLOCKS LIST (Scrollable) -->
-                <div class="control-section mt-12 pt-12" style="border-top: 1px solid var(--border-color);">
-                    <h4 class="text-sm text-muted mb-8">Blocks (${path.block_sequence?.length || 0})</h4>
-                    <div class="bg-input rounded-lg" style="max-height: 150px; overflow-y: auto; padding: 8px; border: 1px solid #3a3a4e;">
-                        ${blocksListHtml || '<div class="text-muted text-xs">No blocks</div>'}
+                <div class="property-item">
+                    <label class="property-label">Mode</label>
+                    <select id="route-mode-select" class="property-input">
+                        ${modeSelect}
+                    </select>
+                </div>
+                
+                <div class="text-xs text-muted mt-8" style="line-height: 1.4;">
+                    ${route.mode === 'one_off' ? 'Train runs once through all waypoints then stops' : ''}
+                    ${route.mode === 'circular' ? 'Train continuously cycles through waypoints' : ''}
+                    ${route.mode === 'round_trip' ? 'Train bounces back and forth between endpoints' : ''}
+                </div>
+            </div>
+        `;
+    }
+
+    renderWaypointItem(waypoint, index) {
+        const viability = this.viabilityResults.get(index);
+        let viabilityHtml = '';
+        
+        if (index > 0) {
+            if (viability === undefined) {
+                viabilityHtml = '<span class="text-muted">Checking...</span>';
+            } else if (viability.viable) {
+                viabilityHtml = `<span class="text-success">✓ ${viability.hop_count} blocks</span>`;
+            } else {
+                viabilityHtml = `<span class="text-danger">✗ ${viability.error || 'No path'}</span>`;
+            }
+        } else {
+            viabilityHtml = '<span class="text-muted">Start</span>';
+        }
+
+        const platformName = waypoint.platform_id || 'Unknown';
+        const dwellTime = waypoint.dwell_time_sec || 30;
+        const isFlexible = waypoint.flexible_platform || false;
+        const requiredSide = waypoint.required_platform_side || 'either';
+        const directionPolicy = waypoint.travel_direction_policy || 'either';
+
+        return `
+            <div class="waypoint-item mb-8 p-8 bg-input rounded-lg" data-index="${index}">
+                <div class="flex justify-between items-start mb-8">
+                    <div class="flex items-center gap-8">
+                        <span class="text-lg font-bold text-info">${index + 1}</span>
+                        <span class="font-mono text-white">${platformName}</span>
+                    </div>
+                    <div class="flex gap-4">
+                        ${index > 0 ? `<button class="btn btn-xs btn-secondary move-waypoint-up" data-index="${index}">↑</button>` : ''}
+                        ${index < this.currentRoute.waypoints.length - 1 ? `<button class="btn btn-xs btn-secondary move-waypoint-down" data-index="${index}">↓</button>` : ''}
+                        <button class="btn btn-xs btn-danger delete-waypoint" data-index="${index}">🗑</button>
                     </div>
                 </div>
                 
-                <button id="back-to-paths-btn" class="btn btn-secondary btn-full btn-sm mt-12">
-                    ← Back to Paths List
-                </button>
-            </div>
-        `;
+                <div class="text-xs mb-8 ${isFlexible ? 'text-success' : 'text-muted'}">
+                    ${isFlexible ? '🔀 Flexible Platform' : 'Fixed Platform'}
+                </div>
 
-        this.editor.showSecondarySidebar('🛤️ Path Details', content);
+                <div class="mb-8">
+                    <label class="property-label">Dwell (sec)</label>
+                    <input type="number" min="0" step="1" class="property-input waypoint-dwell-input" data-index="${index}" value="${dwellTime}">
+                </div>
 
-        setTimeout(() => this.initPathEditorHandlers(pathId, path), 0);
+                <label class="flex items-center gap-6 mb-8 text-xs text-muted">
+                    <input type="checkbox" class="waypoint-flexible-toggle" data-index="${index}" ${isFlexible ? 'checked' : ''}>
+                    Flexible platform
+                </label>
 
-        if (this.renderer.highlightPath) {
-            this.renderer.highlightPath(path);
-        }
-    }
+                <div class="mb-8">
+                    <label class="property-label">Required Side</label>
+                    <select class="property-input waypoint-side-select" data-index="${index}" ${isFlexible ? '' : 'disabled'}>
+                        <option value="either" ${requiredSide === 'either' ? 'selected' : ''}>Either</option>
+                        <option value="left" ${requiredSide === 'left' ? 'selected' : ''}>Left</option>
+                        <option value="right" ${requiredSide === 'right' ? 'selected' : ''}>Right</option>
+                        <option value="both" ${requiredSide === 'both' ? 'selected' : ''}>Both</option>
+                    </select>
+                </div>
 
-    initPathEditorHandlers(pathId, path) {
-        const backBtn = document.getElementById('back-to-paths-btn');
-        if (backBtn) {
-            backBtn.onclick = async () => {
-                if (this.renderer.clearPathHighlight) {
-                    this.renderer.clearPathHighlight();
-                }
-                await this.showPathsPanel();
-            };
-        }
-
-        const cancelBtn = document.getElementById('cancel-path-btn');
-        if (cancelBtn) {
-            cancelBtn.onclick = async () => {
-                const hasApproachLocked = path.approach_locked_blocks?.length > 0;
-                const msg = hasApproachLocked
-                    ? `Cancel path "${pathId}"?\n\nNote: ${path.approach_locked_blocks.length} blocks are approach-locked and will be released when train stops.`
-                    : `Cancel path "${pathId}"?`;
+                <div class="mb-8">
+                    <label class="property-label">Direction Policy</label>
+                    <select class="property-input waypoint-direction-select" data-index="${index}" ${isFlexible ? '' : 'disabled'}>
+                        <option value="either" ${directionPolicy === 'either' ? 'selected' : ''}>Either</option>
+                        <option value="preserve" ${directionPolicy === 'preserve' ? 'selected' : ''}>Preserve</option>
+                    </select>
+                </div>
                 
-                if (!confirm(msg)) return;
-
-                try {
-                    const result = await this.api.cancelPath(pathId);
-                    if (result.success) {
-                        window.showToast(`Path ${pathId} cancelled`, 'success', 5000);
-                        await window.app.refreshNetwork();
-                        if (this.renderer.clearPathHighlight) {
-                            this.renderer.clearPathHighlight();
-                        }
-                        await this.showPathsPanel();
-                    } else {
-                        window.showToast(`Failed to cancel: ${result.message || result.error}`, 'error', 5000);
-                    }
-                } catch (err) {
-                    console.error('[Editor] Failed to cancel path:', err);
-                    window.showToast('Failed to cancel path: ' + err.message, 'error', 5000);
-                }
-            };
-        }
-
-        const extendBtn = document.getElementById('extend-path-btn');
-        if (extendBtn) {
-            extendBtn.onclick = async () => {
-                window.showToast('Path extension not yet implemented', 'info', 3000);
-            };
-        }
-    }
-
-    enterExtendRouteMode() {
-        this.extendPathState = {
-            active: false,
-            selectedPathId: null,
-            selectedPath: null,
-            reachableEndpoints: [],
-            reachablePositions: new Set()
-        };
-        document.getElementById('status-state').textContent = 'Extend Path: Click on a path to extend';
-    }
-
-    exitExtendRouteMode() {
-        this.resetExtendRouteState();
-        document.getElementById('status-state').textContent = 'Ready';
-    }
-
-    resetExtendRouteState() {
-        this.extendPathState = {
-            active: false,
-            selectedPathId: null,
-            selectedPath: null,
-            reachableEndpoints: [],
-            reachablePositions: new Set()
-        };
-        if (this.renderer.setReachableHighlights) {
-            this.renderer.setReachableHighlights(new Set());
-        }
-        if (this.renderer.clearPathHighlight) {
-            this.renderer.clearPathHighlight();
-        }
-        if (this.editor._currentEditorType === 'extend-path-setup') {
-            this.editor.hideSecondarySidebar();
-        }
-        if (this.cachedNetwork) {
-            this.renderer.drawNetwork(this.cachedNetwork);
-        }
-    }
-
-    async handleExtendRouteToolClick(gridPos) {
-        const track = this.cachedNetwork?.tracks?.find(t => t.x === gridPos.x && t.y === gridPos.y);
-
-        if (!this.extendPathState?.active) {
-            await this.handleExtendRouteFirstClick(gridPos, track);
-        } else {
-            await this.handleExtendRouteSecondClick(gridPos, track);
-        }
-    }
-
-    async handleExtendRouteFirstClick(gridPos, track) {
-        if (!track) {
-            window.showToast('No track at this position', 'warning', 3000);
-            return;
-        }
-
-        const blockId = track.block_section_id;
-        if (!blockId) {
-            window.showToast('No block at this position', 'warning', 3000);
-            return;
-        }
-
-        try {
-            const paths = await this.api.getPaths();
-            
-            const matchingPaths = paths.filter(p => 
-                p.end_block_id === blockId && 
-                ['pending', 'setting', 'set', 'active'].includes(p.status)
-            );
-
-            if (matchingPaths.length === 0) {
-                const partOfPath = paths.find(p => 
-                    p.block_sequence?.includes(blockId) && 
-                    ['pending', 'setting', 'set', 'active'].includes(p.status)
-                );
-                
-                if (partOfPath) {
-                    window.showToast('Can only extend from the END of a path. Click on the end block.', 'warning', 4000);
-                } else {
-                    window.showToast('No active path ends at this block', 'warning', 3000);
-                }
-                return;
-            }
-
-            const selectedPath = matchingPaths[0];
-            
-            this.extendPathState.selectedPathId = selectedPath.path_id;
-            this.extendPathState.selectedPath = selectedPath;
-            this.extendPathState.active = true;
-
-            if (this.renderer.highlightPath) {
-                this.renderer.highlightPath(selectedPath);
-            }
-
-            document.getElementById('status-state').textContent = 'Extend Path: Loading destinations...';
-            const endpointsResult = await this.api.getPathReachableExtensions(selectedPath.path_id);
-            
-            if (endpointsResult.error) {
-                window.showToast('Cannot extend path: ' + endpointsResult.error, 'error', 5000);
-                this.resetExtendRouteState();
-                return;
-            }
-            
-            this.extendPathState.reachableEndpoints = endpointsResult.reachable_endpoints || [];
-            this.extendPathState.exitDirection = endpointsResult.exit_direction;
-
-            this.buildExtendRoutePositionsSet();
-
-            const count = this.extendPathState.reachableEndpoints.length;
-            document.getElementById('status-state').textContent = `Extend Path: Click new destination (${count} reachable)`;
-
-            if (this.renderer.setReachableHighlights) {
-                this.renderer.setReachableHighlights(this.extendPathState.reachablePositions);
-            }
-
-            this.showExtendRoutePanel();
-
-            if (this.cachedNetwork) {
-                this.renderer.drawNetwork(this.cachedNetwork);
-            }
-        } catch (err) {
-            console.error('[Editor] Failed to get paths for extend:', err);
-            window.showToast('Failed to load paths: ' + err.message, 'error', 5000);
-            this.resetExtendRouteState();
-        }
-    }
-
-    buildExtendRoutePositionsSet() {
-        const positions = new Set();
-        const tracks = this.cachedNetwork?.tracks || [];
-
-        for (const endpoint of this.extendPathState.reachableEndpoints) {
-            for (const track of tracks) {
-                if (track.block_section_id === endpoint) {
-                    positions.add(`${track.x},${track.y}`);
-                }
-            }
-        }
-
-        this.extendPathState.reachablePositions = positions;
-    }
-
-    async handleExtendRouteSecondClick(gridPos, track) {
-        if (!track) {
-            window.showToast('No track at this position', 'warning', 3000);
-            return;
-        }
-
-        const newEndBlockId = track.block_section_id;
-        if (!newEndBlockId) {
-            window.showToast('Must select a block as destination', 'warning', 3000);
-            return;
-        }
-
-        if (!this.extendPathState.reachableEndpoints.includes(newEndBlockId)) {
-            window.showToast('Cannot extend to this block', 'warning', 3000);
-            return;
-        }
-
-        try {
-            document.getElementById('status-state').textContent = 'Extend Path: Extending...';
-            
-            const result = await this.api.extendPath(
-                this.extendPathState.selectedPathId,
-                newEndBlockId
-            );
-
-            if (result.success) {
-                window.showToast(`Path extended to ${newEndBlockId}`, 'success', 5000);
-                await window.app.refreshNetwork();
-                this.resetExtendRouteState();
-                document.getElementById('status-state').textContent = 'Extend Path: Click on a path to extend';
-            } else {
-                window.showToast(`Extend failed: ${result.error || result.message}`, 'error', 5000);
-            }
-        } catch (err) {
-            console.error('[Editor] Failed to extend route:', err);
-            window.showToast('Failed to extend route: ' + err.message, 'error', 5000);
-        }
-    }
-
-    showExtendRoutePanel() {
-        this.editor._currentEditorType = 'extend-path-setup';
-        this.editor._currentEditorId = this.extendPathState.selectedPathId;
-
-        const route = this.extendPathState.selectedPath;
-        const statusColor = this.getPathStatusColor(route.status);
-        const exitDir = this.extendPathState.exitDirection;
-        const exitDirText = exitDir ? this.getDirectionName(exitDir) : 'Unknown';
-        const reachableCount = this.extendPathState.reachableEndpoints.length;
-
-        const content = `
-            <div class="extend-route-panel">
-                ${renderHeaderId(route.path_id, statusColor)}
-                
-                ${renderReadOnlyValue('Current End', route.end_block_id, 'value-display-mono text-sm')}
-                ${renderReadOnlyValue('Direction', `${exitDirText} (${exitDir || '?'})`, 'text-info font-bold')}
-                ${renderReadOnlyValue('Status', route.status.toUpperCase(), `font-bold`)}
-                ${route.train_id
-                    ? renderReadOnlyValue('Train', `${route.train_id}`, 'text-info font-bold')
-                    : ''
-                }
-                
-                <div class="info-box text-sm" style="margin-top: 16px;">
-                    ${reachableCount > 0 
-                        ? `Click on an <span style="color: #ff9500;">orange</span> destination block to extend the route ${exitDirText.toLowerCase()}.`
-                        : `<span style="color: #ff6b6b;">No forward destinations available.</span> The route may be at a dead end or all forward blocks are occupied.`
-                    }
-                    <br><br>
-                    Right-click or press ESC to cancel.
+                <div class="flex justify-between items-center text-xs">
+                    <span class="text-muted">⏱ ${dwellTime}s dwell</span>
+                    <span>${viabilityHtml}</span>
                 </div>
             </div>
         `;
+    }
 
-        this.editor.showSecondarySidebar('+ Extend Path', content);
+    renderTrainAssignmentSection() {
+        const route = this.currentRoute;
+        const assignedTrains = route.assigned_train_ids || [];
+        const statusByTrainId = new Map();
+        (this.currentRouteStatus?.trains || []).forEach(ts => {
+            statusByTrainId.set(ts.train_id, ts);
+        });
+
+        let assignedHtml = '';
+        if (assignedTrains.length > 0) {
+            assignedHtml = '<div class="assigned-trains-list mb-12">';
+            assignedTrains.forEach(trainId => {
+                const trainStatus = statusByTrainId.get(trainId);
+                const wpText = trainStatus
+                    ? `WP ${trainStatus.current_waypoint_index + 1}`
+                    : 'WP ?';
+                assignedHtml += `
+                    <div class="p-8 bg-input rounded-lg mb-4">
+                        <div class="flex justify-between items-center mb-6">
+                            <span class="font-mono text-white">🚂 ${trainId}</span>
+                            <button class="btn btn-xs btn-danger unassign-train-btn" data-train-id="${trainId}">Unassign</button>
+                        </div>
+                        <div class="flex items-center gap-8 text-xs">
+                            <span class="text-muted">${wpText}</span>
+                            <input type="number" min="1" step="1" class="property-input set-waypoint-input" style="max-width: 80px;" value="${(trainStatus?.current_waypoint_index || 0) + 1}" data-train-id="${trainId}">
+                            <button class="btn btn-xs btn-secondary set-waypoint-btn" data-train-id="${trainId}">Set WP</button>
+                        </div>
+                    </div>
+                `;
+            });
+            assignedHtml += '</div>';
+        } else {
+            assignedHtml = '<div class="text-muted text-sm mb-12">No trains assigned</div>';
+        }
+
+        // Get available trains (not assigned to this route)
+        const allTrains = this.cachedNetwork?.trains || [];
+        const availableTrains = allTrains.filter(t => !assignedTrains.includes(t.train_id));
+
+        let trainSelectHtml = '<option value="">Select train...</option>';
+        availableTrains.forEach(train => {
+            trainSelectHtml += `<option value="${train.train_id}">${train.train_id}</option>`;
+        });
+
+        return `
+            ${assignedHtml}
+            <div class="flex gap-8">
+                <select id="assign-train-select" class="property-input flex-1">
+                    ${trainSelectHtml}
+                </select>
+                <button id="assign-train-btn" class="btn btn-sm btn-primary">Assign</button>
+            </div>
+            <label class="flex items-center gap-6 mt-8 text-xs text-muted">
+                <input type="checkbox" id="assign-train-force"> Force reassign
+            </label>
+        `;
+    }
+
+    initRouteEditorHandlers() {
+        // Back button
+        const backBtn = document.getElementById('back-to-routes-btn');
+        if (backBtn) {
+            backBtn.onclick = () => this.showRoutesPanel();
+        }
+
+        // Save button
+        const saveBtn = document.getElementById('save-route-btn');
+        if (saveBtn) {
+            saveBtn.onclick = () => this.saveRoute();
+        }
+
+        const deleteRouteBtn = document.getElementById('delete-route-btn');
+        if (deleteRouteBtn) {
+            deleteRouteBtn.onclick = async () => {
+                if (!confirm(`Delete route "${this.currentRoute?.name || this.currentRoute?.route_id}"?`)) {
+                    return;
+                }
+                try {
+                    await this.api.deleteRoute(this.currentRoute.route_id);
+                    window.showToast('Route deleted', 'success', 3000);
+                    await this.showRoutesPanel();
+                } catch (err) {
+                    console.error('[RouteEditor] Failed to delete route:', err);
+                    window.showToast('Failed to delete route: ' + err.message, 'error', 5000);
+                }
+            };
+        }
+
+        // Add waypoint button
+        const addWaypointBtn = document.getElementById('add-waypoint-btn');
+        if (addWaypointBtn) {
+            addWaypointBtn.onclick = () => this.enterWaypointClickMode();
+        }
+
+        // Activate/Deactivate buttons
+        const activateBtn = document.getElementById('activate-route-btn');
+        if (activateBtn) {
+            activateBtn.onclick = () => this.activateRoute();
+        }
+
+        const deactivateBtn = document.getElementById('deactivate-route-btn');
+        if (deactivateBtn) {
+            deactivateBtn.onclick = () => this.deactivateRoute();
+        }
+
+        // Waypoint reorder/delete buttons
+        document.querySelectorAll('.move-waypoint-up').forEach(btn => {
+            btn.onclick = (e) => {
+                const index = parseInt(e.target.dataset.index);
+                this.moveWaypoint(index, -1);
+            };
+        });
+
+        document.querySelectorAll('.move-waypoint-down').forEach(btn => {
+            btn.onclick = (e) => {
+                const index = parseInt(e.target.dataset.index);
+                this.moveWaypoint(index, 1);
+            };
+        });
+
+        document.querySelectorAll('.delete-waypoint').forEach(btn => {
+            btn.onclick = (e) => {
+                const index = parseInt(e.target.dataset.index);
+                this.deleteWaypoint(index);
+            };
+        });
+
+        document.querySelectorAll('.waypoint-dwell-input').forEach(input => {
+            input.onchange = (e) => {
+                const index = parseInt(e.target.dataset.index, 10);
+                const value = parseFloat(e.target.value);
+                if (!Number.isFinite(value) || value < 0) {
+                    e.target.value = this.currentRoute.waypoints[index]?.dwell_time_sec ?? 30;
+                    return;
+                }
+                this.currentRoute.waypoints[index].dwell_time_sec = value;
+            };
+        });
+
+        document.querySelectorAll('.waypoint-flexible-toggle').forEach(toggle => {
+            toggle.onchange = (e) => {
+                const index = parseInt(e.target.dataset.index, 10);
+                this.currentRoute.waypoints[index].flexible_platform = !!e.target.checked;
+                this.rerenderRouteEditor();
+            };
+        });
+
+        document.querySelectorAll('.waypoint-side-select').forEach(select => {
+            select.onchange = (e) => {
+                const index = parseInt(e.target.dataset.index, 10);
+                this.currentRoute.waypoints[index].required_platform_side = e.target.value;
+            };
+        });
+
+        document.querySelectorAll('.waypoint-direction-select').forEach(select => {
+            select.onchange = (e) => {
+                const index = parseInt(e.target.dataset.index, 10);
+                this.currentRoute.waypoints[index].travel_direction_policy = e.target.value;
+            };
+        });
+
+        // Train assignment buttons
+        const assignTrainBtn = document.getElementById('assign-train-btn');
+        if (assignTrainBtn) {
+            assignTrainBtn.onclick = () => this.assignTrain();
+        }
+
+        document.querySelectorAll('.unassign-train-btn').forEach(btn => {
+            btn.onclick = (e) => {
+                const trainId = e.target.dataset.trainId;
+                this.unassignTrain(trainId);
+            };
+        });
+
+        document.querySelectorAll('.set-waypoint-btn').forEach(btn => {
+            btn.onclick = (e) => {
+                const trainId = e.target.dataset.trainId;
+                const input = document.querySelector(`.set-waypoint-input[data-train-id="${trainId}"]`);
+                const waypointIndex = (parseInt(input?.value || '1', 10) || 1) - 1;
+                this.setTrainWaypoint(trainId, waypointIndex);
+            };
+        });
+    }
+
+    /**
+     * Enter mode to click on platforms to add waypoints
+     */
+    enterWaypointClickMode() {
+        this.waypointClickMode = true;
+        document.getElementById('status-state').textContent = 'Route Editor: Click on a platform to add waypoint';
         
-        const sidebar = document.getElementById('secondary-sidebar');
-        if (sidebar) {
-            sidebar.classList.add('compact');
+        // Highlight all platforms
+        if (this.renderer.highlightPlatforms) {
+            const platforms = this.cachedNetwork?.platforms || this.cachedNetwork?.stations || [];
+            this.renderer.highlightPlatforms(platforms.map(p => p.platform_id || p.station_id));
         }
     }
 
-    getDirectionName(dir) {
-        const names = { 'N': 'North', 'S': 'South', 'E': 'East', 'W': 'West' };
-        return names[dir] || dir || 'Unknown';
-    }
-
-    enterCancelRouteMode() {
-        document.getElementById('status-state').textContent = 'Cancel Path: Click on a path to cancel';
-    }
-
-    exitCancelRouteMode() {
+    /**
+     * Exit waypoint click mode
+     */
+    exitWaypointClickMode() {
+        this.waypointClickMode = false;
         document.getElementById('status-state').textContent = 'Ready';
+        
+        if (this.renderer.clearPlatformHighlights) {
+            this.renderer.clearPlatformHighlights();
+        }
     }
 
-    async handleCancelRouteToolClick(gridPos) {
-        const track = this.cachedNetwork?.tracks?.find(t => t.x === gridPos.x && t.y === gridPos.y);
+    /**
+     * Handle click when in waypoint click mode
+     */
+    async handleWaypointClick(gridPos) {
+        if (!this.waypointClickMode) return false;
+
+        // Find platform at this position
+        const platform = this.findPlatformAtPosition(gridPos.x, gridPos.y);
+        if (!platform) {
+            window.showToast('No platform at this position. Click on a platform tile.', 'warning', 3000);
+            return true; // Consumed the click
+        }
+
+        // Add waypoint
+        const platformId = platform.platform_id || platform.station_id;
+        const newWaypoint = {
+            platform_id: platformId,
+            dwell_time_sec: 30,
+            flexible_platform: false,
+            required_platform_side: 'either',
+            travel_direction_policy: 'either',
+            timing_mode: 'none'
+        };
+
+        this.currentRoute.waypoints.push(newWaypoint);
+        this.exitWaypointClickMode();
         
-        if (!track) {
-            window.showToast('No track at this position', 'warning', 3000);
+        // Refresh editor
+        await this.checkAllViability();
+        this.rerenderRouteEditor();
+
+        window.showToast(`Added waypoint: ${platform.name || platformId}`, 'success', 3000);
+        return true; // Consumed the click
+    }
+
+    /**
+     * Find platform at a grid position
+     */
+    findPlatformAtPosition(x, y) {
+        const platforms = this.cachedNetwork?.platforms || this.cachedNetwork?.stations || [];
+        return platforms.find(p => 
+            p.positions?.some(pos => pos[0] === x && pos[1] === y)
+        );
+    }
+
+    /**
+     * Move waypoint up or down in the list
+     */
+    async moveWaypoint(index, direction) {
+        const waypoints = this.currentRoute.waypoints;
+        const newIndex = index + direction;
+
+        if (newIndex < 0 || newIndex >= waypoints.length) return;
+
+        // Swap
+        [waypoints[index], waypoints[newIndex]] = [waypoints[newIndex], waypoints[index]];
+
+        // Refresh
+        await this.checkAllViability();
+        this.rerenderRouteEditor();
+    }
+
+    /**
+     * Delete a waypoint
+     */
+    async deleteWaypoint(index) {
+        if (!confirm('Delete this waypoint?')) return;
+
+        this.currentRoute.waypoints.splice(index, 1);
+
+        // Refresh
+        await this.checkAllViability();
+        this.rerenderRouteEditor();
+    }
+
+    /**
+     * Check viability for all consecutive waypoint pairs
+     */
+    async checkAllViability() {
+        const waypoints = this.currentRoute.waypoints || [];
+        if (waypoints.length < 2) {
+            this.viabilityResults.clear();
             return;
         }
 
-        const blockId = track.block_section_id;
-        if (!blockId) {
-            window.showToast('No block at this position', 'warning', 3000);
-            return;
+        const pairs = [];
+        for (let i = 1; i < waypoints.length; i++) {
+            pairs.push([waypoints[i-1].platform_id, waypoints[i].platform_id]);
         }
 
         try {
-            const paths = await this.api.getPaths();
-            
-            const matchingPaths = paths.filter(p => 
-                p.block_sequence?.includes(blockId) && 
-                ['pending', 'setting', 'set', 'active'].includes(p.status)
-            );
-
-            if (matchingPaths.length === 0) {
-                window.showToast('No active path found at this block', 'warning', 3000);
-                return;
-            }
-
-            const pathToCancel = matchingPaths[0];
-            
-            const msg = `Cancel path "${pathToCancel.path_id}"?\n\n` +
-                `From: ${pathToCancel.start_block_id}\n` +
-                `To: ${pathToCancel.end_block_id}` +
-                (pathToCancel.train_id ? `\nTrain: ${pathToCancel.train_id}` : '');
-            
-            if (!confirm(msg)) {
-                return;
-            }
-
-            document.getElementById('status-state').textContent = 'Cancel Path: Cancelling...';
-            
-            const cancelResult = await this.api.cancelPath(pathToCancel.path_id);
-            
-            if (cancelResult.success) {
-                window.showToast(`Path ${pathToCancel.path_id} cancelled`, 'success', 5000);
-                await window.app.refreshNetwork();
-            } else {
-                window.showToast(`Failed to cancel: ${cancelResult.message || cancelResult.error}`, 'error', 5000);
-            }
-            
-            document.getElementById('status-state').textContent = 'Cancel Path: Click on a path to cancel';
+            const results = await this.api.checkViability(pairs);
+            this.viabilityResults.clear();
+            results.results?.forEach((result, idx) => {
+                this.viabilityResults.set(idx + 1, result);
+            });
         } catch (err) {
-            console.error('[Editor] Failed to cancel path:', err);
-            window.showToast('Failed to cancel path: ' + err.message, 'error', 5000);
-            document.getElementById('status-state').textContent = 'Cancel Path: Click on a path to cancel';
+            console.error('[RouteEditor] Viability check failed:', err);
+        }
+    }
+
+    /**
+     * Save route changes
+     */
+    async saveRoute() {
+        const nameInput = document.getElementById('route-name-input');
+        const modeSelect = document.getElementById('route-mode-select');
+
+        if (nameInput) {
+            this.currentRoute.name = nameInput.value;
+        }
+        if (modeSelect) {
+            this.currentRoute.mode = modeSelect.value;
+        }
+
+        try {
+            await this.api.updateRoute(this.currentRoute.route_id, {
+                name: this.currentRoute.name,
+                mode: this.currentRoute.mode,
+                waypoints: this.currentRoute.waypoints
+            });
+            window.showToast('Route saved', 'success', 3000);
+        } catch (err) {
+            console.error('[RouteEditor] Failed to save route:', err);
+            window.showToast('Failed to save route: ' + err.message, 'error', 5000);
+        }
+    }
+
+    /**
+     * Activate the route
+     */
+    async activateRoute() {
+        try {
+            await this.api.activateRoute(this.currentRoute.route_id);
+            window.showToast('Route activated', 'success', 3000);
+            this.currentRoute.is_active = true;
+            this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
+            this.rerenderRouteEditor();
+        } catch (err) {
+            console.error('[RouteEditor] Failed to activate route:', err);
+            window.showToast('Failed to activate route: ' + err.message, 'error', 5000);
+        }
+    }
+
+    /**
+     * Deactivate the route
+     */
+    async deactivateRoute() {
+        try {
+            await this.api.deactivateRoute(this.currentRoute.route_id);
+            window.showToast('Route deactivated', 'success', 3000);
+            this.currentRoute.is_active = false;
+            this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
+            this.rerenderRouteEditor();
+        } catch (err) {
+            console.error('[RouteEditor] Failed to deactivate route:', err);
+            window.showToast('Failed to deactivate route: ' + err.message, 'error', 5000);
+        }
+    }
+
+    /**
+     * Assign a train to this route
+     */
+    async assignTrain() {
+        const select = document.getElementById('assign-train-select');
+        if (!select || !select.value) return;
+
+        const trainId = select.value;
+        const forceAssign = !!document.getElementById('assign-train-force')?.checked;
+
+        try {
+            await this.api.assignRoute(trainId, this.currentRoute.route_id, {
+                force: forceAssign,
+                auto_park: true
+            });
+            
+            this.currentRoute.assigned_train_ids.push(trainId);
+            this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
+            window.showToast(`Train ${trainId} assigned`, 'success', 3000);
+            
+            // Refresh
+            this.rerenderRouteEditor();
+        } catch (err) {
+            console.error('[RouteEditor] Failed to assign train:', err);
+            window.showToast('Failed to assign train: ' + err.message, 'error', 5000);
+        }
+    }
+
+    /**
+     * Unassign a train from this route
+     */
+    async unassignTrain(trainId) {
+        try {
+            await this.api.assignRoute(trainId, null, {
+                auto_park: true
+            });
+            
+            this.currentRoute.assigned_train_ids = this.currentRoute.assigned_train_ids.filter(
+                id => id !== trainId
+            );
+            this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
+            window.showToast(`Train ${trainId} unassigned`, 'success', 3000);
+            
+            // Refresh
+            this.rerenderRouteEditor();
+        } catch (err) {
+            console.error('[RouteEditor] Failed to unassign train:', err);
+            window.showToast('Failed to unassign train: ' + err.message, 'error', 5000);
+        }
+    }
+
+    async setTrainWaypoint(trainId, waypointIndex) {
+        try {
+            await this.api.setTrainWaypoint(trainId, waypointIndex);
+            this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
+            window.showToast(`Train ${trainId} waypoint set to ${waypointIndex + 1}`, 'success', 3000);
+
+            this.rerenderRouteEditor();
+        } catch (err) {
+            console.error('[RouteEditor] Failed to set waypoint:', err);
+            window.showToast('Failed to set waypoint: ' + err.message, 'error', 5000);
         }
     }
 }

@@ -238,9 +238,14 @@ class TrainEditorHandler {
 
         let content = `
             <div class="schedules-panel">
-                <button id="refresh-schedules-btn" class="btn btn-secondary btn-full text-sm mb-16">
-                    🔄 Refresh Schedules
-                </button>
+                <div class="flex gap-8 mb-16">
+                    <button id="create-route-btn" class="btn btn-primary btn-sm flex-1">
+                        + Create Route
+                    </button>
+                    <button id="refresh-schedules-btn" class="btn btn-secondary btn-sm">
+                        🔄
+                    </button>
+                </div>
         `;
 
         if (schedules.length === 0) {
@@ -277,7 +282,7 @@ class TrainEditorHandler {
                 </div>
                 ${schedule.stops && schedule.stops.length > 0 ? `
                 <div class="schedule-stop-list-compact text-xs schedule-stop-list">
-                    ${schedule.stops.map((stop, idx) => `<div>${idx + 1}. ${stop.station_id || stop}</div>`).join('')}
+                    ${schedule.stops.map((stop, idx) => `<div>${idx + 1}. ${stop.platform_id || stop.station_id || stop}</div>`).join('')}
                 </div>
                 ` : ''}
                 <div class="schedule-actions mt-8">
@@ -288,6 +293,13 @@ class TrainEditorHandler {
     }
 
     initSchedulesPanelHandlers() {
+        const createRouteBtn = document.getElementById('create-route-btn');
+        if (createRouteBtn) {
+            createRouteBtn.onclick = async () => {
+                await this.editor.showRoutesPanel();
+            };
+        }
+
         const refreshBtn = document.getElementById('refresh-schedules-btn');
         if (refreshBtn) {
             refreshBtn.onclick = async () => {
@@ -362,9 +374,10 @@ class TrainEditorHandler {
                 if (path) {
                     pathName = path.path_id || assignedPathId;
                     // Get destination: prefer station name, fallback to block name
-                    if (path.end_station_id) {
-                        const station = await this.api.getStation(path.end_station_id);
-                        destinationName = station?.name || path.end_station_id;
+                    if (path.end_platform_id || path.end_station_id) {
+                        const destinationPlatformId = path.end_platform_id || path.end_station_id;
+                        const platform = await this.api.getPlatform(destinationPlatformId);
+                        destinationName = platform?.name || destinationPlatformId;
                     } else if (path.end_block_id) {
                         const block = await this.api.getBlock(path.end_block_id);
                         destinationName = block?.name || path.end_block_id;

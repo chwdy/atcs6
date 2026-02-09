@@ -76,14 +76,17 @@
                     <div class="tool-category">
                         <div class="tool-category-label">Platform</div>
                         <div class="tool-row">
-                            <button class="tool-btn" data-tool="station" title="Station">
-                                <span class="tool-icon">🚉</span> Station
+                            <button class="tool-btn" data-tool="platform" title="Platform">
+                                <span class="tool-icon">🚉</span> Platform
                             </button>
-                            <button class="tool-btn" data-tool="extend-station" title="Extend Existing Station">
+                            <button class="tool-btn" data-tool="extend-platform" title="Extend Existing Platform">
                                 <span class="tool-icon">🚉+</span> Extend
                             </button>
-                            <button class="tool-btn" data-tool="remove-station-tile" title="Remove Station Tile">
+                            <button class="tool-btn" data-tool="remove-platform-tile" title="Remove Platform Tile">
                                 <span class="tool-icon">➖🚉</span> Remove
+                            </button>
+                            <button class="tool-btn" data-tool="stations-panel" title="Logical Station Groups">
+                                <span class="tool-icon">🏛️</span> Stations
                             </button>
                         </div>
                     </div>
@@ -132,6 +135,9 @@
                             </button>
                             <button class="tool-btn" data-tool="train-panel" title="Train Management">
                                 <span class="tool-icon">📋</span> Trains
+                            </button>
+                            <button class="tool-btn" data-tool="routes-panel" title="Train Route Editor">
+                                <span class="tool-icon">🛤️</span> Train Routes
                             </button>
                             <button class="tool-btn" data-tool="schedules-panel" title="View Schedules">
                                 <span class="tool-icon">📅</span> Schedules
@@ -310,7 +316,7 @@
     <script src="js/pathfinders.js?v=15"></script>
     <script src="js/renderer-tracks.js?v=15"></script>
     <script src="js/renderer-signals.js?v=15"></script>
-    <script src="js/renderer-stations.js?v=15"></script>
+    <script src="js/renderer-platforms.js?v=16"></script>
     <script src="js/renderer-blocks.js?v=15"></script>
     <script src="js/renderer-debug.js?v=15"></script>
     <script src="js/renderer-routes.js?v=15"></script>
@@ -321,9 +327,10 @@
     <script src="js/editor-signals.js?v=15"></script>
     <script src="js/editor-switches.js?v=15"></script>
     <script src="js/editor-trains.js?v=15"></script>
-    <script src="js/editor-routes.js?v=15"></script>
+    <script src="js/editor-paths.js?v=15"></script>
+    <script src="js/editor-routes.js?v=16"></script>
     <script src="js/editor-ui.js?v=15"></script>
-    <script src="js/editor.js?v=15"></script>
+    <script src="js/editor.js?v=16"></script>
     <script src="js/train-monitor.js?v=15"></script>
     <script src="js/app.js?v=15"></script>
 </body>

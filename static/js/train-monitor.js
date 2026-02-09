@@ -529,7 +529,7 @@ class TrainMonitor {
                     message = `⚠️ Block ${warning.block_id} has no length configured. Please set length in Block Editor.`;
                     break;
                 case 'station_length_not_configured':
-                    message = `⚠️ Station ${warning.station_id} has no length configured. Please set length in Station Editor.`;
+                    message = `⚠️ Platform ${warning.station_id} has no length configured. Please set length in Platform Editor.`;
                     break;
                 case 'switch_not_configured':
                     message = `⚠️ Switch at (${warning.position[0]}, ${warning.position[1]}) [${warning.state}] has no length configured.`;
@@ -541,7 +541,7 @@ class TrainMonitor {
                     message = `⚠️ Block ${warning.block_id} not found in network.`;
                     break;
                 case 'station_not_found':
-                    message = `⚠️ Station ${warning.station_id} not found in network.`;
+                    message = `⚠️ Platform ${warning.station_id} not found in network.`;
                     break;
                 default:
                     message = warning.message || 'Unknown configuration warning';
@@ -1057,7 +1057,7 @@ class TrainMonitor {
                 this.ctx.globalAlpha = 1.0;
             }
             
-            const name = station.name || station.station_id || 'Station';
+            const name = station.name || station.platform_id || station.station_id || 'Platform';
             this.ctx.font = '9px Inter, sans-serif';
             if (stationWidth > 30) {
                 const labelMaxWidth = Math.max(0, stationWidth - 6);

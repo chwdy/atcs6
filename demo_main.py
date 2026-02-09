@@ -251,13 +251,18 @@ def create_comprehensive_demo():
     )
 
     # Station at (7,0) - will split BLOCK_MAIN_EAST into before/station/after
-    network.add_station(
+    central_platform = network.add_station(
         x=7,
         y=0,
         name="Central Station",
         length_cm=100.0,  # Platform length
         platform_side="both",
         top_speed_kmh=40.0,  # Reduced speed through station
+    )
+    network.create_station_group(
+        station_id=central_platform.platform_id,
+        name=central_platform.name,
+        platform_ids=[central_platform.platform_id],
     )
 
     # North Branch: (3,1) to (3,3)
@@ -277,13 +282,18 @@ def create_comprehensive_demo():
     print(f"  Created {len(network.blocks)} blocks with validated track assignments")
 
     # Station at (3,2) on branch - will split BLOCK_BRANCH into before/station/after
-    network.add_station(
+    north_platform = network.add_station(
         x=3,
         y=2,
         name="North Station",
         length_cm=80.0,  # Smaller platform
         platform_side="right",
         top_speed_kmh=30.0,  # Lower speed for branch station
+    )
+    network.create_station_group(
+        station_id=north_platform.platform_id,
+        name=north_platform.name,
+        platform_ids=[north_platform.platform_id],
     )
 
     # remove 9,0 if exist
@@ -335,8 +345,13 @@ def create_comprehensive_demo():
         platform_side="right",
         top_speed_kmh=30.0,
     )
-    network.extend_station(east_branch_station.station_id, [(11, 7)])
-    network.extend_station(east_branch_station.station_id, [(10, 6)])
+    network.create_station_group(
+        station_id=east_branch_station.platform_id,
+        name=east_branch_station.name,
+        platform_ids=[east_branch_station.platform_id],
+    )
+    network.extend_station(east_branch_station.platform_id, [(11, 7)])
+    network.extend_station(east_branch_station.platform_id, [(10, 6)])
 
     print(
         f"  ✓ Created vertical east branch (6 tiles), station with auto-block (3 tiles), and diagonal approach (2 tiles)"
@@ -352,9 +367,14 @@ def create_comprehensive_demo():
         platform_side="both",
         top_speed_kmh=20.0,  # Low speed for terminal station
     )
+    network.create_station_group(
+        station_id=east_terminal.platform_id,
+        name=east_terminal.name,
+        platform_ids=[east_terminal.platform_id],
+    )
 
     # Extend station to cover 2 tiles (use station_id from returned station)
-    network.extend_station(east_terminal.station_id, [(9, 4)])
+    network.extend_station(east_terminal.platform_id, [(9, 4)])
 
     print(f"  ✓ Created multi-tile East Terminal station spanning 2 tiles")
 
@@ -537,7 +557,7 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
         for station in network.stations.values()
         if station.name == "East Terminal"
     )
-    target_block_id = executor._get_station_block_id(east_terminal)
+    target_block_id = executor._get_platform_block_id(east_terminal.platform_id)
 
     car = TrainCar(
         car_id="DEMO_CAR_01",

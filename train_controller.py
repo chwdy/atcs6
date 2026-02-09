@@ -664,7 +664,7 @@ class TrainController:
         station_id = self._get_station_in_block(dest_block_id)
         station_positions: set = set()
         if station_id:
-            station = self.network.stations.get(station_id)
+            station = self.network.platforms.get(station_id)
             if station:
                 station_positions = set(station.positions)
 
@@ -755,7 +755,7 @@ class TrainController:
         station_id = self._get_station_in_block(current_block_id)
         station_positions: set = set()
         if station_id:
-            station = self.network.stations.get(station_id)
+            station = self.network.platforms.get(station_id)
             if station:
                 station_positions = set(station.positions)
 
@@ -933,6 +933,105 @@ class TrainController:
             return min(matches, key=lambda i: abs(i - train.path_index))
 
         return matches[0]
+
+    def _direction_between_tiles(
+        self, from_tile: Tuple[int, int], to_tile: Tuple[int, int]
+    ) -> Optional[Direction]:
+        """Convert an adjacent tile-to-tile delta into a Direction."""
+        dx = to_tile[0] - from_tile[0]
+        dy = to_tile[1] - from_tile[1]
+
+        if dx == 1 and dy == 0:
+            return Direction.EAST
+        if dx == -1 and dy == 0:
+            return Direction.WEST
+        if dx == 0 and dy == 1:
+            return Direction.NORTH
+        if dx == 0 and dy == -1:
+            return Direction.SOUTH
+        return None
+
+    def _get_path_scan_step(self, train: "Train", head_path_index: int) -> int:
+        """
+        Determine whether lookahead should scan path forward (+1) or backward (-1).
+
+        Lookahead direction follows the active cab's facing direction, not the stored
+        path order. This allows monitor lookahead to flip correctly when switching cab.
+        """
+        if not train.current_path:
+            return 1
+
+        path_length = len(train.current_path)
+        if path_length <= 1:
+            return 1
+
+        facing_direction = (
+            train.position.facing_direction
+            if train.position and train.position.facing_direction
+            else None
+        )
+        if facing_direction is None:
+            if head_path_index >= path_length - 1 and head_path_index > 0:
+                return -1
+            return 1
+
+        head_entry = train.current_path[head_path_index]
+        head_tile = (head_entry[0], head_entry[1])
+
+        next_index = head_path_index + 1
+        if next_index < path_length:
+            next_entry = train.current_path[next_index]
+            next_direction = self._direction_between_tiles(
+                head_tile, (next_entry[0], next_entry[1])
+            )
+            if next_direction == facing_direction:
+                return 1
+
+        prev_index = head_path_index - 1
+        if prev_index >= 0:
+            prev_entry = train.current_path[prev_index]
+            prev_direction = self._direction_between_tiles(
+                head_tile, (prev_entry[0], prev_entry[1])
+            )
+            if prev_direction == facing_direction:
+                return -1
+
+        if self.active_cab == "B":
+            if head_path_index > 0:
+                return -1
+            if head_path_index < path_length - 1:
+                return 1
+
+        # Cab A follows path order and should not implicitly reverse at terminal tiles.
+        if self.active_cab == "A":
+            return 1
+
+        return 1
+
+    def _build_empty_monitor_lookahead(
+        self,
+        *,
+        head_distance_cm: float = 0.0,
+        travel_direction: Optional[str] = None,
+        speed_limit_reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build a consistent empty lookahead payload for Train Monitor."""
+        return {
+            "train_id": self.train_id,
+            "head_tile": None,
+            "head_distance_cm": head_distance_cm,
+            "travel_direction": travel_direction,
+            "cab": self.active_cab,
+            "speed_limit_reason": speed_limit_reason,
+            "lookahead": {
+                "blocks": [],
+                "signals": [],
+                "switches": [],
+                "stations": [],
+                "clearance_cm": 0.0,
+                "speed_curves": [],
+            },
+        }
 
     def _get_remaining_distance_in_current_block(self) -> float:
         """
@@ -1311,7 +1410,7 @@ class TrainController:
         if destination_block_id:
             station_id = self._get_station_in_block(destination_block_id)
             if station_id:
-                station = self.network.stations.get(station_id)
+                station = self.network.platforms.get(station_id)
                 if station:
                     destination_station_name = station.name
 
@@ -1360,12 +1459,9 @@ class TrainController:
         if train.assigned_route_id and hasattr(self.network, "routes"):
             route = self.network.routes.get(train.assigned_route_id)
             if route:
-                # Check if station is in the route's waypoints
+                # Check if platform is in the route's waypoints
                 for waypoint in route.waypoints:
-                    if (
-                        hasattr(waypoint, "station_id")
-                        and waypoint.station_id == station_id
-                    ):
+                    if waypoint.platform_id == station_id:
                         return True
 
         # If no route, consider any station as a potential stop
@@ -2400,6 +2496,9 @@ class TrainController:
             self.state = TrainState.STANDBY
             train.set_cab(cab)  # This only updates leading_end and state
 
+            if train.position and train.position.facing_direction is not None:
+                train.facing_direction = train.position.facing_direction
+
             # When switching cabs (A <-> B), the physical train doesn't move.
             # The driver walks to the other end. What changes:
             # 1. leading_end flips (done by train.set_cab)
@@ -2408,15 +2507,16 @@ class TrainController:
             # 4. distance_cm for BOTH ends flips (10cm from W = tile_length - 10cm from E)
             if old_cab in ("A", "B") and old_cab != cab:
                 # Flip facing_direction
-                if train.facing_direction is None:
-                    return CommandResult(
-                        False,
-                        f"Cannot switch cab from {old_cab} to {cab}: train has no facing direction",
-                    )
-                new_direction = train.facing_direction.opposite()
-                train.facing_direction = new_direction
-                if train.position:
-                    train.position.facing_direction = new_direction
+                new_direction: Optional[Direction] = None
+                if train.facing_direction is not None:
+                    new_direction = train.facing_direction.opposite()
+                elif train.position and train.position.facing_direction is not None:
+                    new_direction = train.position.facing_direction
+
+                if new_direction is not None:
+                    train.facing_direction = new_direction
+                    if train.position:
+                        train.position.facing_direction = new_direction
 
                 # Flip entry edges and distances for BOTH ends
                 if train.position and self.network:
@@ -2455,6 +2555,15 @@ class TrainController:
                             train.position.end_b_distance_cm = (
                                 tile_length - train.position.end_b_distance_cm
                             )
+
+                    # Update path_index to match new head position after cab switch
+                    # This is critical for lookahead and speed limit calculations
+                    if train.current_path and train.position:
+                        new_head_tile = train.position.head_tile
+                        for i, (x, y, _) in enumerate(train.current_path):
+                            if (x, y) == new_head_tile:
+                                train.path_index = i
+                                break
 
         return CommandResult(True, f"Cab set to {cab}")
 
@@ -3166,7 +3275,7 @@ class TrainController:
 
             # Check if there's a station in this block
             if head_track and head_track.station_id:
-                station = self.network.stations.get(head_track.station_id)
+                station = self.network.platforms.get(head_track.station_id)
                 if station:
                     # Get station length from station positions
                     station_tile_count = (
@@ -3221,22 +3330,15 @@ class TrainController:
     def get_monitor_lookahead(self) -> Dict[str, Any]:
         train = self._get_train()
         if not train or not self.network:
-            return {
-                "train_id": self.train_id,
-                "head_tile": None,
-                "head_distance_cm": 0.0,
-                "travel_direction": None,
-                "cab": self.active_cab,
-                "speed_limit_reason": self.speed_limit_reason,
-                "lookahead": {
-                    "blocks": [],
-                    "signals": [],
-                    "switches": [],
-                    "stations": [],
-                    "clearance_cm": 0.0,
-                    "speed_curves": [],
-                },
-            }
+            return self._build_empty_monitor_lookahead(
+                speed_limit_reason=self.speed_limit_reason
+            )
+
+        if self.active_cab not in ("A", "B"):
+            self.speed_limit_reason = "No cab selected"
+            return self._build_empty_monitor_lookahead(
+                speed_limit_reason=self.speed_limit_reason
+            )
 
         head_tile = self._get_head_tile()
         head_distance_cm = self._get_head_distance_cm()
@@ -3247,22 +3349,11 @@ class TrainController:
         )
 
         if not head_tile:
-            return {
-                "train_id": self.train_id,
-                "head_tile": None,
-                "head_distance_cm": head_distance_cm,
-                "travel_direction": travel_direction,
-                "cab": self.active_cab,
-                "speed_limit_reason": self.speed_limit_reason,
-                "lookahead": {
-                    "blocks": [],
-                    "signals": [],
-                    "switches": [],
-                    "stations": [],
-                    "clearance_cm": 0.0,
-                    "speed_curves": [],
-                },
-            }
+            return self._build_empty_monitor_lookahead(
+                head_distance_cm=head_distance_cm,
+                travel_direction=travel_direction,
+                speed_limit_reason=self.speed_limit_reason,
+            )
 
         head_path_index = self._get_head_path_index(train, head_tile)
         if head_path_index < 0 or not train.current_path:
@@ -3278,6 +3369,7 @@ class TrainController:
         stations: List[Dict[str, Any]] = []
 
         cumulative_distance_cm = -head_distance_cm
+        path_scan_step = self._get_path_scan_step(train, head_path_index)
 
         current_block_id = None
         block_back_length_cm = 0.0
@@ -3287,7 +3379,11 @@ class TrainController:
             current_block_id = head_track.block_section_id
 
         if current_block_id:
-            for j in range(head_path_index - 1, -1, -1):
+            behind_start = (
+                head_path_index - 1 if path_scan_step == 1 else head_path_index + 1
+            )
+            behind_end = -1 if path_scan_step == 1 else len(train.current_path)
+            for j in range(behind_start, behind_end, -path_scan_step):
                 prev_entry = train.current_path[j]
                 prev_x, prev_y = prev_entry[0], prev_entry[1]
                 prev_track = self.network.get_track(prev_x, prev_y)
@@ -3308,17 +3404,24 @@ class TrainController:
         seen_switches: set[Tuple[int, int]] = set()
         seen_stations: set[str] = set()
 
-        for i in range(head_path_index, len(train.current_path)):
+        loop_end = len(train.current_path) if path_scan_step == 1 else -1
+        for i in range(head_path_index, loop_end, path_scan_step):
             path_entry = train.current_path[i]
             x, y = path_entry[0], path_entry[1]
             track = self.network.get_track(x, y)
             tile_length = self.network._get_tile_length_cm(x, y) if track else 50.0
             tile_block_id = track.block_section_id if track else None
-            travel_direction = (
+            tile_travel_direction = (
                 path_entry[2].name
                 if len(path_entry) > 2 and hasattr(path_entry[2], "name")
                 else None
             )
+            if (
+                tile_travel_direction
+                and path_scan_step == -1
+                and hasattr(path_entry[2], "opposite")
+            ):
+                tile_travel_direction = path_entry[2].opposite().name
             point_element_start = max(0.0, cumulative_distance_cm)
 
             if tile_block_id and tile_block_id != current_block_id:
@@ -3329,7 +3432,7 @@ class TrainController:
                 seen_blocks.add(tile_block_id)
                 block_length = 0.0
                 tile_count = 0
-                for j in range(i, len(train.current_path)):
+                for j in range(i, loop_end, path_scan_step):
                     next_entry = train.current_path[j]
                     next_x, next_y = next_entry[0], next_entry[1]
                     next_track = self.network.get_track(next_x, next_y)
@@ -3369,8 +3472,8 @@ class TrainController:
                     }
                 )
 
-            if track and track.signal_ids and travel_direction:
-                train_dir = travel_direction.upper()
+            if track and track.signal_ids and tile_travel_direction:
+                train_dir = tile_travel_direction.upper()
                 for signal_id in track.signal_ids:
                     if signal_id in seen_signals:
                         continue
@@ -3431,7 +3534,7 @@ class TrainController:
                 station_id = track.station_id
                 if station_id not in seen_stations:
                     seen_stations.add(station_id)
-                    station = self.network.stations.get(station_id)
+                    station = self.network.platforms.get(station_id)
                     station_length = station.length_cm if station else 0.0
                     station_tile_count = 0
                     if not station_length:

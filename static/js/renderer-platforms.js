@@ -1,4 +1,4 @@
-class RendererStationHandler {
+class RendererPlatformHandler {
     constructor(renderer) {
         this.renderer = renderer;
     }
@@ -6,7 +6,7 @@ class RendererStationHandler {
     get ctx() { return this.renderer.ctx; }
     get scale() { return this.renderer.scale; }
     get gridSize() { return this.renderer.gridSize; }
-    get currentStations() { return this.renderer.currentStations; }
+    get currentPlatforms() { return this.renderer.currentPlatforms; }
     get trackMap() { return this.renderer.trackMap; }
     get mouseX() { return this.renderer.mouseX; }
     get mouseY() { return this.renderer.mouseY; }
@@ -14,21 +14,22 @@ class RendererStationHandler {
     gridToScreenX(x, y) { return this.renderer.gridToScreenX(x, y); }
     gridToScreenY(x, y) { return this.renderer.gridToScreenY(x, y); }
 
-    drawStations() {
-        if (!this.currentStations || this.currentStations.length === 0) return;
+    drawPlatforms() {
+        if (!this.currentPlatforms || this.currentPlatforms.length === 0) return;
 
         const tileSize = this.gridSize * this.scale;
         const half = tileSize / 2;
+        this.renderer.platformBounds = [];
 
-        for (const station of this.currentStations) {
-            if (!station.positions || station.positions.length === 0) continue;
+        for (const platform of this.currentPlatforms) {
+            if (!platform.positions || platform.positions.length === 0) continue;
 
-            const positions = station.positions;
+            const positions = platform.positions;
             if (positions.length === 0) continue;
 
-            let orientation = station.orientation;
-            let platformSides = station.platform_sides || [];
-            const stationName = station.name || station.station_id || 'Station';
+            let orientation = platform.orientation || platform.initial_orientation;
+            let platformSides = platform.platform_sides || [];
+            const platformName = platform.name || platform.platform_id || platform.station_id || 'Platform';
 
             if (!orientation && positions.length > 0) {
                 const firstPos = positions[0];
@@ -44,12 +45,12 @@ class RendererStationHandler {
 
             if (platformSides.length === 0 && orientation) {
                 const sideMapping = {
-                    'NS': { 'both': ['west', 'east'], 'left': ['west'], 'right': ['east'] },
-                    'EW': { 'both': ['north', 'south'], 'left': ['north'], 'right': ['south'] },
-                    'NE_SW': { 'both': ['northwest', 'southeast'], 'left': ['northwest'], 'right': ['southeast'] },
-                    'NW_SE': { 'both': ['southwest', 'northeast'], 'left': ['southwest'], 'right': ['northeast'] }
+                    NS: { both: ['west', 'east'], left: ['west'], right: ['east'] },
+                    EW: { both: ['north', 'south'], left: ['north'], right: ['south'] },
+                    NE_SW: { both: ['northwest', 'southeast'], left: ['northwest'], right: ['southeast'] },
+                    NW_SE: { both: ['southwest', 'northeast'], left: ['southwest'], right: ['northeast'] }
                 };
-                const side = station.platform_side || 'both';
+                const side = (platform.platform_side || 'both').toLowerCase();
                 platformSides = sideMapping[orientation]?.[side] || ['west', 'east'];
             }
 
@@ -57,7 +58,6 @@ class RendererStationHandler {
             if (!endpointTiles) continue;
 
             const [tile1, tile2] = endpointTiles;
-
             const track1 = this.trackMap[`${tile1[0]},${tile1[1]}`];
             const track2 = this.trackMap[`${tile2[0]},${tile2[1]}`];
             if (!track1 || !track2) continue;
@@ -77,8 +77,8 @@ class RendererStationHandler {
                 );
             }
 
-            this.drawStationLabel(
-                stationName,
+            this.drawPlatformLabel(
+                platformName,
                 longestPair[0], longestPair[1],
                 orientation, platformSides[0],
                 half
@@ -88,23 +88,23 @@ class RendererStationHandler {
         }
     }
 
-    abbreviateStationName(name) {
-        if (!name || name.length <= 4) return name.toUpperCase();
+    abbreviatePlatformName(name) {
+        if (!name || name.length <= 4) return String(name || '').toUpperCase();
 
-        const words = name.split(/[\s\-_]+/).filter(w => w.length > 0);
+        const words = String(name).split(/[\s\-_]+/).filter(w => w.length > 0);
         if (words.length >= 2) {
             return words.slice(0, 4).map(w => w[0].toUpperCase()).join('');
         }
 
-        const consonants = name.replace(/[aeiou]/gi, '').toUpperCase();
+        const consonants = String(name).replace(/[aeiou]/gi, '').toUpperCase();
         if (consonants.length >= 3) {
             return consonants.slice(0, 4);
         }
-        return name.slice(0, 4).toUpperCase();
+        return String(name).slice(0, 4).toUpperCase();
     }
 
-    drawStationLabel(fullName, point1, point2, orientation, side, half) {
-        const abbrev = this.abbreviateStationName(fullName);
+    drawPlatformLabel(fullName, point1, point2, orientation, side, half) {
+        const abbrev = this.abbreviatePlatformName(fullName);
 
         const centerX = (point1.x + point2.x) / 2;
         const centerY = (point1.y + point2.y) / 2;
@@ -118,8 +118,6 @@ class RendererStationHandler {
         const perpY = dx / length;
 
         const sideMultiplier = this.getSideMultiplier(side, orientation);
-
-        // Use dynamic spacing based on user preference
         const spacingMultiplier = getLabelSpacingMultiplier();
         const labelOffset = half * spacingMultiplier + 18 * this.scale;
         const labelX = centerX + perpX * labelOffset * sideMultiplier;
@@ -163,6 +161,14 @@ class RendererStationHandler {
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
         this.ctx.fillText(displayText, labelX, labelY);
+
+        this.renderer.platformBounds.push({
+            x: centerX,
+            y: centerY,
+            r: hoverRadius + length / 2,
+            name: fullName,
+            abbrev,
+        });
     }
 
     findEndpointTiles(positions) {
@@ -192,31 +198,31 @@ class RendererStationHandler {
         const centerY = this.gridToScreenY(tilePos[0], tilePos[1]);
 
         const edgePositions = {
-            'N': { x: centerX + half / 2, y: centerY - half / 2 },
-            'S': { x: centerX - half / 2, y: centerY + half / 2 },
-            'E': { x: centerX + half / 2, y: centerY + half / 2 },
-            'W': { x: centerX - half / 2, y: centerY - half / 2 }
+            N: { x: centerX + half / 2, y: centerY - half / 2 },
+            S: { x: centerX - half / 2, y: centerY + half / 2 },
+            E: { x: centerX + half / 2, y: centerY + half / 2 },
+            W: { x: centerX - half / 2, y: centerY - half / 2 }
         };
 
         const endpoints = [];
 
         if (trackBits & TRACK_BITS.NS) {
-            endpoints.push(edgePositions['N'], edgePositions['S']);
+            endpoints.push(edgePositions.N, edgePositions.S);
         }
         if (trackBits & TRACK_BITS.EW) {
-            endpoints.push(edgePositions['E'], edgePositions['W']);
+            endpoints.push(edgePositions.E, edgePositions.W);
         }
         if (trackBits & TRACK_BITS.NE) {
-            endpoints.push(edgePositions['N'], edgePositions['E']);
+            endpoints.push(edgePositions.N, edgePositions.E);
         }
         if (trackBits & TRACK_BITS.NW) {
-            endpoints.push(edgePositions['N'], edgePositions['W']);
+            endpoints.push(edgePositions.N, edgePositions.W);
         }
         if (trackBits & TRACK_BITS.SE) {
-            endpoints.push(edgePositions['S'], edgePositions['E']);
+            endpoints.push(edgePositions.S, edgePositions.E);
         }
         if (trackBits & TRACK_BITS.SW) {
-            endpoints.push(edgePositions['S'], edgePositions['W']);
+            endpoints.push(edgePositions.S, edgePositions.W);
         }
 
         return endpoints.slice(0, 2);
@@ -274,10 +280,10 @@ class RendererStationHandler {
             const offsetX = perpX * perpOffset * sideMultiplier;
             const offsetY = perpY * perpOffset * sideMultiplier;
 
-            const innerStartX = point1.x + offsetX;
-            const innerStartY = point1.y + offsetY;
-            const innerEndX = point2.x + offsetX;
-            const innerEndY = point2.y + offsetY;
+            const innerStartX = p1.x + offsetX;
+            const innerStartY = p1.y + offsetY;
+            const innerEndX = p2.x + offsetX;
+            const innerEndY = p2.y + offsetY;
 
             const outerStartX = innerStartX + perpX * width * sideMultiplier;
             const outerStartY = innerStartY + perpY * width * sideMultiplier;
@@ -295,10 +301,10 @@ class RendererStationHandler {
 
     getSideMultiplier(side, orientation) {
         const sideMap = {
-            'NS': { 'east': 1, 'west': -1 },
-            'EW': { 'south': 1, 'north': -1 },
-            'NE_SW': { 'southeast': 1, 'northwest': -1 },
-            'NW_SE': { 'northeast': 1, 'southwest': -1 }
+            NS: { east: 1, west: -1 },
+            EW: { south: 1, north: -1 },
+            NE_SW: { southeast: 1, northwest: -1 },
+            NW_SE: { northeast: 1, southwest: -1 }
         };
 
         return sideMap[orientation]?.[side] || 1;

@@ -119,7 +119,7 @@ class Renderer {
         // Mouse position for hover detection
         this.mouseX = -1;
         this.mouseY = -1;
-        this.stationBounds = []; // Array of {bounds, name, abbrev} for hover detection
+        this.platformBounds = []; // Array of {bounds, name, abbrev} for hover detection
 
         // Block display mode:
         // - false: only show when debug checkbox is checked (full debug info)
@@ -148,7 +148,7 @@ class Renderer {
 
         this.trackHandler = new RendererTrackHandler(this);
         this.signalHandler = new RendererSignalHandler(this);
-        this.stationHandler = new RendererStationHandler(this);
+        this.platformHandler = new RendererPlatformHandler(this);
         this.blockHandler = new RendererBlockHandler(this);
         this.routeHandler = new RendererRouteHandler(this);
         this.trainHandler = new RendererTrainHandler(this);
@@ -164,14 +164,14 @@ class Renderer {
             this.mouseY = e.clientY - rect.top;
 
             // Redraw if mouse moved and we have a network
-            // Need redraw for: block hover, station name hover, etc.
+            // Need redraw for: block hover, platform name hover, etc.
             const showBlocksElement = document.getElementById('debug-show-blocks');
             const showBlocks = showBlocksElement ? showBlocksElement.checked : false;
-            const hasStations = this.currentStations && this.currentStations.length > 0;
+            const hasPlatforms = this.currentPlatforms && this.currentPlatforms.length > 0;
 
             if (this.currentNetwork && (prevMouseX !== this.mouseX || prevMouseY !== this.mouseY)) {
-                // Redraw if blocks debug is enabled OR if there are stations (for hover-to-expand)
-                if (showBlocks || this.showBlockColorsOnly || hasStations) {
+                // Redraw if blocks debug is enabled OR if there are platforms (for hover-to-expand)
+                if (showBlocks || this.showBlockColorsOnly || hasPlatforms) {
                     this.drawNetwork(this.currentNetwork);
                 }
             }
@@ -185,10 +185,10 @@ class Renderer {
             // Redraw when mouse leaves to clear hover state
             const showBlocksElement = document.getElementById('debug-show-blocks');
             const showBlocks = showBlocksElement ? showBlocksElement.checked : false;
-            const hasStations = this.currentStations && this.currentStations.length > 0;
+            const hasPlatforms = this.currentPlatforms && this.currentPlatforms.length > 0;
 
             if (this.currentNetwork && (prevMouseX !== -1 || prevMouseY !== -1)) {
-                if (showBlocks || this.showBlockColorsOnly || hasStations) {
+                if (showBlocks || this.showBlockColorsOnly || hasPlatforms) {
                     this.drawNetwork(this.currentNetwork);
                 }
             }
@@ -381,9 +381,9 @@ class Renderer {
         // Store network for hover redraws
         this.currentNetwork = network;
 
-        // Store blocks and stations for rendering
+        // Store blocks and platforms for rendering
         this.currentBlocks = network.blocks || {};
-        this.currentStations = network.stations || [];
+        this.currentPlatforms = network.platforms || [];
         // Create track lookup map for station rendering
         this.trackMap = {};
         network.tracks.forEach(track => {
@@ -409,8 +409,8 @@ class Renderer {
             this.blockHandler.drawBlockBoundaryMarkers(network.tracks);
         }
 
-        // Draw stations as spanning platforms (after tracks, so platforms appear on top)
-        this.stationHandler.drawStations();
+        // Draw platforms (after tracks, so platforms appear on top)
+        this.platformHandler.drawPlatforms();
 
         // Draw signal-to-block connection lines (before signals, so they appear underneath)
         const showSignalDebugElement = document.getElementById('debug-show-signals');

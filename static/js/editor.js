@@ -23,7 +23,7 @@ class Editor {
         this.cachedBlocks = [];  // Block Manager cache
         this.selectedBlockId = null;  // Currently selected block in Block Manager
 
-        // Hover preview for signal/station tools
+        // Hover preview for signal/platform tools
         this.hoverPosition = null;
         this.hoverValid = false;
         this.previewSignalDirection = null;  // Current preview direction for signal tool (cycles on right-click)
@@ -33,7 +33,7 @@ class Editor {
         this.shiftKeyHeld = false;
         this.diagonalBuildMode = false;  // True when building diagonal/short-path tracks
 
-        // Station extend mode
+        // Platform extend mode
         this.stationExtendMode = { active: false };
         
         // Block extend mode
@@ -55,15 +55,17 @@ class Editor {
         this.existingOnlyPathfinder = new ExistingTrackPathfinder();
         this.blockHandler = new BlockEditorHandler(this);
         this.signalHandler = new SignalEditorHandler(this);
-        this.stationHandler = new StationEditorHandler(this);
+        this.platformHandler = new PlatformEditorHandler(this);
+        this.stationGroupHandler = new StationGroupEditorHandler(this);
         this.trainHandler = new TrainEditorHandler(this);
+        this.pathHandler = new PathEditorHandler(this);
         this.routeHandler = new RouteEditorHandler(this);
         this.switchHandler = new SwitchEditorHandler(this);
         this.uiHandler = new EditorUIHandler(this);
         
         this.setupEventListeners();
         this.setupBlockManager();
-        this._currentEditorType = null;  // 'block', 'signal', or 'station'
+        this._currentEditorType = null;  // 'block', 'signal', or 'platform'
         this._currentEditorId = null;    // The ID of the item being edited
 
         this.setupSecondarySidebar();
@@ -142,10 +144,13 @@ class Editor {
                 // signals is an object keyed by signal_id
                 itemExists = this.cachedNetwork?.signals && (id in this.cachedNetwork.signals);
                 break;
-            case 'station':
-                // stations is an array
-                itemExists = Array.isArray(this.cachedNetwork?.stations) &&
-                             this.cachedNetwork.stations.some(s => s.station_id === id);
+            case 'platform':
+                itemExists = Array.isArray(this.cachedNetwork?.platforms) &&
+                             this.cachedNetwork.platforms.some(p => p.platform_id === id);
+                break;
+            case 'station-group':
+                itemExists = Array.isArray(this.cachedNetwork?.station_groups) &&
+                             this.cachedNetwork.station_groups.some(s => s.station_id === id);
                 break;
             case 'train':
             case 'train-control':
@@ -171,7 +176,7 @@ class Editor {
     /**
      * Refresh the secondary editor if it matches the given type and id.
      * Used after API calls that modify specific items.
-     * @param {string} type - 'block', 'signal', or 'station'
+     * @param {string} type - 'block', 'signal', or 'platform'
      * @param {string} id - The ID of the item that was modified
      */
     refreshEditorIfNeeded(type, id) {
@@ -192,8 +197,8 @@ class Editor {
             case 'signal':
                 this.showSignalEditor(id);
                 break;
-            case 'station':
-                this.showStationEditor(id);
+            case 'platform':
+                this.showPlatformEditor(id);
                 break;
         }
     }
@@ -223,7 +228,7 @@ class Editor {
         
         // All other panels use subscriptions
         if (this._currentEditorType === 'signal' || this._currentEditorType === 'switch' || 
-            this._currentEditorType === 'block' || this._currentEditorType === 'station') {
+            this._currentEditorType === 'block' || this._currentEditorType === 'platform' || this._currentEditorType === 'station-group') {
             return;
         }
     }
@@ -248,33 +253,37 @@ class Editor {
         return this.blockHandler.initEditorHandlers(blockId);
     }
 
-    showStationEditor(stationId) {
-        return this.stationHandler.showEditor(stationId);
+    showPlatformEditor(platformId) {
+        return this.platformHandler.showEditor(platformId);
     }
 
     async showSwitchEditor(switchId) {
         return this.switchHandler.showEditor(switchId);
     }
 
-    async initStationEditorHandlers(stationId) {
-        return this.stationHandler.initEditorHandlers(stationId);
+    async initPlatformEditorHandlers(platformId) {
+        return this.platformHandler.initEditorHandlers(platformId);
     }
 
-    async showBlockAssignmentDialog(stationId, x, y, tileIndex) {
-        return this.stationHandler.showBlockAssignmentDialog(stationId, x, y, tileIndex);
+    async showBlockAssignmentDialog(platformId, x, y, tileIndex) {
+        return this.platformHandler.showBlockAssignmentDialog(platformId, x, y, tileIndex);
     }
 
 
-    async enterStationExtendMode(stationId, direction) {
-        return this.stationHandler.enterExtendMode(stationId, direction);
+    async enterPlatformExtendMode(platformId, direction) {
+        return this.platformHandler.enterExtendMode(platformId, direction);
     }
 
-    exitStationExtendMode() {
-        return this.stationHandler.exitExtendMode();
+    exitPlatformExtendMode() {
+        return this.platformHandler.exitExtendMode();
     }
 
-    async handleStationExtendClick(x, y) {
-        return this.stationHandler.handleExtendClick(x, y);
+    async handlePlatformExtendClick(x, y) {
+        return this.platformHandler.handleExtendClick(x, y);
+    }
+
+    async showStationsPanel() {
+        return this.stationGroupHandler.showPanel();
     }
 
     async enterBlockExtendMode(blockId, direction) {
@@ -370,6 +379,17 @@ class Editor {
                     e.currentTarget.classList.remove('active');
                     document.querySelector(`.tool-btn[data-tool="${oldTool}"]`)?.classList.add('active');
                     return;
+                } else if (newTool === 'routes-panel') {
+                    this.showRoutesPanel();
+                    // Don't change selected tool - keep current tool active
+                    e.currentTarget.classList.remove('active');
+                    document.querySelector(`.tool-btn[data-tool="${oldTool}"]`)?.classList.add('active');
+                    return;
+                } else if (newTool === 'stations-panel') {
+                    this.showStationsPanel();
+                    e.currentTarget.classList.remove('active');
+                    document.querySelector(`.tool-btn[data-tool="${oldTool}"]`)?.classList.add('active');
+                    return;
                 } else if (oldTool === 'path') {
                     // Leaving path tool mode
                     this.exitRouteToolMode();
@@ -413,7 +433,7 @@ class Editor {
                 this.lastMouseY = e.clientY;
             }
             // Left mouse + path-based tools = start drag
-            else if (e.button === 0 && ['track', 'block', 'eraser', 'extend-block', 'extend-station', 'remove-station-tile', 'remove-block-tile'].includes(this.selectedTool)) {
+            else if (e.button === 0 && ['track', 'block', 'eraser', 'extend-block', 'extend-platform', 'remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool)) {
                 this.isDraggingBuild = true;
                 this.dragStart = gridPos;
                 this.dragEnd = gridPos;
@@ -421,8 +441,8 @@ class Editor {
                 this.lastValidPreviewPath = null;
                 this.lastValidPreviewTracks = null;
             }
-            // Left click with signal/station = single click placement
-            else if (e.button === 0 && ['signal', 'station'].includes(this.selectedTool)) {
+            // Left click with signal/platform = single click placement
+            else if (e.button === 0 && ['signal', 'platform'].includes(this.selectedTool)) {
                 this.handleSingleClickPlace(gridPos);
             }
         });
@@ -460,8 +480,8 @@ class Editor {
                 this.dragEnd = gridPos;
                 this.updatePreviewPath();
             }
-            // Hover preview for signal/station tools
-            else if (['signal', 'station'].includes(this.selectedTool)) {
+            // Hover preview for signal/platform tools
+            else if (['signal', 'platform'].includes(this.selectedTool)) {
                 this.updateHoverPreview(gridPos);
             }
         });
@@ -481,10 +501,10 @@ class Editor {
                 if (this.selectedTool === 'eraser' && isSingleClick) {
                     // Single click eraser: two-stage deletion
                     await this.handleErase(this.dragStart);
-                } else if (['remove-station-tile', 'remove-block-tile'].includes(this.selectedTool) && isSingleClick) {
+                } else if (['remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool) && isSingleClick) {
                     // Single click removal tools
                     await this.handleRemovalClick(this.dragStart);
-                } else if (['eraser', 'block', 'track', 'extend-block', 'extend-station', 'remove-station-tile', 'remove-block-tile'].includes(this.selectedTool)) {
+                } else if (['eraser', 'block', 'track', 'extend-block', 'extend-platform', 'remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool)) {
                     // Drag operation: commit the build/erase/block/removal path
                     await this.commitDragBuild();
                 }
@@ -570,7 +590,7 @@ class Editor {
             
             // Check if in station extend mode
             if (this.stationExtendMode?.active) {
-                const handled = await this.handleStationExtendClick(gridPos.x, gridPos.y);
+                const handled = await this.handlePlatformExtendClick(gridPos.x, gridPos.y);
                 if (handled) return;
             }
             
@@ -596,6 +616,12 @@ class Editor {
             if (this.selectedTool === 'cancel-path') {
                 await this.handleCancelRouteToolClick(gridPos);
                 return;
+            }
+            
+            // Check if route editor is in waypoint click mode
+            if (this.routeHandler.waypointClickMode) {
+                const handled = await this.routeHandler.handleWaypointClick(gridPos);
+                if (handled) return;
             }
             
             // Only handle selection with select tool
@@ -642,7 +668,7 @@ class Editor {
 
                 // Exit station extend mode if active
                 if (this.stationExtendMode?.active) {
-                    this.exitStationExtendMode();
+                    this.exitPlatformExtendMode();
                     window.showToast('Extend mode cancelled', 'info', 3000);
                     return;
                 }
@@ -658,6 +684,13 @@ class Editor {
                 if (this.pathToolState?.active) {
                     this.exitRouteToolMode();
                     window.showToast('Route creation cancelled', 'info', 3000);
+                    return;
+                }
+
+                // Exit route editor waypoint click mode if active
+                if (this.routeHandler.waypointClickMode) {
+                    this.routeHandler.exitWaypointClickMode();
+                    window.showToast('Waypoint selection cancelled', 'info', 3000);
                     return;
                 }
 
@@ -704,8 +737,8 @@ class Editor {
         return this.blockHandler.showPropertiesModal(options);
     }
 
-    showStationModal(options) {
-        return this.stationHandler.showModal(options);
+    showPlatformModal(options) {
+        return this.platformHandler.showModal(options);
     }
 
     renderSignalList(signals) {
@@ -746,8 +779,8 @@ class Editor {
                 this.previewTracks = this.lastValidPreviewTracks;
             }
         }
-        else if (['block', 'extend-block', 'extend-station', 'eraser', 'remove-station-tile', 'remove-block-tile'].includes(this.selectedTool)) {
-            // Use existing-only pathfinder for block assignment, extend-block, extend-station, eraser, and removal tools
+        else if (['block', 'extend-block', 'extend-platform', 'eraser', 'remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool)) {
+            // Use existing-only pathfinder for block assignment, extend-block, extend-platform, eraser, and removal tools
             const existingTracks = this.cachedNetwork ? this.cachedNetwork.tracks : [];
             const foundPath = this.existingOnlyPathfinder.findPathOnExistingTracks(
                 this.dragStart.x, this.dragStart.y,
@@ -777,11 +810,11 @@ class Editor {
                 this.renderer.trackHandler.drawPreviewTracks(this.previewTracks);
             }
             // Draw eraser and removal tools preview in red
-            else if (['eraser', 'remove-station-tile', 'remove-block-tile'].includes(this.selectedTool) && this.previewPath) {
+            else if (['eraser', 'remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool) && this.previewPath) {
                 this.renderer.trackHandler.drawEraserPreviewPath(this.previewPath);
             }
-            // Draw block preview in purple (for block, extend-block, and extend-station tools)
-            else if (['block', 'extend-block', 'extend-station'].includes(this.selectedTool) && this.previewPath) {
+            // Draw block preview in purple (for block, extend-block, and extend-platform tools)
+            else if (['block', 'extend-block', 'extend-platform'].includes(this.selectedTool) && this.previewPath) {
                 this.renderer.blockHandler.drawBlockPreviewPath(this.previewPath);
             }
             else if (this.previewPath) {
@@ -932,68 +965,63 @@ class Editor {
                     return;
                 }
             }
-            else if (this.selectedTool === 'extend-station') {
-                // Extend existing station - must start on tile with station
+            else if (this.selectedTool === 'extend-platform') {
+                // Extend existing platform - must start on tile with platform
                 if (!this.previewPath || this.previewPath.length === 0) return;
 
-                // Find stations that intersect with the path
+                // Find platforms that intersect with the path
                 const tracks = this.cachedNetwork?.tracks || [];
-                const stations = this.cachedNetwork?.stations || [];
-                const stationsInPath = new Set();
+                const platforms = this.cachedNetwork?.platforms || [];
+                const platformsInPath = new Set();
 
                 for (const pos of this.previewPath) {
                     const track = tracks.find(t => t.x === pos.x && t.y === pos.y);
                     if (track && track.station_id) {
-                        stationsInPath.add(track.station_id);
+                        platformsInPath.add(track.station_id);
                     }
                 }
 
-                if (stationsInPath.size === 0) {
-                    window.showToast('No station found in path. Start the drag on an existing station.', 'error', 5000);
+                if (platformsInPath.size === 0) {
+                    window.showToast('No platform found in path. Start the drag on an existing platform.', 'error', 5000);
                     return;
                 }
 
-                // Get the station ID to extend (use first station found, which should be at drag start)
-                let stationId;
-                if (stationsInPath.size === 1) {
-                    // Only one station, use it
-                    stationId = Array.from(stationsInPath)[0];
+                // Get the platform ID to extend (use first platform found, which should be at drag start)
+                let platformId;
+                if (platformsInPath.size === 1) {
+                    platformId = Array.from(platformsInPath)[0];
                 } else {
-                    // Multiple stations - find the one at the drag start point
+                    // Multiple platforms - find the one at the drag start point
                     const startTrack = tracks.find(t => t.x === this.dragStart.x && t.y === this.dragStart.y);
                     if (startTrack && startTrack.station_id) {
-                        stationId = startTrack.station_id;
+                        platformId = startTrack.station_id;
                     } else {
-                        // Fallback: use the first station found
-                        stationId = Array.from(stationsInPath)[0];
+                        platformId = Array.from(platformsInPath)[0];
                     }
-
-                    const station = stations.find(s => s.station_id === stationId);
                 }
 
                 try {
-                    // Get positions that don't already belong to the station
-                    const station = stations.find(s => s.station_id === stationId);
-                    const stationPositions = new Set(
-                        station?.positions?.map(p => `${p[0]},${p[1]}`) || []
+                    // Get positions that don't already belong to the platform
+                    const platform = platforms.find(p => p.platform_id === platformId);
+                    const platformPositions = new Set(
+                        platform?.positions?.map(p => `${p[0]},${p[1]}`) || []
                     );
 
                     const newPositions = this.previewPath
-                        .filter(p => !stationPositions.has(`${p.x},${p.y}`))
+                        .filter(p => !platformPositions.has(`${p.x},${p.y}`))
                         .map(p => [p.x, p.y]);
 
                     if (newPositions.length === 0) {
-                        window.showToast('All tiles are already part of the station.', 'error', 5000);
+                        window.showToast('All tiles are already part of the platform.', 'error', 5000);
                         return;
                     }
 
-                    await this.api.extendStation(stationId, newPositions);
+                    await this.api.extendPlatform(platformId, newPositions);
 
-                    // Show success toast
-                    window.showToast(`Station extended with ${newPositions.length} tile(s)`, 'success');
+                    window.showToast(`Platform extended with ${newPositions.length} tile(s)`, 'success');
                 } catch (err) {
-                    console.error('[Editor] Failed to extend station:', err);
-                    window.showToast('Failed to extend station: ' + err.message, 'error', 5000);
+                    console.error('[Editor] Failed to extend platform:', err);
+                    window.showToast('Failed to extend platform: ' + err.message, 'error', 5000);
                     return;
                 }
             }
@@ -1004,8 +1032,8 @@ class Editor {
                 const positions = this.previewPath.map(p => [p.x, p.y]);
                 await this.api.deleteTracksBulk(positions);
             }
-            else if (this.selectedTool === 'remove-station-tile') {
-                // Remove station tiles along the path
+            else if (this.selectedTool === 'remove-platform-tile') {
+                // Remove platform tiles along the path
                 if (!this.previewPath || this.previewPath.length === 0) return;
 
                 const tracks = this.cachedNetwork?.tracks || [];
@@ -1016,13 +1044,13 @@ class Editor {
                 for (const pos of this.previewPath) {
                     const track = tracks.find(t => t.x === pos.x && t.y === pos.y);
                     if (!track || !track.station_id) {
-                        errors.push(`No station at (${pos.x}, ${pos.y})`);
+                        errors.push(`No platform at (${pos.x}, ${pos.y})`);
                         errorCount++;
                         continue;
                     }
 
                     try {
-                        await this.api.removeStationTile(track.station_id, pos.x, pos.y);
+                        await this.api.removePlatformTile(track.station_id, pos.x, pos.y);
                         successCount++;
                     } catch (err) {
                         errors.push(`(${pos.x}, ${pos.y}): ${err.message}`);
@@ -1031,7 +1059,7 @@ class Editor {
                 }
 
                 if (successCount > 0) {
-                    window.showToast(`Removed ${successCount} station tile(s)`, 'success');
+                    window.showToast(`Removed ${successCount} platform tile(s)`, 'success');
                 }
                 if (errorCount > 0) {
                     window.showToast(`Failed to remove ${errorCount} tile(s):\n${errors.slice(0, 3).join('\n')}`, 'error', 5000);
@@ -1113,17 +1141,17 @@ class Editor {
                 return;
             }
 
-            // Check if tile has objects (signal or station)
+            // Check if tile has objects (signal or platform)
             const hasSignal = existingTrack.signal_id || existingTrack.signal_state || existingTrack.type === 'signal';
-            const hasStation = existingTrack.station_id || existingTrack.station_name || existingTrack.type === 'station';
+            const hasPlatform = existingTrack.station_id || existingTrack.station_name || existingTrack.type === 'station';
 
-            if (hasSignal || hasStation) {
+            if (hasSignal || hasPlatform) {
                 // First click: remove objects only, keep track
 
                 // Build confirmation message
                 let items = [];
                 if (hasSignal) items.push(`Signal ${existingTrack.signal_id || 'at this location'}`);
-                if (hasStation) items.push(`Station ${existingTrack.station_name || existingTrack.station_id || 'at this location'}`);
+                if (hasPlatform) items.push(`Platform ${existingTrack.station_name || existingTrack.station_id || 'at this location'}`);
 
                 const confirmed = confirm(`Delete ${items.join(' and ')}?\n\nThe track will remain.`);
                 if (!confirmed) return;
@@ -1137,10 +1165,10 @@ class Editor {
                         await this.api.deleteSignalAt(gridPos.x, gridPos.y);
                     }
                 }
-                if (hasStation) {
-                    // Use the station-specific deletion API
+                if (hasPlatform) {
+                    // Use the platform-specific deletion API
                     if (existingTrack.station_id) {
-                        await this.api.deleteStation(existingTrack.station_id);
+                        await this.api.deletePlatform(existingTrack.station_id);
                     }
                 }
             } else {
@@ -1165,17 +1193,17 @@ class Editor {
                 return;
             }
 
-            if (this.selectedTool === 'remove-station-tile') {
+            if (this.selectedTool === 'remove-platform-tile') {
                 if (!existingTrack.station_id) {
-                    window.showToast('No station at this position', 'error', 3000);
+                    window.showToast('No platform at this position', 'error', 3000);
                     return;
                 }
 
                 try {
-                    await this.api.removeStationTile(existingTrack.station_id, gridPos.x, gridPos.y);
-                    window.showToast('Station tile removed', 'success');
+                    await this.api.removePlatformTile(existingTrack.station_id, gridPos.x, gridPos.y);
+                    window.showToast('Platform tile removed', 'success');
                 } catch (err) {
-                    window.showToast(`Failed to remove station tile: ${err.message}`, 'error', 5000);
+                    window.showToast(`Failed to remove platform tile: ${err.message}`, 'error', 5000);
                 }
             }
             else if (this.selectedTool === 'remove-block-tile') {
@@ -1206,7 +1234,7 @@ class Editor {
         }
     }
 
-    // Single click placement for signal/station tools
+    // Single click placement for signal/platform tools
     async handleSingleClickPlace(gridPos) {
         const existingTrack = this.cachedNetwork?.tracks?.find(
             t => t.x === gridPos.x && t.y === gridPos.y
@@ -1218,9 +1246,9 @@ class Editor {
         }
 
         if (this.selectedTool === 'signal') {
-            // Check if already has a station
+            // Check if already has a platform
             if (existingTrack.station_name) {
-                window.showToast('Cannot place signal on a station', 'error', 5000);
+                window.showToast('Cannot place signal on a platform', 'error', 5000);
                 return;
             }
 
@@ -1271,39 +1299,39 @@ class Editor {
                 window.showToast('Failed to create signal: ' + err.message, 'error', 5000);
                 return;
             }
-        } else if (this.selectedTool === 'station') {
-            // Validate station placement via API
+        } else if (this.selectedTool === 'platform') {
+            // Validate platform placement via API
             try {
-                const validation = await this.api.validateStationPlacement(gridPos.x, gridPos.y);
+                const validation = await this.api.validatePlatformPlacement(gridPos.x, gridPos.y);
 
                 if (!validation.can_place) {
-                    window.showToast(validation.error || 'Cannot place station at this position', 'error', 5000);
+                    window.showToast(validation.error || 'Cannot place platform at this position', 'error', 5000);
                     return;
                 }
 
-                // Show station modal to get station properties
-                const stationData = await this.showStationModal({
+                // Show platform modal to get platform properties
+                const platformData = await this.showPlatformModal({
                     mode: 'create',
                     x: gridPos.x,
                     y: gridPos.y,
                     existingBlock: validation.existing_block
                 });
 
-                if (!stationData) return; // User cancelled
+                if (!platformData) return; // User cancelled
 
-                // Create station via API
-                await this.api.createStation(
-                    gridPos.x,
-                    gridPos.y,
-                    stationData.name,
-                    stationData.lengthCm,
-                    stationData.platformSide,
-                    stationData.topSpeedKmh,
-                    stationData.stationId
-                );
+                // Create platform via API
+                await this.api.createPlatform({
+                    x: gridPos.x,
+                    y: gridPos.y,
+                    name: platformData.name,
+                    length_cm: platformData.lengthCm,
+                    platform_side: platformData.platformSide,
+                    top_speed_kmh: platformData.topSpeedKmh,
+                    platform_id: platformData.platformId,
+                });
             } catch (err) {
-                console.error('[Editor] Station creation failed:', err);
-                window.showToast('Failed to create station: ' + err.message, 'error', 5000);
+                console.error('[Editor] Platform creation failed:', err);
+                window.showToast('Failed to create platform: ' + err.message, 'error', 5000);
                 return;
             }
         }
@@ -1315,10 +1343,10 @@ class Editor {
         this.hoverValid = false;
     }
 
-    // Update hover preview for signal/station tools
+    // Update hover preview for signal/platform tools
     // Uses async API validation for accurate signal placement checking
     updateHoverPreview(gridPos) {
-        if (!['signal', 'station'].includes(this.selectedTool)) {
+        if (!['signal', 'platform'].includes(this.selectedTool)) {
             this.hoverPosition = null;
             this.hoverValid = false;
             return;
@@ -1343,8 +1371,8 @@ class Editor {
         if (this.selectedTool === 'signal') {
             // Debounced API validation for accurate signal placement
             this.validateSignalPreviewAsync(gridPos, existingTrack);
-        } else if (this.selectedTool === 'station') {
-            // Station validation:
+        } else if (this.selectedTool === 'platform') {
+            // Platform validation:
             // - Cannot be a switch
             // - Cannot already have signal
             this.hoverValid = !existingTrack.is_switch && !existingTrack.signal_state;
@@ -1437,7 +1465,7 @@ class Editor {
     // Used by App to avoid flickering during network polling
     isToolActive() {
         // Tools that show hover previews
-        const previewTools = ['signal', 'station'];
+        const previewTools = ['signal', 'platform'];
         if (previewTools.includes(this.selectedTool) && this.hoverPosition) {
             return true;
         }
@@ -1744,20 +1772,20 @@ class Editor {
                 `;
             })() : ''}
 
-            <!-- Station Info Display -->
+            <!-- Platform Info Display -->
             ${track.station_id ? (() => {
-                const station = this.cachedNetwork && this.cachedNetwork.stations 
-                    ? this.cachedNetwork.stations.find(s => s.station_id === track.station_id) 
+                const platform = this.cachedNetwork && this.cachedNetwork.platforms 
+                    ? this.cachedNetwork.platforms.find(p => p.platform_id === track.station_id) 
                     : null;
                 return `
-                <div class="property-group-header">Station</div>
+                <div class="property-group-header">Platform</div>
                 <div class="property-item-row">
                     <div class="station-summary-row">
                         <div class="station-info">
                             <span class="station-id">${track.station_id}</span>
-                            ${station && station.name ? `<span class="station-name">${station.name}</span>` : ''}
+                            ${platform && platform.name ? `<span class="station-name">${platform.name}</span>` : ''}
                         </div>
-                        <button class="edit-btn edit-station-btn" data-station-id="${track.station_id}">Edit</button>
+                        <button class="edit-btn edit-platform-btn" data-platform-id="${track.station_id}">Edit</button>
                     </div>
                 </div>
                 `;
@@ -1862,7 +1890,7 @@ class Editor {
         setTimeout(() => this.initSignalEditor(track), 0);
         setTimeout(() => this.initBlockEditor(track), 0);
         setTimeout(() => this.initSwitchEditor(track), 0);
-        setTimeout(() => this.initStationButtonHandlers(), 0);
+        setTimeout(() => this.initPlatformButtonHandlers(), 0);
         setTimeout(() => this.initTrainEditor(track), 0);
         setTimeout(() => this.initViewFullJSONButton(track), 0);
     }
@@ -1871,8 +1899,8 @@ class Editor {
         return this.uiHandler.initViewFullJSONButton(track);
     }
 
-    initStationButtonHandlers() {
-        return this.uiHandler.initStationButtonHandlers();
+    initPlatformButtonHandlers() {
+        return this.uiHandler.initPlatformButtonHandlers();
     }
 
     initSignalEditor(track) {
@@ -1967,113 +1995,119 @@ class Editor {
 
         // Re-validate hover state if we have an active hover position
         // This ensures the hover preview reflects the updated network state
-        if (this.hoverPosition && ['signal', 'station'].includes(this.selectedTool)) {
+        if (this.hoverPosition && ['signal', 'platform'].includes(this.selectedTool)) {
             // Re-run validation with the new network data
             this.updateHoverPreview(this.hoverPosition);
         }
     }
 
     enterRouteToolMode() {
-        return this.routeHandler.enterRouteToolMode();
+        return this.pathHandler.enterRouteToolMode();
     }
 
     exitRouteToolMode() {
-        return this.routeHandler.exitRouteToolMode();
+        return this.pathHandler.exitRouteToolMode();
     }
 
     resetRouteToolState() {
-        return this.routeHandler.resetRouteToolState();
+        return this.pathHandler.resetRouteToolState();
     }
 
     async handleRouteToolClick(gridPos) {
-        return this.routeHandler.handleRouteToolClick(gridPos);
+        return this.pathHandler.handleRouteToolClick(gridPos);
     }
 
     async handleRouteFirstClick(gridPos, track) {
-        return this.routeHandler.handleRouteFirstClick(gridPos, track);
+        return this.pathHandler.handleRouteFirstClick(gridPos, track);
     }
 
     buildReachablePositionsSet() {
-        return this.routeHandler.buildReachablePositionsSet();
+        return this.pathHandler.buildReachablePositionsSet();
     }
 
     async handleRouteSecondClick(gridPos, track) {
-        return this.routeHandler.handleRouteSecondClick(gridPos, track);
+        return this.pathHandler.handleRouteSecondClick(gridPos, track);
     }
 
     showRoutePrioritySelector() {
-        return this.routeHandler.showRoutePrioritySelector();
+        return this.pathHandler.showRoutePrioritySelector();
     }
 
     async showPathsPanel() {
-        return this.routeHandler.showPathsPanel();
+        return this.pathHandler.showPathsPanel();
     }
 
     renderPathListItem(path) {
-        return this.routeHandler.renderPathListItem(path);
+        return this.pathHandler.renderPathListItem(path);
     }
 
     getPathStatusColor(status) {
-        return this.routeHandler.getPathStatusColor(status);
+        return this.pathHandler.getPathStatusColor(status);
     }
 
     initRoutesPanelHandlers() {
-        return this.routeHandler.initRoutesPanelHandlers();
+        return this.pathHandler.initRoutesPanelHandlers();
     }
 
     async showPathEditor(pathId) {
-        return this.routeHandler.showPathEditor(pathId);
+        return this.pathHandler.showPathEditor(pathId);
     }
 
     initPathEditorHandlers(pathId, path) {
-        return this.routeHandler.initPathEditorHandlers(pathId, path);
+        return this.pathHandler.initPathEditorHandlers(pathId, path);
     }
 
     enterExtendRouteMode() {
-        return this.routeHandler.enterExtendRouteMode();
+        return this.pathHandler.enterExtendRouteMode();
     }
 
     exitExtendRouteMode() {
-        return this.routeHandler.exitExtendRouteMode();
+        return this.pathHandler.exitExtendRouteMode();
     }
 
     resetExtendRouteState() {
-        return this.routeHandler.resetExtendRouteState();
+        return this.pathHandler.resetExtendRouteState();
     }
 
     async handleExtendRouteToolClick(gridPos) {
-        return this.routeHandler.handleExtendRouteToolClick(gridPos);
+        return this.pathHandler.handleExtendRouteToolClick(gridPos);
     }
 
     async handleExtendRouteFirstClick(gridPos, track) {
-        return this.routeHandler.handleExtendRouteFirstClick(gridPos, track);
+        return this.pathHandler.handleExtendRouteFirstClick(gridPos, track);
     }
 
     buildExtendRoutePositionsSet() {
-        return this.routeHandler.buildExtendRoutePositionsSet();
+        return this.pathHandler.buildExtendRoutePositionsSet();
     }
 
     async handleExtendRouteSecondClick(gridPos, track) {
-        return this.routeHandler.handleExtendRouteSecondClick(gridPos, track);
+        return this.pathHandler.handleExtendRouteSecondClick(gridPos, track);
     }
 
     showExtendRoutePanel() {
-        return this.routeHandler.showExtendRoutePanel();
+        return this.pathHandler.showExtendRoutePanel();
     }
 
     getDirectionName(dir) {
-        return this.routeHandler.getDirectionName(dir);
+        return this.pathHandler.getDirectionName(dir);
     }
 
     enterCancelRouteMode() {
-        return this.routeHandler.enterCancelRouteMode();
+        return this.pathHandler.enterCancelRouteMode();
     }
 
     exitCancelRouteMode() {
-        return this.routeHandler.exitCancelRouteMode();
+        return this.pathHandler.exitCancelRouteMode();
     }
 
     async handleCancelRouteToolClick(gridPos) {
-        return this.routeHandler.handleCancelRouteToolClick(gridPos);
+        return this.pathHandler.handleCancelRouteToolClick(gridPos);
+    }
+
+    // === Train Routes Panel Methods ===
+
+    async showRoutesPanel() {
+        return this.routeHandler.showRoutesPanel();
     }
 }

@@ -2,6 +2,8 @@
 Train Management Routes - Train CRUD, control, and state management.
 """
 
+from typing import Dict, Optional
+
 from flask import jsonify, request
 
 from app_state import AppState
@@ -15,6 +17,65 @@ def register(app, state: AppState) -> None:
     def _get_train_controller(train):
         """Get or create TrainController for a train."""
         return state.sim_controller._get_or_create_controller(train)
+
+    def _get_platforms() -> Dict[str, object]:
+        """Get physical platforms map."""
+        platforms = getattr(state.network, "platforms", None)
+        if isinstance(platforms, dict):
+            return platforms
+        return {}
+
+    def _get_platform_block_id(platform_id: str) -> Optional[str]:
+        """Resolve a platform to one representative block ID."""
+        platform = _get_platforms().get(platform_id)
+        if not platform:
+            return None
+
+        get_all_assigned_blocks = getattr(platform, "get_all_assigned_blocks", None)
+        if callable(get_all_assigned_blocks):
+            block_ids = get_all_assigned_blocks()
+            if isinstance(block_ids, (set, list, tuple)) and block_ids:
+                return list(block_ids)[0]
+
+        for x, y in getattr(platform, "positions", []):
+            track = state.network.get_track(x, y)
+            if track and track.block_section_id:
+                return track.block_section_id
+        return None
+
+    def _find_auto_park_platform_id(train: Train) -> Optional[str]:
+        """Pick a platform destination for temporary auto-park route."""
+        platforms = _get_platforms()
+        if not platforms:
+            return None
+
+        if not train.position:
+            return next(iter(platforms.keys()))
+
+        head_x, head_y = train.position.head_tile
+        current_track = state.network.get_track(head_x, head_y)
+        current_block_id = current_track.block_section_id if current_track else None
+
+        # Prefer platform on current block.
+        for platform_id in platforms.keys():
+            if _get_platform_block_id(platform_id) == current_block_id:
+                return platform_id
+
+        # Fall back to nearest platform center by Manhattan distance.
+        best_id: Optional[str] = None
+        best_distance: Optional[float] = None
+        for platform_id, platform in platforms.items():
+            positions = getattr(platform, "positions", [])
+            if not positions:
+                continue
+            center_x = sum(pos[0] for pos in positions) / len(positions)
+            center_y = sum(pos[1] for pos in positions) / len(positions)
+            distance = abs(center_x - head_x) + abs(center_y - head_y)
+            if best_distance is None or distance < best_distance:
+                best_distance = distance
+                best_id = platform_id
+
+        return best_id
 
     # ============================================================================
     # Train CRUD and Basic Operations
@@ -563,14 +624,173 @@ def register(app, state: AppState) -> None:
 
         data = request.get_json() or {}
         route_id = data.get("route_id")
+        force = bool(data.get("force", False))
+        auto_park = bool(data.get("auto_park", True))
+        next_waypoint_index = data.get("next_waypoint_index")
+
+        current_route_id = train.assigned_route_id
 
         if route_id is None:
+            if current_route_id:
+                current_route = state.network.routes.get(current_route_id)
+                if current_route:
+                    current_route.unassign_train(train_id)
             train.assigned_route_id = None
+
+            route_executor = (
+                state.sim_controller.route_executor if state.sim_controller else None
+            )
+            if route_executor:
+                route_executor.execution_states.pop(train_id, None)
+
+            if auto_park and current_route_id:
+                target_platform_id = _find_auto_park_platform_id(train)
+                if target_platform_id:
+                    from train_route import Route, RouteMode, Waypoint
+
+                    simulation_time = (
+                        state.sim_controller.simulation_time
+                        if state.sim_controller
+                        else 0.0
+                    )
+                    temp_route_id = f"TEMP_{train_id}_{int(simulation_time)}"
+                    while temp_route_id in state.network.routes:
+                        temp_route_id = f"{temp_route_id}_X"
+
+                    temp_route = Route(
+                        route_id=temp_route_id,
+                        name=f"AutoPark {train_id}",
+                        mode=RouteMode.ONE_OFF,
+                    )
+                    temp_route.add_waypoint(
+                        Waypoint(
+                            platform_id=target_platform_id,
+                            dwell_time_sec=0.0,
+                            flexible_platform=False,
+                        )
+                    )
+                    temp_route.assign_train(train_id)
+                    temp_route.activate(simulation_time)
+                    state.network.routes[temp_route_id] = temp_route
+                    train.assigned_route_id = temp_route_id
+
+                    if route_executor:
+                        from route_executor import RouteExecutionState
+
+                        route_executor.execution_states[train_id] = RouteExecutionState(
+                            train_id=train_id,
+                            route_id=temp_route_id,
+                            route_start_time=simulation_time,
+                        )
+
+                    return jsonify(
+                        {
+                            "status": "success",
+                            "train": train.to_dict(state.network),
+                            "temporary_route_id": temp_route_id,
+                            "target_platform_id": target_platform_id,
+                        }
+                    )
+
             return jsonify({"status": "success", "train": train.to_dict(state.network)})
 
         route = state.network.routes.get(route_id)
         if not route:
             return jsonify({"error": "Route not found"}), 404
 
+        if current_route_id and current_route_id != route_id and not force:
+            return (
+                jsonify(
+                    {
+                        "error": f"Train already assigned to route {current_route_id}. Use force=true to reassign."
+                    }
+                ),
+                409,
+            )
+
+        if current_route_id and current_route_id != route_id:
+            previous_route = state.network.routes.get(current_route_id)
+            if previous_route:
+                previous_route.unassign_train(train_id)
+
+        route.assign_train(train_id)
         train.assigned_route_id = route_id
+
+        route_executor = (
+            state.sim_controller.route_executor if state.sim_controller else None
+        )
+        if route_executor:
+            exec_state = route_executor.execution_states.get(train_id)
+            if not exec_state or exec_state.route_id != route_id:
+                from route_executor import RouteExecutionState
+
+                exec_state = RouteExecutionState(
+                    train_id=train_id,
+                    route_id=route_id,
+                    route_start_time=state.sim_controller.simulation_time,
+                )
+                route_executor.execution_states[train_id] = exec_state
+
+            if next_waypoint_index is not None:
+                try:
+                    idx = int(next_waypoint_index)
+                except (TypeError, ValueError):
+                    return jsonify(
+                        {"error": "next_waypoint_index must be an integer"}
+                    ), 400
+
+                if idx < 0 or idx >= route.get_waypoint_count():
+                    return (
+                        jsonify({"error": "next_waypoint_index out of range"}),
+                        400,
+                    )
+
+                exec_state.current_waypoint_index = idx
+                exec_state.arrived_at_platform_time = None
+                exec_state.waiting_for_path = False
+                exec_state.resolved_platform_id = None
+
         return jsonify({"status": "success", "train": train.to_dict(state.network)})
+
+    @app.route("/api/trains/<train_id>/set-waypoint", methods=["POST"])
+    def set_train_waypoint(train_id: str):
+        """Override the current waypoint index for an assigned route."""
+        train = state.network.trains.get(train_id)
+        if not train:
+            return jsonify({"error": "Train not found"}), 404
+
+        if not train.assigned_route_id:
+            return jsonify({"error": "Train has no assigned route"}), 400
+
+        route = state.network.routes.get(train.assigned_route_id)
+        if not route:
+            return jsonify({"error": "Assigned route not found"}), 404
+
+        data = request.get_json() or {}
+        if "waypoint_index" not in data:
+            return jsonify({"error": "waypoint_index is required"}), 400
+
+        try:
+            waypoint_index = int(data["waypoint_index"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "waypoint_index must be an integer"}), 400
+
+        if waypoint_index < 0 or waypoint_index >= route.get_waypoint_count():
+            return jsonify({"error": "waypoint_index out of range"}), 400
+
+        route_executor = (
+            state.sim_controller.route_executor if state.sim_controller else None
+        )
+        if not route_executor:
+            return jsonify({"error": "Route executor unavailable"}), 500
+
+        if not route_executor.set_train_waypoint_index(train_id, waypoint_index):
+            return jsonify({"error": "Failed to set waypoint"}), 400
+
+        return jsonify(
+            {
+                "status": "success",
+                "train": train.to_dict(state.network),
+                "waypoint_index": waypoint_index,
+            }
+        )

@@ -11,7 +11,7 @@ This package contains Flask route definitions organized by domain:
 - paths: Pathfinding and path management
 """
 
-from routes import misc, tracks, blocks, signals, stations, trains, paths
+from routes import misc, tracks, blocks, signals, stations, platforms, trains, paths
 
 
 def register_all(app, state) -> None:
@@ -26,5 +26,6 @@ def register_all(app, state) -> None:
     blocks.register(app, state)
     signals.register(app, state)
     stations.register(app, state)
+    platforms.register(app, state)
     trains.register(app, state)
     paths.register(app, state)
