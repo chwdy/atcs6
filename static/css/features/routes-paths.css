@@ -1,0 +1,664 @@
+/* ============================================================================
+   Route Dispatcher Styles
+   ============================================================================ */
+
+/* Routes Panel */
+.routes-panel {
+    padding: 0;
+}
+
+.routes-toolbar {
+    display: flex;
+    gap: 8px;
+}
+
+.routes-empty-state {
+    padding: 28px 14px;
+    border: 1px dashed #3a3a4e;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.01);
+}
+
+.routes-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.route-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid #3a3a4e;
+    border-radius: 8px;
+    background: #171925;
+}
+
+.route-row:hover {
+    border-color: #5a5a7e;
+    background: #1a1c2a;
+}
+
+.route-row-main {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    flex: 1;
+}
+
+.route-row-status {
+    min-width: 56px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+}
+
+.route-status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    box-shadow: 0 0 6px currentColor;
+}
+
+.route-status-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+}
+
+.route-row-status.is-active {
+    color: var(--success-color);
+}
+
+.route-row-status.is-inactive {
+    color: #888;
+}
+
+.route-row-content {
+    min-width: 0;
+    flex: 1;
+}
+
+.route-row-name {
+    font-size: 12px;
+    font-weight: 700;
+    color: #fff;
+    line-height: 1.25;
+    word-break: break-word;
+}
+
+.route-row-meta {
+    margin-top: 4px;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.route-mode-pill {
+    border: 1px solid #4b4f66;
+    border-radius: 999px;
+    padding: 1px 6px;
+    font-size: 9px;
+    color: #c6cada;
+}
+
+.route-row-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.route-stats-value {
+    min-height: 38px;
+    display: flex;
+    align-items: center;
+}
+
+.route-empty-dashed {
+    padding: 24px 16px;
+    border: 2px dashed #3a3a4e;
+    border-radius: 8px;
+}
+
+.waypoint-card {
+    border: 1px solid #3a3a4e;
+}
+
+.waypoint-flex-toggle {
+    height: var(--control-height-sm);
+    padding: 0 10px;
+}
+
+.waypoint-flex-toggle input[type="checkbox"] {
+    margin: 0;
+}
+
+.waypoint-flex-label {
+    font-size: 11px;
+}
+
+/* Shared compact panel states */
+.btn-danger-solid {
+    background-color: var(--danger-color);
+    color: #fff;
+}
+
+.control-section-divider {
+    border-top: 1px solid var(--border-color);
+}
+
+.panel-subsection-divider {
+    border-bottom: 1px solid var(--border-color);
+}
+
+.property-input-warning {
+    border-color: #ff9500;
+}
+
+.signal-grid-tight {
+    gap: 8px;
+}
+
+.signal-grid-standard {
+    gap: 12px;
+}
+
+.signal-panel-card {
+    border-left: 4px solid var(--signal-state-color);
+}
+
+.signal-state-green { --signal-state-color: #04d361; }
+.signal-state-yellow { --signal-state-color: #ffd93d; }
+.signal-state-red { --signal-state-color: #e83f5b; }
+
+.signal-state-row,
+.switch-state-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.signal-state-dot {
+    background: var(--signal-state-color);
+    box-shadow: 0 0 8px var(--signal-state-color);
+}
+
+.signal-state-title,
+.switch-state-title {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--signal-state-color, var(--switch-state-color));
+}
+
+.signal-item-empty {
+    color: #888;
+    font-style: italic;
+}
+
+.signal-list-id {
+    color: #00ff88;
+    font-weight: 700;
+}
+
+.signal-list-dir {
+    color: #888;
+}
+
+.switch-state-header {
+    text-align: center;
+    margin-bottom: 12px;
+}
+
+.switch-state-dot {
+    background: var(--switch-state-color);
+    box-shadow: 0 0 8px var(--switch-state-color);
+}
+
+.switch-state-main { --switch-state-color: #04d361; }
+.switch-state-diverge { --switch-state-color: #ffd93d; }
+
+.switch-action-row {
+    display: flex;
+    gap: 8px;
+}
+
+.switch-state-inline {
+    color: var(--switch-state-color);
+}
+
+.train-state-dot.train-state-off,
+.train-state-text.train-state-off,
+.train-state-display.train-state-off {
+    color: #888;
+    background-color: #888;
+}
+
+.train-state-dot.train-state-idle,
+.train-state-text.train-state-idle,
+.train-state-display.train-state-idle {
+    color: #ffd93d;
+    background-color: #ffd93d;
+}
+
+.train-state-dot.train-state-standby,
+.train-state-text.train-state-standby,
+.train-state-display.train-state-standby {
+    color: #00d4ff;
+    background-color: #00d4ff;
+}
+
+.train-state-dot.train-state-running,
+.train-state-text.train-state-running,
+.train-state-display.train-state-running {
+    color: #04d361;
+    background-color: #04d361;
+}
+
+.train-state-dot.train-state-waiting,
+.train-state-text.train-state-waiting,
+.train-state-display.train-state-waiting {
+    color: #ff9500;
+    background-color: #ff9500;
+}
+
+.train-state-dot.train-state-station,
+.train-state-text.train-state-station,
+.train-state-display.train-state-station {
+    color: #8257e5;
+    background-color: #8257e5;
+}
+
+.train-state-dot.train-state-manual,
+.train-state-text.train-state-manual,
+.train-state-display.train-state-manual {
+    color: #e83f5b;
+    background-color: #e83f5b;
+}
+
+.info-box-block {
+    background: var(--bg-dark);
+    border-left: 4px solid #888;
+    border-radius: 6px;
+    padding: 12px;
+}
+
+.info-box-block.obc-power-off { border-left-color: #888; }
+.info-box-block.obc-power-on { border-left-color: #04d361; }
+.info-box-block.obc-power-emergency { border-left-color: #e83f5b; }
+
+.obc-power-display.power-on { color: #04d361; }
+.obc-power-display.power-off { color: #888; }
+
+.obc-mode-display.mode-ato { color: #00d4ff; }
+.obc-mode-display.mode-manual { color: #e83f5b; }
+
+.obc-handle-display.handle-power,
+.handle-position-display.handle-power { color: #04d361; }
+
+.obc-handle-display.handle-brake,
+.handle-position-display.handle-brake { color: #e83f5b; }
+
+.obc-handle-display.handle-neutral,
+.handle-position-display.handle-neutral { color: #ffd93d; }
+
+.btn-emergency-lg {
+    font-size: 14px;
+    padding: 12px;
+}
+
+.train-cab-status.cab-active { color: #00d4ff; }
+.train-cab-status.cab-none { color: #ffd93d; }
+
+.train-control-debug-section {
+    border-top: 1px solid var(--border-color);
+    padding-top: 12px;
+}
+
+.block-state-display.block-state-free { color: #04d361; }
+.block-state-display.block-state-reserved { color: #ffd93d; }
+.block-state-display.block-state-occupied { color: #e83f5b; }
+.block-state-display.block-state-caution { color: #ff9500; }
+.block-state-display.block-state-unknown { color: #888; }
+
+.block-station-names {
+    color: #eebb00;
+    margin-left: 5px;
+}
+
+.info-display-item-stacked {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.signal-list-compact {
+    width: 100%;
+    max-height: 80px;
+}
+
+.path-priority-value {
+    min-width: 30px;
+    text-align: center;
+}
+
+.path-row {
+    border: 1px solid #3a3a4e;
+    border-radius: 8px;
+    background: #171925;
+    padding: 8px 10px;
+}
+
+.path-row:hover {
+    border-color: #5a5a7e;
+    background: #1a1c2a;
+}
+
+.path-row-main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+}
+
+.path-row-status {
+    min-width: 46px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+}
+
+.path-status-label {
+    font-size: 0.65rem;
+    line-height: 1;
+    padding: 4px 0;
+    margin-top: 2px;
+}
+
+.path-priority-tag {
+    line-height: 1;
+    padding-top: 2px;
+}
+
+.path-row-content {
+    min-width: 0;
+}
+
+.path-id-text {
+    word-break: break-all;
+    line-height: 1.2;
+}
+
+.path-meta-col {
+    min-width: 0;
+}
+
+.path-endpoints-stack {
+    word-break: break-word;
+    line-height: 1.4;
+    margin-bottom: 6px;
+}
+
+.path-arrow-divider {
+    text-align: center;
+    width: 20px;
+}
+
+.path-progress-compact {
+    width: 100%;
+    max-width: 120px;
+    height: 4px;
+}
+
+.path-progress-full {
+    width: 100%;
+    max-width: 150px;
+    height: 6px;
+}
+
+.path-row,
+.path-status-title {
+    --path-status-accent: #888;
+}
+
+.path-status-dot {
+    background-color: var(--path-status-accent);
+}
+
+.path-status-label,
+.path-status-title {
+    color: var(--path-status-accent);
+}
+
+.path-progress-meter {
+    width: 100%;
+    height: 100%;
+    display: block;
+    appearance: none;
+    -webkit-appearance: none;
+    border: none;
+    background: transparent;
+}
+
+.path-progress-meter::-webkit-progress-bar {
+    background-color: #2a2d3d;
+    border-radius: 999px;
+}
+
+.path-progress-meter::-webkit-progress-value {
+    background-color: var(--path-status-accent);
+    border-radius: 999px;
+}
+
+.path-progress-meter::-moz-progress-bar {
+    background-color: var(--path-status-accent);
+    border-radius: 999px;
+}
+
+.path-status-pending { --path-status-accent: #888; }
+.path-status-setting { --path-status-accent: #ffd93d; }
+.path-status-set { --path-status-accent: #04d361; }
+.path-status-active { --path-status-accent: #00ff88; }
+.path-status-clearing { --path-status-accent: #ff9500; }
+.path-status-completed { --path-status-accent: #666; }
+.path-status-cancelled { --path-status-accent: #e83f5b; }
+
+.path-route-stack {
+    line-height: 1.4;
+}
+
+.path-block-list-wrap {
+    max-height: 150px;
+    overflow-y: auto;
+    padding: 8px;
+    border: 1px solid #3a3a4e;
+}
+
+.json-viewer-panel {
+    background: transparent;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.json-viewer-toolbar {
+    margin-bottom: 12px;
+}
+
+.json-viewer-content {
+    flex: 1;
+    overflow: auto;
+    background: #0d1020;
+    border: 1px solid #3a3a4e;
+    border-radius: 6px;
+    padding: 12px;
+}
+
+.json-content-view {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: #00ff88;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+/* Individual Route Item */
+.route-item {
+    background: #1a1a2e;
+    border: 1px solid #3a3a4e;
+    border-radius: 8px;
+    padding: 12px;
+    transition: border-color 0.2s ease;
+}
+
+.route-item:hover {
+    border-color: #5a5a7e;
+}
+
+.route-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.route-status {
+    font-weight: bold;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.route-priority {
+    background: #4a4a6e;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #ccc;
+}
+
+.route-id {
+    margin-bottom: 4px;
+    font-size: 12px;
+    color: #aaa;
+    word-break: break-all;
+    white-space: normal;
+    line-height: 1.4;
+}
+
+.route-endpoints {
+    color: #888;
+    margin-bottom: 4px;
+}
+
+.route-train {
+    color: #8257e5;
+    margin-bottom: 8px;
+}
+
+.route-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+/* Progress Bar */
+.progress-container {
+    background: #0d0d1a;
+    border-radius: 4px;
+    height: 20px;
+    position: relative;
+    overflow: hidden;
+    margin-top: 8px;
+    border: 1px solid #2a2a3e;
+}
+
+.progress-bar {
+    background: linear-gradient(90deg, #04d361, #00ff88);
+    height: 100%;
+    transition: width 0.3s ease;
+    border-radius: 3px;
+}
+
+.progress-text {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 11px;
+    font-weight: 600;
+    color: #fff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* Status Dot */
+.status-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+    box-shadow: 0 0 6px currentColor;
+}
+
+/* Route Setup Panel (during route creation) */
+.route-setup-panel {
+    padding: 0;
+}
+
+.route-setup-panel .property-item {
+    margin-bottom: 16px;
+}
+
+/* Route Editor Panel */
+.route-editor-panel {
+    padding: 0;
+}
+
+.route-editor-panel .block-item {
+    padding: 4px 8px;
+    border-bottom: 1px solid #2a2a3e;
+}
+
+.route-editor-panel .block-item:last-child {
+    border-bottom: none;
+}
+
+/* Route priority slider styling */
+#route-priority-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    background: #3a3a4e;
+    border-radius: 3px;
+    outline: none;
+}
+
+#route-priority-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    background: #00d4ff;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 0 6px rgba(0, 212, 255, 0.5);
+}
+
+#route-priority-slider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    background: #00d4ff;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 0 6px rgba(0, 212, 255, 0.5);
+}

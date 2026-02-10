@@ -1,0 +1,101 @@
+/* Tool Categories - Organized rows with labels */
+.tool-category {
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 4px;
+}
+
+.tool-category:last-child {
+    margin-bottom: 0;
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.tool-category-label {
+    font-size: 0.55rem;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 2px 4px;
+    border-radius: 3px;
+    transition: background-color 0.2s, color 0.2s;
+    user-select: none;
+}
+
+.tool-category-label:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.tool-category-label::after {
+    content: '▼';
+    font-size: 0.45rem;
+    transition: transform 0.2s;
+}
+
+.tool-category.collapsed .tool-category-label::after {
+    transform: rotate(-90deg);
+}
+
+.tool-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    overflow: hidden;
+    max-height: 200px;
+    transition: max-height 0.25s ease-out, opacity 0.2s ease-out, margin 0.2s ease-out;
+    opacity: 1;
+    margin-top: 4px;
+}
+
+.tool-category.collapsed .tool-row {
+    max-height: 0;
+    opacity: 0;
+    margin-top: 0;
+}
+
+.tool-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 4px;
+}
+
+.tool-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    padding: 3px;
+    width: 46px;
+    height: 46px;
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+    font-size: 0.55rem;
+    flex-shrink: 0;
+}
+
+.tool-btn:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.tool-btn.active {
+    background-color: var(--bg-hover);
+    border-color: var(--accent-color);
+    color: var(--accent-color);
+}
+
+.tool-icon {
+    font-size: 1rem;
+}
