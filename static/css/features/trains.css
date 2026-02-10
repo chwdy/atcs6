@@ -7,17 +7,17 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 8px 10px;
+    padding: 6px 8px; /* Tighter padding */
     background: linear-gradient(135deg, rgba(130, 87, 229, 0.15), rgba(130, 87, 229, 0.05));
     border-bottom: 1px solid var(--border-color);
     border-radius: 6px 6px 0 0;
-    margin: -10px -10px 10px -10px;
+    margin: -8px -10px 8px -10px; /* Negative margin to flush with sidebar edge */
 }
 
 .train-panel-header h3 {
     margin: 0;
-    font-size: 13px;
-    font-weight: 600;
+    font-size: 14px; /* text-l-ish */
+    font-weight: 700;
     color: var(--text-primary);
     display: flex;
     align-items: center;
@@ -56,15 +56,16 @@
 }
 
 .train-status-label {
-    font-size: 10px;
+    font-size: 10px; /* text-s */
     color: var(--text-secondary);
-    font-weight: 500;
+    font-weight: 300;
 }
 
 .train-status-value {
-    font-size: 11px;
+    font-size: 13px; /* text-m */
     color: var(--text-primary);
     font-family: var(--font-mono);
+    font-weight: 400;
 }
 
 /* Train State Badge */

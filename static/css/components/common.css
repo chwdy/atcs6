@@ -1,6 +1,6 @@
-/* UI Elements */
+/* Button Utilities */
 .btn {
-    padding: 6px 12px;
+    padding: 6px 10px;
     border-radius: 6px;
     border: none;
     font-weight: 500;
@@ -11,7 +11,42 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
+    gap: 4px;
+}
+
+/* Property Groups */
+.prop-group {
+    gap: 4px; /* Reduced gap between label and input */
+}
+
+/* Signal Summary Row */
+.signal-summary-row {
+    gap: 4px; /* Reduced gap */
+}
+
+/* Block Summary Row */
+.block-summary-row {
+    gap: 4px; /* Reduced gap */
+}
+
+/* Station Summary Row */
+.station-summary-row {
+    gap: 4px; /* Reduced gap */
+}
+
+/* Switch Summary Row */
+.switch-summary-row {
+    gap: 4px; /* Reduced gap */
+}
+
+/* Train Summary Row */
+.train-summary-row {
+    gap: 4px; /* Reduced gap */
+}
+
+/* Input Group */
+.input-group {
+    gap: 2px; /* Reduced gap */
 }
 
 .btn-primary {
@@ -78,28 +113,30 @@
 
 /* Properties Form */
 .prop-group {
-    margin-bottom: 6px;
-    display: flex; /* Enable side-by-side layout */
-    align-items: center; /* Align vertically */
-    justify-content: space-between; /* Space out label and input */
-    gap: 8px; /* Space between label and input */
+    margin-bottom: 4px; /* Reduced vertical spacing */
+    display: flex; 
+    align-items: center; 
+    justify-content: space-between; 
+    gap: 4px; /* Reduced gap */
 }
 
 .prop-label {
     display: block;
-    font-size: 0.75rem; /* ~12px */
+    font-size: 10px; /* text-s */
     color: var(--text-secondary);
-    margin-bottom: 0; /* Remove bottom margin for side-by-side */
-    flex: 0 0 auto; /* Label takes necessary width */
-    max-width: 40%; /* Limit label width */
+    margin-bottom: 0;
+    flex: 0 0 auto;
+    max-width: 40%;
+    font-weight: 300; /* Light */
 }
 
 .prop-value {
     font-family: var(--font-mono);
-    font-size: 0.8rem;
+    font-size: 13px; /* text-m */
     color: var(--text-primary);
-    flex: 1; /* Value takes remaining space */
-    text-align: right; /* Right align value */
+    flex: 1;
+    text-align: right;
+    font-weight: 400; /* Normal */
 }
 
 .prop-input {
@@ -144,11 +181,11 @@
 /* Signal Summary Row */
 .signal-summary-row {
     background: #1e2025;
-    padding: 6px 8px;
+    padding: 4px 6px; /* Reduced padding */
     border-radius: 4px;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px; /* Reduced gap */
     border: 1px solid var(--border-color);
 }
 
@@ -180,12 +217,12 @@
 /* Block Summary Row */
 .block-summary-row {
     background: #1e2025;
-    padding: 6px 8px;
+    padding: 4px 6px; /* Reduced padding */
     border-radius: 4px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    gap: 6px; /* Reduced gap */
     border: 1px solid var(--border-color);
 }
 
@@ -210,12 +247,12 @@
 /* Station Summary Row */
 .station-summary-row {
     background: #1e2025;
-    padding: 6px 8px;
+    padding: 4px 6px; /* Reduced padding */
     border-radius: 4px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    gap: 6px; /* Reduced gap */
     border: 1px solid var(--border-color);
     border-left: 3px solid #ffd93d;
 }
@@ -240,11 +277,11 @@
 /* Switch Summary Row */
 .switch-summary-row {
     background: #1e2025;
-    padding: 6px 8px;
+    padding: 4px 6px; /* Reduced padding */
     border-radius: 4px;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px; /* Reduced gap */
     border: 1px solid var(--border-color);
 }
 
@@ -277,12 +314,12 @@
 /* Train Summary Row */
 .train-summary-row {
     background: #1e2025;
-    padding: 6px 8px;
+    padding: 4px 6px; /* Reduced padding */
     border-radius: 4px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    gap: 6px; /* Reduced gap */
     border: 1px solid var(--border-color);
 }
 
@@ -444,7 +481,7 @@
 
 .input-group {
     display: flex;
-    gap: 4px;
+    gap: 2px; /* Reduced gap */
     flex: 1;
 }
 

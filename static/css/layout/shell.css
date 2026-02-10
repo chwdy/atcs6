@@ -432,15 +432,15 @@ textarea {
 }
 
 .sidebar-section {
-    padding: 8px 10px;
+    padding: 6px 8px; /* Tighter padding to edge */
     border-bottom: 1px solid var(--border-color);
 }
 
 .sidebar-section h3 {
-    font-size: 0.75rem;
+    font-size: 0.7rem; /* Smaller section header */
     text-transform: uppercase;
     color: var(--text-secondary);
-    margin-bottom: 6px;
+    margin-bottom: 4px;
     letter-spacing: 0.05em;
 }
 
