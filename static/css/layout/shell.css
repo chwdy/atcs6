@@ -363,7 +363,7 @@ textarea {
 
 /* Sidebar */
 .sidebar {
-    width: 370px;
+    width: 280px; /* Reduced from 370px */
     min-width: 200px;
     max-width: 600px;
     background-color: var(--bg-panel);
