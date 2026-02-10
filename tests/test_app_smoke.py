@@ -179,7 +179,13 @@ class TestAppSmoke:
 
     def test_train_monitor_upcoming_default_width(self):
         """Train monitor upcoming column default width should be widened."""
-        css_file = PROJECT_ROOT / "static" / "css" / "style.css"
+        # CSS was refactored to modular files, so we check the specific feature file
+        css_file = PROJECT_ROOT / "static" / "css" / "features" / "train-monitor.css"
+
+        # Fallback to style.css if feature file doesn't exist (backward compatibility)
+        if not css_file.exists():
+            css_file = PROJECT_ROOT / "static" / "css" / "style.css"
+
         content = css_file.read_text()
 
         assert ".train-monitor-upcoming" in content, (

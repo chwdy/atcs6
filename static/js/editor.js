@@ -1881,16 +1881,16 @@ class Editor {
             <h3>Properties</h3>
             
             <!-- Compact Header: Position and Type on one line with virtual badge -->
-            <div class="compact-header">
+            <div class="compact-header info-display-medium">
                 <span>(${track.x}, ${track.y}) - ${track.isVirtual ? 'Empty' : track.type}</span>
                 ${track.isVirtual ? '<span class="badge badge-new">NEW</span>' : ''}
             </div>
             
             <!-- Track Bits Display (Primary) - Larger font, compact layout -->
-            <div class="info-box-track">
+            <div class="info-box-track info-display-large">
                 <label class="text-track font-bold block mb-4">Track Bits</label>
                 <div class="text-2xl font-bold mb-2 text-track font-mono">${trackBits} <span class="text-lg text-muted">(0b${binaryHTML})</span></div>
-                <div class="text-muted text-base mb-8">
+                <div class="text-muted text-base mb-8 info-meta">
                     ${shapeDesc} • ${numSegments} segment${numSegments !== 1 ? 's' : ''} • ${activeSegments.length > 0 ? activeSegments.join(', ') : 'No segments'} ${edges.length > 0 ? '• Edges: ' + edges.join(', ') : ''}
                 </div>
                 ${isForbidden ?
@@ -2033,8 +2033,10 @@ class Editor {
             ` : ''}
             ${track.dead_end_ports && track.dead_end_ports.length > 0 ? `
             <div class="property-item">
-                <label class="property-label">Dead Ends</label>
-                <div class="value-display text-warning">${track.dead_end_ports.join(', ')}</div>
+                <div class="info-display-row info-display-compact">
+                    <span class="info-label">Dead Ends</span>
+                    <span class="info-value text-warning">${track.dead_end_ports.join(', ')}</span>
+                </div>
             </div>
             ` : ''}
 

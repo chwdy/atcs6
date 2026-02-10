@@ -147,22 +147,24 @@ class BlockEditorHandler {
                 <div class="control-section control-section-divider mt-12 pt-12">
                     <h4 class="text-sm text-muted mb-8">Properties</h4>
                     
-                    ${renderTextInput('block-name-input', 'Block Name', block.name || '', { placeholder: 'Enter block name...' })}
-                    
-                    <div class="grid grid-cols-2 gap-8 mb-8">
-                        <div class="form-group mb-0">
-                            <label class="text-xs text-muted mb-4 block">Length (cm)</label>
-                            <input type="number" id="block-length-input" class="property-input" value="${block.length_cm || 0}" min="0" step="1">
-                        </div>
-                        <div class="form-group mb-0">
-                            <label class="text-xs text-muted mb-4 block">Min Radius (cm)</label>
-                            <input type="number" id="block-radius-input" class="property-input" value="${block.min_radius_cm || ''}" min="0" step="1" placeholder="Not set">
-                        </div>
+                    <div class="input-large-container mb-8">
+                        <label class="input-large-label">Block Name</label>
+                        <input type="text" id="block-name-input" class="input-large-field" value="${block.name || ''}" placeholder="Enter block name...">
                     </div>
                     
-                    <div class="form-group mb-8">
-                        <label class="text-xs text-muted mb-4 block">Max Speed (km/h)</label>
-                        <input type="number" id="block-speed-input" class="property-input" value="${block.max_speed_kmh || ''}" min="0" step="1" placeholder="Not set">
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="block-length-input">Length (cm)</label>
+                        <input type="number" id="block-length-input" class="input-small-field input-small-field-compact" value="${block.length_cm || 0}" min="0" step="1">
+                    </div>
+                    
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="block-radius-input">Min Radius (cm)</label>
+                        <input type="number" id="block-radius-input" class="input-small-field input-small-field-compact" value="${block.min_radius_cm || ''}" min="0" step="1" placeholder="Not set">
+                    </div>
+                    
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="block-speed-input">Max Speed (km/h)</label>
+                        <input type="number" id="block-speed-input" class="input-small-field input-small-field-compact" value="${block.max_speed_kmh || ''}" min="0" step="1" placeholder="Not set">
                     </div>
 
                     <div class="flex gap-8">

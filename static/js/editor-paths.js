@@ -190,7 +190,12 @@ class PathEditorHandler {
         this.editor._currentEditorId = null;
 
         const trainInfo = this.pathToolState.trainId
-            ? renderReadOnlyValue('Train', `🚂 ${this.pathToolState.trainId}`, 'text-info font-bold')
+            ? `
+                <div class="info-display-row info-display-small">
+                    <span class="info-label">Train</span>
+                    <span class="info-value text-info">🚂 ${this.pathToolState.trainId}</span>
+                </div>
+            `
             : '<div class="text-muted text-sm py-8">No train at start block</div>';
 
         const content = `
@@ -434,10 +439,10 @@ class PathEditorHandler {
                 ${renderHeaderId(path.path_id, statusColor)}
                 
                 <!-- INFO SECTION (Read-only, styled like Train Control) -->
-                <div class="info-box-track mb-12">
+                <div class="info-box-track mb-12 info-display-large">
                     <div class="flex justify-between items-start mb-4">
-                        <span class="text-xs text-muted uppercase tracking-wider">Status</span>
-                        <span class="text-xxs text-muted">P${path.priority}</span>
+                        <span class="info-label text-muted">Status</span>
+                        <span class="info-meta">P${path.priority}</span>
                     </div>
                     
                     <div class="text-2xl font-bold mb-6 font-mono path-status-title ${statusClass}">
@@ -446,24 +451,24 @@ class PathEditorHandler {
                     
                     <div class="grid grid-cols-1 gap-y-4 text-sm font-mono">
                         <div>
-                            <span class="text-muted text-xs block mb-2">Route</span>
-                            <div class="text-white path-route-stack">
-                                <div class="opacity-90">${path.start_block_id}</div>
-                                <div class="text-xxs text-muted py-1">↓</div>
-                                <div class="opacity-90">${path.end_block_id}</div>
+                            <span class="info-label text-muted block mb-2">Route</span>
+                            <div class="path-route-stack">
+                                <div class="info-value text-white opacity-90">${path.start_block_id}</div>
+                                <div class="info-meta py-1">↓</div>
+                                <div class="info-value text-white opacity-90">${path.end_block_id}</div>
                             </div>
                         </div>
                         <div>
-                            <span class="text-muted text-xs block">Train</span>
-                            <span class="${path.train_id ? 'text-info' : 'text-muted'}">${path.train_id ? `🚂 ${path.train_id}` : 'None assigned'}</span>
+                            <span class="info-label text-muted block">Train</span>
+                            <span class="info-value ${path.train_id ? 'text-info' : 'text-muted'}">${path.train_id ? `🚂 ${path.train_id}` : 'None assigned'}</span>
                         </div>
                         ${path.status === 'active' ? `
                         <div>
-                            <span class="text-muted text-xs block mb-1">Progress</span>
+                            <span class="info-label text-muted block mb-1">Progress</span>
                             <div class="progress-container path-progress-full">
                                 <progress class="path-progress-meter ${statusClass}" value="${progress}" max="100"></progress>
                             </div>
-                            <span class="text-xxs text-muted mt-1">${progress}%</span>
+                            <span class="info-meta mt-1">${progress}%</span>
                         </div>
                         ` : ''}
                     </div>

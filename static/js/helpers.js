@@ -811,14 +811,14 @@ function renderTileList(sortedPositions, options) {
     }).join('');
 
     return `
-        <div class="property-item">
+        <div>
             <label class="property-label">${entityType === 'platform' ? 'Platform' : 'Block'} Tiles (${sortedPositions.length})</label>
             <button id="${extendStartBtnId}" class="btn btn-secondary btn-full text-sm mb-8">➕ Extend Start</button>
-            <div class="bg-input rounded-lg" style="max-height: 200px; overflow-y: auto; border: 1px solid #3a3a4e; padding: 8px;">
+            <div class="bg-input rounded-lg" style="max-height: 200px; overflow-y: auto; border: 1px solid #3a3a4e; padding: 4px 8px;">
                 ${tileItems}
             </div>
             <button id="${extendEndBtnId}" class="btn btn-secondary btn-full text-sm mt-8">➕ Extend End</button>
-            <div class="info-box-warning text-xxs text-warning mt-4">Only edge tiles (start/end) can be removed</div>
+            <div class="info-box-warning text-xxs text-warning mt-4 mb-0">Only edge tiles (start/end) can be removed</div>
         </div>
     `;
 }

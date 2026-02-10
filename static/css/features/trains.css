@@ -29,6 +29,99 @@
     font-size: 11px;
 }
 
+/* Train control panel input hierarchy */
+.input-large-container {
+    margin-bottom: 12px;
+}
+
+.input-large-label {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.input-large-field {
+    width: 100%;
+    min-height: 36px;
+    padding: 8px 10px;
+    box-sizing: border-box;
+    border: 1px solid #4a3a6a;
+    border-radius: 6px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    text-align: left;
+}
+
+.input-large-field:focus {
+    outline: none;
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 2px rgba(130, 87, 229, 0.18);
+}
+
+.input-large-field[readonly] {
+    cursor: default;
+}
+
+.input-small-container {
+    margin-bottom: 8px;
+}
+
+.input-small-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.input-small-label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.input-small-label-inline {
+    margin-bottom: 0;
+    flex: 0 0 94px;
+}
+
+.input-small-field {
+    width: 100%;
+    min-height: 26px;
+    padding: 3px 6px;
+    box-sizing: border-box;
+    border: 1px solid #3a3a4e;
+    border-radius: 5px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 11px;
+    font-family: var(--font-mono);
+}
+
+.input-small-field-compact {
+    flex: 1;
+}
+
+.input-small-field:focus {
+    outline: none;
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 2px rgba(130, 87, 229, 0.15);
+}
+
+.input-small-field::placeholder {
+    color: var(--text-secondary);
+}
+
 /* Status Section */
 .train-status-section {
     background: var(--bg-dark);

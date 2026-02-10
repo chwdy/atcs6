@@ -102,7 +102,7 @@ class RouteEditorHandler {
                     </div>
                     <div class="route-row-content">
                         <div class="route-row-name font-mono">${routeName}</div>
-                        <div class="route-row-meta text-xs text-muted">
+                        <div class="route-row-meta text-xs text-muted info-meta">
                             <span>🚂 ${trainCount} train${trainCount !== 1 ? 's' : ''}</span>
                             <span>📍 ${waypointCount} waypoint${waypointCount !== 1 ? 's' : ''}</span>
                             <span class="route-mode-pill uppercase">${modeText}</span>
@@ -308,10 +308,10 @@ class RouteEditorHandler {
                             ${modeSelect}
                         </select>
                     </div>
-                    <div class="route-header-col narrow">
-                         <label class="property-label">Statistics</label>
-                         <div class="property-value route-stats-value">
-                            <span class="text-xs text-muted">${waypointCount} stops · ${assignedCount} trains</span>
+                    <div class="route-header-col narrow info-display-small">
+                         <label class="property-label info-label">Statistics</label>
+                         <div class="route-stats-value info-meta">
+                            ${waypointCount} stops · ${assignedCount} trains
                          </div>
                     </div>
                 </div>

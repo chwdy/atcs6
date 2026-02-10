@@ -98,8 +98,12 @@ textarea {
 .mode-switch .btn {
     background: transparent;
     border: none;
-    padding: 6px 12px;
-    font-size: 0.9rem;
+    padding: 0;
+    min-height: 22px;
+    min-width: 58px;
+    font-size: 0.72rem;
+    line-height: 1;
+    border-radius: 4px;
     color: var(--text-secondary);
 }
 
@@ -163,7 +167,7 @@ textarea {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 12px 24px;
+    padding: 8px 12px;
     background: linear-gradient(135deg, rgba(130, 87, 229, 0.1), rgba(130, 87, 229, 0.05));
     border-bottom: 1px solid var(--border-color);
 }
@@ -176,10 +180,10 @@ textarea {
 
 .secondary-nav-btn {
     background: #0d1020;
-    border: 1px solid #3a3a4e;
+    border: none;
     color: var(--text-secondary);
-    width: var(--control-height-sm);
-    height: var(--control-height-sm);
+    width: var(--control-height-xs);
+    height: var(--control-height-xs);
     border-radius: var(--control-radius-sm);
     cursor: pointer;
     line-height: 1;
@@ -192,7 +196,6 @@ textarea {
 
 .secondary-nav-btn:hover:not(:disabled) {
     color: var(--text-primary);
-    border-color: #6a6a86;
 }
 
 .secondary-nav-btn:disabled {
@@ -202,7 +205,6 @@ textarea {
 
 .secondary-nav-btn.active {
     color: #ffe08a;
-    border-color: #9f8241;
     background: #3a3425;
 }
 
@@ -220,12 +222,12 @@ textarea {
 
 .secondary-sidebar-header .close-btn {
     background: #0d1020;
-    border: 1px solid #3a3a4e;
+    border: none;
     color: var(--text-secondary);
     font-size: 14px;
     cursor: pointer;
-    width: var(--control-height-sm);
-    height: var(--control-height-sm);
+    width: var(--control-height-xs);
+    height: var(--control-height-xs);
     border-radius: var(--control-radius-sm);
     padding: 0;
     line-height: 1;
@@ -237,7 +239,20 @@ textarea {
 
 .secondary-sidebar-header .close-btn:hover {
     color: var(--danger-color);
-    border-color: #6a6a86;
+}
+
+.secondary-sidebar-content .btn:not(.btn-icon-only):not(.btn-size-lg),
+.secondary-sidebar-content .edit-btn {
+    min-height: 0;
+    padding: 4px 12px;
+    font-size: 12px;
+    line-height: 1.2;
+    border-radius: var(--control-radius-sm);
+}
+
+.secondary-sidebar-content .btn:not(.btn-icon-only):not(.btn-size-lg):not(.btn-outline),
+.secondary-sidebar-content .edit-btn {
+    border: none;
 }
 
 .secondary-sidebar-content {
@@ -259,14 +274,15 @@ textarea {
 .secondary-tab {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     max-width: 160px;
     min-width: 0;
     border: 1px solid var(--border-color);
     background: #232336;
     color: var(--text-secondary);
-    border-radius: 6px;
-    padding: 2px 6px;
+    border-radius: 4px;
+    min-height: 18px;
+    padding: 0 4px;
 }
 
 .secondary-tab.active {
@@ -280,7 +296,8 @@ textarea {
     background: none;
     color: inherit;
     cursor: pointer;
-    font-size: 0.72rem;
+    font-size: 0.68rem;
+    line-height: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -293,8 +310,13 @@ textarea {
     background: none;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 0.8rem;
+    font-size: 0.7rem;
     line-height: 1;
+    width: 12px;
+    height: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     padding: 0;
 }
 

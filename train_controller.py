@@ -769,6 +769,15 @@ class TrainController:
             tile_length = self.network._get_tile_length_cm(*head_tile)
             return max(0.0, tile_length - head_distance_cm)
 
+        # Sort block positions by travel direction
+        # This is critical for multi-tile stations to ensure we calculate
+        # remaining distance in the correct order
+        travel_direction = self._get_travel_direction()
+        if travel_direction:
+            block_positions = self._sort_positions_by_direction(
+                block_positions, travel_direction
+            )
+
         # Find current position within block
         try:
             current_idx = block_positions.index(head_tile)
@@ -806,6 +815,78 @@ class TrainController:
                     break
 
         return remaining
+
+    def _get_travel_direction(self) -> Optional[Direction]:
+        """Get the train's current travel direction from path or facing direction."""
+        train = self._get_train()
+        if not train or not train.position:
+            return None
+
+        # First, try to get direction from current_path
+        if train.current_path and len(train.current_path) > 0:
+            head_tile = self._get_head_tile()
+            if head_tile:
+                # Find current position in path
+                for i, path_entry in enumerate(train.current_path):
+                    if (path_entry[0], path_entry[1]) == head_tile:
+                        # Return direction from this path entry
+                        if len(path_entry) > 2:
+                            return path_entry[2]
+                        # Or infer from next tile
+                        if i + 1 < len(train.current_path):
+                            next_tile = train.current_path[i + 1]
+                            dx = next_tile[0] - path_entry[0]
+                            dy = next_tile[1] - path_entry[1]
+                            if dy > 0:
+                                return Direction.NORTH
+                            elif dy < 0:
+                                return Direction.SOUTH
+                            elif dx > 0:
+                                return Direction.EAST
+                            elif dx < 0:
+                                return Direction.WEST
+                        break
+
+        # Fall back to facing direction
+        return train.position.facing_direction
+
+    def _sort_positions_by_direction(
+        self,
+        positions: List[Tuple[int, int]],
+        direction: Direction,
+    ) -> List[Tuple[int, int]]:
+        """Sort positions in the given travel direction.
+
+        For multi-tile blocks, we need to process tiles in the order
+        the train will encounter them, not in arbitrary insertion order.
+
+        Args:
+            positions: List of (x, y) positions
+            direction: Travel direction
+
+        Returns:
+            Positions sorted by travel direction
+        """
+        if not positions:
+            return positions
+
+        # Create a copy to avoid mutating the original
+        positions = list(positions)
+
+        if direction == Direction.NORTH:
+            # Traveling north: sort by y ascending
+            positions.sort(key=lambda p: p[1])
+        elif direction == Direction.SOUTH:
+            # Traveling south: sort by y descending
+            positions.sort(key=lambda p: -p[1])
+        elif direction == Direction.EAST:
+            # Traveling east: sort by x ascending
+            positions.sort(key=lambda p: p[0])
+        elif direction == Direction.WEST:
+            # Traveling west: sort by x descending
+            positions.sort(key=lambda p: -p[0])
+
+        return positions
 
     def _calculate_atc_speed_limit(self) -> Tuple[float, Optional[str]]:
         """
@@ -1170,6 +1251,14 @@ class TrainController:
         block_positions = self.network.get_block_positions(current_block_id)
         if not block_positions:
             return block.length_cm
+
+        # Sort block positions by travel direction to ensure correct calculation
+        # for multi-tile stations regardless of insertion order
+        travel_direction = self._get_travel_direction()
+        if travel_direction:
+            block_positions = self._sort_positions_by_direction(
+                block_positions, travel_direction
+            )
 
         tile_count = len(block_positions)
         if tile_count <= 0:

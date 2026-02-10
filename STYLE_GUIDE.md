@@ -1,7 +1,7 @@
 # Frontend Style Guide
 
-**Version:** 1.1  
-**Last Updated:** 2026-02-09
+**Version:** 1.3  
+**Last Updated:** 2026-02-10
 
 This guide documents the design system for the railway control system frontend. Use these CSS classes instead of inline styles to maintain consistency across the application.
 
@@ -38,6 +38,48 @@ Use these classes for font sizes to maintain clear visual hierarchy:
 <label class="text-sm">Track Bits</label>
 <div class="text-2xl">42</div>
 <p class="text-xs">Click to edit</p>
+```
+
+---
+
+## Info Display Scale
+
+Use the info display classes for non-editable information hierarchy across panels.
+
+| Class | Intent | Typical size |
+|-------|--------|--------------|
+| `.info-display-large` | Primary operational info | label 12px, value 14px |
+| `.info-display-medium` | Header-level metadata | label 11px, value 13px |
+| `.info-display-small` | Secondary operational info | label 10px, value 12px |
+| `.info-display-compact` | Dense debug/diagnostics | label/value/meta 10px |
+
+Supporting classes:
+
+| Class | Purpose |
+|-------|---------|
+| `.info-label` | Semantic label text (uppercase metadata label) |
+| `.info-value` | Semantic value text (mono display value) |
+| `.info-meta` | Secondary explanation text under a value |
+| `.info-display-row` | Single-line label/value pair row |
+
+Mapping for current UI:
+
+1. **Train debug panel** → `.info-display-compact`
+2. **Track compact header (`(x, y) - type`)** → `.info-display-medium`
+3. **Train control ATO path/destination** → `.info-display-small`
+4. **Track bits panel + train control info cards** → `.info-display-large` (and above for hero values like `.text-2xl`)
+
+Example:
+```html
+<div class="info-display-small">
+    <div class="info-label">Path</div>
+    <div class="info-value text-info">P_MAIN_01</div>
+</div>
+
+<div class="info-display-row info-display-compact">
+    <span class="info-label">Dead Ends</span>
+    <span class="info-value text-warning">N, W</span>
+</div>
 ```
 
 ---
@@ -95,8 +137,8 @@ Use these classes for font sizes to maintain clear visual hierarchy:
 <!-- Section header (14px, bold, with background) -->
 <div class="section-header">Track Information</div>
 
-<!-- Compact header (flexbox, for inline elements) -->
-<div class="compact-header">
+<!-- Compact header (medium info display) -->
+<div class="compact-header info-display-medium">
     <span>(0, 0) - Track</span>
     <span class="badge badge-new">NEW</span>
 </div>
@@ -331,15 +373,197 @@ Recommended panel classes:
 </div>
 ```
 
+### Button Size Scale
+
+Use this size scale for consistent control density across panels:
+
+| Class | Size | Height | Padding | Border | Typical use |
+|-------|------|--------|---------|--------|-------------|
+| `.btn-size-tight` | Tiny | 18px | 0 | None | Tab labels, tiny chip-like controls |
+| `.btn-size-sm` | Small | Auto | 2px 8px | 1px | Secondary actions (e.g. open monitor) |
+| `.btn-size-md` | Medium | Auto | 4px 12px | None* | Main control actions, editor save/apply |
+| `.btn-size-lg` | Large | 40px | 0 16px | 1px | High-priority actions (emergency controls) |
+
+**Border Rule:** Medium buttons have no border by default, **except** `.btn-outline` variants which keep their border for visibility on dark backgrounds.
+
+**Usage Patterns:**
+
+```html
+<!-- Large button (emergency, primary actions) -->
+<button class="btn btn-danger btn-size-lg">🚨 EMERGENCY STOP</button>
+
+<!-- Medium button (main actions, no border) -->
+<button class="btn btn-primary btn-size-md">Save</button>
+<button class="btn btn-success btn-size-md">▶ Go</button>
+
+<!-- Medium outline button (keeps border) -->
+<button class="btn btn-outline btn-size-md">ATO</button>
+<button class="btn btn-outline btn-size-md">Cab A</button>
+
+<!-- Small button (secondary actions) -->
+<button class="btn btn-info btn-size-sm">📊 Open Monitor</button>
+
+<!-- Tight button (tabs, chips) -->
+<button class="btn btn-secondary btn-size-tight">Tab 1</button>
+```
+
+**Panel Mapping:**
+- **Header navigation**: `.btn-size-tight` (tabs)
+- **Secondary actions** (open monitor, refresh): `.btn-size-sm`
+- **Main controls** (power, cab, mode, go/stop): `.btn-size-md` (solid = no border, outline = with border)
+- **Emergency controls**: `.btn-size-lg`
+- **Editor actions** (save, delete, apply): `.btn-size-md`
+
 ### Info Box with Header
 
 ```html
+<!-- Track-related info (green tint) -->
 <div class="info-box-track">
     <label class="text-track font-bold block mb-4">Track Bits</label>
     <div class="text-2xl font-bold text-track">42</div>
     <div class="text-muted text-sm">6 segments</div>
 </div>
 ```
+
+---
+
+## Input Box Size Scale
+
+Consistent input sizing creates visual rhythm in forms:
+
+| Class | Size | Height | Padding | Font | Typical use |
+|-------|------|--------|---------|------|-------------|
+| `.input-tiny` | Tiny | 24px | 4px 8px | 11px | Compact numeric inputs, IDs |
+| `.input-small` | Small | 28px | 6px 10px | 12px | Short text fields, coordinates |
+| `.property-input` | Medium (default) | 32px | 8px 12px | 13px | Standard form inputs |
+| `.input-large` | Large | 40px | 10px 16px | 14px | Primary fields (train names) |
+| `.input-full` | Full width | - | - | - | Block-level inputs |
+
+**Examples:**
+
+```html
+<!-- Large input (prominent field) -->
+<div class="input-large-container">
+    <label class="input-large-label">Train Name</label>
+    <input type="text" class="input-large-field" value="T-001" readonly>
+</div>
+
+<!-- Medium input (standard) -->
+<div class="property-item">
+    <label class="property-label">Station Name</label>
+    <input type="text" class="property-input" placeholder="Enter name...">
+</div>
+
+<!-- Small input (compact) -->
+<div class="input-small-row">
+    <label class="input-small-label">Radius (cm)</label>
+    <input type="number" class="input-small-field" value="100">
+</div>
+
+<!-- Tiny input (minimal) -->
+<input type="text" class="property-input input-tiny" value="42">
+```
+
+---
+
+## Info Display Scale
+
+Use the info display classes to create clear information hierarchy across panels. These define the relationship between labels, values, and metadata text.
+
+### Display Size Classes
+
+| Class | Label Size | Value Size | Meta Size | Use Case |
+|-------|------------|------------|-----------|----------|
+| `.info-display-large` | 12px | 14px | 13px | Primary operational info cards |
+| `.info-display-medium` | 11px | 13px | 12px | Header metadata, coordinates |
+| `.info-display-small` | 10px | 12px | 11px | Secondary operational info |
+| `.info-display-compact` | 10px | 10px | 10px | Dense debug/diagnostics |
+
+### Supporting Classes
+
+| Class | Purpose |
+|-------|---------|
+| `.info-label` | Semantic label (uppercase, muted color) |
+| `.info-value` | Semantic value (mono font, primary color) |
+| `.info-meta` | Secondary explanation text |
+| `.info-display-row` | Flex row for label/value pairs |
+
+### Usage Mapping
+
+```html
+<!-- Large: Main info cards (train status, track bits) -->
+<div class="info-box-track info-display-large">
+    <div class="flex justify-between items-center mb-4">
+        <span class="info-label text-muted">State</span>
+        <span class="badge badge-warning text-xxs">Block B-12</span>
+    </div>
+    <div class="text-2xl font-bold train-state-display">RUNNING</div>
+    <div class="flex justify-between gap-6 mt-4">
+        <div class="flex flex-col items-center text-center flex-1">
+            <span class="info-label text-muted">Position</span>
+            <span class="info-value text-info">(5, 10)</span>
+        </div>
+        <div class="flex flex-col items-center text-center flex-1">
+            <span class="info-label text-muted">Direction</span>
+            <span class="info-value text-station">N</span>
+        </div>
+        <div class="flex flex-col items-center text-center flex-1">
+            <span class="info-label text-muted">Speed</span>
+            <span class="info-value text-track">45.5 km/h</span>
+        </div>
+    </div>
+</div>
+
+<!-- Medium: Header metadata (coordinates, type) -->
+<div class="compact-header info-display-medium">
+    <span>(0, 0) - Straight Track</span>
+    <span class="badge badge-new">NEW</span>
+</div>
+
+<!-- Small: Secondary info (ATO path/destination) -->
+<div class="info-display-small">
+    <div class="info-label text-muted mb-2">Path</div>
+    <div class="info-value text-info">P_MAIN_01</div>
+    <div class="info-label text-muted mt-4 mb-2">Destination</div>
+    <div class="info-value text-station">Station A - Platform 1</div>
+</div>
+
+<!-- Compact: Debug info rows -->
+<div class="info-display-row info-display-compact">
+    <span class="info-label">Dead Ends</span>
+    <span class="info-value text-warning">N, W</span>
+</div>
+
+<div class="train-debug-panel info-display-compact">
+    <div class="train-debug-row">
+        <span class="train-debug-label">Train ID:</span>
+        <span class="train-debug-value">T-001</span>
+    </div>
+    <div class="train-debug-row">
+        <span class="train-debug-label">Block:</span>
+        <span class="train-debug-value text-block">B-05</span>
+    </div>
+</div>
+```
+
+### Context-Specific Patterns
+
+**Train Control Panel:**
+- Main info card (state, position, direction, speed): `.info-display-large`
+- Onboard computer status (power, mode, handle): `.info-display-large`
+- ATO path/destination: `.info-display-small`
+- Debug panel: `.info-display-compact`
+
+**Track Properties Panel:**
+- Header (coordinates, type): `.info-display-medium`
+- Track bits display: `.info-display-large` (with `.text-2xl` for the value)
+- Switch/signal metadata: `.info-display-small`
+- Dead ends: `.info-display-compact`
+
+**Route/Path Panels:**
+- Status cards: `.info-display-large`
+- Route statistics: `.info-display-small`
+- Block list items: `.info-display-compact`
 
 ---
 

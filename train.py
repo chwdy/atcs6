@@ -441,6 +441,7 @@ class Train:
 
     # Train model info
     model: str = ""  # Train model name (e.g., "BR 218", "Shinkansen E5")
+    car_number: str = ""  # Unique entity car number
     min_radius_cm: float = 30.0  # Minimum curve radius train can navigate
 
     # Direction control
@@ -1254,6 +1255,7 @@ class Train:
             "max_speed": self.max_speed,
             "num_cars": self.num_cars,
             "model": self.model,
+            "car_number": self.car_number,
             "min_radius_cm": self.min_radius_cm,
             "facing_direction": self.facing_direction.name
             if self.facing_direction
@@ -1500,6 +1502,7 @@ class Train:
 
         # Train model info
         train.model = data.get("model", "")
+        train.car_number = data.get("car_number", "")
         train.min_radius_cm = float(data.get("min_radius_cm", 30.0))
 
         # Facing direction

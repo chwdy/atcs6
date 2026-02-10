@@ -439,7 +439,7 @@ class EditorUIHandler {
             const safeTitle = this.escapeHtml(tab.title || 'Editor');
             const activeClass = tab.tabId === this.activeSecondaryTabId ? ' active' : '';
             return `<div class="secondary-tab${activeClass}" title="${safeTitle}">`
-                + `<button class="secondary-tab-label" data-tab-id="${tab.tabId}">${safeTitle}</button>`
+                + `<button class="secondary-tab-label btn-size-tight" data-tab-id="${tab.tabId}">${safeTitle}</button>`
                 + `<button class="secondary-tab-close" data-tab-id="${tab.tabId}" title="Close tab">×</button>`
                 + `</div>`;
         }).join('');

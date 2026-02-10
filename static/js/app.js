@@ -524,7 +524,7 @@ class App {
         if (!controlPanelDebug) return;
         
         // Build HTML content
-        let html = '<div class="train-debug-panel" style="background: transparent; border: none; padding: 0;">';
+        let html = '<div class="train-debug-panel info-display-compact" style="background: transparent; border: none; padding: 0;">';
         
         // Basic info
         html += `<div class="train-debug-row"><span class="train-debug-label">Train ID:</span><span class="train-debug-value">${train.id}</span></div>`;

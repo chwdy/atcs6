@@ -65,33 +65,33 @@ class SwitchEditorHandler {
 
         const content = `
             <!-- INFO SECTION (Read-only) -->
-            <div class="info-box-track">
+            <div class="info-box-track info-display-large">
                 <!-- Large State Display -->
                 <div class="switch-state-header">
                     <div class="switch-state-row">
                         <span class="train-status-dot switch-state-dot ${stateClass}"></span>
                         <span class="switch-state-title ${stateClass}">${stateText}</span>
                     </div>
-                    <div class="text-muted text-xs mt-4">State ${currentState}</div>
+                    <div class="info-meta mt-4">State ${currentState}</div>
                 </div>
 
                 <!-- Info Grid -->
-                <div class="property-grid signal-grid-tight">
+                <div class="property-grid signal-grid-tight info-display-small">
                     <div class="property-item">
-                        <label class="property-label">Switch ID</label>
-                        <div class="value-display text-info">${switchData.switch_id}</div>
+                        <div class="info-label">Switch ID</div>
+                        <div class="info-value text-info">${switchData.switch_id}</div>
                     </div>
                     <div class="property-item">
-                        <label class="property-label">Position</label>
-                        <div class="value-display text-muted">(${switchData.x}, ${switchData.y})</div>
+                        <div class="info-label">Position</div>
+                        <div class="info-value text-muted">(${switchData.x}, ${switchData.y})</div>
                     </div>
                     <div class="property-item">
-                        <label class="property-label">Type</label>
-                        <div class="value-display">${switchData.switch_type || 'standard'}</div>
+                        <div class="info-label">Type</div>
+                        <div class="info-value">${switchData.switch_type || 'standard'}</div>
                     </div>
                     <div class="property-item">
-                        <label class="property-label">Lock Status</label>
-                        <div class="value-display ${isLocked ? 'text-danger' : 'text-success'}">${lockText}</div>
+                        <div class="info-label">Lock Status</div>
+                        <div class="info-value ${isLocked ? 'text-danger' : 'text-success'}">${lockText}</div>
                     </div>
                 </div>
             </div>
@@ -110,45 +110,39 @@ class SwitchEditorHandler {
             <!-- LENGTH PROPERTIES SECTION -->
             <div class="control-section">
                 <div class="control-section-header">Path Lengths (cm)</div>
-                <div class="property-grid signal-grid-standard">
-                    <div class="property-item">
-                        <label class="property-label">MAIN Path Length</label>
-                        <input type="number" id="switch-main-length" class="property-input" value="${switchData.main_length_cm || 0}" min="0" step="0.1" placeholder="Length in cm">
-                    </div>
-                    <div class="property-item">
-                        <label class="property-label">DIVERGE Path Length</label>
-                        <input type="number" id="switch-diverge-length" class="property-input" value="${switchData.diverge_length_cm || 0}" min="0" step="0.1" placeholder="Length in cm">
-                    </div>
+                <div class="input-small-row mb-8">
+                    <label class="input-small-label input-small-label-inline" for="switch-main-length">MAIN Path Length</label>
+                    <input type="number" id="switch-main-length" class="input-small-field input-small-field-compact" value="${switchData.main_length_cm || 0}" min="0" step="0.1" placeholder="Length in cm">
+                </div>
+                <div class="input-small-row mb-8">
+                    <label class="input-small-label input-small-label-inline" for="switch-diverge-length">DIVERGE Path Length</label>
+                    <input type="number" id="switch-diverge-length" class="input-small-field input-small-field-compact" value="${switchData.diverge_length_cm || 0}" min="0" step="0.1" placeholder="Length in cm">
                 </div>
             </div>
 
             <!-- RADIUS PROPERTIES SECTION -->
             <div class="control-section">
                 <div class="control-section-header">Path Radii (cm)</div>
-                <div class="property-grid signal-grid-standard">
-                    <div class="property-item">
-                        <label class="property-label">MAIN Path Radius</label>
-                        <input type="number" id="switch-main-radius" class="property-input" value="${switchData.main_radius_cm || ''}" min="0" step="0.1" placeholder="None (straight)">
-                    </div>
-                    <div class="property-item">
-                        <label class="property-label">DIVERGE Path Radius</label>
-                        <input type="number" id="switch-diverge-radius" class="property-input" value="${switchData.diverge_radius_cm || ''}" min="0" step="0.1" placeholder="None (straight)">
-                    </div>
+                <div class="input-small-row mb-8">
+                    <label class="input-small-label input-small-label-inline" for="switch-main-radius">MAIN Path Radius</label>
+                    <input type="number" id="switch-main-radius" class="input-small-field input-small-field-compact" value="${switchData.main_radius_cm || ''}" min="0" step="0.1" placeholder="None (straight)">
+                </div>
+                <div class="input-small-row mb-8">
+                    <label class="input-small-label input-small-label-inline" for="switch-diverge-radius">DIVERGE Path Radius</label>
+                    <input type="number" id="switch-diverge-radius" class="input-small-field input-small-field-compact" value="${switchData.diverge_radius_cm || ''}" min="0" step="0.1" placeholder="None (straight)">
                 </div>
             </div>
 
             <!-- OTHER PROPERTIES SECTION -->
             <div class="control-section">
                 <div class="control-section-header">Properties</div>
-                <div class="property-grid signal-grid-standard">
-                    <div class="property-item">
-                        <label class="property-label">Name</label>
-                        <input type="text" id="switch-name" class="property-input" value="${switchData.name || ''}" placeholder="Switch name...">
-                    </div>
-                    <div class="property-item">
-                        <label class="property-label">Notes</label>
-                        <input type="text" id="switch-notes" class="property-input" value="${switchData.notes || ''}" placeholder="Notes...">
-                    </div>
+                <div class="input-large-container mb-8">
+                    <label class="input-large-label">Switch Name</label>
+                    <input type="text" id="switch-name" class="input-large-field" value="${switchData.name || ''}" placeholder="Switch name...">
+                </div>
+                <div class="property-item mb-8">
+                    <label class="property-label">Notes</label>
+                    <input type="text" id="switch-notes" class="property-input" value="${switchData.notes || ''}" placeholder="Notes...">
                 </div>
 
                 <div class="switch-action-row mt-16">
@@ -170,7 +164,12 @@ class SwitchEditorHandler {
         if (toggleBtn && !toggleBtn.disabled) {
             toggleBtn.onclick = async () => {
                 try {
-                    await this.api.toggleSwitchState(switchData.x, switchData.y);
+                    // Get current track state to determine toggle direction
+                    const track = await this.api.getTrack(switchData.x, switchData.y);
+                    const currentState = track?.switch_state ?? 0;
+                    const newState = currentState === 0 ? 1 : 0;
+
+                    await this.api.setSwitchState(switchData.switch_id, newState);
                     window.showToast('Switch state toggled', 'success', 2000);
                     await window.app.refreshNetwork();
                     // Refresh editor

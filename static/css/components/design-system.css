@@ -114,7 +114,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 8px 10px;
+    padding: 4px 8px;
     border-bottom: 1px solid #2a2a3e;
     transition: background-color 0.2s;
 }
@@ -179,6 +179,58 @@
 .text-tiny { font-size: 9px; }                   /* Smaller than s */
 
 /* ============================================================================
+   DESIGN SYSTEM - Info Display Scale
+   ============================================================================ */
+.info-display-large {
+    --info-label-size: 12px;
+    --info-value-size: 14px;
+    --info-meta-size: 13px;
+}
+
+.info-display-medium {
+    --info-label-size: 11px;
+    --info-value-size: 13px;
+    --info-meta-size: 12px;
+}
+
+.info-display-small {
+    --info-label-size: 10px;
+    --info-value-size: 12px;
+    --info-meta-size: 11px;
+}
+
+.info-display-compact {
+    --info-label-size: 10px;
+    --info-value-size: 10px;
+    --info-meta-size: 10px;
+}
+
+.info-display-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.info-label {
+    font-size: var(--info-label-size, 11px);
+    color: var(--text-secondary);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.info-value {
+    font-size: var(--info-value-size, 13px);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+}
+
+.info-meta {
+    font-size: var(--info-meta-size, 12px);
+    color: var(--text-muted);
+}
+
+/* ============================================================================
    DESIGN SYSTEM - Color Palette (Semantic)
    ============================================================================ */
 .text-primary { color: var(--text-primary); }    /* #e1e1e6 - main text */
@@ -231,8 +283,8 @@
 }
 
 .compact-header {
-    font-size: 14px;
-    font-weight: bold;
+    font-size: var(--info-value-size, 13px);
+    font-weight: 600;
     color: var(--text-primary);
     margin-bottom: 12px;
     padding: 8px;
@@ -645,6 +697,118 @@
 
 /* Cursor Utilities */
 .cursor-pointer { cursor: pointer; }
+
+/* ============================================================================
+   SWITCH CONTROL COMPONENT - Radio-style button group
+   
+   Usage:
+   <div class="switch-control">
+       <span class="switch-label">Label Text</span>
+       <div class="switch-group">
+           <button class="switch-btn active">Option 1</button>
+           <button class="switch-btn">Option 2</button>
+           <button class="switch-btn">Option 3</button>
+       </div>
+   </div>
+   ============================================================================ */
+.switch-control {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.switch-control:last-child {
+    margin-bottom: 0;
+}
+
+.switch-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    flex-shrink: 0;
+}
+
+.switch-group {
+    display: flex;
+    align-items: stretch;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--bg-dark);
+    flex: 1;
+    max-width: 50%;
+    min-width: 25%;
+}
+
+.switch-btn {
+    flex: 1;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: transparent;
+    border: none;
+    border-right: 1px solid var(--border-color);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+    min-width: 0;
+    line-height: 1.2;
+}
+
+.switch-btn:last-child {
+    border-right: none;
+}
+
+.switch-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.switch-btn.active {
+    background: var(--accent-color);
+    color: white;
+}
+
+.switch-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* Variant: Success (green) */
+.switch-group.success .switch-btn.active {
+    background: var(--success-color);
+    color: white;
+}
+
+/* Variant: Danger (red) */
+.switch-group.danger .switch-btn.active {
+    background: var(--danger-color);
+    color: white;
+}
+
+/* Variant: Warning (yellow) */
+.switch-group.warning .switch-btn.active {
+    background: var(--warning-color);
+    color: #000;
+}
+
+/* Size variants */
+.switch-group.compact .switch-btn {
+    padding: 4px 8px;
+    font-size: 10px;
+    min-width: 40px;
+}
+
+.switch-group.large .switch-btn {
+    padding: 8px 16px;
+    font-size: 12px;
+    min-width: 60px;
+}
 
 /* ============================================================================
    BIT TOGGLE COMPONENT

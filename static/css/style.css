@@ -8,10 +8,3 @@
 @import url('./features/routes-paths.css');
 @import url('./features/trains.css');
 @import url('./features/train-monitor.css');
-
-/* Compatibility block: smoke tests assert these declarations in style.css */
-.train-monitor-upcoming {
-    width: 280px;
-    min-width: 200px;
-    max-width: 400px;
-}

@@ -91,7 +91,7 @@ class SimulationController:
                     self.route_executor.handle_path_completion(
                         train_id=train_id,
                         path_id=path_id,
-                        end_tile=end_tile,
+                        _end_tile=end_tile,
                         _event_time=event.get("time"),
                     )
 

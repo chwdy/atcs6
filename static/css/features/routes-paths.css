@@ -231,53 +231,74 @@
     color: var(--switch-state-color);
 }
 
-.train-state-dot.train-state-off,
-.train-state-text.train-state-off,
-.train-state-display.train-state-off {
-    color: #888;
+.train-state-dot.train-state-off {
     background-color: #888;
 }
 
-.train-state-dot.train-state-idle,
-.train-state-text.train-state-idle,
-.train-state-display.train-state-idle {
-    color: #ffd93d;
+.train-state-text.train-state-off,
+.train-state-display.train-state-off {
+    color: #888;
+    background-color: transparent;
+}
+
+.train-state-dot.train-state-idle {
     background-color: #ffd93d;
 }
 
-.train-state-dot.train-state-standby,
-.train-state-text.train-state-standby,
-.train-state-display.train-state-standby {
-    color: #00d4ff;
+.train-state-text.train-state-idle,
+.train-state-display.train-state-idle {
+    color: #ffd93d;
+    background-color: transparent;
+}
+
+.train-state-dot.train-state-standby {
     background-color: #00d4ff;
 }
 
-.train-state-dot.train-state-running,
-.train-state-text.train-state-running,
-.train-state-display.train-state-running {
-    color: #04d361;
+.train-state-text.train-state-standby,
+.train-state-display.train-state-standby {
+    color: #00d4ff;
+    background-color: transparent;
+}
+
+.train-state-dot.train-state-running {
     background-color: #04d361;
 }
 
-.train-state-dot.train-state-waiting,
-.train-state-text.train-state-waiting,
-.train-state-display.train-state-waiting {
-    color: #ff9500;
+.train-state-text.train-state-running,
+.train-state-display.train-state-running {
+    color: #04d361;
+    background-color: transparent;
+}
+
+.train-state-dot.train-state-waiting {
     background-color: #ff9500;
 }
 
-.train-state-dot.train-state-station,
-.train-state-text.train-state-station,
-.train-state-display.train-state-station {
-    color: #8257e5;
+.train-state-text.train-state-waiting,
+.train-state-display.train-state-waiting {
+    color: #ff9500;
+    background-color: transparent;
+}
+
+.train-state-dot.train-state-station {
     background-color: #8257e5;
 }
 
-.train-state-dot.train-state-manual,
+.train-state-text.train-state-station,
+.train-state-display.train-state-station {
+    color: #8257e5;
+    background-color: transparent;
+}
+
+.train-state-dot.train-state-manual {
+    background-color: #e83f5b;
+}
+
 .train-state-text.train-state-manual,
 .train-state-display.train-state-manual {
     color: #e83f5b;
-    background-color: #e83f5b;
+    background-color: transparent;
 }
 
 .info-box-block {

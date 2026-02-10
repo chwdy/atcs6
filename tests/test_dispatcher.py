@@ -1813,7 +1813,7 @@ class TestPathDispatcherProgress:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(0, 0)],
             occupied_blocks=["BLOCK_A"],
         )
@@ -1834,7 +1834,7 @@ class TestPathDispatcherProgress:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(1, 0)],
             occupied_blocks=["BLOCK_B"],
         )
@@ -1870,7 +1870,7 @@ class TestSimulationPathAdvancement:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(1, 0)],
             occupied_blocks=["BLOCK_B"],
         )
@@ -1917,7 +1917,7 @@ class TestSimulationPathAdvancement:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(1, 0)],
             occupied_blocks=["BLOCK_B"],
         )
@@ -1953,10 +1953,10 @@ class TestSimulationPathAdvancement:
 
         route = Route(
             route_id="ROUTE_001",
-            mode=RouteMode.ONE_WAY,
+            mode=RouteMode.ONE_OFF,
             waypoints=[
-                Waypoint(station_id="STA_A", dwell_time_sec=20.0),
-                Waypoint(station_id="STA_B", dwell_time_sec=20.0),
+                Waypoint(platform_id="STA_A", dwell_time_sec=20.0),
+                Waypoint(platform_id="STA_B", dwell_time_sec=20.0),
             ],
         )
         network.routes[route.route_id] = route
@@ -1995,11 +1995,11 @@ class TestSimulationPathAdvancement:
         assert train.state == TrainState.STANDBY
         assert route.is_active
         assert route.current_waypoint_index == 1
-        assert route.get_current_waypoint().station_id == "STA_B"
+        assert route.get_current_waypoint().platform_id == "STA_B"
 
         exec_state = sim.route_executor.execution_states.get(train.train_id)
         assert exec_state is not None
-        assert exec_state.arrived_at_station_time is None
+        assert exec_state.arrived_at_platform_time is None
 
     def test_route_executor_path_completion_clears_route_on_final_waypoint(
         self, simple_linear_network, dispatcher, train
@@ -2011,8 +2011,8 @@ class TestSimulationPathAdvancement:
 
         route = Route(
             route_id="ROUTE_FINAL",
-            mode=RouteMode.ONE_WAY,
-            waypoints=[Waypoint(station_id="STA_FINAL", dwell_time_sec=20.0)],
+            mode=RouteMode.ONE_OFF,
+            waypoints=[Waypoint(platform_id="STA_FINAL", dwell_time_sec=20.0)],
         )
         network.routes[route.route_id] = route
 
@@ -2081,7 +2081,7 @@ class TestPathSwitchUnlockBugFix:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(0, 0)],
             occupied_blocks=["BLOCK_A"],
         )
@@ -2104,7 +2104,7 @@ class TestPathSwitchUnlockBugFix:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end="a",
-            facing_direction=Direction.EAST,
+            _facing_direction_legacy=Direction.EAST,
             occupied_tiles=[(2, 0)],
             occupied_blocks=["BLOCK_B"],
         )
@@ -2265,7 +2265,7 @@ class TestPathExtensionForMultiTileStations:
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
             leading_end="a",
-            facing_direction=Direction.NORTH,
+            _facing_direction_legacy=Direction.NORTH,
             occupied_tiles=[(0, 0)],
             occupied_blocks=["BLOCK_START"],
         )
@@ -2292,7 +2292,7 @@ class TestPathExtensionForMultiTileStations:
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
             leading_end="a",
-            facing_direction=Direction.NORTH,
+            _facing_direction_legacy=Direction.NORTH,
             occupied_tiles=[(0, 3)],
             occupied_blocks=["STATION_BLOCK"],
         )
@@ -2315,7 +2315,7 @@ class TestPathExtensionForMultiTileStations:
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
             leading_end="a",
-            facing_direction=Direction.NORTH,
+            _facing_direction_legacy=Direction.NORTH,
             occupied_tiles=[(0, 4)],
             occupied_blocks=["STATION_BLOCK"],
         )
@@ -2367,7 +2367,7 @@ class TestPathCompletionAtStoppedDestination:
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
             leading_end="a",
-            facing_direction=Direction.NORTH,
+            _facing_direction_legacy=Direction.NORTH,
             occupied_tiles=[(0, 0)],
             occupied_blocks=["BLOCK_START"],
         )

@@ -102,7 +102,10 @@ def register(app, state: AppState) -> None:
         )
 
         train = Train(
-            train_id=train_id, consist=[car], max_speed=data.get("max_speed", 100.0)
+            train_id=train_id,
+            consist=[car],
+            max_speed=data.get("max_speed", 100.0),
+            car_number=data.get("car_number", ""),
         )
 
         if "position" in data:
@@ -136,6 +139,54 @@ def register(app, state: AppState) -> None:
         if not train:
             return jsonify({"error": "Train not found"}), 404
         return jsonify(train.to_dict(state.network))
+
+    @app.route("/api/trains/<train_id>", methods=["PATCH"])
+    def update_train(train_id):
+        """Update train properties."""
+        train = state.network.trains.get(train_id)
+        if not train:
+            return jsonify({"error": "Train not found"}), 404
+
+        data = request.json or {}
+
+        errors = []
+
+        if "max_speed" in data:
+            try:
+                train.max_speed = float(data["max_speed"])
+            except (ValueError, TypeError):
+                errors.append("max_speed")
+
+        if "car_number" in data:
+            train.car_number = str(data["car_number"])
+
+        if "length_cm" in data:
+            try:
+                new_length = float(data["length_cm"])
+                if new_length > 0:
+                    if train.consist:
+                        train.consist[0].length = new_length
+                    else:
+                        # Create default car if consist is empty
+                        car = TrainCar(
+                            car_id=f"{train_id}_loco",
+                            car_type="LOCOMOTIVE",
+                            length=new_length,
+                            max_speed=train.max_speed,
+                        )
+                        train.consist.append(car)
+            except (ValueError, TypeError):
+                errors.append("length_cm")
+
+        if errors:
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": f"Invalid values for fields: {', '.join(errors)}",
+                }
+            ), 400
+
+        return jsonify({"status": "success", "train": train.to_dict(state.network)})
 
     @app.route("/api/trains/<train_id>", methods=["DELETE"])
     def delete_train(train_id):
