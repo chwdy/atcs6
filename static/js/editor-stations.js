@@ -24,24 +24,74 @@ class PlatformEditorHandler {
         const content = `
             <div class="platform-editor" data-platform-id="${platformId}">
                 ${renderHeaderId(platformId, '#00d2ff')}
-                ${renderTextInput('platform-name', 'Name', platform.name || '', 'Optional name')}
-                ${renderNumberInput('platform-length-cm', 'Length (cm)', platform.length_cm || 0, 0, 50000, 10)}
-                ${renderSelectInput('platform-side', 'Platform Side', [
-                    { value: 'left', label: 'Left' },
-                    { value: 'right', label: 'Right' },
-                    { value: 'both', label: 'Both' }
-                ], platform.platform_side || 'both')}
-                ${renderNumberInput('platform-top-speed', 'Top Speed (km/h)', platform.top_speed_kmh ?? '', 0, 400, 1)}
-                ${renderTileList(sortedPositions, {
-                    entityType: 'platform',
-                    extendStartBtnId: 'extend-platform-start-btn',
-                    extendEndBtnId: 'extend-platform-end-btn',
-                    removeBtnClass: 'remove-platform-tile-btn',
-                })}
-                <div class="flex gap-8 mt-12">
-                    <button id="save-platform-btn" class="btn btn-primary btn-sm flex-1">Save</button>
-                    <button id="delete-platform-btn" class="btn btn-danger btn-sm flex-1">Delete</button>
+                
+                <!-- INFO SECTION (Read-only, styled like Block Editor) -->
+                <div class="info-box-track mb-12">
+                    <div class="flex justify-between items-start mb-2">
+                        <span class="text-xs text-muted uppercase tracking-wider">Info</span>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm font-mono">
+                        <div>
+                            <span class="text-muted text-xs block">Tile Count</span>
+                            <span class="text-track font-bold">${sortedPositions.length} tiles</span>
+                        </div>
+                        <div>
+                            <span class="text-muted text-xs block">Length</span>
+                            <span class="text-info">${platform.length_cm || 0} cm</span>
+                        </div>
+                    </div>
                 </div>
+                
+                <!-- TILES LIST (Scrollable with extend buttons) -->
+                <div class="control-section mt-12">
+                    <h4 class="control-section-header">Tiles</h4>
+                    ${renderTileList(sortedPositions, {
+                        entityType: 'platform',
+                        extendStartBtnId: 'extend-platform-start-btn',
+                        extendEndBtnId: 'extend-platform-end-btn',
+                        removeBtnClass: 'remove-platform-tile-btn',
+                    })}
+                </div>
+                
+                <!-- EDITABLE PROPERTIES SECTION -->
+                <div class="control-section control-section-divider mt-12 pt-12">
+                    <h4 class="control-section-header">Properties</h4>
+                    
+                    <!-- Name field - Large/Medium size -->
+                    <div class="input-large-container mb-8">
+                        <label class="input-large-label">Platform Name</label>
+                        <input type="text" id="platform-name-input" class="input-large-field" value="${platform.name || ''}" placeholder="Enter platform name...">
+                    </div>
+                    
+                    <!-- Length - Small size -->
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="platform-length-input">Length (cm)</label>
+                        <input type="number" id="platform-length-input" class="input-small-field input-small-field-compact" value="${platform.length_cm || 0}" min="0" step="1">
+                    </div>
+                    
+                    <!-- Platform Side - Small size -->
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="platform-side-input">Platform Side</label>
+                        <select id="platform-side-input" class="input-small-field input-small-field-compact">
+                            <option value="left" ${platform.platform_side === 'left' ? 'selected' : ''}>Left</option>
+                            <option value="right" ${platform.platform_side === 'right' ? 'selected' : ''}>Right</option>
+                            <option value="both" ${platform.platform_side === 'both' || !platform.platform_side ? 'selected' : ''}>Both</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Top Speed - Small size -->
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="platform-speed-input">Max Speed (km/h)</label>
+                        <input type="number" id="platform-speed-input" class="input-small-field input-small-field-compact" value="${platform.top_speed_kmh || ''}" min="0" step="1" placeholder="Not set">
+                    </div>
+
+                    <div class="flex gap-8">
+                        <button id="save-platform-btn" class="btn btn-primary btn-sm flex-1">💾 Save</button>
+                        <button id="delete-platform-btn" class="btn btn-danger btn-sm flex-1">🗑 Delete</button>
+                    </div>
+                </div>
+                
                 <div class="mt-8">
                     <button id="open-stations-panel-btn" class="btn btn-secondary btn-sm btn-full">Manage Logical Stations</button>
                 </div>
@@ -58,11 +108,11 @@ class PlatformEditorHandler {
             saveBtn.onclick = async () => {
                 try {
                     const updates = {
-                        name: document.getElementById('platform-name')?.value || '',
-                        length_cm: parseFloat(document.getElementById('platform-length-cm')?.value || '0') || 0,
-                        platform_side: document.getElementById('platform-side')?.value || 'both',
+                        name: document.getElementById('platform-name-input')?.value || '',
+                        length_cm: parseFloat(document.getElementById('platform-length-input')?.value || '0') || 0,
+                        platform_side: document.getElementById('platform-side-input')?.value || 'both',
                     };
-                    const topSpeedRaw = document.getElementById('platform-top-speed')?.value;
+                    const topSpeedRaw = document.getElementById('platform-speed-input')?.value;
                     updates.top_speed_kmh = topSpeedRaw === '' ? null : (parseFloat(topSpeedRaw) || 0);
 
                     await this.api.updatePlatform(platformId, updates);

@@ -747,45 +747,43 @@ function renderTileItem(x, y, index, total, assignedBlock, blocks, removeBtnClas
         if (assignedBlock) {
             const block = blocks.find(b => b.block_id === assignedBlock);
             const blockColor = getBlockStateColor(block?.state);
-            blockBadge = `<div class="text-xxs" style="color: ${blockColor}; font-weight: bold; margin-top: 4px;">● ${assignedBlock}</div>`;
+            blockBadge = `<span class="tile-list-badge" style="background: ${blockColor}20; color: ${blockColor};">${assignedBlock}</span>`;
         }
 
         const assignButton = `
-            <button class="${assignBtnClass} btn btn-sm btn-info" data-x="${x}" data-y="${y}" data-index="${index}" title="Assign a block section to this platform tile">
-                ${assignedBlock ? 'Change Block' : 'Assign Block'}
+            <button class="${assignBtnClass} btn btn-xs btn-info" data-x="${x}" data-y="${y}" data-index="${index}" title="Assign a block section to this platform tile">
+                ${assignedBlock ? 'Change' : 'Assign'}
             </button>
         `;
 
         const removeButton = isEdge ? 
-            `<button class="${removeBtnClass} btn btn-sm btn-danger" data-x="${x}" data-y="${y}">Remove</button>` : 
-            `<span class="text-muted text-xxs">middle</span>`;
+            `<button class="${removeBtnClass} btn btn-xs btn-danger" data-x="${x}" data-y="${y}">Remove</button>` : 
+            `<span class="tile-list-middle-label">middle</span>`;
 
         content = `
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                    <span class="text-info text-sm value-display-mono">(${x}, ${y})</span>
-                    ${blockBadge}
-                </div>
-                <div style="display: flex; gap: 8px; align-items: center;">
-                    ${assignButton}
-                    ${removeButton}
-                </div>
+            <div class="flex items-center gap-8">
+                <span class="tile-list-coords">(${x}, ${y})</span>
+                ${blockBadge}
+            </div>
+            <div class="flex items-center gap-8">
+                ${assignButton}
+                ${removeButton}
             </div>
         `;
     } else {
         // Simple tile item
         const removeButton = isEdge ? 
-            `<button class="${removeBtnClass} btn btn-sm btn-danger" data-x="${x}" data-y="${y}">Remove</button>` : 
-            `<span class="text-muted text-xxs">middle</span>`;
+            `<button class="${removeBtnClass} btn btn-xs btn-danger" data-x="${x}" data-y="${y}">Remove</button>` : 
+            `<span class="tile-list-middle-label">middle</span>`;
 
         content = `
-            <span class="text-info text-sm value-display-mono">(${x}, ${y})</span>
+            <span class="tile-list-coords">(${x}, ${y})</span>
             ${removeButton}
         `;
     }
 
     return `
-        <div class="station-tile-item" data-x="${x}" data-y="${y}" ${assignBtnClass ? 'style="border-bottom: 1px solid #2a2a3e; padding: 8px 0;"' : ''}>
+        <div class="tile-list-item" data-x="${x}" data-y="${y}">
             ${content}
         </div>
     `;
@@ -811,13 +809,13 @@ function renderTileList(sortedPositions, options) {
     }).join('');
 
     return `
-        <div>
-            <label class="property-label">${entityType === 'platform' ? 'Platform' : 'Block'} Tiles (${sortedPositions.length})</label>
-            <button id="${extendStartBtnId}" class="btn btn-secondary btn-full text-sm mb-8">➕ Extend Start</button>
-            <div class="bg-input rounded-lg" style="max-height: 200px; overflow-y: auto; border: 1px solid #3a3a4e; padding: 4px 8px;">
+        <div class="tile-list">
+            <div class="tile-list-header">${entityType === 'platform' ? 'Platform' : 'Block'} Tiles (${sortedPositions.length})</div>
+            <button id="${extendStartBtnId}" class="btn btn-secondary btn-sm tile-list-extend-btn">➕ Extend Start</button>
+            <div class="tile-list-container">
                 ${tileItems}
             </div>
-            <button id="${extendEndBtnId}" class="btn btn-secondary btn-full text-sm mt-8">➕ Extend End</button>
+            <button id="${extendEndBtnId}" class="btn btn-secondary btn-sm tile-list-extend-btn">➕ Extend End</button>
             <div class="info-box-warning text-xxs text-warning mt-4 mb-0">Only edge tiles (start/end) can be removed</div>
         </div>
     `;

@@ -842,3 +842,196 @@
 .bit-toggle-label .bit-name.inactive {
     color: #ccc;
 }
+
+/* ============================================================================
+   TILE LIST COMPONENT - Shared between Block and Platform editors
+   ============================================================================ */
+.tile-list {
+    margin-top: 8px;
+}
+
+.tile-list-header {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 8px;
+    font-weight: 600;
+}
+
+.tile-list-container {
+    background: #1a1a2e;
+    border: 1px solid #2a2a3e;
+    border-radius: 4px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.tile-list-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 8px;
+    border-bottom: 1px solid #2a2a3e;
+    transition: background-color 0.2s;
+}
+
+.tile-list-item:last-child {
+    border-bottom: none;
+}
+
+.tile-list-item:hover {
+    background-color: rgba(130, 87, 229, 0.1);
+}
+
+.tile-list-coords {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-info);
+}
+
+.tile-list-badge {
+    font-size: 10px;
+    font-weight: bold;
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-left: 8px;
+}
+
+.tile-list-middle-label {
+    font-size: 10px;
+    color: var(--text-muted);
+}
+
+.tile-list-extend-btn {
+    width: 100%;
+    margin-bottom: 8px;
+}
+
+.tile-list-extend-btn:last-of-type {
+    margin-bottom: 0;
+    margin-top: 8px;
+}
+
+/* ============================================================================
+   INPUT SIZE SCALE - Form input sizing system
+   ============================================================================ */
+
+/* Large input - for primary/prominent fields like names */
+.input-large-container {
+    margin-bottom: 12px;
+}
+
+.input-large-label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+    font-weight: 600;
+}
+
+.input-large-field {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--bg-input);
+    border: 1px solid #3a3a4e;
+    border-radius: 6px;
+    font-size: 14px;
+    color: var(--text-primary);
+    box-sizing: border-box;
+    transition: border-color 0.2s;
+}
+
+.input-large-field:focus {
+    outline: none;
+    border-color: var(--accent-color);
+}
+
+.input-large-field::placeholder {
+    color: var(--text-muted);
+}
+
+/* Small input row - for compact property fields */
+.input-small-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.input-small-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    flex-shrink: 0;
+}
+
+.input-small-label-inline {
+    min-width: 100px;
+}
+
+.input-small-field {
+    flex: 1;
+    padding: 6px 10px;
+    background: var(--bg-input);
+    border: 1px solid #3a3a4e;
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--text-primary);
+    box-sizing: border-box;
+    transition: border-color 0.2s;
+}
+
+.input-small-field:focus {
+    outline: none;
+    border-color: var(--accent-color);
+}
+
+.input-small-field::placeholder {
+    color: var(--text-muted);
+}
+
+.input-small-field-compact {
+    max-width: 120px;
+}
+
+/* Medium input - for secondary important fields */
+.input-medium-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.input-medium-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    flex-shrink: 0;
+    min-width: 100px;
+}
+
+.input-medium-field {
+    flex: 1;
+    padding: 8px 12px;
+    background: var(--bg-input);
+    border: 1px solid #3a3a4e;
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--text-primary);
+    box-sizing: border-box;
+    transition: border-color 0.2s;
+}
+
+.input-medium-field:focus {
+    outline: none;
+    border-color: var(--accent-color);
+}
+
+.input-medium-field::placeholder {
+    color: var(--text-muted);
+}

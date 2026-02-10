@@ -1055,7 +1055,9 @@ def register(app, state: AppState) -> None:
     @app.route("/api/switches", methods=["GET"])
     def get_switches():
         """Get all switch configurations."""
-        return jsonify([s.to_dict() for s in state.network.switches.values()])
+        return jsonify(
+            [s.to_dict(state.network) for s in state.network.switches.values()]
+        )
 
     @app.route("/api/switches/<switch_id>", methods=["GET"])
     def get_switch(switch_id: str):
@@ -1063,7 +1065,7 @@ def register(app, state: AppState) -> None:
         switch = state.network.get_switch(switch_id)
         if not switch:
             return jsonify({"error": "Switch not found"}), 404
-        return jsonify(switch.to_dict())
+        return jsonify(switch.to_dict(state.network))
 
     @app.route("/api/tracks/<int:x>/<int:y>/switch", methods=["POST"])
     def create_switch_at_track(x: int, y: int):
@@ -1084,7 +1086,7 @@ def register(app, state: AppState) -> None:
             existing = state.network.get_switch_at(x, y)
             if existing:
                 # Return existing switch (idempotent)
-                return jsonify(existing.to_dict()), 200
+                return jsonify(existing.to_dict(state.network)), 200
 
             # Generate switch ID
             switch_id = f"SW_{x}_{y}"
@@ -1109,7 +1111,7 @@ def register(app, state: AppState) -> None:
 
             state.network.add_switch(switch)
 
-            return jsonify(switch.to_dict()), 201
+            return jsonify(switch.to_dict(state.network)), 201
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception as e:
@@ -1127,7 +1129,7 @@ def register(app, state: AppState) -> None:
             if not switch:
                 return jsonify({"error": "Switch not found"}), 404
 
-            return jsonify(switch.to_dict())
+            return jsonify(switch.to_dict(state.network))
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -1183,7 +1185,7 @@ def register(app, state: AppState) -> None:
                     {
                         "success": True,
                         "message": message,
-                        "switch": switch.to_dict(),
+                        "switch": switch.to_dict(state.network),
                     }
                 )
             else:
@@ -1233,7 +1235,9 @@ def register(app, state: AppState) -> None:
             success = switch.lock(path_id, state_val)
 
             if success:
-                return jsonify({"success": True, "switch": switch.to_dict()})
+                return jsonify(
+                    {"success": True, "switch": switch.to_dict(state.network)}
+                )
             else:
                 return jsonify(
                     {"error": f"Switch already locked by path {switch.locked_by_path}"}
@@ -1271,7 +1275,9 @@ def register(app, state: AppState) -> None:
             success = switch.unlock(path_id)
 
             if success:
-                return jsonify({"success": True, "switch": switch.to_dict()})
+                return jsonify(
+                    {"success": True, "switch": switch.to_dict(state.network)}
+                )
             else:
                 if switch.is_locked():
                     return jsonify(
