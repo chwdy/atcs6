@@ -4837,5 +4837,533 @@ class TestMultiTilePlatformStopping:
         )
 
 
+class TestManualPathAssignmentAfterArrival:
+    """
+    Comprehensive tests for manual path assignment bug.
+
+    BUG: When a train arrives at a terminal (B) and user manually assigns
+    a one-off path to another terminal (C), the ATO GO button flashes
+    briefly and returns to STANDBY without the train moving.
+
+    The path appears to be established correctly (debug info and lookahead
+    JSON look correct, distance to stop is correct), but the train doesn't move.
+
+    These tests ensure that manual path assignment from a stopped train works
+    correctly and the train actually proceeds to the destination.
+    """
+
+    def _build_terminal_line_with_switch(self) -> RailwayNetwork:
+        """Build A-B-C line with switch at B connecting to branch C.
+
+        Layout:
+        A(0,0) --- B(3,0)[Station] --- (4,0)[SWITCH] --- (continue main line)
+                                        |
+                                      C(4,4)
+        """
+        from track import TRACK_EW, TRACK_NS, TRACK_NW, TRACK_SE
+        from switch import Switch
+
+        network = RailwayNetwork()
+
+        # Create main line: A to switch (0,0 to 4,0)
+        for x in range(5):
+            network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
+
+        # Create switch at (4,0) - connects east-west to north-south
+        # Replace the straight EW track at (4,0) with a switch track
+        network.remove_track(4, 0)
+        switch_track = TrackSegment(4, 0, track_bits=TRACK_EW | TRACK_NW)
+        switch_track.switch_state = 0  # Start with EW (main)
+        network.add_track(switch_track)
+
+        # Create switch entity
+        switch = Switch(switch_id="SW_B", x=4, y=0)
+        network.add_switch(switch)
+        switch_track.switch_id = switch.switch_id
+
+        # Create branch line from switch northward (4,1) to (4,4)
+        for y in range(1, 5):
+            network.add_track(TrackSegment(x=4, y=y, track_bits=TRACK_NS))
+
+        # Station A at west end (0,0)
+        network.add_station(
+            0,
+            0,
+            station_id="STA_A",
+            name="West Terminal",
+            length_cm=50.0,
+            top_speed_kmh=60.0,
+        )
+
+        # Station B at (3,0) - just before the switch (main terminal)
+        network.add_station(
+            3,
+            0,
+            station_id="STA_B",
+            name="East Terminal",
+            length_cm=50.0,
+            top_speed_kmh=60.0,
+        )
+
+        # Station C at end of branch (4,4) - the branch terminal
+        network.add_station(
+            4,
+            4,
+            station_id="STA_C",
+            name="East Branch Terminal",
+            length_cm=50.0,
+            top_speed_kmh=60.0,
+        )
+
+        # Create blocks
+        # Block A-B (main line from A to before switch)
+        # Note: stations create their own blocks automatically (STA_B_BLOCK, STA_C_BLOCK)
+        network.create_block_with_tracks(
+            block_id="BLK_A_B",
+            positions=[(1, 0), (2, 0)],
+            name="A to B",
+            length_cm=100.0,
+        )
+
+        # Block B-C (the branch from switch to C)
+        network.create_block_with_tracks(
+            block_id="BLK_B_C",
+            positions=[(4, 1), (4, 2), (4, 3)],
+            name="B to C Branch",
+            length_cm=150.0,
+        )
+
+        for block in network.blocks.values():
+            block.max_speed_kmh = 60.0
+
+        return network
+
+    def _run_until(
+        self,
+        simulation: SimulationController,
+        condition,
+        failure_message: str,
+        max_steps: int = 20000,
+        dt: float = 0.02,
+    ) -> None:
+        for _ in range(max_steps):
+            simulation.update(dt)
+            if condition():
+                return
+        pytest.fail(failure_message)
+
+    def test_train_arrives_at_b_manual_path_to_c_should_move(self):
+        """
+        Test the core bug scenario:
+        1. Train starts at A, assigned ONE_OFF route to B
+        2. Train arrives at B and stops
+        3. Manually create a one-off path from B to C
+        4. Train should move to C (not flash ATO and return to standby)
+        """
+        # Setup
+        network = self._build_terminal_line_with_switch()
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+
+        # Create train at A
+        car = TrainCar(car_id="CAR_BUG_TEST", car_type="LOCOMOTIVE", length=45.0)
+        train = Train(train_id="BUG_TEST_TRAIN", consist=[car], max_speed=60.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        # Setup controller
+        train.state = TrainState.IDLE
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.state = TrainState.IDLE
+        assert controller.set_direction_and_standby(Direction.EAST) is True
+
+        # Step 1: Assign ONE_OFF route from A to B
+        route = Route(route_id="ROUTE_A_TO_B", name="A to B", mode=RouteMode.ONE_OFF)
+        route.add_waypoint(Waypoint(platform_id="STA_B", dwell_time_sec=1.0))
+        route.assign_train(train.train_id)
+        route.activate(simulation.simulation_time)
+        network.routes[route.route_id] = route
+        train.assigned_route_id = route.route_id
+
+        # Wait for train to get path to B
+        self._run_until(
+            simulation,
+            lambda: (
+                train.assigned_path_id is not None
+                and dispatcher.get_path(train.assigned_path_id) is not None
+                and dispatcher.get_path(train.assigned_path_id).end_block_id
+                == "STA_B_BLOCK"
+            ),
+            "Train did not get path from A to B",
+        )
+
+        # Step 2: Force arrival at B (simulating the train arriving and stopping)
+        # Place train at B station (now at 3,0)
+        train.position = make_train_position((3, 0), Direction.EAST)
+        train.current_speed = 0.0
+        train.state = TrainState.STANDBY
+        controller.state = TrainState.STANDBY
+        controller.ato_running = False
+
+        # Cancel the path from A to B
+        if train.assigned_path_id:
+            dispatcher.cancel_path(train.assigned_path_id, force=True)
+        train.assigned_path_id = None
+        train.current_path = None
+        train.reserved_blocks = []
+
+        # Mark route as completed at B
+        exec_state = simulation.route_executor.execution_states.get(train.train_id)
+        if exec_state:
+            exec_state.current_waypoint_index = 0  # Completed the only waypoint
+
+        # Verify train is at B
+        assert simulation.route_executor._is_train_at_platform(train, "STA_B") is True
+        assert train.state == TrainState.STANDBY
+        assert train.current_speed == 0.0
+
+        # Step 3: Clear the A->B route and manually assign a new path from B to C
+        # This simulates the user action in the UI
+        old_route = network.routes.get("ROUTE_A_TO_B")
+        if old_route:
+            old_route.unassign_train(train.train_id)
+        train.assigned_route_id = None
+        if exec_state:
+            simulation.route_executor.execution_states.pop(train.train_id, None)
+
+        # Create new ONE_OFF route from B to C (the bug scenario)
+        new_route = Route(
+            route_id="ROUTE_B_TO_C", name="B to C", mode=RouteMode.ONE_OFF
+        )
+        new_route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=1.0))
+        new_route.assign_train(train.train_id)
+        new_route.activate(simulation.simulation_time)
+        network.routes[new_route.route_id] = new_route
+        train.assigned_route_id = new_route.route_id
+
+        # IMPORTANT: This is where the bug manifests
+        # The train should now get a path from B to C and start moving
+        # Instead of ATO flashing and returning to standby
+
+        # Step 4: Verify train gets path to C and actually moves
+        self._run_until(
+            simulation,
+            lambda: (
+                train.assigned_path_id is not None
+                and dispatcher.get_path(train.assigned_path_id) is not None
+                and dispatcher.get_path(train.assigned_path_id).end_block_id
+                == "STA_C_BLOCK"
+            ),
+            "BUG: Train did not get path from B to C after manual assignment. "
+            "ATO likely flashed and returned to standby without moving.",
+        )
+
+        # Verify the path is valid
+        path = dispatcher.get_path(train.assigned_path_id)
+        assert path is not None
+        assert path.start_block_id in ["STA_B_BLOCK", "BLK_B_C"]
+        assert path.end_block_id == "STA_C_BLOCK"
+
+        # Verify train has a valid state after path assignment
+        # The train may be RUNNING_AT_STATION (just arrived) or transitioning
+        assert train.state in [
+            TrainState.RUNNING_MOVING,
+            TrainState.STANDBY,
+            TrainState.RUNNING_AT_STATION,
+        ], (
+            f"BUG: Train state is {train.state}, expected valid state after path assignment. "
+            f"Path was assigned but train is in unexpected state."
+        )
+
+        # Verify ATO is running or ready
+        # Note: ATO may not be running yet if train is still in station state
+        assert controller.state in [
+            TrainState.RUNNING_MOVING,
+            TrainState.STANDBY,
+            TrainState.RUNNING_AT_STATION,
+        ], (
+            "BUG: Controller in unexpected state after path assignment. "
+            f"State: {controller.state}"
+        )
+
+    def test_manual_path_b_to_c_train_actually_arrives_at_c(self):
+        """
+        Extended test: Actually run the simulation and verify train arrives at C.
+
+        This ensures the full end-to-end flow works:
+        1. Train at B with manual B->C route
+        2. Route executor acquires path and calls depart()
+        3. Train departs B (ATO doesn't falsely stop at departure station)
+        4. Train arrives at C
+
+        BUG: _is_at_station() returned True at the departure station on the
+        first tick after depart() because the train had speed=0 and no route-
+        based waypoint filtering applied when ato_destination_block_id was set.
+
+        FIX: _is_at_station() now checks ato_destination_block_id and only
+        returns True when the train is at the destination block.
+        """
+        network = self._build_terminal_line_with_switch()
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+
+        # Create train already at B (simulating arrival at terminal)
+        car = TrainCar(car_id="CAR_AT_B", car_type="LOCOMOTIVE", length=45.0)
+        train = Train(train_id="TRAIN_AT_B", consist=[car], max_speed=60.0)
+        network.add_train(train)
+
+        # Place train at B station (3,0), facing east
+        network.place_train(train, 3, 0, Direction.EAST)
+        train.current_speed = 0.0
+        train.state = TrainState.IDLE
+
+        # Setup controller
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.state = TrainState.IDLE
+        assert controller.set_direction_and_standby(Direction.EAST) is True
+
+        # Assign B->C route (simulating UI action)
+        route = Route(
+            route_id="MANUAL_B_TO_C", name="Manual B to C", mode=RouteMode.ONE_OFF
+        )
+        route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=1.0))
+        route.assign_train(train.train_id)
+        route.activate(simulation.simulation_time)
+        network.routes[route.route_id] = route
+        train.assigned_route_id = route.route_id
+
+        # Run simulation - route executor should:
+        # 1. See STANDBY train with assigned route
+        # 2. Create path B->C via dispatcher
+        # 3. Set ato_destination_block_id
+        # 4. Call depart()
+        # 5. Train should start moving (not falsely stop at departure station)
+
+        # Wait for train to get path and start moving
+        self._run_until(
+            simulation,
+            lambda: train.state == TrainState.RUNNING_MOVING and controller.ato_running,
+            "BUG: Train did not start moving after path B->C assignment. "
+            f"State: {train.state}, ato_running: {controller.ato_running}, "
+            f"ato_destination_block_id: {controller.ato_destination_block_id}",
+            max_steps=500,
+        )
+
+        # Verify ato_destination_block_id is set
+        assert controller.ato_destination_block_id == "STA_C_BLOCK", (
+            f"ato_destination_block_id should be STA_C_BLOCK, "
+            f"got {controller.ato_destination_block_id}"
+        )
+
+        # Continue until train arrives at C
+        self._run_until(
+            simulation,
+            lambda: simulation.route_executor._is_train_at_platform(train, "STA_C"),
+            "BUG: Train did not arrive at C after manual path assignment. "
+            f"State: {train.state}, speed: {train.current_speed}, "
+            f"position: {getattr(train.position, 'head_tile', None)}",
+            max_steps=20000,
+        )
+
+        # Verify train is at C
+        assert simulation.route_executor._is_train_at_platform(train, "STA_C") is True
+
+    def test_path_assignment_preserves_correct_lookahead(self):
+        """
+        Test that manual path assignment results in correct lookahead info.
+
+        The bug description mentioned that debug info and lookahead JSON
+        looked correct, but train still didn't move. This test verifies
+        the lookahead calculation is correct after manual path assignment.
+        """
+        network = self._build_terminal_line_with_switch()
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+
+        # Create train at B (now at 3,0)
+        car = TrainCar(car_id="CAR_LOOKAHEAD", car_type="LOCOMOTIVE", length=45.0)
+        train = Train(train_id="LOOKAHEAD_TEST", consist=[car], max_speed=60.0)
+        network.add_train(train)
+        train.position = make_train_position((3, 0), Direction.EAST)
+        train.current_speed = 0.0
+        train.state = TrainState.STANDBY
+
+        # Setup controller
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.state = TrainState.STANDBY
+
+        # Manually assign B->C route
+        route = Route(
+            route_id="LOOKAHEAD_ROUTE", name="Lookahead Test", mode=RouteMode.ONE_OFF
+        )
+        route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=1.0))
+        route.assign_train(train.train_id)
+        route.activate(simulation.simulation_time)
+        network.routes[route.route_id] = route
+        train.assigned_route_id = route.route_id
+
+        # Run a few updates to let route executor process
+        for _ in range(100):
+            simulation.update(0.02)
+
+        # Check if path was assigned - if not, the bug is reproduced
+        if train.assigned_path_id is None:
+            pytest.fail(
+                "BUG: Lookahead test failed - path was not assigned. "
+                "Train at B with route to C did not get a path."
+            )
+
+        # Get lookahead info - use the controller's lookahead attribute
+        lookahead = controller.lookahead
+
+        # Verify lookahead shows correct destination
+        assert lookahead is not None, (
+            "Lookahead should not be None after path assignment"
+        )
+        assert len(lookahead) > 0, "Lookahead should contain lookahead data"
+
+        # The lookahead should show the path to C
+        # Check that we have blocks in the lookahead
+        block_ids_in_lookahead = [pt.block_id for pt in lookahead if pt.block_id]
+        assert len(block_ids_in_lookahead) > 0, (
+            "BUG: Lookahead contains no block IDs. "
+            "Path may not be properly established."
+        )
+
+        # Verify the destination block is in lookahead
+        assert (
+            "STA_C_BLOCK" in block_ids_in_lookahead
+            or "BLK_B_C" in block_ids_in_lookahead
+        ), (
+            f"BUG: Lookahead should contain path to C. Got blocks: {block_ids_in_lookahead}"
+        )
+
+        print(
+            f"✓ Lookahead correct: contains {len(lookahead)} points, blocks: {block_ids_in_lookahead}"
+        )
+
+    def test_consecutive_manual_paths_a_to_b_then_b_to_c(self):
+        """
+        Test two consecutive manual path assignments:
+        1. Assign A->B route, train departs A and arrives at B
+        2. Assign B->C route, train departs B and arrives at C
+
+        This simulates the exact workflow that triggers the bug:
+        Train runs ONE_OFF A->B, arrives at B, user assigns B->C.
+
+        BUG: On the B->C leg, _is_at_station() falsely detected arrival at B
+        (the departure station) on the first tick because speed=0 and no
+        ato_destination_block_id check was applied.
+
+        FIX: _is_at_station() now returns False at non-destination stations
+        when ato_destination_block_id is set.
+        """
+        network = self._build_terminal_line_with_switch()
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+
+        # Create train at A
+        car = TrainCar(car_id="CAR_CONSEC", car_type="LOCOMOTIVE", length=45.0)
+        train = Train(train_id="CONSEC_TEST", consist=[car], max_speed=60.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+        train.current_speed = 0.0
+        train.state = TrainState.IDLE
+
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.state = TrainState.IDLE
+        assert controller.set_direction_and_standby(Direction.EAST) is True
+
+        # First leg: A->B route
+        route_ab = Route(route_id="ROUTE_AB", name="A to B", mode=RouteMode.ONE_OFF)
+        route_ab.add_waypoint(Waypoint(platform_id="STA_B", dwell_time_sec=0.5))
+        route_ab.assign_train(train.train_id)
+        route_ab.activate(simulation.simulation_time)
+        network.routes[route_ab.route_id] = route_ab
+        train.assigned_route_id = route_ab.route_id
+
+        # Run until train departs and starts moving to B
+        self._run_until(
+            simulation,
+            lambda: train.state == TrainState.RUNNING_MOVING and controller.ato_running,
+            "Train did not start moving toward B",
+            max_steps=500,
+        )
+
+        # Run until train arrives at B
+        self._run_until(
+            simulation,
+            lambda: simulation.route_executor._is_train_at_platform(train, "STA_B"),
+            "Train did not arrive at B",
+            max_steps=20000,
+        )
+
+        # Wait for the route to complete and train to return to STANDBY
+        # (ONE_OFF route completes after dwell time at the only waypoint)
+        self._run_until(
+            simulation,
+            lambda: train.state in [TrainState.STANDBY, TrainState.IDLE],
+            f"Train did not reach STANDBY/IDLE after arriving at B. State: {train.state}",
+            max_steps=2000,
+        )
+
+        # Clear the completed route
+        train.assigned_route_id = None
+        if train.assigned_path_id:
+            dispatcher.cancel_path(train.assigned_path_id, force=True)
+        train.assigned_path_id = None
+        train.current_path = None
+        train.reserved_blocks = []
+        controller.ato_destination_block_id = None
+        train.ato_destination_block_id = None
+
+        # Make sure train is in STANDBY for the next leg
+        if train.state == TrainState.IDLE:
+            controller.state = TrainState.IDLE
+            assert controller.set_direction_and_standby(Direction.EAST) is True
+
+        assert train.state == TrainState.STANDBY, (
+            f"Expected STANDBY before second leg, got {train.state}"
+        )
+
+        # Verify at B
+        assert simulation.route_executor._is_train_at_platform(train, "STA_B")
+
+        # Second leg: B->C route (THE BUG SCENARIO)
+        route_bc = Route(route_id="ROUTE_BC", name="B to C", mode=RouteMode.ONE_OFF)
+        route_bc.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.5))
+        route_bc.assign_train(train.train_id)
+        route_bc.activate(simulation.simulation_time)
+        network.routes[route_bc.route_id] = route_bc
+        train.assigned_route_id = route_bc.route_id
+
+        # Train should get path to C and start moving
+        self._run_until(
+            simulation,
+            lambda: train.state == TrainState.RUNNING_MOVING and controller.ato_running,
+            f"BUG: Train did not start moving toward C after B->C assignment. "
+            f"State: {train.state}, ato_running: {controller.ato_running}",
+            max_steps=500,
+        )
+
+        # Arrive at C
+        self._run_until(
+            simulation,
+            lambda: simulation.route_executor._is_train_at_platform(train, "STA_C"),
+            f"BUG: Train did not arrive at C after consecutive path assignment. "
+            f"State: {train.state}, speed: {train.current_speed}, "
+            f"position: {getattr(train.position, 'head_tile', None)}",
+            max_steps=20000,
+        )
+
+
 if __name__ == "__main__":
     print("Run tests with: pytest tests/test_trains.py -v")

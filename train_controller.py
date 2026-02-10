@@ -1623,7 +1623,12 @@ class TrainController:
         A train is "at station" if:
         - It's in a block that contains a station
         - It's stopped (speed near zero)
-        - The station is a scheduled stop on its route
+        - The station is a scheduled stop on its route OR is the ATO destination
+
+        When ato_destination_block_id is set (manual path), the train should
+        only stop at the destination block, not at intermediate or departure
+        stations. This prevents a false-positive "arrival" at the departure
+        station on the first tick after depart() when speed is still 0.
 
         Returns:
             True if train is at a scheduled station stop
@@ -1654,7 +1659,13 @@ class TrainController:
                     if waypoint.platform_id == station_id:
                         return True
 
-        # If no route, consider any station as a potential stop
+        # If ato_destination_block_id is set (manual path), only stop at the
+        # destination block. This prevents stopping at the departure station
+        # or at intermediate stations along the path.
+        if self.ato_destination_block_id:
+            return current_block_id == self.ato_destination_block_id
+
+        # If no route and no destination, consider any station as a potential stop
         return True
 
     # -------------------------------------------------------------------------

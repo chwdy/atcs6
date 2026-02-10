@@ -230,6 +230,10 @@ class RouteExecutor:
                 train.current_path = self._convert_path_to_train_path(path_result.path)
                 train.path_index = 0
                 train.assigned_path_id = path_result.path.path_id
+                # Set ato_destination_block_id for proper ATO stopping
+                if path_result.path.end_block_id:
+                    controller.ato_destination_block_id = path_result.path.end_block_id
+                    train.ato_destination_block_id = path_result.path.end_block_id
                 if train.state == TrainState.STANDBY:
                     controller.depart()
             else:
