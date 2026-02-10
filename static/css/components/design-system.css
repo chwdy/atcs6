@@ -147,14 +147,36 @@
 /* ============================================================================
    DESIGN SYSTEM - Typography Scale
    ============================================================================ */
-.text-2xl { font-size: 24px; }  /* Major values (track bits display) */
-.text-xl { font-size: 16px; }   /* Panel titles */
-.text-lg { font-size: 14px; }   /* Section headers */
-.text-base { font-size: 13px; } /* Default text, values */
-.text-sm { font-size: 12px; }   /* Labels, metadata */
-.text-xs { font-size: 11px; }   /* Helper text */
-.text-xxs { font-size: 10px; }  /* Badges, small UI */
-.text-tiny { font-size: 9px; }  /* Micro text */
+/* 4 distinct sizes: xl (Hero), l (Major), m (Standard), s (Micro) */
+.text-xl { 
+    font-size: 24px; 
+    font-weight: 800; /* Heavy/Black */
+} 
+
+.text-l { 
+    font-size: 16px; 
+    font-weight: 700; /* Bold */
+}
+
+.text-m { 
+    font-size: 13px; 
+    font-weight: 400; /* Normal */
+}
+
+.text-s { 
+    font-size: 10px; 
+    font-family: var(--font-mono); 
+    font-weight: 300; /* Light/Thin */
+}
+
+/* Legacy mappings for backward compatibility, mapped to nearest new tier */
+.text-2xl { font-size: 24px; font-weight: 800; } /* Maps to xl */
+.text-lg { font-size: 14px; font-weight: 600; }  /* Between m and l */
+.text-base { font-size: 13px; }                  /* Maps to m */
+.text-sm { font-size: 12px; }                    /* Small m */
+.text-xs { font-size: 11px; }                    /* Large s */
+.text-xxs { font-size: 10px; }                   /* Maps to s */
+.text-tiny { font-size: 9px; }                   /* Smaller than s */
 
 /* ============================================================================
    DESIGN SYSTEM - Color Palette (Semantic)

@@ -79,34 +79,51 @@
 /* Properties Form */
 .prop-group {
     margin-bottom: 6px;
+    display: flex; /* Enable side-by-side layout */
+    align-items: center; /* Align vertically */
+    justify-content: space-between; /* Space out label and input */
+    gap: 8px; /* Space between label and input */
 }
 
 .prop-label {
     display: block;
-    font-size: 0.75rem;
+    font-size: 0.75rem; /* ~12px */
     color: var(--text-secondary);
-    margin-bottom: 2px;
+    margin-bottom: 0; /* Remove bottom margin for side-by-side */
+    flex: 0 0 auto; /* Label takes necessary width */
+    max-width: 40%; /* Limit label width */
 }
 
 .prop-value {
     font-family: var(--font-mono);
     font-size: 0.8rem;
     color: var(--text-primary);
+    flex: 1; /* Value takes remaining space */
+    text-align: right; /* Right align value */
+}
+
+.prop-input {
+    /* ... previous input styles ... */
+    flex: 1; /* Input takes remaining space */
+    text-align: left; /* Keep input left-aligned or right if preferred */
 }
 
 .prop-input {
     width: 100%;
-    background-color: var(--bg-dark);
-    border: 1px solid var(--border-color);
+    background-color: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border-color);
     color: var(--text-primary);
-    padding: 4px;
-    border-radius: 4px;
+    padding: 2px 4px; /* Reduced vertical padding */
+    border-radius: 0; /* No radius for underline style */
     font-family: var(--font-mono);
+    line-height: 1.5; /* 1.5x text height */
+    height: auto;
 }
 
 .prop-input:focus {
     outline: none;
-    border-color: var(--accent-color);
+    border-bottom-color: var(--accent-color);
 }
 
 
