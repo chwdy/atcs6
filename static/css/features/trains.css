@@ -7,21 +7,21 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px 16px;
+    padding: 8px 10px;
     background: linear-gradient(135deg, rgba(130, 87, 229, 0.15), rgba(130, 87, 229, 0.05));
     border-bottom: 1px solid var(--border-color);
     border-radius: 6px 6px 0 0;
-    margin: -15px -15px 15px -15px;
+    margin: -10px -10px 10px -10px;
 }
 
 .train-panel-header h3 {
     margin: 0;
-    font-size: 16px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--text-primary);
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
 }
 
 .train-panel-header .btn-danger {
@@ -34,15 +34,15 @@
     background: var(--bg-dark);
     border: 1px solid var(--border-color);
     border-radius: 6px;
-    padding: 12px;
-    margin-bottom: 16px;
+    padding: 8px;
+    margin-bottom: 12px;
 }
 
 .train-status-row {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 6px 0;
+    padding: 4px 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
@@ -56,13 +56,13 @@
 }
 
 .train-status-label {
-    font-size: 12px;
+    font-size: 10px;
     color: var(--text-secondary);
     font-weight: 500;
 }
 
 .train-status-value {
-    font-size: 13px;
+    font-size: 11px;
     color: var(--text-primary);
     font-family: var(--font-mono);
 }
@@ -364,11 +364,11 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 10px 12px;
+    padding: 6px 8px;
     background: var(--bg-dark);
     border: 1px solid var(--border-color);
     border-radius: 6px;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
     cursor: pointer;
     transition: all 0.2s ease;
 }
@@ -389,13 +389,13 @@
 }
 
 .train-list-id {
-    font-size: 13px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--text-primary);
 }
 
 .train-list-state {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
 }
 

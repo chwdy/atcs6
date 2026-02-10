@@ -358,35 +358,35 @@
 
 /* Route editor compact controls */
 .info-box {
-    padding: 12px;
+    padding: 8px;
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid var(--border-color);
-    border-radius: 6px;
-    margin: 8px 0;
+    border-radius: 4px;
+    margin: 6px 0;
     color: var(--text-secondary);
-    line-height: 1.5;
+    line-height: 1.4;
 }
 
 .info-box-track {
     background: #2a3a2e;
-    padding: 12px;
+    padding: 8px;
     border-radius: 4px;
-    margin: 8px 0;
+    margin: 6px 0;
 }
 
 .info-box-signal {
     background: #2a2a3e;
-    padding: 8px;
+    padding: 6px;
     border-radius: 4px;
-    margin: 8px 0;
+    margin: 6px 0;
 }
 
 .info-box-warning {
     background: #3a2a1a;
     border-left: 3px solid var(--warning-color);
-    padding: 12px;
+    padding: 8px;
     border-radius: 4px;
-    margin: 8px 0;
+    margin: 6px 0;
 }
 
 /* Badges */
@@ -656,64 +656,3 @@
 .bit-toggle-label .bit-name.inactive {
     color: #ccc;
 }
-
-/* ============================================================================
-   MISSING UTILITY CLASSES
-   ============================================================================ */
-
-/* Flex utilities */
-.flex { display: flex; }
-.flex-1 { flex: 1; }
-.flex-3 { flex: 3; }
-.flex-col { flex-direction: column; }
-.items-center { align-items: center; }
-.justify-between { justify-content: space-between; }
-.flex-between { display: flex; justify-content: space-between; align-items: center; }
-.flex-center { display: flex; justify-content: center; align-items: center; }
-
-/* Gap utilities */
-.gap-4 { gap: 4px; }
-.gap-8 { gap: 8px; }
-.gap-12 { gap: 12px; }
-
-/* Border utilities */
-.border { border: 1px solid var(--border-color); }
-.border-b { border-bottom: 1px solid var(--border-color); }
-.border-l-4 { border-left: 4px solid; }
-.rounded { border-radius: 4px; }
-.rounded-sm { border-radius: 3px; }
-.rounded-lg { border-radius: 6px; }
-
-/* Additional spacing utilities */
-.m-0 { margin: 0; }
-.mt-2 { margin-top: 2px; }
-.mt-4 { margin-top: 4px; }
-.mt-8 { margin-top: 8px; }
-.mt-12 { margin-top: 12px; }
-.mt-16 { margin-top: 16px; }
-.mt-20 { margin-top: 20px; }
-.mb-4 { margin-bottom: 4px; }
-.mb-8 { margin-bottom: 8px; }
-.mb-12 { margin-bottom: 12px; }
-.mb-16 { margin-bottom: 16px; }
-.mb-20 { margin-bottom: 20px; }
-.my-6 { margin-top: 6px; margin-bottom: 6px; }
-.my-12 { margin-top: 12px; margin-bottom: 12px; }
-.pr-8 { padding-right: 8px; }
-.pb-12 { padding-bottom: 12px; }
-.p-4 { padding: 4px; }
-.p-6 { padding: 6px; }
-.p-8 { padding: 8px; }
-.p-10 { padding: 10px; }
-.p-12 { padding: 12px; }
-.p-16 { padding: 16px; }
-.p-20 { padding: 20px; }
-
-/* Font weight utilities */
-.font-bold { font-weight: bold; }
-.font-semibold { font-weight: 600; }
-.font-normal { font-weight: normal; }
-
-/* Display utilities */
-.block { display: block; }
-.inline-block { display: inline-block; }

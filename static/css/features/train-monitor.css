@@ -408,26 +408,26 @@
 /* Info display group: compact style like track bits */
 .info-display-group {
     background: var(--bg-section);
-    border-radius: 6px;
-    padding: 12px;
-    margin-bottom: 16px;
+    border-radius: 4px;
+    padding: 8px;
+    margin-bottom: 8px;
     border: 1px solid var(--border-color);
 }
 
 .info-display-header {
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 600;
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    margin-bottom: 10px;
+    margin-bottom: 6px;
 }
 
 .info-display-item {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 6px 0;
+    padding: 4px 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
@@ -441,14 +441,14 @@
 }
 
 .info-display-label {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-secondary);
     font-weight: 500;
 }
 
 .info-display-value {
     font-family: var(--font-mono);
-    font-size: 13px;
+    font-size: 11px;
     color: var(--text-primary);
     font-weight: 600;
 }
