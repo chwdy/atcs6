@@ -1,0 +1,509 @@
+textarea {
+    font-family: inherit;
+}
+
+.app-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+/* Header */
+.app-header {
+    height: 50px;
+    background-color: var(--bg-panel);
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+}
+
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    font-size: 0.75rem;
+}
+
+.logo h1 {
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: 700;
+}
+
+.logo .icon {
+    font-size: 1.5rem;
+    line-height: 1;
+}
+
+.controls {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+}
+
+.simulation-controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding-right: 20px;
+    border-right: 1px solid var(--border-color);
+}
+
+#btn-play-pause {
+    min-width: 80px;
+    justify-content: center;
+}
+
+.speed-presets {
+    display: flex;
+    gap: 2px;
+    background: var(--bg-dark);
+    padding: 2px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+}
+
+.speed-btn {
+    padding: 4px 8px;
+    font-size: 0.75rem;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    border-radius: 2px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.speed-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.speed-btn.active {
+    background: var(--accent-color);
+    color: white;
+    font-weight: 600;
+}
+
+.mode-switch {
+    display: flex;
+    background-color: var(--bg-dark);
+    border-radius: 6px;
+    padding: 2px;
+}
+
+.mode-switch .btn {
+    background: transparent;
+    border: none;
+    padding: 6px 12px;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.mode-switch .btn.active {
+    background-color: var(--bg-panel);
+    color: var(--text-primary);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+/* App Body (Main Layout) */
+.app-body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+}
+
+.content-area {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+}
+
+.workspace {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+}
+
+/* Secondary Sidebar (Block/Signal Editor) - Left of Canvas */
+.secondary-sidebar {
+    width: 350px;
+    min-width: 280px;
+    max-width: 500px;
+    background-color: #1a1a24;
+    border-right: 1px solid var(--border-color);
+    display: none;  /* Hidden by default */
+    flex-direction: column;
+    overflow: hidden;
+    /* Position relative in flow */
+    position: relative;
+    flex-shrink: 0;
+    z-index: 10;
+}
+
+.secondary-sidebar.visible {
+    display: flex;
+}
+
+/* Compact mode for secondary sidebar (e.g., route creation panel) */
+.secondary-sidebar.compact {
+    width: auto;
+    min-width: 240px;
+    max-width: 320px;
+}
+
+.secondary-sidebar-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 24px;
+    background: linear-gradient(135deg, rgba(130, 87, 229, 0.1), rgba(130, 87, 229, 0.05));
+    border-bottom: 1px solid var(--border-color);
+}
+
+.secondary-sidebar-nav {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.secondary-nav-btn {
+    background: #0d1020;
+    border: 1px solid #3a3a4e;
+    color: var(--text-secondary);
+    width: var(--control-height-sm);
+    height: var(--control-height-sm);
+    border-radius: var(--control-radius-sm);
+    cursor: pointer;
+    line-height: 1;
+    padding: 0;
+    font-size: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.secondary-nav-btn:hover:not(:disabled) {
+    color: var(--text-primary);
+    border-color: #6a6a86;
+}
+
+.secondary-nav-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+.secondary-nav-btn.active {
+    color: #ffe08a;
+    border-color: #9f8241;
+    background: #3a3425;
+}
+
+.secondary-sidebar-header h3 {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.secondary-sidebar-header .close-btn {
+    background: #0d1020;
+    border: 1px solid #3a3a4e;
+    color: var(--text-secondary);
+    font-size: 14px;
+    cursor: pointer;
+    width: var(--control-height-sm);
+    height: var(--control-height-sm);
+    border-radius: var(--control-radius-sm);
+    padding: 0;
+    line-height: 1;
+    transition: color 0.2s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.secondary-sidebar-header .close-btn:hover {
+    color: var(--danger-color);
+    border-color: #6a6a86;
+}
+
+.secondary-sidebar-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 15px;
+}
+
+.secondary-sidebar-tabs {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 24px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    background: rgba(255, 255, 255, 0.02);
+    overflow-x: auto;
+}
+
+.secondary-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 160px;
+    min-width: 0;
+    border: 1px solid var(--border-color);
+    background: #232336;
+    color: var(--text-secondary);
+    border-radius: 6px;
+    padding: 2px 6px;
+}
+
+.secondary-tab.active {
+    background: #2f3250;
+    color: var(--text-primary);
+    border-color: #6b76bd;
+}
+
+.secondary-tab-label {
+    border: none;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: 0.72rem;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0;
+}
+
+.secondary-tab-close {
+    border: none;
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.8rem;
+    line-height: 1;
+    padding: 0;
+}
+
+.secondary-tab-close:hover {
+    color: var(--danger-color);
+}
+
+.secondary-sidebar-breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 30px;
+    padding: 6px 24px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    background: rgba(255, 255, 255, 0.02);
+    overflow-x: auto;
+    white-space: nowrap;
+}
+
+.secondary-breadcrumb-segment {
+    background: none;
+    border: none;
+    color: #9db0ff;
+    font-size: 0.75rem;
+    padding: 0;
+    cursor: pointer;
+}
+
+.secondary-breadcrumb-segment:hover {
+    color: #c4d0ff;
+}
+
+.secondary-breadcrumb-current {
+    color: var(--text-primary);
+    font-size: 0.75rem;
+}
+
+.secondary-breadcrumb-separator {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+}
+
+/* Resize handle for secondary sidebar - on RIGHT edge */
+.secondary-sidebar::before {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 8px;
+    cursor: ew-resize;
+    background: linear-gradient(to right, transparent, rgba(130, 87, 229, 0.3));
+    opacity: 0;
+    transition: opacity 0.2s;
+    z-index: 1000;
+}
+
+.secondary-sidebar:hover::before {
+    opacity: 1;
+}
+
+.secondary-sidebar.resizing::before {
+    opacity: 1;
+    background: linear-gradient(to right, transparent, rgba(130, 87, 229, 0.6));
+}
+
+/* Sidebar */
+.sidebar {
+    width: 370px;
+    min-width: 200px;
+    max-width: 600px;
+    background-color: var(--bg-panel);
+    border-right: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+    flex-shrink: 0;
+}
+
+/* Split sidebar: Fixed tools at top, scrollable content below */
+.sidebar-tools-section {
+    flex-shrink: 0;
+    padding: 10px;
+    border-bottom: 2px solid var(--border-color);
+    background-color: var(--bg-panel);
+}
+
+.sidebar-content-section {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+/* Thinner, more transparent scrollbar for sidebar content */
+.sidebar-content-section::-webkit-scrollbar {
+    width: 6px;
+}
+
+.sidebar-content-section::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.1);
+}
+
+.sidebar-content-section::-webkit-scrollbar-thumb {
+    background: rgba(130, 87, 229, 0.3);
+    border-radius: 3px;
+}
+
+.sidebar-content-section::-webkit-scrollbar-thumb:hover {
+    background: rgba(130, 87, 229, 0.5);
+}
+
+/* Resize handle visual indicator - full edge width */
+.sidebar::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 8px;
+    cursor: ew-resize;
+    background: linear-gradient(to right, transparent, rgba(130, 87, 229, 0.3));
+    opacity: 0;
+    transition: opacity 0.2s;
+    z-index: 1000;
+}
+
+.sidebar:hover::after {
+    opacity: 1;
+}
+
+.sidebar.resizing::after {
+    opacity: 1;
+    background: linear-gradient(to right, transparent, rgba(130, 87, 229, 0.6));
+}
+
+.sidebar-section {
+    padding: 15px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.sidebar-section h3 {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+    letter-spacing: 0.05em;
+}
+
+.properties-empty {
+    color: #666;
+    font-size: 12px;
+}
+
+.collapsible-sidebar-section {
+    padding-top: 10px;
+    padding-bottom: 10px;
+}
+
+.sidebar-section-toggle {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0;
+    cursor: pointer;
+}
+
+.sidebar-section-toggle h3 {
+    margin: 0;
+}
+
+.sidebar-section-toggle::after {
+    content: '▼';
+    font-size: 10px;
+    color: var(--text-secondary);
+    transition: transform 0.2s ease;
+}
+
+.sidebar-section-body {
+    max-height: 420px;
+    overflow: hidden;
+    opacity: 1;
+    margin-top: 10px;
+    transition: max-height 0.2s ease, opacity 0.2s ease, margin-top 0.2s ease;
+}
+
+.collapsible-sidebar-section.collapsed .sidebar-section-toggle::after {
+    transform: rotate(-90deg);
+}
+
+.collapsible-sidebar-section.collapsed .sidebar-section-body {
+    max-height: 0;
+    opacity: 0;
+    margin-top: 0;
+}
+
+.debug-control-span-2 {
+    grid-column: 1 / -1;
+}
+
+.settings-label-inline {
+    width: auto;
+    margin-right: 5px;
+}
+
+.settings-select-fill {
+    flex: 1;
+}
