@@ -1,10 +1,10 @@
 /* UI Elements */
 .btn {
-    padding: 8px 16px;
+    padding: 6px 12px;
     border-radius: 6px;
     border: none;
     font-weight: 500;
-    font-size: 12px;
+    font-size: 11px;
     line-height: 1.2;
     cursor: pointer;
     transition: all 0.2s;
@@ -63,8 +63,8 @@
 
 .btn-sm {
     min-height: var(--control-height-sm);
-    padding: 0 10px;
-    font-size: 12px;
+    padding: 0 8px;
+    font-size: 11px;
     border-radius: var(--control-radius-sm);
 }
 
@@ -78,19 +78,19 @@
 
 /* Properties Form */
 .prop-group {
-    margin-bottom: 10px;
+    margin-bottom: 6px;
 }
 
 .prop-label {
     display: block;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     color: var(--text-secondary);
-    margin-bottom: 4px;
+    margin-bottom: 2px;
 }
 
 .prop-value {
     font-family: var(--font-mono);
-    font-size: 0.9rem;
+    font-size: 0.8rem;
     color: var(--text-primary);
 }
 
@@ -99,7 +99,7 @@
     background-color: var(--bg-dark);
     border: 1px solid var(--border-color);
     color: var(--text-primary);
-    padding: 6px;
+    padding: 4px;
     border-radius: 4px;
     font-family: var(--font-mono);
 }
@@ -112,16 +112,16 @@
 
 /* Property Groups */
 .property-group-header {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--text-secondary);
-    margin: 16px 0 8px 0;
+    margin: 8px 0 4px 0;
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
 
 .property-item-row {
-    margin-bottom: 8px;
+    margin-bottom: 4px;
 }
 
 /* Signal Summary Row */
@@ -351,14 +351,14 @@
 .debug-panel {
     background: var(--bg-panel);
     border-radius: 8px;
-    padding: 16px;
-    margin-top: 12px;
+    padding: 8px;
+    margin-top: 8px;
 }
 
 .debug-controls {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 4px;
+    gap: 2px;
     margin-bottom: 0;
 }
 
@@ -366,8 +366,8 @@
     display: flex;
     align-items: center;
     cursor: pointer;
-    font-size: 11px;
-    padding: 3px 4px;
+    font-size: 10px;
+    padding: 2px 4px;
     border-radius: 4px;
     transition: background 0.2s;
     white-space: nowrap;
@@ -420,9 +420,9 @@
 }
 
 .setting-input-compact {
-    padding: 6px 8px;
-    font-size: 12px;
-    height: 28px;
+    padding: 4px 6px;
+    font-size: 11px;
+    height: 24px;
 }
 
 .input-group {
@@ -437,8 +437,8 @@
 }
 
 .input-group .btn {
-    padding: 0 10px;
-    height: 28px;
+    padding: 0 8px;
+    height: 24px;
     font-size: 11px;
     flex-shrink: 0;
 }
@@ -522,8 +522,8 @@
 
 /* Train Debug Panel */
 .train-debug-panel {
-    margin-top: 12px;
-    padding: 8px;
+    margin-top: 8px;
+    padding: 6px;
     background: var(--bg-dark);
     border-radius: 4px;
     border: 1px solid var(--border-color);
@@ -534,8 +534,8 @@
 }
 
 .debug-section-header {
-    margin: 0 0 8px 0;
-    font-size: 12px;
+    margin: 0 0 4px 0;
+    font-size: 11px;
     font-weight: bold;
     color: var(--accent-purple);
 }
@@ -543,8 +543,8 @@
 .train-debug-row {
     display: flex;
     justify-content: space-between;
-    padding: 3px 0;
-    font-size: 11px;
+    padding: 2px 0;
+    font-size: 10px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
@@ -641,19 +641,19 @@
 .bit-toggles {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 8px;
-    margin: 12px 0;
+    gap: 4px;
+    margin: 8px 0;
 }
 
 .bit-toggles label {
     display: flex;
     align-items: center;
-    padding: 6px;
+    padding: 4px;
     background: var(--bg-dark);
     border-radius: 4px;
     cursor: pointer;
     transition: background 0.2s;
-    font-size: 11px;
+    font-size: 10px;
 }
 
 .bit-toggles label:hover {

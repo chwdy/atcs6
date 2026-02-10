@@ -378,7 +378,7 @@ textarea {
 /* Split sidebar: Fixed tools at top, scrollable content below */
 .sidebar-tools-section {
     flex-shrink: 0;
-    padding: 10px;
+    padding: 6px 8px;
     border-bottom: 2px solid var(--border-color);
     background-color: var(--bg-panel);
 }
@@ -432,15 +432,15 @@ textarea {
 }
 
 .sidebar-section {
-    padding: 15px;
+    padding: 8px 10px;
     border-bottom: 1px solid var(--border-color);
 }
 
 .sidebar-section h3 {
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     text-transform: uppercase;
     color: var(--text-secondary);
-    margin-bottom: 10px;
+    margin-bottom: 6px;
     letter-spacing: 0.05em;
 }
 
@@ -481,7 +481,7 @@ textarea {
     max-height: 420px;
     overflow: hidden;
     opacity: 1;
-    margin-top: 10px;
+    margin-top: 6px;
     transition: max-height 0.2s ease, opacity 0.2s ease, margin-top 0.2s ease;
 }
 
