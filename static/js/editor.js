@@ -82,6 +82,10 @@ class Editor {
     setupCollapsibleCategories() {
         return this.uiHandler.setupCollapsibleCategories();
     }
+
+    setupCollapsibleSidebarSections() {
+        return this.uiHandler.setupCollapsibleSidebarSections();
+    }
     
     toggleCategory(category) {
         return this.uiHandler.toggleCategory(category);
@@ -549,6 +553,7 @@ class Editor {
 
         // Collapsible tool categories
         this.setupCollapsibleCategories();
+        this.setupCollapsibleSidebarSections();
 
         const canvas = this.renderer.canvas;
 
@@ -1021,9 +1026,13 @@ class Editor {
 
                 // Show warnings about signals but allow proceeding
                 if (validation.warnings.length > 0) {
-                    const proceed = confirm(
-                        'Warning:\n' + validation.warnings.join('\n') + '\n\nProceed anyway?'
-                    );
+                    const proceed = await showConfirmModal({
+                        title: 'Proceed with Warnings',
+                        message: 'Block creation reported warnings.',
+                        detail: `${validation.warnings.join('\n')}\n\nProceed anyway?`,
+                        confirmText: 'Proceed',
+                        confirmVariant: 'primary'
+                    });
                     if (!proceed) return;
                 }
 
@@ -1077,12 +1086,13 @@ class Editor {
                 const hasSignals = validation.signalsInPath.length > 0;
                 if (hasSignals) {
                     const signalCount = validation.signalsInPath.length;
-                    const proceed = confirm(
-                        `Warning: Path contains ${signalCount} signal(s).\n\n` +
-                        'These signals will be INVALIDATED and need reconfiguration.\n' +
-                        '(They will show an orange warning triangle)\n\n' +
-                        'Proceed anyway?'
-                    );
+                    const proceed = await showConfirmModal({
+                        title: 'Signals Will Be Invalidated',
+                        message: `Path contains ${signalCount} signal(s).`,
+                        detail: 'These signals will be invalidated and need reconfiguration.\n(They will show an orange warning triangle)\n\nProceed anyway?',
+                        confirmText: 'Proceed',
+                        confirmVariant: 'primary'
+                    });
                     if (!proceed) return;
                 }
 
@@ -1321,7 +1331,13 @@ class Editor {
                 if (hasSignal) items.push(`Signal ${existingTrack.signal_id || 'at this location'}`);
                 if (hasPlatform) items.push(`Platform ${existingTrack.station_name || existingTrack.station_id || 'at this location'}`);
 
-                const confirmed = confirm(`Delete ${items.join(' and ')}?\n\nThe track will remain.`);
+                const confirmed = await showConfirmModal({
+                    title: 'Delete Objects',
+                    message: `Delete ${items.join(' and ')}?`,
+                    detail: 'The track will remain in place.',
+                    confirmText: 'Delete',
+                    confirmVariant: 'danger'
+                });
                 if (!confirmed) return;
 
                 if (hasSignal) {

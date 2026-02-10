@@ -60,6 +60,16 @@ class BlockEditorHandler {
         return `hsl(${hue}, 70%, 50%)`;
     }
 
+    getBlockStateClass(state) {
+        const map = {
+            free: 'block-state-free',
+            reserved: 'block-state-reserved',
+            occupied: 'block-state-occupied',
+            caution: 'block-state-caution'
+        };
+        return map[(state || '').toLowerCase()] || 'block-state-unknown';
+    }
+
     // === Block Editor Panel ===
 
     async showEditor(blockId) {
@@ -85,13 +95,10 @@ class BlockEditorHandler {
         }
 
         const blockColor = this.getColor(blockId);
-        const stateColor = block.state === 'free' ? '#04d361' :
-                          block.state === 'reserved' ? '#ffd93d' :
-                          block.state === 'occupied' ? '#e83f5b' :
-                          block.state === 'caution' ? '#ff9500' : '#888';
+        const blockStateClass = this.getBlockStateClass(block.state);
 
         const content = `
-            <div class="block-editor-panel" data-block-id="${blockId}" style="background: transparent;">
+            <div class="block-editor-panel" data-block-id="${blockId}">
                 ${renderHeaderId(blockId, blockColor)}
                 
                 <!-- INFO SECTION (Read-only, styled like Train Control) -->
@@ -101,7 +108,7 @@ class BlockEditorHandler {
                         ${block.occupied_by ? `<span class="badge badge-warning text-xxs">🚂 ${block.occupied_by}</span>` : ''}
                     </div>
                     
-                    <div class="text-2xl font-bold mb-4 font-mono" style="color: ${stateColor}" id="block-state-display">
+                    <div class="text-2xl font-bold mb-4 font-mono block-state-display ${blockStateClass}" id="block-state-display">
                         ${(block.state || 'free').toUpperCase()}
                     </div>
                     
@@ -137,7 +144,7 @@ class BlockEditorHandler {
                 </div>
                 
                 <!-- EDITABLE PROPERTIES SECTION -->
-                <div class="control-section mt-12 pt-12" style="border-top: 1px solid var(--border-color);">
+                <div class="control-section control-section-divider mt-12 pt-12">
                     <h4 class="text-sm text-muted mb-8">Properties</h4>
                     
                     ${renderTextInput('block-name-input', 'Block Name', block.name || '', { placeholder: 'Enter block name...' })}
@@ -193,27 +200,13 @@ class BlockEditorHandler {
 
                     // Update the status light and text directly without re-rendering
                     const newState = result.state || 'FREE';
-                    const stateColor = newState === 'free' ? '#04d361' :
-                                       newState === 'reserved' ? '#ffd93d' :
-                                       newState === 'occupied' ? '#e83f5b' :
-                                       newState === 'caution' ? '#ff9500' : '#888';
-
-                    // Find and update the status light (first span in the state row)
                     const panel = document.querySelector(`.block-editor-panel[data-block-id="${blockId}"]`);
                     if (panel) {
                         const stateDisplay = panel.querySelector('#block-state-display');
                         if (stateDisplay) {
                             stateDisplay.textContent = newState.toUpperCase();
-                            stateDisplay.style.color = stateColor;
-                        }
-                        // Update the light (sibling span before state display)
-                        const stateRow = stateDisplay?.parentElement;
-                        if (stateRow) {
-                            const light = stateRow.querySelector('span:first-child');
-                            if (light) {
-                                light.style.background = stateColor;
-                                light.style.boxShadow = `0 0 8px ${stateColor}`;
-                            }
+                            stateDisplay.classList.remove('block-state-free', 'block-state-reserved', 'block-state-occupied', 'block-state-caution', 'block-state-unknown');
+                            stateDisplay.classList.add(this.getBlockStateClass(newState));
                         }
                     }
                 } catch (err) {
@@ -283,7 +276,14 @@ class BlockEditorHandler {
         // Delete button
         if (deleteBtn) {
             deleteBtn.onclick = async () => {
-                if (!confirm(`Delete block "${blockId}"? This will remove block assignment from all tracks.`)) {
+                const confirmed = await showConfirmModal({
+                    title: 'Delete Block',
+                    message: `Delete block "${blockId}"?`,
+                    detail: 'Tracks assigned to this block will be unassigned.',
+                    confirmText: 'Delete',
+                    confirmVariant: 'danger'
+                });
+                if (!confirmed) {
                     return;
                 }
                 // Remember selected element before delete
@@ -392,7 +392,6 @@ class BlockEditorHandler {
         if (this.blockExtendMode?.active) {
             console.log('[BlockEditorHandler] Exiting block extend mode');
             this.blockExtendMode = { active: false };
-            document.body.style.cursor = 'default';
             
             // Restore header
             const secondarySidebar = document.getElementById('secondary-sidebar-content');
@@ -400,7 +399,6 @@ class BlockEditorHandler {
                 const header = secondarySidebar.closest('.secondary-sidebar')?.querySelector('h3');
                 if (header) {
                     header.textContent = '📦 Block Editor';
-                    header.style.color = '';
                 }
             }
         }
@@ -479,7 +477,14 @@ class BlockEditorHandler {
     }
 
     async delete(blockId) {
-        if (!confirm(`Delete block "${blockId}"?\nTracks will be unassigned from this block.`)) return;
+        const confirmed = await showConfirmModal({
+            title: 'Delete Block',
+            message: `Delete block "${blockId}"?`,
+            detail: 'Tracks assigned to this block will be unassigned.',
+            confirmText: 'Delete',
+            confirmVariant: 'danger'
+        });
+        if (!confirmed) return;
 
         try {
             await this.api.deleteBlock(blockId);
@@ -576,7 +581,7 @@ class BlockEditorHandler {
                                 <label for="block-${blockId}">
                                     <span class="block-id">${blockId}</span>
                                     ${block?.name ? `<span class="block-name">${block.name}</span>` : ''}
-                                    ${block?.station_names ? `<span class="block-name" style="color: #eebb00; margin-left: 5px;">[${block.station_names.join(', ')}]</span>` : ''}
+                                    ${block?.station_names ? `<span class="block-name block-station-names">[${block.station_names.join(', ')}]</span>` : ''}
                                     <span class="block-track-count">${block?.track_count || 0} tracks</span>
                                 </label>
                             </div>
@@ -726,9 +731,9 @@ class BlockEditorHandler {
                         </span>
                     </div>
                     ${blockData.monitoring_signals && blockData.monitoring_signals.length > 0 ? `
-                    <div class="info-display-item" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+                    <div class="info-display-item info-display-item-stacked">
                         <span class="info-display-label">Monitoring Signals</span>
-                        <div class="signal-list" id="monitoring-signals-list" style="width: 100%; max-height: 80px;">
+                        <div class="signal-list signal-list-compact" id="monitoring-signals-list">
                             ${this.editor.renderSignalList ? this.editor.renderSignalList(blockData.monitoring_signals) : ''}
                         </div>
                     </div>

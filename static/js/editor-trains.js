@@ -132,17 +132,7 @@ class TrainEditorHandler {
 
     renderTrainListItem(train) {
         const state = train.state || 'off';
-        // Map states to consistent colors
-        const stateColorMap = {
-            'running_moving': '#04d361', // Success green
-            'running_waiting': '#ff9500', // Warning orange
-            'running_at_station': '#8257e5', // Purple
-            'off': '#888', // Grey
-            'idle': '#ffd93d', // Yellow
-            'standby': '#00d4ff', // Cyan
-            'manual': '#e83f5b' // Red/Pink
-        };
-        const stateColor = stateColorMap[state] || '#888';
+        const stateClass = this.getTrainStateVisualClass(state);
         
         // Get head position from new TrainPosition format
         let position = { x: 0, y: 0 };
@@ -155,12 +145,12 @@ class TrainEditorHandler {
             <div class="train-summary-row mb-8">
                 <div class="flex items-center gap-12 w-full p-2">
                     <div class="flex flex-col items-center gap-1">
-                        <div class="train-status-dot" style="background-color: ${stateColor}"></div>
+                        <div class="train-status-dot train-state-dot ${stateClass}"></div>
                     </div>
                     <div class="train-info flex-1">
                         <div class="flex items-center gap-2 mb-1">
                             <span class="train-id font-mono font-bold text-white">${train.id}</span>
-                            <span class="text-xs font-bold uppercase tracking-wider" style="color: ${stateColor}">
+                            <span class="text-xs font-bold uppercase tracking-wider train-state-text ${stateClass}">
                                 ${state.toUpperCase().replace('RUNNING_', '')}
                             </span>
                         </div>
@@ -171,13 +161,49 @@ class TrainEditorHandler {
                             </div>
                             <div class="flex gap-4">
                                 <button class="edit-btn btn-sm" onclick="window.app.selectTrain('${train.id}')">Edit</button>
-                                <button class="btn btn-sm btn-danger text-white delete-train-btn" style="background-color: var(--danger-color);" data-train-id="${train.id}">Delete</button>
+                                <button class="btn btn-sm btn-danger btn-danger-solid delete-train-btn" data-train-id="${train.id}">Delete</button>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
         `;
+    }
+
+    getTrainStateVisualClass(state) {
+        const map = {
+            off: 'train-state-off',
+            idle: 'train-state-idle',
+            standby: 'train-state-standby',
+            running_moving: 'train-state-running',
+            running_waiting: 'train-state-waiting',
+            running_at_station: 'train-state-station',
+            manual: 'train-state-manual'
+        };
+        return map[state] || 'train-state-off';
+    }
+
+    getHandleVisualClass(handlePosition) {
+        if (handlePosition?.startsWith('P')) return 'handle-power';
+        if (handlePosition?.startsWith('B') || handlePosition === 'EB') return 'handle-brake';
+        return 'handle-neutral';
+    }
+
+    getObcStateClass(powerOn, emergencyActive) {
+        if (!powerOn) return 'obc-power-off';
+        return emergencyActive ? 'obc-power-emergency' : 'obc-power-on';
+    }
+
+    getCabStatusClass(activeCab) {
+        return activeCab ? 'cab-active' : 'cab-none';
+    }
+
+    _replaceVisualClass(element, allowedClasses, nextClass) {
+        if (!element) return;
+        allowedClasses.forEach(cls => element.classList.remove(cls));
+        if (nextClass) {
+            element.classList.add(nextClass);
+        }
     }
 
     initTrainsPanelHandlers() {
@@ -208,7 +234,14 @@ class TrainEditorHandler {
         deleteBtns.forEach(btn => {
             btn.onclick = async () => {
                 const trainId = btn.dataset.trainId;
-                if (!confirm(`Delete train "${trainId}"?`)) return;
+                const confirmed = await showConfirmModal({
+                    title: 'Delete Train',
+                    message: `Delete train "${trainId}"?`,
+                    detail: 'This action cannot be undone.',
+                    confirmText: 'Delete',
+                    confirmVariant: 'danger'
+                });
+                if (!confirmed) return;
 
                 try {
                     await window.api.deleteTrain(trainId);
@@ -311,7 +344,14 @@ class TrainEditorHandler {
         deleteBtns.forEach(btn => {
             btn.onclick = async () => {
                 const scheduleId = btn.dataset.scheduleId;
-                if (!confirm(`Delete schedule "${scheduleId}"?`)) return;
+                const confirmed = await showConfirmModal({
+                    title: 'Delete Schedule',
+                    message: `Delete schedule "${scheduleId}"?`,
+                    detail: 'All stops in this schedule will be removed.',
+                    confirmText: 'Delete',
+                    confirmVariant: 'danger'
+                });
+                if (!confirmed) return;
 
                 try {
                     await window.api.deleteSchedule(scheduleId);
@@ -349,18 +389,8 @@ class TrainEditorHandler {
             return;
         }
 
-        // Use OnboardComputer state as source of truth for control state
-        const stateColors = {
-            'off': '#888',
-            'idle': '#ffd93d',
-            'standby': '#00d4ff',
-            'running_moving': '#04d361',
-            'running_waiting': '#ff9500',
-            'running_at_station': '#8257e5',
-            'manual': '#e83f5b'
-        };
         const trainState = onboard?.state || train.state || 'off';
-        const stateColor = stateColors[trainState] || '#888';
+        const trainStateClass = this.getTrainStateVisualClass(trainState);
 
         // Get path and destination info for ATO section
         const onboardAto = onboard?.ato_info;
@@ -408,6 +438,9 @@ class TrainEditorHandler {
         const powerOn = onboard?.power_on ?? false;
         const emergencyActive = onboard?.emergency_stop_active ?? false;
         const atoRunning = onboard?.ato_running ?? false;
+        const handleClass = this.getHandleVisualClass(handlePosition);
+        const obcStateClass = this.getObcStateClass(powerOn, emergencyActive);
+        const cabStatusClass = this.getCabStatusClass(onboard?.active_cab);
 
         // Handle position order for display
         const handleOrder = ['P5', 'P4', 'P3', 'P2', 'P1', 'N', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'EB'];
@@ -424,7 +457,7 @@ class TrainEditorHandler {
                         ${train.block_section_id ? `<span class="badge badge-warning text-xxs">Block ${train.block_section_id}</span>` : ''}
                     </div>
                     
-                    <div class="text-2xl font-bold mb-4 font-mono train-state-display" style="color: ${stateColor}">
+                    <div class="text-2xl font-bold mb-4 font-mono train-state-display ${trainStateClass}">
                         ${trainState.toUpperCase().replace('_', ' ')}
                     </div>
                     
@@ -452,20 +485,20 @@ class TrainEditorHandler {
                 </div>
                 
                 <!-- ONBOARD COMPUTER STATUS -->
-                <div class="info-box-block mb-12" style="border-left-color: ${powerOn ? (emergencyActive ? '#e83f5b' : '#04d361') : '#888'};">
+                <div class="info-box-block mb-12 ${obcStateClass}">
                     <div class="text-xs text-muted uppercase tracking-wider mb-4">Onboard Computer</div>
                     <div class="flex items-center justify-between gap-6 px-5">
                         <div class="flex flex-col items-center gap-1 text-center">
                             <span class="text-xs text-muted">Power</span>
-                            <div class="text-sm font-mono obc-power-display" style="color: ${powerOn ? '#04d361' : '#888'};">${powerOn ? 'ON' : 'OFF'}</div>
+                            <div class="text-sm font-mono obc-power-display ${powerOn ? 'power-on' : 'power-off'}">${powerOn ? 'ON' : 'OFF'}</div>
                         </div>
                         <div class="flex flex-col items-center gap-1 text-center">
                             <span class="text-xs text-muted">Mode</span>
-                            <div class="text-sm font-mono obc-mode-display" style="color: ${isManual ? '#e83f5b' : '#00d4ff'};">${controlMode.toUpperCase()}</div>
+                            <div class="text-sm font-mono obc-mode-display ${isManual ? 'mode-manual' : 'mode-ato'}">${controlMode.toUpperCase()}</div>
                         </div>
                         <div class="flex flex-col items-center gap-1 text-center">
                             <span class="text-xs text-muted">Handle</span>
-                            <div class="text-sm font-mono obc-handle-display" style="color: ${handlePosition.startsWith('P') ? '#04d361' : (handlePosition.startsWith('B') || handlePosition === 'EB' ? '#e83f5b' : '#ffd93d')};">${handlePosition}</div>
+                            <div class="text-sm font-mono obc-handle-display ${handleClass}">${handlePosition}</div>
                         </div>
                     </div>
                     ${emergencyActive ? `
@@ -486,22 +519,22 @@ class TrainEditorHandler {
                 </div>
                 
                 <!-- TRAIN CONTROL SECTION -->
-                <div class="control-section mt-16 pt-12" style="border-top: 1px solid var(--border-color);">
+                <div class="control-section control-section-divider mt-16 pt-12">
                     <h4 class="text-sm text-muted mb-12">Train Control</h4>
                     
                     <!-- EMERGENCY STOP (prominent at top) -->
                     <div class="mb-16">
                         ${emergencyActive ? `
                             <div class="flex items-center gap-8">
-                                <button id="train-emergency-btn" class="btn btn-danger flex-3" style="font-size: 14px; padding: 12px;">
+                                <button id="train-emergency-btn" class="btn btn-danger flex-3 btn-emergency-lg">
                                     🚨 EMERGENCY STOP
                                 </button>
-                                <button id="train-emergency-reset-btn" class="btn btn-warning flex-1" style="font-size: 14px; padding: 12px;">
+                                <button id="train-emergency-reset-btn" class="btn btn-warning flex-1 btn-emergency-lg">
                                     RESET
                                 </button>
                             </div>
                         ` : `
-                            <button id="train-emergency-btn" class="btn btn-danger btn-full" style="font-size: 14px; padding: 12px;">
+                            <button id="train-emergency-btn" class="btn btn-danger btn-full btn-emergency-lg">
                                 🚨 EMERGENCY STOP
                             </button>
                         `}
@@ -524,7 +557,7 @@ class TrainEditorHandler {
                             <button id="train-cab-b-btn" class="btn btn-outline btn-sm flex-1 ${onboard?.active_cab === 'B' ? 'btn-active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>Cab B</button>
                             <button id="train-cab-off-btn" class="btn btn-outline btn-sm flex-1 ${!onboard?.active_cab ? 'btn-active' : ''}" ${!powerOn || !isStopped || !onboard?.active_cab ? 'disabled' : ''}>Off</button>
                         </div>
-                        <div id="train-cab-status" class="text-xs text-center" style="color: ${onboard?.active_cab ? '#00d4ff' : '#ffd93d'};">
+                        <div id="train-cab-status" class="text-xs text-center train-cab-status ${cabStatusClass}">
                             ${onboard?.active_cab ? `Cab ${onboard.active_cab} Active` : 'No Cab Selected'}
                         </div>
                     </div>
@@ -540,7 +573,7 @@ class TrainEditorHandler {
                     
                     <!-- ATO Controls -->
                     <div id="ato-controls" class="${isManual ? 'hidden' : ''}">
-                        <div class="mb-8 pb-8" style="border-bottom: 1px solid var(--border-color);">
+                        <div class="mb-8 pb-8 panel-subsection-divider">
                             <div class="text-xs text-muted mb-2">Path</div>
                             <div class="text-sm text-info font-mono mb-4 train-ato-path-display">${pathName}</div>
                             <div class="text-xs text-muted mb-2">Destination</div>
@@ -575,7 +608,7 @@ class TrainEditorHandler {
                                     min="0" max="14" step="1" value="${handleIndex >= 0 ? handleIndex : 5}"
                                     ${!isManual || emergencyActive ? 'disabled' : ''}>
                                 <div class="text-center mt-4">
-                                    <span id="handle-position-label" class="text-lg font-mono font-bold" style="color: ${handlePosition.startsWith('P') ? '#04d361' : (handlePosition.startsWith('B') || handlePosition === 'EB' ? '#e83f5b' : '#ffd93d')};">
+                                    <span id="handle-position-label" class="text-lg font-mono font-bold handle-position-display ${handleClass}">
                                         ${handlePosition}
                                     </span>
                                     <span class="text-xs text-muted block mt-1" id="handle-description">
@@ -600,12 +633,12 @@ class TrainEditorHandler {
                 </div>
                 
                 <!-- Train Position Debug Section (shown when debug checkbox is enabled) -->
-                <div id="train-control-debug-section" class="mt-12 hidden" style="border-top: 1px solid var(--border-color); padding-top: 12px;">
+                <div id="train-control-debug-section" class="mt-12 hidden train-control-debug-section">
                     <!-- Content injected by app.js updateTrainDebugPanel() -->
                 </div>
 
                 <!-- EDITABLE PROPERTIES SECTION -->
-                <div class="control-section mt-12 pt-12" style="border-top: 1px solid var(--border-color);">
+                <div class="control-section control-section-divider mt-12 pt-12">
                     <h4 class="text-sm text-muted mb-8">Properties</h4>
                     
                     <div class="grid grid-cols-2 gap-8 mb-8">
@@ -809,14 +842,11 @@ class TrainEditorHandler {
                 const position = handleOrder[parseInt(handleSlider.value)];
                 if (handleLabel) {
                     handleLabel.textContent = position;
-                    // Update color based on position type
-                    if (position.startsWith('P')) {
-                        handleLabel.style.color = '#04d361';  // Green for power
-                    } else if (position.startsWith('B') || position === 'EB') {
-                        handleLabel.style.color = '#e83f5b';  // Red for braking
-                    } else {
-                        handleLabel.style.color = '#ffd93d';  // Yellow for neutral
-                    }
+                    this._replaceVisualClass(
+                        handleLabel,
+                        ['handle-power', 'handle-brake', 'handle-neutral'],
+                        this.getHandleVisualClass(position)
+                    );
                 }
                 if (handleDesc) {
                     if (position === 'N') {
@@ -935,7 +965,14 @@ class TrainEditorHandler {
 
         if (deleteBtn) {
             deleteBtn.onclick = async () => {
-                if (!confirm(`Delete train "${trainId}"? This action cannot be undone.`)) {
+                const confirmed = await showConfirmModal({
+                    title: 'Delete Train',
+                    message: `Delete train "${trainId}"?`,
+                    detail: 'This action cannot be undone.',
+                    confirmText: 'Delete',
+                    confirmVariant: 'danger'
+                });
+                if (!confirmed) {
                     return;
                 }
                 try {
@@ -1027,23 +1064,17 @@ class TrainEditorHandler {
         
         if (powerDisplay) {
             powerDisplay.textContent = powerOn ? 'ON' : 'OFF';
-            powerDisplay.style.color = powerOn ? '#04d361' : '#888';
+            this._replaceVisualClass(powerDisplay, ['power-on', 'power-off'], powerOn ? 'power-on' : 'power-off');
         }
         
         if (modeDisplay) {
             modeDisplay.textContent = controlMode.toUpperCase();
-            modeDisplay.style.color = controlMode === 'manual' ? '#e83f5b' : '#00d4ff';
+            this._replaceVisualClass(modeDisplay, ['mode-manual', 'mode-ato'], controlMode === 'manual' ? 'mode-manual' : 'mode-ato');
         }
         
         if (handleDisplay) {
             handleDisplay.textContent = handlePosition;
-            if (handlePosition.startsWith('P')) {
-                handleDisplay.style.color = '#04d361';
-            } else if (handlePosition.startsWith('B') || handlePosition === 'EB') {
-                handleDisplay.style.color = '#e83f5b';
-            } else {
-                handleDisplay.style.color = '#ffd93d';
-            }
+            this._replaceVisualClass(handleDisplay, ['handle-power', 'handle-brake', 'handle-neutral'], this.getHandleVisualClass(handlePosition));
         }
         
         // Update speed display
@@ -1084,19 +1115,13 @@ class TrainEditorHandler {
         const onboard = train.onboard || null;
         const trainState = onboard?.state || train.state || 'off';
 
-        const stateColors = {
-            'off': '#888',
-            'idle': '#ffd93d',
-            'standby': '#00d4ff',
-            'running_moving': '#04d361',
-            'running_waiting': '#ff9500',
-            'running_at_station': '#8257e5',
-            'manual': '#e83f5b'
-        };
-
         const stateEl = panel.querySelector('.train-state-display');
         if (stateEl) {
-            stateEl.style.color = stateColors[trainState] || '#888';
+            this._replaceVisualClass(
+                stateEl,
+                ['train-state-off', 'train-state-idle', 'train-state-standby', 'train-state-running', 'train-state-waiting', 'train-state-station', 'train-state-manual'],
+                this.getTrainStateVisualClass(trainState)
+            );
             stateEl.innerHTML = `
                 ${trainState.toUpperCase().replace('_', ' ')}
             `;
@@ -1147,24 +1172,21 @@ class TrainEditorHandler {
 
             if (powerDisplay) {
                 powerDisplay.textContent = powerOn ? 'ON' : 'OFF';
-                powerDisplay.style.color = powerOn ? '#04d361' : '#888';
+                this._replaceVisualClass(powerDisplay, ['power-on', 'power-off'], powerOn ? 'power-on' : 'power-off');
             }
 
             if (modeDisplay) {
                 modeDisplay.textContent = controlMode.toUpperCase();
-                modeDisplay.style.color = controlMode === 'manual' ? '#e83f5b' : '#00d4ff';
+                this._replaceVisualClass(modeDisplay, ['mode-manual', 'mode-ato'], controlMode === 'manual' ? 'mode-manual' : 'mode-ato');
             }
 
             if (handleDisplay) {
                 handleDisplay.textContent = handlePosition;
-                if (handlePosition.startsWith('P')) {
-                    handleDisplay.style.color = '#04d361';
-                } else if (handlePosition.startsWith('B') || handlePosition === 'EB') {
-                    handleDisplay.style.color = '#e83f5b';
-                } else {
-                    handleDisplay.style.color = '#ffd93d';
-                }
+                this._replaceVisualClass(handleDisplay, ['handle-power', 'handle-brake', 'handle-neutral'], this.getHandleVisualClass(handlePosition));
             }
+
+            const obcBox = panel.querySelector('.info-box-block');
+            this._replaceVisualClass(obcBox, ['obc-power-off', 'obc-power-on', 'obc-power-emergency'], this.getObcStateClass(powerOn, onboard.emergency_stop_active ?? false));
 
             const pathDisplay = panel.querySelector('.train-ato-path-display');
             const destinationDisplay = panel.querySelector('.train-ato-destination-display');
@@ -1198,13 +1220,7 @@ class TrainEditorHandler {
 
             if (handleLabel) {
                 handleLabel.textContent = handlePosition;
-                if (handlePosition.startsWith('P')) {
-                    handleLabel.style.color = '#04d361';
-                } else if (handlePosition.startsWith('B') || handlePosition === 'EB') {
-                    handleLabel.style.color = '#e83f5b';
-                } else {
-                    handleLabel.style.color = '#ffd93d';
-                }
+                this._replaceVisualClass(handleLabel, ['handle-power', 'handle-brake', 'handle-neutral'], this.getHandleVisualClass(handlePosition));
             }
 
             if (handleDesc) {
@@ -1267,7 +1283,7 @@ class TrainEditorHandler {
         }
         if (cabStatus) {
             cabStatus.textContent = activeCab ? `Cab ${activeCab} Active` : 'No Cab Selected';
-            cabStatus.style.color = activeCab ? '#00d4ff' : '#ffd93d';
+            this._replaceVisualClass(cabStatus, ['cab-active', 'cab-none'], this.getCabStatusClass(activeCab));
         }
     }
 

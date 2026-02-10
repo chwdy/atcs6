@@ -13,6 +13,7 @@ class EditorUIHandler {
         this.maxSecondaryTabs = 8;
         this.secondaryPanelPinned = false;
         this.secondaryInspectorStorageKey = 'secondaryInspectorStateV1';
+        this.sidebarSectionStorageKey = 'sidebarSectionStatesV1';
     }
 
     get selectedTool() { return this.editor.selectedTool; }
@@ -113,6 +114,66 @@ class EditorUIHandler {
         this.loadCategoryStates();
         
         this.expandCategoryForTool(this.selectedTool);
+    }
+
+    setupCollapsibleSidebarSections() {
+        const sections = document.querySelectorAll('.collapsible-sidebar-section');
+
+        sections.forEach(section => {
+            const toggle = section.querySelector('.sidebar-section-toggle');
+            if (!toggle) return;
+
+            toggle.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.toggleSidebarSection(section);
+            });
+        });
+
+        this.loadSidebarSectionStates();
+    }
+
+    toggleSidebarSection(section) {
+        const isCollapsed = section.classList.toggle('collapsed');
+        const toggle = section.querySelector('.sidebar-section-toggle');
+        if (toggle) {
+            toggle.setAttribute('aria-expanded', (!isCollapsed).toString());
+        }
+        this.saveSidebarSectionStates();
+    }
+
+    saveSidebarSectionStates() {
+        const states = {};
+        const sections = document.querySelectorAll('.collapsible-sidebar-section');
+
+        sections.forEach((section, index) => {
+            const sectionName = section.dataset.section || `section-${index}`;
+            states[sectionName] = section.classList.contains('collapsed');
+        });
+
+        try {
+            localStorage.setItem(this.sidebarSectionStorageKey, JSON.stringify(states));
+        } catch (e) {
+        }
+    }
+
+    loadSidebarSectionStates() {
+        try {
+            const saved = localStorage.getItem(this.sidebarSectionStorageKey);
+            if (!saved) return;
+
+            const states = JSON.parse(saved);
+            const sections = document.querySelectorAll('.collapsible-sidebar-section');
+            sections.forEach((section, index) => {
+                const sectionName = section.dataset.section || `section-${index}`;
+                const shouldCollapse = states[sectionName] !== undefined ? states[sectionName] : section.classList.contains('collapsed');
+                section.classList.toggle('collapsed', shouldCollapse);
+                const toggle = section.querySelector('.sidebar-section-toggle');
+                if (toggle) {
+                    toggle.setAttribute('aria-expanded', (!shouldCollapse).toString());
+                }
+            });
+        } catch (e) {
+        }
     }
     
     toggleCategory(category) {
@@ -623,15 +684,15 @@ class EditorUIHandler {
         const jsonString = JSON.stringify(data, null, 2);
         
         const content = `
-            <div class="json-viewer-panel" style="background: transparent; height: 100%; display: flex; flex-direction: column;">
-                <div style="margin-bottom: 12px;">
+            <div class="json-viewer-panel">
+                <div class="json-viewer-toolbar">
                     <button id="copy-json-btn" class="btn btn-primary btn-full text-sm">
                         📋 Copy to Clipboard
                     </button>
                 </div>
 
-                <div style="flex: 1; overflow: auto; background: #0d1020; border: 1px solid #3a3a4e; border-radius: 6px; padding: 12px;">
-                    <pre id="json-content" style="margin: 0; font-family: 'Courier New', monospace; font-size: 11px; color: #00ff88; line-height: 1.4; white-space: pre-wrap; word-wrap: break-word;">${this.syntaxHighlightJSON(jsonString)}</pre>
+                <div class="json-viewer-content">
+                    <pre id="json-content" class="json-content-view">${this.syntaxHighlightJSON(jsonString)}</pre>
                 </div>
             </div>
         `;
@@ -797,7 +858,7 @@ class EditorUIHandler {
                 const newBits = calculateBitsFromCheckboxes();
 
                 if (FORBIDDEN_TRACK_BITS.has(newBits)) {
-                    alert('Cannot apply forbidden configuration');
+                    window.showToast('Cannot apply forbidden configuration', 'error', 3000);
                     return;
                 }
 
@@ -837,7 +898,7 @@ class EditorUIHandler {
                     await this.editor.selectElement({x: track.x, y: track.y});
                 } catch (err) {
                     console.error('Failed to update track bits:', err);
-                    alert('Failed to update track bits: ' + err.message);
+                    window.showToast('Failed to update track bits: ' + err.message, 'error', 5000);
                 }
             };
         }
@@ -1043,7 +1104,7 @@ class EditorUIHandler {
         if (panel) {
             panel.innerHTML = `
                 <h3>Properties</h3>
-                <p style="color: #666; font-size: 12px;">Select an element to view properties</p>
+                <p class="properties-empty">Select an element to view properties</p>
             `;
         }
     }

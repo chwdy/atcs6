@@ -271,6 +271,391 @@ function renderConditional(condition, html) {
     return condition ? html : '';
 }
 
+/**
+ * Reusable confirmation modal for destructive or important actions.
+ * Returns a promise that resolves true on confirm, false on cancel.
+ */
+function showConfirmModal(options = {}) {
+    const {
+        title = 'Confirm Action',
+        message = 'Are you sure?',
+        detail = '',
+        confirmText = 'Confirm',
+        cancelText = 'Cancel',
+        confirmVariant = 'danger'
+    } = options;
+
+    const variantClassMap = {
+        danger: 'btn-danger',
+        success: 'btn-success',
+        primary: 'btn-primary',
+        secondary: 'btn-secondary'
+    };
+    const confirmClass = variantClassMap[confirmVariant] || 'btn-danger';
+
+    return new Promise((resolve) => {
+        const existing = document.querySelector('.app-modal-overlay');
+        if (existing) {
+            existing.remove();
+        }
+
+        const overlay = document.createElement('div');
+        overlay.className = 'app-modal-overlay';
+
+        const modal = document.createElement('div');
+        modal.className = 'app-modal';
+
+        const header = document.createElement('div');
+        header.className = 'app-modal-header';
+        header.textContent = title;
+
+        const body = document.createElement('div');
+        body.className = 'app-modal-body';
+
+        const messageEl = document.createElement('div');
+        messageEl.className = 'app-modal-message';
+        messageEl.textContent = message;
+        body.appendChild(messageEl);
+
+        if (detail) {
+            const detailEl = document.createElement('div');
+            detailEl.className = 'app-modal-detail';
+            detailEl.textContent = detail;
+            body.appendChild(detailEl);
+        }
+
+        const footer = document.createElement('div');
+        footer.className = 'app-modal-footer';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'btn btn-secondary btn-sm';
+        cancelBtn.textContent = cancelText;
+
+        const confirmBtn = document.createElement('button');
+        confirmBtn.className = `btn ${confirmClass} btn-sm`;
+        confirmBtn.textContent = confirmText;
+
+        footer.appendChild(cancelBtn);
+        footer.appendChild(confirmBtn);
+
+        modal.appendChild(header);
+        modal.appendChild(body);
+        modal.appendChild(footer);
+        overlay.appendChild(modal);
+
+        const cleanup = () => {
+            document.removeEventListener('keydown', onKeyDown);
+            overlay.remove();
+        };
+
+        const handleCancel = () => {
+            cleanup();
+            resolve(false);
+        };
+
+        const handleConfirm = () => {
+            cleanup();
+            resolve(true);
+        };
+
+        const onKeyDown = (event) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                handleCancel();
+                return;
+            }
+
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                handleConfirm();
+            }
+        };
+
+        overlay.addEventListener('click', (event) => {
+            if (event.target === overlay) {
+                handleCancel();
+            }
+        });
+        cancelBtn.addEventListener('click', handleCancel);
+        confirmBtn.addEventListener('click', handleConfirm);
+        document.addEventListener('keydown', onKeyDown);
+
+        document.body.appendChild(overlay);
+        cancelBtn.focus();
+    });
+}
+
+/**
+ * Reusable form modal for collecting one or more input values.
+ * Returns an object of field values, or null when cancelled.
+ */
+function showFormModal(options = {}) {
+    const {
+        title = 'Input Required',
+        message = '',
+        detail = '',
+        fields = [],
+        confirmText = 'Save',
+        cancelText = 'Cancel',
+        confirmVariant = 'primary'
+    } = options;
+
+    const variantClassMap = {
+        danger: 'btn-danger',
+        success: 'btn-success',
+        primary: 'btn-primary',
+        secondary: 'btn-secondary'
+    };
+    const confirmClass = variantClassMap[confirmVariant] || 'btn-primary';
+
+    return new Promise((resolve) => {
+        const existing = document.querySelector('.app-modal-overlay');
+        if (existing) {
+            existing.remove();
+        }
+
+        const overlay = document.createElement('div');
+        overlay.className = 'app-modal-overlay';
+
+        const modal = document.createElement('div');
+        modal.className = 'app-modal';
+
+        const header = document.createElement('div');
+        header.className = 'app-modal-header';
+        header.textContent = title;
+
+        const body = document.createElement('div');
+        body.className = 'app-modal-body';
+
+        if (message) {
+            const messageEl = document.createElement('div');
+            messageEl.className = 'app-modal-message';
+            messageEl.textContent = message;
+            body.appendChild(messageEl);
+        }
+
+        if (detail) {
+            const detailEl = document.createElement('div');
+            detailEl.className = 'app-modal-detail';
+            detailEl.textContent = detail;
+            body.appendChild(detailEl);
+        }
+
+        const form = document.createElement('form');
+        form.className = 'app-modal-form';
+        form.noValidate = true;
+
+        fields.forEach((field) => {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'app-modal-field';
+
+            const label = document.createElement('label');
+            label.textContent = field.label || field.name;
+            label.htmlFor = `app-modal-${field.name}`;
+            wrapper.appendChild(label);
+
+            let inputEl;
+            if (field.type === 'select') {
+                inputEl = document.createElement('select');
+                const optionsList = Array.isArray(field.options) ? field.options : [];
+                optionsList.forEach((opt) => {
+                    const optionEl = document.createElement('option');
+                    optionEl.value = opt.value;
+                    optionEl.textContent = opt.label;
+                    inputEl.appendChild(optionEl);
+                });
+            } else if (field.type === 'textarea') {
+                inputEl = document.createElement('textarea');
+                inputEl.rows = field.rows || 3;
+            } else {
+                inputEl = document.createElement('input');
+                inputEl.type = field.type || 'text';
+            }
+
+            inputEl.id = `app-modal-${field.name}`;
+            inputEl.name = field.name;
+            inputEl.className = 'property-input';
+            if (field.placeholder) inputEl.placeholder = field.placeholder;
+            if (field.required) inputEl.required = true;
+            if (typeof field.min !== 'undefined') inputEl.min = String(field.min);
+            if (typeof field.max !== 'undefined') inputEl.max = String(field.max);
+            if (typeof field.step !== 'undefined') inputEl.step = String(field.step);
+            if (field.defaultValue !== undefined && field.defaultValue !== null) {
+                inputEl.value = String(field.defaultValue);
+            }
+            wrapper.appendChild(inputEl);
+
+            if (field.hint) {
+                const hint = document.createElement('div');
+                hint.className = 'app-modal-hint';
+                hint.textContent = field.hint;
+                wrapper.appendChild(hint);
+            }
+
+            form.appendChild(wrapper);
+        });
+
+        const errorEl = document.createElement('div');
+        errorEl.className = 'app-modal-error hidden';
+        form.appendChild(errorEl);
+
+        body.appendChild(form);
+
+        const footer = document.createElement('div');
+        footer.className = 'app-modal-footer';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'btn btn-secondary btn-sm';
+        cancelBtn.textContent = cancelText;
+
+        const confirmBtn = document.createElement('button');
+        confirmBtn.type = 'submit';
+        confirmBtn.className = `btn ${confirmClass} btn-sm`;
+        confirmBtn.textContent = confirmText;
+
+        footer.appendChild(cancelBtn);
+        footer.appendChild(confirmBtn);
+
+        modal.appendChild(header);
+        modal.appendChild(body);
+        modal.appendChild(footer);
+        overlay.appendChild(modal);
+
+        const showError = (messageText) => {
+            errorEl.textContent = messageText;
+            errorEl.classList.remove('hidden');
+        };
+
+        const clearError = () => {
+            errorEl.textContent = '';
+            errorEl.classList.add('hidden');
+        };
+
+        const collectValues = () => {
+            const values = {};
+            for (const field of fields) {
+                const el = form.elements.namedItem(field.name);
+                if (!el) continue;
+
+                let value = el.value;
+                if (field.type === 'number') {
+                    if (value === '') {
+                        value = '';
+                    } else {
+                        const parsed = Number(value);
+                        if (!Number.isFinite(parsed)) {
+                            return { ok: false, error: `${field.label || field.name} must be a valid number.` };
+                        }
+                        value = parsed;
+                    }
+                }
+
+                if (field.required && (value === '' || value === null || value === undefined)) {
+                    return { ok: false, error: `${field.label || field.name} is required.` };
+                }
+
+                if (typeof field.validate === 'function') {
+                    const validationResult = field.validate(value, values);
+                    if (typeof validationResult === 'string' && validationResult) {
+                        return { ok: false, error: validationResult };
+                    }
+                }
+
+                values[field.name] = value;
+            }
+            return { ok: true, values };
+        };
+
+        const cleanup = () => {
+            document.removeEventListener('keydown', onKeyDown);
+            overlay.remove();
+        };
+
+        const handleCancel = () => {
+            cleanup();
+            resolve(null);
+        };
+
+        const handleSubmit = (event) => {
+            event.preventDefault();
+            clearError();
+            const collected = collectValues();
+            if (!collected.ok) {
+                showError(collected.error || 'Please correct the highlighted fields.');
+                return;
+            }
+            cleanup();
+            resolve(collected.values);
+        };
+
+        const onKeyDown = (event) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                handleCancel();
+            }
+        };
+
+        form.addEventListener('submit', handleSubmit);
+        cancelBtn.addEventListener('click', handleCancel);
+        overlay.addEventListener('click', (event) => {
+            if (event.target === overlay) {
+                handleCancel();
+            }
+        });
+        document.addEventListener('keydown', onKeyDown);
+
+        document.body.appendChild(overlay);
+        const firstInput = form.querySelector('input, select, textarea');
+        if (firstInput) {
+            firstInput.focus();
+            if (firstInput.select) firstInput.select();
+        }
+    });
+}
+
+/**
+ * Reusable single-input prompt modal.
+ * Returns the entered value, or null if cancelled.
+ */
+async function showPromptModal(options = {}) {
+    const {
+        title = 'Input Required',
+        label = 'Value',
+        placeholder = '',
+        defaultValue = '',
+        required = false,
+        type = 'text',
+        confirmText = 'OK',
+        cancelText = 'Cancel',
+        confirmVariant = 'primary',
+        hint = '',
+        validate = null
+    } = options;
+
+    const values = await showFormModal({
+        title,
+        fields: [{
+            name: 'value',
+            label,
+            placeholder,
+            defaultValue,
+            required,
+            type,
+            hint,
+            validate
+        }],
+        confirmText,
+        cancelText,
+        confirmVariant
+    });
+
+    if (!values) {
+        return null;
+    }
+    return values.value;
+}
+
 // ============================================================================
 // BIT TOGGLE COMPONENT
 // ============================================================================

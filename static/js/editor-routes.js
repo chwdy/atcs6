@@ -53,11 +53,11 @@ class RouteEditorHandler {
 
         let content = `
             <div class="routes-panel">
-                <div class="flex gap-8 mb-16">
+                <div class="routes-toolbar mb-16">
                     <button id="create-route-btn" class="btn btn-primary btn-sm flex-1">
                         + New Route
                     </button>
-                    <button id="refresh-routes-btn" class="btn btn-secondary btn-sm">
+                    <button id="refresh-routes-btn" class="btn btn-secondary btn-sm btn-icon-only" title="Refresh routes" aria-label="Refresh routes">
                         🔄
                     </button>
                 </div>
@@ -65,7 +65,7 @@ class RouteEditorHandler {
 
         if (this.routes.length === 0) {
             content += `
-                <div class="text-muted text-center" style="padding: 32px 16px;">
+                <div class="routes-empty-state text-muted text-center">
                     <div class="mb-8">No routes defined</div>
                     <div class="text-sm">Click "New Route" to create a train route</div>
                 </div>
@@ -86,38 +86,32 @@ class RouteEditorHandler {
 
     renderRouteListItem(route) {
         const isActive = route.is_active;
-        const statusColor = isActive ? '#00ff88' : '#888';
         const statusText = isActive ? 'ACTIVE' : 'INACTIVE';
         const trainCount = route.assigned_train_ids?.length || 0;
         const waypointCount = route.waypoints?.length || 0;
+        const statusClass = isActive ? 'is-active' : 'is-inactive';
+        const modeText = (route.mode || 'one_off').replaceAll('_', ' ');
+        const routeName = route.name || route.route_id;
 
         return `
-            <div class="train-summary-row mb-8" data-route-id="${route.route_id}">
-                <div class="flex items-center gap-12 w-full p-2">
-                    <div class="flex flex-col items-center justify-center gap-2" style="min-width: 40px; padding-top: 4px;">
-                        <div class="train-status-dot" style="background-color: ${statusColor}"></div>
-                        <div class="text-xxs font-bold uppercase tracking-wider" style="color: ${statusColor}; font-size: 0.65rem; line-height: 1; padding: 4px 0; margin-top: 2px;">
-                            ${statusText}
+            <div class="route-row" data-route-id="${route.route_id}">
+                <div class="route-row-main">
+                    <div class="route-row-status ${statusClass}">
+                        <span class="route-status-dot"></span>
+                        <span class="route-status-label">${statusText}</span>
+                    </div>
+                    <div class="route-row-content">
+                        <div class="route-row-name font-mono">${routeName}</div>
+                        <div class="route-row-meta text-xs text-muted">
+                            <span>🚂 ${trainCount} train${trainCount !== 1 ? 's' : ''}</span>
+                            <span>📍 ${waypointCount} waypoint${waypointCount !== 1 ? 's' : ''}</span>
+                            <span class="route-mode-pill uppercase">${modeText}</span>
                         </div>
                     </div>
-                    <div class="train-info flex-1" style="min-width: 0;">
-                        <div class="flex flex-col gap-1 mb-6">
-                            <div class="flex justify-between items-start gap-2">
-                                <span class="train-id font-mono font-bold text-white" style="word-break: break-all; line-height: 1.2;">${route.name || route.route_id}</span>
-                            </div>
-                        </div>
-                        <div class="flex justify-between items-end gap-2">
-                            <div class="text-xs text-muted flex-1" style="min-width: 0;">
-                                <div class="mb-4">🚂 ${trainCount} train${trainCount !== 1 ? 's' : ''} assigned</div>
-                                <div>📍 ${waypointCount} waypoint${waypointCount !== 1 ? 's' : ''}</div>
-                                <div class="text-xxs mt-2 uppercase">${route.mode || 'one_off'}</div>
-                            </div>
-                            <div class="flex gap-4 flex-shrink-0">
-                                <button class="edit-btn btn-sm edit-route-btn" data-route-id="${route.route_id}">Edit</button>
-                                <button class="btn btn-sm btn-danger text-white delete-route-btn" style="background-color: var(--danger-color);" data-route-id="${route.route_id}">Delete</button>
-                            </div>
-                        </div>
-                    </div>
+                </div>
+                <div class="route-row-actions">
+                    <button class="edit-btn btn-sm edit-route-btn" data-route-id="${route.route_id}">Edit</button>
+                    <button class="btn btn-sm btn-danger delete-route-btn" data-route-id="${route.route_id}">Delete</button>
                 </div>
             </div>
         `;
@@ -147,7 +141,14 @@ class RouteEditorHandler {
             btn.onclick = async () => {
                 const routeId = btn.dataset.routeId;
                 const route = this.routes.find(r => r.route_id === routeId);
-                if (!confirm(`Delete route "${route?.name || routeId}"?`)) return;
+                const confirmed = await showConfirmModal({
+                    title: 'Delete Route',
+                    message: `Delete route "${route?.name || routeId}"?`,
+                    detail: 'This removes its waypoints and train assignments.',
+                    confirmText: 'Delete',
+                    confirmVariant: 'danger'
+                });
+                if (!confirmed) return;
 
                 try {
                     await this.api.deleteRoute(routeId);
@@ -223,7 +224,7 @@ class RouteEditorHandler {
             waypointsHtml += '</div>';
         } else {
             waypointsHtml = `
-                <div class="text-muted text-center text-sm" style="padding: 24px 16px; border: 2px dashed #3a3a4e; border-radius: 8px;">
+                <div class="route-empty-dashed text-muted text-center text-sm">
                     Click "Add Waypoint" then click on a platform to add it to the route
                 </div>
             `;
@@ -260,7 +261,7 @@ class RouteEditorHandler {
                     <h4 class="text-sm text-muted mb-12">Controls</h4>
                     <div class="flex gap-8 mb-12">
                         ${isActive 
-                            ? `<button id="deactivate-route-btn" class="btn btn-danger btn-sm flex-1 text-white" style="background-color: var(--danger-color);">Deactivate</button>`
+                            ? `<button id="deactivate-route-btn" class="btn btn-danger btn-sm flex-1">Deactivate</button>`
                             : `<button id="activate-route-btn" class="btn btn-success btn-sm flex-1">Activate</button>`
                         }
                     </div>
@@ -309,7 +310,7 @@ class RouteEditorHandler {
                     </div>
                     <div class="route-header-col narrow">
                          <label class="property-label">Statistics</label>
-                         <div class="property-value" style="padding: 10px 12px; height: 38px; display: flex; align-items: center;">
+                         <div class="property-value route-stats-value">
                             <span class="text-xs text-muted">${waypointCount} stops · ${assignedCount} trains</span>
                          </div>
                     </div>
@@ -375,7 +376,7 @@ class RouteEditorHandler {
 
         // Standardized card layout
         return `
-            <div class="waypoint-item mb-8 p-8 bg-input rounded-lg" data-index="${index}" style="border: 1px solid #3a3a4e;">
+            <div class="waypoint-item waypoint-card mb-8 p-8 bg-input rounded-lg" data-index="${index}">
                 <div class="waypoint-item-header">
                     <div class="flex flex-col">
                         <div class="flex items-center gap-8">
@@ -385,8 +386,8 @@ class RouteEditorHandler {
                         <div class="text-xs text-muted mt-2">${stationHint} · ${viabilityHtml}</div>
                     </div>
                     <div class="flex gap-4">
-                        <button class="btn btn-xs btn-secondary btn-icon-only locate-waypoint-btn" data-index="${index}" title="Locate on Map">📍</button>
-                        <button class="btn btn-xs btn-danger btn-icon-only delete-waypoint" data-index="${index}" title="Remove Stop">×</button>
+                        <button class="btn btn-sm btn-secondary btn-icon-only locate-waypoint-btn" data-index="${index}" title="Locate on Map">📍</button>
+                        <button class="btn btn-sm btn-danger btn-icon-only delete-waypoint" data-index="${index}" title="Remove Stop">×</button>
                     </div>
                 </div>
                 
@@ -405,21 +406,19 @@ class RouteEditorHandler {
                     <div class="waypoint-control-group">
                         <label>Order</label>
                         <div class="flex gap-2">
-                             <button class="btn btn-xs btn-secondary btn-icon-only move-waypoint-up" data-index="${index}" ${index === 0 ? 'disabled' : ''}>↑</button>
-                             <button class="btn btn-xs btn-secondary btn-icon-only move-waypoint-down" data-index="${index}" ${index >= this.currentRoute.waypoints.length - 1 ? 'disabled' : ''}>↓</button>
+                             <button class="btn btn-sm btn-secondary btn-icon-only move-waypoint-up" data-index="${index}" ${index === 0 ? 'disabled' : ''}>↑</button>
+                             <button class="btn btn-sm btn-secondary btn-icon-only move-waypoint-down" data-index="${index}" ${index >= this.currentRoute.waypoints.length - 1 ? 'disabled' : ''}>↓</button>
                         </div>
                     </div>
 
                     <div class="waypoint-control-group">
                         <label>Options</label>
-                        <label class="btn btn-xs ${isFlexible ? 'btn-success' : 'btn-secondary'} btn-icon-only flex items-center gap-4" 
-                               style="height: 32px; padding: 0 10px;"
+                        <label class="btn btn-sm waypoint-flex-toggle ${isFlexible ? 'btn-success' : 'btn-secondary'} btn-icon-only flex items-center gap-4"
                                title="${supportsFlexible ? 'Enable flexible platform assignment' : 'Flexible assignment unavailable (single platform station)'}">
                             <input type="checkbox" class="waypoint-flexible-toggle" 
-                                   style="margin: 0;"
                                    data-index="${index}" ${isFlexible ? 'checked' : ''} 
                                    ${supportsFlexible ? '' : 'disabled'}>
-                            <span style="font-size: 11px;">Flex</span>
+                            <span class="waypoint-flex-label">Flex</span>
                         </label>
                     </div>
                 </div>
@@ -576,12 +575,12 @@ class RouteEditorHandler {
                     <div class="p-8 bg-input rounded-lg mb-4">
                         <div class="flex justify-between items-center mb-6">
                             <span class="font-mono text-white">🚂 ${trainId}</span>
-                            <button class="btn btn-xs btn-danger unassign-train-btn" data-train-id="${trainId}">Unassign</button>
+                            <button class="btn btn-sm btn-danger unassign-train-btn" data-train-id="${trainId}">Unassign</button>
                         </div>
                         <div class="flex items-center gap-8 text-xs">
                             <span class="text-muted">${wpText}</span>
                             <input type="number" min="1" step="1" class="property-input route-input-compact route-number-input set-waypoint-input" value="${(trainStatus?.current_waypoint_index || 0) + 1}" data-train-id="${trainId}">
-                            <button class="btn btn-xs btn-secondary set-waypoint-btn" data-train-id="${trainId}">Set WP</button>
+                            <button class="btn btn-sm btn-secondary set-waypoint-btn" data-train-id="${trainId}">Set WP</button>
                         </div>
                     </div>
                 `;
@@ -638,7 +637,14 @@ class RouteEditorHandler {
         const deleteRouteBtn = document.getElementById('delete-route-btn');
         if (deleteRouteBtn) {
             deleteRouteBtn.onclick = async () => {
-                if (!confirm(`Delete route "${this.currentRoute?.name || this.currentRoute?.route_id}"?`)) {
+                const confirmed = await showConfirmModal({
+                    title: 'Delete Route',
+                    message: `Delete route "${this.currentRoute?.name || this.currentRoute?.route_id}"?`,
+                    detail: 'This removes all waypoints and train assignments for this route.',
+                    confirmText: 'Delete',
+                    confirmVariant: 'danger'
+                });
+                if (!confirmed) {
                     return;
                 }
                 try {
@@ -853,7 +859,14 @@ class RouteEditorHandler {
      * Delete a waypoint
      */
     async deleteWaypoint(index) {
-        if (!confirm('Delete this waypoint?')) return;
+        const confirmed = await showConfirmModal({
+            title: 'Delete Waypoint',
+            message: 'Delete this waypoint?',
+            detail: 'Route order and viability will be recalculated.',
+            confirmText: 'Delete',
+            confirmVariant: 'danger'
+        });
+        if (!confirmed) return;
 
         this.currentRoute.waypoints.splice(index, 1);
 

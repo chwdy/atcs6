@@ -149,12 +149,15 @@
                 <div class="sidebar-content-section">
                     <div class="sidebar-section properties-panel" id="properties-panel">
                         <h3>Properties</h3>
-                        <p style="color: #666; font-size: 12px;">Select an element to view properties</p>
+                        <p class="properties-empty">Select an element to view properties</p>
                     </div>
 
-                    <div class="sidebar-section debug-panel" id="debug-panel">
-                        <h3>Debug Info</h3>
-                        <div class="debug-controls">
+                    <div class="sidebar-section debug-panel collapsible-sidebar-section collapsed" id="debug-panel" data-section="debug">
+                        <button class="sidebar-section-toggle" type="button" aria-expanded="false" aria-controls="debug-panel-body">
+                            <h3>Debug Info</h3>
+                        </button>
+                        <div class="sidebar-section-body" id="debug-panel-body">
+                            <div class="debug-controls">
                             <label title="Show Track Bits">
                                 <input type="checkbox" id="debug-show-bits" />
                                 <span>Track Bits</span>
@@ -180,31 +183,35 @@
                                 <span>Signals</span>
                             </label>
 
-                            <label title="Show Train Position Details" style="grid-column: 1 / -1;">
+                            <label title="Show Train Position Details" class="debug-control-span-2">
                                 <input type="checkbox" id="debug-show-train-position" checked />
                                 <span>Show Train Position Details</span>
                             </label>
 
-                        </div>
+                            </div>
                         
-                        <!-- Train Position Debug Panel is now in secondary sidebar -->
+                            <!-- Train Position Debug Panel is now in secondary sidebar -->
+                        </div>
 
                     </div>
 
-                    <div class="sidebar-section settings-panel" id="settings-panel">
-                        <h3>Settings</h3>
-                        <div class="settings-controls">
+                    <div class="sidebar-section settings-panel collapsible-sidebar-section collapsed" id="settings-panel" data-section="settings">
+                        <button class="sidebar-section-toggle" type="button" aria-expanded="false" aria-controls="settings-panel-body">
+                            <h3>Settings</h3>
+                        </button>
+                        <div class="sidebar-section-body" id="settings-panel-body">
+                            <div class="settings-controls">
                             <div class="setting-row">
-                                <span class="setting-label-compact" style="width: auto; margin-right: 5px;">Labels</span>
-                                <select id="label-spacing-select" class="setting-select setting-input-compact" style="flex: 1;">
+                                <span class="setting-label-compact settings-label-inline">Labels</span>
+                                <select id="label-spacing-select" class="setting-select setting-input-compact settings-select-fill">
                                     <option value="tight">Tight</option>
                                     <option value="mid" selected>Mid</option>
                                     <option value="cozy">Cozy</option>
                                 </select>
                             </div>
                             <div class="setting-row">
-                                <span id="scale-current-display" class="setting-label-compact" style="width: auto; margin-right: 5px;">Current: 1:1</span>
-                                <select id="scale-select" class="setting-select setting-input-compact" style="flex: 1;">
+                                <span id="scale-current-display" class="setting-label-compact settings-label-inline">Current: 1:1</span>
+                                <select id="scale-select" class="setting-select setting-input-compact settings-select-fill">
                                     <option value="1">1:1 (Full)</option>
                                     <option value="22.5">1:22.5 (G)</option>
                                     <option value="43.5">1:43.5 (O)</option>
@@ -216,6 +223,7 @@
                                     <option value="220">1:220 (Z)</option>
                                 </select>
                                 <button id="scale-apply-custom" class="btn btn-sm btn-secondary">Set</button>
+                            </div>
                             </div>
                         </div>
                     </div>

@@ -191,7 +191,7 @@ class PathEditorHandler {
 
         const trainInfo = this.pathToolState.trainId
             ? renderReadOnlyValue('Train', `🚂 ${this.pathToolState.trainId}`, 'text-info font-bold')
-            : '<div class="text-muted text-sm" style="padding: 8px 0;">No train at start block</div>';
+            : '<div class="text-muted text-sm py-8">No train at start block</div>';
 
         const content = `
             <div class="path-setup-panel">
@@ -202,20 +202,20 @@ class PathEditorHandler {
                     <div class="flex items-center gap-12">
                         <input type="range" id="path-priority-slider" 
                                min="1" max="10" value="${this.pathToolState.priority}"
-                               class="property-input" style="flex: 1;">
-                        <span id="path-priority-value" class="text-lg font-bold text-track" style="min-width: 30px; text-align: center;">
+                               class="property-input flex-1">
+                        <span id="path-priority-value" class="text-lg font-bold text-track path-priority-value">
                             ${this.pathToolState.priority}
                         </span>
                     </div>
-                    <div class="text-xxs text-muted" style="margin-top: 4px;">
+                    <div class="text-xxs text-muted mt-4">
                         5 = Normal, 10 = Critical
                     </div>
                 </div>
                 
                 ${trainInfo}
                 
-                <div class="info-box text-sm" style="margin-top: 16px;">
-                    Click on an <span style="color: #ff9500;">orange</span> destination block to create path.
+                <div class="info-box text-sm mt-16">
+                    Click on an <span class="text-warning">orange</span> destination block to create path.
                     <br><br>
                     Right-click or press ESC to cancel.
                 </div>
@@ -263,7 +263,7 @@ class PathEditorHandler {
         `;
 
         if (this.cachedPaths.length === 0) {
-            content += '<div class="text-muted text-center" style="padding: 32px 16px;">No active paths</div>';
+            content += '<div class="text-muted text-center routes-empty-state">No active paths</div>';
         } else {
             content += '<div class="paths-list">';
             for (const path of this.cachedPaths) {
@@ -280,44 +280,45 @@ class PathEditorHandler {
     }
 
     renderPathListItem(path) {
-        const statusColor = this.getPathStatusColor(path.status);
+        const statusClass = this.getPathStatusClass(path.status);
         const progress = path.block_sequence?.length > 0
             ? Math.round((path.current_block_index / path.block_sequence.length) * 100)
             : 0;
+        const statusText = path.status.toUpperCase();
 
         return `
-            <div class="train-summary-row mb-8">
-                <div class="flex items-center gap-12 w-full p-2">
-                    <div class="flex flex-col items-center justify-center gap-2" style="min-width: 40px; padding-top: 4px;">
-                        <div class="train-status-dot" style="background-color: ${statusColor}"></div>
-                        <div class="text-xxs font-bold uppercase tracking-wider" style="color: ${statusColor}; font-size: 0.65rem; line-height: 1; padding: 4px 0; margin-top: 2px;">
-                            ${path.status.toUpperCase()}
+            <div class="path-row ${statusClass} mb-8">
+                <div class="path-row-main">
+                    <div class="path-row-status">
+                        <div class="train-status-dot path-status-dot"></div>
+                        <div class="text-xxs font-bold uppercase tracking-wider path-status-label">
+                            ${statusText}
                         </div>
-                        <div class="text-xxs font-bold text-muted" title="Priority" style="line-height: 1; padding-top: 2px;">P${path.priority}</div>
+                        <div class="text-xxs font-bold text-muted path-priority-tag" title="Priority">P${path.priority}</div>
                     </div>
-                    <div class="train-info flex-1" style="min-width: 0;">
+                    <div class="train-info flex-1 path-row-content">
                         <div class="flex flex-col gap-1 mb-6">
                             <div class="flex justify-between items-start gap-2">
-                                <span class="train-id font-mono font-bold text-white" style="word-break: break-all; line-height: 1.2;">${path.path_id}</span>
+                                <span class="train-id font-mono font-bold text-white path-id-text">${path.path_id}</span>
                             </div>
                         </div>
                         <div class="flex justify-between items-end gap-2">
-                            <div class="text-xs text-muted flex-1" style="min-width: 0;">
-                                <div style="word-break: break-word; line-height: 1.4; margin-bottom: 6px;">
+                            <div class="text-xs text-muted flex-1 path-meta-col">
+                                <div class="path-endpoints-stack">
                                     <div class="font-mono text-white opacity-90">${path.start_block_id}</div>
-                                    <div class="text-xxs opacity-50 py-1" style="text-align: center; width: 20px;">↓</div>
+                                    <div class="text-xxs opacity-50 py-1 path-arrow-divider">↓</div>
                                     <div class="font-mono text-white opacity-90">${path.end_block_id}</div>
                                 </div>
-                                <div style="margin-bottom: 4px;">${path.train_id ? `🚂 ${path.train_id}` : 'No Train'}</div>
+                                <div class="mb-4">${path.train_id ? `🚂 ${path.train_id}` : 'No Train'}</div>
                                 ${path.status === 'active' ? `
-                                    <div class="progress-container mt-1" style="width: 100%; max-width: 120px; height: 4px;">
-                                        <div class="progress-bar" style="width: ${progress}%; background-color: ${statusColor};"></div>
+                                    <div class="progress-container mt-1 path-progress-compact">
+                                        <progress class="path-progress-meter" value="${progress}" max="100"></progress>
                                     </div>
                                 ` : ''}
                             </div>
                             <div class="flex gap-4 flex-shrink-0">
                                 <button class="edit-btn btn-sm view-path-btn" data-path-id="${path.path_id}">View</button>
-                                <button class="btn btn-sm btn-danger text-white cancel-path-btn" style="background-color: var(--danger-color);" data-path-id="${path.path_id}">Cancel</button>
+                                <button class="btn btn-sm btn-danger btn-danger-solid cancel-path-btn" data-path-id="${path.path_id}">Cancel</button>
                             </div>
                         </div>
                     </div>
@@ -337,6 +338,19 @@ class PathEditorHandler {
             'cancelled': '#e83f5b'
         };
         return colors[status] || '#888';
+    }
+
+    getPathStatusClass(status) {
+        const map = {
+            pending: 'path-status-pending',
+            setting: 'path-status-setting',
+            set: 'path-status-set',
+            active: 'path-status-active',
+            clearing: 'path-status-clearing',
+            completed: 'path-status-completed',
+            cancelled: 'path-status-cancelled'
+        };
+        return map[status] || 'path-status-pending';
     }
 
     initRoutesPanelHandlers() {
@@ -359,7 +373,14 @@ class PathEditorHandler {
         cancelBtns.forEach(btn => {
             btn.onclick = async () => {
                 const pathId = btn.dataset.pathId;
-                if (!confirm(`Cancel path "${pathId}"?`)) return;
+                const confirmed = await showConfirmModal({
+                    title: 'Cancel Path',
+                    message: `Cancel path "${pathId}"?`,
+                    detail: 'Reserved blocks for this path will be released.',
+                    confirmText: 'Cancel Path',
+                    confirmVariant: 'danger'
+                });
+                if (!confirmed) return;
                 
                 try {
                     const result = await this.api.cancelPath(pathId);
@@ -391,7 +412,7 @@ class PathEditorHandler {
             return;
         }
 
-        const statusColor = this.getPathStatusColor(path.status);
+        const statusClass = this.getPathStatusClass(path.status);
         const progress = path.block_sequence?.length > 0
             ? Math.round((path.current_block_index / path.block_sequence.length) * 100)
             : 0;
@@ -419,14 +440,14 @@ class PathEditorHandler {
                         <span class="text-xxs text-muted">P${path.priority}</span>
                     </div>
                     
-                    <div class="text-2xl font-bold mb-6 font-mono" style="color: ${statusColor}">
+                    <div class="text-2xl font-bold mb-6 font-mono path-status-title ${statusClass}">
                         ${path.status.toUpperCase()}
                     </div>
                     
                     <div class="grid grid-cols-1 gap-y-4 text-sm font-mono">
                         <div>
                             <span class="text-muted text-xs block mb-2">Route</span>
-                            <div class="text-white" style="line-height: 1.4;">
+                            <div class="text-white path-route-stack">
                                 <div class="opacity-90">${path.start_block_id}</div>
                                 <div class="text-xxs text-muted py-1">↓</div>
                                 <div class="opacity-90">${path.end_block_id}</div>
@@ -439,8 +460,8 @@ class PathEditorHandler {
                         ${path.status === 'active' ? `
                         <div>
                             <span class="text-muted text-xs block mb-1">Progress</span>
-                            <div class="progress-container" style="width: 100%; max-width: 150px; height: 6px;">
-                                <div class="progress-bar" style="width: ${progress}%; background-color: ${statusColor};"></div>
+                            <div class="progress-container path-progress-full">
+                                <progress class="path-progress-meter ${statusClass}" value="${progress}" max="100"></progress>
                             </div>
                             <span class="text-xxs text-muted mt-1">${progress}%</span>
                         </div>
@@ -463,16 +484,16 @@ class PathEditorHandler {
                                 ➕ Extend
                             </button>
                         ` : ''}
-                        <button id="cancel-path-btn" class="btn btn-danger btn-sm flex-1 text-white" style="background-color: var(--danger-color);">
+                        <button id="cancel-path-btn" class="btn btn-danger btn-sm flex-1 btn-danger-solid">
                             ❌ Cancel
                         </button>
                     </div>
                 </div>
                 
                 <!-- BLOCKS LIST (Scrollable) -->
-                <div class="control-section mt-12 pt-12" style="border-top: 1px solid var(--border-color);">
+                <div class="control-section control-section-divider mt-12 pt-12">
                     <h4 class="text-sm text-muted mb-8">Blocks (${path.block_sequence?.length || 0})</h4>
-                    <div class="bg-input rounded-lg" style="max-height: 150px; overflow-y: auto; padding: 8px; border: 1px solid #3a3a4e;">
+                    <div class="bg-input rounded-lg path-block-list-wrap">
                         ${blocksListHtml || '<div class="text-muted text-xs">No blocks</div>'}
                     </div>
                 </div>
@@ -507,11 +528,18 @@ class PathEditorHandler {
         if (cancelBtn) {
             cancelBtn.onclick = async () => {
                 const hasApproachLocked = path.approach_locked_blocks?.length > 0;
-                const msg = hasApproachLocked
-                    ? `Cancel path "${pathId}"?\n\nNote: ${path.approach_locked_blocks.length} blocks are approach-locked and will be released when train stops.`
-                    : `Cancel path "${pathId}"?`;
+                const detail = hasApproachLocked
+                    ? `${path.approach_locked_blocks.length} approach-locked block(s) will be released when the train stops.`
+                    : 'Reserved blocks for this path will be released.';
                 
-                if (!confirm(msg)) return;
+                const confirmed = await showConfirmModal({
+                    title: 'Cancel Path',
+                    message: `Cancel path "${pathId}"?`,
+                    detail,
+                    confirmText: 'Cancel Path',
+                    confirmVariant: 'danger'
+                });
+                if (!confirmed) return;
 
                 try {
                     const result = await this.api.cancelPath(pathId);
@@ -724,14 +752,13 @@ class PathEditorHandler {
         this.editor._currentEditorId = this.extendPathState.selectedPathId;
 
         const route = this.extendPathState.selectedPath;
-        const statusColor = this.getPathStatusColor(route.status);
         const exitDir = this.extendPathState.exitDirection;
         const exitDirText = exitDir ? this.getDirectionName(exitDir) : 'Unknown';
         const reachableCount = this.extendPathState.reachableEndpoints.length;
 
         const content = `
-            <div class="extend-route-panel">
-                ${renderHeaderId(route.path_id, statusColor)}
+                <div class="extend-route-panel">
+                ${renderHeaderId(route.path_id, this.getPathStatusColor(route.status))}
                 
                 ${renderReadOnlyValue('Current End', route.end_block_id, 'value-display-mono text-sm')}
                 ${renderReadOnlyValue('Direction', `${exitDirText} (${exitDir || '?'})`, 'text-info font-bold')}
@@ -741,10 +768,10 @@ class PathEditorHandler {
                     : ''
                 }
                 
-                <div class="info-box text-sm" style="margin-top: 16px;">
+                <div class="info-box text-sm mt-16">
                     ${reachableCount > 0 
-                        ? `Click on an <span style="color: #ff9500;">orange</span> destination block to extend the route ${exitDirText.toLowerCase()}.`
-                        : `<span style="color: #ff6b6b;">No forward destinations available.</span> The route may be at a dead end or all forward blocks are occupied.`
+                        ? `Click on an <span class="text-warning">orange</span> destination block to extend the route ${exitDirText.toLowerCase()}.`
+                        : `<span class="text-danger">No forward destinations available.</span> The route may be at a dead end or all forward blocks are occupied.`
                     }
                     <br><br>
                     Right-click or press ESC to cancel.
@@ -801,13 +828,19 @@ class PathEditorHandler {
             }
 
             const pathToCancel = matchingPaths[0];
-            
-            const msg = `Cancel path "${pathToCancel.path_id}"?\n\n` +
+            const detail =
                 `From: ${pathToCancel.start_block_id}\n` +
                 `To: ${pathToCancel.end_block_id}` +
                 (pathToCancel.train_id ? `\nTrain: ${pathToCancel.train_id}` : '');
             
-            if (!confirm(msg)) {
+            const confirmed = await showConfirmModal({
+                title: 'Cancel Path',
+                message: `Cancel path "${pathToCancel.path_id}"?`,
+                detail,
+                confirmText: 'Cancel Path',
+                confirmVariant: 'danger'
+            });
+            if (!confirmed) {
                 return;
             }
 

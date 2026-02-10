@@ -78,7 +78,14 @@ class PlatformEditorHandler {
         const deleteBtn = document.getElementById('delete-platform-btn');
         if (deleteBtn) {
             deleteBtn.onclick = async () => {
-                if (!confirm(`Delete platform ${platformId}?`)) {
+                const confirmed = await showConfirmModal({
+                    title: 'Delete Platform',
+                    message: `Delete platform "${platformId}"?`,
+                    detail: 'Platform assignments on its track tiles will be removed.',
+                    confirmText: 'Delete',
+                    confirmVariant: 'danger'
+                });
+                if (!confirmed) {
                     return;
                 }
                 try {
@@ -112,41 +119,88 @@ class PlatformEditorHandler {
         }
     }
 
-    showModal(options) {
+    async showModal(options) {
         const defaultId = `PLAT_${Date.now().toString().slice(-6)}`;
-        const platformId = window.prompt('Platform ID', options?.platformId || defaultId);
-        if (platformId === null) {
-            return null;
-        }
-        const name = window.prompt('Platform Name (optional)', options?.name || '') || '';
-        const lengthValue = window.prompt('Platform Length (cm)', '0');
-        if (lengthValue === null) {
-            return null;
-        }
-        const sideValue = window.prompt('Platform Side (left/right/both)', 'both');
-        if (sideValue === null) {
-            return null;
-        }
-        const topSpeedValue = window.prompt('Top Speed km/h (blank for none)', '');
-        if (topSpeedValue === null) {
+        const values = await showFormModal({
+            title: 'Create Platform',
+            message: 'Enter platform properties.',
+            fields: [
+                {
+                    name: 'platformId',
+                    label: 'Platform ID',
+                    type: 'text',
+                    defaultValue: options?.platformId || defaultId,
+                    required: true,
+                    validate: (value) => String(value || '').trim() ? '' : 'Platform ID is required.'
+                },
+                {
+                    name: 'name',
+                    label: 'Platform Name (optional)',
+                    type: 'text',
+                    defaultValue: options?.name || ''
+                },
+                {
+                    name: 'lengthCm',
+                    label: 'Platform Length (cm)',
+                    type: 'number',
+                    defaultValue: 0,
+                    min: 0,
+                    step: 1,
+                    validate: (value) => (value === '' || value < 0) ? 'Length must be 0 or greater.' : ''
+                },
+                {
+                    name: 'platformSide',
+                    label: 'Platform Side',
+                    type: 'select',
+                    defaultValue: 'both',
+                    options: [
+                        { value: 'left', label: 'Left' },
+                        { value: 'right', label: 'Right' },
+                        { value: 'both', label: 'Both' }
+                    ]
+                },
+                {
+                    name: 'topSpeedKmh',
+                    label: 'Top Speed (km/h, optional)',
+                    type: 'number',
+                    defaultValue: '',
+                    min: 0,
+                    step: 1,
+                    hint: 'Leave blank for no speed limit.',
+                    validate: (value) => (value !== '' && value < 0) ? 'Top speed must be 0 or greater.' : ''
+                }
+            ],
+            confirmText: 'Create Platform',
+            confirmVariant: 'primary'
+        });
+
+        if (!values) {
             return null;
         }
 
         return {
-            platformId,
-            name,
-            lengthCm: parseFloat(lengthValue || '0') || 0,
-            platformSide: (sideValue || 'both').toLowerCase(),
-            topSpeedKmh: topSpeedValue === '' ? null : (parseFloat(topSpeedValue) || 0),
+            platformId: String(values.platformId || '').trim() || defaultId,
+            name: String(values.name || ''),
+            lengthCm: Number(values.lengthCm || 0),
+            platformSide: String(values.platformSide || 'both').toLowerCase(),
+            topSpeedKmh: values.topSpeedKmh === '' ? null : Number(values.topSpeedKmh),
         };
     }
 
     async showBlockAssignmentDialog(platformId, x, y) {
-        const blockId = window.prompt(`Assign block to tile (${x}, ${y})`, '');
-        if (!blockId) {
+        const blockId = await showPromptModal({
+            title: 'Assign Block to Platform Tile',
+            label: `Block ID for tile (${x}, ${y})`,
+            defaultValue: '',
+            required: true,
+            confirmText: 'Assign',
+            confirmVariant: 'primary'
+        });
+        const normalizedBlockId = String(blockId || '').trim();
+        if (!normalizedBlockId) {
             return;
         }
-        await this.api.assignPlatformTileToBlock(platformId, x, y, blockId);
+        await this.api.assignPlatformTileToBlock(platformId, x, y, normalizedBlockId);
         await window.app.refreshNetwork();
         await this.showEditor(platformId);
     }
@@ -255,7 +309,14 @@ class StationGroupEditorHandler {
         document.querySelectorAll('.delete-station-group-btn').forEach((btn) => {
             btn.onclick = async () => {
                 const stationId = btn.dataset.stationId;
-                if (!confirm(`Delete logical station ${stationId}?`)) {
+                const confirmed = await showConfirmModal({
+                    title: 'Delete Logical Station',
+                    message: `Delete logical station "${stationId}"?`,
+                    detail: 'This removes only the grouping; platform tracks remain unchanged.',
+                    confirmText: 'Delete',
+                    confirmVariant: 'danger'
+                });
+                if (!confirmed) {
                     return;
                 }
                 await this.api.deleteStationGroup(stationId);
@@ -266,14 +327,19 @@ class StationGroupEditorHandler {
         document.querySelectorAll('.add-platform-to-station-btn').forEach((btn) => {
             btn.onclick = async () => {
                 const stationId = btn.dataset.stationId;
-                const platformId = window.prompt(
-                    `Platform ID to add to station ${stationId}`,
-                    platforms[0]?.platform_id || ''
-                );
-                if (!platformId) {
+                const platformId = await showPromptModal({
+                    title: 'Add Platform to Station',
+                    label: `Platform ID to add to station "${stationId}"`,
+                    defaultValue: platforms[0]?.platform_id || '',
+                    required: true,
+                    confirmText: 'Add',
+                    confirmVariant: 'primary'
+                });
+                const normalizedPlatformId = String(platformId || '').trim();
+                if (!normalizedPlatformId) {
                     return;
                 }
-                await this.api.addPlatformToStation(stationId, platformId);
+                await this.api.addPlatformToStation(stationId, normalizedPlatformId);
                 await this.showPanel();
             };
         });
@@ -281,11 +347,19 @@ class StationGroupEditorHandler {
         document.querySelectorAll('.remove-platform-from-station-btn').forEach((btn) => {
             btn.onclick = async () => {
                 const stationId = btn.dataset.stationId;
-                const platformId = window.prompt(`Platform ID to remove from station ${stationId}`, '');
-                if (!platformId) {
+                const platformId = await showPromptModal({
+                    title: 'Remove Platform from Station',
+                    label: `Platform ID to remove from station "${stationId}"`,
+                    defaultValue: '',
+                    required: true,
+                    confirmText: 'Remove',
+                    confirmVariant: 'danger'
+                });
+                const normalizedPlatformId = String(platformId || '').trim();
+                if (!normalizedPlatformId) {
                     return;
                 }
-                await this.api.removePlatformFromStation(stationId, platformId);
+                await this.api.removePlatformFromStation(stationId, normalizedPlatformId);
                 await this.showPanel();
             };
         });

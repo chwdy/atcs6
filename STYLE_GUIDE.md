@@ -1,7 +1,7 @@
 # Frontend Style Guide
 
-**Version:** 1.0  
-**Last Updated:** 2026-01-16
+**Version:** 1.1  
+**Last Updated:** 2026-02-09
 
 This guide documents the design system for the railway control system frontend. Use these CSS classes instead of inline styles to maintain consistency across the application.
 
@@ -173,6 +173,34 @@ Use these classes for font sizes to maintain clear visual hierarchy:
     STOPPED
 </div>
 ```
+
+---
+
+## Secondary Panel Standards
+
+Use these rules for all editor panels (routes, paths, trains, blocks, signals, switches):
+
+1. **Panel shell first**: group content into `.control-section` blocks with consistent spacing.
+2. **Section rhythm**: header + content + actions (avoid random per-section spacing).
+3. **Compact controls**: use `.btn-sm` / `.btn-xs` for mouse-driven tool actions.
+4. **Dense metadata rows**: prefer 2-column grids (`.grid .grid-cols-2`) over long single-column stacks.
+5. **No static inline styles**: use CSS classes for spacing, font size, borders, and alignment.
+6. **Dynamic inline style allowed only for state values** via CSS variables, for example:
+
+```html
+<div class="train-status-dot" style="--state-color: #04d361;"></div>
+```
+
+Recommended panel classes:
+
+| Purpose | Class |
+|--------|-------|
+| Section container | `.control-section` |
+| Section divider | `.control-section-divider` |
+| Section title | `.control-section-header` |
+| Two-column properties | `.property-grid` + `.grid-cols-2` |
+| Compact icon/action buttons | `.btn-xs` + `.btn-icon-only` |
+| Empty state card | `.routes-empty-state` / `.route-empty-dashed` |
 
 ---
 
@@ -417,6 +445,6 @@ Use these in custom inline styles when needed:
 
 ## Questions?
 
-If you're unsure which class to use, check `static/css/style.css` for the full list of available classes and their definitions. Look for similar existing UI elements in the codebase and follow the same pattern.
+If you're unsure which class to use, start with `static/css/style.css` (entrypoint) and then check the imported modules in `static/css/base/`, `static/css/layout/`, `static/css/components/`, and `static/css/features/`. Look for similar existing UI elements in the codebase and follow the same pattern.
 
-For new patterns not covered by this guide, add them to the design system in `style.css` and document them here.
+For new patterns not covered by this guide, add them to the appropriate modular stylesheet and keep `style.css` as the import entrypoint. Document new patterns here.

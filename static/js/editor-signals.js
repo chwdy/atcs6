@@ -12,6 +12,19 @@ class SignalEditorHandler {
     set cachedBlocks(value) { this.editor.cachedBlocks = value; }
     get selectedElement() { return this.editor.selectedElement; }
 
+    getSignalStateClass(state) {
+        const normalized = (state || 'green').toLowerCase();
+        if (normalized === 'yellow') return 'signal-state-yellow';
+        if (normalized === 'red') return 'signal-state-red';
+        return 'signal-state-green';
+    }
+
+    _replaceSignalStateClass(element, nextClass) {
+        if (!element) return;
+        element.classList.remove('signal-state-green', 'signal-state-yellow', 'signal-state-red');
+        element.classList.add(nextClass);
+    }
+
     async showSignalsEditorForTile(track) {
         const signals = track.signals || [];
 
@@ -34,52 +47,53 @@ class SignalEditorHandler {
 
             signalDetails.push({ signal, index: i });
             const state = (signal.state || signal.signal_state || 'green').toUpperCase();
-            const stateColor = state === 'GREEN' ? '#04d361' : (state === 'YELLOW' ? '#ffd93d' : '#e83f5b');
+            const signalStateClass = this.getSignalStateClass(state);
+            const directionClass = signal.detection_direction ? 'text-white' : 'text-danger';
 
             signalsContent += `
-                <div class="info-box-track" style="margin-bottom: 16px; border-left: 4px solid ${stateColor};">
+                <div class="info-box-track signal-panel-card ${signalStateClass} mb-16">
                     <!-- Header with signal number -->
-                    ${signals.length > 1 ? `<div class="text-muted text-xs" style="margin-bottom: 8px;">Signal ${i + 1} of ${signals.length}</div>` : ''}
+                    ${signals.length > 1 ? `<div class="text-muted text-xs mb-8">Signal ${i + 1} of ${signals.length}</div>` : ''}
 
                     <!-- Large State Display (Left-aligned) -->
-                    <div style="margin-bottom: 12px;">
-                        <div style="display: flex; align-items: center; gap: 10px;">
-                            <span class="train-status-dot" style="background: ${stateColor}; box-shadow: 0 0 8px ${stateColor};"></span>
-                            <span style="font-size: 24px; font-weight: bold; color: ${stateColor};">${state}</span>
+                    <div class="mb-12">
+                        <div class="signal-state-row">
+                            <span class="train-status-dot signal-state-dot"></span>
+                            <span class="signal-state-title">${state}</span>
                         </div>
                     </div>
 
                     <!-- Info Grid -->
-                    <div class="property-grid" style="gap: 8px; margin-bottom: 16px;">
+                    <div class="property-grid signal-grid-tight mb-16">
                         <div class="property-item">
                             <label class="property-label">Signal ID</label>
                             <div class="value-display text-info">${signal.signal_id}</div>
                         </div>
                         <div class="property-item">
                             <label class="property-label">Direction</label>
-                            <div class="value-display" style="color: ${signal.detection_direction ? '#fff' : '#f55'};">${signal.detection_direction || '???'}</div>
+                            <div class="value-display ${directionClass}">${signal.detection_direction || '???'}</div>
                         </div>
                     </div>
 
                     <!-- Editable Fields -->
-                    <div class="property-grid" style="gap: 12px;">
+                    <div class="property-grid signal-grid-standard">
                         <div class="property-item">
                             <label class="property-label">Signal Name</label>
                             <input type="text" class="signal-name-input property-input" data-signal-id="${signal.signal_id}" value="${signal.name || ''}" placeholder="Enter signal name...">
                         </div>
                         <div class="property-item">
                             <label class="property-label">Block to Monitor</label>
-                            <select class="signal-block-select property-input" data-signal-id="${signal.signal_id}" style="border-color: ${signal.monitored_block_id ? 'var(--border-color)' : '#ff9500'};">
+                            <select class="signal-block-select property-input ${signal.monitored_block_id ? '' : 'property-input-warning'}" data-signal-id="${signal.signal_id}">
                                 <option value="">-- None (Manual Control) --</option>
                                 <option value="${signal.monitored_block_id || ''}" selected>${signal.monitored_block_id || 'None'} (Loading...)</option>
                             </select>
-                            <div class="block-select-hint text-muted text-xs" data-signal-id="${signal.signal_id}" style="margin-top: 4px;">
+                            <div class="block-select-hint text-muted text-xs mt-4" data-signal-id="${signal.signal_id}">
                                 Signal shows RED when monitored block is occupied
                             </div>
                         </div>
                     </div>
 
-                    <div style="margin-top: 16px;">
+                    <div class="mt-16">
                         <button class="save-signal-btn btn btn-primary btn-full text-base" data-signal-id="${signal.signal_id}">
                             Save Signal Properties
                         </button>
@@ -128,9 +142,9 @@ class SignalEditorHandler {
                     const hintDiv = document.querySelector(`.block-select-hint[data-signal-id="${signal.signal_id}"]`);
                     if (hintDiv) {
                         if (reachableBlocks.length === 0) {
-                            hintDiv.innerHTML = `<span style="color: #ff6b6b;">No reachable blocks found.</span>`;
+                            hintDiv.innerHTML = '<span class="text-danger">No reachable blocks found.</span>';
                         } else {
-                            hintDiv.innerHTML = `Signal shows RED when monitored block is occupied<br><span style="color: #888;">${reachableBlocks.length} reachable block(s)</span>`;
+                            hintDiv.innerHTML = `Signal shows RED when monitored block is occupied<br><span class="text-muted">${reachableBlocks.length} reachable block(s)</span>`;
                         }
                     }
                 }
@@ -186,29 +200,30 @@ class SignalEditorHandler {
         }
 
         const state = (signal.state || signal.signal_state || 'green').toLowerCase();
-        const stateColor = state === 'green' ? '#04d361' : (state === 'yellow' ? '#ffd93d' : '#e83f5b');
+        const signalStateClass = this.getSignalStateClass(state);
         const stateText = state.toUpperCase();
+        const directionClass = signal.detection_direction ? 'text-white' : 'text-danger';
 
         const content = `
             <!-- INFO SECTION (Read-only, styled like Train Control) -->
-            <div class="info-box-track">
+            <div class="info-box-track signal-panel-card ${signalStateClass}">
                 <!-- Large State Display (Left-aligned) -->
-                <div style="margin-bottom: 12px;">
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <span class="train-status-dot" style="background: ${stateColor}; box-shadow: 0 0 8px ${stateColor};"></span>
-                        <span style="font-size: 24px; font-weight: bold; color: ${stateColor};">${stateText}</span>
+                <div class="mb-12">
+                    <div class="signal-state-row">
+                        <span class="train-status-dot signal-state-dot"></span>
+                        <span class="signal-state-title">${stateText}</span>
                     </div>
                 </div>
 
                 <!-- Info Grid -->
-                <div class="property-grid" style="gap: 8px;">
+                <div class="property-grid signal-grid-tight">
                     <div class="property-item">
                         <label class="property-label">Signal ID</label>
                         <div class="value-display text-info">${signal.signal_id}</div>
                     </div>
                     <div class="property-item">
                         <label class="property-label">Direction</label>
-                        <div class="value-display" style="color: ${signal.detection_direction ? '#fff' : '#f55'};">${signal.detection_direction || '???'}</div>
+                        <div class="value-display ${directionClass}">${signal.detection_direction || '???'}</div>
                     </div>
                     <div class="property-item">
                         <label class="property-label">Position</label>
@@ -225,24 +240,24 @@ class SignalEditorHandler {
             <div class="control-section">
                 <div class="control-section-header">Properties</div>
 
-                <div class="property-grid" style="gap: 12px;">
+                <div class="property-grid signal-grid-standard">
                     <div class="property-item">
                         <label class="property-label">Signal Name</label>
                         <input type="text" id="signal-name-input" class="property-input" value="${signal.name || ''}" placeholder="Enter signal name...">
                     </div>
                     <div class="property-item">
                         <label class="property-label">Block to Monitor</label>
-                        <select id="signal-block-select" class="property-input" style="border-color: ${signal.monitored_block_id ? 'var(--border-color)' : '#ff9500'};">
+                        <select id="signal-block-select" class="property-input ${signal.monitored_block_id ? '' : 'property-input-warning'}">
                             <option value="">-- None (Manual Control) --</option>
                             <option value="${signal.monitored_block_id || ''}" selected>${signal.monitored_block_id || 'None'} (Loading...)</option>
                         </select>
-                        <div id="block-select-hint" class="text-muted text-xs" style="margin-top: 4px;">
+                        <div id="block-select-hint" class="text-muted text-xs mt-4">
                             Signal shows RED when monitored block is occupied
                         </div>
                     </div>
                 </div>
 
-                <div style="margin-top: 16px;">
+                <div class="mt-16">
                     <button id="save-signal-btn" class="btn btn-primary btn-full text-base">
                         Save Signal Properties
                     </button>
@@ -288,9 +303,9 @@ class SignalEditorHandler {
                 const hintDiv = document.getElementById('block-select-hint');
                 if (hintDiv) {
                      if (reachableBlocks.length === 0) {
-                        hintDiv.innerHTML = `<span style="color: #ff6b6b;">No reachable blocks found. Check track connectivity.</span>`;
+                        hintDiv.innerHTML = '<span class="text-danger">No reachable blocks found. Check track connectivity.</span>';
                      } else {
-                        hintDiv.innerHTML = `Signal shows RED when monitored block is occupied<br><span style="color: #888;">${reachableBlocks.length} reachable block(s)</span>`;
+                        hintDiv.innerHTML = `Signal shows RED when monitored block is occupied<br><span class="text-muted">${reachableBlocks.length} reachable block(s)</span>`;
                      }
                 }
             }
@@ -385,18 +400,18 @@ class SignalEditorHandler {
     _updateSignalDisplay(signal) {
         // Update state display
         const state = (signal.state || signal.signal_state || 'green').toLowerCase();
-        const stateColor = state === 'green' ? '#04d361' : (state === 'yellow' ? '#ffd93d' : '#e83f5b');
+        const stateClass = this.getSignalStateClass(state);
         const stateText = state.toUpperCase();
+
+        const stateCard = document.querySelector('.signal-panel-card');
+        this._replaceSignalStateClass(stateCard, stateClass);
         
         const stateDot = document.querySelector('.train-status-dot');
-        if (stateDot) {
-            stateDot.style.background = stateColor;
-            stateDot.style.boxShadow = `0 0 8px ${stateColor}`;
-        }
+        this._replaceSignalStateClass(stateDot, stateClass);
         
         const stateSpan = stateDot?.nextElementSibling;
         if (stateSpan) {
-            stateSpan.style.color = stateColor;
+            this._replaceSignalStateClass(stateSpan, stateClass);
             stateSpan.textContent = stateText;
         }
         
@@ -423,13 +438,13 @@ class SignalEditorHandler {
 
     renderSignalList(signals) {
         if (!signals || signals.length === 0) {
-            return '<div class="signal-item" style="color: #888; font-style: italic;">No signals</div>';
+            return '<div class="signal-item signal-item-empty">No signals</div>';
         }
 
         return signals.map(signal => `
             <div class="signal-item">
-                <span style="color: #00ff88; font-weight: bold;">${signal.signal_id || 'Unknown'}</span>
-                <span style="color: #888;"> → ${signal.detection_direction || 'N/A'}</span>
+                <span class="signal-list-id">${signal.signal_id || 'Unknown'}</span>
+                <span class="signal-list-dir"> → ${signal.detection_direction || 'N/A'}</span>
                 <span class="signal-state-badge state-${signal.state || 'red'}">${(signal.state || 'red').toUpperCase()}</span>
             </div>
         `).join('');

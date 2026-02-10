@@ -18,6 +18,16 @@ class SwitchEditorHandler {
     get api() { return this.editor.api; }
     get selectedElement() { return this.editor.selectedElement; }
 
+    getSwitchStateClass(switchState) {
+        return switchState === 0 ? 'switch-state-main' : 'switch-state-diverge';
+    }
+
+    _replaceSwitchStateClass(element, nextClass) {
+        if (!element) return;
+        element.classList.remove('switch-state-main', 'switch-state-diverge');
+        element.classList.add(nextClass);
+    }
+
     // === Switch Editor Panel ===
 
     async showEditor(switchId) {
@@ -49,25 +59,24 @@ class SwitchEditorHandler {
 
         const currentState = track?.switch_state ?? 0;
         const stateText = currentState === 0 ? 'MAIN' : 'DIVERGE';
-        const stateColor = currentState === 0 ? '#04d361' : '#ffd93d';
+        const stateClass = this.getSwitchStateClass(currentState);
         const isLocked = switchData.locked_by_path !== null;
-        const lockColor = isLocked ? '#e83f5b' : '#04d361';
         const lockText = isLocked ? `Locked by ${switchData.locked_by_path}` : 'Unlocked';
 
         const content = `
             <!-- INFO SECTION (Read-only) -->
             <div class="info-box-track">
                 <!-- Large State Display -->
-                <div style="text-align: center; margin-bottom: 12px;">
-                    <div style="display: flex; align-items: center; justify-content: center; gap: 10px;">
-                        <span class="train-status-dot" style="background: ${stateColor}; box-shadow: 0 0 8px ${stateColor};"></span>
-                        <span style="font-size: 24px; font-weight: bold; color: ${stateColor};">${stateText}</span>
+                <div class="switch-state-header">
+                    <div class="switch-state-row">
+                        <span class="train-status-dot switch-state-dot ${stateClass}"></span>
+                        <span class="switch-state-title ${stateClass}">${stateText}</span>
                     </div>
-                    <div class="text-muted text-xs" style="margin-top: 4px;">State ${currentState}</div>
+                    <div class="text-muted text-xs mt-4">State ${currentState}</div>
                 </div>
 
                 <!-- Info Grid -->
-                <div class="property-grid" style="gap: 8px;">
+                <div class="property-grid signal-grid-tight">
                     <div class="property-item">
                         <label class="property-label">Switch ID</label>
                         <div class="value-display text-info">${switchData.switch_id}</div>
@@ -82,7 +91,7 @@ class SwitchEditorHandler {
                     </div>
                     <div class="property-item">
                         <label class="property-label">Lock Status</label>
-                        <div class="value-display" style="color: ${lockColor};">${lockText}</div>
+                        <div class="value-display ${isLocked ? 'text-danger' : 'text-success'}">${lockText}</div>
                     </div>
                 </div>
             </div>
@@ -95,13 +104,13 @@ class SwitchEditorHandler {
                         Toggle State
                     </button>
                 </div>
-                ${isLocked ? `<div class="text-warning text-xs" style="margin-top: 8px;">Switch is locked and cannot be toggled</div>` : ''}
+                ${isLocked ? '<div class="text-warning text-xs mt-8">Switch is locked and cannot be toggled</div>' : ''}
             </div>
 
             <!-- LENGTH PROPERTIES SECTION -->
             <div class="control-section">
                 <div class="control-section-header">Path Lengths (cm)</div>
-                <div class="property-grid" style="gap: 12px;">
+                <div class="property-grid signal-grid-standard">
                     <div class="property-item">
                         <label class="property-label">MAIN Path Length</label>
                         <input type="number" id="switch-main-length" class="property-input" value="${switchData.main_length_cm || 0}" min="0" step="0.1" placeholder="Length in cm">
@@ -116,7 +125,7 @@ class SwitchEditorHandler {
             <!-- RADIUS PROPERTIES SECTION -->
             <div class="control-section">
                 <div class="control-section-header">Path Radii (cm)</div>
-                <div class="property-grid" style="gap: 12px;">
+                <div class="property-grid signal-grid-standard">
                     <div class="property-item">
                         <label class="property-label">MAIN Path Radius</label>
                         <input type="number" id="switch-main-radius" class="property-input" value="${switchData.main_radius_cm || ''}" min="0" step="0.1" placeholder="None (straight)">
@@ -131,7 +140,7 @@ class SwitchEditorHandler {
             <!-- OTHER PROPERTIES SECTION -->
             <div class="control-section">
                 <div class="control-section-header">Properties</div>
-                <div class="property-grid" style="gap: 12px;">
+                <div class="property-grid signal-grid-standard">
                     <div class="property-item">
                         <label class="property-label">Name</label>
                         <input type="text" id="switch-name" class="property-input" value="${switchData.name || ''}" placeholder="Switch name...">
@@ -142,7 +151,7 @@ class SwitchEditorHandler {
                     </div>
                 </div>
 
-                <div style="margin-top: 16px; display: flex; gap: 8px;">
+                <div class="switch-action-row mt-16">
                     <button id="save-switch-btn" class="btn btn-primary flex-1">Save Properties</button>
                     <button id="delete-switch-btn" class="btn btn-danger">Delete</button>
                 </div>
@@ -201,7 +210,14 @@ class SwitchEditorHandler {
         const deleteBtn = document.getElementById('delete-switch-btn');
         if (deleteBtn) {
             deleteBtn.onclick = async () => {
-                if (!confirm(`Delete switch ${switchData.switch_id}? This will remove the switch configuration but not the track.`)) {
+                const confirmed = await showConfirmModal({
+                    title: 'Delete Switch',
+                    message: `Delete switch "${switchData.switch_id}"?`,
+                    detail: 'The switch configuration will be removed, but track geometry will remain.',
+                    confirmText: 'Delete',
+                    confirmVariant: 'danger'
+                });
+                if (!confirmed) {
                     return;
                 }
 
@@ -256,15 +272,15 @@ class SwitchEditorHandler {
         const track = await this.api.getTrack(switchData.x, switchData.y);
         const currentState = track?.switch_state ?? 0;
         const stateText = currentState === 0 ? 'MAIN' : 'DIVERGE';
-        const stateColor = currentState === 0 ? '#04d361' : '#ffd93d';
+        const stateClass = this.getSwitchStateClass(currentState);
         const isLocked = switchData.locked_by_path !== null;
         
         const stateDot = document.querySelector('.train-status-dot');
-        if (stateDot) stateDot.style.background = stateColor;
+        this._replaceSwitchStateClass(stateDot, stateClass);
         
         const stateSpan = stateDot?.nextElementSibling;
         if (stateSpan) {
-            stateSpan.style.color = stateColor;
+            this._replaceSwitchStateClass(stateSpan, stateClass);
             stateSpan.textContent = stateText;
         }
         
@@ -289,18 +305,18 @@ class SwitchEditorHandler {
 
     renderSwitchList(switches) {
         if (!switches || switches.length === 0) {
-            return '<div class="text-muted text-sm" style="padding: 8px;">No switches</div>';
+            return '<div class="text-muted text-sm p-8">No switches</div>';
         }
 
         return switches.map(sw => {
             const stateText = sw.switch_state === 0 ? 'MAIN' : 'DIVERGE';
-            const stateColor = sw.switch_state === 0 ? '#04d361' : '#ffd93d';
+            const stateClass = this.getSwitchStateClass(sw.switch_state);
             const isLocked = sw.locked_by_path !== null;
 
             return `
                 <div class="train-summary-row" data-switch-id="${sw.switch_id}">
                     <div class="flex items-center gap-8">
-                        <span class="train-status-dot" style="background: ${stateColor};"></span>
+                        <span class="train-status-dot switch-state-dot ${stateClass}"></span>
                         <div>
                             <div class="text-sm font-bold text-track">${sw.switch_id}</div>
                             <div class="text-xs text-muted">(${sw.x}, ${sw.y})</div>
@@ -308,7 +324,7 @@ class SwitchEditorHandler {
                     </div>
                     <div class="flex items-center gap-8">
                         ${isLocked ? '<span class="badge badge-danger text-xxs">LOCKED</span>' : ''}
-                        <span class="text-xs" style="color: ${stateColor};">${stateText}</span>
+                        <span class="text-xs switch-state-inline ${stateClass}">${stateText}</span>
                         <button class="btn btn-secondary btn-sm edit-switch-btn" data-switch-id="${sw.switch_id}">Edit</button>
                     </div>
                 </div>

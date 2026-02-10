@@ -326,7 +326,14 @@ class App {
     }
 
     async deleteSelectedLayout(filename, name) {
-        if (!confirm(`Are you sure you want to delete "${name}"?`)) {
+        const confirmed = await showConfirmModal({
+            title: 'Delete Layout',
+            message: `Delete layout "${name}"?`,
+            detail: 'This action cannot be undone.',
+            confirmText: 'Delete',
+            confirmVariant: 'danger'
+        });
+        if (!confirmed) {
             return;
         }
 
@@ -354,9 +361,13 @@ class App {
                 if (stats.trains > 0) items.push(`${stats.trains} train(s)`);
 
                 const summary = items.join(', ');
-                const confirmed = confirm(
-                    `This will clear the current layout:\n${summary}\n\nAre you sure you want to start fresh?`
-                );
+                const confirmed = await showConfirmModal({
+                    title: 'Create New Layout',
+                    message: 'Create a new blank layout?',
+                    detail: `This will clear the current layout:\n${summary}`,
+                    confirmText: 'Clear Layout',
+                    confirmVariant: 'danger'
+                });
 
                 if (!confirmed) {
                     return;
@@ -778,27 +789,78 @@ class App {
         }
     }
 
-    showAddTrainDialog() {
-        // Simple prompt-based dialog for now
-        const trainId = prompt('Enter train ID:');
-        if (!trainId) return;
-        
-        const posX = parseInt(prompt('Enter X position:', '0'));
-        const posY = parseInt(prompt('Enter Y position:', '0'));
-        
-        if (isNaN(posX) || isNaN(posY)) return;
-        
-        window.api.createTrain({
-            id: trainId,
-            position: { x: posX, y: posY },
-            direction: 'EAST',
-            max_speed: 100
-        }).then(() => {
-            this.refreshNetwork();
-        }).catch(err => {
-            console.error('Failed to create train:', err);
-            alert('Failed to create train');
+    async showAddTrainDialog() {
+        const defaultTrainId = `TRN_${Date.now().toString().slice(-6)}`;
+        const values = await showFormModal({
+            title: 'Add Train',
+            message: 'Enter train placement and startup settings.',
+            fields: [
+                {
+                    name: 'trainId',
+                    label: 'Train ID',
+                    type: 'text',
+                    defaultValue: defaultTrainId,
+                    required: true,
+                    validate: (value) => String(value || '').trim() ? '' : 'Train ID is required.'
+                },
+                {
+                    name: 'posX',
+                    label: 'X Position',
+                    type: 'number',
+                    defaultValue: 0,
+                    step: 1,
+                    validate: (value) => Number.isFinite(value) ? '' : 'X position must be a number.'
+                },
+                {
+                    name: 'posY',
+                    label: 'Y Position',
+                    type: 'number',
+                    defaultValue: 0,
+                    step: 1,
+                    validate: (value) => Number.isFinite(value) ? '' : 'Y position must be a number.'
+                },
+                {
+                    name: 'direction',
+                    label: 'Direction',
+                    type: 'select',
+                    defaultValue: 'EAST',
+                    options: [
+                        { value: 'NORTH', label: 'North' },
+                        { value: 'EAST', label: 'East' },
+                        { value: 'SOUTH', label: 'South' },
+                        { value: 'WEST', label: 'West' }
+                    ]
+                },
+                {
+                    name: 'maxSpeed',
+                    label: 'Max Speed (km/h)',
+                    type: 'number',
+                    defaultValue: 100,
+                    min: 1,
+                    step: 1,
+                    validate: (value) => Number.isFinite(value) && value > 0 ? '' : 'Max speed must be greater than 0.'
+                }
+            ],
+            confirmText: 'Create Train',
+            confirmVariant: 'primary'
         });
+
+        if (!values) {
+            return;
+        }
+
+        try {
+            await window.api.createTrain({
+                id: String(values.trainId || '').trim(),
+                position: { x: Number(values.posX), y: Number(values.posY) },
+                direction: values.direction || 'EAST',
+                max_speed: Number(values.maxSpeed)
+            });
+            await this.refreshNetwork();
+        } catch (err) {
+            console.error('Failed to create train:', err);
+            window.showToast('Failed to create train: ' + err.message, 'error', 4000);
+        }
     }
 
     setupDebugPanel() {
