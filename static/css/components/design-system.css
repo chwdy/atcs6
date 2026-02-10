@@ -1,0 +1,719 @@
+/* Properties Panel Enhancements */
+.property-header-compact {
+    font-size: 14px;
+    font-weight: bold;
+    color: #e1e1e6;
+    margin-bottom: 12px;
+    padding: 8px;
+    background: #2a2a35;
+    border-radius: 4px;
+}
+
+.track-bits-display {
+    background: #2a3a2e;
+    padding: 12px;
+    border-radius: 4px;
+    margin: 8px 0;
+}
+
+.track-bits-display label {
+    color: #00ff88;
+    font-weight: bold;
+    display: block;
+    margin-bottom: 4px;
+}
+
+.combined-editor {
+    display: flex;
+    gap: 8px;
+    margin: 8px 0;
+}
+
+#bit-editor {
+    flex: 0 0 33%;
+    background: #1a1a2e;
+    padding: 8px;
+    border-radius: 4px;
+}
+
+#bit-editor h4 {
+    color: #00ff88;
+    font-size: 11px;
+    margin: 0 0 8px 0;
+}
+
+.bit-toggles {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.bit-toggle-label {
+    display: flex;
+    align-items: center;
+    padding: 4px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 10px;
+    transition: background-color 0.2s;
+}
+
+.bit-toggle-label:hover {
+    opacity: 0.9;
+}
+
+.bit-toggle-label input[type="checkbox"] {
+    margin-right: 4px;
+    width: 12px;
+    height: 12px;
+    cursor: pointer;
+}
+
+.bit-info {
+    margin: 8px 0 0 0;
+    padding: 4px;
+    background: #2a2a34;
+    border-radius: 3px;
+    font-size: 9px;
+}
+
+.bit-warning {
+    margin: 2px 0 0 0;
+    color: #e83f5b;
+    font-weight: bold;
+    font-size: 8px;
+}
+
+.visual-editor {
+    flex: 1;
+    background: #1a1a2e;
+    padding: 8px;
+    border-radius: 4px;
+}
+
+.visual-editor label {
+    color: #00ff88;
+    font-weight: bold;
+    font-size: 11px;
+    margin-bottom: 6px;
+    display: block;
+}
+
+.visual-editor canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    cursor: pointer;
+    border: 1px solid #444;
+    border-radius: 4px;
+    background: #0a0a14;
+}
+
+/* Station Tile List */
+.station-tile-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    border-bottom: 1px solid #2a2a3e;
+    transition: background-color 0.2s;
+}
+
+.station-tile-item:hover {
+    background-color: rgba(130, 87, 229, 0.1);
+}
+
+.station-tile-item:last-child {
+    border-bottom: none;
+}
+
+.delete-tile-btn {
+    padding: 4px 8px;
+    background: transparent;
+    border: 1px solid #e83f5b;
+    border-radius: 4px;
+    color: #e83f5b;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: bold;
+    transition: all 0.2s;
+}
+
+.delete-tile-btn:hover {
+    background: #e83f5b;
+    color: white;
+}
+
+/* ============================================================================
+   DESIGN SYSTEM - Typography Scale
+   ============================================================================ */
+.text-2xl { font-size: 24px; }  /* Major values (track bits display) */
+.text-xl { font-size: 16px; }   /* Panel titles */
+.text-lg { font-size: 14px; }   /* Section headers */
+.text-base { font-size: 13px; } /* Default text, values */
+.text-sm { font-size: 12px; }   /* Labels, metadata */
+.text-xs { font-size: 11px; }   /* Helper text */
+.text-xxs { font-size: 10px; }  /* Badges, small UI */
+.text-tiny { font-size: 9px; }  /* Micro text */
+
+/* ============================================================================
+   DESIGN SYSTEM - Color Palette (Semantic)
+   ============================================================================ */
+.text-primary { color: var(--text-primary); }    /* #e1e1e6 - main text */
+.text-secondary { color: var(--text-secondary); }/* #a8a8b3 - labels */
+.text-muted { color: #888; }                      /* dim text */
+.text-white { color: #fff; }                      /* bright white */
+.text-dim { color: #666; }                        /* very dim */
+
+.text-accent { color: var(--accent-color); }      /* #8257e5 - purple */
+.text-success { color: var(--success-color); }    /* #04d361 - green */
+.text-track { color: #00ff88; }                   /* bright green for tracks */
+.text-danger { color: var(--danger-color); }      /* #e83f5b - red */
+.text-warning { color: var(--warning-color); }    /* #ffcd1e - yellow */
+.text-info { color: #00d4ff; }                    /* cyan/blue */
+.text-station { color: #ffd93d; }                 /* yellow for stations */
+.text-block { color: #ff79c6; }                   /* pink for blocks */
+
+/* ============================================================================
+   DESIGN SYSTEM - Background Colors
+   ============================================================================ */
+.bg-dark { background: var(--bg-dark); }          /* #121214 - darkest */
+.bg-panel { background: var(--bg-panel); }        /* #1e1e24 - panel bg */
+.bg-hover { background: var(--bg-hover); }        /* #2a2a35 - hover state */
+.bg-input { background: #0d1020; }                /* input fields */
+.bg-section { background: #1a1a2e; }              /* section containers */
+.bg-track { background: #2a3a2e; }                /* track-related */
+.bg-signal { background: #2a2a3e; }               /* signal-related */
+.bg-warning { background: #3a2a1a; }              /* warning boxes */
+
+/* ============================================================================
+   DESIGN SYSTEM - Component Classes
+   ============================================================================ */
+
+/* Panel Headers */
+.panel-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 12px;
+}
+
+.section-header {
+    font-size: 14px;
+    font-weight: bold;
+    color: var(--text-primary);
+    margin-bottom: 12px;
+    padding: 8px;
+    background: var(--bg-hover);
+    border-radius: 4px;
+}
+
+.compact-header {
+    font-size: 14px;
+    font-weight: bold;
+    color: var(--text-primary);
+    margin-bottom: 12px;
+    padding: 8px;
+    background: var(--bg-hover);
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Property Items */
+.property-item {
+    margin-bottom: 16px;
+}
+
+.property-label {
+    display: block;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+    font-weight: 500;
+}
+
+.property-value {
+    padding: 10px 12px;
+    background: #0d1020;
+    border: 1px solid #3a3a4e;
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+}
+
+.property-input {
+    width: 100%;
+    padding: 10px 12px;
+    background: #0d1020;
+    border: 1px solid #3a3a4e;
+    color: var(--text-primary);
+    border-radius: 6px;
+    font-size: 13px;
+    box-sizing: border-box;
+}
+
+.property-input:focus {
+    outline: none;
+    border-color: var(--accent-color);
+}
+
+
+/* Route Editor Layout Helpers */
+.route-header-row {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.route-header-col {
+    flex: 1;
+    min-width: 0;
+}
+
+.route-header-col.narrow {
+    flex: 0 0 140px;
+}
+
+/* Override default full width for specific inputs */
+.property-input.input-compact {
+    padding: 6px 8px;
+    font-size: 13px;
+    height: var(--control-height-sm); /* Fixed height for alignment */
+}
+
+.property-input.route-input-compact {
+    padding: 6px 8px;
+    font-size: 13px;
+    height: var(--control-height-sm);
+}
+
+.property-input.route-number-input {
+    width: 64px;
+    min-width: 64px;
+    text-align: center;
+}
+
+.property-input.input-tiny {
+    width: 70px;
+    min-width: 70px;
+    padding: 6px;
+    text-align: center;
+}
+
+/* Waypoint Item Layout */
+.waypoint-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.waypoint-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-white);
+}
+
+.waypoint-controls-row {
+    display: flex;
+    gap: 12px;
+    align-items: flex-end; /* Align inputs to bottom */
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #2a2a3e;
+}
+
+.waypoint-control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.waypoint-control-group label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.waypoint-flexible-area {
+    margin-top: 8px;
+    padding: 8px;
+    background: rgba(0,0,0,0.2);
+    border-radius: 4px;
+    border: 1px dashed #3a3a4e;
+}
+
+/* Action Buttons specific to route editor */
+.btn-icon-only {
+    min-width: var(--control-height-sm);
+    min-height: var(--control-height-sm);
+    padding: 0 8px;
+    font-size: 12px;
+    line-height: 1;
+}
+
+/* Route editor compact controls */
+.info-box {
+    padding: 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    margin: 8px 0;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.info-box-track {
+    background: #2a3a2e;
+    padding: 12px;
+    border-radius: 4px;
+    margin: 8px 0;
+}
+
+.info-box-signal {
+    background: #2a2a3e;
+    padding: 8px;
+    border-radius: 4px;
+    margin: 8px 0;
+}
+
+.info-box-warning {
+    background: #3a2a1a;
+    border-left: 3px solid var(--warning-color);
+    padding: 12px;
+    border-radius: 4px;
+    margin: 8px 0;
+}
+
+/* Badges */
+.badge {
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.badge-new {
+    background: #ff9900;
+    color: #000;
+}
+
+.badge-primary {
+    background: var(--accent-color);
+    color: white;
+}
+
+.badge-success {
+    background: var(--success-color);
+    color: white;
+}
+
+.badge-danger {
+    background: var(--danger-color);
+    color: white;
+}
+
+.badge-warning {
+    background: var(--warning-color);
+    color: #000;
+}
+
+/* Status Displays */
+.status-display {
+    padding: 10px 12px;
+    border: 1px solid;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: bold;
+    text-align: center;
+}
+
+.status-display-success {
+    background: rgba(4, 211, 97, 0.2);
+    border-color: var(--success-color);
+    color: var(--success-color);
+}
+
+.status-display-danger {
+    background: rgba(232, 63, 91, 0.2);
+    border-color: var(--danger-color);
+    color: var(--danger-color);
+}
+
+.status-display-warning {
+    background: rgba(255, 205, 30, 0.2);
+    border-color: var(--warning-color);
+    color: var(--warning-color);
+}
+
+.status-display-info {
+    background: rgba(130, 87, 229, 0.2);
+    border-color: var(--accent-color);
+    color: var(--accent-color);
+}
+
+/* Read-only Value Display */
+.value-display {
+    padding: 10px 12px;
+    background: #0d1020;
+    border: 1px solid #3a3a4e;
+    border-radius: 6px;
+    font-size: 13px;
+}
+
+.value-display-mono {
+    font-family: var(--font-mono);
+}
+
+/* Helper Text */
+.helper-text {
+    font-size: 9px;
+    color: #888;
+    margin-top: 4px;
+    text-align: center;
+}
+
+.helper-text-danger {
+    color: var(--danger-color);
+    font-weight: bold;
+}
+
+/* Spacing Utilities */
+.mb-0 { margin-bottom: 0; }
+.mb-2 { margin-bottom: 2px; }
+.mb-4 { margin-bottom: 4px; }
+.mb-6 { margin-bottom: 6px; }
+.mb-8 { margin-bottom: 8px; }
+.mb-12 { margin-bottom: 12px; }
+.mb-16 { margin-bottom: 16px; }
+.mb-20 { margin-bottom: 20px; }
+.mt-2 { margin-top: 2px; }
+.mt-4 { margin-top: 4px; }
+.mt-6 { margin-top: 6px; }
+.mt-8 { margin-top: 8px; }
+.mt-12 { margin-top: 12px; }
+.mt-16 { margin-top: 16px; }
+.mt-20 { margin-top: 20px; }
+.p-4 { padding: 4px; }
+.p-6 { padding: 6px; }
+.p-8 { padding: 8px; }
+.p-10 { padding: 10px; }
+.p-12 { padding: 12px; }
+.px-5 { padding-left: 5px; padding-right: 5px; }
+
+/* Flex Utilities */
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.gap-4 { gap: 4px; }
+.gap-8 { gap: 8px; }
+.gap-10 { gap: 10px; }
+.gap-12 { gap: 12px; }
+.gap-1 { gap: 1px; }
+.gap-2 { gap: 2px; }
+.gap-6 { gap: 6px; }
+
+/* Font Weight */
+.font-bold { font-weight: bold; }
+.font-semibold { font-weight: 600; }
+.font-normal { font-weight: normal; }
+
+/* Border Utilities */
+.border-track { border: 1px solid #00ff88; }
+.border-l-warning { border-left: 3px solid var(--warning-color); }
+.border-l-success { border-left: 3px solid var(--success-color); }
+.border-l-danger { border-left: 3px solid var(--danger-color); }
+.border-success { border: 2px solid var(--success-color); }
+.border-warning { border: 2px solid var(--warning-color); }
+
+/* Border Radius */
+.rounded { border-radius: 4px; }
+.rounded-sm { border-radius: 3px; }
+.rounded-lg { border-radius: 6px; }
+
+/* Display */
+.block { display: block; }
+.inline-block { display: inline-block; }
+.hidden { display: none !important; }
+
+/* Grid Utilities */
+.grid { display: grid; }
+.grid-cols-1 { grid-template-columns: 1fr; }
+.grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.col-span-2 { grid-column: span 2; }
+.gap-x-4 { column-gap: 4px; }
+.gap-y-2 { row-gap: 2px; }
+.gap-y-4 { row-gap: 4px; }
+
+/* Additional Layout Utilities */
+.items-start { align-items: flex-start; }
+.items-end { align-items: flex-end; }
+.justify-center { justify-content: center; }
+.flex-shrink-0 { flex-shrink: 0; }
+.p-2 { padding: 2px; }
+.pt-4 { padding-top: 4px; }
+.pt-12 { padding-top: 12px; }
+.pb-8 { padding-bottom: 8px; }
+.py-1 { padding-top: 1px; padding-bottom: 1px; }
+.py-8 { padding-top: 8px; padding-bottom: 8px; }
+.opacity-50 { opacity: 0.5; }
+.opacity-90 { opacity: 0.9; }
+
+/* Text Utilities */
+.uppercase { text-transform: uppercase; }
+.tracking-wider { letter-spacing: 0.05em; }
+
+/* Border Utilities */
+.border-t { border-top: 1px solid var(--border-color); }
+.border-gray-700 { border-color: #3a3a4e; }
+
+/* Width */
+.w-full { width: 100%; }
+
+/* Text Align */
+.text-center { text-align: center; }
+
+/* Button Utilities */
+.btn-full { width: 100%; }
+.btn-info {
+    background-color: #00d4ff;
+    color: #0a0a0f;
+    border: none;
+}
+.btn-info:hover {
+    background-color: #00b8e6;
+}
+
+.btn-xs {
+    min-height: var(--control-height-xs);
+    padding: 0 8px;
+    font-size: 11px;
+    line-height: 1.2;
+    border-radius: var(--control-radius-sm);
+}
+
+/* Secondary panel building blocks */
+.control-section {
+    background: rgba(16, 18, 24, 0.6);
+    border: 1px solid #2f3242;
+    border-radius: 8px;
+    padding: 10px;
+}
+
+.control-section-header {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 8px;
+    font-weight: 600;
+}
+
+.property-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+/* Cursor Utilities */
+.cursor-pointer { cursor: pointer; }
+
+/* ============================================================================
+   BIT TOGGLE COMPONENT
+   ============================================================================ */
+.bit-toggle-label {
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.bit-toggle-label.active {
+    background: #2a4a3e;
+    border: 1px solid var(--success-color);
+}
+
+.bit-toggle-label.inactive {
+    background: #2a2a34;
+    border: 1px solid transparent;
+}
+
+.bit-toggle-label input[type="checkbox"] {
+    margin-right: 4px;
+    width: 12px;
+    height: 12px;
+    cursor: pointer;
+}
+
+.bit-toggle-label .bit-name.active {
+    color: var(--success-color);
+}
+
+.bit-toggle-label .bit-name.inactive {
+    color: #ccc;
+}
+
+/* ============================================================================
+   MISSING UTILITY CLASSES
+   ============================================================================ */
+
+/* Flex utilities */
+.flex { display: flex; }
+.flex-1 { flex: 1; }
+.flex-3 { flex: 3; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.flex-between { display: flex; justify-content: space-between; align-items: center; }
+.flex-center { display: flex; justify-content: center; align-items: center; }
+
+/* Gap utilities */
+.gap-4 { gap: 4px; }
+.gap-8 { gap: 8px; }
+.gap-12 { gap: 12px; }
+
+/* Border utilities */
+.border { border: 1px solid var(--border-color); }
+.border-b { border-bottom: 1px solid var(--border-color); }
+.border-l-4 { border-left: 4px solid; }
+.rounded { border-radius: 4px; }
+.rounded-sm { border-radius: 3px; }
+.rounded-lg { border-radius: 6px; }
+
+/* Additional spacing utilities */
+.m-0 { margin: 0; }
+.mt-2 { margin-top: 2px; }
+.mt-4 { margin-top: 4px; }
+.mt-8 { margin-top: 8px; }
+.mt-12 { margin-top: 12px; }
+.mt-16 { margin-top: 16px; }
+.mt-20 { margin-top: 20px; }
+.mb-4 { margin-bottom: 4px; }
+.mb-8 { margin-bottom: 8px; }
+.mb-12 { margin-bottom: 12px; }
+.mb-16 { margin-bottom: 16px; }
+.mb-20 { margin-bottom: 20px; }
+.my-6 { margin-top: 6px; margin-bottom: 6px; }
+.my-12 { margin-top: 12px; margin-bottom: 12px; }
+.pr-8 { padding-right: 8px; }
+.pb-12 { padding-bottom: 12px; }
+.p-4 { padding: 4px; }
+.p-6 { padding: 6px; }
+.p-8 { padding: 8px; }
+.p-10 { padding: 10px; }
+.p-12 { padding: 12px; }
+.p-16 { padding: 16px; }
+.p-20 { padding: 20px; }
+
+/* Font weight utilities */
+.font-bold { font-weight: bold; }
+.font-semibold { font-weight: 600; }
+.font-normal { font-weight: normal; }
+
+/* Display utilities */
+.block { display: block; }
+.inline-block { display: inline-block; }
