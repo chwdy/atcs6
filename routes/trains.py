@@ -688,6 +688,14 @@ def register(app, state: AppState) -> None:
                     current_route.unassign_train(train_id)
             train.assigned_route_id = None
 
+            # Stop ATO and clear destination when canceling route
+            controller = _get_train_controller(train)
+            if controller.ato_running:
+                controller.ato_stop()
+            controller.ato_destination_block_id = None
+            controller.ato_path_id = None
+            train.ato_destination_block_id = None
+
             route_executor = (
                 state.sim_controller.route_executor if state.sim_controller else None
             )

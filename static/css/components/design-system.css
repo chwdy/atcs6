@@ -1035,3 +1035,108 @@
 .input-medium-field::placeholder {
     color: var(--text-muted);
 }
+
+/* ============================================================================
+    CHECKBOX COMPONENT - Compact styled checkboxes for dark theme
+    
+    Usage:
+    <label class="checkbox-wrapper">
+        <input type="checkbox" class="checkbox-input" />
+        <span class="checkbox-custom"></span>
+        <span class="checkbox-label">Option Label</span>
+    </label>
+    ============================================================================ */
+.checkbox-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    padding: 2px 0;
+    transition: opacity 0.2s ease;
+}
+
+.checkbox-wrapper:hover {
+    opacity: 0.9;
+}
+
+.checkbox-wrapper.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.checkbox-input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+}
+
+.checkbox-custom {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    background: var(--bg-input);
+    border: 2px solid var(--border-color);
+    border-radius: 3px;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+    position: relative;
+}
+
+.checkbox-custom::after {
+    content: '';
+    width: 4px;
+    height: 7px;
+    border: 2px solid white;
+    border-top: none;
+    border-left: none;
+    transform: rotate(45deg) scale(0);
+    transition: transform 0.15s ease;
+    margin-top: -1px;
+}
+
+.checkbox-input:checked + .checkbox-custom {
+    background: var(--accent-color);
+    border-color: var(--accent-color);
+}
+
+.checkbox-input:checked + .checkbox-custom::after {
+    transform: rotate(45deg) scale(1);
+}
+
+.checkbox-input:focus + .checkbox-custom {
+    box-shadow: 0 0 0 2px rgba(130, 87, 229, 0.2);
+}
+
+.checkbox-label {
+    font-size: 11px;
+    color: var(--text-primary);
+    user-select: none;
+}
+
+.checkbox-wrapper:hover .checkbox-custom {
+    border-color: #4a4a5e;
+}
+
+.checkbox-wrapper:hover .checkbox-input:checked + .checkbox-custom {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+}
+
+/* Two column grid for debug controls */
+.debug-controls {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 4px 12px;
+}
+
+.debug-controls .checkbox-wrapper {
+    padding: 2px 4px;
+}
+
+.debug-controls .checkbox-wrapper:hover {
+    background: rgba(255, 255, 255, 0.02);
+}

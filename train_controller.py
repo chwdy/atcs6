@@ -1574,18 +1574,50 @@ class TrainController:
         if path_id and not path and not destination_block_id:
             return ATOInfo(path_id=path_id)
 
-        # Determine path heading and required cab
+        # Determine path heading and required cab by comparing
+        # the path's travel direction with the train's facing direction.
         path_heading = "a"  # Default
-        required_cab = "A"  # Default
+        required_cab = self.active_cab or "A"  # Default to current cab
 
-        # Check path direction to determine which cab should be active
-        if hasattr(path, "end_a") and hasattr(path, "end_b"):
-            # Path has defined ends - determine which end we're heading toward
-            if train.position:
-                # If train is closer to end_a, we're heading to end_b
-                # This is simplified - real implementation would trace path direction
-                path_heading = "b"
-                required_cab = "A"  # Cab A faces forward
+        # Determine required cab from current_path direction vs facing_direction.
+        # Find the head tile in the path and look at the next tile to determine
+        # which direction the path is heading. Compare with facing_direction
+        # to decide if the train needs to switch cabs (turn around).
+        if (
+            train.current_path
+            and len(train.current_path) >= 2
+            and train.position
+            and train.facing_direction is not None
+        ):
+            path_direction = self._get_path_direction_at_head(train)
+            if path_direction is not None:
+                if path_direction == train.facing_direction:
+                    # Path goes same direction as train faces -> keep current cab
+                    required_cab = self.active_cab or "A"
+                elif path_direction == train.facing_direction.opposite():
+                    # Path goes opposite to train's facing -> need opposite cab
+                    required_cab = "B" if self.active_cab == "A" else "A"
+                else:
+                    # Path goes at 90 degrees at the head tile.  This can
+                    # happen on diagonal staircase track where the first
+                    # move is perpendicular but the overall trajectory is
+                    # actually opposite to the train's facing direction.
+                    #
+                    # Resolve by computing the dominant direction of the
+                    # overall path vector (first tile → last tile), using
+                    # the axis with the larger displacement.  If *that*
+                    # direction is opposite to the train's facing, switch
+                    # cabs.  Otherwise keep the current cab.
+                    overall_dir = self._dominant_direction_from_tiles(
+                        train.current_path[0], train.current_path[-1]
+                    )
+                    if (
+                        overall_dir is not None
+                        and overall_dir == train.facing_direction.opposite()
+                    ):
+                        required_cab = "B" if self.active_cab == "A" else "A"
+                    else:
+                        required_cab = self.active_cab or "A"
 
         # Get destination info - simple logic:
         # 1. Use ato_destination_block_id if set (controller/train)
@@ -1611,6 +1643,110 @@ class TrainController:
             path_heading=path_heading,
             required_cab=required_cab,
         )
+
+    # -------------------------------------------------------------------------
+    # Path Direction Detection
+    # -------------------------------------------------------------------------
+
+    def _get_path_direction_at_head(self, train: "Train") -> Optional[Direction]:
+        """Determine the path's travel direction at or near the train's head tile.
+
+        Looks up the head tile in current_path. If the path entry has a stored
+        direction (3rd element), uses that. Otherwise infers direction from the
+        vector to the next tile in the path.
+
+        If the head tile is the last tile in the path, looks backward to infer
+        the direction from the previous tile.
+
+        Falls back to using the first two tiles of the path if the head tile
+        is not found in the path (e.g., during initial placement).
+
+        Args:
+            train: Train with current_path and position set.
+
+        Returns:
+            Direction the path is heading at the train's head, or None.
+        """
+        if not train.current_path or len(train.current_path) < 2:
+            return None
+        if not train.position:
+            return None
+
+        head_tile = train.position.head_tile
+        if not head_tile:
+            # Fallback: use first two tiles
+            return self._direction_from_tiles(
+                train.current_path[0], train.current_path[1]
+            )
+
+        # Find head tile in path
+        head_index = -1
+        for i, entry in enumerate(train.current_path):
+            if (entry[0], entry[1]) == head_tile:
+                head_index = i
+                break
+
+        if head_index >= 0:
+            # Found head in path - get direction from this entry or next tile
+            entry = train.current_path[head_index]
+            if len(entry) > 2 and entry[2] is not None:
+                return entry[2]
+            # Infer from next tile
+            if head_index + 1 < len(train.current_path):
+                return self._direction_from_tiles(
+                    entry, train.current_path[head_index + 1]
+                )
+            # Head is last tile - infer from previous tile (same direction)
+            if head_index > 0:
+                return self._direction_from_tiles(
+                    train.current_path[head_index - 1], entry
+                )
+
+        # Head tile not found in path - fallback to first two tiles
+        return self._direction_from_tiles(train.current_path[0], train.current_path[1])
+
+    @staticmethod
+    def _direction_from_tiles(tile_a: Tuple, tile_b: Tuple) -> Optional[Direction]:
+        """Compute direction from tile_a to tile_b."""
+        dx = tile_b[0] - tile_a[0]
+        dy = tile_b[1] - tile_a[1]
+        if dx > 0:
+            return Direction.EAST
+        elif dx < 0:
+            return Direction.WEST
+        elif dy > 0:
+            return Direction.NORTH
+        elif dy < 0:
+            return Direction.SOUTH
+        return None
+
+    @staticmethod
+    def _dominant_direction_from_tiles(
+        tile_a: Tuple, tile_b: Tuple
+    ) -> Optional[Direction]:
+        """Compute the dominant cardinal direction from tile_a to tile_b.
+
+        Unlike ``_direction_from_tiles`` (which prioritises dx), this method
+        picks the axis with the larger absolute displacement.  This is useful
+        for computing the *overall* direction of a multi-tile path where the
+        start→end vector may be diagonal.
+
+        Args:
+            tile_a: Starting tile (x, y, ...).
+            tile_b: Ending tile (x, y, ...).
+
+        Returns:
+            The cardinal Direction along the axis with greater displacement,
+            or None if both displacements are zero.
+        """
+        dx = tile_b[0] - tile_a[0]
+        dy = tile_b[1] - tile_a[1]
+        if dx == 0 and dy == 0:
+            return None
+        if abs(dx) >= abs(dy):
+            return Direction.EAST if dx > 0 else Direction.WEST
+        else:
+            return Direction.NORTH if dy > 0 else Direction.SOUTH
 
     # -------------------------------------------------------------------------
     # Station Detection
@@ -2697,27 +2833,39 @@ class TrainController:
             self.state = TrainState.STANDBY
             train.set_cab(cab)  # This only updates leading_end and state
 
-            if train.position and train.position.facing_direction is not None:
-                train.facing_direction = train.position.facing_direction
-
             # When switching cabs (A <-> B), the physical train doesn't move.
             # The driver walks to the other end. What changes:
             # 1. leading_end flips (done by train.set_cab)
-            # 2. facing_direction reverses
+            # 2. facing_direction reverses (computed from leading_end for multi-tile trains)
             # 3. entry_edge for BOTH ends flips (since train will travel opposite direction)
             # 4. distance_cm for BOTH ends flips (10cm from W = tile_length - 10cm from E)
             if old_cab in ("A", "B") and old_cab != cab:
-                # Flip facing_direction
-                new_direction: Optional[Direction] = None
-                if train.facing_direction is not None:
-                    new_direction = train.facing_direction.opposite()
-                elif train.position and train.position.facing_direction is not None:
-                    new_direction = train.position.facing_direction
-
-                if new_direction is not None:
-                    train.facing_direction = new_direction
-                    if train.position:
-                        train.position.facing_direction = new_direction
+                # Sync facing_direction from the computed property.
+                # For multi-tile trains, the computed property derives direction from
+                # leading_end + tile positions, so changing leading_end automatically
+                # gives the correct (reversed) direction.
+                # For single-tile trains (end_a_tile == end_b_tile), the computed
+                # property falls back to the legacy field, so we must explicitly flip.
+                if train.position:
+                    is_multi_tile = (
+                        train.position.end_a_tile is not None
+                        and train.position.end_b_tile is not None
+                        and train.position.end_a_tile != train.position.end_b_tile
+                    )
+                    if is_multi_tile:
+                        # Multi-tile: computed property derives direction from
+                        # leading_end + tile geometry — already correct after flip
+                        computed = train.position.facing_direction
+                        if computed is not None:
+                            train.facing_direction = computed
+                            train.position._facing_direction_legacy = computed
+                    else:
+                        # Single-tile: computed property falls back to legacy field,
+                        # which still holds the OLD direction. Flip it explicitly.
+                        if train.facing_direction is not None:
+                            new_direction = train.facing_direction.opposite()
+                            train.facing_direction = new_direction
+                            train.position._facing_direction_legacy = new_direction
 
                 # Flip entry edges and distances for BOTH ends
                 if train.position and self.network:
@@ -2765,6 +2913,10 @@ class TrainController:
                             if (x, y) == new_head_tile:
                                 train.path_index = i
                                 break
+            else:
+                # Not switching cabs (first cab selection or same cab) - just sync
+                if train.position and train.position.facing_direction is not None:
+                    train.facing_direction = train.position.facing_direction
 
         return CommandResult(True, f"Cab set to {cab}")
 
@@ -3094,15 +3246,14 @@ class TrainController:
 
     def turn_around(self) -> bool:
         """
-        Flip facing direction by switching cab. Only allowed when stopped.
+        Flip facing direction by switching to the opposite cab.
 
-        Unlike set_cab(), this method is used when the train needs to reverse
-        direction to reach the next waypoint. It:
-        - Flips the facing direction
-        - Switches the active cab (A <-> B)
-        - Updates leading_end to match new cab
-
-        Does NOT swap end_a/end_b position data - those stay with physical ends.
+        Delegates to set_cab() which handles all the necessary state changes:
+        - Swaps active cab (A <-> B) and leading_end
+        - Flips entry edges for both ends
+        - Flips distances for both ends
+        - Updates path_index for new head position
+        - Syncs facing_direction from computed property
 
         Returns:
             True if successful, False if preconditions not met
@@ -3110,7 +3261,7 @@ class TrainController:
         Preconditions:
         - Train must be stopped
         - ATO must not be actively running (ato_running == False)
-        - Train must have a facing direction
+        - Train must have an active cab (A or B)
         """
         train = self._get_train()
         if train is None:
@@ -3122,25 +3273,13 @@ class TrainController:
         if self.ato_running:
             return False
 
-        if train.facing_direction is None:
+        if self.active_cab not in ("A", "B"):
             return False
 
-        # Flip facing direction
-        train.facing_direction = train.facing_direction.opposite()
-
-        # Also swap active cab designation
-        if self.active_cab == "A":
-            self.active_cab = "B"
-            train.active_cab = "B"
-            if train.position:
-                train.position.leading_end = "b"
-        elif self.active_cab == "B":
-            self.active_cab = "A"
-            train.active_cab = "A"
-            if train.position:
-                train.position.leading_end = "a"
-
-        return True
+        # Delegate to set_cab with the opposite cab
+        new_cab = "B" if self.active_cab == "A" else "A"
+        result = self.set_cab(new_cab)
+        return result.success
 
     def set_direction_and_standby(self, direction: Direction) -> bool:
         """

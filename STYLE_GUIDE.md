@@ -192,6 +192,57 @@ Example:
 <span class="badge badge-warning">CAUTION</span>
 ```
 
+### Checkboxes
+
+Compact styled checkboxes for dark theme (used in debug panel).
+
+**Basic usage:**
+```html
+<label class="checkbox-wrapper">
+    <input type="checkbox" id="show-coords" class="checkbox-input" />
+    <span class="checkbox-custom"></span>
+    <span class="checkbox-label">Show Coordinates</span>
+</label>
+```
+
+**Two column grid (debug panel):**
+```html
+<div class="debug-controls">
+    <label class="checkbox-wrapper">
+        <input type="checkbox" class="checkbox-input" />
+        <span class="checkbox-custom"></span>
+        <span class="checkbox-label">Option 1</span>
+    </label>
+    <label class="checkbox-wrapper">
+        <input type="checkbox" class="checkbox-input" />
+        <span class="checkbox-custom"></span>
+        <span class="checkbox-label">Option 2</span>
+    </label>
+    <label class="checkbox-wrapper">
+        <input type="checkbox" class="checkbox-input" checked />
+        <span class="checkbox-custom"></span>
+        <span class="checkbox-label">Option 3</span>
+    </label>
+    <label class="checkbox-wrapper">
+        <input type="checkbox" class="checkbox-input" />
+        <span class="checkbox-custom"></span>
+        <span class="checkbox-label">Option 4</span>
+    </label>
+</div>
+```
+
+**Disabled state:**
+```html
+<label class="checkbox-wrapper disabled">
+    <input type="checkbox" class="checkbox-input" disabled />
+    <span class="checkbox-custom"></span>
+    <span class="checkbox-label">Disabled</span>
+</label>
+```
+
+**Panel mapping:**
+- **Debug panel**: Uses `.debug-controls` with 2-column grid layout
+
 ### Status Displays
 
 ```html

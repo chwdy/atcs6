@@ -78,6 +78,32 @@ def register(app, state: AppState) -> None:
                                 result.path.end_block_id
                             )
                             train.ato_destination_block_id = result.path.end_block_id
+
+                            # Check if train needs to turn around for this path.
+                            # Use the controller's ato_info to determine the
+                            # required cab — this handles diagonal and 90-degree
+                            # cases that a simple "exact opposite" check misses.
+                            if (
+                                train.position
+                                and train.current_path
+                                and len(train.current_path) >= 2
+                                and train.facing_direction is not None
+                                and train.is_stopped()
+                            ):
+                                # Recalculate ato_info now that the path is assigned
+                                controller.ato_info = controller._calculate_ato_info()
+                                if (
+                                    controller.ato_info
+                                    and controller.ato_info.required_cab
+                                    and controller.active_cab
+                                    and controller.ato_info.required_cab
+                                    != controller.active_cab
+                                ):
+                                    # Stop ATO before turning
+                                    if controller.ato_running:
+                                        controller.ato_stop()
+                                    # Switch cab to match path direction
+                                    controller.set_cab(controller.ato_info.required_cab)
             return jsonify(result.to_dict()), 200 if result.success else 400
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -130,6 +156,9 @@ def register(app, state: AppState) -> None:
     def cancel_path(path_id):
         """Cancel a path and release its resources.
 
+        Also stops the assigned train's ATO and clears path-related fields
+        so the train brakes to a stop instead of continuing to the destination.
+
         Query params:
             force: If "true", force cancellation even with approach locking
 
@@ -142,6 +171,23 @@ def register(app, state: AppState) -> None:
             path = state.path_dispatcher.get_path(path_id)
             if not path:
                 return jsonify({"error": f"Path {path_id} not found"}), 404
+
+            # Before cancelling the path, stop the assigned train's ATO
+            # and clear path-related fields so it brakes to a stop
+            if path.train_id and state.sim_controller:
+                train = state.network.trains.get(path.train_id)
+                if train and train.assigned_path_id == path_id:
+                    controller = state.sim_controller._get_or_create_controller(train)
+                    if controller:
+                        if controller.ato_running:
+                            controller.ato_stop()
+                        controller.ato_destination_block_id = None
+                        controller.ato_path_id = None
+                    train.ato_destination_block_id = None
+                    train.assigned_path_id = None
+                    train.current_path = None
+                    train.path_index = 0
+                    train.reserved_blocks = []
 
             result = state.path_dispatcher.cancel_path(path_id, force=force)
 

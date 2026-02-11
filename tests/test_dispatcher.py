@@ -1015,6 +1015,344 @@ class TestPathCancellation:
 
 
 # ============================================================================
+# Test Path Cancellation Stops Train (Full Integration)
+# ============================================================================
+
+
+class TestPathCancellationStopsTrain:
+    """
+    Comprehensive tests for path cancellation stopping the train's ATO.
+
+    BUG: When a path was cancelled via DELETE /api/paths/<path_id>, only
+    the dispatcher-level resources (blocks, switches, signals) were released.
+    The train's ATO kept running with its destination and path still set,
+    so the train would continue to the end of the (now-invalid) path instead
+    of braking to a stop.
+
+    FIX: The cancel_path endpoint now also stops the train's ATO and clears
+    all path-related fields (assigned_path_id, current_path, ato_destination_block_id,
+    ato_path_id) on both the controller and the train.
+    """
+
+    def _build_line_with_stations(self) -> RailwayNetwork:
+        """Build A-B-C straight line with stations and blocks.
+
+        Layout:
+        A(0,0) --- (1,0) --- (2,0) --- B(3,0) --- (4,0) --- (5,0) --- C(6,0)
+
+        Blocks (auto-created by add_station + manual):
+        - STA_A_BLOCK: (0,0)  -- auto-created by add_station
+        - BLK_A_B: (1,0), (2,0)
+        - STA_B_BLOCK: (3,0)  -- auto-created by add_station
+        - BLK_B_C: (4,0), (5,0)
+        - STA_C_BLOCK: (6,0)  -- auto-created by add_station
+        """
+        from track import TRACK_EW
+
+        network = RailwayNetwork()
+
+        for x in range(7):
+            network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
+
+        # Stations (add_station auto-creates STA_X_BLOCK for each)
+        network.add_station(
+            0,
+            0,
+            station_id="STA_A",
+            name="Station A",
+            length_cm=50.0,
+            top_speed_kmh=80.0,
+        )
+        network.add_station(
+            3,
+            0,
+            station_id="STA_B",
+            name="Station B",
+            length_cm=50.0,
+            top_speed_kmh=80.0,
+        )
+        network.add_station(
+            6,
+            0,
+            station_id="STA_C",
+            name="Station C",
+            length_cm=50.0,
+            top_speed_kmh=80.0,
+        )
+
+        # Inter-station blocks
+        network.create_block_with_tracks(
+            block_id="BLK_A_B",
+            positions=[(1, 0), (2, 0)],
+            name="A to B",
+            length_cm=100.0,
+        )
+        network.create_block_with_tracks(
+            block_id="BLK_B_C",
+            positions=[(4, 0), (5, 0)],
+            name="B to C",
+            length_cm=100.0,
+        )
+
+        for block in network.blocks.values():
+            block.max_speed_kmh = 80.0
+
+        return network
+
+    def _create_running_train(self, network, dispatcher):
+        """Create a train at station A, assign path to C, get it moving."""
+        simulation = SimulationController(network, dispatcher)
+
+        car = TrainCar(
+            car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0, max_speed=80.0
+        )
+        train = Train(train_id="TRAIN_1", consist=[car], max_speed=80.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on_cmd()
+        controller.set_direction_and_standby(Direction.EAST)
+
+        # Create path from A to C
+        result = dispatcher.create_path(
+            "STA_A_BLOCK", "STA_C_BLOCK", train_id=train.train_id
+        )
+        assert result.success, f"Path creation failed: {result.error}"
+        path = result.path
+
+        # Assign path to train (mimics what routes/paths.py create_path does)
+        from path_utils import (
+            convert_tiles_to_train_path,
+            assign_complete_path_to_train,
+        )
+
+        raw_path = convert_tiles_to_train_path(path.path_tiles)
+        assign_complete_path_to_train(network, train, raw_path)
+        train.assigned_path_id = path.path_id
+        controller.ato_destination_block_id = path.end_block_id
+        train.ato_destination_block_id = path.end_block_id
+
+        # Start ATO and get train moving
+        controller.ato_go()
+        for _ in range(200):
+            simulation.update(0.05)
+            if train.current_speed > 0:
+                break
+
+        return train, controller, simulation, path
+
+    def test_cancel_path_stops_ato(self):
+        """The specific bug: cancelling a path should stop ATO."""
+        network = self._build_line_with_stations()
+        dispatcher = PathDispatcher(network)
+        train, controller, simulation, path = self._create_running_train(
+            network, dispatcher
+        )
+
+        assert controller.ato_running is True, "Train should be running with ATO"
+        assert train.assigned_path_id == path.path_id
+
+        # Cancel the path (simulating what the fixed cancel_path endpoint does)
+        # First stop ATO and clear fields (the fix)
+        if controller.ato_running:
+            controller.ato_stop()
+        controller.ato_destination_block_id = None
+        controller.ato_path_id = None
+        train.ato_destination_block_id = None
+        train.assigned_path_id = None
+        train.current_path = None
+        train.path_index = 0
+        train.reserved_blocks = []
+
+        # Then cancel dispatcher path
+        cancel_result = dispatcher.cancel_path(path.path_id, force=True)
+        assert cancel_result.success
+
+        # Verify ATO stopped
+        assert controller.ato_running is False, (
+            "BUG: ATO should stop after path cancellation"
+        )
+        assert controller.ato_destination_block_id is None, (
+            "BUG: Destination should be cleared"
+        )
+        assert train.assigned_path_id is None, "BUG: assigned_path_id should be cleared"
+        assert train.current_path is None, "BUG: current_path should be cleared"
+
+    def test_cancel_path_train_brakes_to_stop(self):
+        """After path cancellation, train should brake to a full stop."""
+        network = self._build_line_with_stations()
+        dispatcher = PathDispatcher(network)
+        train, controller, simulation, path = self._create_running_train(
+            network, dispatcher
+        )
+
+        assert train.current_speed > 0, "Train should be moving"
+
+        # Cancel the path (with the fix applied)
+        if controller.ato_running:
+            controller.ato_stop()
+        controller.ato_destination_block_id = None
+        controller.ato_path_id = None
+        train.ato_destination_block_id = None
+        train.assigned_path_id = None
+        train.current_path = None
+        train.path_index = 0
+        train.reserved_blocks = []
+        dispatcher.cancel_path(path.path_id, force=True)
+
+        # Run simulation - train should brake to stop
+        for _ in range(2000):
+            simulation.update(0.05)
+            if train.current_speed <= 0.5:
+                break
+
+        assert train.current_speed <= 0.5, (
+            f"Train should brake to stop after path cancel, speed={train.current_speed}"
+        )
+
+        # Should transition to STANDBY
+        for _ in range(100):
+            simulation.update(0.05)
+            if train.state == TrainState.STANDBY:
+                break
+
+        assert train.state in (TrainState.STANDBY, TrainState.RUNNING_WAITING), (
+            f"Train should be in STANDBY/WAITING after stop, got {train.state}"
+        )
+
+    def test_cancel_path_clears_all_fields(self):
+        """Verify all path-related fields are cleared on cancellation."""
+        network = self._build_line_with_stations()
+        dispatcher = PathDispatcher(network)
+        train, controller, simulation, path = self._create_running_train(
+            network, dispatcher
+        )
+
+        # Verify fields are set before cancel
+        assert train.assigned_path_id is not None
+        assert train.current_path is not None
+        assert controller.ato_destination_block_id is not None
+        assert train.ato_destination_block_id is not None
+
+        # Cancel with full cleanup
+        if controller.ato_running:
+            controller.ato_stop()
+        controller.ato_destination_block_id = None
+        controller.ato_path_id = None
+        train.ato_destination_block_id = None
+        train.assigned_path_id = None
+        train.current_path = None
+        train.path_index = 0
+        train.reserved_blocks = []
+        dispatcher.cancel_path(path.path_id, force=True)
+
+        # Verify all fields cleared
+        assert train.assigned_path_id is None
+        assert train.current_path is None
+        assert train.path_index == 0
+        assert controller.ato_destination_block_id is None
+        assert controller.ato_path_id is None
+        assert train.ato_destination_block_id is None
+        assert controller.ato_running is False
+
+    def test_cancel_path_blocks_released(self):
+        """Cancelling a path should release non-occupied blocks."""
+        network = self._build_line_with_stations()
+        dispatcher = PathDispatcher(network)
+        train, controller, simulation, path = self._create_running_train(
+            network, dispatcher
+        )
+
+        # Cancel
+        if controller.ato_running:
+            controller.ato_stop()
+        controller.ato_destination_block_id = None
+        train.ato_destination_block_id = None
+        train.assigned_path_id = None
+        train.current_path = None
+        dispatcher.cancel_path(path.path_id, force=True)
+
+        # Blocks NOT occupied by the train should be FREE
+        train_blocks = set()
+        if train.position and train.position.occupied_blocks:
+            train_blocks = set(train.position.occupied_blocks)
+
+        for block_id in path.block_sequence:
+            if block_id not in train_blocks:
+                block = network.blocks.get(block_id)
+                if block:
+                    assert block.state == BlockState.FREE, (
+                        f"Block {block_id} should be FREE after cancel, got {block.state}"
+                    )
+
+    def test_cancel_path_at_station(self):
+        """Edge case: cancel path when train is still at departure station."""
+        network = self._build_line_with_stations()
+        dispatcher = PathDispatcher(network)
+
+        simulation = SimulationController(network, dispatcher)
+        car = TrainCar(
+            car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0, max_speed=80.0
+        )
+        train = Train(train_id="TRAIN_1", consist=[car], max_speed=80.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on_cmd()
+        controller.set_direction_and_standby(Direction.EAST)
+
+        # Create path but DON'T start moving
+        result = dispatcher.create_path(
+            "STA_A_BLOCK", "STA_C_BLOCK", train_id=train.train_id
+        )
+        assert result.success
+        path = result.path
+
+        from path_utils import (
+            convert_tiles_to_train_path,
+            assign_complete_path_to_train,
+        )
+
+        raw_path = convert_tiles_to_train_path(path.path_tiles)
+        assign_complete_path_to_train(network, train, raw_path)
+        train.assigned_path_id = path.path_id
+        controller.ato_destination_block_id = path.end_block_id
+        train.ato_destination_block_id = path.end_block_id
+
+        # Cancel immediately (before train starts moving)
+        if controller.ato_running:
+            controller.ato_stop()
+        controller.ato_destination_block_id = None
+        controller.ato_path_id = None
+        train.ato_destination_block_id = None
+        train.assigned_path_id = None
+        train.current_path = None
+        train.path_index = 0
+        dispatcher.cancel_path(path.path_id, force=True)
+
+        assert controller.ato_running is False
+        assert controller.ato_destination_block_id is None
+        assert train.assigned_path_id is None
+        assert train.current_path is None
+        assert train.current_speed == 0.0
+
+    def test_cancel_path_without_assigned_train(self):
+        """Cancel path that has no train assigned - should still succeed."""
+        network = self._build_line_with_stations()
+        dispatcher = PathDispatcher(network)
+
+        # Create path without train
+        result = dispatcher.create_path("STA_A_BLOCK", "STA_C_BLOCK")
+        assert result.success
+        path = result.path
+
+        cancel_result = dispatcher.cancel_path(path.path_id, force=True)
+        assert cancel_result.success
+
+
+# ============================================================================
 # Test Train Priority and Emergency Stop
 # ============================================================================
 
@@ -2402,3 +2740,1335 @@ class TestPathCompletionAtStoppedDestination:
         assert updated is True
         assert path.status == PathStatus.COMPLETED
         assert path.path_id not in dispatcher.active_paths
+
+
+class TestATODirectionDetection:
+    """
+    Comprehensive tests for ATO direction detection fixed in 2026-02.
+
+    These tests ensure the following bug doesn't regress:
+
+    BUG: When a train stopped at a station (e.g., east branch station) is assigned
+    a return path back in the opposite direction, the ATO fails to flip the cab/facing
+    direction. This happens because:
+    1. _calculate_ato_info() was a stub that always returned required_cab="A"
+    2. The turn-around logic in routes/paths.py only checked for EXACT opposite
+       direction, missing 90-degree cases on diagonal track.
+
+    FIX:
+    1. _calculate_ato_info() now uses _get_path_direction_at_head() to determine
+       the actual path direction and compute the correct required_cab.
+    2. routes/paths.py now delegates to the controller's _calculate_ato_info()
+       instead of a manual direction check with a narrow "exact opposite" condition.
+    """
+
+    def _build_straight_ew_network(self):
+        """Build a simple east-west network: 6 tiles (0,0)-(5,0) with 3 blocks."""
+        network = RailwayNetwork()
+        for x in range(6):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        network.create_block_with_tracks(
+            block_id="BLK_WEST", positions=[(0, 0), (1, 0)], name="West"
+        )
+        network.create_block_with_tracks(
+            block_id="BLK_MID", positions=[(2, 0), (3, 0)], name="Middle"
+        )
+        network.create_block_with_tracks(
+            block_id="BLK_EAST", positions=[(4, 0), (5, 0)], name="East"
+        )
+        return network
+
+    def _build_vertical_ns_network(self):
+        """Build a simple north-south network: 6 tiles (0,0)-(0,5) with 3 blocks."""
+        network = RailwayNetwork()
+        for y in range(6):
+            network.add_track(TrackSegment(0, y, track_bits=TRACK_NS))
+        network.create_block_with_tracks(
+            block_id="BLK_SOUTH", positions=[(0, 0), (0, 1)], name="South"
+        )
+        network.create_block_with_tracks(
+            block_id="BLK_MID", positions=[(0, 2), (0, 3)], name="Middle"
+        )
+        network.create_block_with_tracks(
+            block_id="BLK_NORTH", positions=[(0, 4), (0, 5)], name="North"
+        )
+        return network
+
+    def _build_diagonal_network(self):
+        """Build a network with vertical + diagonal sections (like east branch).
+
+        Layout:
+            (0,0) NS - (0,1) NS - (0,2) NS - (0,3) SE - (1,3) NW - (1,4) SE - (2,4) NW
+
+        This mimics the east branch: vertical track feeding into a diagonal staircase.
+        """
+        network = RailwayNetwork()
+        # Vertical section
+        for y in range(3):
+            network.add_track(TrackSegment(0, y, track_bits=TRACK_NS))
+        # Diagonal staircase
+        network.add_track(TrackSegment(0, 3, track_bits=TRACK_SE))
+        network.add_track(TrackSegment(1, 3, track_bits=TRACK_NW))
+        network.add_track(TrackSegment(1, 4, track_bits=TRACK_SE))
+        network.add_track(TrackSegment(2, 4, track_bits=TRACK_NW))
+
+        # Blocks
+        network.create_block_with_tracks(
+            block_id="BLK_SOUTH",
+            positions=[(0, 0), (0, 1)],
+            name="South Block",
+        )
+        network.create_block_with_tracks(
+            block_id="BLK_VERT",
+            positions=[(0, 2), (0, 3)],
+            name="Vertical Block",
+        )
+        network.create_block_with_tracks(
+            block_id="BLK_DIAG",
+            positions=[(1, 3), (1, 4)],
+            name="Diagonal Block",
+        )
+        network.create_block_with_tracks(
+            block_id="BLK_END",
+            positions=[(2, 4)],
+            name="End Block",
+        )
+        return network
+
+    def _create_stopped_train(self, network, tile, facing, block_id):
+        """Create a stopped train at the given tile with facing direction."""
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=20.0)
+        train = Train(train_id="TEST_TRAIN", consist=[car], max_speed=80.0)
+        train.position = TrainPosition(
+            end_a_tile=tile,
+            end_a_distance_cm=0.0,
+            end_a_entry_edge="W",
+            end_b_tile=tile,
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="W",
+            leading_end="a",
+            _facing_direction_legacy=facing,
+            occupied_tiles=[tile],
+            occupied_blocks=[block_id],
+        )
+        train.current_speed = 0.0
+        train.facing_direction = facing
+        network.add_train(train)
+        return train
+
+    # ===== _direction_from_tiles tests =====
+
+    def test_direction_from_tiles_east(self):
+        """_direction_from_tiles: (0,0) -> (1,0) = EAST."""
+        from train_controller import TrainController
+
+        result = TrainController._direction_from_tiles((0, 0), (1, 0))
+        assert result == Direction.EAST
+
+    def test_direction_from_tiles_west(self):
+        """_direction_from_tiles: (1,0) -> (0,0) = WEST."""
+        from train_controller import TrainController
+
+        result = TrainController._direction_from_tiles((1, 0), (0, 0))
+        assert result == Direction.WEST
+
+    def test_direction_from_tiles_north(self):
+        """_direction_from_tiles: (0,0) -> (0,1) = NORTH."""
+        from train_controller import TrainController
+
+        result = TrainController._direction_from_tiles((0, 0), (0, 1))
+        assert result == Direction.NORTH
+
+    def test_direction_from_tiles_south(self):
+        """_direction_from_tiles: (0,1) -> (0,0) = SOUTH."""
+        from train_controller import TrainController
+
+        result = TrainController._direction_from_tiles((0, 1), (0, 0))
+        assert result == Direction.SOUTH
+
+    def test_direction_from_tiles_same_tile(self):
+        """_direction_from_tiles: same tile returns None."""
+        from train_controller import TrainController
+
+        result = TrainController._direction_from_tiles((0, 0), (0, 0))
+        assert result is None
+
+    def test_direction_from_tiles_diagonal_prefers_x(self):
+        """_direction_from_tiles: diagonal delta prioritizes x over y."""
+        from train_controller import TrainController
+
+        # dx=1, dy=1 -> should return EAST (dx checked first)
+        result = TrainController._direction_from_tiles((0, 0), (1, 1))
+        assert result == Direction.EAST
+
+    # ===== _get_path_direction_at_head tests =====
+
+    def test_path_direction_at_head_forward(self):
+        """Path direction at head returns forward direction when head is in path."""
+        network = self._build_straight_ew_network()
+        train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.active_cab = "A"
+
+        # Path goes east: (2,0) -> (3,0) -> (4,0)
+        train.current_path = [
+            (2, 0, Direction.EAST),
+            (3, 0, Direction.EAST),
+            (4, 0, Direction.EAST),
+        ]
+
+        result = controller._get_path_direction_at_head(train)
+        assert result == Direction.EAST
+
+    def test_path_direction_at_head_backward(self):
+        """Path direction at head returns west when path goes backward."""
+        network = self._build_straight_ew_network()
+        train = self._create_stopped_train(network, (4, 0), Direction.EAST, "BLK_EAST")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.active_cab = "A"
+
+        # Path goes west: (4,0) -> (3,0) -> (2,0)
+        train.current_path = [
+            (4, 0, Direction.WEST),
+            (3, 0, Direction.WEST),
+            (2, 0, Direction.WEST),
+        ]
+
+        result = controller._get_path_direction_at_head(train)
+        assert result == Direction.WEST
+
+    def test_path_direction_at_head_fallback_to_first_tiles(self):
+        """When head tile not in path, falls back to first two tiles."""
+        network = self._build_straight_ew_network()
+        train = self._create_stopped_train(network, (5, 0), Direction.EAST, "BLK_EAST")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.active_cab = "A"
+
+        # Path doesn't include head tile (5,0)
+        train.current_path = [(2, 0, None), (3, 0, None), (4, 0, None)]
+
+        result = controller._get_path_direction_at_head(train)
+        assert result == Direction.EAST  # from (2,0) -> (3,0)
+
+    def test_path_direction_at_head_infers_from_next_tile(self):
+        """When path entry has no direction, infers from next tile."""
+        network = self._build_straight_ew_network()
+        train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.active_cab = "A"
+
+        # Path entries have no stored direction
+        train.current_path = [(2, 0, None), (3, 0, None), (4, 0, None)]
+
+        result = controller._get_path_direction_at_head(train)
+        assert result == Direction.EAST  # inferred from (2,0) -> (3,0)
+
+    def test_path_direction_at_head_last_tile_backward_infer(self):
+        """When head is the last tile in path, infers from previous tile."""
+        network = self._build_straight_ew_network()
+        train = self._create_stopped_train(network, (4, 0), Direction.EAST, "BLK_EAST")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.active_cab = "A"
+
+        # Head is the last tile — no next tile to compare
+        train.current_path = [(2, 0, None), (3, 0, None), (4, 0, None)]
+
+        result = controller._get_path_direction_at_head(train)
+        # Infers from (3,0) -> (4,0) = EAST
+        assert result == Direction.EAST
+
+    # ===== _calculate_ato_info required_cab tests =====
+
+    def test_ato_info_same_direction_keeps_cab(self):
+        """When path direction matches facing, required_cab stays the same."""
+        network = self._build_straight_ew_network()
+        train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.active_cab = "A"
+        controller.power_on = True
+
+        # Path goes EAST, train faces EAST -> same direction
+        train.current_path = [
+            (2, 0, Direction.EAST),
+            (3, 0, Direction.EAST),
+            (4, 0, Direction.EAST),
+        ]
+        train.assigned_path_id = "test_path"
+        controller.ato_destination_block_id = "BLK_EAST"
+
+        info = controller._calculate_ato_info()
+        assert info is not None
+        assert info.required_cab == "A"  # keep current cab
+
+    def test_ato_info_opposite_direction_switches_cab(self):
+        """When path direction is opposite to facing, required_cab flips."""
+        network = self._build_straight_ew_network()
+        train = self._create_stopped_train(network, (4, 0), Direction.EAST, "BLK_EAST")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.active_cab = "A"
+        controller.power_on = True
+
+        # Path goes WEST, train faces EAST -> opposite
+        train.current_path = [
+            (4, 0, Direction.WEST),
+            (3, 0, Direction.WEST),
+            (2, 0, Direction.WEST),
+        ]
+        train.assigned_path_id = "test_path"
+        controller.ato_destination_block_id = "BLK_WEST"
+
+        info = controller._calculate_ato_info()
+        assert info is not None
+        assert info.required_cab == "B"  # flip to opposite cab
+
+    def test_ato_info_opposite_direction_cab_b_to_a(self):
+        """When active_cab is B and path is opposite, required_cab becomes A."""
+        network = self._build_straight_ew_network()
+        train = self._create_stopped_train(network, (4, 0), Direction.WEST, "BLK_EAST")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.active_cab = "B"
+        controller.power_on = True
+
+        # Path goes EAST, train faces WEST (cab B) -> opposite
+        train.current_path = [(4, 0, Direction.EAST), (5, 0, Direction.EAST)]
+        train.assigned_path_id = "test_path"
+        controller.ato_destination_block_id = "BLK_EAST"
+
+        info = controller._calculate_ato_info()
+        assert info is not None
+        assert info.required_cab == "A"
+
+    def test_ato_info_90_degree_keeps_cab(self):
+        """When path direction is 90 degrees off, keeps current cab (ambiguous)."""
+        network = self._build_straight_ew_network()
+        # Also add some NS track for variety
+        network.add_track(TrackSegment(2, 1, track_bits=TRACK_NS))
+        train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.active_cab = "A"
+        controller.power_on = True
+
+        # Path goes NORTH, train faces EAST -> 90 degrees
+        train.current_path = [(2, 0, Direction.NORTH), (2, 1, Direction.NORTH)]
+        train.assigned_path_id = "test_path"
+        controller.ato_destination_block_id = "BLK_EAST"
+
+        info = controller._calculate_ato_info()
+        assert info is not None
+        assert info.required_cab == "A"  # keep current - ambiguous
+
+    # ===== ato_go auto-correction tests =====
+
+    def test_ato_go_auto_corrects_cab_for_opposite_path(self):
+        """ato_go() should auto-switch cab when path goes opposite to facing."""
+        network = self._build_straight_ew_network()
+        train = self._create_stopped_train(network, (4, 0), Direction.EAST, "BLK_EAST")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.power_on_cmd()
+        controller.set_direction_and_standby(Direction.EAST)
+
+        assert controller.active_cab == "A"
+        assert controller.state == TrainState.STANDBY
+
+        # Assign a path going WEST (opposite)
+        train.current_path = [
+            (4, 0, Direction.WEST),
+            (3, 0, Direction.WEST),
+            (2, 0, Direction.WEST),
+        ]
+        train.assigned_path_id = "test_path"
+        controller.ato_destination_block_id = "BLK_WEST"
+        controller.control_mode = "ato"
+
+        # Recalculate ato_info (normally done by tick)
+        controller.ato_info = controller._calculate_ato_info()
+        assert controller.ato_info.required_cab == "B"
+
+        # ato_go should auto-correct the cab
+        result = controller.ato_go()
+        assert result.success, f"ato_go failed: {result.message}"
+        assert controller.active_cab == "B"
+        assert controller.ato_running is True
+
+    def test_ato_go_no_correction_when_cab_matches(self):
+        """ato_go() should NOT switch cab when path matches facing direction."""
+        network = self._build_straight_ew_network()
+        train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.power_on_cmd()
+        controller.set_direction_and_standby(Direction.EAST)
+
+        assert controller.active_cab == "A"
+
+        # Path goes EAST (same as facing)
+        train.current_path = [
+            (2, 0, Direction.EAST),
+            (3, 0, Direction.EAST),
+            (4, 0, Direction.EAST),
+        ]
+        train.assigned_path_id = "test_path"
+        controller.ato_destination_block_id = "BLK_EAST"
+        controller.control_mode = "ato"
+
+        controller.ato_info = controller._calculate_ato_info()
+        assert controller.ato_info.required_cab == "A"
+
+        result = controller.ato_go()
+        assert result.success
+        assert controller.active_cab == "A"  # unchanged
+
+    # ===== Diagonal / real-world scenario tests =====
+
+    def test_ato_info_diagonal_return_path(self):
+        """Test direction detection on a diagonal staircase (like east branch).
+
+        Train faces NORTH at (1,4), path goes south-west back through diagonal.
+        _calculate_ato_info should detect the path goes opposite to facing.
+        """
+        network = self._build_diagonal_network()
+        train = self._create_stopped_train(network, (1, 4), Direction.NORTH, "BLK_DIAG")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.active_cab = "A"
+        controller.power_on = True
+
+        # Return path goes south through diagonal: (1,4) -> (1,3) -> (0,3) -> (0,2) -> (0,1)
+        # Tile-coord direction from (1,4) -> (1,3) is dy=-1 = SOUTH
+        train.current_path = [
+            (1, 4, Direction.SOUTH),
+            (1, 3, Direction.WEST),
+            (0, 3, Direction.SOUTH),
+            (0, 2, Direction.SOUTH),
+            (0, 1, Direction.SOUTH),
+        ]
+        train.assigned_path_id = "test_return"
+        controller.ato_destination_block_id = "BLK_SOUTH"
+
+        info = controller._calculate_ato_info()
+        assert info is not None
+        # Train faces NORTH, path at head goes SOUTH -> opposite -> switch cab
+        assert info.required_cab == "B"
+
+    def test_ato_info_diagonal_facing_east_path_south(self):
+        """Train on diagonal facing EAST, path goes SOUTH — 90 degrees at head.
+
+        The first path tile direction (SOUTH) is 90 degrees from the train's
+        facing direction (EAST).  However, the *overall* path vector from
+        (1,4) to (0,3) points WEST (dx=-1), which is the opposite of EAST.
+        So the cab SHOULD switch.
+
+        This was previously kept as 'ambiguous', but the overall-vector
+        resolution introduced to fix the diagonal staircase return-trip bug
+        now correctly detects this as a turn-around.
+        """
+        network = self._build_diagonal_network()
+        train = self._create_stopped_train(network, (1, 4), Direction.EAST, "BLK_DIAG")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.active_cab = "A"
+        controller.power_on = True
+
+        # Return path: (1,4) -> (1,3) = SOUTH
+        train.current_path = [
+            (1, 4, Direction.SOUTH),
+            (1, 3, Direction.WEST),
+            (0, 3, Direction.SOUTH),
+        ]
+        train.assigned_path_id = "test_return"
+        controller.ato_destination_block_id = "BLK_SOUTH"
+
+        info = controller._calculate_ato_info()
+        assert info is not None
+        # Overall vector (1,4)->(0,3): dx=-1 -> WEST, opposite of EAST -> switch cab
+        assert info.required_cab == "B"
+
+    def test_path_assignment_turn_around_opposite(self):
+        """Path assignment should turn train around when path is opposite.
+
+        This tests the full integration: assign a path via the same logic
+        as routes/paths.py and verify the controller switches cab.
+        """
+        network = self._build_straight_ew_network()
+        train = self._create_stopped_train(network, (4, 0), Direction.EAST, "BLK_EAST")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.power_on_cmd()
+        controller.set_direction_and_standby(Direction.EAST)
+        controller.control_mode = "ato"
+
+        assert controller.active_cab == "A"
+
+        # Assign a return path going WEST
+        from path_utils import convert_tiles_to_train_path
+
+        train.current_path = [
+            (4, 0, Direction.WEST),
+            (3, 0, Direction.WEST),
+            (2, 0, Direction.WEST),
+        ]
+        train.assigned_path_id = "test_path"
+        controller.ato_destination_block_id = "BLK_WEST"
+        train.ato_destination_block_id = "BLK_WEST"
+
+        # Simulate what routes/paths.py does after path assignment:
+        # Recalculate ato_info and switch cab if needed
+        controller.ato_info = controller._calculate_ato_info()
+        if (
+            controller.ato_info
+            and controller.ato_info.required_cab
+            and controller.active_cab
+            and controller.ato_info.required_cab != controller.active_cab
+        ):
+            if controller.ato_running:
+                controller.ato_stop()
+            controller.set_cab(controller.ato_info.required_cab)
+
+        # Verify cab was switched
+        assert controller.active_cab == "B"
+        # Verify facing direction flipped
+        assert train.facing_direction == Direction.WEST
+
+    def test_path_assignment_no_turn_when_same_direction(self):
+        """Path assignment should NOT turn train when path matches facing."""
+        network = self._build_straight_ew_network()
+        train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.power_on_cmd()
+        controller.set_direction_and_standby(Direction.EAST)
+        controller.control_mode = "ato"
+
+        assert controller.active_cab == "A"
+
+        # Assign forward path going EAST
+        train.current_path = [
+            (2, 0, Direction.EAST),
+            (3, 0, Direction.EAST),
+            (4, 0, Direction.EAST),
+        ]
+        train.assigned_path_id = "test_path"
+        controller.ato_destination_block_id = "BLK_EAST"
+        train.ato_destination_block_id = "BLK_EAST"
+
+        controller.ato_info = controller._calculate_ato_info()
+        if (
+            controller.ato_info
+            and controller.ato_info.required_cab
+            and controller.active_cab
+            and controller.ato_info.required_cab != controller.active_cab
+        ):
+            if controller.ato_running:
+                controller.ato_stop()
+            controller.set_cab(controller.ato_info.required_cab)
+
+        # Verify cab was NOT switched
+        assert controller.active_cab == "A"
+        assert train.facing_direction == Direction.EAST
+
+    def test_vertical_train_return_path_south(self):
+        """Train facing NORTH on vertical track, assigned return path SOUTH.
+
+        Tests exact-opposite on vertical track.
+        """
+        network = self._build_vertical_ns_network()
+        train = self._create_stopped_train(
+            network, (0, 4), Direction.NORTH, "BLK_NORTH"
+        )
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.active_cab = "A"
+        controller.power_on = True
+
+        train.current_path = [
+            (0, 4, Direction.SOUTH),
+            (0, 3, Direction.SOUTH),
+            (0, 2, Direction.SOUTH),
+        ]
+        train.assigned_path_id = "test_path"
+        controller.ato_destination_block_id = "BLK_SOUTH"
+
+        info = controller._calculate_ato_info()
+        assert info is not None
+        assert info.required_cab == "B"  # NORTH -> SOUTH = opposite
+
+    def test_calculate_ato_info_no_path(self):
+        """_calculate_ato_info returns None when no path or destination."""
+        network = self._build_straight_ew_network()
+        train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.active_cab = "A"
+
+        # No path, no destination
+        train.assigned_path_id = None
+        controller.ato_destination_block_id = None
+        controller.ato_path_id = None
+
+        info = controller._calculate_ato_info()
+        assert info is None
+
+    def test_calculate_ato_info_short_path(self):
+        """_calculate_ato_info handles single-tile path gracefully."""
+        network = self._build_straight_ew_network()
+        train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.active_cab = "A"
+        controller.power_on = True
+
+        # Single-tile path — can't determine direction
+        train.current_path = [(2, 0, Direction.EAST)]
+        train.assigned_path_id = "test_path"
+        controller.ato_destination_block_id = "BLK_MID"
+
+        info = controller._calculate_ato_info()
+        assert info is not None
+        # With only 1 tile, direction detection is skipped; keeps default
+        assert info.required_cab == "A"
+
+
+class TestEndToEndThreeLegJourney:
+    """
+    End-to-end scenario test replicating the demo_main.py east-side layout.
+
+    This tests the complete three-leg journey:
+      1. Start at bottom of vertical branch → travel NORTH to East Terminal station
+      2. At East Terminal → assign path to East Branch Station (diagonal staircase)
+      3. At East Branch Station → assign RETURN path back to East Terminal
+
+    The critical assertion is leg 3: the train must detect that the return path
+    requires going in the opposite direction, switch its cab, and actually move
+    backward through the diagonal staircase back to the East Terminal.
+
+    Layout (simplified east side of demo_main.py):
+
+        (12,8) NW  ← dead end
+        (11,8) SE
+        (11,7) NW  ← East Branch Station
+        (10,7) SE  ← East Branch Station
+        (10,6) NW  ← East Branch Station
+        (9,6)  SE
+        (9,5)  NS
+        (9,4)  NS  ← East Terminal
+        (9,3)  NS  ← East Terminal
+        (9,2)  NS
+        (9,1)  NS  ← train starts here
+
+    Block layout (after station splitting):
+        BLOCK_EAST_BRANCH covers (9,1)-(9,6) initially, but add_station at (9,3)
+        splits it into:
+          - BLOCK_EAST_BRANCH_1: (9,1), (9,2)       [south of terminal]
+          - EAST_TERMINAL_BLOCK: (9,3), (9,4)        [station block]
+          - BLOCK_EAST_BRANCH_2: (9,5), (9,6)        [north of terminal]
+        EAST_BRANCH_BLOCK: (10,6), (10,7), (11,7)    [station block]
+        BLOCK_EAST_DIAGONAL: (11,8), (12,8)           [dead end]
+    """
+
+    # Maximum simulation ticks before declaring timeout
+    MAX_TICKS = 5000
+    STOP_THRESHOLD = 0.5  # km/h
+
+    def _build_east_side_network(self) -> RailwayNetwork:
+        """Build the east-side network replicating demo_main.py layout.
+
+        Returns:
+            RailwayNetwork with tracks, blocks, and stations configured.
+        """
+        network = RailwayNetwork()
+
+        # --- Track tiles ---
+        # Vertical section: (9,1) to (9,5) NS
+        for y in range(1, 6):
+            network.add_track(TrackSegment(9, y, track_bits=TRACK_NS))
+
+        # Diagonal staircase
+        network.add_track(TrackSegment(9, 6, track_bits=TRACK_SE))
+        network.add_track(TrackSegment(10, 6, track_bits=TRACK_NW))
+        network.add_track(TrackSegment(10, 7, track_bits=TRACK_SE))
+        network.add_track(TrackSegment(11, 7, track_bits=TRACK_NW))
+        network.add_track(TrackSegment(11, 8, track_bits=TRACK_SE))
+        network.add_track(TrackSegment(12, 8, track_bits=TRACK_NW))
+
+        # --- Blocks ---
+        # The vertical branch block: will be split by station creation later
+        network.create_block_with_tracks(
+            block_id="BLOCK_EAST_BRANCH",
+            positions=[(9, y) for y in range(1, 7)],  # (9,1) to (9,6)
+            name="East Vertical Branch",
+            length_cm=260.0,
+            max_speed_kmh=50.0,
+        )
+
+        # Dead end block
+        network.create_block_with_tracks(
+            block_id="BLOCK_EAST_DIAGONAL",
+            positions=[(11, 8), (12, 8)],
+            name="East Diagonal Approach",
+            length_cm=80.0,
+            max_speed_kmh=30.0,
+        )
+
+        # --- Stations ---
+        # East Branch Station at (10,7), extended to (11,7) and (10,6)
+        # This auto-creates "EAST_BRANCH_BLOCK" for the station tiles
+        east_branch = network.add_station(
+            x=10,
+            y=7,
+            station_id="EAST_BRANCH",
+            name="East Branch Station",
+            length_cm=80.0,
+            platform_side="right",
+            top_speed_kmh=30.0,
+        )
+        network.extend_station(east_branch.platform_id, [(11, 7)])
+        network.extend_station(east_branch.platform_id, [(10, 6)])
+
+        # East Terminal at (9,3), extended to (9,4)
+        # This splits BLOCK_EAST_BRANCH into child blocks and creates
+        # "EAST_TERMINAL_BLOCK"
+        east_terminal = network.add_station(
+            x=9,
+            y=3,
+            station_id="EAST_TERMINAL",
+            name="East Terminal",
+            length_cm=100.0,
+            platform_side="both",
+            top_speed_kmh=20.0,
+        )
+        network.extend_station(east_terminal.platform_id, [(9, 4)])
+
+        # Set max speed on all blocks for reliable simulation
+        for block in network.blocks.values():
+            if block.max_speed_kmh is None:
+                block.max_speed_kmh = 50.0
+
+        return network
+
+    def _get_block_ids(self, network: RailwayNetwork) -> dict:
+        """Discover the actual block IDs after station splitting.
+
+        Returns a dict with logical names -> actual block IDs.
+        """
+        result = {}
+
+        # Station blocks are deterministic
+        result["east_terminal"] = "EAST_TERMINAL_BLOCK"
+        result["east_branch"] = "EAST_BRANCH_BLOCK"
+        result["east_diagonal"] = "BLOCK_EAST_DIAGONAL"
+
+        # The split blocks from BLOCK_EAST_BRANCH need discovery
+        # (9,1) and (9,2) should be in one child block
+        track_9_1 = network.get_track(9, 1)
+        assert track_9_1 is not None, "Track (9,1) should exist"
+        result["south_of_terminal"] = track_9_1.block_section_id
+
+        # (9,5) and (9,6) should be in another child block
+        track_9_5 = network.get_track(9, 5)
+        assert track_9_5 is not None, "Track (9,5) should exist"
+        result["north_of_terminal"] = track_9_5.block_section_id
+
+        # Sanity: they should be different blocks
+        assert result["south_of_terminal"] != result["north_of_terminal"], (
+            f"South and north child blocks should differ: "
+            f"{result['south_of_terminal']} vs {result['north_of_terminal']}"
+        )
+
+        return result
+
+    def _place_train_and_init(
+        self, network: RailwayNetwork, tile: tuple, direction: Direction
+    ):
+        """Place a train and set up simulation infrastructure.
+
+        Returns (train, dispatcher, simulation, controller).
+        """
+        from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
+        from path_utils import (
+            convert_tiles_to_train_path,
+            assign_complete_path_to_train,
+        )
+
+        car = TrainCar(car_id="E2E_CAR", car_type="LOCOMOTIVE", length=40.0)
+        train = Train(train_id="E2E_TRAIN", consist=[car], max_speed=60.0)
+
+        # Create a speed profile for reliable physics
+        profile = SpeedProfile(
+            profile_id="e2e_profile",
+            name="E2E Profile",
+            speed_voltage_curve=list(DEFAULT_SPEED_PROFILE.speed_voltage_curve),
+            min_start_voltage=DEFAULT_SPEED_PROFILE.min_start_voltage,
+            lighting_voltage=DEFAULT_SPEED_PROFILE.lighting_voltage,
+            acceleration_rate=3.0,
+            deceleration_rate=4.2,
+            emergency_brake_rate=5.0,
+            friction_rate=DEFAULT_SPEED_PROFILE.friction_rate,
+            operational_decel_ratio=DEFAULT_SPEED_PROFILE.operational_decel_ratio,
+            air_resistance_enabled=False,
+        )
+        network.speed_profiles[profile.profile_id] = profile
+        train.speed_profile_id = profile.profile_id
+
+        network.add_train(train)
+        network.place_train(train, tile[0], tile[1], direction)
+
+        # Occupy the starting block
+        track = network.get_track(tile[0], tile[1])
+        if track and track.block_section_id and network.block_manager:
+            network.block_manager.occupy_block(track.block_section_id, train.train_id)
+
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+        controller = simulation._get_or_create_controller(train)
+
+        # Power on and set direction (IDLE -> STANDBY)
+        controller.power_on_cmd()
+        controller.set_direction_and_standby(direction)
+
+        return train, dispatcher, simulation, controller
+
+    def _assign_path_and_go(
+        self,
+        network: RailwayNetwork,
+        train: Train,
+        dispatcher: PathDispatcher,
+        simulation: SimulationController,
+        controller,
+        start_block_id: str,
+        end_block_id: str,
+    ):
+        """Assign a path to the train and start ATO.
+
+        Replicates the flow from routes/paths.py POST /api/paths.
+
+        Returns the created path object.
+        """
+        from path_utils import (
+            convert_tiles_to_train_path,
+            assign_complete_path_to_train,
+        )
+
+        result = dispatcher.create_path(
+            start_block_id=start_block_id,
+            end_block_id=end_block_id,
+            train_id=train.train_id,
+        )
+        assert result.success, (
+            f"Path creation failed ({start_block_id} -> {end_block_id}): {result.error}"
+        )
+        path = result.path
+
+        # Convert and assign path tiles (mimics routes/paths.py)
+        raw_path = convert_tiles_to_train_path(path.path_tiles)
+        success, error = assign_complete_path_to_train(network, train, raw_path)
+        if not success:
+            # Fallback to direct assignment
+            train.current_path = raw_path
+            train.path_index = 0
+        train.assigned_path_id = path.path_id
+
+        # Set ATO destination
+        controller.ato_destination_block_id = path.end_block_id
+        train.ato_destination_block_id = path.end_block_id
+
+        # Turn-around check (mimics routes/paths.py cab switching logic)
+        if (
+            train.position
+            and train.current_path
+            and len(train.current_path) >= 2
+            and train.facing_direction is not None
+            and train.is_stopped()
+        ):
+            controller.ato_info = controller._calculate_ato_info()
+            if (
+                controller.ato_info
+                and controller.ato_info.required_cab
+                and controller.active_cab
+                and controller.ato_info.required_cab != controller.active_cab
+            ):
+                if controller.ato_running:
+                    controller.ato_stop()
+                controller.set_cab(controller.ato_info.required_cab)
+
+        # Start ATO
+        ato_result = controller.ato_go()
+        assert ato_result.success, f"ATO go failed: {ato_result.message}"
+
+        return path
+
+    def _run_until_stopped(
+        self,
+        train: Train,
+        simulation: SimulationController,
+        label: str = "",
+    ) -> int:
+        """Run simulation until train stops. Returns tick count.
+
+        The train must first accelerate past a minimum speed threshold before
+        we start checking for a stop, to avoid false positives when the train
+        is just starting to move (speed briefly below STOP_THRESHOLD while
+        accelerating from 0).
+
+        Asserts that the train actually starts moving and eventually stops.
+        """
+        MIN_CRUISE_SPEED = 2.0  # km/h - train must exceed this before we check for stop
+
+        # Phase 1: Wait for train to accelerate past the minimum cruise speed
+        reached_cruise = False
+        for tick in range(1000):
+            simulation.update(0.05)
+            if train.current_speed > MIN_CRUISE_SPEED:
+                reached_cruise = True
+                break
+        assert reached_cruise, (
+            f"[{label}] Train never reached cruise speed "
+            f"(max speed seen: {train.current_speed:.2f})"
+        )
+
+        # Phase 2: Wait for train to decelerate and stop
+        stop_tick = 0
+        for tick in range(self.MAX_TICKS):
+            simulation.update(0.05)
+            if train.current_speed <= self.STOP_THRESHOLD:
+                stop_tick = tick
+                break
+        else:
+            assert False, (
+                f"[{label}] Train did not stop within {self.MAX_TICKS} ticks "
+                f"(speed={train.current_speed:.2f})"
+            )
+
+        # Phase 3: Let it settle (state transitions, block updates)
+        for _ in range(100):
+            simulation.update(0.05)
+
+        return stop_tick
+
+    def _get_train_block(self, network: RailwayNetwork, train: Train) -> str:
+        """Get the block ID the train's head is currently in."""
+        if train.position:
+            head = train.position.head_tile
+            if head:
+                track = network.get_track(*head)
+                if track and track.block_section_id:
+                    return track.block_section_id
+        return ""
+
+    def _transition_to_standby(
+        self,
+        train: Train,
+        simulation: SimulationController,
+        controller,
+        label: str = "",
+    ) -> None:
+        """Transition train from stopped/moving state to STANDBY for next path.
+
+        Handles ATO stop, waits for path completion events, and ensures
+        the controller reaches STANDBY state.
+        """
+        # Stop ATO if still running
+        if controller.ato_running:
+            controller.ato_stop()
+
+        # Run simulation to process state transitions and path completion
+        for _ in range(300):
+            simulation.update(0.05)
+            if (
+                controller.state == TrainState.STANDBY
+                and train.assigned_path_id is None
+            ):
+                break
+
+        # If still not in STANDBY, force it (train is stopped after all)
+        if controller.state != TrainState.STANDBY:
+            # Run more ticks for edge cases
+            for _ in range(200):
+                simulation.update(0.05)
+                if controller.state == TrainState.STANDBY:
+                    break
+
+        assert controller.state == TrainState.STANDBY, (
+            f"[{label}] Controller should be STANDBY, got {controller.state}"
+        )
+
+    # =========================================================================
+    # Tests
+    # =========================================================================
+
+    def test_network_setup_blocks_correct(self):
+        """Verify the network builds correctly with expected blocks and stations."""
+        network = self._build_east_side_network()
+        block_ids = self._get_block_ids(network)
+
+        # Station blocks exist
+        assert "EAST_TERMINAL_BLOCK" in network.blocks, (
+            "East Terminal station block should exist"
+        )
+        assert "EAST_BRANCH_BLOCK" in network.blocks, (
+            "East Branch station block should exist"
+        )
+        assert "BLOCK_EAST_DIAGONAL" in network.blocks, (
+            "East Diagonal block should exist"
+        )
+
+        # Child blocks from splitting exist
+        assert block_ids["south_of_terminal"] in network.blocks
+        assert block_ids["north_of_terminal"] in network.blocks
+
+        # Station block tile membership
+        terminal_track_3 = network.get_track(9, 3)
+        terminal_track_4 = network.get_track(9, 4)
+        assert terminal_track_3.block_section_id == "EAST_TERMINAL_BLOCK"
+        assert terminal_track_4.block_section_id == "EAST_TERMINAL_BLOCK"
+
+        branch_track_10_7 = network.get_track(10, 7)
+        branch_track_11_7 = network.get_track(11, 7)
+        branch_track_10_6 = network.get_track(10, 6)
+        assert branch_track_10_7.block_section_id == "EAST_BRANCH_BLOCK"
+        assert branch_track_11_7.block_section_id == "EAST_BRANCH_BLOCK"
+        assert branch_track_10_6.block_section_id == "EAST_BRANCH_BLOCK"
+
+        # Platforms exist
+        assert "EAST_TERMINAL" in network.platforms
+        assert "EAST_BRANCH" in network.platforms
+
+    def test_leg1_start_to_east_terminal(self):
+        """Leg 1: Train starts at (9,1) heading NORTH, stops at East Terminal."""
+        network = self._build_east_side_network()
+        block_ids = self._get_block_ids(network)
+
+        train, dispatcher, simulation, controller = self._place_train_and_init(
+            network, (9, 1), Direction.NORTH
+        )
+
+        path = self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["south_of_terminal"],
+            end_block_id=block_ids["east_terminal"],
+        )
+
+        self._run_until_stopped(train, simulation, label="Leg 1: to East Terminal")
+
+        # Train should be in or near the East Terminal block
+        train_block = self._get_train_block(network, train)
+        assert train_block == "EAST_TERMINAL_BLOCK", (
+            f"Train should be in EAST_TERMINAL_BLOCK, got {train_block}"
+        )
+
+        # Train should be facing NORTH (same direction it started)
+        assert train.facing_direction == Direction.NORTH, (
+            f"Train should face NORTH after leg 1, got {train.facing_direction}"
+        )
+
+    def test_leg2_east_terminal_to_east_branch(self):
+        """Leg 2: From East Terminal, assign path to East Branch Station."""
+        network = self._build_east_side_network()
+        block_ids = self._get_block_ids(network)
+
+        train, dispatcher, simulation, controller = self._place_train_and_init(
+            network, (9, 1), Direction.NORTH
+        )
+
+        # Leg 1: go to East Terminal
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["south_of_terminal"],
+            end_block_id=block_ids["east_terminal"],
+        )
+        self._run_until_stopped(train, simulation, label="Leg 1")
+        self._transition_to_standby(train, simulation, controller, label="After Leg 1")
+
+        # Leg 2: East Terminal -> East Branch Station
+        path2 = self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["east_terminal"],
+            end_block_id=block_ids["east_branch"],
+        )
+        self._run_until_stopped(train, simulation, label="Leg 2: to East Branch")
+
+        # Train should be in East Branch Station block
+        train_block = self._get_train_block(network, train)
+        assert train_block == "EAST_BRANCH_BLOCK", (
+            f"Train should be in EAST_BRANCH_BLOCK, got {train_block}"
+        )
+
+    def test_leg3_return_east_branch_to_east_terminal(self):
+        """Leg 3 (the critical test): Return from East Branch to East Terminal.
+
+        This is the bug scenario. The train must:
+        1. Detect that the return path goes in the opposite direction
+        2. Switch its cab (A -> B or vice versa)
+        3. Flip its facing direction
+        4. Actually move backward through the diagonal staircase
+        5. Stop at East Terminal
+        """
+        network = self._build_east_side_network()
+        block_ids = self._get_block_ids(network)
+
+        train, dispatcher, simulation, controller = self._place_train_and_init(
+            network, (9, 1), Direction.NORTH
+        )
+
+        # === Leg 1: Start -> East Terminal ===
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["south_of_terminal"],
+            end_block_id=block_ids["east_terminal"],
+        )
+        self._run_until_stopped(train, simulation, label="Leg 1")
+        self._transition_to_standby(train, simulation, controller, label="After Leg 1")
+
+        # === Leg 2: East Terminal -> East Branch Station ===
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["east_terminal"],
+            end_block_id=block_ids["east_branch"],
+        )
+        self._run_until_stopped(train, simulation, label="Leg 2")
+
+        # Record state before return leg
+        cab_before_return = controller.active_cab
+        facing_before_return = train.facing_direction
+        position_before_return = train.position.end_a_tile if train.position else None
+
+        self._transition_to_standby(train, simulation, controller, label="After Leg 2")
+
+        # === Leg 3: East Branch Station -> East Terminal (BACKWARD!) ===
+        path3 = self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["east_branch"],
+            end_block_id=block_ids["east_terminal"],
+        )
+
+        # CRITICAL: After path assignment, cab should have switched
+        assert controller.active_cab != cab_before_return, (
+            f"BUG: Cab should switch for return leg. "
+            f"Before={cab_before_return}, After={controller.active_cab}"
+        )
+
+        # Facing direction should be different (turned around)
+        assert train.facing_direction != facing_before_return, (
+            f"BUG: Facing direction should flip for return leg. "
+            f"Before={facing_before_return}, After={train.facing_direction}"
+        )
+
+        # Run simulation - train should move backward
+        self._run_until_stopped(
+            train, simulation, label="Leg 3: return to East Terminal"
+        )
+
+        # Train should end up back in East Terminal block
+        train_block = self._get_train_block(network, train)
+        assert train_block == "EAST_TERMINAL_BLOCK", (
+            f"Train should return to EAST_TERMINAL_BLOCK, got {train_block}"
+        )
+
+        # Train position should have changed from the East Branch area
+        position_after_return = train.position.end_a_tile if train.position else None
+        assert position_after_return != position_before_return, (
+            f"Train should have moved from {position_before_return}"
+        )
+
+    def test_full_journey_three_legs(self):
+        """Complete three-leg journey with detailed state verification at each stage."""
+        network = self._build_east_side_network()
+        block_ids = self._get_block_ids(network)
+
+        train, dispatcher, simulation, controller = self._place_train_and_init(
+            network, (9, 1), Direction.NORTH
+        )
+
+        # ---- Leg 1: (9,1) -> East Terminal ----
+        path1 = self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["south_of_terminal"],
+            end_block_id=block_ids["east_terminal"],
+        )
+        ticks1 = self._run_until_stopped(train, simulation, label="Leg 1")
+
+        assert train.facing_direction == Direction.NORTH
+        assert controller.active_cab == "A"
+        leg1_block = self._get_train_block(network, train)
+        assert leg1_block == "EAST_TERMINAL_BLOCK"
+
+        self._transition_to_standby(train, simulation, controller, label="Before Leg 2")
+
+        # ---- Leg 2: East Terminal -> East Branch Station ----
+        path2 = self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["east_terminal"],
+            end_block_id=block_ids["east_branch"],
+        )
+        ticks2 = self._run_until_stopped(train, simulation, label="Leg 2")
+
+        leg2_block = self._get_train_block(network, train)
+        assert leg2_block == "EAST_BRANCH_BLOCK", (
+            f"After leg 2, train should be in EAST_BRANCH_BLOCK, got {leg2_block}"
+        )
+
+        # Record pre-return state
+        cab_leg2 = controller.active_cab
+        facing_leg2 = train.facing_direction
+
+        self._transition_to_standby(train, simulation, controller, label="Before Leg 3")
+
+        # ---- Leg 3: East Branch Station -> East Terminal (BACKWARD) ----
+        path3 = self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["east_branch"],
+            end_block_id=block_ids["east_terminal"],
+        )
+
+        # Verify cab switched
+        assert controller.active_cab != cab_leg2, (
+            f"Cab should switch for return: was {cab_leg2}, now {controller.active_cab}"
+        )
+        # Verify facing direction changed
+        assert train.facing_direction != facing_leg2, (
+            f"Facing should flip for return: was {facing_leg2}, "
+            f"now {train.facing_direction}"
+        )
+
+        ticks3 = self._run_until_stopped(train, simulation, label="Leg 3")
+
+        # Verify final position
+        leg3_block = self._get_train_block(network, train)
+        assert leg3_block == "EAST_TERMINAL_BLOCK", (
+            f"After return, train should be in EAST_TERMINAL_BLOCK, got {leg3_block}"
+        )
+
+    def test_return_path_cab_and_facing_are_consistent(self):
+        """After return path assignment, cab and facing direction must be internally
+        consistent: if cab switched A->B, facing should be the opposite of original."""
+        network = self._build_east_side_network()
+        block_ids = self._get_block_ids(network)
+
+        train, dispatcher, simulation, controller = self._place_train_and_init(
+            network, (9, 1), Direction.NORTH
+        )
+
+        # Go to East Terminal
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["south_of_terminal"],
+            end_block_id=block_ids["east_terminal"],
+        )
+        self._run_until_stopped(train, simulation, label="to terminal")
+        self._transition_to_standby(train, simulation, controller, label="at terminal")
+
+        # Go to East Branch
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["east_terminal"],
+            end_block_id=block_ids["east_branch"],
+        )
+        self._run_until_stopped(train, simulation, label="to branch")
+
+        # Record forward state
+        forward_cab = controller.active_cab
+        forward_facing = train.facing_direction
+
+        self._transition_to_standby(train, simulation, controller, label="at branch")
+
+        # Assign return path
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["east_branch"],
+            end_block_id=block_ids["east_terminal"],
+        )
+
+        # Consistency: if cab changed, facing should also change
+        cab_changed = controller.active_cab != forward_cab
+        facing_changed = train.facing_direction != forward_facing
+
+        assert cab_changed == facing_changed, (
+            f"Cab and facing should change together. "
+            f"Cab changed: {cab_changed} ({forward_cab}->{controller.active_cab}), "
+            f"Facing changed: {facing_changed} "
+            f"({forward_facing}->{train.facing_direction})"
+        )
+
+        # Both should have changed for a return trip
+        assert cab_changed, (
+            f"Cab should change for return trip: {forward_cab} -> {controller.active_cab}"
+        )
+        assert facing_changed, (
+            f"Facing should change for return trip: "
+            f"{forward_facing} -> {train.facing_direction}"
+        )

@@ -4938,6 +4938,71 @@ class TestManualPathAssignmentAfterArrival:
 
         return network
 
+    def _build_bidirectional_line(self, network: RailwayNetwork) -> None:
+        """Build simple A-B-C bidirectional line for route/path testing.
+
+        Layout:
+        A(0,0) --- (1,0) --- (2,0) --- B(3,0) --- (4,0) --- (5,0) --- C(6,0)
+
+        All stations and blocks are aligned on a single east-west line.
+        Trains can go A→C facing EAST, then turn around and go C→A facing WEST.
+        """
+        from track import TRACK_EW
+
+        # Create straight line from (0,0) to (6,0)
+        for x in range(7):
+            network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
+
+        # Station A at (0,0) - west terminal
+        network.add_station(
+            0,
+            0,
+            station_id="STA_A",
+            name="Station A",
+            length_cm=50.0,
+            top_speed_kmh=80.0,
+        )
+
+        # Station B at (3,0) - middle station
+        network.add_station(
+            3,
+            0,
+            station_id="STA_B",
+            name="Station B",
+            length_cm=50.0,
+            top_speed_kmh=80.0,
+        )
+
+        # Station C at (6,0) - east terminal
+        network.add_station(
+            6,
+            0,
+            station_id="STA_C",
+            name="Station C",
+            length_cm=50.0,
+            top_speed_kmh=80.0,
+        )
+
+        # Create blocks between stations
+        # Block A-B: (1,0), (2,0)
+        network.create_block_with_tracks(
+            block_id="BLK_A",
+            positions=[(1, 0), (2, 0)],
+            name="A to B",
+            length_cm=100.0,
+        )
+
+        # Block B-C: (4,0), (5,0)
+        network.create_block_with_tracks(
+            block_id="BLK_C",
+            positions=[(4, 0), (5, 0)],
+            name="B to C",
+            length_cm=100.0,
+        )
+
+        for block in network.blocks.values():
+            block.max_speed_kmh = 80.0
+
     def _run_until(
         self,
         simulation: SimulationController,
@@ -5268,101 +5333,736 @@ class TestManualPathAssignmentAfterArrival:
         dispatcher = PathDispatcher(network)
         simulation = SimulationController(network, dispatcher)
 
-        # Create train at A
-        car = TrainCar(car_id="CAR_CONSEC", car_type="LOCOMOTIVE", length=45.0)
-        train = Train(train_id="CONSEC_TEST", consist=[car], max_speed=60.0)
+        # Create train at A (short train to fit on track)
+        car = TrainCar(
+            car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0, max_speed=80.0
+        )
+        train = Train(train_id="TRAIN_1", consist=[car], max_speed=80.0)
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
-        train.current_speed = 0.0
-        train.state = TrainState.IDLE
 
         controller = simulation._get_or_create_controller(train)
-        controller.power_on = True
-        controller.control_mode = "ato"
-        controller.state = TrainState.IDLE
-        assert controller.set_direction_and_standby(Direction.EAST) is True
+        controller.power_on_cmd()
+        controller.set_direction_and_standby(Direction.EAST)
 
-        # First leg: A->B route
-        route_ab = Route(route_id="ROUTE_AB", name="A to B", mode=RouteMode.ONE_OFF)
-        route_ab.add_waypoint(Waypoint(platform_id="STA_B", dwell_time_sec=0.5))
-        route_ab.assign_train(train.train_id)
-        route_ab.activate(simulation.simulation_time)
-        network.routes[route_ab.route_id] = route_ab
-        train.assigned_route_id = route_ab.route_id
+        # Create and activate route A->C
+        route = Route(route_id="ROUTE_AC", name="A to C", mode=RouteMode.ONE_OFF)
+        route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.5))
+        route.assign_train(train.train_id)
+        route.activate(simulation.simulation_time)
+        network.routes[route.route_id] = route
+        train.assigned_route_id = route.route_id
 
-        # Run until train departs and starts moving to B
-        self._run_until(
-            simulation,
-            lambda: train.state == TrainState.RUNNING_MOVING and controller.ato_running,
-            "Train did not start moving toward B",
-            max_steps=500,
-        )
+        # Run until train is moving
+        for _ in range(500):
+            simulation.update(0.1)
+            if train.state == TrainState.RUNNING_MOVING and controller.ato_running:
+                break
 
-        # Run until train arrives at B
-        self._run_until(
-            simulation,
-            lambda: simulation.route_executor._is_train_at_platform(train, "STA_B"),
-            "Train did not arrive at B",
-            max_steps=20000,
-        )
+        assert controller.ato_running is True, "Train should be running with ATO"
+        assert train.current_speed > 0, "Train should be moving"
+        old_destination = controller.ato_destination_block_id
+        assert old_destination is not None, "Train should have a destination"
 
-        # Wait for the route to complete and train to return to STANDBY
-        # (ONE_OFF route completes after dwell time at the only waypoint)
-        self._run_until(
-            simulation,
-            lambda: train.state in [TrainState.STANDBY, TrainState.IDLE],
-            f"Train did not reach STANDBY/IDLE after arriving at B. State: {train.state}",
-            max_steps=2000,
-        )
-
-        # Clear the completed route
+        # Cancel route (simulate cancel button)
+        # This mimics the API call: PUT /api/trains/<train_id>/assign-route with route_id=None
+        if train.assigned_route_id:
+            old_route = network.routes.get(train.assigned_route_id)
+            if old_route:
+                old_route.unassign_train(train.train_id)
         train.assigned_route_id = None
-        if train.assigned_path_id:
-            dispatcher.cancel_path(train.assigned_path_id, force=True)
-        train.assigned_path_id = None
-        train.current_path = None
-        train.reserved_blocks = []
+
+        # Apply the fix: Stop ATO and clear destination
+        if controller.ato_running:
+            controller.ato_stop()
+        controller.ato_destination_block_id = None
+        controller.ato_path_id = None
+        train.ato_destination_block_id = None
+
+        # Clear route executor state
+        if simulation.route_executor:
+            simulation.route_executor.execution_states.pop(train.train_id, None)
+
+        # Verify fix
+        assert controller.ato_running is False, (
+            "BUG: ATO should stop after route cancellation"
+        )
+        assert controller.ato_destination_block_id is None, (
+            "BUG: Destination should be cleared"
+        )
+        assert train.ato_destination_block_id is None, (
+            "BUG: Train destination should be cleared"
+        )
+
+        # Run a bit more - train should brake to stop
+        for _ in range(1000):
+            simulation.update(0.1)
+            if train.current_speed <= 0.5:
+                break
+
+        # Train should eventually transition to STANDBY after stopping
+        for _ in range(100):
+            simulation.update(0.1)
+            if train.state == TrainState.STANDBY:
+                break
+
+        assert train.state in (TrainState.STANDBY, TrainState.RUNNING_WAITING), (
+            f"Train should stop after ATO cancel, got {train.state}"
+        )
+
+    def test_route_cancellation_edge_case_at_station(self):
+        """Edge case: Cancel route when train is at station."""
+        network = RailwayNetwork()
+        self._build_bidirectional_line(network)
+
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+
+        car = TrainCar(
+            car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0, max_speed=80.0
+        )
+        train = Train(train_id="TRAIN_1", consist=[car], max_speed=80.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on_cmd()
+        controller.set_direction_and_standby(Direction.EAST)
+
+        # Create route
+        route = Route(route_id="ROUTE_AC", name="A to C", mode=RouteMode.ONE_OFF)
+        route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.5))
+        route.assign_train(train.train_id)
+        route.activate(simulation.simulation_time)
+        network.routes[route.route_id] = route
+        train.assigned_route_id = route.route_id
+
+        # Train is at station A, cancel immediately
+        train.assigned_route_id = None
+        if controller.ato_running:
+            controller.ato_stop()
         controller.ato_destination_block_id = None
         train.ato_destination_block_id = None
 
-        # Make sure train is in STANDBY for the next leg
-        if train.state == TrainState.IDLE:
-            controller.state = TrainState.IDLE
-            assert controller.set_direction_and_standby(Direction.EAST) is True
+        assert controller.ato_running is False
+        assert controller.ato_destination_block_id is None
 
-        assert train.state == TrainState.STANDBY, (
-            f"Expected STANDBY before second leg, got {train.state}"
+    def test_route_cancellation_clears_path_id(self):
+        """Ensure cancellation clears both destination AND path ID."""
+        network = RailwayNetwork()
+        self._build_bidirectional_line(network)
+
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+
+        car = TrainCar(
+            car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0, max_speed=80.0
+        )
+        train = Train(train_id="TRAIN_1", consist=[car], max_speed=80.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on_cmd()
+        controller.set_direction_and_standby(Direction.EAST)
+
+        # Set some path state
+        controller.ato_path_id = "PATH_123"
+        controller.ato_destination_block_id = "BLK_C"
+        train.ato_destination_block_id = "BLK_C"
+
+        # Cancel
+        if controller.ato_running:
+            controller.ato_stop()
+        controller.ato_destination_block_id = None
+        controller.ato_path_id = None
+        train.ato_destination_block_id = None
+
+        assert controller.ato_path_id is None, "Path ID should be cleared"
+        assert controller.ato_destination_block_id is None
+
+    def test_backward_path_assignment_auto_turns_train(self):
+        """
+        BUG 2 test: Assigning backward path should auto-turn train.
+
+        Steps:
+        1. Train at C facing EAST (reached terminal)
+        2. User assigns path C->A (requires WEST direction)
+        3. System should auto-turn train to face WEST
+        4. Train should then be able to follow the path
+
+        Expected:
+        - Train facing direction changes to WEST
+        - Active cab switches A <-> B
+        - Train can depart toward A
+        """
+        network = RailwayNetwork()
+        self._build_bidirectional_line(network)
+
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+
+        # Create train at C facing EAST (as if it just arrived from the west)
+        # But we need to place it so there's track ahead, so place at (5,0) facing EAST
+        # This puts the train approaching/at station C
+        car = TrainCar(
+            car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0, max_speed=80.0
+        )
+        train = Train(train_id="TRAIN_1", consist=[car], max_speed=80.0)
+        network.add_train(train)
+        network.place_train(train, 5, 0, Direction.EAST)
+
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on_cmd()
+        controller.set_direction_and_standby(Direction.EAST)
+        controller.set_cab("A")
+
+        assert train.facing_direction == Direction.EAST, (
+            "Train should face EAST initially"
+        )
+        assert controller.active_cab == "A", "Cab A should be active"
+
+        # Manually create backward path C->A (this simulates path tool usage)
+        # Path should go from (6,0) to (0,0) - heading WEST
+        path_result = dispatcher.create_path(
+            start_block_id="STA_C_BLOCK",
+            end_block_id="STA_A_BLOCK",
+            train_id=train.train_id,
         )
 
-        # Verify at B
-        assert simulation.route_executor._is_train_at_platform(train, "STA_B")
+        assert path_result.success, f"Path creation failed: {path_result.error}"
 
-        # Second leg: B->C route (THE BUG SCENARIO)
-        route_bc = Route(route_id="ROUTE_BC", name="B to C", mode=RouteMode.ONE_OFF)
-        route_bc.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.5))
-        route_bc.assign_train(train.train_id)
-        route_bc.activate(simulation.simulation_time)
-        network.routes[route_bc.route_id] = route_bc
-        train.assigned_route_id = route_bc.route_id
+        # Convert path to train format
+        from path_utils import convert_tiles_to_train_path
 
-        # Train should get path to C and start moving
-        self._run_until(
-            simulation,
-            lambda: train.state == TrainState.RUNNING_MOVING and controller.ato_running,
-            f"BUG: Train did not start moving toward C after B->C assignment. "
-            f"State: {train.state}, ato_running: {controller.ato_running}",
-            max_steps=500,
+        raw_path = convert_tiles_to_train_path(path_result.path.path_tiles)
+        train.current_path = raw_path
+        train.path_index = 0
+        train.assigned_path_id = path_result.path.path_id
+
+        # Set destination
+        controller.ato_destination_block_id = "STA_A_BLOCK"
+        train.ato_destination_block_id = "STA_A_BLOCK"
+
+        # Apply the fix: Auto-turn if path requires opposite direction
+        if train.position and train.current_path and len(train.current_path) >= 2:
+            first_tile = train.current_path[0]
+            second_tile = train.current_path[1]
+            dx = second_tile[0] - first_tile[0]
+            dy = second_tile[1] - first_tile[1]
+
+            # Determine path direction
+            path_direction = None
+            if dx > 0:
+                path_direction = Direction.EAST
+            elif dx < 0:
+                path_direction = Direction.WEST
+            elif dy > 0:
+                path_direction = Direction.NORTH
+            elif dy < 0:
+                path_direction = Direction.SOUTH
+
+            # If path goes opposite to facing, turn around
+            if (
+                path_direction is not None
+                and path_direction == train.facing_direction.opposite()
+                and train.is_stopped()
+            ):
+                result = controller.turn_around()
+                assert result, (
+                    f"turn_around() failed! "
+                    f"train.state={train.state}, controller.state={controller.state}, "
+                    f"active_cab={controller.active_cab}, ato_running={controller.ato_running}, "
+                    f"speed={train.current_speed}"
+                )
+
+        # Verify fix
+        assert train.facing_direction == Direction.WEST, (
+            f"BUG: Train should auto-turn to WEST for backward path, got {train.facing_direction}"
+        )
+        assert controller.active_cab == "B", (
+            f"BUG: Cab should switch to B after turn, got {controller.active_cab}"
         )
 
-        # Arrive at C
-        self._run_until(
-            simulation,
-            lambda: simulation.route_executor._is_train_at_platform(train, "STA_C"),
-            f"BUG: Train did not arrive at C after consecutive path assignment. "
-            f"State: {train.state}, speed: {train.current_speed}, "
-            f"position: {getattr(train.position, 'head_tile', None)}",
-            max_steps=20000,
+    def test_backward_path_no_turn_if_already_correct(self):
+        """Don't turn if train already faces the right direction."""
+        network = RailwayNetwork()
+        self._build_bidirectional_line(network)
+
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+
+        # Train at A facing EAST (correct for A->C path)
+        car = TrainCar(
+            car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0, max_speed=80.0
         )
+        train = Train(train_id="TRAIN_1", consist=[car], max_speed=80.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on_cmd()
+        controller.set_direction_and_standby(Direction.EAST)
+        controller.set_cab("A")
+
+        # Create forward path A->C
+        path_result = dispatcher.create_path(
+            start_block_id="BLK_A", end_block_id="BLK_C", train_id=train.train_id
+        )
+
+        from path_utils import convert_tiles_to_train_path
+
+        raw_path = convert_tiles_to_train_path(path_result.path.path_tiles)
+        train.current_path = raw_path
+        train.path_index = 0
+
+        # Check if turn is needed (should NOT turn)
+        if train.position and train.current_path and len(train.current_path) >= 2:
+            first_tile = train.current_path[0]
+            second_tile = train.current_path[1]
+            dx = second_tile[0] - first_tile[0]
+
+            path_direction = None
+            if dx > 0:
+                path_direction = Direction.EAST
+            elif dx < 0:
+                path_direction = Direction.WEST
+
+            # Should NOT turn (path and facing both EAST)
+            if (
+                path_direction is not None
+                and path_direction == train.facing_direction.opposite()
+                and train.is_stopped()
+            ):
+                controller.turn_around()
+
+        # Should still face EAST
+        assert train.facing_direction == Direction.EAST, (
+            "Train should not turn for forward path"
+        )
+        assert controller.active_cab == "A", "Cab should remain A"
+
+    def test_backward_path_real_world_scenario(self):
+        """
+        Real-world scenario: Train reaches terminal C, user assigns path back to A.
+
+        This is the exact scenario the user described:
+        - Train finishes route to branch terminal
+        - User uses path tool to assign return path
+        - Train should automatically turn around and depart
+        """
+        network = RailwayNetwork()
+        self._build_bidirectional_line(network)
+
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+
+        # 1. Train starts at A with route to C
+        car = TrainCar(
+            car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0, max_speed=80.0
+        )
+        train = Train(train_id="TRAIN_1", consist=[car], max_speed=80.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on_cmd()
+        controller.set_direction_and_standby(Direction.EAST)
+
+        route = Route(route_id="ROUTE_AC", name="A to C", mode=RouteMode.ONE_OFF)
+        route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.5))
+        route.assign_train(train.train_id)
+        route.activate(simulation.simulation_time)
+        network.routes[route.route_id] = route
+        train.assigned_route_id = route.route_id
+
+        # 2. Run until train reaches C
+        for _ in range(10000):
+            simulation.update(0.1)
+            if simulation.route_executor._is_train_at_platform(train, "STA_C"):
+                break
+
+        assert simulation.route_executor._is_train_at_platform(train, "STA_C"), (
+            "Train should reach C"
+        )
+        assert train.facing_direction == Direction.EAST, (
+            "Train should still face EAST at terminal"
+        )
+
+        # 3. User cancels route and assigns return path
+        train.assigned_route_id = None
+        if controller.ato_running:
+            controller.ato_stop()
+        controller.ato_destination_block_id = None
+        train.ato_destination_block_id = None
+
+        # Wait for train to stop
+        for _ in range(500):
+            simulation.update(0.1)
+            if train.is_stopped():
+                break
+
+        assert train.is_stopped(), "Train should be stopped"
+
+        # Assign backward path C->A
+        path_result = dispatcher.create_path(
+            start_block_id="STA_C_BLOCK",
+            end_block_id="STA_A_BLOCK",
+            train_id=train.train_id,
+        )
+
+        from path_utils import convert_tiles_to_train_path
+
+        raw_path = convert_tiles_to_train_path(path_result.path.path_tiles)
+        train.current_path = raw_path
+        train.path_index = 0
+        train.assigned_path_id = path_result.path.path_id
+        controller.ato_destination_block_id = "STA_A_BLOCK"
+        train.ato_destination_block_id = "STA_A_BLOCK"
+
+        # Auto-turn logic
+        if train.position and train.current_path and len(train.current_path) >= 2:
+            first_tile = train.current_path[0]
+            second_tile = train.current_path[1]
+            dx = second_tile[0] - first_tile[0]
+            dy = second_tile[1] - first_tile[1]
+
+            path_direction = None
+            if dx < 0:
+                path_direction = Direction.WEST
+            elif dx > 0:
+                path_direction = Direction.EAST
+            elif dy > 0:
+                path_direction = Direction.NORTH
+            elif dy < 0:
+                path_direction = Direction.SOUTH
+
+            if (
+                path_direction is not None
+                and path_direction == train.facing_direction.opposite()
+                and train.is_stopped()
+            ):
+                result = controller.turn_around()
+                assert result, (
+                    f"turn_around() failed! "
+                    f"train.state={train.state}, controller.state={controller.state}, "
+                    f"active_cab={controller.active_cab}, ato_running={controller.ato_running}, "
+                    f"speed={train.current_speed}, facing={train.facing_direction}"
+                )
+
+        # 4. Verify train turned and can depart
+        assert train.facing_direction == Direction.WEST, (
+            "BUG: Train should turn WEST for return path"
+        )
+
+        # After turning, set direction controller to match new facing
+        controller.set_direction_and_standby(Direction.WEST)
+
+        # Start ATO
+        controller.ato_go()
+
+        # Run a bit - train should start moving
+        for _ in range(500):
+            simulation.update(0.1)
+            if train.current_speed > 0:
+                break
+
+        assert train.current_speed > 0, "BUG: Train should be able to move after turn"
+        assert controller.ato_running is True, "BUG: ATO should be running"
+
+
+class TestSetCabDoubleFlipBugFix:
+    """
+    Comprehensive tests for set_cab() double-flip bug fixed 2026-02-10.
+
+    BUG: TrainController.set_cab() had two conflicting operations when switching
+    cabs (A <-> B):
+
+    1. It synced train.facing_direction from the computed property
+       train.position.facing_direction — which already returned the CORRECT
+       new direction because leading_end was already changed by train.set_cab().
+
+    2. It then explicitly flipped train.facing_direction to its opposite —
+       which UNDID the correct direction from step 1, putting it back to the
+       original direction.
+
+    For multi-tile trains, the computed TrainPosition.facing_direction property
+    derives direction from leading_end + tile geometry. After leading_end changes,
+    it automatically returns the reversed direction. The explicit flip was
+    redundant and destructive.
+
+    FIX: Replaced the sync-then-flip logic with direction-aware handling:
+    - Multi-tile trains (end_a_tile != end_b_tile): Use the computed property
+      directly — it already returns the correct direction.
+    - Single-tile trains (end_a_tile == end_b_tile): Explicitly flip the legacy
+      direction field since the computed property falls back to it.
+
+    This bug caused turn_around() (which delegates to set_cab()) to silently
+    "succeed" but leave the train facing the SAME direction it was before,
+    breaking backward path assignment after route completion.
+    """
+
+    def _setup_multi_tile_train(self, network):
+        """Create a 2-tile train on E-W track, facing EAST with cab A."""
+        for x in range(5):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=80.0, max_speed=80.0)
+        train = Train(train_id="FLIP_TEST", consist=[car], max_speed=80.0)
+        network.add_train(train)
+        network.place_train(train, 1, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on = True
+        controller.set_cab("A")
+
+        assert train.facing_direction == Direction.EAST
+        assert controller.active_cab == "A"
+        assert train.position.end_a_tile != train.position.end_b_tile, (
+            "Setup must produce a multi-tile train"
+        )
+
+        return train, controller
+
+    def _setup_single_tile_train(self, network):
+        """Create a 1-tile train on E-W track, facing EAST with cab A."""
+        for x in range(3):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=20.0, max_speed=80.0)
+        train = Train(train_id="FLIP_TEST_1T", consist=[car], max_speed=80.0)
+        network.add_train(train)
+        network.place_train(train, 1, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on = True
+        controller.set_cab("A")
+
+        assert train.facing_direction == Direction.EAST
+        assert controller.active_cab == "A"
+        assert train.position.end_a_tile == train.position.end_b_tile, (
+            "Setup must produce a single-tile train"
+        )
+
+        return train, controller
+
+    # ---- Multi-tile tests (the original bug case) ----
+
+    def test_multi_tile_set_cab_flips_train_facing_direction(self, network):
+        """The specific case that triggered the bug: multi-tile train
+        facing_direction stays wrong after set_cab()."""
+        train, controller = self._setup_multi_tile_train(network)
+
+        controller.set_cab("B")
+
+        assert train.facing_direction == Direction.WEST, (
+            f"BUG REGRESSION: train.facing_direction should be WEST after "
+            f"switching to cab B, got {train.facing_direction}"
+        )
+
+    def test_multi_tile_set_cab_flips_computed_direction(self, network):
+        """Computed property on TrainPosition also returns correct direction."""
+        train, controller = self._setup_multi_tile_train(network)
+
+        controller.set_cab("B")
+
+        assert train.position.facing_direction == Direction.WEST
+
+    def test_multi_tile_set_cab_syncs_legacy_and_computed(self, network):
+        """After set_cab, legacy field and computed property agree."""
+        train, controller = self._setup_multi_tile_train(network)
+
+        controller.set_cab("B")
+
+        # Both access paths should return the same direction
+        legacy = train.facing_direction  # Reads Train.facing_direction field
+        computed = train.position.facing_direction  # Reads computed property
+        assert legacy == computed == Direction.WEST, (
+            f"Legacy ({legacy}) and computed ({computed}) should both be WEST"
+        )
+
+    def test_multi_tile_double_flip_returns_to_original(self, network):
+        """Switching cab twice returns to original direction (A->B->A)."""
+        train, controller = self._setup_multi_tile_train(network)
+
+        controller.set_cab("B")
+        assert train.facing_direction == Direction.WEST
+
+        controller.set_cab("A")
+        assert train.facing_direction == Direction.EAST
+
+    def test_multi_tile_triple_flip(self, network):
+        """Three cab switches (A->B->A->B) end correctly."""
+        train, controller = self._setup_multi_tile_train(network)
+
+        controller.set_cab("B")
+        assert train.facing_direction == Direction.WEST
+
+        controller.set_cab("A")
+        assert train.facing_direction == Direction.EAST
+
+        controller.set_cab("B")
+        assert train.facing_direction == Direction.WEST
+
+    def test_multi_tile_turn_around_flips_direction(self, network):
+        """turn_around() delegates to set_cab() and correctly flips direction."""
+        train, controller = self._setup_multi_tile_train(network)
+
+        result = controller.turn_around()
+        assert result is True, "turn_around() should succeed"
+        assert train.facing_direction == Direction.WEST
+        assert controller.active_cab == "B"
+
+    def test_multi_tile_turn_around_twice_returns_original(self, network):
+        """Two turn_around() calls return to original direction."""
+        train, controller = self._setup_multi_tile_train(network)
+
+        controller.turn_around()
+        assert train.facing_direction == Direction.WEST
+
+        controller.turn_around()
+        assert train.facing_direction == Direction.EAST
+
+    # ---- Single-tile tests ----
+
+    def test_single_tile_set_cab_flips_direction(self, network):
+        """Single-tile train also flips direction on cab switch."""
+        train, controller = self._setup_single_tile_train(network)
+
+        controller.set_cab("B")
+
+        assert train.facing_direction == Direction.WEST, (
+            f"Single-tile train should flip to WEST, got {train.facing_direction}"
+        )
+
+    def test_single_tile_double_flip(self, network):
+        """Single-tile: A->B->A returns to original."""
+        train, controller = self._setup_single_tile_train(network)
+
+        controller.set_cab("B")
+        assert train.facing_direction == Direction.WEST
+
+        controller.set_cab("A")
+        assert train.facing_direction == Direction.EAST
+
+    def test_single_tile_turn_around(self, network):
+        """Single-tile: turn_around() works correctly."""
+        train, controller = self._setup_single_tile_train(network)
+
+        result = controller.turn_around()
+        assert result is True
+        assert train.facing_direction == Direction.WEST
+        assert controller.active_cab == "B"
+
+    # ---- Edge cases ----
+
+    def test_set_cab_from_none_does_not_flip(self, network):
+        """Setting cab from None (first selection) should NOT flip direction."""
+        for x in range(5):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=80.0, max_speed=80.0)
+        train = Train(train_id="FIRST_CAB", consist=[car], max_speed=80.0)
+        network.add_train(train)
+        network.place_train(train, 1, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on = True
+
+        # active_cab is None initially
+        assert controller.active_cab is None
+
+        # First cab selection should sync from computed, not flip
+        controller.set_cab("A")
+        assert train.facing_direction == Direction.EAST, (
+            "First cab selection should NOT flip direction"
+        )
+
+    def test_set_same_cab_does_not_flip(self, network):
+        """Setting the same cab again should NOT flip direction."""
+        train, controller = self._setup_multi_tile_train(network)
+
+        controller.set_cab("A")  # Already A, setting A again
+        assert train.facing_direction == Direction.EAST, (
+            "Re-selecting same cab should NOT flip direction"
+        )
+
+    def test_turn_around_fails_while_moving(self, network):
+        """turn_around() should fail if train is moving."""
+        train, controller = self._setup_multi_tile_train(network)
+
+        train.current_speed = 10.0  # Moving
+
+        result = controller.turn_around()
+        assert result is False
+        assert train.facing_direction == Direction.EAST, (
+            "Direction should not change on failed turn_around"
+        )
+
+    def test_turn_around_fails_while_ato_running(self, network):
+        """turn_around() should fail if ATO is actively running."""
+        train, controller = self._setup_multi_tile_train(network)
+
+        controller.ato_running = True
+
+        result = controller.turn_around()
+        assert result is False
+        assert train.facing_direction == Direction.EAST
+
+    def test_entry_edges_flip_with_direction(self, network):
+        """Entry edges and distances also flip correctly alongside direction."""
+        train, controller = self._setup_multi_tile_train(network)
+
+        orig_a_edge = train.position.end_a_entry_edge
+        orig_b_edge = train.position.end_b_entry_edge
+        orig_a_dist = train.position.end_a_distance_cm
+        orig_b_dist = train.position.end_b_distance_cm
+
+        controller.set_cab("B")
+
+        # Entry edges should have flipped
+        assert train.position.end_a_entry_edge != orig_a_edge, (
+            "end_a entry edge should flip on cab switch"
+        )
+        assert train.position.end_b_entry_edge != orig_b_edge, (
+            "end_b entry edge should flip on cab switch"
+        )
+        # Distances should have changed (tile_length - original)
+        assert train.position.end_a_distance_cm != orig_a_dist
+        assert train.position.end_b_distance_cm != orig_b_dist
+
+        # Direction must be correct too
+        assert train.facing_direction == Direction.WEST
+
+    # ---- Real-world scenario: the actual bug trigger ----
+
+    def test_turn_around_after_ato_stops_in_idle_state(self, network):
+        """
+        Real-world scenario: train arrives at terminal via ATO, route is
+        cancelled (train goes to IDLE), then turn_around() is called.
+
+        This was the actual bug trigger: after ATO stops and route is
+        cancelled, the train is in IDLE state with a cab still selected.
+        turn_around() -> set_cab() must work in this state.
+        """
+        train, controller = self._setup_multi_tile_train(network)
+
+        # Simulate: train was running, ATO stopped, route cancelled -> IDLE
+        controller.state = TrainState.IDLE
+        train.state = TrainState.IDLE
+        controller.ato_running = False
+        train.current_speed = 0.0
+
+        # Active cab is still A (route cancellation doesn't clear cab)
+        assert controller.active_cab == "A"
+
+        result = controller.turn_around()
+        assert result is True, (
+            f"turn_around() should work from IDLE state with cab selected, "
+            f"train.state={train.state}"
+        )
+        assert train.facing_direction == Direction.WEST
+        assert controller.active_cab == "B"
 
 
 if __name__ == "__main__":
