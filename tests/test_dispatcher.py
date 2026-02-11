@@ -43,7 +43,7 @@ from block import Block
 from train import Train, TrainCar, TrainPosition
 from tests.train_test_helpers import make_train_position
 from train_route import Route, RouteMode, Waypoint
-from enums import BlockState, Direction, TrainState, HandlePosition
+from enums import BlockState, Direction, LeadingEnd, TrainState, HandlePosition
 from simulation import SimulationController
 
 
@@ -2150,8 +2150,8 @@ class TestPathDispatcherProgress:
             end_b_tile=(0, 0),
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
+            
             occupied_tiles=[(0, 0)],
             occupied_blocks=["BLOCK_A"],
         )
@@ -2171,8 +2171,8 @@ class TestPathDispatcherProgress:
             end_b_tile=(1, 0),
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
+            
             occupied_tiles=[(1, 0)],
             occupied_blocks=["BLOCK_B"],
         )
@@ -2207,8 +2207,8 @@ class TestSimulationPathAdvancement:
             end_b_tile=(1, 0),
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
+            
             occupied_tiles=[(1, 0)],
             occupied_blocks=["BLOCK_B"],
         )
@@ -2254,8 +2254,8 @@ class TestSimulationPathAdvancement:
             end_b_tile=(1, 0),
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
+            
             occupied_tiles=[(1, 0)],
             occupied_blocks=["BLOCK_B"],
         )
@@ -2418,8 +2418,8 @@ class TestPathSwitchUnlockBugFix:
             end_b_tile=(0, 0),
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
+            
             occupied_tiles=[(0, 0)],
             occupied_blocks=["BLOCK_A"],
         )
@@ -2441,8 +2441,8 @@ class TestPathSwitchUnlockBugFix:
             end_b_tile=(2, 0),
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
+            
             occupied_tiles=[(2, 0)],
             occupied_blocks=["BLOCK_B"],
         )
@@ -2523,8 +2523,8 @@ class TestPathExtensionForMultiTileStations:
             end_b_tile=(0, 0),
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
-            leading_end="a",
-            _facing_direction_legacy=Direction.NORTH,
+            leading_end=LeadingEnd.A,
+            
             occupied_tiles=[(0, 0)],
             occupied_blocks=["BLOCK_START"],
         )
@@ -2602,8 +2602,8 @@ class TestPathExtensionForMultiTileStations:
             end_b_tile=(0, 0),
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
-            leading_end="a",
-            _facing_direction_legacy=Direction.NORTH,
+            leading_end=LeadingEnd.A,
+            
             occupied_tiles=[(0, 0)],
             occupied_blocks=["BLOCK_START"],
         )
@@ -2629,8 +2629,8 @@ class TestPathExtensionForMultiTileStations:
             end_b_tile=(0, 3),
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
-            leading_end="a",
-            _facing_direction_legacy=Direction.NORTH,
+            leading_end=LeadingEnd.A,
+            
             occupied_tiles=[(0, 3)],
             occupied_blocks=["STATION_BLOCK"],
         )
@@ -2652,8 +2652,8 @@ class TestPathExtensionForMultiTileStations:
             end_b_tile=(0, 4),
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
-            leading_end="a",
-            _facing_direction_legacy=Direction.NORTH,
+            leading_end=LeadingEnd.A,
+            
             occupied_tiles=[(0, 4)],
             occupied_blocks=["STATION_BLOCK"],
         )
@@ -2704,8 +2704,8 @@ class TestPathCompletionAtStoppedDestination:
             end_b_tile=(0, 0),
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
-            leading_end="a",
-            _facing_direction_legacy=Direction.NORTH,
+            leading_end=LeadingEnd.A,
+            
             occupied_tiles=[(0, 0)],
             occupied_blocks=["BLOCK_START"],
         )
@@ -2730,8 +2730,8 @@ class TestPathCompletionAtStoppedDestination:
             end_b_tile=(0, 3),
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
-            leading_end="a",
-            _facing_direction_legacy=Direction.NORTH,
+            leading_end=LeadingEnd.A,
+            
             occupied_tiles=[(0, 3)],
             occupied_blocks=["BLOCK_END"],
         )
@@ -2846,8 +2846,8 @@ class TestATODirectionDetection:
             end_b_tile=tile,
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=facing,
+            leading_end=LeadingEnd.A,
+            
             occupied_tiles=[tile],
             occupied_blocks=[block_id],
         )
@@ -3921,6 +3921,97 @@ class TestEndToEndThreeLegJourney:
             f"Train should have moved from {position_before_return}"
         )
 
+    def test_return_path_lookahead_after_assignment(self):
+        """
+        Validate lookahead after assigning the return path.
+
+        BUG CONTEXT (2026-02-10):
+        When assigning a return path after reaching the destination block,
+        lookahead sometimes collapsed to only the current block. This caused
+        ATC/ATO to misbehave (no speed limits, early stops). This test ensures
+        the lookahead immediately reflects the full return path.
+        """
+        from path_utils import convert_tiles_to_train_path
+
+        network = self._build_east_side_network()
+        block_ids = self._get_block_ids(network)
+
+        train, dispatcher, simulation, controller = self._place_train_and_init(
+            network, (9, 1), Direction.NORTH
+        )
+
+        # Leg 1: Start -> East Terminal
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["south_of_terminal"],
+            end_block_id=block_ids["east_terminal"],
+        )
+        self._run_until_stopped(train, simulation, label="Leg 1")
+        self._transition_to_standby(train, simulation, controller, label="After Leg 1")
+
+        # Leg 2: East Terminal -> East Branch Station
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["east_terminal"],
+            end_block_id=block_ids["east_branch"],
+        )
+        self._run_until_stopped(train, simulation, label="Leg 2")
+        self._transition_to_standby(train, simulation, controller, label="After Leg 2")
+
+        # Assign return path (East Branch -> East Terminal)
+        path3 = self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["east_branch"],
+            end_block_id=block_ids["east_terminal"],
+        )
+
+        raw_path = convert_tiles_to_train_path(path3.path_tiles)
+        train.current_path = raw_path
+        train.path_index = 0
+
+        # Advance one tick so TrainController recalculates lookahead
+        simulation.update(0.05)
+
+        # Lookahead should show multiple blocks, including the destination
+        controller.tick(0.05)
+        payload = controller.get_monitor_lookahead()
+        blocks = payload["lookahead"]["blocks"]
+        block_ids_in_lookahead = [block["id"] for block in blocks]
+
+        assert block_ids_in_lookahead, "Lookahead should not be empty"
+        assert len(block_ids_in_lookahead) > 1, (
+            f"Lookahead should include more than current block, got {block_ids_in_lookahead}"
+        )
+        assert "EAST_TERMINAL_BLOCK" in block_ids_in_lookahead, (
+            f"Return lookahead should include EAST_TERMINAL_BLOCK, got {block_ids_in_lookahead}"
+        )
+
+        # Verify block distances are sane (no inflated end_cm)
+        for blk in blocks:
+            computed_span = blk["end_cm"] - blk["start_cm"]
+            assert computed_span == pytest.approx(blk["length_cm"], abs=0.1), (
+                f"Block {blk['id']}: end_cm - start_cm = {computed_span:.1f} "
+                f"but length_cm = {blk['length_cm']:.1f}. "
+                f"start_cm={blk['start_cm']:.1f}, end_cm={blk['end_cm']:.1f}"
+            )
+            # Block length should not exceed 500cm (sanity - no block in this
+            # layout is larger than ~260cm)
+            assert blk["length_cm"] < 500, (
+                f"Block {blk['id']}: length_cm={blk['length_cm']:.1f} is unreasonably large"
+            )
+
     def test_full_journey_three_legs(self):
         """Complete three-leg journey with detailed state verification at each stage."""
         network = self._build_east_side_network()
@@ -4072,3 +4163,1136 @@ class TestEndToEndThreeLegJourney:
             f"Facing should change for return trip: "
             f"{forward_facing} -> {train.facing_direction}"
         )
+
+
+class TestFullDemoMainJourney:
+    """
+    End-to-end test replicating the full demo_main.py layout with main line,
+    switches, and east branch.
+
+    Tests the complete multi-leg journey that exposes bugs:
+      1. Start at (0,0) → East Terminal (initial eastbound run)
+      2. East Terminal → East Branch Station (northward diagonal)
+      3. East Branch Station → Central Station (return westbound)
+      4. Central Station → (0,0) block (final westbound run)
+
+    BUG CONTEXT (2026-02-10):
+    On leg 4, the train stops at (4,0) with "Braking: 0m ahead" despite
+    having valid clearance. The ATC clearance calculation fails because:
+    - _get_blocks_ahead() may return empty if head_path_index is -1
+    - _calculate_clearance_to_destination() also fails with head_index < 0
+    - Resulting clearance is only the remaining distance in current tile (~0)
+
+    Related bugs:
+    - Intermittent lookahead drops to 1 block on block transitions
+    - Speed limit violations and emergency brakes on return paths
+    """
+
+    MAX_TICKS = 8000
+    STOP_THRESHOLD = 0.5  # km/h
+
+    def _build_demo_main_network(self) -> RailwayNetwork:
+        """Build the full demo_main.py layout.
+
+        Layout:
+            Main line (y=0): (0,0)-(2,0) [BLOCK_MAIN_WEST] | SW(3,0) |
+                (4,0)-(10,0) [BLOCK_MAIN_EAST, split by Central Station at (7,0)]
+            East branch: SW(9,0) → (9,1)-(9,6) [BLOCK_EAST_BRANCH, split by
+                East Terminal at (9,3)-(9,4)]
+            Diagonal: (10,6)-(11,7) [East Branch Station block]
+                (11,8)-(12,8) [BLOCK_EAST_DIAGONAL]
+
+        Returns:
+            Fully configured RailwayNetwork.
+        """
+        from switch import Switch
+
+        network = RailwayNetwork()
+
+        # === Main line tracks (y=0) ===
+        for x in range(11):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+
+        # === Blocks ===
+        network.create_block_with_tracks(
+            block_id="BLOCK_MAIN_WEST",
+            positions=[(x, 0) for x in range(3)],
+            name="Main Line West",
+            length_cm=150.0,
+            max_speed_kmh=60.0,
+        )
+
+        network.create_block_with_tracks(
+            block_id="BLOCK_MAIN_EAST",
+            positions=[(x, 0) for x in range(4, 11)],
+            name="Main Line East",
+            length_cm=350.0,
+            max_speed_kmh=80.0,
+        )
+
+        # === Central Station at (7,0) - splits BLOCK_MAIN_EAST ===
+        central_station = network.add_station(
+            x=7,
+            y=0,
+            name="Central Station",
+            length_cm=100.0,
+            platform_side="both",
+            top_speed_kmh=40.0,
+        )
+
+        # === Switch at (3,0) - EW | NW ===
+        existing = network.get_track(3, 0)
+        if existing:
+            network.remove_track(3, 0)
+        switch_track_3 = TrackSegment(3, 0, track_bits=TRACK_EW | TRACK_NW)
+        switch_track_3.switch_state = 0  # MAIN (EW)
+        network.add_track(switch_track_3)
+        switch_3 = Switch(switch_id="SW_3_0", x=3, y=0)
+        network.add_switch(switch_3)
+        switch_track_3.switch_id = switch_3.switch_id
+
+        # === Switch at (9,0) - EW | NW ===
+        existing = network.get_track(9, 0)
+        if existing:
+            network.remove_track(9, 0)
+        switch_track_9 = TrackSegment(9, 0, track_bits=TRACK_EW | TRACK_NW)
+        switch_track_9.switch_state = 0  # MAIN (EW)
+        network.add_track(switch_track_9)
+        switch_9 = Switch(switch_id="SW_9_0", x=9, y=0)
+        network.add_switch(switch_9)
+        switch_track_9.switch_id = switch_9.switch_id
+
+        # === East vertical branch: (9,1) to (9,5) NS + (9,6) SE ===
+        for y in range(1, 6):
+            network.add_track(TrackSegment(9, y, track_bits=TRACK_NS))
+        network.add_track(TrackSegment(9, 6, track_bits=TRACK_SE))
+
+        # === Diagonal staircase ===
+        network.add_track(TrackSegment(10, 6, track_bits=TRACK_NW))
+        network.add_track(TrackSegment(10, 7, track_bits=TRACK_SE))
+        network.add_track(TrackSegment(11, 7, track_bits=TRACK_NW))
+        network.add_track(TrackSegment(11, 8, track_bits=TRACK_SE))
+        network.add_track(TrackSegment(12, 8, track_bits=TRACK_NW))
+
+        # === East branch blocks ===
+        network.create_block_with_tracks(
+            block_id="BLOCK_EAST_BRANCH",
+            positions=[(9, y) for y in range(1, 7)],
+            name="East Vertical Branch",
+            length_cm=260.0,
+            max_speed_kmh=50.0,
+        )
+
+        network.create_block_with_tracks(
+            block_id="BLOCK_EAST_DIAGONAL",
+            positions=[(11, 8), (12, 8)],
+            name="East Diagonal Approach",
+            length_cm=80.0,
+            max_speed_kmh=30.0,
+        )
+
+        # === East Branch Station at (10,7) ===
+        east_branch_station = network.add_station(
+            x=10,
+            y=7,
+            name="East Branch Station",
+            length_cm=80.0,
+            platform_side="right",
+            top_speed_kmh=30.0,
+        )
+        network.extend_station(east_branch_station.platform_id, [(11, 7)])
+        network.extend_station(east_branch_station.platform_id, [(10, 6)])
+
+        # === East Terminal at (9,3), extended to (9,4) ===
+        east_terminal = network.add_station(
+            x=9,
+            y=3,
+            name="East Terminal",
+            length_cm=100.0,
+            platform_side="both",
+            top_speed_kmh=20.0,
+        )
+        network.extend_station(east_terminal.platform_id, [(9, 4)])
+
+        # Ensure all blocks have speed limits
+        for block in network.blocks.values():
+            if block.max_speed_kmh is None:
+                block.max_speed_kmh = 50.0
+
+        return network
+
+    def _discover_block_ids(self, network: RailwayNetwork) -> dict:
+        """Discover actual block IDs after station splitting.
+
+        Returns dict mapping logical names to actual block IDs.
+        """
+        result = {}
+
+        # Main west (unsplit)
+        track_0_0 = network.get_track(0, 0)
+        assert track_0_0, "Track (0,0) should exist"
+        result["main_west"] = track_0_0.block_section_id
+
+        # Main east child blocks (split by Central Station at (7,0))
+        track_4_0 = network.get_track(4, 0)
+        assert track_4_0, "Track (4,0) should exist"
+        result["main_east_before_station"] = track_4_0.block_section_id
+
+        track_7_0 = network.get_track(7, 0)
+        assert track_7_0, "Track (7,0) should exist"
+        result["central_station"] = track_7_0.block_section_id
+
+        track_8_0 = network.get_track(8, 0)
+        assert track_8_0, "Track (8,0) should exist"
+        result["main_east_after_station"] = track_8_0.block_section_id
+
+        # East branch child blocks (split by East Terminal)
+        track_9_1 = network.get_track(9, 1)
+        assert track_9_1, "Track (9,1) should exist"
+        result["south_of_terminal"] = track_9_1.block_section_id
+
+        track_9_5 = network.get_track(9, 5)
+        assert track_9_5, "Track (9,5) should exist"
+        result["north_of_terminal"] = track_9_5.block_section_id
+
+        # Station blocks (deterministic names)
+        # East Terminal station block
+        track_9_3 = network.get_track(9, 3)
+        assert track_9_3, "Track (9,3) should exist"
+        result["east_terminal"] = track_9_3.block_section_id
+
+        # East Branch Station block
+        track_10_7 = network.get_track(10, 7)
+        assert track_10_7, "Track (10,7) should exist"
+        result["east_branch_station"] = track_10_7.block_section_id
+
+        result["east_diagonal"] = "BLOCK_EAST_DIAGONAL"
+
+        return result
+
+    def _place_train(
+        self,
+        network: RailwayNetwork,
+        tile: tuple,
+        direction: Direction,
+    ):
+        """Place a train and return (train, dispatcher, simulation, controller)."""
+        from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
+        from path_utils import assign_complete_path_to_train
+
+        car = TrainCar(car_id="DEMO_CAR", car_type="LOCOMOTIVE", length=40.0)
+        train = Train(train_id="DEMO_TRAIN", consist=[car], max_speed=60.0)
+
+        profile = SpeedProfile(
+            profile_id="demo_profile",
+            name="Demo Profile",
+            speed_voltage_curve=list(DEFAULT_SPEED_PROFILE.speed_voltage_curve),
+            min_start_voltage=DEFAULT_SPEED_PROFILE.min_start_voltage,
+            lighting_voltage=DEFAULT_SPEED_PROFILE.lighting_voltage,
+            acceleration_rate=3.0,
+            deceleration_rate=4.2,
+            emergency_brake_rate=5.0,
+            friction_rate=DEFAULT_SPEED_PROFILE.friction_rate,
+            operational_decel_ratio=DEFAULT_SPEED_PROFILE.operational_decel_ratio,
+            air_resistance_enabled=False,
+        )
+        network.speed_profiles[profile.profile_id] = profile
+        train.speed_profile_id = profile.profile_id
+
+        network.add_train(train)
+        network.place_train(train, tile[0], tile[1], direction)
+
+        track = network.get_track(tile[0], tile[1])
+        if track and track.block_section_id and network.block_manager:
+            network.block_manager.occupy_block(track.block_section_id, train.train_id)
+
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+        controller = simulation._get_or_create_controller(train)
+
+        controller.power_on_cmd()
+        controller.set_direction_and_standby(direction)
+
+        return train, dispatcher, simulation, controller
+
+    def _assign_path_and_go(
+        self,
+        network: RailwayNetwork,
+        train: Train,
+        dispatcher: PathDispatcher,
+        simulation: SimulationController,
+        controller,
+        start_block_id: str,
+        end_block_id: str,
+    ):
+        """Assign a path and start ATO. Returns the path object."""
+        from path_utils import (
+            convert_tiles_to_train_path,
+            assign_complete_path_to_train,
+        )
+
+        result = dispatcher.create_path(
+            start_block_id=start_block_id,
+            end_block_id=end_block_id,
+            train_id=train.train_id,
+        )
+        assert result.success, (
+            f"Path creation failed ({start_block_id} -> {end_block_id}): {result.error}"
+        )
+        path = result.path
+
+        raw_path = convert_tiles_to_train_path(path.path_tiles)
+        success, error = assign_complete_path_to_train(network, train, raw_path)
+        if not success:
+            train.current_path = raw_path
+            train.path_index = 0
+        train.assigned_path_id = path.path_id
+
+        controller.ato_destination_block_id = path.end_block_id
+        train.ato_destination_block_id = path.end_block_id
+
+        # Turn-around check
+        if (
+            train.position
+            and train.current_path
+            and len(train.current_path) >= 2
+            and train.facing_direction is not None
+            and train.is_stopped()
+        ):
+            controller.ato_info = controller._calculate_ato_info()
+            if (
+                controller.ato_info
+                and controller.ato_info.required_cab
+                and controller.active_cab
+                and controller.ato_info.required_cab != controller.active_cab
+            ):
+                if controller.ato_running:
+                    controller.ato_stop()
+                controller.set_cab(controller.ato_info.required_cab)
+
+        ato_result = controller.ato_go()
+        assert ato_result.success, f"ATO go failed: {ato_result.message}"
+
+        return path
+
+    def _run_until_stopped(
+        self,
+        train: Train,
+        simulation: SimulationController,
+        controller,
+        label: str = "",
+        check_clearance: bool = False,
+    ) -> int:
+        """Run simulation until train stops.
+
+        Args:
+            check_clearance: If True, assert clearance never drops to 0
+                when train has blocks ahead (diagnostic mode).
+
+        Returns tick count.
+        """
+        MIN_CRUISE_SPEED = 2.0
+        min_clearance_seen = float("inf")
+        zero_clearance_info = None
+
+        # Phase 1: Wait for acceleration
+        reached_cruise = False
+        for tick in range(1500):
+            simulation.update(0.05)
+            if train.current_speed > MIN_CRUISE_SPEED:
+                reached_cruise = True
+                break
+        assert reached_cruise, (
+            f"[{label}] Train never reached cruise speed "
+            f"(max speed seen: {train.current_speed:.2f}, "
+            f"state: {controller.state}, "
+            f"ato_running: {controller.ato_running}, "
+            f"handle: {controller.handle_position}, "
+            f"clearance: {controller.clearance_ahead_cm:.1f}, "
+            f"reason: {controller.speed_limit_reason})"
+        )
+
+        # Phase 2: Wait for stop
+        for tick in range(self.MAX_TICKS):
+            simulation.update(0.05)
+
+            # Track clearance for diagnostics
+            if check_clearance and controller.clearance_ahead_cm < min_clearance_seen:
+                min_clearance_seen = controller.clearance_ahead_cm
+                if controller.clearance_ahead_cm < 1.0 and train.current_speed > 1.0:
+                    zero_clearance_info = {
+                        "tick": tick,
+                        "speed": train.current_speed,
+                        "clearance": controller.clearance_ahead_cm,
+                        "reason": controller.speed_limit_reason,
+                        "head_tile": (
+                            train.position.head_tile if train.position else None
+                        ),
+                        "path_index": train.path_index,
+                        "state": controller.state,
+                        "eb_active": controller.eb_active,
+                    }
+
+            if train.current_speed <= self.STOP_THRESHOLD:
+                break
+        else:
+            assert False, (
+                f"[{label}] Train did not stop within {self.MAX_TICKS} ticks "
+                f"(speed={train.current_speed:.2f})"
+            )
+
+        # Phase 3: Settle
+        for _ in range(100):
+            simulation.update(0.05)
+
+        if check_clearance and zero_clearance_info:
+            # Emit diagnostic info (not a hard failure yet, just info)
+            print(
+                f"\n[{label}] WARNING: Near-zero clearance detected: "
+                f"{zero_clearance_info}"
+            )
+
+        return tick
+
+    def _transition_to_standby(
+        self, train, simulation, controller, label: str = ""
+    ) -> None:
+        """Transition train to STANDBY for next path."""
+        if controller.ato_running:
+            controller.ato_stop()
+
+        for _ in range(300):
+            simulation.update(0.05)
+            if (
+                controller.state == TrainState.STANDBY
+                and train.assigned_path_id is None
+            ):
+                break
+
+        if controller.state != TrainState.STANDBY:
+            for _ in range(200):
+                simulation.update(0.05)
+                if controller.state == TrainState.STANDBY:
+                    break
+
+        assert controller.state == TrainState.STANDBY, (
+            f"[{label}] Controller should be STANDBY, got {controller.state}"
+        )
+
+    def _get_train_block(self, network, train) -> str:
+        """Get the block ID where the train's head is."""
+        if train.position and train.position.head_tile:
+            track = network.get_track(*train.position.head_tile)
+            if track and track.block_section_id:
+                return track.block_section_id
+        return ""
+
+    # =====================================================================
+    # Tests
+    # =====================================================================
+
+    def test_network_setup(self):
+        """Verify the demo main network builds correctly."""
+        network = self._build_demo_main_network()
+        block_ids = self._discover_block_ids(network)
+
+        # All key blocks exist
+        assert block_ids["main_west"], "Main west block should exist"
+        assert block_ids["main_east_before_station"], (
+            "Main east pre-station block should exist"
+        )
+        assert block_ids["central_station"], "Central station block should exist"
+        assert block_ids["main_east_after_station"], (
+            "Main east post-station block should exist"
+        )
+        assert block_ids["east_terminal"], "East terminal block should exist"
+        assert block_ids["east_branch_station"], (
+            "East branch station block should exist"
+        )
+
+        # Switches exist and are not in blocks
+        sw_3_0 = network.get_track(3, 0)
+        assert sw_3_0 is not None, "Switch at (3,0) should exist"
+        # Switch may or may not have block_section_id after removal
+
+        sw_9_0 = network.get_track(9, 0)
+        assert sw_9_0 is not None, "Switch at (9,0) should exist"
+
+    def test_clearance_at_block_boundary_heading_west(self):
+        """
+        Test that clearance is correct when train is at (4,0) heading west.
+
+        BUG: Train at (4,0) heading west saw "Braking: 0m ahead" because
+        _get_blocks_ahead() returned empty and clearance was only the
+        remaining distance in the current tile.
+
+        The train should see BLOCK_MAIN_WEST ahead (via switch at (3,0))
+        and have substantial clearance.
+        """
+        network = self._build_demo_main_network()
+        block_ids = self._discover_block_ids(network)
+
+        # Place train at (4,0) heading WEST (simulating mid-journey state)
+        train, dispatcher, simulation, controller = self._place_train(
+            network, (4, 0), Direction.WEST
+        )
+
+        # Create a simple westward path from (4,0) block to BLOCK_MAIN_WEST
+        start_block = block_ids["main_east_before_station"]
+        end_block = block_ids["main_west"]
+
+        path_result = dispatcher.create_path(
+            start_block_id=start_block,
+            end_block_id=end_block,
+            train_id=train.train_id,
+        )
+        assert path_result.success, f"Path creation failed: {path_result.error}"
+
+        from path_utils import (
+            convert_tiles_to_train_path,
+            assign_complete_path_to_train,
+        )
+
+        raw_path = convert_tiles_to_train_path(path_result.path.path_tiles)
+        success, error = assign_complete_path_to_train(network, train, raw_path)
+        if not success:
+            train.current_path = raw_path
+            train.path_index = 0
+        train.assigned_path_id = path_result.path.path_id
+
+        controller.ato_destination_block_id = path_result.path.end_block_id
+        train.ato_destination_block_id = path_result.path.end_block_id
+
+        # Run one tick to compute clearance
+        controller.tick(0.05)
+
+        # Clearance should be substantial (not near 0)
+        assert controller.clearance_ahead_cm > 50.0, (
+            f"Clearance should be > 50cm, got {controller.clearance_ahead_cm:.1f}cm. "
+            f"Reason: {controller.speed_limit_reason}. "
+            f"Head tile: {train.position.head_tile if train.position else None}. "
+            f"Path index: {train.path_index}. "
+            f"Head path index: {controller._get_head_path_index(train, train.position.head_tile) if train.position else -1}. "
+            f"Blocks ahead: {controller._get_blocks_ahead()}. "
+            f"Current block: {controller._get_current_block_id()}"
+        )
+
+        # Speed limit reason should NOT say "0m ahead"
+        if controller.speed_limit_reason:
+            assert "0m ahead" not in controller.speed_limit_reason, (
+                f"Speed limit reason should not say '0m ahead': "
+                f"{controller.speed_limit_reason}"
+            )
+
+    def test_clearance_maintained_during_westbound_travel(self):
+        """
+        Test that clearance stays above 0 during westbound travel through (4,0).
+
+        Simulates the actual scenario: assign path westward and run simulation,
+        checking that clearance never drops to problematic levels while the
+        train is moving.
+        """
+        network = self._build_demo_main_network()
+        block_ids = self._discover_block_ids(network)
+
+        # Place train at (6,0) heading WEST
+        train, dispatcher, simulation, controller = self._place_train(
+            network, (6, 0), Direction.WEST
+        )
+
+        start_block = block_ids["main_east_before_station"]
+        end_block = block_ids["main_west"]
+
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=start_block,
+            end_block_id=end_block,
+        )
+
+        # Run simulation and track clearance at each tick
+        min_clearance_while_moving = float("inf")
+        eb_triggered = False
+        eb_info = None
+
+        for tick in range(self.MAX_TICKS):
+            simulation.update(0.05)
+
+            if train.current_speed > 1.0:
+                if controller.clearance_ahead_cm < min_clearance_while_moving:
+                    min_clearance_while_moving = controller.clearance_ahead_cm
+
+                if controller.eb_active:
+                    eb_triggered = True
+                    eb_info = {
+                        "tick": tick,
+                        "speed": train.current_speed,
+                        "clearance": controller.clearance_ahead_cm,
+                        "reason": controller.speed_limit_reason,
+                        "head_tile": (
+                            train.position.head_tile if train.position else None
+                        ),
+                        "blocks_ahead": controller._get_blocks_ahead(),
+                    }
+                    break
+
+            if train.current_speed <= self.STOP_THRESHOLD and tick > 100:
+                break
+
+        # Clearance should never have dropped to near-0 while moving
+        assert min_clearance_while_moving > 10.0, (
+            f"Min clearance while moving was {min_clearance_while_moving:.1f}cm "
+            f"(should be > 10cm)"
+        )
+
+        # No emergency brakes should have triggered
+        assert not eb_triggered, f"Emergency brake triggered: {eb_info}"
+
+        # Train should have reached BLOCK_MAIN_WEST
+        final_block = self._get_train_block(network, train)
+        assert final_block == block_ids["main_west"], (
+            f"Train should have reached main_west block ({block_ids['main_west']}), "
+            f"got {final_block}. "
+            f"Head tile: {train.position.head_tile if train.position else None}"
+        )
+
+    def test_full_four_leg_journey(self):
+        """
+        Complete four-leg journey replicating the user's exact scenario.
+
+        Leg 1: (0,0) → East Terminal (initial eastbound)
+        Leg 2: East Terminal → East Branch Station
+        Leg 3: East Branch Station → Central Station (return)
+        Leg 4: Central Station → BLOCK_MAIN_WEST (0,0) area
+
+        Asserts:
+        - Train reaches each destination
+        - No emergency brakes during travel
+        - Clearance stays reasonable
+        """
+        network = self._build_demo_main_network()
+        block_ids = self._discover_block_ids(network)
+
+        train, dispatcher, simulation, controller = self._place_train(
+            network, (0, 0), Direction.EAST
+        )
+
+        # === Leg 1: (0,0) → East Terminal ===
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["main_west"],
+            end_block_id=block_ids["east_terminal"],
+        )
+        self._run_until_stopped(
+            train, simulation, controller, label="Leg 1: to East Terminal"
+        )
+        leg1_block = self._get_train_block(network, train)
+        assert leg1_block == block_ids["east_terminal"], (
+            f"After leg 1, train should be in East Terminal block "
+            f"({block_ids['east_terminal']}), got {leg1_block}"
+        )
+        self._transition_to_standby(train, simulation, controller, label="After Leg 1")
+
+        # === Leg 2: East Terminal → East Branch Station ===
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["east_terminal"],
+            end_block_id=block_ids["east_branch_station"],
+        )
+        self._run_until_stopped(
+            train, simulation, controller, label="Leg 2: to East Branch Station"
+        )
+        leg2_block = self._get_train_block(network, train)
+        assert leg2_block == block_ids["east_branch_station"], (
+            f"After leg 2, train should be in East Branch Station block "
+            f"({block_ids['east_branch_station']}), got {leg2_block}"
+        )
+        self._transition_to_standby(train, simulation, controller, label="After Leg 2")
+
+        # === Leg 3: East Branch Station → Central Station ===
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["east_branch_station"],
+            end_block_id=block_ids["central_station"],
+        )
+        self._run_until_stopped(
+            train,
+            simulation,
+            controller,
+            label="Leg 3: to Central Station",
+            check_clearance=True,
+        )
+        leg3_block = self._get_train_block(network, train)
+        assert leg3_block == block_ids["central_station"], (
+            f"After leg 3, train should be in Central Station block "
+            f"({block_ids['central_station']}), got {leg3_block}"
+        )
+        self._transition_to_standby(train, simulation, controller, label="After Leg 3")
+
+        # === Leg 4: Central Station → BLOCK_MAIN_WEST ===
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["central_station"],
+            end_block_id=block_ids["main_west"],
+        )
+
+        # Track if emergency brake triggers during this leg
+        eb_triggered = False
+        eb_info = None
+        reached_cruise = False
+
+        for tick in range(self.MAX_TICKS):
+            simulation.update(0.05)
+
+            if train.current_speed > 2.0:
+                reached_cruise = True
+
+            if reached_cruise and controller.eb_active:
+                eb_triggered = True
+                eb_info = {
+                    "tick": tick,
+                    "speed": train.current_speed,
+                    "clearance": controller.clearance_ahead_cm,
+                    "atc_limit": controller.atc_speed_limit,
+                    "reason": controller.speed_limit_reason,
+                    "head_tile": (train.position.head_tile if train.position else None),
+                    "blocks_ahead": controller._get_blocks_ahead(),
+                    "current_block": controller._get_current_block_id(),
+                    "path_index": train.path_index,
+                }
+
+            if reached_cruise and train.current_speed <= self.STOP_THRESHOLD:
+                break
+        else:
+            assert False, (
+                f"[Leg 4] Train did not stop within {self.MAX_TICKS} ticks "
+                f"(speed={train.current_speed:.2f}). "
+                f"EB info: {eb_info}"
+            )
+
+        # Settle
+        for _ in range(100):
+            simulation.update(0.05)
+
+        # No EB should have triggered
+        assert not eb_triggered, (
+            f"[Leg 4] Emergency brake triggered unexpectedly: {eb_info}"
+        )
+
+        # Train should reach BLOCK_MAIN_WEST
+        leg4_block = self._get_train_block(network, train)
+        assert leg4_block == block_ids["main_west"], (
+            f"After leg 4, train should be in main_west block "
+            f"({block_ids['main_west']}), got {leg4_block}. "
+            f"Head: {train.position.head_tile if train.position else None}"
+        )
+
+    def test_leg4_with_signal_updates(self):
+        """
+        Test Leg 4 with update_signals_from_blocks() calls matching real app behavior.
+
+        The real app calls update_signals_from_blocks() after path creation
+        (routes/paths.py line 58). The test helper _assign_path_and_go does NOT.
+        This test checks whether signal state causes the train to stop prematurely.
+        """
+        from railway_signal import SignalState
+
+        network = self._build_demo_main_network()
+        block_ids = self._discover_block_ids(network)
+
+        train, dispatcher, simulation, controller = self._place_train(
+            network, (0, 0), Direction.EAST
+        )
+
+        def assign_path_and_go_with_signals(start_block_id, end_block_id):
+            """Like _assign_path_and_go but calls update_signals_from_blocks."""
+            path = self._assign_path_and_go(
+                network,
+                train,
+                dispatcher,
+                simulation,
+                controller,
+                start_block_id=start_block_id,
+                end_block_id=end_block_id,
+            )
+            # Match real app: update signals after path creation
+            network.update_signals_from_blocks()
+            return path
+
+        # === Legs 1-3: reach Central Station ===
+        assign_path_and_go_with_signals(
+            block_ids["main_west"], block_ids["east_terminal"]
+        )
+        self._run_until_stopped(train, simulation, controller, label="Leg 1")
+        self._transition_to_standby(train, simulation, controller, label="After Leg 1")
+
+        assign_path_and_go_with_signals(
+            block_ids["east_terminal"], block_ids["east_branch_station"]
+        )
+        self._run_until_stopped(train, simulation, controller, label="Leg 2")
+        self._transition_to_standby(train, simulation, controller, label="After Leg 2")
+
+        assign_path_and_go_with_signals(
+            block_ids["east_branch_station"], block_ids["central_station"]
+        )
+        self._run_until_stopped(train, simulation, controller, label="Leg 3")
+        self._transition_to_standby(train, simulation, controller, label="After Leg 3")
+
+        # === Leg 4: Central Station → BLOCK_MAIN_WEST ===
+        assign_path_and_go_with_signals(
+            block_ids["central_station"], block_ids["main_west"]
+        )
+
+        # Dump signal states after path assignment + signal update
+        print("\n=== SIGNAL STATES AFTER LEG 4 PATH CREATION ===")
+        for sig_id, sig in sorted(network.signals.items()):
+            print(
+                f"  {sig_id}: state={sig.state.value}, "
+                f"pos={sig.position}, dir={sig.detection_direction}, "
+                f"monitored={sig.monitored_block_id}, "
+                f"approaching={sig.approaching_train_id}"
+            )
+
+        # Check if any signal monitoring BLOCK_MAIN_WEST is RED
+        red_signals_for_dest = []
+        for sig_id, sig in network.signals.items():
+            if sig.monitored_block_id == block_ids["main_west"]:
+                if sig.state == SignalState.RED:
+                    red_signals_for_dest.append((sig_id, sig))
+
+        if red_signals_for_dest:
+            print(
+                f"\nWARNING: {len(red_signals_for_dest)} RED signal(s) "
+                f"monitoring destination BLOCK_MAIN_WEST:"
+            )
+            for sig_id, sig in red_signals_for_dest:
+                print(
+                    f"  {sig_id}: pos={sig.position}, "
+                    f"detection_dir={sig.detection_direction}"
+                )
+
+        # Check _is_signal_red_for_block for BLOCK_MAIN_WEST
+        is_red = controller._is_signal_red_for_block(block_ids["main_west"])
+        print(f"\n_is_signal_red_for_block(BLOCK_MAIN_WEST) = {is_red}")
+
+        # Run Leg 4
+        eb_triggered = False
+        eb_info = None
+        reached_cruise = False
+        stuck_at_tile = None
+
+        for tick in range(self.MAX_TICKS):
+            simulation.update(0.05)
+
+            if train.current_speed > 2.0:
+                reached_cruise = True
+
+            if reached_cruise and controller.eb_active:
+                eb_triggered = True
+                eb_info = {
+                    "tick": tick,
+                    "speed": train.current_speed,
+                    "clearance": controller.clearance_ahead_cm,
+                    "atc_limit": controller.atc_speed_limit,
+                    "reason": controller.speed_limit_reason,
+                    "head_tile": (train.position.head_tile if train.position else None),
+                    "blocks_ahead": controller._get_blocks_ahead(),
+                    "current_block": controller._get_current_block_id(),
+                    "signal_red": controller._is_signal_red_for_block(
+                        block_ids["main_west"]
+                    ),
+                }
+
+            if reached_cruise and train.current_speed <= self.STOP_THRESHOLD:
+                stuck_at_tile = train.position.head_tile if train.position else None
+                break
+        else:
+            assert False, f"[Leg 4] Train did not stop within {self.MAX_TICKS} ticks"
+
+        # Settle
+        for _ in range(100):
+            simulation.update(0.05)
+
+        # Check results
+        final_block = self._get_train_block(network, train)
+        final_tile = train.position.head_tile if train.position else None
+        print(f"\nFinal: tile={final_tile}, block={final_block}")
+        print(f"Expected dest: {block_ids['main_west']}")
+
+        assert not eb_triggered, f"[Leg 4] EB triggered: {eb_info}"
+        assert final_block == block_ids["main_west"], (
+            f"Train should be in main_west ({block_ids['main_west']}), "
+            f"got {final_block} at tile {final_tile}. "
+            f"Signal red for dest: "
+            f"{controller._is_signal_red_for_block(block_ids['main_west'])}. "
+            f"Stuck at tile: {stuck_at_tile}"
+        )
+
+    def test_leg4_diagnostics(self):
+        """
+        Diagnostic test for Leg 4 (Central Station -> BLOCK_MAIN_WEST).
+
+        Runs legs 1-3 using the same approach as test_full_four_leg_journey,
+        then captures detailed tick-by-tick state for Leg 4 at 3x sim speed.
+        """
+        network = self._build_demo_main_network()
+        block_ids = self._discover_block_ids(network)
+
+        train, dispatcher, simulation, controller = self._place_train(
+            network, (0, 0), Direction.EAST
+        )
+
+        # === Leg 1: (0,0) → East Terminal ===
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["main_west"],
+            end_block_id=block_ids["east_terminal"],
+        )
+        self._run_until_stopped(train, simulation, controller, label="Leg 1")
+        self._transition_to_standby(train, simulation, controller, label="After Leg 1")
+
+        # === Leg 2: East Terminal → East Branch Station ===
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["east_terminal"],
+            end_block_id=block_ids["east_branch_station"],
+        )
+        self._run_until_stopped(train, simulation, controller, label="Leg 2")
+        self._transition_to_standby(train, simulation, controller, label="After Leg 2")
+
+        # === Leg 3: East Branch Station → Central Station ===
+        self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["east_branch_station"],
+            end_block_id=block_ids["central_station"],
+        )
+        self._run_until_stopped(train, simulation, controller, label="Leg 3")
+        self._transition_to_standby(train, simulation, controller, label="After Leg 3")
+
+        # Verify at Central Station
+        pre_leg4_block = self._get_train_block(network, train)
+        assert pre_leg4_block == block_ids["central_station"], (
+            f"Pre-leg4: expected Central Station, got {pre_leg4_block}"
+        )
+
+        # Dump block states before Leg 4
+        print(f"\n=== BLOCK STATES BEFORE LEG 4 ===")
+        for bid, block in sorted(network.blocks.items()):
+            if block.state.value != "free" or block.occupied_by:
+                print(
+                    f"  {bid}: state={block.state.value}, "
+                    f"occupied_by={block.occupied_by}, "
+                    f"max_speed={getattr(block, 'max_speed_kmh', None)}"
+                )
+
+        # === Leg 4: Central Station → BLOCK_MAIN_WEST ===
+        path = self._assign_path_and_go(
+            network,
+            train,
+            dispatcher,
+            simulation,
+            controller,
+            start_block_id=block_ids["central_station"],
+            end_block_id=block_ids["main_west"],
+        )
+
+        # Capture the path for diagnostics
+        path_tiles = (
+            [(x, y) for x, y, *_ in train.current_path] if train.current_path else []
+        )
+        print(f"\n=== LEG 4 DIAGNOSTICS (3x speed, dt=0.3) ===")
+        print(f"Path tiles: {path_tiles}")
+        print(f"Cab: {controller.active_cab}")
+        print(f"Facing: {train.facing_direction}")
+        print(f"ATO running: {controller.ato_running}")
+        print(f"ATO dest: {controller.ato_destination_block_id}")
+        print(f"Reserved blocks: {train.reserved_blocks}")
+
+        # Dump block states after path assignment
+        print(f"\n=== BLOCK STATES AFTER PATH ASSIGNMENT ===")
+        for bid, block in sorted(network.blocks.items()):
+            if block.state.value != "free" or block.occupied_by:
+                print(
+                    f"  {bid}: state={block.state.value}, "
+                    f"occupied_by={block.occupied_by}"
+                )
+
+        # Tick-by-tick capture with 0.3s dt (3x speed)
+        DT = 0.3
+        snapshots = []
+        prev_block = None
+        eb_events = []
+        max_speed = 0.0
+        reached_cruise = False
+
+        for tick in range(3000):
+            simulation.update(DT)
+
+            head_tile = train.position.head_tile if train.position else None
+            current_block = controller._get_current_block_id()
+            speed = train.current_speed
+            max_speed = max(max_speed, speed)
+
+            if speed > 2.0:
+                reached_cruise = True
+
+            block_changed = current_block != prev_block
+            is_eb = controller.eb_active
+
+            if is_eb and reached_cruise:
+                eb_events.append(
+                    {
+                        "tick": tick,
+                        "speed": speed,
+                        "head_tile": head_tile,
+                        "block": current_block,
+                        "clearance": controller.clearance_ahead_cm,
+                        "atc_limit": controller.atc_speed_limit,
+                        "reason": controller.speed_limit_reason,
+                        "handle": controller.handle_position.value,
+                        "target": controller.target_speed,
+                        "path_index": train.path_index,
+                        "blocks_ahead": controller._get_blocks_ahead(),
+                        "head_dist": (
+                            train.position.head_distance_cm if train.position else None
+                        ),
+                        "remaining_in_block": (
+                            controller._get_remaining_distance_in_current_block()
+                        ),
+                    }
+                )
+
+            if block_changed or (tick % 10 == 0 and tick <= 200) or is_eb:
+                snapshots.append(
+                    {
+                        "tick": tick,
+                        "speed": round(speed, 2),
+                        "head_tile": head_tile,
+                        "block": current_block,
+                        "clearance": round(controller.clearance_ahead_cm, 1),
+                        "atc_limit": round(controller.atc_speed_limit, 1),
+                        "handle": controller.handle_position.value,
+                        "target": round(controller.target_speed, 2),
+                        "path_idx": train.path_index,
+                        "ato_running": controller.ato_running,
+                        "eb": is_eb,
+                    }
+                )
+
+            prev_block = current_block
+
+            if reached_cruise and speed <= self.STOP_THRESHOLD and not is_eb:
+                break
+            if tick > 100 and speed <= self.STOP_THRESHOLD:
+                break
+
+        # Print diagnostics
+        print(f"\nMax speed reached: {max_speed:.2f}")
+        print(f"\nSnapshots ({len(snapshots)} captured):")
+        for s in snapshots:
+            print(
+                f"  t={s['tick']:4d} | spd={s['speed']:6.2f} | "
+                f"tile={str(s['head_tile']):8s} | blk={str(s['block']):25s} | "
+                f"clr={s['clearance']:7.1f} | atc={s['atc_limit']:6.1f} | "
+                f"hdl={s['handle']:3s} | tgt={s['target']:6.2f} | "
+                f"pidx={s['path_idx']} | ato={s['ato_running']} | eb={s['eb']}"
+            )
+
+        if eb_events:
+            print(f"\nEB events ({len(eb_events)}):")
+            for e in eb_events:
+                print(
+                    f"  t={e['tick']} speed={e['speed']:.2f} tile={e['head_tile']} "
+                    f"block={e['block']} clr={e['clearance']:.1f} "
+                    f"atc={e['atc_limit']:.1f} reason={e['reason']} "
+                    f"blocks_ahead={e['blocks_ahead']} "
+                    f"head_dist={e.get('head_dist', '?'):.1f} "
+                    f"remaining={e['remaining_in_block']:.1f}"
+                )
+
+        final_block = self._get_train_block(network, train)
+        final_tile = train.position.head_tile if train.position else None
+        print(f"\nFinal: tile={final_tile}, block={final_block}")
+        print(f"Expected dest: {block_ids['main_west']}")
+
+        # Dump final block states
+        print(f"\n=== BLOCK STATES AFTER LEG 4 ===")
+        for bid, block in sorted(network.blocks.items()):
+            if block.state.value != "free" or block.occupied_by:
+                print(
+                    f"  {bid}: state={block.state.value}, "
+                    f"occupied_by={block.occupied_by}"
+                )
+
+        # Assert - train should reach BLOCK_MAIN_WEST without EB
+        assert not eb_events, f"EB triggered during Leg 4: {eb_events[0]}"
+        assert final_block == block_ids["main_west"], (
+            f"Train should be in main_west ({block_ids['main_west']}), "
+            f"got {final_block} at tile {final_tile}"
+        )
+
+        # Transition to standby after Leg 4 diagnostic loop
+        self._transition_to_standby(
+            train, simulation, controller, label="After Leg 4 diagnostics"
+        )
+
+        # === Second round: verify block cleanup allows full reuse ===
+        # Run all 4 legs again using the clean pattern (no diagnostic loops)
+        second_round_legs = [
+            ("main_west", "east_terminal", "Leg 1"),
+            ("east_terminal", "east_branch_station", "Leg 2"),
+            ("east_branch_station", "central_station", "Leg 3"),
+            ("central_station", "main_west", "Leg 4"),
+        ]
+
+        for start_key, end_key, label in second_round_legs:
+            self._assign_path_and_go(
+                network,
+                train,
+                dispatcher,
+                simulation,
+                controller,
+                start_block_id=block_ids[start_key],
+                end_block_id=block_ids[end_key],
+            )
+            self._run_until_stopped(
+                train, simulation, controller, label=f"Round 2 {label}"
+            )
+            round2_block = self._get_train_block(network, train)
+            assert round2_block == block_ids[end_key], (
+                f"Round 2 {label}: expected {block_ids[end_key]}, got {round2_block}"
+            )
+            self._transition_to_standby(
+                train, simulation, controller, label=f"After Round 2 {label}"
+            )

@@ -53,6 +53,7 @@ from enums import (
     CommandResult,
     Direction,
     HandlePosition,
+    LeadingEnd,
     SignalState,
     TrainState,
 )
@@ -683,8 +684,16 @@ class TrainController:
         clearance = base_clearance
         in_dest_block = False
 
-        # Start from next tile after head
-        for path_entry in train.current_path[head_index + 1 :]:
+        # Determine scan direction so we iterate toward the train's
+        # actual travel direction, not always forward in the array.
+        scan_step = self._get_path_scan_step(train, head_index)
+        if scan_step == -1:
+            ahead_entries = list(reversed(train.current_path[:head_index]))
+        else:
+            ahead_entries = list(train.current_path[head_index + 1 :])
+
+        # Start from next tile after head (in travel direction)
+        for entry_idx, path_entry in enumerate(ahead_entries):
             tile_x, tile_y = path_entry[0], path_entry[1]
             tile_pos = (tile_x, tile_y)
 
@@ -710,12 +719,11 @@ class TrainController:
 
             # If destination has a station, stop at end of station tiles
             if station_positions and tile_pos in station_positions:
-                # Check if this is the last station tile in the path
-                remaining_path = train.current_path[
-                    train.current_path.index(path_entry) + 1 :
-                ]
+                # Check if this is the last station tile in the remaining
+                # ahead entries (direction-aware).
+                remaining_ahead = ahead_entries[entry_idx + 1 :]
                 has_more_station_tiles = any(
-                    (p[0], p[1]) in station_positions for p in remaining_path
+                    (p[0], p[1]) in station_positions for p in remaining_ahead
                 )
                 if not has_more_station_tiles:
                     # This is the last station tile - stopping point reached
@@ -1173,17 +1181,48 @@ class TrainController:
             if prev_direction == facing_direction:
                 return -1
 
-        if self.active_cab == "B":
-            if head_path_index > 0:
-                return -1
-            if head_path_index < path_length - 1:
+        # facing_direction didn't match either neighbor (common on diagonal /
+        # curved tracks after a cab switch).  Fall back to destination-aware
+        # logic: find which end of the path contains the destination block.
+        dest_block_id = self.ato_destination_block_id or getattr(
+            train, "ato_destination_block_id", None
+        )
+        if dest_block_id and self.network:
+            # Find the first path tile belonging to the destination block,
+            # scanning from both ends toward the head.
+            dest_forward_idx: Optional[int] = None
+            dest_backward_idx: Optional[int] = None
+            for i in range(head_path_index + 1, path_length):
+                pt = train.current_path[i]
+                tk = self.network.get_track(pt[0], pt[1])
+                if tk and tk.block_section_id == dest_block_id:
+                    dest_forward_idx = i
+                    break
+            for i in range(head_path_index - 1, -1, -1):
+                pt = train.current_path[i]
+                tk = self.network.get_track(pt[0], pt[1])
+                if tk and tk.block_section_id == dest_block_id:
+                    dest_backward_idx = i
+                    break
+            if dest_forward_idx is not None and dest_backward_idx is None:
                 return 1
+            if dest_backward_idx is not None and dest_forward_idx is None:
+                return -1
+            # Both found — prefer the one further away (more of the path left)
+            if dest_forward_idx is not None and dest_backward_idx is not None:
+                if (
+                    dest_forward_idx - head_path_index
+                    >= head_path_index - dest_backward_idx
+                ):
+                    return 1
+                return -1
 
-        # Cab A follows path order and should not implicitly reverse at terminal tiles.
-        if self.active_cab == "A":
+        # No destination available — use path_index progression heuristic:
+        # if the head is in the first half of the path, it's likely moving
+        # forward (+1); in the second half, backward (-1).
+        if head_path_index <= path_length // 2:
             return 1
-
-        return 1
+        return -1
 
     def _build_empty_monitor_lookahead(
         self,
@@ -1240,7 +1279,19 @@ class TrainController:
             head_tile_length = self.network._get_tile_length_cm(*head_tile)
             remaining = max(0.0, head_tile_length - train.position.head_distance_cm)
 
-            for x, y, _ in train.current_path[head_index + 1 :]:
+            # Determine scan direction: when the train travels in the
+            # reverse direction relative to the path array (scan_step=-1),
+            # tiles "ahead" are at *lower* indices.  Scanning forward
+            # (head_index+1:) in that case would count tiles *behind* the
+            # train, producing a wrong remaining distance.
+            scan_step = self._get_path_scan_step(train, head_index)
+            if scan_step == -1:
+                # Scan backward in path array (tiles ahead of the train)
+                ahead_tiles = reversed(train.current_path[:head_index])
+            else:
+                ahead_tiles = train.current_path[head_index + 1 :]
+
+            for x, y, *_ in ahead_tiles:
                 track = self.network.get_track(x, y)
                 if not track or track.block_section_id != current_block_id:
                     break
@@ -1295,22 +1346,63 @@ class TrainController:
         """
         Get list of block IDs ahead of the train.
 
-        Uses the train's reserved blocks to determine which blocks are ahead.
+        Uses the train's current_path when available to determine which
+        blocks lie ahead in the actual travel direction. This avoids
+        mismatches when the path index is not aligned with the reserved
+        block order (e.g., return paths starting mid-block).
+
+        When no current_path is available, falls back to reserved_blocks.
         """
         train = self._get_train()
         if not train:
             return []
 
-        blocks = []
+        blocks: List[str] = []
+
+        current_block_id = self._get_current_block_id()
+
+        if train.current_path:
+            head_tile = self._get_head_tile()
+            if head_tile:
+                head_index = self._get_head_path_index(train, head_tile)
+                if head_index >= 0:
+                    scan_step = self._get_path_scan_step(train, head_index)
+                    loop_start = head_index + scan_step
+                    loop_end = len(train.current_path) if scan_step == 1 else -1
+
+                    for i in range(loop_start, loop_end, scan_step):
+                        path_entry = train.current_path[i]
+                        track = self.network.get_track(path_entry[0], path_entry[1])
+                        block_id = track.block_section_id if track else None
+                        if not block_id or block_id == current_block_id:
+                            continue
+                        if block_id not in blocks:
+                            blocks.append(block_id)
+
+                    if blocks:
+                        return blocks
 
         if train.reserved_blocks:
-            current_block_id = self._get_current_block_id()
             if current_block_id:
                 try:
                     idx = train.reserved_blocks.index(current_block_id)
-                    blocks = train.reserved_blocks[idx + 1 :]
+
+                    # Determine travel direction relative to path array
+                    scan_step = 1  # default: forward
+                    head_tile = self._get_head_tile()
+                    if head_tile and train.current_path:
+                        head_index = self._get_head_path_index(train, head_tile)
+                        if head_index >= 0:
+                            scan_step = self._get_path_scan_step(train, head_index)
+
+                    if scan_step == -1:
+                        # Traveling backward through path array -- blocks
+                        # ahead are at *lower* indices in reserved_blocks.
+                        blocks = list(reversed(train.reserved_blocks[:idx]))
+                    else:
+                        blocks = train.reserved_blocks[idx + 1 :]
                 except ValueError:
-                    blocks = train.reserved_blocks
+                    blocks = list(train.reserved_blocks)
 
         return blocks
 
@@ -1354,10 +1446,21 @@ class TrainController:
 
     def _is_signal_red_for_block(self, block_id: str) -> bool:
         """
-        Check if there's a red signal protecting this block.
+        Check if there's a red signal protecting this block for the train's
+        direction of travel.
+
+        Only considers signals whose detection_direction matches the train's
+        facing direction. A signal with detection_direction='E' monitors
+        eastbound traffic and should not block a westbound train.
         """
         if not self.network:
             return False
+
+        # Get the train's travel direction as an edge string ("N"/"E"/"S"/"W")
+        train = self._get_train()
+        travel_edge = None
+        if train and train.facing_direction:
+            travel_edge = self._direction_to_edge(train.facing_direction)
 
         for signal_id, signal in self.network.signals.items():
             if (
@@ -1365,16 +1468,31 @@ class TrainController:
                 and signal.monitored_block_id == block_id
             ):
                 if signal.state == SignalState.RED:
+                    # If we know the train's direction, only consider signals
+                    # that monitor traffic in that direction
+                    if travel_edge and hasattr(signal, "detection_direction"):
+                        if signal.detection_direction != travel_edge:
+                            continue
                     return True
 
         return False
 
     def _is_approaching_yellow_signal(self) -> bool:
         """
-        Check if train is approaching a yellow signal.
+        Check if train is approaching a yellow signal in its direction of travel.
+
+        Only considers signals whose detection_direction matches the train's
+        facing direction, preventing opposite-direction yellow signals from
+        triggering unnecessary speed reductions.
         """
         if not self.network:
             return False
+
+        # Get the train's travel direction as an edge string ("N"/"E"/"S"/"W")
+        train = self._get_train()
+        travel_edge = None
+        if train and train.facing_direction:
+            travel_edge = self._direction_to_edge(train.facing_direction)
 
         blocks_checked = 0
         blocks_ahead = self._get_blocks_ahead()
@@ -1388,6 +1506,10 @@ class TrainController:
                     hasattr(signal, "monitored_block_id")
                     and signal.monitored_block_id == block_id
                 ):
+                    # Only consider signals matching the train's travel direction
+                    if travel_edge and hasattr(signal, "detection_direction"):
+                        if signal.detection_direction != travel_edge:
+                            continue
                     if signal.state in (SignalState.YELLOW, SignalState.DOUBLE_YELLOW):
                         return True
 
@@ -2852,20 +2974,11 @@ class TrainController:
                         and train.position.end_b_tile is not None
                         and train.position.end_a_tile != train.position.end_b_tile
                     )
-                    if is_multi_tile:
-                        # Multi-tile: computed property derives direction from
-                        # leading_end + tile geometry — already correct after flip
-                        computed = train.position.facing_direction
-                        if computed is not None:
-                            train.facing_direction = computed
-                            train.position._facing_direction_legacy = computed
-                    else:
-                        # Single-tile: computed property falls back to legacy field,
-                        # which still holds the OLD direction. Flip it explicitly.
-                        if train.facing_direction is not None:
-                            new_direction = train.facing_direction.opposite()
-                            train.facing_direction = new_direction
-                            train.position._facing_direction_legacy = new_direction
+                    # For multi-tile trains, facing_direction is automatically recalculated
+                    # from the already-updated leading_end. No manual sync needed.
+                    # For single-tile trains, the direction is calculated from entry_edge
+                    # and distance_cm, which are being flipped below.
+                    # Therefore, no direction sync is needed at all - it's automatic.
 
                 # Flip entry edges and distances for BOTH ends
                 if train.position and self.network:
@@ -2913,10 +3026,7 @@ class TrainController:
                             if (x, y) == new_head_tile:
                                 train.path_index = i
                                 break
-            else:
-                # Not switching cabs (first cab selection or same cab) - just sync
-                if train.position and train.position.facing_direction is not None:
-                    train.facing_direction = train.position.facing_direction
+            # No need to sync direction - it's calculated automatically from position
 
         return CommandResult(True, f"Cab set to {cab}")
 
@@ -3102,7 +3212,9 @@ class TrainController:
         if train:
             train.state = TrainState.IDLE
             train.active_cab = None
-            train.facing_direction = None
+            # Clear leading_end to None (no direction)
+            if train.position:
+                train.position.leading_end = None
             train.wait_reason = None
             train.assigned_route_id = None
 
@@ -3137,9 +3249,14 @@ class TrainController:
                 if self.ato_info and self.ato_info.required_cab:
                     self.active_cab = self.ato_info.required_cab
                     if train:
-                        train.active_cab = self.active_cab
+                        train.active_cab = self.ato_info.required_cab
                         if train.position:
-                            train.position.leading_end = self.active_cab.lower()
+                            # Convert cab string to LeadingEnd enum
+                            train.position.leading_end = (
+                                LeadingEnd.A
+                                if self.ato_info.required_cab == "A"
+                                else LeadingEnd.B
+                            )
 
             result = self.ato_go()
             return result.success
@@ -3300,11 +3417,11 @@ class TrainController:
         if self.state != TrainState.IDLE:
             return False
 
-        train.facing_direction = direction
+        # Set leading end to A (Cab A is front)
+        if train.position:
+            train.position.leading_end = LeadingEnd.A
         self.active_cab = "A"  # Setting direction implies Cab A is leading
         train.active_cab = "A"
-        if train.position:
-            train.position.leading_end = "a"
 
         self.state = TrainState.STANDBY
         train.state = TrainState.STANDBY
@@ -3330,7 +3447,9 @@ class TrainController:
         if self.state not in (TrainState.STANDBY, TrainState.MANUAL):
             return False
 
-        train.facing_direction = None
+        # Clear leading_end (no direction)
+        if train.position:
+            train.position.leading_end = None
         train.travel_direction = "forward"
         train.manual_target_speed = 0.0
         train.target_speed = 0.0
@@ -3696,6 +3815,39 @@ class TrainController:
             )
 
         head_path_index = self._get_head_path_index(train, head_tile)
+        if head_path_index < 0 and train.current_path:
+            # Head tile is not in the path.  This commonly happens right after
+            # a return-path assignment + cab switch: the cab switch moves the
+            # head to the opposite end of the train which may be one tile past
+            # the path start.  If the head is in the same block as path[0] or
+            # path[-1], anchor the scan at that path endpoint so the full
+            # path-based lookahead is used instead of the fallback.
+            head_track_obj = self.network.get_track(head_tile[0], head_tile[1])
+            head_block = head_track_obj.block_section_id if head_track_obj else None
+            if head_block:
+                # Check first path tile
+                first_entry = train.current_path[0]
+                first_track = self.network.get_track(first_entry[0], first_entry[1])
+                first_block = first_track.block_section_id if first_track else None
+                # Check last path tile
+                last_entry = train.current_path[-1]
+                last_track = self.network.get_track(last_entry[0], last_entry[1])
+                last_block = last_track.block_section_id if last_track else None
+
+                if head_block == first_block:
+                    head_path_index = 0
+                    # Account for extra distance: head is behind path[0]
+                    extra_tiles_cm = 0.0
+                    # Scan from head to path[0] through the block
+                    # (simplified: just add the head tile's length)
+                    head_tile_length = self.network._get_tile_length_cm(
+                        head_tile[0], head_tile[1]
+                    )
+                    extra_tiles_cm = head_tile_length - head_distance_cm
+                    head_distance_cm = -extra_tiles_cm  # Negative = before path start
+                elif head_block == last_block:
+                    head_path_index = len(train.current_path) - 1
+
         if head_path_index < 0 or not train.current_path:
             # No path available - build lookahead from occupied blocks
             # This handles: initial placement, path canceled, entering last tile
@@ -3744,6 +3896,22 @@ class TrainController:
         seen_switches: set[Tuple[int, int]] = set()
         seen_stations: set[str] = set()
         current_entry_edge: Optional[str] = None
+        neighbor_index = head_path_index - path_scan_step
+        if 0 <= neighbor_index < len(train.current_path):
+            neighbor_entry = train.current_path[neighbor_index]
+            neighbor_tile = (neighbor_entry[0], neighbor_entry[1])
+            direction_into_head = self._direction_between_tiles(
+                neighbor_tile, head_tile
+            )
+            exit_edge = (
+                self._direction_to_edge(direction_into_head)
+                if direction_into_head
+                else None
+            )
+            if exit_edge:
+                current_entry_edge = OPPOSITE_EDGES.get(exit_edge)
+        if current_entry_edge is None and train.position:
+            current_entry_edge = train.position.head_entry_edge
 
         loop_end = len(train.current_path) if path_scan_step == 1 else -1
         for i in range(head_path_index, loop_end, path_scan_step):
@@ -3903,6 +4071,20 @@ class TrainController:
             next_index = i + path_scan_step
             if 0 <= next_index < len(train.current_path):
                 next_entry = train.current_path[next_index]
+                direction = self._direction_between_tiles(
+                    (x, y), (next_entry[0], next_entry[1])
+                )
+                exit_edge = self._direction_to_edge(direction) if direction else None
+                if exit_edge and track:
+                    if current_entry_edge is None or exit_edge not in track.get_exits(
+                        current_entry_edge, use_switch_state=True
+                    ):
+                        inferred_entry = track.get_entry_for_exit(
+                            exit_edge, use_switch_state=True
+                        )
+                        if inferred_entry:
+                            current_entry_edge = inferred_entry
+
                 can_traverse, next_entry_edge = self._can_traverse_path_step(
                     train,
                     (x, y),

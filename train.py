@@ -15,7 +15,7 @@ Train Position System:
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Literal, Dict, Any
 from datetime import datetime
-from enums import TrainState, Direction, OPPOSITE_DIRECTIONS
+from enums import TrainState, Direction, OPPOSITE_DIRECTIONS, LeadingEnd
 
 
 @dataclass
@@ -50,12 +50,8 @@ class TrainPosition:
     end_b_entry_edge: str
 
     # Which end is leading (front of travel direction)
-    # "a" or "b" when cab is active, None when no cab selected
-    leading_end: Optional[str] = "a"
-
-    # Legacy field - kept for backward compatibility but computed_facing_direction is preferred
-    # This field is no longer authoritative - facing_direction is computed from occupied_tiles
-    _facing_direction_legacy: Optional[Direction] = field(default=None, repr=False)
+    # LeadingEnd.A or LeadingEnd.B when cab is active, None when no cab selected
+    leading_end: Optional[LeadingEnd] = LeadingEnd.A
 
     # Tiles occupied (ordered from end_a to end_b)
     occupied_tiles: List[Tuple[int, int]] = field(default_factory=list)
@@ -66,14 +62,14 @@ class TrainPosition:
     @property
     def head_tile(self) -> Tuple[int, int]:
         """Get tile of leading end (head)."""
-        return self.end_a_tile if self.leading_end == "a" else self.end_b_tile
+        return self.end_a_tile if self.leading_end == LeadingEnd.A else self.end_b_tile
 
     @property
     def head_distance_cm(self) -> float:
         """Get distance on tile for leading end (head)."""
         return (
             self.end_a_distance_cm
-            if self.leading_end == "a"
+            if self.leading_end == LeadingEnd.A
             else self.end_b_distance_cm
         )
 
@@ -81,20 +77,22 @@ class TrainPosition:
     def head_entry_edge(self) -> str:
         """Get entry edge for leading end (head)."""
         return (
-            self.end_a_entry_edge if self.leading_end == "a" else self.end_b_entry_edge
+            self.end_a_entry_edge
+            if self.leading_end == LeadingEnd.A
+            else self.end_b_entry_edge
         )
 
     @property
     def tail_tile(self) -> Tuple[int, int]:
         """Get tile of trailing end (tail)."""
-        return self.end_b_tile if self.leading_end == "a" else self.end_a_tile
+        return self.end_b_tile if self.leading_end == LeadingEnd.A else self.end_a_tile
 
     @property
     def tail_distance_cm(self) -> float:
         """Get distance on tile for trailing end (tail)."""
         return (
             self.end_b_distance_cm
-            if self.leading_end == "a"
+            if self.leading_end == LeadingEnd.A
             else self.end_a_distance_cm
         )
 
@@ -102,60 +100,59 @@ class TrainPosition:
     def tail_entry_edge(self) -> str:
         """Get entry edge for trailing end (tail)."""
         return (
-            self.end_b_entry_edge if self.leading_end == "a" else self.end_a_entry_edge
+            self.end_b_entry_edge
+            if self.leading_end == LeadingEnd.A
+            else self.end_a_entry_edge
         )
 
     @property
     def facing_direction(self) -> Optional[Direction]:
         """
-        Compute train's facing direction from the physical structure.
+        Calculate train's facing direction from physical position.
 
-        The train is physically connected from end_a to end_b.
-        For the leading end (head), the "forward" direction is AWAY from the other end.
+        For multi-tile trains: Uses vector from adjacent tile to head tile
+        For single-tile trains: Uses entry_edge and distance_cm to determine direction
 
-        Logic:
-        - If leading_end == "a": forward = direction FROM end_b TOWARD end_a (away from train body)
-        - If leading_end == "b": forward = direction FROM end_a TOWARD end_b (away from train body)
-
-        For adjacent tiles on the same position (single-tile train), fall back to legacy value.
+        Returns:
+            Direction the train is facing, or None if position is invalid
         """
-        # Use end_a_tile and end_b_tile directly (more reliable than occupied_tiles order)
+        if not self.leading_end:
+            return None
+
+        # Multi-tile train: calculate from tile positions
         if self.end_a_tile != self.end_b_tile:
-            if self.leading_end == "a":
-                # end_a is head - direction is FROM end_b TOWARD end_a
-                # We need the adjacent tile to end_a (not necessarily end_b if train spans multiple tiles)
-                # For multi-tile trains, find the tile adjacent to head in occupied_tiles
+            # Determine head tile based on leading_end
+            if self.leading_end == LeadingEnd.A:
+                head_tile = self.end_a_tile
+                # Find adjacent tile toward end_b
                 if len(self.occupied_tiles) >= 2:
-                    # Find index of end_a_tile in occupied_tiles
                     try:
                         head_idx = self.occupied_tiles.index(self.end_a_tile)
-                        # Adjacent tile is the next one in the chain toward end_b
-                        if head_idx == 0:
-                            adjacent_tile = self.occupied_tiles[1]
-                        else:
-                            adjacent_tile = self.occupied_tiles[head_idx - 1]
-                    except ValueError:
-                        # end_a_tile not in occupied_tiles, use end_b as fallback
+                        adjacent_tile = (
+                            self.occupied_tiles[1]
+                            if head_idx == 0
+                            else self.occupied_tiles[head_idx - 1]
+                        )
+                    except (ValueError, IndexError):
                         adjacent_tile = self.end_b_tile
                 else:
                     adjacent_tile = self.end_b_tile
-                head_tile = self.end_a_tile
             else:
-                # end_b is head - direction is FROM end_a TOWARD end_b
+                head_tile = self.end_b_tile
                 if len(self.occupied_tiles) >= 2:
                     try:
                         head_idx = self.occupied_tiles.index(self.end_b_tile)
-                        if head_idx == len(self.occupied_tiles) - 1:
-                            adjacent_tile = self.occupied_tiles[-2]
-                        else:
-                            adjacent_tile = self.occupied_tiles[head_idx + 1]
-                    except ValueError:
+                        adjacent_tile = (
+                            self.occupied_tiles[-2]
+                            if head_idx == len(self.occupied_tiles) - 1
+                            else self.occupied_tiles[head_idx + 1]
+                        )
+                    except (ValueError, IndexError):
                         adjacent_tile = self.end_a_tile
                 else:
                     adjacent_tile = self.end_a_tile
-                head_tile = self.end_b_tile
 
-            # Calculate vector from adjacent to head (direction train is facing)
+            # Calculate direction vector from adjacent to head
             dx = head_tile[0] - adjacent_tile[0]
             dy = head_tile[1] - adjacent_tile[1]
 
@@ -164,41 +161,50 @@ class TrainPosition:
                 if direction.value == (dx, dy):
                     return direction
 
-        # Single-tile train or no difference: fall back to legacy or derive from entry edge
-        if self._facing_direction_legacy:
-            return self._facing_direction_legacy
+            return None
 
-        # Last resort: derive from head's entry edge (opposite of entry = forward)
-        head_edge = self.head_entry_edge
-        edge_to_direction = {
-            "N": Direction.SOUTH,  # Entered from N, so facing S (away from entry)
-            "S": Direction.NORTH,
-            "E": Direction.WEST,
-            "W": Direction.EAST,
+        # Single-tile train: calculate from entry edge and distance
+        head_entry = self.head_entry_edge
+        head_distance = self.head_distance_cm
+        tail_distance = self.tail_distance_cm
+
+        if not head_entry:
+            return None
+
+        # Determine exit edge from entry edge
+        # For straight track: opposite edge
+        exit_edge = self._get_opposite_edge(head_entry)
+
+        # If head is farther from entry than tail, facing toward exit
+        # If head is closer to entry than tail, facing toward entry (backing up)
+        # Equal distance means facing forward (toward exit)
+        if head_distance >= tail_distance:
+            # Facing toward exit
+            return self._edge_to_direction(exit_edge)
+        else:
+            # Facing toward entry (reversed)
+            return self._edge_to_direction(head_entry)
+
+    def _get_opposite_edge(self, edge: str) -> str:
+        """Get opposite edge for straight track."""
+        mapping = {"N": "S", "S": "N", "E": "W", "W": "E"}
+        return mapping.get(edge, edge)
+
+    def _edge_to_direction(self, edge: str) -> Optional[Direction]:
+        """Convert edge string to Direction enum."""
+        mapping = {
+            "N": Direction.NORTH,
+            "E": Direction.EAST,
+            "S": Direction.SOUTH,
+            "W": Direction.WEST,
         }
-        return edge_to_direction.get(head_edge)
-
-    @facing_direction.setter
-    def facing_direction(self, value: Optional[Direction]) -> None:
-        """
-        Setter for backward compatibility. Stores value in legacy field.
-
-        Note: The getter now computes facing_direction from occupied_tiles,
-        so this setter mainly exists to not break existing code that sets it.
-        The stored value is used as fallback for single-tile trains.
-        """
-        self._facing_direction_legacy = value
+        return mapping.get(edge)
 
     def reverse(self) -> None:
-        """Swap leading end (train reverses direction).
-
-        Note: facing_direction is now computed from occupied_tiles and leading_end,
-        so changing leading_end automatically changes facing_direction.
-        """
-        self.leading_end = "b" if self.leading_end == "a" else "a"
-        # Also flip legacy value for single-tile train fallback
-        if self._facing_direction_legacy:
-            self._facing_direction_legacy = self._facing_direction_legacy.opposite()
+        """Swap leading end (train reverses direction)."""
+        self.leading_end = (
+            LeadingEnd.B if self.leading_end == LeadingEnd.A else LeadingEnd.A
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -213,7 +219,7 @@ class TrainPosition:
                 "distance_cm": self.end_b_distance_cm,
                 "entry_edge": self.end_b_entry_edge,
             },
-            "leading_end": self.leading_end,
+            "leading_end": self.leading_end.value if self.leading_end else None,
             "facing_direction": self.facing_direction.name
             if self.facing_direction
             else None,
@@ -231,9 +237,14 @@ class TrainPosition:
             end_a = data.get("end_a", {})
             end_b = data.get("end_b", {})
 
-            facing_dir = None
-            if data.get("facing_direction"):
-                facing_dir = Direction[data["facing_direction"]]
+            # Parse leading_end
+            leading_end_data = data.get("leading_end", "a")
+            if leading_end_data == "a":
+                leading_end = LeadingEnd.A
+            elif leading_end_data == "b":
+                leading_end = LeadingEnd.B
+            else:
+                leading_end = LeadingEnd.A  # Default
 
             return cls(
                 end_a_tile=tuple(end_a.get("tile", [0, 0])),
@@ -242,8 +253,7 @@ class TrainPosition:
                 end_b_tile=tuple(end_b.get("tile", [0, 0])),
                 end_b_distance_cm=float(end_b.get("distance_cm", 0.0)),
                 end_b_entry_edge=end_b.get("entry_edge", "W"),
-                leading_end=data.get("leading_end", "a"),
-                _facing_direction_legacy=facing_dir,
+                leading_end=leading_end,
                 occupied_tiles=[tuple(t) for t in data.get("occupied_tiles", [])],
                 occupied_blocks=data.get("occupied_blocks", []),
             )
@@ -433,7 +443,7 @@ class Train:
     end_b_entry_edge: Optional[str] = None
 
     # Which end is currently leading (flip on reverse)
-    leading_end: str = "a"  # 'a' or 'b'
+    leading_end: LeadingEnd = LeadingEnd.A  # LeadingEnd.A or LeadingEnd.B
 
     # ========================================================================
     # NEW PROPERTIES (Phase 1 - Train System)
@@ -444,8 +454,7 @@ class Train:
     car_number: str = ""  # Unique entity car number
     min_radius_cm: float = 30.0  # Minimum curve radius train can navigate
 
-    # Direction control
-    facing_direction: Optional[Direction] = None  # Which cab is active
+    # Direction control (facing_direction is now a calculated property)
     active_cab: Optional[Literal["A", "B"]] = None  # Active cab: A, B, or None (off)
     travel_direction: Literal["forward", "reverse"] = "forward"  # For MANUAL mode
 
@@ -504,25 +513,29 @@ class Train:
     @property
     def head_index(self) -> int:
         """Index of head tile in path_tiles."""
-        return self.end_a_index if self.leading_end == "a" else self.end_b_index
+        return (
+            self.end_a_index if self.leading_end == LeadingEnd.A else self.end_b_index
+        )
 
     @property
     def tail_index(self) -> int:
         """Index of tail tile in path_tiles."""
-        return self.end_b_index if self.leading_end == "a" else self.end_a_index
+        return (
+            self.end_b_index if self.leading_end == LeadingEnd.A else self.end_a_index
+        )
 
     @property
     def head_distance_cm(self) -> float:
         """Distance from entry edge on head tile."""
         return (
             self.end_a_distance_cm
-            if self.leading_end == "a"
+            if self.leading_end == LeadingEnd.A
             else self.end_b_distance_cm
         )
 
     @head_distance_cm.setter
     def head_distance_cm(self, value: float) -> None:
-        if self.leading_end == "a":
+        if self.leading_end == LeadingEnd.A:
             self.end_a_distance_cm = value
         else:
             self.end_b_distance_cm = value
@@ -532,13 +545,13 @@ class Train:
         """Distance from entry edge on tail tile."""
         return (
             self.end_b_distance_cm
-            if self.leading_end == "a"
+            if self.leading_end == LeadingEnd.A
             else self.end_a_distance_cm
         )
 
     @tail_distance_cm.setter
     def tail_distance_cm(self, value: float) -> None:
-        if self.leading_end == "a":
+        if self.leading_end == LeadingEnd.A:
             self.end_b_distance_cm = value
         else:
             self.end_a_distance_cm = value
@@ -547,12 +560,14 @@ class Train:
     def head_entry_edge(self) -> Optional[str]:
         """Entry edge for head tile."""
         return (
-            self.end_a_entry_edge if self.leading_end == "a" else self.end_b_entry_edge
+            self.end_a_entry_edge
+            if self.leading_end == LeadingEnd.A
+            else self.end_b_entry_edge
         )
 
     @head_entry_edge.setter
     def head_entry_edge(self, value: Optional[str]) -> None:
-        if self.leading_end == "a":
+        if self.leading_end == LeadingEnd.A:
             self.end_a_entry_edge = value
         else:
             self.end_b_entry_edge = value
@@ -561,15 +576,33 @@ class Train:
     def tail_entry_edge(self) -> Optional[str]:
         """Entry edge for tail tile."""
         return (
-            self.end_b_entry_edge if self.leading_end == "a" else self.end_a_entry_edge
+            self.end_b_entry_edge
+            if self.leading_end == LeadingEnd.A
+            else self.end_a_entry_edge
         )
 
     @tail_entry_edge.setter
     def tail_entry_edge(self, value: Optional[str]) -> None:
-        if self.leading_end == "a":
+        if self.leading_end == LeadingEnd.A:
             self.end_b_entry_edge = value
         else:
             self.end_a_entry_edge = value
+
+    @property
+    def facing_direction(self) -> Optional[Direction]:
+        """
+        Get train's facing direction (calculated from position).
+
+        This is READ-ONLY - calculated from position.leading_end and physical
+        train geometry. To change direction, use set_cab(), turn_around(), or
+        update position.leading_end directly.
+
+        Returns:
+            Direction the train is facing, or None if no position
+        """
+        if not self.position:
+            return None
+        return self.position.facing_direction
 
     @property
     def occupied_tiles(self) -> List[Tuple[int, int]]:
@@ -582,7 +615,9 @@ class Train:
 
     def reverse_direction(self) -> None:
         """Flip which end is the head (no position recalculation needed)."""
-        self.leading_end = "b" if self.leading_end == "a" else "a"
+        self.leading_end = (
+            LeadingEnd.B if self.leading_end == LeadingEnd.A else LeadingEnd.A
+        )
 
     # === PATH QUEUE METHODS ===
 
@@ -679,11 +714,13 @@ class Train:
 
     def has_path(self) -> bool:
         """Check if train has a planned path"""
-        return self.current_path is not None and len(self.current_path) > 0
+        if self.current_path is None:
+            return False
+        return len(self.current_path) > 0
 
     def get_remaining_path_length(self) -> int:
         """Get number of remaining steps in current path"""
-        if not self.has_path():
+        if not self.has_path() or self.current_path is None:
             return 0
         return len(self.current_path) - self.path_index
 
@@ -771,26 +808,24 @@ class Train:
 
     def turn_around(self) -> bool:
         """
-        Flip facing direction (cab switch). Only allowed when stopped.
+        Flip which end is leading (reverse train direction).
 
-        This is like the driver switching to the other cab in a real train.
-        The train now faces the opposite direction.
-
-        Note: travel_direction stays 'forward' - only used in MANUAL mode
-        for explicit reverse driving.
+        Only allowed when stopped. Simply flips leading_end: LeadingEnd.A ↔ LeadingEnd.B
+        The facing_direction is automatically recalculated from the new leading_end.
 
         Returns:
-            True if successful, False if train is moving or no facing direction
+            True if successful, False if train is moving or no position
         """
         if self.current_speed > self.STOPPED_SPEED_THRESHOLD_KMH:
             return False
 
-        if self.facing_direction is None:
+        if not self.position or not self.position.leading_end:
             return False
 
-        # Use the OPPOSITE_DIRECTIONS mapping from enums
-        # facing_direction is a Direction enum, need to get opposite
-        self.facing_direction = self.facing_direction.opposite()
+        # Simply flip leading_end
+        self.position.leading_end = (
+            LeadingEnd.B if self.position.leading_end == LeadingEnd.A else LeadingEnd.A
+        )
 
         return True
 
@@ -847,6 +882,7 @@ class Train:
         Set train to standby with specified facing direction.
 
         Transitions from IDLE to STANDBY.
+        Note: This method is deprecated. Use set_direction_and_standby() instead.
 
         Args:
             direction: Facing direction for the train
@@ -854,18 +890,16 @@ class Train:
         Returns:
             True if successful, False if not in IDLE state
         """
-        if self.state != TrainState.IDLE:
-            return False
-        self.facing_direction = direction
-        self.state = TrainState.STANDBY
-        return True
+        # This method is kept for backward compatibility
+        # but should not be used - use set_direction_and_standby instead
+        return self.set_direction_and_standby(direction)
 
     def clear_direction(self) -> bool:
         """
         Clear facing direction and return to IDLE state (STANDBY -> IDLE).
 
         Allowed only when stopped and in STANDBY (or MANUAL when stopped).
-        Resets facing_direction to None, travel_direction to 'forward',
+        Clears leading_end to None, travel_direction to 'forward',
         and speed targets to 0.
 
         Returns:
@@ -877,7 +911,10 @@ class Train:
         if self.state not in (TrainState.STANDBY, TrainState.MANUAL):
             return False
 
-        self.facing_direction = None
+        # Clear leading_end (no direction)
+        if self.position:
+            self.position.leading_end = None
+
         self.travel_direction = "forward"
         self.manual_target_speed = 0.0
         self.target_speed = 0.0
@@ -1092,8 +1129,9 @@ class Train:
         """
         Set direction and transition to STANDBY (IDLE -> STANDBY).
 
-        Convenience method that combines setting direction and transitioning.
-        Also sets active_cab to "A" since this method implies Cab A is leading.
+        Sets direction by positioning the train so that leading_end=LeadingEnd.A faces
+        the specified direction. For single-tile trains, this requires the
+        position to already have correct entry_edge and distance_cm.
 
         Args:
             direction: Facing direction to set
@@ -1103,10 +1141,15 @@ class Train:
         """
         if self.state != TrainState.IDLE:
             return False
-        self.facing_direction = direction
-        self.active_cab = "A"  # Setting direction implies Cab A is leading
+
         if self.position:
-            self.position.leading_end = "a"
+            # Set leading end to A (Cab A is front)
+            self.position.leading_end = LeadingEnd.A
+            # Note: For this to work correctly, position must already have
+            # correct entry_edge and distances set up to make end_a face
+            # the specified direction
+
+        self.active_cab = "A"
         self.state = TrainState.STANDBY
         return True
 
@@ -1142,7 +1185,7 @@ class Train:
 
             # Update leading end based on cab selection
             if self.position:
-                new_leading_end = cab.lower()  # "A" -> "a", "B" -> "b"
+                new_leading_end = LeadingEnd.A if cab == "A" else LeadingEnd.B
 
                 # Switching cabs does NOT move the physical train.
                 # end_a stays at its physical location, end_b stays at its physical location.
@@ -1159,7 +1202,6 @@ class Train:
             if self.state != TrainState.STANDBY:
                 return False
             self.active_cab = None
-            self.facing_direction = None
             self.state = TrainState.IDLE
             # Clear leading_end when no cab selected - train has no "front"
             if self.position:
@@ -1292,7 +1334,7 @@ class Train:
             data["end_b_distance_cm"] = pos.end_b_distance_cm
             data["end_a_entry_edge"] = pos.end_a_entry_edge
             data["end_b_entry_edge"] = pos.end_b_entry_edge
-            data["leading_end"] = pos.leading_end
+            data["leading_end"] = pos.leading_end.value if pos.leading_end else None
 
             if network:
                 data["path_tile_info"] = [
@@ -1506,11 +1548,7 @@ class Train:
         train.min_radius_cm = float(data.get("min_radius_cm", 30.0))
 
         # Facing direction
-        if data.get("facing_direction"):
-            try:
-                train.facing_direction = Direction[data["facing_direction"]]
-            except KeyError:
-                pass
+        # facing_direction is now computed from position, so don't restore it
 
         # Travel direction
         travel_dir = data.get("travel_direction", "forward")

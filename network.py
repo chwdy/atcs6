@@ -17,6 +17,7 @@ from block_manager import BlockManager
 from enums import (
     TrackType,
     Direction,
+    LeadingEnd,
     SwitchPosition,
     BlockState,
 )
@@ -1917,13 +1918,12 @@ class RailwayNetwork:
             end_b_tile=tail_tile,
             end_b_distance_cm=tail_distance_cm,
             end_b_entry_edge=tail_entry_edge,
-            leading_end="a",  # end_a is head
-            _facing_direction_legacy=direction,  # Fallback for single-tile trains
+            leading_end=LeadingEnd.A,  # end_a is head
             occupied_tiles=occupied_tiles_end_a_to_b,
             occupied_blocks=occupied_blocks,
         )
 
-        train.facing_direction = direction
+        # facing_direction is now calculated from position geometry
 
         # Occupy all blocks the train covers
         if self.block_manager and occupied_blocks:
@@ -2184,9 +2184,9 @@ class RailwayNetwork:
         num_tiles = len(occupied_tiles)
 
         # occupied_tiles is ordered from end_a to end_b
-        # When leading_end="a": end_a=head, end_b=tail, so order is head-to-tail
-        # When leading_end="b": end_a=tail, end_b=head, so order is tail-to-head
-        is_head_first = pos.leading_end == "a"
+        # When leading_end==LeadingEnd.A: end_a=head, end_b=tail, so order is head-to-tail
+        # When leading_end==LeadingEnd.B: end_a=tail, end_b=head, so order is tail-to-head
+        is_head_first = pos.leading_end == LeadingEnd.A
 
         for i, tile in enumerate(occupied_tiles):
             tile_track = self.get_track(*tile)
@@ -2261,8 +2261,8 @@ class RailwayNetwork:
         if not train.position:
             return False
 
+        # Reverse just flips leading_end - facing_direction is recalculated automatically
         train.position.reverse()
-        train.facing_direction = train.position.facing_direction
         return True
 
     def remove_train(self, train_id: str) -> bool:

@@ -50,6 +50,7 @@ from enums import (
     POWER_MULTIPLIERS,
     BlockState,
     HandlePosition,
+    LeadingEnd,
     TrainState,
 )
 from model_scale import kmh_to_cm_per_sec
@@ -336,7 +337,7 @@ class TrainPhysics:
         position = train.position
 
         # Determine which end is head based on leading_end
-        if position.leading_end == "a":
+        if position.leading_end == LeadingEnd.A:
             # end_a is head
             self._advance_end(
                 train,
@@ -452,7 +453,7 @@ class TrainPhysics:
             return
 
         # Get head position
-        if position.leading_end == "a":
+        if position.leading_end == LeadingEnd.A:
             head_tile = position.end_a_tile
             head_entry = position.end_a_entry_edge
             head_distance = position.end_a_distance_cm
@@ -472,7 +473,7 @@ class TrainPhysics:
 
         # If train fits in current tile
         if remaining_length <= 0:
-            if position.leading_end == "a":
+            if position.leading_end == LeadingEnd.A:
                 position.end_b_tile = current_tile
                 position.end_b_entry_edge = current_entry
                 position.end_b_distance_cm = head_distance - train.length_cm
@@ -512,7 +513,7 @@ class TrainPhysics:
         # Tail is in this tile
         tail_distance = abs(remaining_length) if remaining_length < 0 else 0.0
 
-        if position.leading_end == "a":
+        if position.leading_end == LeadingEnd.A:
             position.end_b_tile = current_tile
             position.end_b_entry_edge = current_entry
             position.end_b_distance_cm = tail_distance
@@ -532,7 +533,7 @@ class TrainPhysics:
             return
 
         # Get head and tail tiles
-        if position.leading_end == "a":
+        if position.leading_end == LeadingEnd.A:
             head_tile = position.end_a_tile
             tail_tile = position.end_b_tile
             head_entry = position.end_a_entry_edge
@@ -571,7 +572,7 @@ class TrainPhysics:
             current_tile = next_tile
             current_entry = OPPOSITE_EDGES[exit_edge]
 
-        if position.leading_end == "a":
+        if position.leading_end == LeadingEnd.A:
             position.occupied_tiles = list(reversed(occupied))
         else:
             position.occupied_tiles = occupied

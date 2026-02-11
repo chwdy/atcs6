@@ -10,7 +10,7 @@ import pytest
 from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, TrainState, HandlePosition
+from enums import BlockState, Direction, LeadingEnd, TrainState, HandlePosition
 from train import Train, TrainCar, TrainPosition
 from tests.train_test_helpers import make_train_position
 from simulation import SimulationController
@@ -111,7 +111,7 @@ class TestTrainManualControlBugFixes:
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.state = TrainState.STANDBY
-        train.facing_direction = Direction.EAST
+        # Direction set via position (refactored): train.set_cab("A")  # was: Direction.EAST
         train.travel_direction = "reverse"
         train.manual_target_speed = 20.0
         train.target_speed = 15.0
@@ -132,7 +132,7 @@ class TestTrainManualControlBugFixes:
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_02", consist=[car], max_speed=60.0)
         train.state = TrainState.STANDBY
-        train.facing_direction = Direction.NORTH
+        # Direction set via position (refactored): train.set_cab("A")  # was: Direction.NORTH
         train.current_speed = 5.0
         network.add_train(train)
         controller = create_controller_for_train("TRAIN_02", network)
@@ -196,7 +196,6 @@ class TestTrainMonitorBlockOffsetBugFix:
         train = Train(train_id="TRAIN_01")
         train.position = make_train_position(
             head_tile=(1, 0),
-            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=20.0,
         )
         train.current_path = [
@@ -229,7 +228,6 @@ class TestTrainMonitorBlockOffsetBugFix:
         train = Train(train_id="TRAIN_02")
         train.position = make_train_position(
             head_tile=(1, 0),
-            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=20.0,
         )
         train.current_path = [
@@ -298,7 +296,6 @@ class TestTrainControllerMonitorLookahead:
         train = Train(train_id="TRAIN_LOOKAHEAD")
         train.position = make_train_position(
             head_tile=(1, 0),
-            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=20.0,
         )
         train.current_path = [
@@ -331,7 +328,6 @@ class TestTrainControllerMonitorLookahead:
         train = Train(train_id="TRAIN_LOOKAHEAD_RESET")
         train.position = make_train_position(
             head_tile=(1, 0),
-            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=20.0,
         )
         train.current_path = [
@@ -365,8 +361,7 @@ class TestTrainControllerMonitorLookahead:
             end_b_tile=(2, 0),
             end_b_distance_cm=10.0,
             end_b_entry_edge="E",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
         )
         train.current_path = [
             (0, 0, Direction.EAST),
@@ -387,7 +382,7 @@ class TestTrainControllerMonitorLookahead:
         payload_b = controller.get_monitor_lookahead()
         # After switching to Cab B, tiles don't swap - physical train doesn't move
         # end_a stays at (0, 0) and end_b stays at (2, 0)
-        # With Cab B active and leading_end="b", head is at end_b which is (2, 0)
+        # With Cab B active and leading_end=LeadingEnd.B, head is at end_b which is (2, 0)
         assert payload_b["head_tile"] == [2, 0]
 
     def test_no_cab_returns_no_lookahead(self, network):
@@ -406,7 +401,6 @@ class TestTrainControllerMonitorLookahead:
             end_b_distance_cm=10.0,
             end_b_entry_edge="E",
             leading_end=None,
-            _facing_direction_legacy=None,
         )
         train.current_path = [
             (0, 0, Direction.EAST),
@@ -445,8 +439,7 @@ class TestTrainControllerMonitorLookahead:
             end_b_tile=(2, 0),
             end_b_distance_cm=10.0,
             end_b_entry_edge="E",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
         )
         train.current_path = [
             (0, 0, Direction.EAST),
@@ -502,8 +495,7 @@ class TestTrainControllerMonitorLookahead:
             end_b_tile=(2, 0),
             end_b_distance_cm=10.0,
             end_b_entry_edge="E",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
         )
         train.current_path = [
             (0, 0, Direction.EAST),
@@ -587,8 +579,7 @@ class TestTrainControllerMonitorLookahead:
             end_b_tile=(2, 0),
             end_b_distance_cm=10.0,
             end_b_entry_edge="E",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
         )
         train.current_path = [
             (0, 0, Direction.EAST),
@@ -647,8 +638,7 @@ class TestTrainControllerMonitorLookahead:
             end_b_tile=(2, 0),
             end_b_distance_cm=10.0,
             end_b_entry_edge="E",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
             occupied_tiles=[(0, 0), (1, 0), (2, 0)],
         )
         train.current_path = [
@@ -717,8 +707,7 @@ class TestLookaheadTrackUsabilityBugFix:
             end_b_tile=(2, 0),
             end_b_distance_cm=10.0,
             end_b_entry_edge="E",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
         )
         train.current_path = [
             (0, 0, Direction.EAST),
@@ -830,14 +819,13 @@ class TestTrainPosition:
             end_b_tile=(0, 0),
             end_b_distance_cm=10.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
             occupied_tiles=[(0, 0), (1, 0)],
             occupied_blocks=["BLOCK_1"],
         )
         assert pos.end_a_tile == (1, 0)
         assert pos.end_b_tile == (0, 0)
-        assert pos.leading_end == "a"
+        assert pos.leading_end == LeadingEnd.A
 
     def test_train_position_head_tail_properties(self):
         pos = TrainPosition(
@@ -847,8 +835,7 @@ class TestTrainPosition:
             end_b_tile=(0, 0),
             end_b_distance_cm=10.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
         )
         assert pos.head_tile == (1, 0)
         assert pos.head_distance_cm == 50.0
@@ -863,11 +850,10 @@ class TestTrainPosition:
             end_b_tile=(0, 0),
             end_b_distance_cm=10.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
         )
         pos.reverse()
-        assert pos.leading_end == "b"
+        assert pos.leading_end == LeadingEnd.B
         assert pos.facing_direction == Direction.WEST
         assert pos.head_tile == (0, 0)
         assert pos.tail_tile == (1, 0)
@@ -880,8 +866,7 @@ class TestTrainPosition:
             end_b_tile=(0, 0),
             end_b_distance_cm=10.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
             occupied_tiles=[(0, 0), (1, 0)],
             occupied_blocks=["BLOCK_1"],
         )
@@ -979,11 +964,11 @@ class TestTrainReverse:
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
         network.place_train(train, 1, 0, Direction.EAST)
-        assert train.position.leading_end == "a"
+        assert train.position.leading_end == LeadingEnd.A
         assert train.position.facing_direction == Direction.EAST
         old_head = train.position.head_tile
         network.reverse_train(train)
-        assert train.position.leading_end == "b"
+        assert train.position.leading_end == LeadingEnd.B
         assert train.position.facing_direction == Direction.WEST
 
 
@@ -1026,7 +1011,7 @@ class TestCabSwitchEndPositionsBugFix:
         controller.set_cab("B")
 
         # Tiles should NOT change - physical train stays in place
-        assert train.position.leading_end == "b"
+        assert train.position.leading_end == LeadingEnd.B
         assert train.position.end_a_tile == original_end_a  # unchanged
         assert train.position.end_b_tile == original_end_b  # unchanged
 
@@ -1157,7 +1142,7 @@ class TestCabSwitchEntryEdgeFlipBugFix:
 
         controller.set_cab("B")
 
-        assert train.position.leading_end == "b"
+        assert train.position.leading_end == LeadingEnd.B
         # BOTH ends flip their entry edges
         assert train.position.end_a_entry_edge == expected_entry_a
         assert train.position.end_b_entry_edge == expected_entry_b
@@ -1179,7 +1164,7 @@ class TestCabSwitchEntryEdgeFlipBugFix:
 
         controller.set_cab("B")
 
-        assert train.position.leading_end == "b"
+        assert train.position.leading_end == LeadingEnd.B
         # BOTH ends flip their entry edges
         assert train.position.end_a_entry_edge == expected_entry_a
         assert train.position.end_b_entry_edge == expected_entry_b
@@ -1216,7 +1201,7 @@ class TestTrainPhysicsOccupiedTilesOrderBugFix:
         physics = TrainPhysics(train_id=train.train_id, network=network)
         physics._move_train(train, 1.0)
 
-        assert train.position.leading_end == "a"
+        assert train.position.leading_end == LeadingEnd.A
         assert train.position.occupied_tiles[0] == train.position.end_a_tile
         assert train.position.occupied_tiles[-1] == train.position.end_b_tile
 
@@ -1760,7 +1745,7 @@ class TestAtoAutoCabSelectionBugFix:
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_NO_CAB", consist=[car], max_speed=60.0)
         train.state = TrainState.STANDBY
-        train.facing_direction = Direction.EAST
+        # Direction set via position (refactored): train.set_cab("A")  # was: Direction.EAST
         train.assigned_path_id = "PATH_1"
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -1811,7 +1796,7 @@ class TestAtoAutoCabSelectionBugFix:
         car = TrainCar(car_id="CAR_02", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_NO_CAB_TICK", consist=[car], max_speed=60.0)
         train.state = TrainState.STANDBY
-        train.facing_direction = Direction.EAST
+        # Direction set via position (refactored): train.set_cab("A")  # was: Direction.EAST
         train.assigned_path_id = "PATH_1"
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -1946,8 +1931,7 @@ class TestTrainPhysicsCautionHoldBugFix:
             end_b_tile=(1, 0),
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
             occupied_tiles=[(1, 0)],
         )
         network.add_train(train)
@@ -1989,8 +1973,7 @@ class TestTrainPhysicsCautionHoldBugFix:
             end_b_tile=(1, 0),
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
             occupied_tiles=[(1, 0)],
         )
         network.add_train(train)
@@ -2010,8 +1993,7 @@ class TestTrainPhysicsCautionHoldBugFix:
             end_b_tile=(2, 0),
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
             occupied_tiles=[(2, 0)],
         )
 
@@ -2046,8 +2028,7 @@ class TestTrainPhysicsTransitions:
             end_b_tile=(1, 0),
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
             occupied_tiles=[(1, 0)],
             occupied_blocks=["B2"],
         )
@@ -2100,8 +2081,7 @@ class TestTrainPhysicsCautionStoppedReleaseBugFix:
             end_b_tile=(1, 0),
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
             occupied_tiles=[(1, 0)],
             occupied_blocks=["B2"],
         )
@@ -2244,8 +2224,7 @@ class TestTrainClearancePrecisionBugFix:
             end_b_tile=(0, 0),
             end_b_distance_cm=5.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
             occupied_tiles=[(1, 0), (0, 0)],
         )
 
@@ -3263,12 +3242,11 @@ class TestAtoDestinationStoppingAfterPathCompletes:
             end_b_tile=(4, 0),
             end_b_distance_cm=25.0,
             end_b_entry_edge="E",
-            leading_end="a",
-            _facing_direction_legacy=Direction.WEST,
+            leading_end=LeadingEnd.A,
             occupied_tiles=[(4, 0)],
             occupied_blocks=["BLOCK_B"],
         )
-        train.facing_direction = Direction.WEST
+        # Direction set via position (refactored): train.set_cab("A")  # was: Direction.WEST
 
         train.current_path = [(3, 0, Direction.EAST), (4, 0, Direction.EAST)]
         train.path_index = 1  # At end of path (tile 4,0)
@@ -3368,7 +3346,6 @@ class TestAtoInfoPersistenceWithoutActivePath:
         train = Train(train_id="TRAIN_ATO_INFO")
         train.position = make_train_position(
             head_tile=(0, 0),
-            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=10.0,
         )
         train.assigned_path_id = None
@@ -3393,7 +3370,6 @@ class TestAtoInfoPersistenceWithoutActivePath:
         train = Train(train_id="TRAIN_ATO_INFO_SIM")
         train.position = make_train_position(
             head_tile=(0, 0),
-            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=10.0,
         )
         train.ato_destination_block_id = "BLOCK_DEST"
@@ -3913,8 +3889,7 @@ class TestFutureAwareATOBraking:
             end_b_tile=(0, 0),
             end_b_distance_cm=5.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
             occupied_tiles=[(0, 0)],
             occupied_blocks=[],
         )
@@ -4014,8 +3989,7 @@ class TestBlockTileSyncValidation:
             end_b_tile=(0, 0),
             end_b_distance_cm=10.0,
             end_b_entry_edge="W",
-            leading_end="a",
-            _facing_direction_legacy=Direction.EAST,
+            leading_end=LeadingEnd.A,
             occupied_tiles=[(0, 0), (1, 0), (2, 0)],
             occupied_blocks=["B1"],
         )
@@ -4106,7 +4080,6 @@ class TestFallbackLookaheadMultiTileBlock:
 
         train.position = make_train_position(
             head_tile=(0, 0),
-            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=per_tile_length,  # At exit edge of first tile
         )
         train.position.occupied_tiles = [(0, 0)]
@@ -4146,7 +4119,6 @@ class TestFallbackLookaheadMultiTileBlock:
         train = Train(train_id="TRAIN_MID_BLOCK")
         train.position = make_train_position(
             head_tile=(1, 0),  # Middle tile
-            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=25.0,  # Halfway through middle tile
         )
         train.position.occupied_tiles = [(0, 0), (1, 0)]
@@ -4180,7 +4152,6 @@ class TestFallbackLookaheadMultiTileBlock:
         train = Train(train_id="TRAIN_LAST_TILE")
         train.position = make_train_position(
             head_tile=(2, 0),  # Last tile
-            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=40.0,  # Near end of last tile
         )
         train.position.occupied_tiles = [(0, 0), (1, 0), (2, 0)]
@@ -4213,7 +4184,6 @@ class TestFallbackLookaheadMultiTileBlock:
         train = Train(train_id="TRAIN_BLOCK_INFO")
         train.position = make_train_position(
             head_tile=(0, 0),
-            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=25.0,
         )
         train.position.occupied_tiles = [(0, 0)]
@@ -4242,7 +4212,6 @@ class TestFallbackLookaheadMultiTileBlock:
         train = Train(train_id="TRAIN_PRIOR_CLEARANCE")
         train.position = make_train_position(
             head_tile=(0, 0),
-            _facing_direction_legacy=Direction.EAST,
             head_distance_cm=25.0,
         )
         train.position.occupied_tiles = [(0, 0)]
@@ -4755,8 +4724,7 @@ class TestMultiTilePlatformStopping:
             end_b_tile=(9, 3),
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
-            leading_end="a",
-            _facing_direction_legacy=Direction.NORTH,
+            leading_end=LeadingEnd.A,
             occupied_tiles=[(9, 3)],
             occupied_blocks=["STATION_BLOCK"],
         )
@@ -4813,8 +4781,7 @@ class TestMultiTilePlatformStopping:
             end_b_tile=(9, 3),
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
-            leading_end="a",
-            _facing_direction_legacy=Direction.NORTH,
+            leading_end=LeadingEnd.A,
             occupied_tiles=[(9, 3)],
             occupied_blocks=["STATION_BLOCK"],
         )

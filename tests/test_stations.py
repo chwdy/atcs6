@@ -336,7 +336,6 @@ class TestStationStoppingBehavior:
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.position = make_train_position((1, 0), Direction.EAST)
-        train.facing_direction = Direction.EAST
         executor = RouteExecutor(network)
         target_tile = executor._get_target_station_tile(train, station)
         assert target_tile == (1, 0)
@@ -354,11 +353,12 @@ class TestStationStoppingBehavior:
         network.extend_station("STA_MULTI_EW", [(2, 0), (3, 0)])
         from train import Train, TrainCar
         from enums import Direction
+        from tests.train_test_helpers import make_train_position
         from route_executor import RouteExecutor
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
-        train.facing_direction = Direction.EAST
+        train.position = make_train_position((1, 0), Direction.EAST)
         executor = RouteExecutor(network)
         target_tile = executor._get_target_station_tile(train, station)
         assert target_tile == (3, 0)
@@ -376,11 +376,12 @@ class TestStationStoppingBehavior:
         network.extend_station("STA_MULTI_NS", [(0, 2), (0, 3)])
         from train import Train, TrainCar
         from enums import Direction
+        from tests.train_test_helpers import make_train_position
         from route_executor import RouteExecutor
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
-        train.facing_direction = Direction.NORTH
+        train.position = make_train_position((0, 1), Direction.NORTH)
         executor = RouteExecutor(network)
         target_tile = executor._get_target_station_tile(train, station)
         assert target_tile == (0, 3)
@@ -453,7 +454,6 @@ class TestTravelDirectionPolicyPreserve:
     def _make_train(self) -> Train:
         train = Train(train_id="T-PRESERVE")
         train.position = make_train_position((0, 0), Direction.EAST)
-        train.facing_direction = Direction.EAST
         return train
 
     def test_preserve_filters_out_wrong_direction_candidate(self, monkeypatch):

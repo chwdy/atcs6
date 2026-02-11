@@ -465,13 +465,20 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/trains/<train_id>/lookahead", methods=["GET"])
     def get_train_monitor_lookahead(train_id):
-        """Get Train Monitor lookahead data from TrainController."""
-        train = state.network.trains.get(train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
+        """Get Train Monitor lookahead data from TrainController.
 
-        controller = _get_train_controller(train)
-        return jsonify(controller.get_monitor_lookahead())
+        Acquires simulation_lock to prevent reading partially-updated
+        controller state mid-tick (e.g. current_path set but path_index
+        stale), which would cause the monitor to fall back to a truncated
+        single-block lookahead.
+        """
+        with state.simulation_lock:
+            train = state.network.trains.get(train_id)
+            if not train:
+                return jsonify({"error": "Train not found"}), 404
+
+            controller = _get_train_controller(train)
+            return jsonify(controller.get_monitor_lookahead())
 
     @app.route("/api/trains/<train_id>/notifications", methods=["GET"])
     def get_train_notifications(train_id):

@@ -81,6 +81,11 @@ class SimulationController:
         for train in self.network.trains.values():
             self._update_train(train, delta_seconds)
 
+        # Update signal states based on current block states.
+        # This ensures signals reflect real-time block occupancy rather than
+        # becoming stale between path creation/cancellation events.
+        self.network.update_signals_from_blocks()
+
         if self.path_dispatcher:
             events = self.path_dispatcher.get_and_clear_completion_events()
             for event in events:

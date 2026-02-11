@@ -498,9 +498,11 @@ class App {
                     this.deselectTrain();
                     return;
                 }
-                if (this.trainMonitor.isVisible()) {
-                    this.trainMonitor.updateFromController(newTrain, this.lastLookaheadPayload);
-                }
+                // Only fetch fresh lookahead data -- do NOT render with
+                // stale lastLookaheadPayload here.  The async fetch will
+                // call updateFromController with the fresh payload once it
+                // arrives, preventing the flicker caused by rendering
+                // stale-then-fresh on every poll cycle.
                 this.fetchTrainLookahead(trainId, newTrain);
             },
             { immediate: true }

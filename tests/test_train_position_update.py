@@ -10,7 +10,7 @@ import pytest
 from train import Train, TrainCar, TrainPosition
 from network import RailwayNetwork
 from track import TrackSegment, TRACK_EW
-from enums import Direction, TrainState
+from enums import Direction, LeadingEnd, TrainState
 from simulation import SimulationController
 
 
@@ -47,7 +47,7 @@ class TestTrainPositionUpdates:
             end_b_tile=(0, 0),
             end_b_distance_cm=10.0,  # Tail at 10cm (40cm train length)
             end_b_entry_edge="W",
-            leading_end="a",
+            leading_end=LeadingEnd.A,
             facing_direction=Direction.EAST,
         )
 
