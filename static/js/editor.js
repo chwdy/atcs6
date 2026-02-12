@@ -482,7 +482,7 @@ class Editor {
     setupEventListeners() {
         // Tool selection
         document.querySelectorAll('.tool-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
+            btn.addEventListener('click', async (e) => {
                 document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
                 e.currentTarget.classList.add('active');
 
@@ -549,10 +549,10 @@ class Editor {
                     return;
                 } else if (oldTool === 'path') {
                     // Leaving path tool mode
-                    this.exitRouteToolMode();
+                    await this.exitRouteToolMode();
                 } else if (oldTool === 'extend-path') {
                     // Leaving extend-path tool mode
-                    this.exitExtendRouteMode();
+                    await this.exitExtendRouteMode();
                 } else if (oldTool === 'cancel-path') {
                     // Leaving cancel-path tool mode
                     this.exitCancelRouteMode();
@@ -842,7 +842,7 @@ class Editor {
         });
 
         // ESC key - exit extend mode or return to select tool
-        document.addEventListener('keydown', (e) => {
+        document.addEventListener('keydown', async (e) => {
             if (e.key === 'Escape') {
                 // Check if we're in a modal or input field
                 const inModal = document.querySelector('.block-modal-overlay, .modal-overlay') !== null;
@@ -870,7 +870,7 @@ class Editor {
 
                 // Exit path tool mode if active
                 if (this.pathToolState?.active) {
-                    this.exitRouteToolMode();
+                    await this.exitRouteToolMode();
                     window.showToast('Route creation cancelled', 'info', 3000);
                     return;
                 }
@@ -2212,12 +2212,12 @@ class Editor {
         return this.pathHandler.enterRouteToolMode();
     }
 
-    exitRouteToolMode() {
-        return this.pathHandler.exitRouteToolMode();
+    async exitRouteToolMode() {
+        return await this.pathHandler.exitRouteToolMode();
     }
 
-    resetRouteToolState() {
-        return this.pathHandler.resetRouteToolState();
+    async resetRouteToolState() {
+        return await this.pathHandler.resetRouteToolState();
     }
 
     async handleRouteToolClick(gridPos) {
@@ -2268,12 +2268,12 @@ class Editor {
         return this.pathHandler.enterExtendRouteMode();
     }
 
-    exitExtendRouteMode() {
-        return this.pathHandler.exitExtendRouteMode();
+    async exitExtendRouteMode() {
+        return await this.pathHandler.exitExtendRouteMode();
     }
 
-    resetExtendRouteState() {
-        return this.pathHandler.resetExtendRouteState();
+    async resetExtendRouteState() {
+        return await this.pathHandler.resetExtendRouteState();
     }
 
     async handleExtendRouteToolClick(gridPos) {

@@ -26,12 +26,12 @@ class PathEditorHandler {
         document.getElementById('status-state').textContent = 'Path: Click start block';
     }
 
-    exitRouteToolMode() {
-        this.resetRouteToolState();
+    async exitRouteToolMode() {
+        await this.resetRouteToolState();
         document.getElementById('status-state').textContent = 'Ready';
     }
 
-    resetRouteToolState() {
+    async resetRouteToolState() {
         this.pathToolState = {
             active: false,
             startBlockId: null,
@@ -48,7 +48,7 @@ class PathEditorHandler {
             this.renderer.clearRoutePreview();
         }
         if (this.editor._currentEditorType === 'path-setup') {
-            this.editor.goBackSecondaryPanel();
+            await this.editor.goBackSecondaryPanel();
             // If history was empty (no panel before path tool), goBack does nothing.
             // In that case _currentEditorType is still 'path-setup', so close the sidebar.
             if (this.editor._currentEditorType === 'path-setup') {
@@ -63,7 +63,7 @@ class PathEditorHandler {
 
     async handleRouteToolClick(gridPos) {
         const track = this.cachedNetwork?.tracks?.find(t => t.x === gridPos.x && t.y === gridPos.y);
-        
+
         if (!this.pathToolState.active) {
             await this.handleRouteFirstClick(gridPos, track);
         } else {
@@ -120,7 +120,7 @@ class PathEditorHandler {
         } catch (err) {
             console.error('[Editor] Failed to get reachable destinations:', err);
             window.showToast('Failed to get reachable destinations: ' + err.message, 'error', 5000);
-            this.resetRouteToolState();
+            await this.resetRouteToolState();
         }
     }
 
@@ -176,7 +176,7 @@ class PathEditorHandler {
             if (result.success) {
                 window.showToast(`Path ${result.path.path_id} created`, 'success', 5000);
                 await window.app.refreshNetwork();
-                this.resetRouteToolState();
+                await this.resetRouteToolState();
             } else {
                 window.showToast(`Path failed: ${result.error}`, 'error', 5000);
 
@@ -589,12 +589,12 @@ class PathEditorHandler {
         document.getElementById('status-state').textContent = 'Extend Path: Click on a path to extend';
     }
 
-    exitExtendRouteMode() {
-        this.resetExtendRouteState();
+    async exitExtendRouteMode() {
+        await this.resetExtendRouteState();
         document.getElementById('status-state').textContent = 'Ready';
     }
 
-    resetExtendRouteState() {
+    async resetExtendRouteState() {
         this.extendPathState = {
             active: false,
             selectedPathId: null,
@@ -609,7 +609,7 @@ class PathEditorHandler {
             this.renderer.clearPathHighlight();
         }
         if (this.editor._currentEditorType === 'extend-path-setup') {
-            this.editor.goBackSecondaryPanel();
+            await this.editor.goBackSecondaryPanel();
             // If history was empty, goBack does nothing - close sidebar as fallback.
             if (this.editor._currentEditorType === 'extend-path-setup') {
                 this.editor.hideSecondarySidebar();
@@ -679,7 +679,7 @@ class PathEditorHandler {
             
             if (endpointsResult.error) {
                 window.showToast('Cannot extend path: ' + endpointsResult.error, 'error', 5000);
-                this.resetExtendRouteState();
+                await this.resetExtendRouteState();
                 return;
             }
             
@@ -703,7 +703,7 @@ class PathEditorHandler {
         } catch (err) {
             console.error('[Editor] Failed to get paths for extend:', err);
             window.showToast('Failed to load paths: ' + err.message, 'error', 5000);
-            this.resetExtendRouteState();
+            await this.resetExtendRouteState();
         }
     }
 
@@ -750,7 +750,7 @@ class PathEditorHandler {
             if (result.success) {
                 window.showToast(`Path extended to ${newEndBlockId}`, 'success', 5000);
                 await window.app.refreshNetwork();
-                this.resetExtendRouteState();
+                await this.resetExtendRouteState();
                 document.getElementById('status-state').textContent = 'Extend Path: Click on a path to extend';
             } else {
                 window.showToast(`Extend failed: ${result.error || result.message}`, 'error', 5000);
