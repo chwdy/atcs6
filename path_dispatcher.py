@@ -1523,6 +1523,43 @@ class PathDispatcher:
                     new_flank = self._calculate_flank_protection(path_segment)
                     path.flank_protection_switches.update(new_flank)
 
+                    # FIX: Update train's path and destination after extension
+                    # This ensures the train follows the extended path and stops
+                    # at the new destination instead of the old one.
+                    #
+                    # Why this is needed: The train's current_path and
+                    # ato_destination_block_id are separate copies from
+                    # Path.path_tiles/end_block_id. When extend_path() updates
+                    # the Path object, the train's copies go stale. The ATO
+                    # reads from train.current_path (not Path.path_tiles), so
+                    # we must sync them here.
+                    if path.train_id:
+                        train = self.network.get_train(path.train_id)
+                        if train:
+                            # Update destination
+                            train.ato_destination_block_id = path.end_block_id
+
+                            # Append new tiles to train's current_path
+                            extended_tiles = path_segment.tiles[1:]
+                            if train.current_path and extended_tiles:
+                                from path_utils import convert_tiles_to_train_path
+
+                                extended_path = convert_tiles_to_train_path(
+                                    extended_tiles
+                                )
+                                if extended_path:
+                                    train.current_path.extend(extended_path)
+
+                            # Update the TrainController's destination if accessible
+                            if hasattr(self.network, "_train_controllers"):
+                                controller = self.network._train_controllers.get(
+                                    path.train_id
+                                )
+                                if controller:
+                                    controller.ato_destination_block_id = (
+                                        path.end_block_id
+                                    )
+
                     return ExtensionResult(
                         success=True, extended_blocks=path_segment.blocks[1:]
                     )
