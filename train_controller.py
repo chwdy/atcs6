@@ -3122,6 +3122,10 @@ class TrainController:
         if self.state != TrainState.STANDBY:
             return CommandResult(False, f"Train not in STANDBY (is {self.state.value})")
 
+        # Recalculate ATO info fresh to ensure cab direction matches
+        # the current path (path may have been assigned since last tick)
+        self.ato_info = self._calculate_ato_info()
+
         # ATO Auto-correction: Check and adjust cab to match path direction
         if self.ato_info and self.ato_info.required_cab:
             required_cab = self.ato_info.required_cab
@@ -3133,6 +3137,11 @@ class TrainController:
                     self.active_cab,
                     required_cab,
                 )
+                # Ensure train is physically stopped before switching cab.
+                # We've already verified STANDBY state above, but residual
+                # speed from tick oscillations can cause set_cab() to reject.
+                if train.current_speed > 0:
+                    train.current_speed = 0.0
                 result = self.set_cab(required_cab)
                 if not result.success:
                     return CommandResult(

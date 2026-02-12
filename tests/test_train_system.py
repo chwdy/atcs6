@@ -10,10 +10,11 @@ This module tests:
 import pytest
 from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
 from train_route import Route, Waypoint, TimingMode, RouteMode
-from train import Train, TrainCar
+from train import Train, TrainCar, TrainPosition
 from enums import Direction, TrainState, BlockState, HandlePosition
 from network import RailwayNetwork
 from train_controller import TrainController, create_controller_for_train
+from tests.train_test_helpers import make_train_position
 
 
 # =============================================================================
@@ -215,15 +216,15 @@ class TestWaypoint:
 
     def test_waypoint_initialization(self):
         """Test waypoint default values."""
-        wp = Waypoint(station_id="STN_001")
-        assert wp.station_id == "STN_001"
+        wp = Waypoint(platform_id="STN_001")
+        assert wp.platform_id == "STN_001"
         assert wp.dwell_time_sec == 30.0
         assert wp.timing_mode == TimingMode.NONE
         assert wp.target_time is None
 
     def test_should_depart_none_mode(self):
         """Test departure with no timing constraint."""
-        wp = Waypoint(station_id="STN_001", dwell_time_sec=30.0)
+        wp = Waypoint(platform_id="STN_001", dwell_time_sec=30.0)
 
         # Not enough time yet
         assert wp.should_depart(25.0, 0.0, 100.0) is False
@@ -235,7 +236,7 @@ class TestWaypoint:
     def test_should_depart_relative_mode(self):
         """Test departure with relative timing."""
         wp = Waypoint(
-            station_id="STN_001",
+            platform_id="STN_001",
             timing_mode=TimingMode.RELATIVE,
             target_time=60.0,  # 60 seconds after route start
         )
@@ -252,7 +253,7 @@ class TestWaypoint:
     def test_should_depart_absolute_mode(self):
         """Test departure with absolute timing."""
         wp = Waypoint(
-            station_id="STN_001",
+            platform_id="STN_001",
             timing_mode=TimingMode.ABSOLUTE,
             target_time=500.0,  # Leave at simulation time 500
         )
@@ -269,7 +270,7 @@ class TestWaypoint:
     def test_to_dict_from_dict_roundtrip(self):
         """Test waypoint serialization."""
         wp = Waypoint(
-            station_id="STN_002",
+            platform_id="STN_002",
             dwell_time_sec=45.0,
             timing_mode=TimingMode.RELATIVE,
             target_time=120.0,
@@ -278,7 +279,7 @@ class TestWaypoint:
         data = wp.to_dict()
         restored = Waypoint.from_dict(data)
 
-        assert restored.station_id == wp.station_id
+        assert restored.platform_id == wp.platform_id
         assert restored.dwell_time_sec == wp.dwell_time_sec
         assert restored.timing_mode == wp.timing_mode
         assert restored.target_time == wp.target_time
@@ -299,11 +300,11 @@ class TestRoute:
             route_id="ROUTE_001",
             name="Test Route",
             waypoints=[
-                Waypoint(station_id="A"),
-                Waypoint(station_id="B"),
-                Waypoint(station_id="C"),
+                Waypoint(platform_id="A"),
+                Waypoint(platform_id="B"),
+                Waypoint(platform_id="C"),
             ],
-            mode=RouteMode.ONE_WAY,
+            mode=RouteMode.ONE_OFF,
         )
 
     def test_route_initialization(self, simple_route: Route):
@@ -311,7 +312,7 @@ class TestRoute:
         assert simple_route.route_id == "ROUTE_001"
         assert simple_route.name == "Test Route"
         assert len(simple_route.waypoints) == 3
-        assert simple_route.mode == RouteMode.ONE_WAY
+        assert simple_route.mode == RouteMode.ONE_OFF
         assert simple_route.current_waypoint_index == 0
         assert simple_route.direction == 1
         assert simple_route.is_active is False
@@ -320,85 +321,90 @@ class TestRoute:
         """Test getting current waypoint."""
         wp = simple_route.get_current_waypoint()
         assert wp is not None
-        assert wp.station_id == "A"
+        assert wp.platform_id == "A"
 
     def test_advance_one_way(self, simple_route: Route):
-        """Test ONE_WAY route advancement."""
-        assert simple_route.get_next_station_id() == "A"
+        """Test ONE_OFF route advancement."""
+        wp = simple_route.get_current_waypoint()
+        assert wp.platform_id == "A"
 
         wp = simple_route.advance_to_next_waypoint()
         assert wp is not None
-        assert wp.station_id == "B"
+        assert wp.platform_id == "B"
 
         wp = simple_route.advance_to_next_waypoint()
         assert wp is not None
-        assert wp.station_id == "C"
+        assert wp.platform_id == "C"
 
         # Should complete after C
         wp = simple_route.advance_to_next_waypoint()
         assert wp is None
-        assert simple_route.is_complete() is True
+        assert simple_route.current_waypoint_index >= len(simple_route.waypoints)
 
     def test_advance_loop(self):
-        """Test LOOP route advancement."""
+        """Test CIRCULAR route advancement."""
         route = Route(
             route_id="LOOP_001",
             waypoints=[
-                Waypoint(station_id="A"),
-                Waypoint(station_id="B"),
-                Waypoint(station_id="C"),
+                Waypoint(platform_id="A"),
+                Waypoint(platform_id="B"),
+                Waypoint(platform_id="C"),
             ],
-            mode=RouteMode.LOOP,
+            mode=RouteMode.CIRCULAR,
         )
 
         # Go through A -> B -> C -> A (wrap)
-        assert route.get_next_station_id() == "A"
+        wp = route.get_current_waypoint()
+        assert wp.platform_id == "A"
         route.advance_to_next_waypoint()
-        assert route.get_next_station_id() == "B"
+        wp = route.get_current_waypoint()
+        assert wp.platform_id == "B"
         route.advance_to_next_waypoint()
-        assert route.get_next_station_id() == "C"
+        wp = route.get_current_waypoint()
+        assert wp.platform_id == "C"
         route.advance_to_next_waypoint()
-        assert route.get_next_station_id() == "A"  # Wrapped!
-
-        # LOOP never completes
-        assert route.is_complete() is False
+        wp = route.get_current_waypoint()
+        assert wp.platform_id == "A"  # Wrapped!
 
     def test_advance_round_trip(self):
         """Test ROUND_TRIP route advancement."""
         route = Route(
             route_id="RT_001",
             waypoints=[
-                Waypoint(station_id="A"),
-                Waypoint(station_id="B"),
-                Waypoint(station_id="C"),
+                Waypoint(platform_id="A"),
+                Waypoint(platform_id="B"),
+                Waypoint(platform_id="C"),
             ],
             mode=RouteMode.ROUND_TRIP,
         )
 
         # A -> B -> C -> B -> A -> B -> ...
-        assert route.get_next_station_id() == "A"
+        wp = route.get_current_waypoint()
+        assert wp.platform_id == "A"
 
         route.advance_to_next_waypoint()
-        assert route.get_next_station_id() == "B"
+        wp = route.get_current_waypoint()
+        assert wp.platform_id == "B"
 
         route.advance_to_next_waypoint()
-        assert route.get_next_station_id() == "C"
+        wp = route.get_current_waypoint()
+        assert wp.platform_id == "C"
 
         # Now reverse direction
         route.advance_to_next_waypoint()
-        assert route.get_next_station_id() == "B"
+        wp = route.get_current_waypoint()
+        assert wp.platform_id == "B"
         assert route.direction == -1
 
         route.advance_to_next_waypoint()
-        assert route.get_next_station_id() == "A"
+        wp = route.get_current_waypoint()
+        assert wp.platform_id == "A"
 
         # Reverse again
         route.advance_to_next_waypoint()
-        assert route.get_next_station_id() == "B"
+        wp = route.get_current_waypoint()
+        assert wp.platform_id == "B"
         assert route.direction == 1
-
-        # ROUND_TRIP never completes
-        assert route.is_complete() is False
 
     def test_activate_deactivate(self, simple_route: Route):
         """Test route activation."""
@@ -444,7 +450,7 @@ class TestRoute:
         assert restored.name == simple_route.name
         assert len(restored.waypoints) == len(simple_route.waypoints)
         assert restored.mode == simple_route.mode
-        assert restored.current_waypoint_index == simple_route.current_waypoint_index
+        # current_waypoint_index is runtime-only, not serialized
         assert restored.is_active == simple_route.is_active
         assert restored.started_at == simple_route.started_at
 
@@ -466,7 +472,7 @@ class TestTrainPhase1:
         )
         train.model = "BR 218"
         train.min_radius_cm = 40.0
-        train.facing_direction = Direction.EAST
+        train.position = make_train_position((0, 0), facing_direction=Direction.EAST)
         train.state = TrainState.OFF
         return train
 
@@ -482,54 +488,51 @@ class TestTrainPhase1:
         assert basic_train.target_speed == 0.0
         assert basic_train.manual_target_speed == 0.0
 
-    def test_turn_around_when_stopped(self, basic_train: Train):
-        """Test turn_around when train is stopped."""
+    def test_position_reverse(self, basic_train: Train):
+        """Test TrainPosition.reverse() flips leading_end and updates facing_direction."""
+        from enums import LeadingEnd
+
         basic_train.current_speed = 0.0
-        basic_train.facing_direction = Direction.EAST
-
-        result = basic_train.turn_around()
-        assert result is True
-        assert basic_train.facing_direction == Direction.WEST
-
-        # Turn around again
-        result = basic_train.turn_around()
-        assert result is True
+        basic_train.position = TrainPosition(
+            end_a_tile=(0, 0),
+            end_a_distance_cm=0.0,
+            end_a_entry_edge="W",
+            end_b_tile=(0, 0),
+            end_b_distance_cm=0.0,
+            end_b_entry_edge="E",
+            leading_end=LeadingEnd.A,
+            occupied_tiles=[(0, 0)],
+            occupied_blocks=[],
+        )
         assert basic_train.facing_direction == Direction.EAST
 
-    def test_turn_around_when_moving_fails(self, basic_train: Train):
-        """Test turn_around fails when train is moving."""
-        basic_train.current_speed = 50.0
-        basic_train.facing_direction = Direction.EAST
+        basic_train.position.reverse()
+        assert basic_train.facing_direction == Direction.WEST
 
-        result = basic_train.turn_around()
-        assert result is False
-        assert basic_train.facing_direction == Direction.EAST  # Unchanged
-
-    def test_turn_around_no_facing_direction(self, basic_train: Train):
-        """Test turn_around fails when no facing direction."""
-        basic_train.current_speed = 0.0
-        basic_train.facing_direction = None
-
-        result = basic_train.turn_around()
-        assert result is False
+        basic_train.position.reverse()
+        assert basic_train.facing_direction == Direction.EAST
 
     def test_get_effective_direction_forward(self, basic_train: Train):
         """Test effective direction in forward mode."""
-        basic_train.facing_direction = Direction.NORTH
+        basic_train.position = make_train_position(
+            (0, 0), facing_direction=Direction.NORTH
+        )
         basic_train.travel_direction = "forward"
 
         assert basic_train.get_effective_direction() == Direction.NORTH
 
     def test_get_effective_direction_reverse(self, basic_train: Train):
         """Test effective direction in reverse mode."""
-        basic_train.facing_direction = Direction.NORTH
+        basic_train.position = make_train_position(
+            (0, 0), facing_direction=Direction.NORTH
+        )
         basic_train.travel_direction = "reverse"
 
         assert basic_train.get_effective_direction() == Direction.SOUTH
 
     def test_get_effective_direction_no_facing(self, basic_train: Train):
         """Test effective direction when no facing direction."""
-        basic_train.facing_direction = None
+        basic_train.position = None
         assert basic_train.get_effective_direction() is None
 
     def test_is_stopped(self, basic_train: Train):
@@ -575,32 +578,12 @@ class TestTrainPhase1:
         assert result.success is False
         assert train.state == TrainState.RUNNING_MOVING
 
-    def test_set_standby(self):
-        """Test set_direction_and_standby via TrainController."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.IDLE
-        )
-
-        result = controller.set_direction_and_standby(Direction.NORTH)
-        assert result is True
-        assert train.state == TrainState.STANDBY
-        assert train.facing_direction == Direction.NORTH
-
-    def test_set_standby_not_idle_fails(self):
-        """Test set_direction_and_standby fails when not IDLE."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.OFF
-        )
-
-        result = controller.set_direction_and_standby(Direction.NORTH)
-        assert result is False
-
     def test_enable_disable_manual(self):
         """Test enable_manual and disable_manual via TrainController."""
         train, controller, network = create_test_train_with_controller(
             state=TrainState.IDLE
         )
-        train.facing_direction = Direction.EAST
+        train.position = make_train_position((0, 0), facing_direction=Direction.EAST)
 
         # Enable manual
         result = controller.enable_manual()
@@ -650,7 +633,9 @@ class TestTrainPhase1:
         """Test to_dict includes Phase 1 properties."""
         basic_train.model = "Test Model"
         basic_train.min_radius_cm = 35.0
-        basic_train.facing_direction = Direction.SOUTH
+        basic_train.position = make_train_position(
+            (0, 0), facing_direction=Direction.SOUTH
+        )
         basic_train.travel_direction = "reverse"
         basic_train.state = TrainState.MANUAL
         basic_train.speed_profile_id = "profile_001"
@@ -692,7 +677,9 @@ class TestTrainPhase1:
         assert train.train_id == "TRAIN_002"
         assert train.model == "Shinkansen E5"
         assert train.min_radius_cm == 50.0
-        assert train.facing_direction == Direction.WEST
+        # facing_direction is now computed from position, not stored directly
+        # Without position data in the dict, it will be None
+        assert train.facing_direction is None
         assert train.travel_direction == "forward"
         assert train.state == TrainState.STANDBY
         assert train.speed_profile_id == "profile_002"
@@ -1046,7 +1033,8 @@ class TestTrainStateManager:
             current_speed=0.0,
         )
         train.state = TrainState.OFF
-        train.facing_direction = None
+        # No position means facing_direction is None
+        train.position = None
         return train
 
     def test_state_manager_import(self):
@@ -1104,7 +1092,9 @@ class TestTrainStateManager:
         from train_state_manager import TrainStateManager
 
         test_train.state = TrainState.STANDBY
-        test_train.facing_direction = Direction.NORTH
+        test_train.position = make_train_position(
+            (0, 0), facing_direction=Direction.NORTH
+        )
         result = TrainStateManager.can_transition(test_train, TrainState.RUNNING_MOVING)
         assert result.success is True
 
@@ -1115,7 +1105,7 @@ class TestTrainStateManager:
         from train_state_manager import TrainStateManager
 
         test_train.state = TrainState.STANDBY
-        test_train.facing_direction = None
+        test_train.position = None
         result = TrainStateManager.can_transition(test_train, TrainState.RUNNING_MOVING)
         assert result.success is False
         assert "direction" in result.error.lower()
@@ -1247,10 +1237,10 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.IDLE
         )
+        train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
         result = controller.set_direction_and_standby(Direction.NORTH)
         assert result is True
         assert train.state == TrainState.STANDBY
-        assert train.facing_direction == Direction.NORTH
 
     def test_set_standby_fails_from_wrong_state(self):
         """Test set_direction_and_standby() fails from non-IDLE state."""
@@ -1266,7 +1256,7 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.STANDBY
         )
-        train.facing_direction = Direction.NORTH
+        train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
         # Use manual mode to test depart transition (not ATO auto-cab logic)
         controller.control_mode = "manual"
         result = controller.depart()
@@ -1278,7 +1268,7 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.STANDBY
         )
-        train.facing_direction = None
+        train.position = None
         result = controller.depart()
         assert result is False
 
@@ -1287,7 +1277,7 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.IDLE
         )
-        train.facing_direction = Direction.NORTH
+        train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
         result = controller.depart()
         assert result is False
 
@@ -1395,7 +1385,7 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.MANUAL
         )
-        train.facing_direction = None
+        train.position = None
         result = controller.disable_manual()
         assert result is True
         assert train.state == TrainState.IDLE
@@ -1406,7 +1396,7 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.MANUAL
         )
-        train.facing_direction = Direction.EAST
+        train.position = make_train_position((0, 0), facing_direction=Direction.EAST)
         result = controller.disable_manual()
         assert result is True
         assert train.state == TrainState.STANDBY
@@ -1432,10 +1422,10 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.IDLE
         )
+        train.position = make_train_position((0, 0), facing_direction=Direction.SOUTH)
         result = controller.set_direction_and_standby(Direction.SOUTH)
         assert result is True
         assert train.state == TrainState.STANDBY
-        assert train.facing_direction == Direction.SOUTH
 
     def test_set_manual_speed(self):
         """Test set_manual_speed() in MANUAL mode - uses Train method directly."""
@@ -1589,6 +1579,9 @@ class TestCompleteStateFlows:
             state=TrainState.OFF
         )
 
+        # Give train a position so facing_direction is available
+        train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
+
         # Power on
         result = controller.power_on_cmd()
         assert result.success is True
@@ -1597,7 +1590,6 @@ class TestCompleteStateFlows:
         # Set direction and standby
         assert controller.set_direction_and_standby(Direction.NORTH) is True
         assert train.state == TrainState.STANDBY
-        assert train.facing_direction == Direction.NORTH
 
         # Depart (manual mode to bypass ATO auto-cab selection)
         controller.control_mode = "manual"
@@ -1623,7 +1615,7 @@ class TestCompleteStateFlows:
 
         # Simulate moving and arriving at final station
         # Need to set controller state too for proper flow
-        train.facing_direction = Direction.NORTH
+        train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
         # Use manual mode to test depart (not ATO auto-cab logic)
         controller.control_mode = "manual"
         controller.depart()

@@ -5,7 +5,8 @@ class TrainMonitor {
         this.ctx = this.canvas.getContext('2d');
         this.titleEl = document.getElementById('train-monitor-title');
         this.currentSpeedEl = document.getElementById('monitor-current-speed');
-        this.targetSpeedEl = document.getElementById('monitor-target-speed');
+        this.atcSpeedEl = document.getElementById('monitor-atc-speed');
+        this.atoSpeedEl = document.getElementById('monitor-ato-speed');
         this.waitReasonEl = document.getElementById('monitor-wait-reason');
         this.speedLimitReasonEl = document.getElementById('monitor-speed-limit-reason');
         this.speedCmsEl = document.getElementById('monitor-speed-cms');
@@ -233,7 +234,10 @@ class TrainMonitor {
             
             // Update UI elements with minimal data
             this.currentSpeedEl.textContent = Math.round(this.lookaheadData.current_speed_kmh || 0);
-            this.targetSpeedEl.textContent = Math.round(this.lookaheadData.target_speed_kmh || 0);
+            // For minimal data, we don't have speed curves, so show target speed for both
+            const fallbackSpeed = Math.round(this.lookaheadData.target_speed_kmh || 0);
+            if (this.atcSpeedEl) this.atcSpeedEl.textContent = fallbackSpeed;
+            if (this.atoSpeedEl) this.atoSpeedEl.textContent = fallbackSpeed;
             
             if (this.speedCmsEl) {
                 const speedCms = ((this.lookaheadData.current_speed_kmh || 0) * 27.78 / this.currentScale).toFixed(1);
@@ -392,7 +396,10 @@ class TrainMonitor {
         
         // Update UI elements
         this.currentSpeedEl.textContent = Math.round(this.lookaheadData.current_speed_kmh || 0);
-        this.targetSpeedEl.textContent = Math.round(this.lookaheadData.target_speed_kmh || 0);
+        // For update() method, we don't have speed curves yet - use fallback
+        const fallbackSpeed2 = Math.round(this.lookaheadData.target_speed_kmh || 0);
+        if (this.atcSpeedEl) this.atcSpeedEl.textContent = fallbackSpeed2;
+        if (this.atoSpeedEl) this.atoSpeedEl.textContent = fallbackSpeed2;
         
         if (this.speedCmsEl) {
             const speedCms = ((this.lookaheadData.current_speed_kmh || 0) * 27.78 / this.currentScale).toFixed(1);
@@ -466,7 +473,17 @@ class TrainMonitor {
         };
 
         this.currentSpeedEl.textContent = Math.round(this.lookaheadData.current_speed_kmh || 0);
-        this.targetSpeedEl.textContent = Math.round(this.lookaheadData.target_speed_kmh || 0);
+        
+        // Extract ATC and ATO speeds from speed_curves if available
+        const curves = this.lookaheadData.speed_curves || [];
+        let atcSpeed = this.lookaheadData.target_speed_kmh || 0;
+        let atoSpeed = this.lookaheadData.target_speed_kmh || 0;
+        if (curves.length > 0) {
+            atcSpeed = curves[0].atc_limit ?? atcSpeed;
+            atoSpeed = curves[0].operational_limit ?? atoSpeed;
+        }
+        if (this.atcSpeedEl) this.atcSpeedEl.textContent = Math.round(atcSpeed);
+        if (this.atoSpeedEl) this.atoSpeedEl.textContent = Math.round(atoSpeed);
 
         if (this.speedCmsEl) {
             const speedCms = ((this.lookaheadData.current_speed_kmh || 0) * 27.78 / this.currentScale).toFixed(1);

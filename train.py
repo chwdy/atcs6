@@ -354,12 +354,13 @@ class Train:
     operational status, and assigned schedule.
 
     Position System:
-    - position: TrainPosition with both ends tracked precisely (CURRENT SYSTEM)
+    - position: TrainPosition with both ends tracked precisely
+    - facing_direction: Computed read-only property from position geometry
 
-    New in Phase 1:
+    Key Properties:
     - model: Train model name (e.g., "BR 218", "Shinkansen E5")
     - min_radius_cm: Minimum curve radius train can navigate
-    - facing_direction: Which cab is active (flips on turn-around)
+    - active_cab: Which cab is active ('A', 'B', or None)
     - travel_direction: 'forward' or 'reverse' (only for MANUAL mode)
     - state: TrainState for DC analog control
     - speed_profile_id: SpeedProfile for this train
@@ -424,29 +425,7 @@ class Train:
     assigned_path_id: Optional[str] = None
 
     # ========================================================================
-    # PATH-QUEUE POSITION SYSTEM (Legacy - for future path-based renderer)
-    # ========================================================================
-    # NOTE: This system is NOT currently active. The current renderer uses
-    # TrainPosition for head/tail display. These fields are kept for future
-    # path-queue based rendering.
-    #
-    # path_tiles: Flattened tile list for position queue (NOT used for lookahead)
-    path_tiles: List[Tuple[int, int]] = field(default_factory=list)
-
-    # Two physical ends (don't change on reverse)
-    end_a_index: int = 0  # Index into path_tiles
-    end_a_distance_cm: float = 0.0  # Distance from entry edge on this tile
-    end_a_entry_edge: Optional[str] = None  # 'N', 'E', 'S', 'W'
-
-    end_b_index: int = 0
-    end_b_distance_cm: float = 0.0
-    end_b_entry_edge: Optional[str] = None
-
-    # Which end is currently leading (flip on reverse)
-    leading_end: LeadingEnd = LeadingEnd.A  # LeadingEnd.A or LeadingEnd.B
-
-    # ========================================================================
-    # NEW PROPERTIES (Phase 1 - Train System)
+    # TRAIN PROPERTIES (Phase 1 - Train System)
     # ========================================================================
 
     # Train model info
@@ -506,88 +485,6 @@ class Train:
             return 0
         return (v_ms * v_ms) / (2 * self.acceleration)
 
-    # ========================================================================
-    # PATH POSITION PROPERTIES (Task 1.1)
-    # ========================================================================
-
-    @property
-    def head_index(self) -> int:
-        """Index of head tile in path_tiles."""
-        return (
-            self.end_a_index if self.leading_end == LeadingEnd.A else self.end_b_index
-        )
-
-    @property
-    def tail_index(self) -> int:
-        """Index of tail tile in path_tiles."""
-        return (
-            self.end_b_index if self.leading_end == LeadingEnd.A else self.end_a_index
-        )
-
-    @property
-    def head_distance_cm(self) -> float:
-        """Distance from entry edge on head tile."""
-        return (
-            self.end_a_distance_cm
-            if self.leading_end == LeadingEnd.A
-            else self.end_b_distance_cm
-        )
-
-    @head_distance_cm.setter
-    def head_distance_cm(self, value: float) -> None:
-        if self.leading_end == LeadingEnd.A:
-            self.end_a_distance_cm = value
-        else:
-            self.end_b_distance_cm = value
-
-    @property
-    def tail_distance_cm(self) -> float:
-        """Distance from entry edge on tail tile."""
-        return (
-            self.end_b_distance_cm
-            if self.leading_end == LeadingEnd.A
-            else self.end_a_distance_cm
-        )
-
-    @tail_distance_cm.setter
-    def tail_distance_cm(self, value: float) -> None:
-        if self.leading_end == LeadingEnd.A:
-            self.end_b_distance_cm = value
-        else:
-            self.end_a_distance_cm = value
-
-    @property
-    def head_entry_edge(self) -> Optional[str]:
-        """Entry edge for head tile."""
-        return (
-            self.end_a_entry_edge
-            if self.leading_end == LeadingEnd.A
-            else self.end_b_entry_edge
-        )
-
-    @head_entry_edge.setter
-    def head_entry_edge(self, value: Optional[str]) -> None:
-        if self.leading_end == LeadingEnd.A:
-            self.end_a_entry_edge = value
-        else:
-            self.end_b_entry_edge = value
-
-    @property
-    def tail_entry_edge(self) -> Optional[str]:
-        """Entry edge for tail tile."""
-        return (
-            self.end_b_entry_edge
-            if self.leading_end == LeadingEnd.A
-            else self.end_a_entry_edge
-        )
-
-    @tail_entry_edge.setter
-    def tail_entry_edge(self, value: Optional[str]) -> None:
-        if self.leading_end == LeadingEnd.A:
-            self.end_b_entry_edge = value
-        else:
-            self.end_a_entry_edge = value
-
     @property
     def facing_direction(self) -> Optional[Direction]:
         """
@@ -603,87 +500,6 @@ class Train:
         if not self.position:
             return None
         return self.position.facing_direction
-
-    @property
-    def occupied_tiles(self) -> List[Tuple[int, int]]:
-        """Tiles currently occupied by train (tail to head)."""
-        if not self.path_tiles:
-            return []
-        start = min(self.tail_index, self.head_index)
-        end = max(self.tail_index, self.head_index)
-        return self.path_tiles[start : end + 1]
-
-    def reverse_direction(self) -> None:
-        """Flip which end is the head (no position recalculation needed)."""
-        self.leading_end = (
-            LeadingEnd.B if self.leading_end == LeadingEnd.A else LeadingEnd.A
-        )
-
-    # === PATH QUEUE METHODS ===
-
-    def advance_head(self, new_entry_edge: str) -> bool:
-        """Move head to next tile in path.
-
-        Args:
-            new_entry_edge: Entry edge for the new tile ('N', 'E', 'S', 'W')
-
-        Returns:
-            True if advanced, False if at end of path
-        """
-        if self.leading_end == "a":
-            if self.end_a_index + 1 >= len(self.path_tiles):
-                return False
-            self.end_a_index += 1
-            self.end_a_entry_edge = new_entry_edge
-            self.end_a_distance_cm = 0.0
-        else:
-            if self.end_b_index + 1 >= len(self.path_tiles):
-                return False
-            self.end_b_index += 1
-            self.end_b_entry_edge = new_entry_edge
-            self.end_b_distance_cm = 0.0
-        return True
-
-    def advance_tail(self, new_entry_edge: str) -> bool:
-        """Move tail to next tile (called when tail leaves a tile).
-
-        Args:
-            new_entry_edge: Entry edge for the new tile
-
-        Returns:
-            True if advanced, False if tail would pass head
-        """
-        if self.leading_end == "a":
-            if self.end_b_index + 1 > self.end_a_index:
-                return False
-            self.end_b_index += 1
-            self.end_b_entry_edge = new_entry_edge
-            self.end_b_distance_cm = 0.0
-        else:
-            if self.end_a_index + 1 > self.end_b_index:
-                return False
-            self.end_a_index += 1
-            self.end_a_entry_edge = new_entry_edge
-            self.end_a_distance_cm = 0.0
-        return True
-
-    def extend_path(self, tiles: List[Tuple[int, int]]) -> None:
-        """Append tiles to the path (when path is extended).
-
-        Args:
-            tiles: List of (x, y) positions to append
-        """
-        self.path_tiles.extend(tiles)
-
-    def clear_path(self) -> None:
-        """Clear path and reset all position data (when path is cancelled)."""
-        self.path_tiles = []
-        self.end_a_index = 0
-        self.end_b_index = 0
-        self.end_a_distance_cm = 0.0
-        self.end_b_distance_cm = 0.0
-        self.end_a_entry_edge = None
-        self.end_b_entry_edge = None
 
     def is_at_station(self, station_pos: Tuple[int, int]) -> bool:
         """Check if train is currently at a specific station"""
@@ -810,23 +626,30 @@ class Train:
         """
         Flip which end is leading (reverse train direction).
 
+        DEPRECATED: Use train.position.reverse() directly instead.
+        This method is kept for backward compatibility.
+
         Only allowed when stopped. Simply flips leading_end: LeadingEnd.A ↔ LeadingEnd.B
         The facing_direction is automatically recalculated from the new leading_end.
 
         Returns:
             True if successful, False if train is moving or no position
         """
+        import warnings
+
+        warnings.warn(
+            "Train.turn_around() is deprecated. Use train.position.reverse() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         if self.current_speed > self.STOPPED_SPEED_THRESHOLD_KMH:
             return False
 
         if not self.position or not self.position.leading_end:
             return False
 
-        # Simply flip leading_end
-        self.position.leading_end = (
-            LeadingEnd.B if self.position.leading_end == LeadingEnd.A else LeadingEnd.A
-        )
-
+        self.position.reverse()
         return True
 
     def get_effective_direction(self) -> Optional[Direction]:
@@ -876,23 +699,6 @@ class Train:
         self.target_speed = 0.0
         self.manual_target_speed = 0.0
         return True
-
-    def set_standby(self, direction: Direction) -> bool:
-        """
-        Set train to standby with specified facing direction.
-
-        Transitions from IDLE to STANDBY.
-        Note: This method is deprecated. Use set_direction_and_standby() instead.
-
-        Args:
-            direction: Facing direction for the train
-
-        Returns:
-            True if successful, False if not in IDLE state
-        """
-        # This method is kept for backward compatibility
-        # but should not be used - use set_direction_and_standby instead
-        return self.set_direction_and_standby(direction)
 
     def clear_direction(self) -> bool:
         """
@@ -1502,9 +1308,7 @@ class Train:
             data["lookahead_tile_info"] = lookahead_tile_info
             data["head_distance_into_tile_cm"] = head_distance_into_tile
 
-            # NOTE: Do NOT overwrite path_tiles here!
-            # path_tiles is already set correctly to occupied_tiles (line 1361)
-            # for the path-based train renderer.
+            # NOTE: path_tiles is set to occupied_tiles above (for the renderer).
             # lookahead data is separate and used by the train monitor.
 
         return data
@@ -1574,16 +1378,5 @@ class Train:
         train.wait_reason = data.get("wait_reason")
         train.speed_limit_reason = data.get("speed_limit_reason")
         train.ato_destination_block_id = data.get("ato_destination_block_id")
-
-        # IMPORTANT: Clear path_tiles data from saved files
-        # path_tiles is only used by the NEW path-queue movement system
-        # TrainPosition is the current system for head/tail tracking
-        train.path_tiles = []
-        train.end_a_index = 0
-        train.end_b_index = 0
-        train.end_a_distance_cm = 0.0
-        train.end_b_distance_cm = 0.0
-        train.end_a_entry_edge = None
-        train.end_b_entry_edge = None
 
         return train

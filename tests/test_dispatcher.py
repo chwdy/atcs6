@@ -40,6 +40,7 @@ from track import (
     TRACK_SW,
 )
 from block import Block
+from railway_platform import Platform
 from train import Train, TrainCar, TrainPosition
 from tests.train_test_helpers import make_train_position
 from train_route import Route, RouteMode, Waypoint
@@ -893,7 +894,6 @@ class TestPathLifecycle:
         train.position = make_train_position(
             end_tile, Direction.EAST, occupied_blocks=["BLOCK_C"]
         )
-        train.facing_direction = Direction.EAST
 
         block_c = simple_linear_network.blocks.get("BLOCK_C")
         assert block_c is not None
@@ -2151,7 +2151,6 @@ class TestPathDispatcherProgress:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end=LeadingEnd.A,
-            
             occupied_tiles=[(0, 0)],
             occupied_blocks=["BLOCK_A"],
         )
@@ -2172,7 +2171,6 @@ class TestPathDispatcherProgress:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end=LeadingEnd.A,
-            
             occupied_tiles=[(1, 0)],
             occupied_blocks=["BLOCK_B"],
         )
@@ -2208,7 +2206,6 @@ class TestSimulationPathAdvancement:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end=LeadingEnd.A,
-            
             occupied_tiles=[(1, 0)],
             occupied_blocks=["BLOCK_B"],
         )
@@ -2255,7 +2252,6 @@ class TestSimulationPathAdvancement:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end=LeadingEnd.A,
-            
             occupied_tiles=[(1, 0)],
             occupied_blocks=["BLOCK_B"],
         )
@@ -2289,18 +2285,28 @@ class TestSimulationPathAdvancement:
         dispatcher.network = network
         sim = SimulationController(network, dispatcher)
 
+        # Create platforms so RouteExecutor can detect arrival.
+        # STA_A is placed at (3,0) (BLOCK_C) — the path destination tile.
+        platform_a = Platform(
+            platform_id="STA_A", name="Platform A", positions=[(3, 0)]
+        )
+        network.platforms["STA_A"] = platform_a
+        platform_b = Platform(
+            platform_id="STA_B", name="Platform B", positions=[(0, 0)]
+        )
+        network.platforms["STA_B"] = platform_b
+
         route = Route(
             route_id="ROUTE_001",
             mode=RouteMode.ONE_OFF,
             waypoints=[
-                Waypoint(platform_id="STA_A", dwell_time_sec=20.0),
+                Waypoint(platform_id="STA_A", dwell_time_sec=0.0),
                 Waypoint(platform_id="STA_B", dwell_time_sec=20.0),
             ],
         )
         network.routes[route.route_id] = route
 
         train.state = TrainState.IDLE
-        train.facing_direction = Direction.EAST
         train.position = make_train_position((0, 0), Direction.EAST)
         network.add_train(train)
 
@@ -2347,15 +2353,20 @@ class TestSimulationPathAdvancement:
         dispatcher.network = network
         sim = SimulationController(network, dispatcher)
 
+        # Create platform at the path destination tile so arrival is detected.
+        platform_final = Platform(
+            platform_id="STA_FINAL", name="Final Platform", positions=[(3, 0)]
+        )
+        network.platforms["STA_FINAL"] = platform_final
+
         route = Route(
             route_id="ROUTE_FINAL",
             mode=RouteMode.ONE_OFF,
-            waypoints=[Waypoint(platform_id="STA_FINAL", dwell_time_sec=20.0)],
+            waypoints=[Waypoint(platform_id="STA_FINAL", dwell_time_sec=0.0)],
         )
         network.routes[route.route_id] = route
 
         train.state = TrainState.IDLE
-        train.facing_direction = Direction.EAST
         train.position = make_train_position((0, 0), Direction.EAST)
         network.add_train(train)
 
@@ -2419,7 +2430,6 @@ class TestPathSwitchUnlockBugFix:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end=LeadingEnd.A,
-            
             occupied_tiles=[(0, 0)],
             occupied_blocks=["BLOCK_A"],
         )
@@ -2442,7 +2452,6 @@ class TestPathSwitchUnlockBugFix:
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
             leading_end=LeadingEnd.A,
-            
             occupied_tiles=[(2, 0)],
             occupied_blocks=["BLOCK_B"],
         )
@@ -2524,7 +2533,6 @@ class TestPathExtensionForMultiTileStations:
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
             leading_end=LeadingEnd.A,
-            
             occupied_tiles=[(0, 0)],
             occupied_blocks=["BLOCK_START"],
         )
@@ -2603,7 +2611,6 @@ class TestPathExtensionForMultiTileStations:
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
             leading_end=LeadingEnd.A,
-            
             occupied_tiles=[(0, 0)],
             occupied_blocks=["BLOCK_START"],
         )
@@ -2630,7 +2637,6 @@ class TestPathExtensionForMultiTileStations:
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
             leading_end=LeadingEnd.A,
-            
             occupied_tiles=[(0, 3)],
             occupied_blocks=["STATION_BLOCK"],
         )
@@ -2653,7 +2659,6 @@ class TestPathExtensionForMultiTileStations:
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
             leading_end=LeadingEnd.A,
-            
             occupied_tiles=[(0, 4)],
             occupied_blocks=["STATION_BLOCK"],
         )
@@ -2705,7 +2710,6 @@ class TestPathCompletionAtStoppedDestination:
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
             leading_end=LeadingEnd.A,
-            
             occupied_tiles=[(0, 0)],
             occupied_blocks=["BLOCK_START"],
         )
@@ -2731,7 +2735,6 @@ class TestPathCompletionAtStoppedDestination:
             end_b_distance_cm=0.0,
             end_b_entry_edge="S",
             leading_end=LeadingEnd.A,
-            
             occupied_tiles=[(0, 3)],
             occupied_blocks=["BLOCK_END"],
         )
@@ -2839,20 +2842,10 @@ class TestATODirectionDetection:
         """Create a stopped train at the given tile with facing direction."""
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TEST_TRAIN", consist=[car], max_speed=80.0)
-        train.position = TrainPosition(
-            end_a_tile=tile,
-            end_a_distance_cm=0.0,
-            end_a_entry_edge="W",
-            end_b_tile=tile,
-            end_b_distance_cm=0.0,
-            end_b_entry_edge="W",
-            leading_end=LeadingEnd.A,
-            
-            occupied_tiles=[tile],
-            occupied_blocks=[block_id],
+        train.position = make_train_position(
+            tile, facing_direction=facing, occupied_blocks=[block_id]
         )
         train.current_speed = 0.0
-        train.facing_direction = facing
         network.add_train(train)
         return train
 
@@ -3207,10 +3200,10 @@ class TestATODirectionDetection:
         assert info.required_cab == "B"
 
     def test_path_assignment_turn_around_opposite(self):
-        """Path assignment should turn train around when path is opposite.
+        """ato_go() should turn train around when path is opposite direction.
 
-        This tests the full integration: assign a path via the same logic
-        as routes/paths.py and verify the controller switches cab.
+        Previously path assignment handled turn-around directly, but now
+        ato_go() is the single point for cab auto-correction.
         """
         network = self._build_straight_ew_network()
         train = self._create_stopped_train(network, (4, 0), Direction.EAST, "BLK_EAST")
@@ -3223,9 +3216,7 @@ class TestATODirectionDetection:
 
         assert controller.active_cab == "A"
 
-        # Assign a return path going WEST
-        from path_utils import convert_tiles_to_train_path
-
+        # Assign a return path going WEST (no turn-around happens here anymore)
         train.current_path = [
             (4, 0, Direction.WEST),
             (3, 0, Direction.WEST),
@@ -3235,26 +3226,17 @@ class TestATODirectionDetection:
         controller.ato_destination_block_id = "BLK_WEST"
         train.ato_destination_block_id = "BLK_WEST"
 
-        # Simulate what routes/paths.py does after path assignment:
-        # Recalculate ato_info and switch cab if needed
-        controller.ato_info = controller._calculate_ato_info()
-        if (
-            controller.ato_info
-            and controller.ato_info.required_cab
-            and controller.active_cab
-            and controller.ato_info.required_cab != controller.active_cab
-        ):
-            if controller.ato_running:
-                controller.ato_stop()
-            controller.set_cab(controller.ato_info.required_cab)
+        # Cab should NOT have changed yet — path assignment no longer turns
+        assert controller.active_cab == "A"
 
-        # Verify cab was switched
+        # ato_go() should auto-correct the cab
+        result = controller.ato_go()
+        assert result.success, f"ato_go failed: {result.message}"
         assert controller.active_cab == "B"
-        # Verify facing direction flipped
         assert train.facing_direction == Direction.WEST
 
     def test_path_assignment_no_turn_when_same_direction(self):
-        """Path assignment should NOT turn train when path matches facing."""
+        """ato_go() should NOT switch cab when path matches facing direction."""
         network = self._build_straight_ew_network()
         train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
 
@@ -3276,18 +3258,9 @@ class TestATODirectionDetection:
         controller.ato_destination_block_id = "BLK_EAST"
         train.ato_destination_block_id = "BLK_EAST"
 
-        controller.ato_info = controller._calculate_ato_info()
-        if (
-            controller.ato_info
-            and controller.ato_info.required_cab
-            and controller.active_cab
-            and controller.ato_info.required_cab != controller.active_cab
-        ):
-            if controller.ato_running:
-                controller.ato_stop()
-            controller.set_cab(controller.ato_info.required_cab)
-
-        # Verify cab was NOT switched
+        # ato_go() should NOT switch cab
+        result = controller.ato_go()
+        assert result.success
         assert controller.active_cab == "A"
         assert train.facing_direction == Direction.EAST
 

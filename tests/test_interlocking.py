@@ -187,7 +187,6 @@ class TestPathPrepending:
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         train.position = make_train_position((0, 0), Direction.EAST)
-        train.facing_direction = Direction.EAST
         path_tiles = [
             (2, 0, Direction.EAST),
             (3, 0, Direction.EAST),
@@ -208,7 +207,6 @@ class TestPathPrepending:
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         train.position = make_train_position((0, 0), Direction.EAST)
-        train.facing_direction = Direction.EAST
         path_tiles = [
             (0, 0, Direction.EAST),
             (1, 0, Direction.EAST),
@@ -233,7 +231,6 @@ class TestPathPrepending:
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         train.position = make_train_position((0, 0), Direction.EAST)
-        train.facing_direction = Direction.EAST
         path_tiles = [
             (3, 0, Direction.EAST),
             (4, 0, Direction.EAST),
@@ -252,7 +249,6 @@ class TestPathPrepending:
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         train.position = make_train_position((0, 0), Direction.EAST)
-        train.facing_direction = Direction.EAST
         result = prepare_path_for_train(network, train, [])
         assert result.success is False
         assert "Empty path" in result.error

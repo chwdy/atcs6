@@ -5835,17 +5835,17 @@ class TestSetCabDoubleFlipBugFix:
 
         assert train.position.facing_direction == Direction.WEST
 
-    def test_multi_tile_set_cab_syncs_legacy_and_computed(self, network):
-        """After set_cab, legacy field and computed property agree."""
+    def test_multi_tile_set_cab_facing_direction_consistent(self, network):
+        """After set_cab, Train.facing_direction delegates to position correctly."""
         train, controller = self._setup_multi_tile_train(network)
 
         controller.set_cab("B")
 
         # Both access paths should return the same direction
-        legacy = train.facing_direction  # Reads Train.facing_direction field
-        computed = train.position.facing_direction  # Reads computed property
-        assert legacy == computed == Direction.WEST, (
-            f"Legacy ({legacy}) and computed ({computed}) should both be WEST"
+        via_train = train.facing_direction  # Reads Train.facing_direction property
+        via_position = train.position.facing_direction  # Reads TrainPosition property
+        assert via_train == via_position == Direction.WEST, (
+            f"Train ({via_train}) and position ({via_position}) should both be WEST"
         )
 
     def test_multi_tile_double_flip_returns_to_original(self, network):

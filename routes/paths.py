@@ -78,32 +78,6 @@ def register(app, state: AppState) -> None:
                                 result.path.end_block_id
                             )
                             train.ato_destination_block_id = result.path.end_block_id
-
-                            # Check if train needs to turn around for this path.
-                            # Use the controller's ato_info to determine the
-                            # required cab — this handles diagonal and 90-degree
-                            # cases that a simple "exact opposite" check misses.
-                            if (
-                                train.position
-                                and train.current_path
-                                and len(train.current_path) >= 2
-                                and train.facing_direction is not None
-                                and train.is_stopped()
-                            ):
-                                # Recalculate ato_info now that the path is assigned
-                                controller.ato_info = controller._calculate_ato_info()
-                                if (
-                                    controller.ato_info
-                                    and controller.ato_info.required_cab
-                                    and controller.active_cab
-                                    and controller.ato_info.required_cab
-                                    != controller.active_cab
-                                ):
-                                    # Stop ATO before turning
-                                    if controller.ato_running:
-                                        controller.ato_stop()
-                                    # Switch cab to match path direction
-                                    controller.set_cab(controller.ato_info.required_cab)
             return jsonify(result.to_dict()), 200 if result.success else 400
         except Exception as e:
             return jsonify({"error": str(e)}), 500

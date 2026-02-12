@@ -11,7 +11,7 @@ from datetime import datetime
 import logging
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
-from enums import Direction, OPPOSITE_DIRECTIONS, TrainState
+from enums import Direction, TrainState
 from train_controller import TrainController, create_controller_for_train
 from enums import PlatformSide
 from train_route import RouteMode, TravelDirectionPolicy
@@ -191,11 +191,6 @@ class RouteExecutor:
             exec_state.waiting_for_path = True
             return
 
-        if self._should_turn_around(train, platform):
-            # Ensure cab switch is allowed in all stop-and-reverse route legs.
-            controller.ato_running = False
-            controller.turn_around()
-
         target_block_id = self._get_platform_block_id(target_platform_id)
         if not target_block_id:
             error_msg = f"Platform {target_platform_id} has no associated block"
@@ -310,6 +305,7 @@ class RouteExecutor:
         if route.mode == RouteMode.ONE_OFF:
             exec_state.current_waypoint_index += 1
             exec_state.resolved_platform_id = None
+            route.current_waypoint_index = exec_state.current_waypoint_index
             return exec_state.current_waypoint_index < waypoint_count
 
         if route.mode == RouteMode.CIRCULAR:
@@ -317,6 +313,7 @@ class RouteExecutor:
             if exec_state.current_waypoint_index >= waypoint_count:
                 exec_state.current_waypoint_index = 0
             exec_state.resolved_platform_id = None
+            route.current_waypoint_index = exec_state.current_waypoint_index
             return True
 
         # ROUND_TRIP
@@ -333,6 +330,10 @@ class RouteExecutor:
                 exec_state.current_waypoint_index = 0
 
         exec_state.resolved_platform_id = None
+
+        # Sync backward-compatible route-level fields from per-train state.
+        route.current_waypoint_index = exec_state.current_waypoint_index
+        route.direction = exec_state.direction
         return True
 
     def _handle_route_complete_for_train(
@@ -702,31 +703,6 @@ class RouteExecutor:
         if not track:
             return None
         return track.block_section_id
-
-    def _should_turn_around(self, train: "Train", target_platform: object) -> bool:
-        """Check if train should turn around to approach the target."""
-        if not train.position or not train.facing_direction:
-            return False
-
-        positions = getattr(target_platform, "positions", None)
-        if not positions:
-            return False
-        target_pos = positions[0]
-
-        dx = target_pos[0] - train.position.head_tile[0]
-        dy = target_pos[1] - train.position.head_tile[1]
-        if abs(dx) > abs(dy):
-            required_dir = Direction.EAST if dx > 0 else Direction.WEST
-        else:
-            required_dir = Direction.NORTH if dy > 0 else Direction.SOUTH
-
-        effective_dir = train.get_effective_direction()
-        if (
-            effective_dir
-            and OPPOSITE_DIRECTIONS.get(effective_dir.name[0]) == required_dir.name[0]
-        ):
-            return True
-        return False
 
     def _convert_path_to_train_path(
         self, path: object

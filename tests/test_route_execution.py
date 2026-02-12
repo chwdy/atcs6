@@ -334,7 +334,6 @@ class TestRouteExecutor:
         executor = RouteExecutor(simple_network)
         train = Train(train_id="T001", current_speed=0.0)
         train.state = TrainState.IDLE
-        train.facing_direction = Direction.EAST
         train.position = make_train_position((0, 0), Direction.EAST)
 
         simple_network.routes[simple_route.route_id] = simple_route
@@ -351,7 +350,7 @@ class TestRouteExecutor:
         executor = RouteExecutor(simple_network)
         train = Train(train_id="T001", current_speed=0.0)
         train.state = TrainState.IDLE
-        train.facing_direction = Direction.EAST
+        train.position = make_train_position((0, 0), facing_direction=Direction.EAST)
 
         simple_network.routes[simple_route.route_id] = simple_route
 
@@ -385,7 +384,7 @@ class TestRouteExecutor:
         executor = RouteExecutor(simple_network)
         train = Train(train_id="T001", current_speed=0.0)
         train.state = TrainState.IDLE
-        train.facing_direction = Direction.EAST
+        train.position = make_train_position((0, 0), facing_direction=Direction.EAST)
 
         simple_network.routes[simple_route.route_id] = simple_route
 
@@ -485,7 +484,7 @@ class TestRouteExecutorCompatibilityBugFixes:
 
         train = Train(train_id="T001", current_speed=0.0)
         train.state = TrainState.IDLE
-        train.facing_direction = Direction.EAST
+        train.position = make_train_position((0, 0), facing_direction=Direction.EAST)
 
         executor.activate_route(train, route)
         assert train.train_id in executor.controllers
