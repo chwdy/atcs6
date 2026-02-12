@@ -48,7 +48,12 @@ class PathEditorHandler {
             this.renderer.clearRoutePreview();
         }
         if (this.editor._currentEditorType === 'path-setup') {
-            this.editor.hideSecondarySidebar();
+            this.editor.goBackSecondaryPanel();
+            // If history was empty (no panel before path tool), goBack does nothing.
+            // In that case _currentEditorType is still 'path-setup', so close the sidebar.
+            if (this.editor._currentEditorType === 'path-setup') {
+                this.editor.hideSecondarySidebar();
+            }
         }
         if (this.cachedNetwork) {
             this.renderer.drawNetwork(this.cachedNetwork);
@@ -604,7 +609,11 @@ class PathEditorHandler {
             this.renderer.clearPathHighlight();
         }
         if (this.editor._currentEditorType === 'extend-path-setup') {
-            this.editor.hideSecondarySidebar();
+            this.editor.goBackSecondaryPanel();
+            // If history was empty, goBack does nothing - close sidebar as fallback.
+            if (this.editor._currentEditorType === 'extend-path-setup') {
+                this.editor.hideSecondarySidebar();
+            }
         }
         if (this.cachedNetwork) {
             this.renderer.drawNetwork(this.cachedNetwork);
