@@ -209,12 +209,23 @@ class Renderer {
         width = Math.max(width, 100);
         height = Math.max(height, 100);
 
+        // Save old center before resize to preserve viewport
+        const oldCenterX = this.centerX;
+        const oldCenterY = this.centerY;
+
         this.canvas.width = width;
         this.canvas.height = height;
 
         // Center point of the canvas (where grid 0,0 appears)
         this.centerX = Math.floor(width / 2);
         this.centerY = Math.floor(height / 2);
+
+        // Adjust pan to preserve the same viewport center after resize
+        // This prevents the canvas from "jumping" when the sidebar opens/closes
+        if (oldCenterX !== 0 || oldCenterY !== 0) {
+            this.panX += (oldCenterX - this.centerX);
+            this.panY += (oldCenterY - this.centerY);
+        }
 
         this.draw();
     }

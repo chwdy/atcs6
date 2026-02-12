@@ -38,7 +38,7 @@ from path import (
     CancellationResult,
     DEFAULT_PATH_PRIORITY,
 )
-from enums import BlockState, direction_from_delta, DIRECTION_OFFSETS
+from enums import BlockState, TrainState, direction_from_delta, DIRECTION_OFFSETS
 from track import OPPOSITE_EDGE
 from model_scale import kmh_to_cm_per_sec
 
@@ -1260,6 +1260,25 @@ class PathDispatcher:
                 train_obj.current_path = None
                 train_obj.path_index = 0
                 train_obj.reserved_blocks = []
+
+                # Stop ATO and transition to standby when path completes
+                # This ensures train state changes from RUNNING_MOVING to STANDBY
+                # even when stopped at a waypoint that's not a station
+                if (
+                    hasattr(self.network, "power_controller")
+                    and self.network.power_controller
+                ):
+                    sim_controller = getattr(
+                        self.network.power_controller, "_sim_controller", None
+                    )
+                    if sim_controller:
+                        controller = sim_controller.get_controller(train_obj.train_id)
+                        if controller:
+                            controller.ato_running = False
+                            controller.ato_destination_block_id = None
+                            controller.ato_path_id = None
+                            if train_obj.state == TrainState.RUNNING_MOVING:
+                                controller.transition_to_standby()
 
         del self.active_paths[path.path_id]
 

@@ -185,10 +185,11 @@ class RendererTrainHandler {
     drawTrainFromPath(train) {
         const pathTiles = train.path_tiles;
         const pathInfo = train.path_tile_info || [];
-        // Determine head and tail based on leading_end
-        // When leading_end is null/undefined (no cab selected), treat train as symmetric
-        // Use end_a as "head" position for rendering purposes
-        const hasLeadingEnd = train.leading_end === 'a' || train.leading_end === 'b';
+        // Determine head and tail based on active_cab
+        // active_cab reflects whether a cab is actually selected (A/B/null)
+        // leading_end is always set by place_train() even when cab is OFF,
+        // so we must use active_cab to decide marker style (triangle vs square)
+        const hasLeadingEnd = train.active_cab === 'A' || train.active_cab === 'B';
         const headIndex = train.leading_end === 'b' ? train.end_b_index : train.end_a_index;
         const tailIndex = train.leading_end === 'b' ? train.end_a_index : train.end_b_index;
         const headDistanceCm = train.leading_end === 'b' ? train.end_b_distance_cm : train.end_a_distance_cm;

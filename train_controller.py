@@ -1761,7 +1761,9 @@ class TrainController:
                     required_cab = self.active_cab or "A"
                 elif path_direction == train.facing_direction.opposite():
                     # Path goes opposite to train's facing -> need opposite cab
-                    required_cab = "B" if self.active_cab == "A" else "A"
+                    # Use required_cab (defaults to active_cab or "A") for flip,
+                    # since active_cab may be None when auto-selecting
+                    required_cab = "B" if required_cab == "A" else "A"
                 else:
                     # Path goes at 90 degrees at the head tile.  This can
                     # happen on diagonal staircase track where the first
@@ -1780,7 +1782,7 @@ class TrainController:
                         overall_dir is not None
                         and overall_dir == train.facing_direction.opposite()
                     ):
-                        required_cab = "B" if self.active_cab == "A" else "A"
+                        required_cab = "B" if required_cab == "A" else "A"
                     else:
                         required_cab = self.active_cab or "A"
 
@@ -3143,12 +3145,14 @@ class TrainController:
 
         Rules:
         - Must be in ATO mode
-        - Active cab must be set
-        - Train must be in STANDBY state
+        - Must be powered on
+        - Train state must be IDLE or STANDBY
 
         ATO Automation:
-        - Automatically checks and corrects cab direction to match path
-        - Uses set_cab() for proper state updates (facing_direction, entry edges, etc.)
+        - Automatically selects cab from path direction when cab is OFF (None)
+        - Automatically corrects cab direction to match path when already set
+        - Uses set_cab() for proper state updates (facing_direction, entry edges,
+          state transitions IDLE -> STANDBY, etc.)
         """
         train = self._get_train()
         if train is None:
@@ -3157,41 +3161,57 @@ class TrainController:
         if self.control_mode != "ato":
             return CommandResult(False, "Not in ATO mode")
 
-        if self.active_cab is None:
-            return CommandResult(False, "No cab selected")
+        if not self.power_on:
+            return CommandResult(False, "Power is off")
 
-        if self.state != TrainState.STANDBY:
-            return CommandResult(False, f"Train not in STANDBY (is {self.state.value})")
+        # Allow IDLE (no cab) or STANDBY (cab set) - auto-selection handles IDLE
+        if self.state not in (TrainState.IDLE, TrainState.STANDBY):
+            return CommandResult(
+                False, f"Train not in IDLE or STANDBY (is {self.state.value})"
+            )
 
         # Recalculate ATO info fresh to ensure cab direction matches
         # the current path (path may have been assigned since last tick)
         self.ato_info = self._calculate_ato_info()
 
-        # ATO Auto-correction: Check and adjust cab to match path direction
+        # ATO Auto-selection/correction: determine the required cab from path
+        # direction and select or switch if needed. This handles both:
+        #   1. cab=None (OFF): auto-select cab from path (IDLE -> STANDBY)
+        #   2. cab=A/B but wrong: auto-correct cab to match path direction
         if self.ato_info and self.ato_info.required_cab:
             required_cab = self.ato_info.required_cab
             if self.active_cab != required_cab:
-                # Cab doesn't match path direction - ATO should auto-correct
+                old_cab = self.active_cab
                 logger.info(
-                    "[TrainController %s] ATO auto-correcting cab: %s -> %s",
+                    "[TrainController %s] ATO auto-%s cab: %s -> %s",
                     self.train_id,
-                    self.active_cab,
+                    "selecting" if old_cab is None else "correcting",
+                    old_cab,
                     required_cab,
                 )
                 # Ensure train is physically stopped before switching cab.
-                # We've already verified STANDBY state above, but residual
-                # speed from tick oscillations can cause set_cab() to reject.
                 if train.current_speed > 0:
                     train.current_speed = 0.0
                 result = self.set_cab(required_cab)
                 if not result.success:
                     return CommandResult(
                         False,
-                        f"ATO cannot start: cab auto-correction failed - {result.message}",
+                        f"ATO cannot start: cab auto-{'selection' if old_cab is None else 'correction'} failed - {result.message}",
                     )
                 self.pending_notifications.append(
-                    f"ATO auto-switched cab to {required_cab} for path direction"
+                    f"ATO auto-{'selected' if old_cab is None else 'switched'} cab to {required_cab} for path direction"
                 )
+        elif self.active_cab is None:
+            # No ATO info available and no cab - cannot determine direction
+            return CommandResult(
+                False,
+                "No cab selected and no path available to auto-select direction",
+            )
+
+        # After auto-selection, verify we're in the right state
+        # set_cab() transitions IDLE -> STANDBY, so this should pass
+        if self.state != TrainState.STANDBY:
+            return CommandResult(False, f"Train not in STANDBY (is {self.state.value})")
 
         self.state = TrainState.RUNNING_MOVING
         train.state = TrainState.RUNNING_MOVING

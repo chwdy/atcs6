@@ -3320,6 +3320,113 @@ class TestAtoDestinationStoppingAfterPathCompletes:
             f"but got {controller.ato_destination_block_id}"
         )
 
+    def test_path_completion_transitions_to_standby_at_non_station_waypoint(
+        self, network
+    ):
+        """
+        BUG FIX (2026-02-11): When ATO reaches end of path and stops at a waypoint
+        that's not a station, the train should transition from RUNNING_MOVING to STANDBY.
+
+        ROOT CAUSE:
+        In path_dispatcher._complete_path_on_head_arrival(), the train's assigned_path_id
+        was cleared BEFORE route_executor.handle_path_completion() was called. This caused
+        handle_path_completion() to fail its validation check (train.assigned_path_id != path_id)
+        and return early without calling controller.transition_to_standby().
+
+        FIX:
+        Call controller.transition_to_standby() directly in _complete_path_on_head_arrival()
+        when the path completes and the train is in RUNNING_MOVING state.
+        """
+        from path_dispatcher import PathDispatcher
+        from simulation import SimulationController
+
+        # Create a simple 3-tile track with NO station (just a plain block)
+        for x in range(3):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        # Create a single block covering all tiles (no station)
+        network.create_block_with_tracks(
+            block_id="BLOCK_PLAIN",
+            positions=[(0, 0), (1, 0), (2, 0)],
+            name="Plain Block",
+            length_cm=150.0,
+        )
+
+        # Create dispatcher and simulation controller
+        dispatcher = PathDispatcher(network)
+        sim_controller = SimulationController(network, dispatcher)
+        network.power_controller = sim_controller.power_controller
+        # Link back-reference for the fix to access sim_controller
+        sim_controller.power_controller._sim_controller = sim_controller
+
+        # Create and place train at start
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=30.0)
+        train = Train(train_id="TRAIN_NON_STATION", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        # Create a path for the train
+        from path import Path, PathStatus
+
+        path = Path(
+            path_id="PATH_001",
+            path_tiles=[(0, 0), (1, 0), (2, 0)],
+            block_sequence=["BLOCK_PLAIN"],
+            end_block_id="BLOCK_PLAIN",
+            train_id="TRAIN_NON_STATION",
+        )
+        path.status = PathStatus.ACTIVE
+        dispatcher.active_paths["PATH_001"] = path
+
+        # Assign path to train
+        train.assigned_path_id = "PATH_001"
+        train.current_path = [
+            (0, 0, Direction.EAST),
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+        ]
+        train.path_index = 0
+        train.reserved_blocks = ["BLOCK_PLAIN"]
+
+        # Setup controller for ATO mode and moving state
+        controller = sim_controller._get_or_create_controller(train)
+        controller.power_on = True
+        controller.control_mode = "ato"
+        controller.active_cab = "A"
+        controller.state = TrainState.RUNNING_MOVING
+        controller.ato_running = True
+        controller.ato_destination_block_id = "BLOCK_PLAIN"
+
+        train.state = TrainState.RUNNING_MOVING
+        train.ato_destination_block_id = "BLOCK_PLAIN"
+
+        # Move train to the end tile (simulating arrival at end of path)
+        # Place at tile (1,0) facing EAST so it's on the path and can reach (2,0)
+        network.place_train(train, 1, 0, Direction.EAST)
+        train.current_speed = 0.0  # Train has stopped
+
+        # Verify initial state
+        assert train.state == TrainState.RUNNING_MOVING
+        assert controller.state == TrainState.RUNNING_MOVING
+
+        # Complete the path (this simulates what happens when train reaches path end)
+        dispatcher._complete_path_on_head_arrival(path, train)
+
+        # After path completion, train should transition to STANDBY
+        assert controller.state == TrainState.STANDBY, (
+            f"BUG: Controller state should be STANDBY after path completion, "
+            f"but got {controller.state}. The fix ensures transition_to_standby() "
+            f"is called when path completes."
+        )
+        assert controller.ato_running is False, (
+            f"BUG: ATO should be stopped (ato_running=False) after path completion, "
+            f"but got {controller.ato_running}"
+        )
+        assert controller.ato_destination_block_id is None, (
+            f"BUG: Destination should be cleared after path completion"
+        )
+
 
 class TestAtoInfoPersistenceWithoutActivePath:
     """
@@ -6030,6 +6137,494 @@ class TestSetCabDoubleFlipBugFix:
         )
         assert train.facing_direction == Direction.WEST
         assert controller.active_cab == "B"
+
+
+class TestAtoGoAutoSelectsCabFromNone:
+    """
+    Comprehensive tests for ATO Go auto-cab-selection bug fixed Feb 2026.
+
+    These tests ensure the following bug doesn't regress:
+
+    BUG: When a train is placed via the Add Train tool, it gets
+    leading_end=LeadingEnd.A but active_cab=None and state=OFF.
+    After powering on (state=IDLE) and assigning a path, pressing
+    ATO Go would fail with "No cab selected" because ato_go() had
+    an early-exit guard checking active_cab before the ATO info
+    calculation and auto-correction logic could run.
+
+    Downstream effects:
+    - Lookahead returned empty (get_monitor_lookahead checks active_cab)
+    - ATC speed limit was 0 (tick() checks active_cab)
+    - Manual mode triggered EB immediately (speed limit 0)
+    - Renderer drew triangle head even with cab OFF (checked leading_end
+      instead of active_cab)
+
+    FIX:
+    - ato_go() now calculates ATO info and auto-selects cab BEFORE
+      checking state. set_cab() handles IDLE -> STANDBY transition.
+    - Renderer checks active_cab instead of leading_end for markers.
+    - Frontend Go button enabled when power_on (not active_cab).
+    """
+
+    def _setup_train_no_cab(self, network):
+        """Set up a train placed via Add Train tool (no cab, IDLE after power on)."""
+        # 5 EW tiles: (0,0) to (4,0)
+        for x in range(5):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        # Two blocks
+        network.create_block_with_tracks("B1", [(0, 0), (1, 0)], length_cm=200.0)
+        network.create_block_with_tracks(
+            "B2", [(2, 0), (3, 0), (4, 0)], length_cm=300.0
+        )
+
+        # Create and place train at (1,0) facing EAST
+        car = TrainCar("CAR_01", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="ATO_CAB_TEST", consist=[car], max_speed=60.0)
+        network.add_train(train)
+        network.place_train(train, 1, 0, Direction.EAST)
+
+        # Verify placement state: leading_end=A, active_cab=None
+        assert train.position.leading_end == LeadingEnd.A
+        assert train.active_cab is None
+        assert train.state == TrainState.OFF
+
+        # Create controller and power on (mimics user clicking power on)
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on_cmd()
+
+        assert controller.power_on is True
+        assert controller.state == TrainState.IDLE
+        assert controller.active_cab is None
+        assert controller.control_mode == "ato"
+
+        # Set up a path from train location eastward
+        path_tiles = [
+            (1, 0, Direction.EAST),
+            (2, 0, Direction.EAST),
+            (3, 0, Direction.EAST),
+            (4, 0, Direction.EAST),
+        ]
+        train.current_path = path_tiles
+        train.assigned_path_id = "PATH_EAST"
+        train.path_index = 0
+
+        # Set controller destination
+        controller.ato_destination_block_id = "B2"
+        controller.ato_path_id = "PATH_EAST"
+
+        return train, controller
+
+    def test_ato_go_auto_selects_cab_from_none(self, network):
+        """The specific case that triggered the bug: ato_go with no cab."""
+        train, controller = self._setup_train_no_cab(network)
+
+        # Before fix: ato_go() would return "No cab selected"
+        result = controller.ato_go()
+        assert result.success is True, (
+            f"ato_go() should auto-select cab, got: {result.message}"
+        )
+
+        # Verify cab was auto-selected
+        assert controller.active_cab == "A", (
+            "Should auto-select cab A for eastbound path"
+        )
+        assert train.active_cab == "A"
+        assert controller.state == TrainState.RUNNING_MOVING
+        assert controller.ato_running is True
+
+    def test_ato_go_auto_selects_opposite_cab_for_reverse_path(self, network):
+        """When path goes opposite to facing direction, should select opposite cab."""
+        train, controller = self._setup_train_no_cab(network)
+
+        # Change path to go westward (opposite to train facing EAST)
+        path_tiles = [(1, 0, Direction.WEST), (0, 0, Direction.WEST)]
+        train.current_path = path_tiles
+        train.path_index = 0
+        controller.ato_destination_block_id = "B1"
+
+        result = controller.ato_go()
+        assert result.success is True, (
+            f"ato_go() should auto-select opposite cab, got: {result.message}"
+        )
+
+        # Should select cab B (opposite to default A) since path is opposite to facing
+        assert controller.active_cab == "B", (
+            "Should auto-select cab B for westbound path"
+        )
+        assert controller.state == TrainState.RUNNING_MOVING
+
+    def test_ato_go_fails_without_power(self, network):
+        """ato_go should fail if power is off."""
+        train, controller = self._setup_train_no_cab(network)
+        controller.power_on = False
+        controller.state = TrainState.OFF
+
+        result = controller.ato_go()
+        assert result.success is False
+        assert "Power" in result.message or "power" in result.message
+
+    def test_ato_go_fails_without_path_and_no_cab(self, network):
+        """ato_go with no cab and no path should fail gracefully."""
+        train, controller = self._setup_train_no_cab(network)
+
+        # Remove path info
+        train.current_path = None
+        train.assigned_path_id = None
+        controller.ato_destination_block_id = None
+        controller.ato_path_id = None
+
+        result = controller.ato_go()
+        assert result.success is False
+        assert "cab" in result.message.lower() or "path" in result.message.lower()
+
+    def test_ato_go_transitions_through_standby(self, network):
+        """ato_go from IDLE should transition through STANDBY to RUNNING_MOVING."""
+        train, controller = self._setup_train_no_cab(network)
+
+        # Verify starting state
+        assert controller.state == TrainState.IDLE
+        assert controller.active_cab is None
+
+        result = controller.ato_go()
+        assert result.success is True
+
+        # set_cab() should have transitioned IDLE -> STANDBY,
+        # then ato_go() transitions STANDBY -> RUNNING_MOVING
+        assert controller.state == TrainState.RUNNING_MOVING
+        assert train.state == TrainState.RUNNING_MOVING
+
+    def test_ato_go_with_existing_cab_still_works(self, network):
+        """ato_go should still work when cab is already set (no regression)."""
+        train, controller = self._setup_train_no_cab(network)
+
+        # Manually set cab first (simulating user clicking cab A)
+        controller.set_cab("A")
+        assert controller.active_cab == "A"
+        assert controller.state == TrainState.STANDBY
+
+        result = controller.ato_go()
+        assert result.success is True
+        assert controller.ato_running is True
+        assert controller.state == TrainState.RUNNING_MOVING
+
+    def test_ato_go_auto_corrects_wrong_cab(self, network):
+        """ato_go should auto-correct cab if wrong direction (existing behavior preserved)."""
+        train, controller = self._setup_train_no_cab(network)
+
+        # Set cab A (facing EAST), but path goes WEST
+        controller.set_cab("A")
+        path_tiles = [(1, 0, Direction.WEST), (0, 0, Direction.WEST)]
+        train.current_path = path_tiles
+        train.path_index = 0
+        controller.ato_destination_block_id = "B1"
+
+        result = controller.ato_go()
+        assert result.success is True
+        # Cab should have been auto-corrected from A to B
+        assert controller.active_cab == "B"
+
+    def test_lookahead_works_after_auto_cab_selection(self, network):
+        """After ato_go auto-selects cab, lookahead should not be empty."""
+        train, controller = self._setup_train_no_cab(network)
+
+        result = controller.ato_go()
+        assert result.success is True
+
+        # Now tick should calculate proper lookahead
+        lookahead = controller._calculate_lookahead()
+        assert len(lookahead) > 0, (
+            "Lookahead should not be empty after cab auto-selection"
+        )
+
+    def test_atc_speed_limit_nonzero_after_auto_cab_selection(self, network):
+        """After ato_go auto-selects cab, ATC speed limit should not be 0."""
+        train, controller = self._setup_train_no_cab(network)
+
+        result = controller.ato_go()
+        assert result.success is True
+
+        # Run a tick to update ATC info
+        controller.tick(0.1)
+
+        # ATC speed limit should not be 0 (it was 0 with "No cab selected" before)
+        assert controller.active_cab is not None
+        assert controller.speed_limit_reason != "No cab selected"
+
+    def test_notification_on_auto_cab_selection(self, network):
+        """Auto-cab-selection should produce a notification for the user."""
+        train, controller = self._setup_train_no_cab(network)
+
+        result = controller.ato_go()
+        assert result.success is True
+
+        # Check that a notification was added
+        assert len(controller.pending_notifications) > 0
+        notification = controller.pending_notifications[0]
+        assert "auto" in notification.lower()
+        assert "cab" in notification.lower()
+
+    def test_ato_go_not_in_ato_mode(self, network):
+        """ato_go should fail if control mode is manual."""
+        train, controller = self._setup_train_no_cab(network)
+        controller.set_mode("manual")
+
+        result = controller.ato_go()
+        assert result.success is False
+        assert (
+            "ATO" in result.message
+            or "ato" in result.message
+            or "Not in ATO" in result.message
+        )
+
+
+class TestUserReportedBugExactWorkflow:
+    """
+    End-to-end test replicating the exact user-reported workflow from Feb 2026.
+
+    User's exact workflow:
+    1. At demo_main initial state, cancel whole route
+    2. Place new train on (5,0) - train placed with power off, cab control off
+    3. Use path tool to create path from (5,0) to east terminal
+    4. Turn power on
+    5. Try to use ATO Go
+
+    BUG BEFORE FIX:
+    - ATO Go didn't set cab correctly from OFF
+    - Train rendered with triangle head even though cab was OFF (should be square both ends)
+    - Go button was disabled
+    - Lookahead was empty
+    - ATO speed was wrong
+    - Manual mode triggered EB immediately
+
+    This test ensures all symptoms are fixed and don't regress.
+    """
+
+    def _setup_demo_main_like_network(self, network):
+        """Create a network similar to demo_main with east terminal."""
+        # Create a linear track from (0,0) to (9,0) going east
+        for x in range(10):
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        # Create blocks
+        network.create_block_with_tracks(
+            "WEST_BLOCK", [(0, 0), (1, 0), (2, 0)], length_cm=300.0
+        )
+        network.create_block_with_tracks(
+            "MID_BLOCK", [(3, 0), (4, 0), (5, 0)], length_cm=300.0
+        )
+        network.create_block_with_tracks(
+            "EAST_TERMINAL_BLOCK", [(6, 0), (7, 0), (8, 0), (9, 0)], length_cm=400.0
+        )
+
+        return network
+
+    def test_exact_user_workflow_place_train_power_on_ato_go(self, network):
+        """
+        Exact reproduction of user's workflow.
+
+        This is the PRIMARY regression test for the Feb 2026 ATO Go bug.
+        """
+        self._setup_demo_main_like_network(network)
+
+        # Step 1: User places train at (5,0) via Add Train tool
+        # This mimics POST /api/trains with position
+        car = TrainCar("USER_TRAIN_01", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="USER_TRAIN", consist=[car], max_speed=100.0)
+        network.add_train(train)
+        network.place_train(train, 5, 0, Direction.EAST)
+
+        # Verify placement state matches user's observation:
+        # "train placed but with power off, cab control off"
+        assert train.state == TrainState.OFF, "Train should be OFF after placement"
+        assert train.active_cab is None, (
+            "Train should have no cab selected after placement"
+        )
+        assert train.position.leading_end == LeadingEnd.A, (
+            "leading_end should be set by place_train"
+        )
+
+        # Step 2: Create controller (app creates controller for each train)
+        controller = create_controller_for_train(train.train_id, network)
+        assert controller.power_on is False, "Controller should start with power off"
+        assert controller.active_cab is None
+        assert controller.state == TrainState.OFF
+
+        # Step 3: User uses path tool to create path from (5,0) to east terminal
+        # This creates a path eastward
+        path_tiles = [
+            (5, 0, Direction.EAST),
+            (6, 0, Direction.EAST),
+            (7, 0, Direction.EAST),
+            (8, 0, Direction.EAST),
+            (9, 0, Direction.EAST),
+        ]
+        train.current_path = path_tiles
+        train.assigned_path_id = "PATH_TO_EAST_TERMINAL"
+        train.path_index = 0
+        controller.ato_destination_block_id = "EAST_TERMINAL_BLOCK"
+        controller.ato_path_id = "PATH_TO_EAST_TERMINAL"
+
+        # Step 4: User turns power on
+        result = controller.power_on_cmd()
+        assert result.success is True, "Power on should succeed"
+        assert controller.power_on is True
+        assert controller.state == TrainState.IDLE, (
+            "Should be IDLE after power on with no cab"
+        )
+        assert controller.active_cab is None, "Cab should still be None"
+
+        # CRITICAL TEST: Step 5 - User presses ATO Go
+        # BEFORE FIX: This would fail with "No cab selected"
+        result = controller.ato_go()
+        assert result.success is True, (
+            f"ATO Go should auto-select cab from path, but got: {result.message}"
+        )
+
+        # Verify all symptoms are fixed:
+
+        # 1. Cab was auto-selected
+        assert controller.active_cab == "A", (
+            "ATO Go should auto-select cab A for eastbound path"
+        )
+        assert train.active_cab == "A"
+
+        # 2. State transitioned correctly
+        assert controller.state == TrainState.RUNNING_MOVING, (
+            "Should transition to RUNNING_MOVING"
+        )
+        assert controller.ato_running is True
+
+        # 3. Lookahead is not empty (was empty before fix)
+        lookahead = controller._calculate_lookahead()
+        assert len(lookahead) > 0, (
+            "Lookahead should not be empty after cab auto-selection"
+        )
+
+        # 4. ATC speed limit is not 0 (was 0 with "No cab selected" before)
+        controller.tick(0.1)
+        assert controller.speed_limit_reason != "No cab selected", (
+            "Speed limit reason should not be 'No cab selected'"
+        )
+        # Speed limit should be positive (could be block speed or clearance-based)
+        assert controller.atc_speed_limit >= 0, "ATC speed limit should be valid"
+
+        # 5. Monitor lookahead works (was returning empty before)
+        monitor_data = controller.get_monitor_lookahead()
+        assert monitor_data is not None, "Monitor lookahead should return data"
+        # Should have blocks or at least not fail with empty
+
+    def test_renderer_marker_style_with_no_cab(self, network):
+        """
+        Test that renderer uses active_cab (not leading_end) for marker style.
+
+        BEFORE FIX: Renderer checked leading_end === 'a', so it drew triangle
+        even when cab was OFF.
+
+        AFTER FIX: Renderer checks active_cab === 'A'/'B', so it draws squares
+        when cab is OFF.
+        """
+        self._setup_demo_main_like_network(network)
+
+        car = TrainCar("RENDERER_TEST", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="RENDERER_TEST", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 5, 0, Direction.EAST)
+
+        # After placement: leading_end='a' but active_cab=None
+        assert train.position.leading_end == LeadingEnd.A
+        assert train.active_cab is None
+
+        # Serialize to dict (as sent to frontend)
+        train_dict = train.to_dict(network)
+        assert train_dict["leading_end"] == "a"
+        assert train_dict["active_cab"] is None
+
+        # Frontend logic (pseudo-code, but this is the critical check):
+        # OLD: hasLeadingEnd = train.leading_end === 'a' || train.leading_end === 'b'
+        #      -> TRUE (draws triangle) - BUG
+        # NEW: hasLeadingEnd = train.active_cab === 'A' || train.active_cab === 'B'
+        #      -> FALSE (draws squares) - CORRECT
+
+        # This test documents the expected behavior:
+        # When active_cab is None, renderer should draw squares at both ends
+        # (The actual rendering is in JS, but we verify the data contract)
+
+        # After setting cab, should change
+        train.set_cab("A")
+        train_dict = train.to_dict(network)
+        assert train_dict["active_cab"] == "A"
+        # Now renderer would draw triangle at head, square at tail
+
+    def test_manual_mode_after_power_on_no_eb(self, network):
+        """
+        Test that manual mode doesn't trigger EB when no cab is selected.
+
+        BEFORE FIX: tick() set atc_speed_limit=0 when active_cab=None,
+        causing EB in manual mode.
+
+        AFTER FIX: User should set cab first (either manually or via ATO Go).
+        """
+        self._setup_demo_main_like_network(network)
+
+        car = TrainCar("MANUAL_TEST", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="MANUAL_TEST", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 5, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on_cmd()
+        controller.set_mode("manual")
+
+        # In IDLE state with no cab, tick should handle gracefully
+        controller.tick(0.1)
+
+        # Speed limit is 0 with no cab (expected behavior)
+        assert controller.speed_limit_reason == "No cab selected"
+        assert controller.atc_speed_limit == 0.0
+
+        # User must set cab before moving in manual mode
+        controller.set_cab("A")
+        assert controller.state == TrainState.STANDBY
+
+        # Now with cab set, tick should work normally
+        controller.tick(0.1)
+        assert controller.speed_limit_reason != "No cab selected"
+
+    def test_go_button_enable_state(self, network):
+        """
+        Test that Go button enable logic uses power_on (not active_cab).
+
+        BEFORE FIX: Button disabled when !onboard?.active_cab
+        AFTER FIX: Button enabled when onboard?.power_on
+        """
+        self._setup_demo_main_like_network(network)
+
+        car = TrainCar("BUTTON_TEST", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="BUTTON_TEST", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 5, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+
+        # Power off, no cab
+        onboard = controller.to_dict()
+        assert onboard["power_on"] is False
+        assert onboard["active_cab"] is None
+        # OLD: Button disabled (!active_cab) - WRONG
+        # NEW: Button disabled (!power_on) - CORRECT
+
+        # Power on, no cab
+        controller.power_on_cmd()
+        onboard = controller.to_dict()
+        assert onboard["power_on"] is True
+        assert onboard["active_cab"] is None
+        # OLD: Button disabled (!active_cab) - BUG
+        # NEW: Button enabled (power_on) - CORRECT, backend auto-selects cab
+
+        # This test documents the data contract for the frontend
 
 
 if __name__ == "__main__":

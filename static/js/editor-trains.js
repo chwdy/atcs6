@@ -582,7 +582,7 @@ class TrainEditorHandler {
                             <div class="info-value text-station train-ato-destination-display">${destinationName}</div>
                         </div>
                         <div class="flex gap-8">
-                            <button id="train-ato-go-btn" class="btn btn-success btn-size-md flex-1" ${!onboard?.active_cab || atoRunning ? 'disabled' : ''}>▶ Go</button>
+                            <button id="train-ato-go-btn" class="btn btn-success btn-size-md flex-1" ${!onboard?.power_on || atoRunning ? 'disabled' : ''}>▶ Go</button>
                             <button id="train-ato-stop-btn" class="btn btn-danger btn-size-md flex-1" ${!atoRunning ? 'disabled' : ''}>⏹ Stop</button>
                         </div>
                     </div>

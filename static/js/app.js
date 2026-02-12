@@ -38,8 +38,11 @@ class App {
         document.getElementById('btn-reset').addEventListener('click', () => {
             window.api.controlSimulation('reset').catch(e => console.error('[App] Reset error:', e));
             this.stopSimulationPolling();
-            this.updatePlaybackUI(false); // Ensure button shows Play
+            this.updatePlaybackUI(false);
             this.refreshNetwork();
+            if (this.editor?.uiHandler) {
+                this.editor.uiHandler.clearSecondaryInspectorState();
+            }
         });
 
         document.querySelectorAll('.speed-btn').forEach(btn => {

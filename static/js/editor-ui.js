@@ -600,6 +600,19 @@ class EditorUIHandler {
         await this.restoreSecondaryTabPanel(activeTab);
     }
 
+    clearSecondaryInspectorState() {
+        this.secondaryTabs = [];
+        this.activeSecondaryTabId = null;
+        this.currentSecondaryPanel = null;
+        this.secondaryPanelHistoryBack = [];
+        this.secondaryPanelHistoryForward = [];
+        try {
+            localStorage.removeItem(this.secondaryInspectorStorageKey);
+        } catch (e) {
+        }
+        this.hideSecondarySidebar();
+    }
+
     cleanupSecondaryPanelSubscriptions() {
         // Phase 3-4: Cleanup subscriptions for all handlers
         if (this.editor.trainHandler?._cleanup) this.editor.trainHandler._cleanup();

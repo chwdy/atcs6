@@ -499,8 +499,6 @@ function showFormModal(options = {}) {
         errorEl.className = 'app-modal-error hidden';
         form.appendChild(errorEl);
 
-        body.appendChild(form);
-
         const footer = document.createElement('div');
         footer.className = 'app-modal-footer';
 
@@ -517,9 +515,13 @@ function showFormModal(options = {}) {
         footer.appendChild(cancelBtn);
         footer.appendChild(confirmBtn);
 
+        // Move footer inside form so submit button works
+        form.appendChild(footer);
+
+        body.appendChild(form);
+
         modal.appendChild(header);
         modal.appendChild(body);
-        modal.appendChild(footer);
         overlay.appendChild(modal);
 
         const showError = (messageText) => {
