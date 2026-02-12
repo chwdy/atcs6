@@ -270,7 +270,7 @@ class Editor {
      * If the item was deleted, close the editor. Called after network refresh.
      */
     validateCurrentEditor() {
-        if (!this._currentEditorType || !this._currentEditorId) {
+        if (!this._currentEditorType) {
             return;
         }
 
@@ -279,41 +279,47 @@ class Editor {
 
         switch (this._currentEditorType) {
             case 'block':
-                // blocks is an object keyed by block_id
+                if (!id) return;
                 itemExists = this.cachedNetwork?.blocks && (id in this.cachedNetwork.blocks);
                 break;
             case 'signal':
-                // signals is an object keyed by signal_id
+                if (!id) return;
                 itemExists = this.cachedNetwork?.signals && (id in this.cachedNetwork.signals);
                 break;
             case 'platform':
+                if (!id) return;
                 itemExists = Array.isArray(this.cachedNetwork?.platforms) &&
                              this.cachedNetwork.platforms.some(p => p.platform_id === id);
                 break;
             case 'station-group':
+                if (!id) return;
                 itemExists = Array.isArray(this.cachedNetwork?.station_groups) &&
                              this.cachedNetwork.station_groups.some(s => s.station_id === id);
                 break;
             case 'train':
             case 'train-control':
+                if (!id) return;
                 itemExists = Array.isArray(this.cachedNetwork?.trains) &&
                              this.cachedNetwork.trains.some(t => t.id === id);
                 break;
             case 'switch':
-                // switches is an object keyed by switch_id
+                if (!id) return;
                 itemExists = this.cachedNetwork?.switches && (id in this.cachedNetwork.switches);
                 break;
             case 'trains-list':
             case 'schedules-list':
-                itemExists = true;
-                break;
             case 'path-setup':
             case 'extend-path-setup':
             case 'paths-list':
-            case 'path':
             case 'routes-list':
+                // List and transient panels don't need IDs - always valid
+                itemExists = true;
+                break;
+            case 'path':
             case 'route-editor':
-                // These are transient or list panels - always considered valid
+                // These editor types need IDs but we'll mark as always valid for now
+                // (proper validation would require checking if path/route still exists)
+                if (!id) return;
                 itemExists = true;
                 break;
         }
