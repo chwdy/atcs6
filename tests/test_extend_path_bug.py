@@ -550,3 +550,102 @@ class TestGetPathTiles:
         # Should fall back to train.current_path
         result = controller.get_path_tiles()
         assert result == fake_path
+
+
+class TestAtoDestinationCleanup:
+    """Tests that ato_destination_block_id is cleared on path completion."""
+
+    @pytest.fixture
+    def simple_network(self):
+        """Create a simple linear network for testing."""
+        network = RailwayNetwork()
+
+        for x in range(0, 10):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        network.create_block_with_tracks(
+            block_id="BLOCK_A",
+            positions=[(0, 0), (1, 0)],
+            name="Block A",
+            length_cm=100.0,
+        )
+        network.create_block_with_tracks(
+            block_id="BLOCK_B",
+            positions=[(2, 0), (3, 0)],
+            name="Block B",
+            length_cm=100.0,
+        )
+        network.create_block_with_tracks(
+            block_id="BLOCK_C",
+            positions=[(4, 0), (5, 0)],
+            name="Block C",
+            length_cm=100.0,
+        )
+
+        return network
+
+    def test_destination_cleared_on_complete_path(self, simple_network):
+        """ato_destination_block_id should be None after complete_path()."""
+        network = simple_network
+        dispatcher = PathDispatcher(network)
+
+        train = Train(train_id="TEST", consist=[TrainCar("C1", "LOCOMOTIVE", 40.0)])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        if network.block_manager:
+            network.block_manager.occupy_block("BLOCK_A", train.train_id)
+
+        result = dispatcher.create_path(
+            start_block_id="BLOCK_A",
+            end_block_id="BLOCK_C",
+            train_id=train.train_id,
+        )
+        assert result.success
+
+        train.assigned_path_id = result.path.path_id
+        train.ato_destination_block_id = "BLOCK_C"
+
+        # Complete the path
+        dispatcher.complete_path(result.path.path_id)
+
+        # ato_destination_block_id should be cleared on the train
+        assert train.ato_destination_block_id is None, (
+            "train.ato_destination_block_id should be cleared on path completion"
+        )
+        assert train.assigned_path_id is None, (
+            "train.assigned_path_id should be cleared on path completion"
+        )
+        assert train.current_path is None, (
+            "train.current_path should be cleared on path completion"
+        )
+
+    def test_destination_cleared_on_internal_completion(self, simple_network):
+        """ato_destination_block_id cleared via _complete_path_on_head_arrival."""
+        network = simple_network
+        dispatcher = PathDispatcher(network)
+
+        train = Train(train_id="TEST", consist=[TrainCar("C1", "LOCOMOTIVE", 40.0)])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        if network.block_manager:
+            network.block_manager.occupy_block("BLOCK_A", train.train_id)
+
+        result = dispatcher.create_path(
+            start_block_id="BLOCK_A",
+            end_block_id="BLOCK_C",
+            train_id=train.train_id,
+        )
+        assert result.success
+
+        train.assigned_path_id = result.path.path_id
+        train.ato_destination_block_id = "BLOCK_C"
+
+        # Simulate internal completion (called by tick when train arrives)
+        path = dispatcher.get_path(result.path.path_id)
+        dispatcher._complete_path_on_head_arrival(path, train)
+
+        assert train.ato_destination_block_id is None
+        assert train.assigned_path_id is None

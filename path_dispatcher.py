@@ -1250,6 +1250,17 @@ class PathDispatcher:
                 track.unlock_for_path(path.path_id)
 
         self._record_completion_event(path, train.position.head_tile)
+
+        # Clear train's stale path/destination state — path is done
+        if path.train_id:
+            train_obj = self.network.trains.get(path.train_id)
+            if train_obj:
+                train_obj.ato_destination_block_id = None
+                train_obj.assigned_path_id = None
+                train_obj.current_path = None
+                train_obj.path_index = 0
+                train_obj.reserved_blocks = []
+
         del self.active_paths[path.path_id]
 
     def _record_completion_event(self, path: Path, end_tile: Tuple[int, int]) -> None:
@@ -1448,6 +1459,16 @@ class PathDispatcher:
                 track.unlock_for_path(path_id)
 
         # Remove from active paths
+        # Clear train's stale path/destination state — path is done
+        if path.train_id:
+            train_obj = self.network.trains.get(path.train_id)
+            if train_obj:
+                train_obj.ato_destination_block_id = None
+                train_obj.assigned_path_id = None
+                train_obj.current_path = None
+                train_obj.path_index = 0
+                train_obj.reserved_blocks = []
+
         del self.active_paths[path_id]
 
         return True

@@ -119,6 +119,7 @@ class RouteExecutor:
         train.current_path = None
         train.path_index = 0
         train.reserved_blocks = []
+        train.ato_destination_block_id = None
 
         exec_state = self.execution_states.get(train_id)
         if exec_state:
@@ -131,12 +132,10 @@ class RouteExecutor:
         if route and route.is_active:
             self._check_waypoint_arrival(train, route, exec_state)
 
+        # Clear controller's destination — path is done
         controller = self._get_controller(train)
-        if controller.control_mode == "ato" and controller.ato_destination_block_id:
-            current_block_id = self._get_current_block_id(train)
-            if current_block_id == controller.ato_destination_block_id:
-                return True
-
+        controller.ato_destination_block_id = None
+        controller.ato_path_id = None
         controller.transition_to_standby()
         return True
 
