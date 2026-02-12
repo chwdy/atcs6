@@ -404,11 +404,13 @@ class Train:
     # ========================================================================
     # NAVIGATION PATH - Where the train is going
     # ========================================================================
-    # current_path: Full planned route from pathfinder (head tile to destination)
-    # - List of (x, y, direction) tuples ordered from current position to goal
-    # - Used by: TrainMonitor (lookahead display), ATC (speed calculation),
-    #            simulation (next tile decisions)
-    # - Updated when: New route assigned, recalculated after reaching destination
+    # current_path: Cached copy of path tiles for serialization (Train.to_dict).
+    # NOT the source of truth for control decisions.
+    # TrainController reads path data directly from PathDispatcher via
+    # get_path_tiles(), which reads from Path.path_tiles (the canonical copy).
+    # This cache is set by assign_complete_path_to_train() and may be stale
+    # after path extension/cancellation — that's OK since it's only used for
+    # frontend display (to_dict), not control logic.
     current_path: Optional[List[Tuple[int, int, Direction]]] = None
 
     # path_index: Current position in current_path (0 = first tile in path)
