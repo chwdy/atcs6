@@ -388,3 +388,165 @@ class TestExtendPathBugFix:
     """
 
     pass
+
+
+class TestGetPathTiles:
+    """Tests for TrainController.get_path_tiles() reading from PathDispatcher."""
+
+    @pytest.fixture
+    def simple_network(self):
+        """Create a simple linear network for testing."""
+        network = RailwayNetwork()
+
+        for x in range(0, 10):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        network.create_block_with_tracks(
+            block_id="BLOCK_A",
+            positions=[(0, 0), (1, 0)],
+            name="Block A",
+            length_cm=100.0,
+        )
+        network.create_block_with_tracks(
+            block_id="BLOCK_B",
+            positions=[(2, 0), (3, 0)],
+            name="Block B",
+            length_cm=100.0,
+        )
+        network.create_block_with_tracks(
+            block_id="BLOCK_C",
+            positions=[(4, 0), (5, 0)],
+            name="Block C",
+            length_cm=100.0,
+        )
+        network.create_block_with_tracks(
+            block_id="BLOCK_D",
+            positions=[(6, 0), (7, 0)],
+            name="Block D",
+            length_cm=100.0,
+        )
+        network.create_block_with_tracks(
+            block_id="BLOCK_E",
+            positions=[(8, 0), (9, 0)],
+            name="Block E",
+            length_cm=100.0,
+        )
+
+        return network
+
+    def test_get_path_tiles_returns_dispatcher_path(self, simple_network):
+        """get_path_tiles reads from dispatcher, not train.current_path."""
+        network = simple_network
+        dispatcher = PathDispatcher(network)
+
+        # Create a train and place it
+        train = Train(train_id="TEST", consist=[TrainCar("C1", "LOCOMOTIVE", 40.0)])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        # Occupy starting block
+        if network.block_manager:
+            network.block_manager.occupy_block("BLOCK_A", train.train_id)
+
+        # Create a path
+        result = dispatcher.create_path(
+            start_block_id="BLOCK_A",
+            end_block_id="BLOCK_C",
+            train_id=train.train_id,
+        )
+        assert result.success
+        train.assigned_path_id = result.path.path_id
+
+        # Create controller with dispatcher
+        controller = create_controller_for_train(
+            train_id=train.train_id,
+            network=network,
+            path_dispatcher=dispatcher,
+        )
+
+        # get_path_tiles should return tiles from dispatcher
+        path_tiles = controller.get_path_tiles()
+        assert path_tiles is not None
+        assert len(path_tiles) > 0
+
+        # Each entry should be (x, y, Direction)
+        for entry in path_tiles:
+            assert len(entry) == 3
+            assert isinstance(entry[2], Direction)
+
+    def test_get_path_tiles_returns_none_when_no_path(self, simple_network):
+        """get_path_tiles returns None when train has no assigned path."""
+        network = simple_network
+        dispatcher = PathDispatcher(network)
+        train = Train(train_id="TEST", consist=[TrainCar("C1", "LOCOMOTIVE", 40.0)])
+        network.add_train(train)
+
+        controller = create_controller_for_train(
+            train_id=train.train_id,
+            network=network,
+            path_dispatcher=dispatcher,
+        )
+
+        assert controller.get_path_tiles() is None
+
+    def test_get_path_tiles_reflects_extension(self, simple_network):
+        """After extend_path, get_path_tiles returns the extended path immediately."""
+        network = simple_network
+        dispatcher = PathDispatcher(network)
+
+        train = Train(train_id="TEST", consist=[TrainCar("C1", "LOCOMOTIVE", 40.0)])
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        # Occupy starting block
+        if network.block_manager:
+            network.block_manager.occupy_block("BLOCK_A", train.train_id)
+
+        # Create initial path
+        result = dispatcher.create_path(
+            start_block_id="BLOCK_A",
+            end_block_id="BLOCK_C",
+            train_id=train.train_id,
+        )
+        assert result.success
+        train.assigned_path_id = result.path.path_id
+
+        controller = create_controller_for_train(
+            train_id=train.train_id,
+            network=network,
+            path_dispatcher=dispatcher,
+        )
+
+        tiles_before = controller.get_path_tiles()
+        count_before = len(tiles_before)
+
+        # Extend the path
+        ext_result = dispatcher.extend_path(result.path.path_id, "BLOCK_E")
+        assert ext_result.success, f"Extension failed: {ext_result.error}"
+
+        tiles_after = controller.get_path_tiles()
+        assert len(tiles_after) > count_before, (
+            "get_path_tiles should reflect extension immediately"
+        )
+
+    def test_get_path_tiles_fallback_without_dispatcher(self, simple_network):
+        """Without a dispatcher, get_path_tiles falls back to train.current_path."""
+        network = simple_network
+        train = Train(train_id="TEST", consist=[TrainCar("C1", "LOCOMOTIVE", 40.0)])
+        network.add_train(train)
+
+        # Create controller WITHOUT dispatcher
+        controller = create_controller_for_train(
+            train_id=train.train_id,
+            network=network,
+        )
+
+        # Set a fake current_path and assigned_path_id on the train
+        fake_path = [(0, 0, Direction.EAST), (1, 0, Direction.EAST)]
+        train.current_path = fake_path
+        train.assigned_path_id = "FAKE_PATH"
+
+        # Should fall back to train.current_path
+        result = controller.get_path_tiles()
+        assert result == fake_path

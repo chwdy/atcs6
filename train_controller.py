@@ -1006,6 +1006,31 @@ class TrainController:
 
         return 0.0
 
+    def get_path_tiles(self) -> Optional[List[Tuple[int, int, "Direction"]]]:
+        """Get path tiles from PathDispatcher (single source of truth).
+
+        Reads Path.path_tiles from the dispatcher and converts to
+        (x, y, Direction) format. Returns None if no active path exists.
+
+        This replaces reading from train.current_path, which was a stale
+        copy that didn't reflect path extensions or cancellations.
+        """
+        train = self._get_train()
+        if not train or not train.assigned_path_id:
+            return None
+
+        if not self.path_dispatcher:
+            # Fallback: no dispatcher reference, use train's copy
+            return train.current_path
+
+        path = self.path_dispatcher.get_path(train.assigned_path_id)
+        if not path or not path.path_tiles:
+            return None
+
+        from path_utils import convert_tiles_to_train_path
+
+        return convert_tiles_to_train_path(path.path_tiles)
+
     def _get_head_path_index(self, train: "Train", head_tile: Tuple[int, int]) -> int:
         """Get the path index for the train head tile."""
         if not train.current_path:
