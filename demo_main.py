@@ -617,6 +617,7 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
     controller = create_controller_for_train(
         train_id=demo_train.train_id,
         network=network,
+        path_dispatcher=path_dispatcher,
     )
 
     # Set ATO destination block from the path's end block

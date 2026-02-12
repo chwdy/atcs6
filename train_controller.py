@@ -61,6 +61,7 @@ from model_scale import get_speed_conversion_factor
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
+    from path_dispatcher import PathDispatcher
     from speed_profile import SpeedProfile
     from train import Train
 
@@ -245,6 +246,7 @@ class TrainController:
 
     train_id: str
     network: Optional["RailwayNetwork"] = None
+    path_dispatcher: Optional["PathDispatcher"] = None
 
     # -------------------------------------------------------------------------
     # Power & Safety State
@@ -4187,7 +4189,9 @@ class TrainController:
 
 
 def create_controller_for_train(
-    train_id: str, network: "RailwayNetwork"
+    train_id: str,
+    network: "RailwayNetwork",
+    path_dispatcher: Optional["PathDispatcher"] = None,
 ) -> TrainController:
     """
     Create a TrainController instance for a train.
@@ -4195,8 +4199,11 @@ def create_controller_for_train(
     Args:
         train_id: ID of the train to control
         network: Railway network
+        path_dispatcher: PathDispatcher for reading path data (single source of truth)
 
     Returns:
         TrainController instance
     """
-    return TrainController(train_id=train_id, network=network)
+    return TrainController(
+        train_id=train_id, network=network, path_dispatcher=path_dispatcher
+    )

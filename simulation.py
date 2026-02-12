@@ -147,6 +147,7 @@ class SimulationController:
             controller = create_controller_for_train(
                 train_id=train.train_id,
                 network=self.network,
+                path_dispatcher=self.path_dispatcher,
             )
             # Inherit ATO state from train (for demo_main workflow)
             if hasattr(train, "ato_running") and train.ato_running:
