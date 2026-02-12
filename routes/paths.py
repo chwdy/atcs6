@@ -69,7 +69,8 @@ def register(app, state: AppState) -> None:
                             train.path_index = 0
                         train.assigned_path_id = result.path.path_id
 
-                        # Set ato_destination_block_id on controller for proper stopping
+                        # Set destination on controller for immediate ATO use.
+                        # In future, controller could read Path.end_block_id directly.
                         controller = state.sim_controller._get_or_create_controller(
                             train
                         )
