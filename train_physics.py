@@ -43,12 +43,13 @@ Design Principles:
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from enums import (
     BRAKE_MULTIPLIERS,
     POWER_MULTIPLIERS,
     BlockState,
+    Direction,
     HandlePosition,
     LeadingEnd,
     TrainState,
@@ -117,6 +118,13 @@ class TrainPhysics:
         if self.network is None:
             return None
         return self.network.trains.get(self.train_id)
+
+    def _get_path_tiles(self) -> Optional[List[Tuple[int, int, "Direction"]]]:
+        """Get path tiles from controller (reads from dispatcher)."""
+        if self.controller:
+            return self.controller.get_path_tiles()
+        train = self._get_train()
+        return train.current_path if train else None
 
     def _get_speed_profile(self) -> "SpeedProfile":
         """Get the SpeedProfile for this train."""
@@ -820,8 +828,9 @@ class TrainPhysics:
 
         # If train has a path, follow the path
         train = self._get_train()
-        if train and train.current_path:
-            next_tile_in_path = self._get_next_tile_in_path(train, tile)
+        path_tiles = self._get_path_tiles()
+        if train and path_tiles:
+            next_tile_in_path = self._get_next_tile_in_path(path_tiles, tile)
             if next_tile_in_path:
                 # Determine which edge leads to the next tile
                 for exit_edge in possible_exits:
@@ -833,18 +842,18 @@ class TrainPhysics:
         return possible_exits[0] if possible_exits else None
 
     def _get_next_tile_in_path(
-        self, train: "Train", current_tile: Tuple[int, int]
+        self, path_tiles: List[Tuple[int, int, Any]], current_tile: Tuple[int, int]
     ) -> Optional[Tuple[int, int]]:
         """Get next tile in train's path after current tile."""
-        if not train.current_path:
+        if not path_tiles:
             return None
 
         # Find current tile in path
-        for i, (x, y, _) in enumerate(train.current_path):
+        for i, (x, y, _) in enumerate(path_tiles):
             if (x, y) == current_tile:
                 # Return next tile if exists
-                if i + 1 < len(train.current_path):
-                    next_x, next_y, _ = train.current_path[i + 1]
+                if i + 1 < len(path_tiles):
+                    next_x, next_y, _ = path_tiles[i + 1]
                     return (next_x, next_y)
                 break
 
