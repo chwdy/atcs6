@@ -307,6 +307,15 @@ class Editor {
             case 'schedules-list':
                 itemExists = true;
                 break;
+            case 'path-setup':
+            case 'extend-path-setup':
+            case 'paths-list':
+            case 'path':
+            case 'routes-list':
+            case 'route-editor':
+                // These are transient or list panels - always considered valid
+                itemExists = true;
+                break;
         }
 
         if (!itemExists) {
