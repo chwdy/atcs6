@@ -114,10 +114,10 @@ class TestExtendPathBug:
 
     def test_extend_path_updates_train_destination(self, simple_network, demo_train):
         """
-        Test that extending a path updates the train's destination.
+        Test that extending a path updates the destination visible to the controller.
 
-        This is the core bug: after extending, the train should aim for the
-        new destination, not the old one.
+        After extending, the controller (reading from the dispatcher) should see
+        the new destination and extended path tiles.
         """
         dispatcher = PathDispatcher(simple_network)
         executor = RouteExecutor(simple_network, dispatcher)
@@ -140,80 +140,39 @@ class TestExtendPathBug:
         assert success, f"Failed to assign path: {error}"
         demo_train.assigned_path_id = path.path_id
 
-        # Create controller and set destination
+        # Create controller WITH dispatcher
         controller = create_controller_for_train(
             train_id=demo_train.train_id,
             network=simple_network,
+            path_dispatcher=dispatcher,
         )
         controller.ato_destination_block_id = path.end_block_id
-        demo_train.ato_destination_block_id = path.end_block_id
 
         # Store initial path info
-        initial_path_length = len(demo_train.current_path)
-        initial_destination = demo_train.ato_destination_block_id
-
-        print(f"\nInitial path:")
-        print(f"  Destination: {initial_destination}")
-        print(f"  Path length: {initial_path_length} tiles")
-        print(f"  Path blocks: {path.block_sequence}")
+        initial_tiles = controller.get_path_tiles()
+        initial_path_length = len(initial_tiles)
 
         # Extend path from C to E
         extend_result = dispatcher.extend_path(path.path_id, "BLOCK_E")
-
         assert extend_result.success, f"Failed to extend path: {extend_result.error}"
 
-        # Get updated path
+        # Verify dispatcher's Path object is updated
         updated_path = dispatcher.get_path(path.path_id)
+        assert updated_path.end_block_id == "BLOCK_E"
 
-        print(f"\nExtended path:")
-        print(f"  New destination: {updated_path.end_block_id}")
-        print(f"  Path tiles: {len(updated_path.path_tiles)}")
-        print(f"  Block sequence: {updated_path.block_sequence}")
-        print(f"  Extended blocks: {extend_result.extended_blocks}")
-
-        # BUG VERIFICATION: The following assertions will FAIL before the fix
-        # because extend_path doesn't update the train's data
-
-        # 1. Check that train's ato_destination_block_id is updated
-        print(f"\nTrain state after extension:")
-        print(f"  ato_destination_block_id: {demo_train.ato_destination_block_id}")
-        print(
-            f"  current_path length: {len(demo_train.current_path) if demo_train.current_path else 0}"
+        # Verify controller sees extended path immediately via get_path_tiles()
+        extended_tiles = controller.get_path_tiles()
+        assert len(extended_tiles) > initial_path_length, (
+            f"Controller should see extended path immediately.\n"
+            f"  Initial: {initial_path_length} tiles\n"
+            f"  After extension: {len(extended_tiles)} tiles"
         )
 
-        # This assertion will fail before the fix - train still has old destination
-        assert demo_train.ato_destination_block_id == "BLOCK_E", (
-            f"BUG: Train's ato_destination_block_id not updated!\n"
-            f"  Expected: BLOCK_E\n"
-            f"  Actual: {demo_train.ato_destination_block_id}"
-        )
-
-        # 2. Check that train's current_path is extended
-        # The train's path should now include tiles to the new destination
-        expected_min_length = (
-            initial_path_length + 2
-        )  # Should have added at least 2 tiles (BLOCK_D and BLOCK_E)
-        assert len(demo_train.current_path) >= expected_min_length, (
-            f"BUG: Train's current_path not extended!\n"
-            f"  Initial length: {initial_path_length}\n"
-            f"  Current length: {len(demo_train.current_path)}\n"
-            f"  Expected at least: {expected_min_length}"
-        )
-
-        # 3. The path should end at the new destination block
-        final_tile = demo_train.current_path[-1]
-        final_tile_coords = (final_tile[0], final_tile[1])
-
-        # Get the block at the final tile
-        final_track = simple_network.get_track(*final_tile_coords)
-        assert final_track is not None, f"No track at final tile {final_tile_coords}"
-
-        # The final tile should be in BLOCK_E
-        assert final_track.block_section_id == "BLOCK_E", (
-            f"BUG: Train path doesn't end at new destination block!\n"
-            f"  Expected block: BLOCK_E\n"
-            f"  Actual block: {final_track.block_section_id}"
-        )
+        # The extended path should end at a tile in BLOCK_E
+        final_tile = extended_tiles[-1]
+        final_track = simple_network.get_track(final_tile[0], final_tile[1])
+        assert final_track is not None
+        assert final_track.block_section_id == "BLOCK_E"
 
     def test_extend_path_updates_lookahead(self, simple_network, demo_train):
         """
@@ -236,13 +195,13 @@ class TestExtendPathBug:
         assign_complete_path_to_train(simple_network, demo_train, raw_path)
         demo_train.assigned_path_id = path_result.path.path_id
 
-        # Create controller
+        # Create controller WITH dispatcher
         controller = create_controller_for_train(
             train_id=demo_train.train_id,
             network=simple_network,
+            path_dispatcher=dispatcher,
         )
         controller.ato_destination_block_id = path_result.path.end_block_id
-        demo_train.ato_destination_block_id = path_result.path.end_block_id
 
         controller.power_on_cmd()
         controller.set_direction_and_standby(Direction.EAST)
@@ -293,6 +252,8 @@ class TestExtendPathBug:
 
         This simulates the real-world scenario where the user extends the path
         while the train is already traveling toward the original destination.
+        The controller reads from the dispatcher, so the extension is visible
+        immediately without any sync.
         """
         dispatcher = PathDispatcher(simple_network)
         executor = RouteExecutor(simple_network, dispatcher)
@@ -309,13 +270,13 @@ class TestExtendPathBug:
         assign_complete_path_to_train(simple_network, demo_train, raw_path)
         demo_train.assigned_path_id = path_result.path.path_id
 
-        # Create controller and start train
+        # Create controller WITH dispatcher and start train
         controller = create_controller_for_train(
             train_id=demo_train.train_id,
             network=simple_network,
+            path_dispatcher=dispatcher,
         )
         controller.ato_destination_block_id = path_result.path.end_block_id
-        demo_train.ato_destination_block_id = path_result.path.end_block_id
 
         controller.power_on_cmd()
         controller.set_direction_and_standby(Direction.EAST)
@@ -341,42 +302,31 @@ class TestExtendPathBug:
         simple_network.block_manager.clear_block("BLOCK_A")
         simple_network.block_manager.occupy_block("BLOCK_B", demo_train.train_id)
 
-        print(f"\nTrain position before extension:")
-        print(f"  Head tile: {demo_train.position.head_tile}")
-        print(f"  Path index: {demo_train.path_index}")
-        print(f"  Destination: {demo_train.ato_destination_block_id}")
+        # Get path tiles before extension
+        tiles_before = controller.get_path_tiles()
+        count_before = len(tiles_before)
 
         # Extend path to E
         extend_result = dispatcher.extend_path(path_result.path.path_id, "BLOCK_E")
         assert extend_result.success, f"Extension failed: {extend_result.error}"
 
-        print(f"\nPath extended successfully")
-        print(f"  Extended blocks: {extend_result.extended_blocks}")
-
-        # BUG VERIFICATION: After extension, train should have updated data
+        # Verify dispatcher's Path object is updated
         updated_path = dispatcher.get_path(path_result.path.path_id)
+        assert updated_path.end_block_id == "BLOCK_E"
 
-        print(f"\nAfter extension:")
-        print(f"  Path end_block_id: {updated_path.end_block_id}")
-        print(f"  Train ato_destination: {demo_train.ato_destination_block_id}")
-        print(f"  Path tiles count: {len(updated_path.path_tiles)}")
-        print(
-            f"  Train current_path count: {len(demo_train.current_path) if demo_train.current_path else 0}"
+        # Controller should see extended path immediately
+        tiles_after = controller.get_path_tiles()
+        assert len(tiles_after) > count_before, (
+            f"Controller should see extended path while train is in motion.\n"
+            f"  Before: {count_before} tiles\n"
+            f"  After: {len(tiles_after)} tiles"
         )
 
-        # These assertions will fail before the fix
-        assert demo_train.ato_destination_block_id == "BLOCK_E", (
-            f"BUG: Train destination not updated while in motion!\n"
-            f"  Expected: BLOCK_E\n"
-            f"  Actual: {demo_train.ato_destination_block_id}"
-        )
-
-        # Train should still have a valid path
-        assert demo_train.current_path is not None, "BUG: Train lost its path!"
-        assert len(demo_train.current_path) > demo_train.path_index, (
-            f"BUG: Path index out of bounds after extension!\n"
+        # path_index should still be valid
+        assert len(tiles_after) > demo_train.path_index, (
+            f"Path index should still be valid after extension.\n"
             f"  Path index: {demo_train.path_index}\n"
-            f"  Path length: {len(demo_train.current_path)}"
+            f"  Path length: {len(tiles_after)}"
         )
 
 
