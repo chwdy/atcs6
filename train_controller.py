@@ -2041,19 +2041,25 @@ class TrainController:
 
     def _ato_calculate_handle(self) -> HandlePosition:
         """
-        ATO handle calculation with distance-aware braking.
+        ATO handle calculation using curve-following approach.
 
-        Uses distance-aware deceleration calculation instead of speed difference
-        thresholds. This creates smoother braking that follows the physics curve
-        rather than reactive speed-difference logic.
+        Reads the ATO operational speed curve at the train's current position
+        (distance=0) as the target speed, then uses trend-aware 3-zone control
+        to track it smoothly.
 
-        The control logic is:
-        1. Get speed curves and find upcoming speed restrictions
-        2. Calculate required deceleration based on distance to restriction
-        3. Map deceleration to handle notch (prevents B8 at low speeds)
-        4. Use hysteresis to prevent handle jitter
+        The speed curve already accounts for:
+        - Path end stopping distance with safety margins
+        - Block speed limits and braking envelopes
+        - 60% operational deceleration ratio for comfort
+        - 5 km/h margin below ATC limit
 
-        Also sets self.handle_reason with diagnostic info about why the handle was chosen.
+        The control zones are:
+        1. Stopping: target <= 0.5 -> brake until physics snaps to 0
+        2. Speed-up: speed < target-3 -> release brakes, then optimal power
+        3. Hysteresis: target-3 <= speed < target-1 -> maintain handle
+        4. Slow-down: speed >= target-1 -> trend-aware braking
+
+        Also sets self.handle_reason with diagnostic info.
         """
         train = self._get_train()
         if not train:
@@ -2063,18 +2069,26 @@ class TrainController:
         current_speed = train.current_speed
         current_handle = self.handle_position
 
-        # Determine the result handle - will be updated and returned at the end
-        result_handle: HandlePosition = current_handle
-        reason: str = ""
-
-        # Get speed curves for distance-aware calculation
+        # =================================================================
+        # TARGET ACQUISITION: Read ATO curve at position 0
+        # =================================================================
         lookahead = self.get_monitor_lookahead()
         curves = lookahead.get("lookahead", {}).get("speed_curves", [])
 
-        # Use future-aware target for anticipatory braking
-        effective_target = self._get_future_aware_target(current_speed)
+        if curves:
+            # The curve at distance=0 is the maximum safe speed right now
+            effective_target = curves[0].get("operational_limit", 0.0)
+        else:
+            # Fallback when no curves available (no blocks, no path)
+            effective_target = min(
+                train.max_speed,
+                self.atc_speed_limit,
+                self.current_block_speed_limit,
+            )
 
-        # Also cap at traditional limits as fallback
+        # Always cap at real-time ATC constraints.
+        # The curve may not reflect manual ATC overrides or real-time block
+        # speed limits that were set independently of the curve calculation.
         effective_target = min(
             effective_target,
             train.max_speed,
@@ -2082,27 +2096,14 @@ class TrainController:
             self.current_block_speed_limit,
         )
 
-        # Find the next speed restriction from the curves
-        next_restriction_speed = effective_target
-        next_restriction_distance = float("inf")
+        result_handle: HandlePosition = current_handle
+        reason: str = ""
 
-        if curves:
-            # Find where the curve drops below current speed
-            for point in curves:
-                curve_speed = point.get("operational_limit", current_speed)
-                distance = point.get("distance_cm", 0)
-                if curve_speed < current_speed - 1.0:  # At least 1 km/h drop
-                    next_restriction_speed = curve_speed
-                    next_restriction_distance = distance
-                    break
-
-        # Check if we need to stop (clearance limit or path end)
-        profile = self._get_speed_profile()
-
-        # Handle stopping case - ALWAYS use traditional braking logic
-        # Stopping takes priority over distance-aware smoothing
+        # =================================================================
+        # ZONE 1: STOPPING (effective_target <= 0.5)
+        # =================================================================
         if effective_target <= STOPPED_SPEED_THRESHOLD_KMH:
-            if current_speed > STOPPED_SPEED_THRESHOLD_KMH:
+            if current_speed > 0:
                 result_handle = self._calculate_braking_notch(current_speed)
                 reason = f"Stopping: target={effective_target:.1f}, braking at {current_speed:.1f}"
             else:
@@ -2112,138 +2113,88 @@ class TrainController:
             self.handle_reason = reason
             return result_handle
 
-        # Use distance-aware handle calculation for speed restrictions
-        distance_aware_handle = None
-
-        # Only use distance-aware for reasonably close restrictions (< 100m)
-        # For far restrictions, traditional trend-aware logic works better
-        DISTANCE_AWARE_THRESHOLD_CM = 10000.0  # 100 meters
-
-        # Check if we should skip distance-aware braking because we're accelerating
-        # This happens when leaving a slow block (e.g., station) for a fast block
-        is_accelerating_scenario = (
-            current_speed <= self.current_block_speed_limit - ATO_SPEED_TOLERANCE
-            and effective_target
-            >= self.current_block_speed_limit - ATO_SPEED_MARGIN_KMH
-        )
-
-        if (
-            next_restriction_distance < float("inf")
-            and next_restriction_distance < DISTANCE_AWARE_THRESHOLD_CM
-            and next_restriction_speed < current_speed - 1.0
-            and not is_accelerating_scenario
-        ):
-            # We have an upcoming restriction within reasonable distance - use distance-aware
-            distance_aware_handle = self._calculate_distance_aware_handle(
-                current_speed,
-                current_handle,
-                next_restriction_speed,
-                next_restriction_distance,
-                curves,
-            )
-
-        if distance_aware_handle is not None:
-            # Add hysteresis: if speed is within tolerance of target and stable, maintain handle
-            if abs(current_speed - effective_target) < ATO_ENTRY_MARGIN:
-                trend = self._detect_speed_trend(current_speed)
-                if trend == "stable":
-                    result_handle = current_handle
-                    reason = f"DistAware hysteresis: stable near target ({effective_target:.1f})"
-                    self._previous_speed = current_speed
-                    self.handle_reason = reason
-                    return result_handle
-            result_handle = distance_aware_handle
-            reason = f"DistAware: restrict {next_restriction_speed:.1f} in {next_restriction_distance:.0f}cm"
-            self._previous_speed = current_speed
-            self.handle_reason = reason
-            return result_handle
-
-        # No restriction ahead - maintain speed using traditional logic
+        # Detect speed trend for zone decisions
         trend = self._detect_speed_trend(current_speed)
         speed_diff = effective_target - current_speed
 
-        # Speed Up Zone
+        # =================================================================
+        # ZONE 2: SPEED UP (speed < target - exit_margin)
+        # =================================================================
         if current_speed < effective_target - ATO_EXIT_MARGIN:
             optimal_notch = self._calculate_power_notch(current_speed, effective_target)
 
             if self._is_brake_handle(current_handle):
-                # Transition from brake to neutral first (one step at a time)
                 result_handle = self._adjust_handle_toward_power(current_handle)
                 reason = f"SpeedUp: releasing brake, gap={speed_diff:.1f}"
             elif current_handle == HandlePosition.N:
-                # From neutral, go directly to optimal power notch
                 result_handle = optimal_notch
-                reason = f"SpeedUp: N→{optimal_notch.value}, gap={speed_diff:.1f}"
+                reason = f"SpeedUp: N->{optimal_notch.value}, gap={speed_diff:.1f}"
             else:
-                # Already powering - use optimal notch for the speed difference
-                # This ensures we accelerate properly, not stuck at P1
                 result_handle = optimal_notch
                 reason = f"SpeedUp: optimal={optimal_notch.value}, gap={speed_diff:.1f}"
 
-        # Hysteresis band - maintain current handle
+        # =================================================================
+        # ZONE 3: HYSTERESIS (target-exit <= speed < target-entry)
+        # =================================================================
         elif current_speed < effective_target - ATO_ENTRY_MARGIN:
             result_handle = current_handle
             reason = f"Hysteresis: maintaining {current_handle.value}, target={effective_target:.1f}"
 
-        # Slow Down Zone (but no major restriction) - gentle adjustment
+        # =================================================================
+        # ZONE 4: SLOW DOWN (speed >= target - entry_margin)
+        # =================================================================
         else:
             speed_overshoot = current_speed - effective_target
 
-            # Fast response: large overshoot (>= 3 km/h) needs immediate braking
-            # Note: With ATO margin of 5 km/h, overshoot of 3 means we're 2 km/h from ATC limit
+            # Fast response for large overshoot (>= 3 km/h)
             if speed_overshoot >= 3.0:
                 if (
                     self._is_power_handle(current_handle)
                     or current_handle == HandlePosition.N
                 ):
-                    result_handle = HandlePosition.B2  # Moderate braking
-                    reason = f"SlowDown: overshoot={speed_overshoot:.1f}≥3, applying B2"
+                    result_handle = HandlePosition.B2
+                    reason = (
+                        f"SlowDown: overshoot={speed_overshoot:.1f}>=3, applying B2"
+                    )
                 elif self._is_brake_handle(current_handle):
-                    # Already braking - increase by at most 2 notches to prevent B8 jumps
                     current_level = self._get_brake_level(current_handle)
-                    # Cap at B6 to leave room for ATC, and limit increase
                     new_level = min(6, current_level + 2)
                     result_handle = self._brake_level_to_handle(new_level)
-                    reason = f"SlowDown: overshoot={speed_overshoot:.1f}≥3, B{current_level}→B{new_level}"
+                    reason = f"SlowDown: overshoot={speed_overshoot:.1f}>=3, B{current_level}->B{new_level}"
                 else:
                     result_handle = current_handle
-                    reason = f"SlowDown: overshoot={speed_overshoot:.1f}≥3, maintaining"
+                    reason = (
+                        f"SlowDown: overshoot={speed_overshoot:.1f}>=3, maintaining"
+                    )
             elif self._is_power_handle(current_handle):
                 result_handle = HandlePosition.N
-                reason = f"SlowDown: power→N, overshoot={speed_overshoot:.1f}"
+                reason = f"SlowDown: power->N, overshoot={speed_overshoot:.1f}"
             elif self._is_brake_handle(current_handle):
                 if trend == "rising":
-                    # Braking but speed still rising - brake harder, but limit increase
-                    # Only increase by 1 notch to prevent sudden B8 jumps
                     current_level = self._get_brake_level(current_handle)
-                    new_level = min(6, current_level + 1)  # Cap at B6
+                    new_level = min(6, current_level + 1)
                     result_handle = self._brake_level_to_handle(new_level)
-                    reason = f"SlowDown: rising+brake, B{current_level}→B{new_level}"
+                    reason = f"SlowDown: rising+brake, B{current_level}->B{new_level}"
                 elif trend == "falling":
-                    # Speed is falling - release brakes faster to prevent over-braking
-                    # Jump to neutral if we're close to target, otherwise step down
                     if speed_overshoot < 2.0:
                         result_handle = HandlePosition.N
                         reason = (
-                            f"SlowDown: falling, overshoot={speed_overshoot:.1f}<2, →N"
+                            f"SlowDown: falling, overshoot={speed_overshoot:.1f}<2, ->N"
                         )
                     else:
                         result_handle = self._adjust_handle_toward_power(current_handle)
-                        reason = f"SlowDown: falling, releasing brake"
+                        reason = "SlowDown: falling, releasing brake"
                 else:
-                    # Stable - maintain current brake
                     result_handle = current_handle
                     reason = f"SlowDown: stable, maintaining {current_handle.value}"
             else:  # Neutral handle
                 if trend == "rising":
-                    # Neutral but speed rising above target - start gentle brake
                     result_handle = HandlePosition.B1
-                    reason = f"SlowDown: N+rising, →B1"
+                    reason = "SlowDown: N+rising, ->B1"
                 else:
                     result_handle = HandlePosition.N
                     reason = f"SlowDown: N+{trend}, maintaining N"
 
-        # Update previous speed for trend detection on next tick
         self._previous_speed = current_speed
         self.handle_reason = reason
         return result_handle

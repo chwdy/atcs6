@@ -32,6 +32,7 @@ def straight_ew_track(network):
         network.add_track(track)
     return network
 
+
 class TestAtoStopButtonBugFix:
     """
     Comprehensive tests for ATO stop command behavior (2026-01-25).
@@ -98,7 +99,6 @@ class TestAtoStopButtonBugFix:
         assert controller.state == TrainState.STANDBY
         assert train.state == TrainState.STANDBY
         assert controller.handle_position == HandlePosition.N
-
 
 
 class TestAtoAutoCabSelectionBugFix:
@@ -238,7 +238,6 @@ class TestAtoAutoCabSelectionBugFix:
         assert block.state == BlockState.CAUTION, (
             f"Expected CAUTION but got {block.state}"
         )
-
 
 
 class TestAtoDepartCallsAtoGo:
@@ -482,7 +481,6 @@ class TestAtoDepartCallsAtoGo:
         )
 
 
-
 class TestAtoDistanceAwareControl:
     """
     Comprehensive tests for ATO distance-aware control (2026-01-26).
@@ -679,7 +677,6 @@ class TestAtoDistanceAwareControl:
         )
 
 
-
 class TestAtoStateInheritance:
     """
     Tests for ATO state inheritance when SimulationController creates controllers.
@@ -829,7 +826,6 @@ class TestAtoStateInheritance:
             f"SimulationController's controller should inherit ato_running=True, "
             f"but got {controller.ato_running}"
         )
-
 
 
 class TestAtoDestinationStoppingAfterPathCompletes:
@@ -1217,7 +1213,6 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         )
 
 
-
 class TestAtoInfoPersistenceWithoutActivePath:
     """
     Comprehensive tests for onboard ATO info persistence fixed in 2026-02-08.
@@ -1279,7 +1274,6 @@ class TestAtoInfoPersistenceWithoutActivePath:
         assert controller.ato_destination_block_id == "BLOCK_DEST"
         assert controller.ato_info is not None
         assert controller.ato_info.destination_block_id == "BLOCK_DEST"
-
 
 
 class TestShorterMarginWithStationEnd:
@@ -1399,7 +1393,6 @@ class TestShorterMarginWithStationEnd:
             f"Safety margin WRONG! Got {safety_margin} cm, expected 5.0 cm. "
             f"Station destination should use platform margin (5cm), not default (25cm)."
         )
-
 
 
 class TestTrendAwareATOControl:
@@ -1648,7 +1641,6 @@ class TestTrendAwareATOControl:
         )
 
 
-
 class TestSpeedCurveCalculation:
     """
     Tests for calculate_speed_curves() method in TrainController.
@@ -1754,103 +1746,6 @@ class TestSpeedCurveCalculation:
                     f"ATO ({ato}) should be at least 5 km/h below ATC ({atc}) "
                     f"at distance {point['distance_cm']}cm"
                 )
-
-
-
-class TestFutureAwareATOBraking:
-    """
-    Tests for future-aware ATO braking.
-
-    These tests verify that the ATO looks ahead in the speed curve
-    and starts braking before restrictions, not after.
-    """
-
-    @pytest.fixture
-    def network_with_train(self):
-        """Create network with train and controller."""
-        from network import RailwayNetwork
-        from train import Train, TrainPosition
-        from train_controller import TrainController
-        from enums import Direction
-
-        network = RailwayNetwork()
-
-        # Create a simple track
-        from track import TrackSegment, TRACK_EW
-
-        for x in range(10):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
-            network.add_track(track)
-
-        train = Train(train_id="T1", max_speed=60.0)
-        train.position = TrainPosition(
-            end_a_tile=(0, 0),
-            end_a_distance_cm=10.0,
-            end_a_entry_edge="W",
-            end_b_tile=(0, 0),
-            end_b_distance_cm=5.0,
-            end_b_entry_edge="W",
-            leading_end=LeadingEnd.A,
-            occupied_tiles=[(0, 0)],
-            occupied_blocks=[],
-        )
-        train.current_speed = 30.0
-        network.add_train(train)
-
-        controller = TrainController(train_id="T1", network=network)
-        controller.power_on = True
-        controller.active_cab = "A"
-        controller.ato_running = True
-        controller.clearance_ahead_cm = 500.0
-        controller.current_block_speed_limit = 60.0
-        controller.atc_speed_limit = 60.0
-
-        return network, train, controller
-
-    def test_reaction_distance_scales_with_speed(self, network_with_train):
-        """Reaction distance should increase with speed, with minimum floor."""
-        _, train, controller = network_with_train
-
-        # At 0 speed, reaction distance should be the minimum floor (30cm)
-        # This ensures we can see ahead even when starting from a stop
-        dist_0 = controller._get_reaction_distance_cm(0.0)
-        assert dist_0 == 30.0, (
-            "Reaction distance at 0 speed should be minimum floor (30cm)"
-        )
-
-        # At higher speed, reaction distance should be larger (once above the floor)
-        dist_30 = controller._get_reaction_distance_cm(30.0)
-        dist_60 = controller._get_reaction_distance_cm(60.0)
-        dist_90 = controller._get_reaction_distance_cm(90.0)
-
-        # At moderate speeds, might still be at floor, but high speeds should exceed it
-        assert dist_60 >= dist_30 >= dist_0, (
-            "Reaction distance should not decrease with speed"
-        )
-        assert dist_90 > dist_60, (
-            "At high speeds, quadratic scaling should exceed floor"
-        )
-
-    def test_sample_curve_at_interpolates(self, network_with_train):
-        """Curve sampling should interpolate between points."""
-        _, _, controller = network_with_train
-
-        # Create a simple test curve
-        test_curve = [
-            {"distance_cm": 0.0, "operational_limit": 60.0, "atc_limit": 65.0},
-            {"distance_cm": 100.0, "operational_limit": 40.0, "atc_limit": 45.0},
-            {"distance_cm": 200.0, "operational_limit": 20.0, "atc_limit": 25.0},
-        ]
-
-        # Sample at exact points
-        assert controller._sample_curve_at(test_curve, 0.0) == 60.0
-        assert controller._sample_curve_at(test_curve, 100.0) == 40.0
-        assert controller._sample_curve_at(test_curve, 200.0) == 20.0
-
-        # Sample at midpoint - should interpolate
-        mid = controller._sample_curve_at(test_curve, 50.0)
-        assert 45.0 < mid < 55.0, f"Midpoint should be interpolated: {mid}"
-
 
 
 class TestAtoGoAutoSelectsCabFromNone:
@@ -2091,6 +1986,3 @@ class TestAtoGoAutoSelectsCabFromNone:
             or "ato" in result.message
             or "Not in ATO" in result.message
         )
-
-
-
