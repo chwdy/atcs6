@@ -2235,23 +2235,18 @@ class TrainController:
 
     def _ato_calculate_handle(self) -> HandlePosition:
         """
-        ATO handle calculation using curve-following approach.
+        ATO handle calculation using future-aware curve-tracking approach.
 
-        Reads the ATO operational speed curve at the train's current position
-        (distance=0) as the target speed, then uses trend-aware 4-zone control
-        to track it smoothly.
+        Instead of sampling the speed curve at a fixed lookahead distance,
+        evaluates all candidate handle positions by simulating the train
+        forward and checking which handle best tracks the operational
+        speed curve without overshooting.
 
-        The speed curve already accounts for:
-        - Path end stopping distance with safety margins
-        - Block speed limits and braking envelopes
-        - 60% operational deceleration ratio for comfort
-        - 5 km/h margin below ATC limit
-
-        The control zones are:
-        1. Stopping: target <= 0.5 -> brake until physics snaps to 0
-        2. Speed-up: speed < target-3 -> release brakes, then optimal power
-        3. Hysteresis: target-3 <= speed < target-1 -> maintain handle
-        4. Slow-down: speed >= target-1 -> trend-aware braking
+        Special cases:
+        1. Stopping zone: When curve says stop (operational_limit <= 0.5),
+           use direct braking notch calculation (no prediction needed).
+        2. ATC safety cap: After handle selection, if predicted speed would
+           exceed ATC limit, override with braking.
 
         Also sets self.handle_reason with diagnostic info.
         """
@@ -2261,43 +2256,35 @@ class TrainController:
             return HandlePosition.N
 
         current_speed = train.current_speed
-        current_handle = self.handle_position
 
         # =================================================================
-        # TARGET ACQUISITION: Sample ATO curve ahead to account for reaction delay
+        # Get speed curve
         # =================================================================
         lookahead = self.get_monitor_lookahead()
         curves = lookahead.get("lookahead", {}).get("speed_curves", [])
 
-        LOOKAHEAD_SAMPLE_CM = 30.0  # Sample 30cm ahead to account for reaction delay
+        if not curves:
+            self.handle_reason = "No curves"
+            self._previous_speed = current_speed
+            return HandlePosition.N
 
-        if curves:
-            effective_target = self._sample_curve_at(
-                curves, LOOKAHEAD_SAMPLE_CM, "operational_limit"
-            )
-        else:
-            effective_target = 0.0
+        # =================================================================
+        # ZONE 1: STOPPING (curve at position 0 says stop)
+        # =================================================================
+        curve_at_zero = self._sample_curve_at(curves, 0.0, "operational_limit")
 
-        # Always cap at real-time ATC constraints.
-        # The curve may not reflect manual ATC overrides or real-time block
-        # speed limits that were set independently of the curve calculation.
-        effective_target = min(
-            effective_target,
+        # Also cap at real-time ATC constraints
+        effective_limit_at_zero = min(
+            curve_at_zero,
             train.max_speed,
             self.atc_speed_limit,
             self.current_block_speed_limit,
         )
 
-        result_handle: HandlePosition = current_handle
-        reason: str = ""
-
-        # =================================================================
-        # ZONE 1: STOPPING (effective_target <= 0.5)
-        # =================================================================
-        if effective_target <= STOPPED_SPEED_THRESHOLD_KMH:
+        if effective_limit_at_zero <= STOPPED_SPEED_THRESHOLD_KMH:
             if current_speed > 0:
                 result_handle = self._calculate_braking_notch(current_speed)
-                reason = f"Stopping: target={effective_target:.1f}, braking at {current_speed:.1f}"
+                reason = f"Stopping: curve@0={curve_at_zero:.1f}, braking at {current_speed:.1f}"
             else:
                 result_handle = HandlePosition.N
                 reason = "Stopped"
@@ -2305,87 +2292,39 @@ class TrainController:
             self.handle_reason = reason
             return result_handle
 
-        # Detect speed trend for zone decisions
-        trend = self._detect_speed_trend(current_speed)
-        speed_diff = effective_target - current_speed
+        # =================================================================
+        # FUTURE-AWARE CONTROL: Evaluate handles against curve
+        # =================================================================
+        # Determine evaluation horizon based on current speed
+        # At higher speeds, look further ahead; at low speeds, shorter horizon
+        km_h_to_cm_s = get_speed_conversion_factor()
+        speed_cm_s = current_speed * km_h_to_cm_s
 
-        # =================================================================
-        # ZONE 2: SPEED UP (speed < target - exit_margin)
-        # =================================================================
-        if current_speed < effective_target - ATO_EXIT_MARGIN:
-            optimal_notch = self._calculate_power_notch(current_speed, effective_target)
+        # Horizon = distance covered in ~1 second, clamped to [5, 50] cm
+        horizon_cm = max(5.0, min(50.0, speed_cm_s * 1.0))
 
-            if self._is_brake_handle(current_handle):
-                result_handle = self._adjust_handle_toward_power(current_handle)
-                reason = f"SpeedUp: releasing brake, gap={speed_diff:.1f}"
-            elif current_handle == HandlePosition.N:
-                result_handle = optimal_notch
-                reason = f"SpeedUp: N->{optimal_notch.value}, gap={speed_diff:.1f}"
-            else:
-                result_handle = optimal_notch
-                reason = f"SpeedUp: optimal={optimal_notch.value}, gap={speed_diff:.1f}"
+        result_handle = self._evaluate_handles_against_curve(
+            current_speed_kmh=current_speed,
+            curve=curves,
+            horizon_cm=horizon_cm,
+        )
 
-        # =================================================================
-        # ZONE 3: HYSTERESIS (target-exit <= speed < target-entry)
-        # =================================================================
-        elif current_speed < effective_target - ATO_ENTRY_MARGIN:
-            result_handle = current_handle
-            reason = f"Hysteresis: maintaining {current_handle.value}, target={effective_target:.1f}"
-
-        # =================================================================
-        # ZONE 4: SLOW DOWN (speed >= target - entry_margin)
-        # =================================================================
+        # Safety cap: if result would exceed ATC limits, override
+        predicted = self._simulate_forward(current_speed, result_handle, 5.0)
+        if predicted > self.atc_speed_limit + ATO_SPEED_TOLERANCE:
+            result_handle = self._calculate_braking_notch(current_speed)
+            reason = (
+                f"ATC cap: predicted {predicted:.1f} > limit {self.atc_speed_limit:.1f}"
+            )
         else:
-            speed_overshoot = current_speed - effective_target
-
-            # Fast response for large overshoot (>= 3 km/h)
-            if speed_overshoot >= 3.0:
-                if (
-                    self._is_power_handle(current_handle)
-                    or current_handle == HandlePosition.N
-                ):
-                    result_handle = HandlePosition.B2
-                    reason = (
-                        f"SlowDown: overshoot={speed_overshoot:.1f}>=3, applying B2"
-                    )
-                elif self._is_brake_handle(current_handle):
-                    current_level = self._get_brake_level(current_handle)
-                    new_level = min(6, current_level + 2)
-                    result_handle = self._brake_level_to_handle(new_level)
-                    reason = f"SlowDown: overshoot={speed_overshoot:.1f}>=3, B{current_level}->B{new_level}"
-                else:
-                    result_handle = current_handle
-                    reason = (
-                        f"SlowDown: overshoot={speed_overshoot:.1f}>=3, maintaining"
-                    )
-            elif self._is_power_handle(current_handle):
-                result_handle = HandlePosition.N
-                reason = f"SlowDown: power->N, overshoot={speed_overshoot:.1f}"
-            elif self._is_brake_handle(current_handle):
-                if trend == "rising":
-                    current_level = self._get_brake_level(current_handle)
-                    new_level = min(6, current_level + 1)
-                    result_handle = self._brake_level_to_handle(new_level)
-                    reason = f"SlowDown: rising+brake, B{current_level}->B{new_level}"
-                elif trend == "falling":
-                    if speed_overshoot < 2.0:
-                        result_handle = HandlePosition.N
-                        reason = (
-                            f"SlowDown: falling, overshoot={speed_overshoot:.1f}<2, ->N"
-                        )
-                    else:
-                        result_handle = self._adjust_handle_toward_power(current_handle)
-                        reason = "SlowDown: falling, releasing brake"
-                else:
-                    result_handle = current_handle
-                    reason = f"SlowDown: stable, maintaining {current_handle.value}"
-            else:  # Neutral handle
-                if trend == "rising":
-                    result_handle = HandlePosition.B1
-                    reason = "SlowDown: N+rising, ->B1"
-                else:
-                    result_handle = HandlePosition.N
-                    reason = f"SlowDown: N+{trend}, maintaining N"
+            curve_target = self._sample_curve_at(
+                curves, horizon_cm / 2, "operational_limit"
+            )
+            reason = (
+                f"FutureAware: handle={result_handle.value} "
+                f"speed={current_speed:.1f} curve@{horizon_cm / 2:.0f}cm={curve_target:.1f} "
+                f"horizon={horizon_cm:.0f}cm"
+            )
 
         self._previous_speed = current_speed
         self.handle_reason = reason
