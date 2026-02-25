@@ -2039,12 +2039,119 @@ class TrainController:
         }
         return handles.get(level, HandlePosition.B1)
 
+    def _sample_curve_at(
+        self, curve: List[Dict], distance_cm: float, key: str = "operational_limit"
+    ) -> float:
+        """
+        Sample a speed curve at a specific distance with linear interpolation.
+
+        Args:
+            curve: List of curve points [{distance_cm, atc_limit, operational_limit}, ...]
+            distance_cm: Distance to sample at
+            key: Which limit to sample ('atc_limit' or 'operational_limit')
+
+        Returns:
+            Interpolated speed limit at the given distance
+        """
+        if not curve:
+            return 0.0
+
+        if distance_cm <= 0:
+            return curve[0].get(key, 0.0)
+
+        if distance_cm >= curve[-1].get("distance_cm", 0):
+            return curve[-1].get(key, 0.0)
+
+        for i in range(len(curve) - 1):
+            d1 = curve[i].get("distance_cm", 0)
+            d2 = curve[i + 1].get("distance_cm", 0)
+            if d1 <= distance_cm <= d2:
+                v1 = curve[i].get(key, 0.0)
+                v2 = curve[i + 1].get(key, 0.0)
+                t = (distance_cm - d1) / (d2 - d1) if d2 != d1 else 0
+                return v1 + t * (v2 - v1)
+
+        return curve[-1].get(key, 0.0)
+
+    def _simulate_forward(
+        self,
+        current_speed_kmh: float,
+        handle: HandlePosition,
+        distance_cm: float,
+        dt: float = 0.02,
+    ) -> float:
+        """
+        Simulate train forward in time and return predicted speed at given distance.
+
+        Uses a simplified physics model based on TrainPhysics: converts handle
+        position to acceleration rate via POWER_MULTIPLIERS/BRAKE_MULTIPLIERS,
+        then integrates forward in small time steps until the target distance
+        is reached.
+
+        Note: Air resistance is not modeled. This makes predictions slightly
+        optimistic at high speeds under power. For ATO control purposes this
+        is acceptable since the evaluator compares handles relative to each
+        other, and all candidates experience the same omission.
+
+        Args:
+            current_speed_kmh: Train's current speed in km/h
+            handle: Handle position to simulate
+            distance_cm: Distance ahead to predict speed at
+            dt: Simulation time step in seconds (default 20ms for accuracy)
+
+        Returns:
+            Predicted speed in km/h at the given distance
+        """
+        if distance_cm <= 0:
+            return current_speed_kmh
+
+        profile = self._get_speed_profile()
+
+        # Calculate acceleration for this handle (same as TrainPhysics)
+        if handle in POWER_MULTIPLIERS:
+            accel_kmh_s = profile.acceleration_rate * POWER_MULTIPLIERS[handle]
+        elif handle in BRAKE_MULTIPLIERS:
+            accel_kmh_s = -profile.deceleration_rate * BRAKE_MULTIPLIERS[handle]
+        elif handle == HandlePosition.EB:
+            accel_kmh_s = -profile.emergency_brake_rate
+        else:
+            accel_kmh_s = 0.0  # Neutral or unknown
+
+        km_h_to_cm_s = get_speed_conversion_factor()
+        speed_cm_s = current_speed_kmh * km_h_to_cm_s
+        distance_remaining = distance_cm
+
+        while distance_remaining > 0 and speed_cm_s >= 0:
+            # Apply acceleration
+            speed_cm_s += accel_kmh_s * km_h_to_cm_s * dt
+
+            # Apply friction when coasting (neutral or unknown handle)
+            if handle == HandlePosition.N and speed_cm_s > 0:
+                speed_cm_s -= profile.friction_rate * km_h_to_cm_s * dt
+
+            # Snap to zero when braking below stopped threshold (matches TrainPhysics)
+            speed_kmh = speed_cm_s / km_h_to_cm_s
+            if speed_kmh <= STOPPED_SPEED_THRESHOLD_KMH and accel_kmh_s <= 0:
+                speed_cm_s = 0.0
+                break
+
+            # Clamp to non-negative
+            if speed_cm_s <= 0:
+                speed_cm_s = 0.0
+                break
+
+            # Advance distance
+            step_dist = speed_cm_s * dt
+            distance_remaining -= step_dist
+
+        return speed_cm_s / km_h_to_cm_s
+
     def _ato_calculate_handle(self) -> HandlePosition:
         """
         ATO handle calculation using curve-following approach.
 
         Reads the ATO operational speed curve at the train's current position
-        (distance=0) as the target speed, then uses trend-aware 3-zone control
+        (distance=0) as the target speed, then uses trend-aware 4-zone control
         to track it smoothly.
 
         The speed curve already accounts for:
@@ -2070,21 +2177,19 @@ class TrainController:
         current_handle = self.handle_position
 
         # =================================================================
-        # TARGET ACQUISITION: Read ATO curve at position 0
+        # TARGET ACQUISITION: Sample ATO curve ahead to account for reaction delay
         # =================================================================
         lookahead = self.get_monitor_lookahead()
         curves = lookahead.get("lookahead", {}).get("speed_curves", [])
 
+        LOOKAHEAD_SAMPLE_CM = 30.0  # Sample 30cm ahead to account for reaction delay
+
         if curves:
-            # The curve at distance=0 is the maximum safe speed right now
-            effective_target = curves[0].get("operational_limit", 0.0)
-        else:
-            # Fallback when no curves available (no blocks, no path)
-            effective_target = min(
-                train.max_speed,
-                self.atc_speed_limit,
-                self.current_block_speed_limit,
+            effective_target = self._sample_curve_at(
+                curves, LOOKAHEAD_SAMPLE_CM, "operational_limit"
             )
+        else:
+            effective_target = 0.0
 
         # Always cap at real-time ATC constraints.
         # The curve may not reflect manual ATC overrides or real-time block

@@ -1986,3 +1986,104 @@ class TestAtoGoAutoSelectsCabFromNone:
             or "ato" in result.message
             or "Not in ATO" in result.message
         )
+
+
+class TestForwardSimulation:
+    """
+    Tests for forward simulation used by future-aware ATO.
+
+    The forward simulation predicts where a train will be and how fast
+    it will be going after applying a specific handle for a given distance.
+    """
+
+    @pytest.fixture
+    def controller_with_profile(self, network):
+        """Create a controller with a known speed profile for predictable physics."""
+        from train_controller import TrainController
+        from speed_profile import SpeedProfile
+
+        train = Train(train_id="sim_test")
+        train.max_speed = 60.0
+        network.trains["sim_test"] = train
+
+        # Register a simple linear profile
+        profile = SpeedProfile(
+            profile_id="test_sim",
+            name="Test Simulation",
+            speed_voltage_curve=[(0, 0), (60, 8), (120, 12)],
+            acceleration_rate=10.0,  # 10 km/h per second
+            deceleration_rate=15.0,  # 15 km/h per second
+            friction_rate=0.5,
+            operational_decel_ratio=0.6,
+            air_resistance_enabled=False,  # Disable for predictable tests
+        )
+        network.speed_profiles["test_sim"] = profile
+        train.speed_profile_id = "test_sim"
+
+        controller = TrainController(train_id="sim_test", network=network)
+        controller.power_on = True
+        controller.atc_speed_limit = 60.0
+        controller.current_block_speed_limit = 60.0
+        return controller
+
+    def test_simulate_forward_braking_reduces_speed(self, controller_with_profile):
+        """B4 braking from 20 km/h should result in lower speed after 5cm."""
+        predicted_speed = controller_with_profile._simulate_forward(
+            current_speed_kmh=20.0,
+            handle=HandlePosition.B4,
+            distance_cm=5.0,
+        )
+        assert predicted_speed < 20.0, "B4 braking should reduce speed"
+        assert predicted_speed >= 0.0, "Speed should not go negative"
+
+    def test_simulate_forward_power_increases_speed(self, controller_with_profile):
+        """P5 power from 10 km/h should result in higher speed after 5cm."""
+        predicted_speed = controller_with_profile._simulate_forward(
+            current_speed_kmh=10.0,
+            handle=HandlePosition.P5,
+            distance_cm=5.0,
+        )
+        assert predicted_speed > 10.0, "P5 should increase speed"
+
+    def test_simulate_forward_neutral_slight_decrease(self, controller_with_profile):
+        """Neutral handle should cause slight speed decrease from friction."""
+        predicted_speed = controller_with_profile._simulate_forward(
+            current_speed_kmh=20.0,
+            handle=HandlePosition.N,
+            distance_cm=5.0,
+        )
+        # Should decrease slightly due to friction (0.5 km/h/s)
+        assert predicted_speed < 20.0, "Neutral should cause slight decrease"
+        assert predicted_speed > 19.0, "Friction decrease should be small"
+
+    def test_simulate_forward_zero_distance(self, controller_with_profile):
+        """Zero distance should return current speed unchanged."""
+        predicted_speed = controller_with_profile._simulate_forward(
+            current_speed_kmh=30.0,
+            handle=HandlePosition.B4,
+            distance_cm=0.0,
+        )
+        assert predicted_speed == 30.0
+
+    def test_simulate_forward_braking_to_zero(self, controller_with_profile):
+        """Heavy braking from low speed over long distance should reach 0."""
+        predicted_speed = controller_with_profile._simulate_forward(
+            current_speed_kmh=5.0,
+            handle=HandlePosition.B8,
+            distance_cm=50.0,
+        )
+        assert predicted_speed == 0.0, "Should stop within 50cm from 5 km/h with B8"
+
+    def test_simulate_forward_higher_brake_stops_faster(self, controller_with_profile):
+        """Higher brake notch should result in lower speed at same distance."""
+        speed_b2 = controller_with_profile._simulate_forward(
+            current_speed_kmh=20.0,
+            handle=HandlePosition.B2,
+            distance_cm=3.0,
+        )
+        speed_b6 = controller_with_profile._simulate_forward(
+            current_speed_kmh=20.0,
+            handle=HandlePosition.B6,
+            distance_cm=3.0,
+        )
+        assert speed_b6 < speed_b2, "B6 should reduce speed more than B2"
