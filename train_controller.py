@@ -92,6 +92,8 @@ CURVE_SAMPLE_RESOLUTION_CM = (
 )
 ATO_SPEED_MARGIN_KMH = 5.0  # ATO stays 5 km/h below ATC limit
 NEAR_STOP_DETECTION_CM = 50.0  # Distance to detect approaching stop for rate limiting
+ATO_OVERSHOOT_WEIGHT = 10.0  # Penalty weight for exceeding speed curve in evaluator
+ATO_EARLY_EXIT_OVERSHOOT_KMH = 5.0  # Skip handle if first-sample overshoot exceeds this
 
 
 # =============================================================================
@@ -2183,11 +2185,13 @@ class TrainController:
         sample_count: int = 5,
     ) -> HandlePosition:
         """
-        Evaluate all handle positions against speed curve and return best one.
+        Evaluate candidate handle positions against speed curve and return best.
 
-        For each candidate handle, simulates the train forward and samples
-        the predicted speed at multiple distances. Compares each sample
-        against the operational_limit at that distance on the curve.
+        Evaluates a pruned set of handles (current ±3 notches plus extremes
+        P5, N, B8) by simulating the train forward and sampling the predicted
+        speed at multiple distances. The rate limiter constrains changes to ±1
+        per tick anyway, so global optimality across all 14 handles is not
+        required — the controller converges over multiple ticks.
 
         Scoring:
         - Penalty for being ABOVE the curve (overshoot) - weighted heavily
@@ -2201,7 +2205,7 @@ class TrainController:
             sample_count: Number of sample points within horizon
 
         Returns:
-            Best handle position
+            Best handle position from candidate set
         """
         if not curve:
             return HandlePosition.N
@@ -2213,48 +2217,64 @@ class TrainController:
             # At end of curve - just brake
             return self._calculate_braking_notch(current_speed_kmh)
 
+        # Smart candidate selection: current handle ±3 plus extremes
+        current_idx = HANDLE_POSITION_INDEX.get(self.handle_position, 5)
+        candidate_indices = set()
+
+        # Always include extremes and neutral
+        candidate_indices.add(HANDLE_POSITION_INDEX[HandlePosition.P5])  # 0
+        candidate_indices.add(HANDLE_POSITION_INDEX[HandlePosition.N])  # 5
+        candidate_indices.add(HANDLE_POSITION_INDEX[HandlePosition.B8])  # 13
+
+        # Include ±3 notches from current
+        for offset in range(-3, 4):
+            idx = current_idx + offset
+            if 0 <= idx <= 13:
+                candidate_indices.add(idx)
+
         candidates = [
-            HandlePosition.P5,
-            HandlePosition.P4,
-            HandlePosition.P3,
-            HandlePosition.P2,
-            HandlePosition.P1,
-            HandlePosition.N,
-            HandlePosition.B1,
-            HandlePosition.B2,
-            HandlePosition.B3,
-            HandlePosition.B4,
-            HandlePosition.B5,
-            HandlePosition.B6,
-            HandlePosition.B7,
-            HandlePosition.B8,
+            INDEX_TO_HANDLE_POSITION[i]
+            for i in sorted(candidate_indices)
+            if i in INDEX_TO_HANDLE_POSITION
         ]
 
         sample_distances = [
             horizon_cm * (i + 1) / sample_count for i in range(sample_count)
         ]
 
+        # Pre-sample curve at all distances once
+        curve_limits = [
+            self._sample_curve_at(curve, dist, "operational_limit")
+            for dist in sample_distances
+        ]
+
         best_handle = HandlePosition.N
         best_score = float("inf")
-        OVERSHOOT_WEIGHT = 10.0  # Penalize exceeding curve heavily
 
         for handle in candidates:
             score = 0.0
+            skip = False
 
-            for dist in sample_distances:
+            for j, dist in enumerate(sample_distances):
                 predicted_speed = self._simulate_forward(
                     current_speed_kmh, handle, dist
                 )
-                curve_limit = self._sample_curve_at(curve, dist, "operational_limit")
 
-                if predicted_speed > curve_limit:
+                if predicted_speed > curve_limits[j]:
                     # Above curve - heavy penalty
-                    overshoot = predicted_speed - curve_limit
-                    score += overshoot * OVERSHOOT_WEIGHT
+                    overshoot = predicted_speed - curve_limits[j]
+                    score += overshoot * ATO_OVERSHOOT_WEIGHT
+                    # Early exit: if overshot at first sample, this handle is bad
+                    if j == 0 and overshoot > ATO_EARLY_EXIT_OVERSHOOT_KMH:
+                        skip = True
+                        break
                 else:
                     # Below curve - mild penalty (want to be close to curve)
-                    gap = curve_limit - predicted_speed
+                    gap = curve_limits[j] - predicted_speed
                     score += gap
+
+            if skip:
+                continue
 
             if score < best_score:
                 best_score = score

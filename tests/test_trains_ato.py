@@ -2297,6 +2297,34 @@ class TestFutureAwareIntegration:
             f"Should brake for speed reduction, got {result.value}"
         )
 
+    def test_evaluator_performance(self, controller_with_profile):
+        """Evaluator should complete within 5ms for real-time use."""
+        import time
+
+        controller = controller_with_profile
+
+        curve = [
+            {
+                "distance_cm": i * 5.0,
+                "operational_limit": max(0, 30.0 - i * 1.5),
+                "atc_limit": max(0, 35.0 - i * 1.5),
+            }
+            for i in range(21)
+        ]
+
+        start = time.perf_counter()
+        for _ in range(100):
+            controller._evaluate_handles_against_curve(
+                current_speed_kmh=25.0,
+                curve=curve,
+                horizon_cm=30.0,
+            )
+        elapsed = (time.perf_counter() - start) / 100
+
+        assert elapsed < 0.005, (
+            f"Evaluator took {elapsed * 1000:.1f}ms, should be < 5ms"
+        )
+
 
 class TestHandleSmoothing:
     """Tests for handle change rate limiting to prevent jitter."""
