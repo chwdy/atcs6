@@ -48,6 +48,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from enums import (
     BRAKE_MULTIPLIERS,
+    HANDLE_POSITION_INDEX,
+    INDEX_TO_HANDLE_POSITION,
     POWER_MULTIPLIERS,
     BlockState,
     CommandResult,
@@ -89,6 +91,7 @@ CURVE_SAMPLE_RESOLUTION_CM = (
     3.0  # 3cm resolution for speed curves (balance between precision and performance)
 )
 ATO_SPEED_MARGIN_KMH = 5.0  # ATO stays 5 km/h below ATC limit
+NEAR_STOP_DETECTION_CM = 50.0  # Distance to detect approaching stop for rate limiting
 
 
 # =============================================================================
@@ -215,6 +218,46 @@ def calculate_speed_for_target(
     v_kmh = v_initial_cm_s / km_h_to_cm_s
 
     return v_kmh
+
+
+def _rate_limit_handle(
+    current: HandlePosition,
+    target: HandlePosition,
+    allow_fast: bool = False,
+) -> HandlePosition:
+    """
+    Rate-limit handle changes to prevent jitter.
+
+    Limits handle movement to ±1 notch per call (±2 if allow_fast=True).
+    Emergency brake (EB) always bypasses rate limiting for safety.
+
+    Args:
+        current: Current handle position
+        target: Desired handle position
+        allow_fast: Allow 2-step changes (for stopping zone)
+
+    Returns:
+        Rate-limited handle position
+    """
+    # EB must never be rate-limited — safety critical
+    if target == HandlePosition.EB:
+        return HandlePosition.EB
+
+    current_idx = HANDLE_POSITION_INDEX.get(current, 5)  # N = index 5
+    target_idx = HANDLE_POSITION_INDEX.get(target, 5)
+
+    max_step = 2 if allow_fast else 1
+
+    if target_idx > current_idx:
+        # Moving toward brake
+        new_idx = min(current_idx + max_step, target_idx)
+    elif target_idx < current_idx:
+        # Moving toward power
+        new_idx = max(current_idx - max_step, target_idx)
+    else:
+        new_idx = current_idx
+
+    return INDEX_TO_HANDLE_POSITION.get(new_idx, HandlePosition.N)
 
 
 @dataclass
@@ -1972,20 +2015,6 @@ class TrainController:
             return "falling"
         return "stable"
 
-    def _adjust_handle_toward_brake(self, current: HandlePosition) -> HandlePosition:
-        from enums import HANDLE_POSITION_INDEX, INDEX_TO_HANDLE_POSITION
-
-        current_idx = HANDLE_POSITION_INDEX.get(current, 5)
-        new_idx = min(current_idx + 1, 13)
-        return INDEX_TO_HANDLE_POSITION.get(new_idx, HandlePosition.B8)
-
-    def _adjust_handle_toward_power(self, current: HandlePosition) -> HandlePosition:
-        from enums import HANDLE_POSITION_INDEX, INDEX_TO_HANDLE_POSITION
-
-        current_idx = HANDLE_POSITION_INDEX.get(current, 5)
-        new_idx = max(current_idx - 1, 0)
-        return INDEX_TO_HANDLE_POSITION.get(new_idx, HandlePosition.P5)
-
     def _is_power_handle(self, handle: HandlePosition) -> bool:
         return handle in (
             HandlePosition.P1,
@@ -2282,6 +2311,8 @@ class TrainController:
         )
 
         if effective_limit_at_zero <= STOPPED_SPEED_THRESHOLD_KMH:
+            # Zone 1 intentionally bypasses rate limiting — when the curve
+            # says stop, immediate full braking is required for safety.
             if current_speed > 0:
                 result_handle = self._calculate_braking_notch(current_speed)
                 reason = f"Stopping: curve@0={curve_at_zero:.1f}, braking at {current_speed:.1f}"
@@ -2325,6 +2356,23 @@ class TrainController:
                 f"speed={current_speed:.1f} curve@{horizon_cm / 2:.0f}cm={curve_target:.1f} "
                 f"horizon={horizon_cm:.0f}cm"
             )
+
+        # Rate-limit handle changes to prevent jitter
+        # Allow fast changes only when in stopping zone
+        is_near_stop = False
+        for point in curves:
+            if (
+                point.get("operational_limit", 999) <= STOPPED_SPEED_THRESHOLD_KMH
+                and point.get("distance_cm", 999) < NEAR_STOP_DETECTION_CM
+            ):
+                is_near_stop = True
+                break
+
+        result_handle = _rate_limit_handle(
+            current=self.handle_position,
+            target=result_handle,
+            allow_fast=is_near_stop,
+        )
 
         self._previous_speed = current_speed
         self.handle_reason = reason
