@@ -2146,6 +2146,93 @@ class TrainController:
 
         return speed_cm_s / km_h_to_cm_s
 
+    def _evaluate_handles_against_curve(
+        self,
+        current_speed_kmh: float,
+        curve: List[Dict],
+        horizon_cm: float = 30.0,
+        sample_count: int = 5,
+    ) -> HandlePosition:
+        """
+        Evaluate all handle positions against speed curve and return best one.
+
+        For each candidate handle, simulates the train forward and samples
+        the predicted speed at multiple distances. Compares each sample
+        against the operational_limit at that distance on the curve.
+
+        Scoring:
+        - Penalty for being ABOVE the curve (overshoot) - weighted heavily
+        - Penalty for being too far BELOW the curve (inefficient)
+        - Best handle minimizes total penalty
+
+        Args:
+            current_speed_kmh: Train's current speed in km/h
+            curve: Speed curve points [{distance_cm, operational_limit, ...}, ...]
+            horizon_cm: How far ahead to evaluate (default 30cm)
+            sample_count: Number of sample points within horizon
+
+        Returns:
+            Best handle position
+        """
+        if not curve:
+            return HandlePosition.N
+
+        # Clamp horizon to curve extent
+        max_curve_dist = curve[-1].get("distance_cm", 0)
+        horizon_cm = min(horizon_cm, max_curve_dist)
+        if horizon_cm <= 0:
+            # At end of curve - just brake
+            return self._calculate_braking_notch(current_speed_kmh)
+
+        candidates = [
+            HandlePosition.P5,
+            HandlePosition.P4,
+            HandlePosition.P3,
+            HandlePosition.P2,
+            HandlePosition.P1,
+            HandlePosition.N,
+            HandlePosition.B1,
+            HandlePosition.B2,
+            HandlePosition.B3,
+            HandlePosition.B4,
+            HandlePosition.B5,
+            HandlePosition.B6,
+            HandlePosition.B7,
+            HandlePosition.B8,
+        ]
+
+        sample_distances = [
+            horizon_cm * (i + 1) / sample_count for i in range(sample_count)
+        ]
+
+        best_handle = HandlePosition.N
+        best_score = float("inf")
+        OVERSHOOT_WEIGHT = 10.0  # Penalize exceeding curve heavily
+
+        for handle in candidates:
+            score = 0.0
+
+            for dist in sample_distances:
+                predicted_speed = self._simulate_forward(
+                    current_speed_kmh, handle, dist
+                )
+                curve_limit = self._sample_curve_at(curve, dist, "operational_limit")
+
+                if predicted_speed > curve_limit:
+                    # Above curve - heavy penalty
+                    overshoot = predicted_speed - curve_limit
+                    score += overshoot * OVERSHOOT_WEIGHT
+                else:
+                    # Below curve - mild penalty (want to be close to curve)
+                    gap = curve_limit - predicted_speed
+                    score += gap
+
+            if score < best_score:
+                best_score = score
+                best_handle = handle
+
+        return best_handle
+
     def _ato_calculate_handle(self) -> HandlePosition:
         """
         ATO handle calculation using curve-following approach.
