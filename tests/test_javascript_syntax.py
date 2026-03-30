@@ -8,6 +8,7 @@ Critical: These tests MUST pass before any commit.
 """
 
 import os
+import shutil
 import subprocess
 import pytest
 from pathlib import Path
@@ -17,8 +18,80 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 JS_DIR = PROJECT_ROOT / "static" / "js"
 
-# Node.js path - use Node 22 from nvm which supports ES2020+ syntax
-NODE_PATH = os.path.expanduser("~/.nvm/versions/node/v22.18.0/bin/node")
+# Node.js major version required for ES2020+ syntax
+_NODE_MAJOR = "22"
+
+
+def _resolve_node_path() -> str:
+    """Resolve a Node.js binary that satisfies the required major version.
+
+    Resolution order:
+    1. nvm: source nvm.sh, use 'nvm which <major>' to get the exact path.
+       If the version is not installed, run 'nvm install <major>' first.
+    2. System node (PATH): used as a fallback when nvm is not present.
+
+    Returns:
+        Absolute path to the node binary.
+
+    Raises:
+        RuntimeError: If no suitable Node.js binary can be found or installed.
+    """
+    nvm_sh = Path(os.path.expanduser("~/.nvm/nvm.sh"))
+
+    if nvm_sh.exists():
+        # Ask nvm for the path of the installed version (fast, no subshell overhead)
+        result = subprocess.run(
+            ["bash", "-c", f"source {nvm_sh} && nvm which {_NODE_MAJOR}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            path = result.stdout.strip()
+            if path and Path(path).exists():
+                return path
+
+        # Not installed — install it now
+        print(
+            f"\n[test_javascript_syntax] Node {_NODE_MAJOR} not found via nvm, installing..."
+        )
+        install = subprocess.run(
+            ["bash", "-c", f"source {nvm_sh} && nvm install {_NODE_MAJOR}"],
+            capture_output=False,  # show output so the user can see progress
+            text=True,
+        )
+        if install.returncode != 0:
+            raise RuntimeError(
+                f"nvm install {_NODE_MAJOR} failed (exit {install.returncode})"
+            )
+
+        # Try nvm which again after install
+        result = subprocess.run(
+            ["bash", "-c", f"source {nvm_sh} && nvm which {_NODE_MAJOR}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            path = result.stdout.strip()
+            if path and Path(path).exists():
+                return path
+
+        raise RuntimeError(
+            f"nvm install {_NODE_MAJOR} succeeded but 'nvm which {_NODE_MAJOR}' still failed"
+        )
+
+    # nvm not available — fall back to whatever node is on PATH
+    system_node = shutil.which("node")
+    if system_node:
+        return system_node
+
+    raise RuntimeError(
+        f"Node.js {_NODE_MAJOR} not found. "
+        "Install nvm (https://github.com/nvm-sh/nvm) or install Node.js manually."
+    )
+
+
+# Resolved once at import time so pytest parametrize runs cleanly
+NODE_PATH = _resolve_node_path()
 
 
 def get_all_js_files():
