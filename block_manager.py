@@ -37,6 +37,8 @@ TODO List:
 - [x] Document migration guide (see docs/ARCHITECTURE.md, AGENTS.md)
 """
 
+from collections import deque
+from datetime import datetime
 from typing import Optional, Dict, List
 from block import Block, BlockState
 
@@ -65,6 +67,31 @@ class BlockManager:
             blocks: Dictionary mapping block_id to Block instances
         """
         self.blocks = blocks
+        self.history: deque = deque(maxlen=100)
+
+    def _record_history(
+        self,
+        block_id: str,
+        action: str,
+        from_state: BlockState,
+        to_state: BlockState,
+        train_id: Optional[str] = None,
+    ) -> None:
+        """Record a state change in history."""
+        self.history.append(
+            {
+                "timestamp": datetime.now().isoformat(),
+                "block_id": block_id,
+                "action": action,
+                "from_state": from_state.value
+                if hasattr(from_state, "value")
+                else str(from_state),
+                "to_state": to_state.value
+                if hasattr(to_state, "value")
+                else str(to_state),
+                "train_id": train_id,
+            }
+        )
 
     def occupy_block(self, block_id: str, train_id: str) -> bool:
         """Mark a block as occupied by a train.
@@ -94,8 +121,12 @@ class BlockManager:
 
         # Allow FREE → OCCUPIED (manual mode)
         if block.state == BlockState.FREE:
+            from_state = block.state
             block.state = BlockState.OCCUPIED
             block.occupied_by = train_id
+            self._record_history(
+                block_id, "occupy", from_state, BlockState.OCCUPIED, train_id
+            )
             return True
 
         # Allow RESERVED → OCCUPIED (normal path following)
@@ -105,8 +136,12 @@ class BlockManager:
                 return (
                     False  # Wrong train trying to occupy a block reserved for another
                 )
+            from_state = block.state
             block.state = BlockState.OCCUPIED
             block.occupied_by = train_id
+            self._record_history(
+                block_id, "occupy", from_state, BlockState.OCCUPIED, train_id
+            )
             return True
 
         # Block in incompatible state (CAUTION or OCCUPIED by different train)
@@ -139,8 +174,16 @@ class BlockManager:
 
         # Normal transition: OCCUPIED → CAUTION
         if block.state == BlockState.OCCUPIED:
+            from_state = block.state
             block.state = BlockState.CAUTION
             # Keep occupied_by field for tracking
+            self._record_history(
+                block_id,
+                "set_caution",
+                from_state,
+                BlockState.CAUTION,
+                block.occupied_by,
+            )
             return True
 
         # Invalid transition
@@ -176,26 +219,41 @@ class BlockManager:
 
         # Normal transition: CAUTION → FREE
         if block.state == BlockState.CAUTION:
+            from_state = block.state
+            prev_train = block.occupied_by
             block.state = BlockState.FREE
             block.occupied_by = None
             block.reserved_by_path = None
             block.reserved_direction = None
+            self._record_history(
+                block_id, "clear", from_state, BlockState.FREE, prev_train
+            )
             return True
 
         # Allow OCCUPIED → FREE (manual override for cleanup)
         if block.state == BlockState.OCCUPIED:
+            from_state = block.state
+            prev_train = block.occupied_by
             block.state = BlockState.FREE
             block.occupied_by = None
             block.reserved_by_path = None
             block.reserved_direction = None
+            self._record_history(
+                block_id, "clear", from_state, BlockState.FREE, prev_train
+            )
             return True
 
         # RESERVED → FREE (path cancellation)
         if block.state == BlockState.RESERVED:
+            from_state = block.state
+            prev_train = block.occupied_by
             block.state = BlockState.FREE
             block.occupied_by = None
             block.reserved_by_path = None
             block.reserved_direction = None
+            self._record_history(
+                block_id, "clear", from_state, BlockState.FREE, prev_train
+            )
             return True
 
         return True  # Shouldn't reach here, but be permissive

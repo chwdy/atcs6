@@ -15,6 +15,7 @@ from flask_cors import CORS
 from werkzeug.routing import IntegerConverter
 
 from app_state import AppState
+from debug_inspector import register_debug_routes
 from routes import register_all
 
 
@@ -41,5 +42,8 @@ def create_app(state: AppState) -> Flask:
 
     # Register route modules
     register_all(app, state)
+
+    # Register debug inspector routes
+    register_debug_routes(app, state)
 
     return app
