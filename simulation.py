@@ -234,4 +234,22 @@ def build_network_payload(
         controller = sim_controller._get_or_create_controller(train)
         train_data["onboard"] = controller.to_dict()
 
+        # Inject live path data (overwrite stale values from network.to_dict)
+        if train.assigned_path_id:
+            try:
+                live_path = controller.get_live_path_data()
+                if live_path:
+                    path_tiles = live_path["path_tiles"]
+                    path_index = live_path["path_index"]
+                    train_data["path_index"] = path_index
+                    train_data["path_length"] = len(path_tiles) if path_tiles else 0
+                    train_data["current_path"] = [
+                        {"x": x, "y": y, "dir": d.name if d else None}
+                        for x, y, d in (path_tiles or [])
+                    ]
+            except Exception as e:
+                logger.debug(
+                    "Failed to get live path for train %s: %s", train.train_id, e
+                )
+
     return payload

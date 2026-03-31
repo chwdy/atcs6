@@ -9,6 +9,7 @@ from enums import Direction
 from train import Train, TrainCar
 from path_dispatcher import PathDispatcher
 from train_controller import create_controller_for_train
+from simulation import SimulationController, build_network_payload
 
 
 @pytest.fixture
@@ -231,3 +232,120 @@ class TestToDictLivePath:
         # Lookahead should cover all 6 tiles, not just 2
         assert "lookahead_tile_info" in data
         assert len(data["lookahead_tile_info"]) == 6
+
+
+class TestApiLivePathIntegration:
+    """Integration test: API responses should contain live path data.
+
+    These tests verify the end-to-end flow from PathDispatcher through
+    TrainController.get_live_path_data() into train.to_dict() — the same
+    code path used by API endpoint helpers (_train_to_dict in routes/trains.py
+    and build_network_payload in simulation.py).
+    """
+
+    def test_train_to_dict_helper_passes_live_data(self, live_path_network):
+        """Helper function should pass live path data to to_dict."""
+        network = live_path_network
+        train = Train(
+            train_id="T1",
+            consist=[TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=40.0)],
+        )
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        dispatcher = PathDispatcher(network)
+        sim = SimulationController(network, dispatcher)
+
+        # Create path A -> B
+        result = dispatcher.create_path(
+            start_block_id="BLK_A",
+            end_block_id="BLK_B",
+            train_id=train.train_id,
+        )
+        assert result.success
+        train.assigned_path_id = result.path.path_id
+
+        # Set stale data (shorter than real path)
+        train.current_path = [(0, 0, Direction.EAST)]
+        train.path_index = 0
+
+        # Get controller and live path
+        controller = sim._get_or_create_controller(train)
+        live_path = controller.get_live_path_data()
+        assert live_path is not None
+
+        # Call to_dict with live data (simulating what the helper does)
+        data = train.to_dict(
+            network=network,
+            path_tiles=live_path["path_tiles"],
+            path_index=live_path["path_index"],
+        )
+
+        # Should use live data, not stale
+        assert data["path_length"] > 1, (
+            "API should return live path length from dispatcher, not stale cache"
+        )
+
+    def test_build_network_payload_injects_live_path(self, live_path_network):
+        """build_network_payload() should overwrite stale path fields with live data."""
+        network = live_path_network
+        train = Train(
+            train_id="T1",
+            consist=[TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=40.0)],
+        )
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        dispatcher = PathDispatcher(network)
+        sim = SimulationController(network, dispatcher)
+
+        # Create path A -> B -> C
+        result = dispatcher.create_path(
+            start_block_id="BLK_A",
+            end_block_id="BLK_B",
+            train_id=train.train_id,
+        )
+        assert result.success
+        ext = dispatcher.extend_path(result.path.path_id, "BLK_C")
+        assert ext.success
+        train.assigned_path_id = result.path.path_id
+
+        # Set stale data (much shorter than real path)
+        train.current_path = [(0, 0, Direction.EAST)]
+        train.path_index = 0
+
+        # Build the payload (same as GET /api/network)
+        payload = build_network_payload(network, sim)
+
+        # Find our train in the payload
+        train_data = None
+        for t in payload.get("trains", []):
+            if t.get("id") == "T1":
+                train_data = t
+                break
+        assert train_data is not None
+
+        # path_length should reflect live A->B->C path, not stale 1-tile path
+        assert train_data["path_length"] > 1, (
+            "build_network_payload should inject live path data"
+        )
+
+    def test_no_live_path_when_no_assigned_path(self, live_path_network):
+        """Without assigned_path_id, helper should return stale data gracefully."""
+        network = live_path_network
+        train = Train(
+            train_id="T1",
+            consist=[TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=40.0)],
+        )
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        # Set stale path but no assigned_path_id
+        train.current_path = [(0, 0, Direction.EAST), (1, 0, Direction.EAST)]
+        train.path_index = 1
+
+        # Simulate what _train_to_dict does without sim_controller
+        data = train.to_dict(network=network)
+
+        assert data["path_length"] == 2
+        assert data["path_index"] == 1
