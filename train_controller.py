@@ -1077,6 +1077,42 @@ class TrainController:
 
         return convert_tiles_to_train_path(path.path_tiles)
 
+    def get_live_path_data(self) -> Optional[Dict[str, Any]]:
+        """Get live path data for serialization (Train.to_dict).
+
+        Returns path_tiles and the current head path_index, both derived
+        from the PathDispatcher (source of truth). Returns None if the
+        train has no active path.
+
+        This replaces reading from train.current_path / train.path_index
+        which can be stale after path extension or cancellation.
+
+        Returns:
+            Dict with 'path_tiles' (List[Tuple[int, int, Direction]]) and
+            'path_index' (int), or None if no active path.
+        """
+        train = self._get_train()
+        if not train:
+            return None
+
+        path_tiles = self.get_path_tiles()
+        if path_tiles is None:
+            return None
+
+        # Derive head path index from train's physical position
+        head_tile = self._get_head_tile()
+        if head_tile:
+            path_index = self._get_head_path_index(train, head_tile)
+            if path_index < 0:
+                path_index = train.path_index  # Fallback to cached index
+        else:
+            path_index = train.path_index  # Fallback to cached index
+
+        return {
+            "path_tiles": path_tiles,
+            "path_index": path_index,
+        }
+
     def _get_head_path_index(self, train: "Train", head_tile: Tuple[int, int]) -> int:
         """Get the path index for the train head tile."""
         path_tiles = self.get_path_tiles()

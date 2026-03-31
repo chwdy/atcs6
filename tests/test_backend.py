@@ -43,6 +43,9 @@ from tests.test_trains_routes import *
 # Scenario recorder/runner tests
 from tests.test_scenario_runner import *
 
+# Live path data tests
+from tests.test_to_dict_live_path import *
+
 
 if __name__ == "__main__":
     print("Backend Test Suite - Modular Test Files")
