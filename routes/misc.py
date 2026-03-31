@@ -55,6 +55,19 @@ def register(app, state: AppState) -> None:
             }
         )
 
+    @app.route("/api/network/steps", methods=["GET"])
+    def get_network_steps():
+        """Return current network layout as StepRecorder steps.
+
+        Used by the frontend scenario recorder to embed the layout
+        in scenario files for self-contained replay.
+        """
+        from step_recorder import StepRecorder
+
+        recorder = StepRecorder()
+        steps = recorder.generate_steps_list(state.network)
+        return jsonify({"steps": steps})
+
     # ========================================================================
     # Layout Persistence API
     # ========================================================================

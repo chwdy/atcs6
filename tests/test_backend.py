@@ -18,6 +18,7 @@ Individual test categories are in:
 - tests/test_trains_ato.py - ATO-specific tests
 - tests/test_trains_lookahead.py - Monitor lookahead and UI data
 - tests/test_trains_routes.py - Route execution and path assignment
+- tests/test_scenario_runner.py - Scenario recorder/runner system
 """
 
 import pytest
@@ -39,6 +40,9 @@ from tests.test_trains_ato import *
 from tests.test_trains_lookahead import *
 from tests.test_trains_routes import *
 
+# Scenario recorder/runner tests
+from tests.test_scenario_runner import *
+
 
 if __name__ == "__main__":
     print("Backend Test Suite - Modular Test Files")
@@ -58,6 +62,9 @@ if __name__ == "__main__":
     print("  pytest tests/test_trains_ato.py -v")
     print("  pytest tests/test_trains_lookahead.py -v")
     print("  pytest tests/test_trains_routes.py -v")
+    print("\nScenario tests:")
+    print("  pytest tests/test_scenario_runner.py -v")
+    print("  pytest tests/test_scenarios.py -v")
     print("\nOr run all tests:")
     print("  pytest tests/test_backend.py -v")
     print("  conda run -n general pytest tests/test_backend.py -v")

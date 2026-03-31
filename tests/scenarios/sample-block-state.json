@@ -1,0 +1,42 @@
+{
+    "version": "1.0",
+    "format": "scenario",
+    "name": "Block starts free",
+    "description": "Verify that a freshly created block has free state and correct name",
+    "created": "2026-03-31T00:00:00Z",
+    "layout": [
+        {
+            "id": 1,
+            "type": "track_group",
+            "description": "Three EW tracks",
+            "operations": [
+                {"op": "add_track", "x": 0, "y": 0, "track_bits": 2},
+                {"op": "add_track", "x": 1, "y": 0, "track_bits": 2},
+                {"op": "add_track", "x": 2, "y": 0, "track_bits": 2}
+            ]
+        },
+        {
+            "id": 2,
+            "type": "block",
+            "description": "Block B1",
+            "operations": [
+                {
+                    "op": "create_block_with_tracks",
+                    "block_id": "B1",
+                    "name": "Block 1",
+                    "positions": [[0, 0], [1, 0], [2, 0]]
+                }
+            ]
+        }
+    ],
+    "actions": [
+        {
+            "t": 0.0,
+            "action": "checkpoint",
+            "assertions": [
+                {"path": "blocks.B1.state", "op": "==", "expected": "free"},
+                {"path": "blocks.B1.name", "op": "==", "expected": "Block 1"}
+            ]
+        }
+    ]
+}

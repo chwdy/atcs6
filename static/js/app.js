@@ -3,6 +3,7 @@ class App {
         this.renderer = new Renderer('rail-canvas');
         this.editor = new Editor(this.renderer, window.api);
         this.trainMonitor = new TrainMonitor();
+        this.scenarioRecorder = new ScenarioRecorder(window.api);
         this.simulationInterval = null;
         this.currentNetwork = null;
         this.isSimulationRunning = false;
@@ -14,6 +15,7 @@ class App {
         this.trainMonitorUnsub = null;
 
         this.setupControls();
+        this.setupRecorderControls();
         this.setupDebugPanel();
         this.setupSettingsPanel();
         this.refreshNetwork();
@@ -72,6 +74,47 @@ class App {
 
         // Layout controls
         this.setupLayoutControls();
+    }
+
+    setupRecorderControls() {
+        const recordBtn = document.getElementById('btn-record');
+        const checkpointBtn = document.getElementById('btn-checkpoint');
+        const saveBtn = document.getElementById('btn-save-scenario');
+
+        if (!recordBtn) return;
+
+        recordBtn.addEventListener('click', async () => {
+            if (this.scenarioRecorder.recording) {
+                this.scenarioRecorder.stopRecording();
+                recordBtn.classList.remove('recording');
+                recordBtn.innerHTML = '<span class="record-dot"></span> Record';
+                checkpointBtn.disabled = true;
+                saveBtn.disabled = !this.scenarioRecorder.hasPendingRecording;
+                window.showToast?.('Recording stopped', 'info', 2000);
+            } else {
+                await this.scenarioRecorder.startRecording();
+                recordBtn.classList.add('recording');
+                recordBtn.innerHTML = '<span class="record-dot"></span> Stop';
+                checkpointBtn.disabled = false;
+                saveBtn.disabled = true;
+                window.showToast?.('Recording started - actions are being captured', 'info', 2000);
+            }
+        });
+
+        checkpointBtn.addEventListener('click', async () => {
+            await this.scenarioRecorder.checkpoint();
+            const status = this.scenarioRecorder.getStatus();
+            window.showToast?.(`Checkpoint ${status.checkpointCount} added`, 'success', 1500);
+        });
+
+        saveBtn.addEventListener('click', () => {
+            const name = prompt('Scenario name:', 'My Scenario');
+            if (!name) return;
+            const description = prompt('Description (optional):', '');
+            this.scenarioRecorder.saveScenario(name, description || '');
+            saveBtn.disabled = true;
+            window.showToast?.('Scenario file downloaded', 'success', 2000);
+        });
     }
 
     updatePlaybackUI(isPlaying) {

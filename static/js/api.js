@@ -62,6 +62,16 @@ class API {
         return this._request('/network', {}, 'getNetwork');
     }
 
+    /**
+     * Get current network layout as StepRecorder steps.
+     * Used by the scenario recorder to embed layout in scenario files.
+     * @returns {Promise<Array>} List of step objects
+     */
+    async getNetworkSteps() {
+        const data = await this._request('/network/steps', {}, 'getNetworkSteps');
+        return data?.steps || [];
+    }
+
     // Individual track operations
 
     async getTrack(x, y) {

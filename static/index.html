@@ -29,6 +29,17 @@
                         <button class="btn btn-sm speed-btn" data-speed="3">3x</button>
                     </div>
                 </div>
+                <div class="recorder-controls">
+                    <button id="btn-record" class="btn btn-outline btn-record" title="Record Scenario">
+                        <span class="record-dot"></span> Record
+                    </button>
+                    <button id="btn-checkpoint" class="btn btn-outline" title="Add Checkpoint" disabled>
+                        &#x2691; Checkpoint
+                    </button>
+                    <button id="btn-save-scenario" class="btn btn-outline" title="Save Scenario" disabled>
+                        Save Scenario
+                    </button>
+                </div>
                 <div class="mode-switch">
                     <button id="mode-edit" class="btn btn-size-tight active">Editor</button>
                     <button id="mode-sim" class="btn btn-size-tight">Simulation</button>
@@ -359,6 +370,7 @@
     <script src="js/editor-ui.js?v=15"></script>
     <script src="js/editor.js?v=16"></script>
     <script src="js/train-monitor.js?v=15"></script>
+    <script src="js/scenario-recorder.js?v=15"></script>
     <script src="js/app.js?v=15"></script>
 </body>
 </html>
