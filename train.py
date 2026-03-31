@@ -1091,12 +1091,22 @@ class Train:
         # conservative - it may reject some valid multi-car opposite-polarity cases.
         return len(self.consist) == 1
 
-    def to_dict(self, network=None) -> dict:
+    def to_dict(
+        self,
+        network=None,
+        path_tiles: Optional[List[Tuple[int, int, "Direction"]]] = None,
+        path_index: Optional[int] = None,
+    ) -> dict:
         """Convert train to dictionary for serialization.
 
         Args:
             network: Optional RailwayNetwork to calculate tile length for distance ratio
+            path_tiles: Optional live path tiles (overrides stale self.current_path)
+            path_index: Optional live path index (overrides stale self.path_index)
         """
+        # Resolve path data: prefer live params, fall back to stale fields
+        effective_path = path_tiles if path_tiles is not None else self.current_path
+        effective_index = path_index if path_index is not None else self.path_index
         data = {
             "id": self.train_id,
             "length": self.length,
@@ -1122,12 +1132,12 @@ class Train:
             "wait_reason": self.wait_reason,
             "speed_limit_reason": self.speed_limit_reason,
             # Path info for debug
-            "path_index": self.path_index,
-            "path_length": len(self.current_path) if self.current_path else 0,
+            "path_index": effective_index,
+            "path_length": len(effective_path) if effective_path else 0,
             # Current path as list of tiles with direction
             "current_path": [
                 {"x": x, "y": y, "dir": d.name if d else None}
-                for x, y, d in (self.current_path or [])
+                for x, y, d in (effective_path or [])
             ],
         }
 
@@ -1176,7 +1186,7 @@ class Train:
         # ========================================================================
         # LOOKAHEAD TILE INFO - Used by TrainMonitor for upcoming elements
         # ========================================================================
-        # Build lookahead_tiles from current_path starting at path_index (head position)
+        # Build lookahead_tiles from effective path starting at effective index (head position)
         # This provides info about ALL tiles ahead, not just occupied tiles
         #
         # Data structure:
@@ -1184,7 +1194,7 @@ class Train:
         # - lookahead_tile_info: Rich info for each tile (block, signals, switches, distance)
         # - head_distance_into_tile_cm: How far into current tile the head is
         #
-        if network and self.current_path and self.path_index >= 0:
+        if network and effective_path and effective_index >= 0:
             lookahead_tiles = []
             lookahead_tile_info = []
 
@@ -1199,14 +1209,14 @@ class Train:
 
             current_block_id = None
             block_back_length_cm = 0.0
-            if self.path_index < len(self.current_path):
-                head_entry = self.current_path[self.path_index]
+            if effective_index < len(effective_path):
+                head_entry = effective_path[effective_index]
                 head_x, head_y = head_entry[0], head_entry[1]
                 head_track = network.get_track(head_x, head_y)
                 current_block_id = head_track.block_section_id if head_track else None
                 if current_block_id:
-                    for j in range(self.path_index - 1, -1, -1):
-                        prev_entry = self.current_path[j]
+                    for j in range(effective_index - 1, -1, -1):
+                        prev_entry = effective_path[j]
                         prev_x, prev_y = prev_entry[0], prev_entry[1]
                         prev_track = network.get_track(prev_x, prev_y)
                         if (
@@ -1225,8 +1235,8 @@ class Train:
             )
 
             # Iterate from current position to end of path
-            for i in range(self.path_index, len(self.current_path)):
-                path_entry = self.current_path[i]
+            for i in range(effective_index, len(effective_path)):
+                path_entry = effective_path[i]
                 x, y = path_entry[0], path_entry[1]
                 # path_entry[2] is the Direction enum for train's travel direction
                 travel_direction = (
