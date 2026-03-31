@@ -531,14 +531,38 @@ class Train:
         return None
 
     def has_path(self) -> bool:
-        """Check if train has a planned path"""
+        """Check if train has a planned path.
+
+        .. deprecated::
+            Reads from stale current_path cache. Use
+            TrainController.get_path_tiles() is not None instead.
+        """
+        import warnings
+
+        warnings.warn(
+            "train.has_path() reads stale cache. Use controller.get_path_tiles().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self.current_path is None:
             return False
         return len(self.current_path) > 0
 
     def get_remaining_path_length(self) -> int:
-        """Get number of remaining steps in current path"""
-        if not self.has_path() or self.current_path is None:
+        """Get number of remaining steps in current path.
+
+        .. deprecated::
+            Reads from stale current_path cache. Use
+            TrainController.get_live_path_data() instead.
+        """
+        import warnings
+
+        warnings.warn(
+            "train.get_remaining_path_length() reads stale cache. Use controller.get_live_path_data().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if self.current_path is None or len(self.current_path) == 0:
             return 0
         return len(self.current_path) - self.path_index
 
