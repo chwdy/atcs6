@@ -181,6 +181,10 @@ def register(app, state: AppState) -> None:
             "new_end_block_id": "BLK_003"
         }
 
+        Also syncs ato_destination_block_id on both controller and train
+        so the ATO knows the new terminal, and updates train.current_path
+        cache for to_dict() serialization.
+
         Returns:
             ExtensionResult with extended blocks or error info
         """
@@ -196,6 +200,29 @@ def register(app, state: AppState) -> None:
                 return jsonify({"error": f"Path {path_id} not found"}), 404
 
             result = state.path_dispatcher.extend_path(path_id, new_end_block_id)
+
+            # Sync train and controller state after successful extension
+            if result.success and path.train_id:
+                train = state.network.trains.get(path.train_id)
+                if train:
+                    # Update destination so ATO doesn't stop at old terminal
+                    train.ato_destination_block_id = new_end_block_id
+
+                    # Update current_path cache for to_dict() serialization
+                    train.current_path = _convert_path_tiles_to_train_path(
+                        path.path_tiles
+                    )
+
+                    # Sync controller destination
+                    if state.sim_controller:
+                        controller = state.sim_controller._get_or_create_controller(
+                            train
+                        )
+                        if controller:
+                            controller.ato_destination_block_id = new_end_block_id
+
+            if result.success:
+                state.network.update_signals_from_blocks()
 
         return jsonify(result.to_dict()), 200 if result.success else 400
 

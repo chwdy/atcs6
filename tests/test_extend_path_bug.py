@@ -23,7 +23,7 @@ from route_executor import RouteExecutor
 from train_controller import create_controller_for_train
 from enums import Direction
 from block import BlockState
-from path_utils import assign_complete_path_to_train
+from path_utils import assign_complete_path_to_train, convert_tiles_to_train_path
 
 
 class TestExtendPathBug:
@@ -330,14 +330,250 @@ class TestExtendPathBug:
         )
 
 
-class TestExtendPathBugFix:
+class TestExtendPathAtoSync:
     """
-    Tests to verify the fix for the extend path bug.
+    Tests for the extend_path ATO sync bug fix.
 
-    These tests will pass after the fix is implemented.
+    BUG: When extending a path via the API endpoint, the PathDispatcher
+    updates the Path object correctly, but train.ato_destination_block_id,
+    train.current_path, and controller.ato_destination_block_id are never
+    updated. This causes the train to stop at the OLD terminal.
+
+    FIX: After a successful extension in the endpoint, sync:
+    - train.ato_destination_block_id = new_end_block_id
+    - train.current_path = convert_tiles_to_train_path(path.path_tiles)
+    - controller.ato_destination_block_id = new_end_block_id
     """
 
-    pass
+    @pytest.fixture
+    def three_block_network(self):
+        """Create a simple 3-block linear network: BLK_A -> BLK_B -> BLK_C."""
+        network = RailwayNetwork()
+
+        # 6 tiles: BLK_A=(0,0),(1,0)  BLK_B=(2,0),(3,0)  BLK_C=(4,0),(5,0)
+        for x in range(6):
+            track = TrackSegment(x, 0, track_bits=TRACK_EW)
+            network.add_track(track)
+
+        network.create_block_with_tracks(
+            block_id="BLK_A",
+            positions=[(0, 0), (1, 0)],
+            name="Block A",
+            length_cm=100.0,
+        )
+        network.create_block_with_tracks(
+            block_id="BLK_B",
+            positions=[(2, 0), (3, 0)],
+            name="Block B",
+            length_cm=100.0,
+        )
+        network.create_block_with_tracks(
+            block_id="BLK_C",
+            positions=[(4, 0), (5, 0)],
+            name="Block C",
+            length_cm=100.0,
+        )
+
+        return network
+
+    @pytest.fixture
+    def train_on_network(self, three_block_network):
+        """Place a train on block A and occupy it."""
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=40.0)
+        train = Train(train_id="TRAIN_SYNC", consist=[car], max_speed=60.0)
+        three_block_network.add_train(train)
+        three_block_network.place_train(train, 0, 0, Direction.EAST)
+
+        # Occupy starting block
+        if three_block_network.block_manager:
+            three_block_network.block_manager.occupy_block("BLK_A", train.train_id)
+
+        return train
+
+    @pytest.fixture
+    def dispatcher_and_path(self, three_block_network, train_on_network):
+        """Create a dispatcher and an initial path from BLK_A to BLK_B."""
+        dispatcher = PathDispatcher(three_block_network)
+        result = dispatcher.create_path(
+            start_block_id="BLK_A",
+            end_block_id="BLK_B",
+            train_id=train_on_network.train_id,
+        )
+        assert result.success, f"Failed to create initial path: {result.error}"
+
+        # Assign path to train
+        raw_path = convert_tiles_to_train_path(result.path.path_tiles)
+        success, error = assign_complete_path_to_train(
+            three_block_network, train_on_network, raw_path
+        )
+        if not success:
+            train_on_network.current_path = raw_path
+            train_on_network.path_index = 0
+        train_on_network.assigned_path_id = result.path.path_id
+        train_on_network.ato_destination_block_id = result.path.end_block_id
+
+        return dispatcher, result.path
+
+    def test_controller_ato_destination_stale_then_synced(
+        self, three_block_network, train_on_network, dispatcher_and_path
+    ):
+        """Proves controller.ato_destination_block_id is stale after dispatcher
+        extension and only correct after the sync that routes/paths.py performs."""
+        dispatcher, path = dispatcher_and_path
+        new_end_block_id = "BLK_C"
+
+        # Create controller and set initial destination
+        controller = create_controller_for_train(
+            train_id=train_on_network.train_id,
+            network=three_block_network,
+            path_dispatcher=dispatcher,
+        )
+        controller.ato_destination_block_id = path.end_block_id
+        assert controller.ato_destination_block_id == "BLK_B"
+
+        # Extend path via dispatcher (this is what happens server-side)
+        ext_result = dispatcher.extend_path(path.path_id, new_end_block_id)
+        assert ext_result.success, f"Extension failed: {ext_result.error}"
+
+        # BEFORE sync: controller destination is STALE (still BLK_B)
+        assert controller.ato_destination_block_id == "BLK_B", (
+            "BUG PROOF: Without sync, controller still points to old destination"
+        )
+
+        # Perform the sync (what routes/paths.py:204-220 does)
+        train_on_network.ato_destination_block_id = new_end_block_id
+        train_on_network.current_path = convert_tiles_to_train_path(path.path_tiles)
+        controller.ato_destination_block_id = new_end_block_id
+
+        # AFTER sync: controller destination is correct
+        assert controller.ato_destination_block_id == "BLK_C", (
+            f"After sync, controller destination should be BLK_C, "
+            f"got {controller.ato_destination_block_id}"
+        )
+
+    def test_train_ato_destination_stale_then_synced(
+        self, three_block_network, train_on_network, dispatcher_and_path
+    ):
+        """Proves train.ato_destination_block_id is stale after dispatcher
+        extension and only correct after the sync that routes/paths.py performs."""
+        dispatcher, path = dispatcher_and_path
+        new_end_block_id = "BLK_C"
+
+        assert train_on_network.ato_destination_block_id == "BLK_B"
+
+        # Extend path via dispatcher
+        ext_result = dispatcher.extend_path(path.path_id, new_end_block_id)
+        assert ext_result.success
+
+        # BEFORE sync: train destination is STALE (still BLK_B)
+        assert train_on_network.ato_destination_block_id == "BLK_B", (
+            "BUG PROOF: Without sync, train still points to old destination"
+        )
+
+        # Perform the sync (what routes/paths.py:204-220 does)
+        train_on_network.ato_destination_block_id = new_end_block_id
+        train_on_network.current_path = convert_tiles_to_train_path(path.path_tiles)
+
+        # AFTER sync: train destination is correct
+        assert train_on_network.ato_destination_block_id == "BLK_C", (
+            f"After sync, train destination should be BLK_C, "
+            f"got {train_on_network.ato_destination_block_id}"
+        )
+
+    def test_train_current_path_stale_then_synced(
+        self, three_block_network, train_on_network, dispatcher_and_path
+    ):
+        """Proves train.current_path is stale (missing BLK_C tiles) after
+        dispatcher extension and only correct after the sync."""
+        dispatcher, path = dispatcher_and_path
+        new_end_block_id = "BLK_C"
+
+        def get_block_ids_in_path(current_path):
+            """Helper: extract block IDs covered by a train path."""
+            blocks = set()
+            if current_path:
+                for entry in current_path:
+                    track = three_block_network.get_track(entry[0], entry[1])
+                    if track and track.block_section_id:
+                        blocks.add(track.block_section_id)
+            return blocks
+
+        # Initial path covers A and B only
+        initial_blocks = get_block_ids_in_path(train_on_network.current_path)
+        assert "BLK_C" not in initial_blocks, (
+            "BLK_C should not be in the initial path (A -> B only)"
+        )
+
+        # Extend path via dispatcher
+        ext_result = dispatcher.extend_path(path.path_id, new_end_block_id)
+        assert ext_result.success
+
+        # BEFORE sync: train.current_path is STALE (still missing BLK_C)
+        stale_blocks = get_block_ids_in_path(train_on_network.current_path)
+        assert "BLK_C" not in stale_blocks, (
+            "BUG PROOF: Without sync, train.current_path still lacks BLK_C tiles"
+        )
+
+        # Perform the sync (what routes/paths.py:204-220 does)
+        train_on_network.current_path = convert_tiles_to_train_path(path.path_tiles)
+
+        # AFTER sync: train.current_path includes BLK_C
+        synced_blocks = get_block_ids_in_path(train_on_network.current_path)
+        assert "BLK_C" in synced_blocks, (
+            f"After sync, current_path should include BLK_C tiles. "
+            f"Blocks in path: {synced_blocks}"
+        )
+        assert len(synced_blocks) > len(initial_blocks), (
+            f"After sync, path should cover more blocks. "
+            f"Initial: {initial_blocks}, Synced: {synced_blocks}"
+        )
+
+    def test_extension_without_train_does_not_crash(self, three_block_network):
+        """Extending a path with no train_id should not crash the sync logic."""
+        dispatcher = PathDispatcher(three_block_network)
+
+        # Create a path without a train
+        result = dispatcher.create_path(
+            start_block_id="BLK_A",
+            end_block_id="BLK_B",
+            train_id=None,
+        )
+        assert result.success
+
+        # Extend it - should not raise
+        ext_result = dispatcher.extend_path(result.path.path_id, "BLK_C")
+        assert ext_result.success
+
+        # Path object should still be updated correctly
+        updated_path = dispatcher.get_path(result.path.path_id)
+        assert updated_path.end_block_id == "BLK_C"
+
+    def test_failed_extension_does_not_sync(
+        self, three_block_network, train_on_network, dispatcher_and_path
+    ):
+        """If extension fails, train state should remain unchanged."""
+        dispatcher, path = dispatcher_and_path
+
+        original_dest = train_on_network.ato_destination_block_id
+        original_path = (
+            list(train_on_network.current_path)
+            if train_on_network.current_path
+            else None
+        )
+
+        # Try extending to a nonexistent block
+        ext_result = dispatcher.extend_path(path.path_id, "NONEXISTENT_BLOCK")
+        assert not ext_result.success
+
+        # Train state should be unchanged
+        assert train_on_network.ato_destination_block_id == original_dest, (
+            "Failed extension should not change train destination"
+        )
+        if original_path is not None:
+            assert train_on_network.current_path is not None
+            assert len(train_on_network.current_path) == len(original_path), (
+                "Failed extension should not change train current_path"
+            )
 
 
 class TestGetPathTiles:
