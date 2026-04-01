@@ -160,7 +160,12 @@ class RouteExecutor:
             target_platform_id = waypoint.platform_id
         exec_state.resolved_platform_id = target_platform_id
 
-        if train.state == TrainState.STANDBY:
+        if train.state in (TrainState.STANDBY, TrainState.IDLE):
+            # STANDBY: normal pre-departure state.
+            # IDLE: a new route was assigned after a previous route completed.
+            # In both cases, _try_depart_to_waypoint requests a path and calls
+            # depart(), which infers direction and cab from the path (enabling
+            # auto-reversal when the new route goes the opposite way).
             self._try_depart_to_waypoint(train, route, exec_state)
         elif train.state == TrainState.RUNNING_MOVING:
             self._check_waypoint_arrival(train, route, exec_state)
@@ -207,7 +212,7 @@ class RouteExecutor:
         if current_block_id == target_block_id:
             exec_state.waiting_for_path = False
             route.clear_error()
-            if train.state == TrainState.STANDBY:
+            if train.state in (TrainState.STANDBY, TrainState.IDLE):
                 controller.depart()
             return
 
@@ -228,7 +233,7 @@ class RouteExecutor:
                 if path_result.path.end_block_id:
                     controller.ato_destination_block_id = path_result.path.end_block_id
                     train.ato_destination_block_id = path_result.path.end_block_id
-                if train.state == TrainState.STANDBY:
+                if train.state in (TrainState.STANDBY, TrainState.IDLE):
                     controller.depart()
             else:
                 error_msg = path_result.error or "Path unavailable"
@@ -236,7 +241,7 @@ class RouteExecutor:
                 controller.wait_for_path(error_msg)
                 exec_state.waiting_for_path = True
         else:
-            if train.state == TrainState.STANDBY:
+            if train.state in (TrainState.STANDBY, TrainState.IDLE):
                 controller.depart()
 
     def _check_waypoint_arrival(

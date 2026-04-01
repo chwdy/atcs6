@@ -73,7 +73,7 @@ async function refreshHistory() {
             return;
         }
         container.innerHTML = data.history
-            .reverse()
+            .slice().reverse()
             .map(h => {
                 const time = h.timestamp ? h.timestamp.split('T')[1]?.substring(0, 8) : '??';
                 const fromCls = `state-${h.from_state}`;

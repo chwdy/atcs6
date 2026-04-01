@@ -2302,6 +2302,116 @@ OR
 
 ---
 
+## Debug Inspector Endpoints
+
+The debug inspector provides a generic object traversal API over the live Python runtime. It powers the standalone debug UI at `/debug`.
+
+### GET /debug
+
+Serves the standalone debug inspector HTML page — a tree-view browser for the Python object graph.
+
+**Response:** `debug-inspector.html` (Content-Type: text/html)
+
+---
+
+### GET /api/debug/inspect
+
+Traverse the Python object graph from `AppState` using a dot-separated path.
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | No | Dot-separated path from AppState root, e.g. `network.trains` or `network.trains.T1` |
+| `depth` | integer | No | Max traversal depth (default: 2) |
+
+**Example:** `GET /api/debug/inspect?path=network.trains&depth=2`
+
+**Response:**
+
+```json
+{
+  "path": "network.trains",
+  "value": {
+    "T1": {
+      "__type__": "Train",
+      "train_id": "T1",
+      "current_speed": 42.3
+    }
+  }
+}
+```
+
+---
+
+### GET /api/debug/summary
+
+Returns counts of top-level entities (trains, blocks, signals, etc.).
+
+**Response:**
+
+```json
+{
+  "trains": 3,
+  "blocks": 12,
+  "signals": 8,
+  "stations": 2,
+  "routes": 1,
+  "active_paths": 3
+}
+```
+
+---
+
+### GET /api/debug/block-history
+
+Returns recent block state transition history from `BlockManager`.
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `block_id` | string | No | Filter history for a specific block |
+| `limit` | integer | No | Max entries to return (default: 50) |
+
+**Response:**
+
+```json
+{
+  "history": [
+    {
+      "block_id": "BLK_abc123",
+      "from_state": "FREE",
+      "to_state": "RESERVED",
+      "train_id": "T1",
+      "timestamp": "2026-03-30T10:23:01"
+    }
+  ]
+}
+```
+
+---
+
+## Platform Endpoints
+
+Platforms are physical multi-tile track entities (formerly called "stations" before the station/platform split). Stations are now the logical grouping; platforms are the physical infrastructure.
+
+See `/api/station` endpoints for the logical station grouping. Platform endpoints follow the same pattern:
+
+- `POST /api/platform` — Create a platform
+- `GET /api/platform/{platform_id}` — Get platform details
+- `PATCH /api/platform/{platform_id}` — Update platform
+- `DELETE /api/platform/{platform_id}` — Delete platform
+- `GET /api/platform/validate/{x}/{y}` — Validate placement
+- `POST /api/platform/{platform_id}/extend` — Add tiles
+- `POST /api/platform/{platform_id}/remove_tile` — Remove a tile
+- `POST /api/platform/{platform_id}/can_extend` — Check extension feasibility
+- `POST /api/platform/{platform_id}/assign_tile` — Assign tile to block
+- `POST /api/platform/{platform_id}/unassign_tile` — Unassign tile from block
+- `GET /api/platform/{platform_id}/block_assignments` — Get tile→block mappings
+
+---
+
 ## Error Responses
 
 All errors return JSON with `error` field:

@@ -3217,10 +3217,15 @@ class TrainController:
 
     def depart(self) -> bool:
         """
-        Start moving (STANDBY -> RUNNING_MOVING).
+        Start moving (STANDBY/IDLE -> RUNNING_MOVING).
 
         Used by RouteExecutor when path is acquired and train should start moving.
-        If in ATO mode, this calls ato_go() to start ATO - like pressing the Go button.
+
+        ATO mode: accepts STANDBY or IDLE; delegates to ato_go() which
+        auto-selects cab from path direction (enabling automatic reversal when
+        a new route goes the opposite direction).
+
+        Manual mode: accepts STANDBY only; requires facing_direction to be set.
 
         Returns:
             True if successful, False if preconditions not met
@@ -3229,32 +3234,19 @@ class TrainController:
         if train is None:
             return False
 
-        if self.state != TrainState.STANDBY:
-            return False
-
-        if train.facing_direction is None:
-            return False
-
-        # If in ATO mode, just call ato_go() - RouteExecutor is "pressing the Go button"
+        # ATO mode: delegate to ato_go() which accepts IDLE and STANDBY,
+        # auto-selects cab from path direction, and transitions to RUNNING_MOVING.
         if self.control_mode == "ato":
-            # Auto-select cab if needed
-            if self.active_cab is None:
-                if self.ato_info and self.ato_info.required_cab:
-                    self.active_cab = self.ato_info.required_cab
-                    if train:
-                        train.active_cab = self.ato_info.required_cab
-                        if train.position:
-                            # Convert cab string to LeadingEnd enum
-                            train.position.leading_end = (
-                                LeadingEnd.A
-                                if self.ato_info.required_cab == "A"
-                                else LeadingEnd.B
-                            )
-
+            if self.state not in (TrainState.IDLE, TrainState.STANDBY):
+                return False
             result = self.ato_go()
             return result.success
 
-        # Manual mode - just transition state
+        # Manual mode: requires STANDBY with a facing direction
+        if self.state != TrainState.STANDBY:
+            return False
+        if train.facing_direction is None:
+            return False
         self.state = TrainState.RUNNING_MOVING
         train.state = TrainState.RUNNING_MOVING
         train.wait_reason = None

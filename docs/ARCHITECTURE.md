@@ -85,11 +85,12 @@
 | `simulation.py` | SimulationController - tick loop, train updates, power control |
 | `train_controller.py` | TrainController - ATC + ATO decisions and command validation |
 | `train_physics.py` | TrainPhysics - movement, block occupancy, voltage output |
+| `train_state_manager.py` | TrainStateManager - validates and enforces train state machine transitions |
 | `block_power.py` | BlockPowerController - voltage management for blocks |
 | `speed_profile.py` | SpeedProfile - acceleration/deceleration curves |
-| `train_config.py` | Configuration constants (scale, margins, defaults) |
-| `route_executor.py` | RouteExecutor - executes train routes/schedules |
-| `train_route.py` | Route, Waypoint - train travel plans |
+| `model_scale.py` | Model scale factor (N/HO/etc.) and speed conversion utilities |
+| `route_executor.py` | RouteExecutor - waypoint navigation, dwell timing, flexible platform resolution |
+| `train_route.py` | Route, Waypoint - train travel plans with ONE_WAY/LOOP/SHUTTLE modes |
 
 ### Dispatcher & Pathfinding
 
@@ -98,6 +99,26 @@
 | `path_dispatcher.py` | **ACTIVE** PathDispatcher - block reservation and switch locking |
 | `path.py` | PathSegment, PathStatus - dispatcher reservation management |
 | `pathfinder.py` | RailwayPathfinder - A* pathfinding for train movement |
+
+### Application Startup & Infrastructure
+
+| Module | Purpose |
+|--------|---------|
+| `app_factory.py` | Flask app factory - creates and wires the Flask application |
+| `app_state.py` | AppState dataclass - dependency injection container passed to all route modules |
+| `bootstrap.py` | Network initialization - loads demo data or empty state on startup |
+| `runtime.py` | Background thread management - simulation tick loop and periodic autosave |
+| `server.py` | Entry point - parses CLI args, calls bootstrap, starts runtime, serves app |
+
+### Debugging & Testing
+
+| Module | Purpose |
+|--------|---------|
+| `debug_inspector.py` | Generic object inspector - traverses Python object graph from AppState; powers `/debug` UI |
+| `debug_train_stop.py` | One-off debug script for tracing premature train stops (not production code) |
+| `scenario_runner.py` | Scenario replay engine - rebuilds layout, replays API actions, evaluates assertions |
+| `step_recorder.py` | Step recorder - serialises network construction as ordered steps |
+| `step_player.py` | Step player - replays construction steps to reconstruct a layout |
 
 ### Persistence & Utilities
 
@@ -113,9 +134,25 @@
 |------|---------|
 | `static/js/app.js` | Application initialization, event binding |
 | `static/js/editor.js` | Track editing tools, construction pathfinder |
-| `static/js/editor-*.js` | Specialized editors (blocks, signals, stations, trains, routes, switches) |
+| `static/js/editor-ui.js` | Shared editor UI helpers (panels, toolbars) |
+| `static/js/editor-blocks.js` | Block editor panel |
+| `static/js/editor-signals.js` | Signal editor panel |
+| `static/js/editor-stations.js` | Station editor panel |
+| `static/js/editor-trains.js` | Train editor panel |
+| `static/js/editor-routes.js` | Route editor panel |
+| `static/js/editor-switches.js` | Switch editor panel |
+| `static/js/editor-paths.js` | Path editor panel |
 | `static/js/renderer.js` | Isometric canvas rendering coordinator |
-| `static/js/renderer-*.js` | Specialized renderers (tracks, trains, blocks, stations, signals, routes, debug) |
+| `static/js/renderer-tracks.js` | Track tile rendering |
+| `static/js/renderer-trains.js` | Train rendering with smooth path interpolation |
+| `static/js/renderer-blocks.js` | Block overlay rendering |
+| `static/js/renderer-signals.js` | Signal rendering |
+| `static/js/renderer-stations.js` | Station/platform rendering |
+| `static/js/renderer-routes.js` | Route overlay rendering |
+| `static/js/renderer-platforms.js` | Platform rendering |
+| `static/js/renderer-debug.js` | Debug overlay rendering |
+| `static/js/debug-inspector.js` | Debug inspector tree-view UI (standalone `/debug` page) |
+| `static/js/scenario-recorder.js` | Activity recorder - intercepts API calls for scenario capture |
 | `static/js/api.js` | Server communication wrapper |
 | `static/js/state-manager.js` | Client-side state management |
 | `static/js/pathfinders.js` | Construction and existing-track pathfinders |
@@ -388,6 +425,7 @@ TrainPhysics → BlockManager.clear_block(old_block, train_id)
 - `route_executor.py` - Route and schedule execution
 - `network.py` - Infrastructure registry
 - `train.py` - Train entity with TrainPosition and consist
+- `app_state.py` - Shared runtime state container (dependency injection)
 - `static/js/renderer-trains.js` - Frontend interpolation using path tiles
 
 ---

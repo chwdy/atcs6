@@ -32,6 +32,7 @@ def straight_ew_track(network):
         network.add_track(track)
     return network
 
+
 class TestBlockTileSyncValidation:
     """
     Tests for block-tile position sync validation.
@@ -114,7 +115,6 @@ class TestBlockTileSyncValidation:
         assert "B1" in train.position.occupied_blocks, (
             "Should auto-correct to include B1"
         )
-
 
 
 class TestRouteExecutorThreeStationLoopSimulation:
@@ -518,7 +518,6 @@ class TestRouteExecutorThreeStationLoopSimulation:
         )
 
 
-
 class TestMultiTilePlatformStopping:
     """
     Tests for train stopping at multi-tile platforms.
@@ -687,7 +686,6 @@ class TestMultiTilePlatformStopping:
             f"which may cause the clearance calculation to stop early "
             f"if not properly sorting by travel direction."
         )
-
 
 
 class TestManualPathAssignmentAfterArrival:
@@ -1624,7 +1622,6 @@ class TestManualPathAssignmentAfterArrival:
         assert controller.ato_running is True, "BUG: ATO should be running"
 
 
-
 class TestUserReportedBugExactWorkflow:
     """
     End-to-end test replicating the exact user-reported workflow from Feb 2026.
@@ -1873,7 +1870,264 @@ class TestUserReportedBugExactWorkflow:
         # This test documents the data contract for the frontend
 
 
+class TestAutoReversalOnNewRouteAssignment:
+    """
+    Tests for auto-reversal when assigning a new route after a train has
+    completed its previous route at a terminal.
+
+    Expected behaviour: when a train completes a ONE_OFF route to a terminal
+    (e.g. eastbound to station C) and the user assigns a new route going the
+    other way (e.g. westbound to station A), the system should automatically:
+      1. Handle IDLE state in _execute_route_for_train() (same as STANDBY)
+      2. Request a path and infer the required direction
+      3. Switch cabs (auto-reverse) via ato_go() to match the path direction
+      4. Depart and move toward the new destination
+
+    Fix: route_executor.py now dispatches IDLE to _try_depart_to_waypoint(),
+    and depart() delegates to ato_go() which handles cab selection for both
+    IDLE and STANDBY states.
+
+    Note: test_backward_path_assignment_auto_turns_train and related tests in
+    TestManualPathAssignmentAfterArrival call controller.turn_around() manually
+    in the test body — those tests cover a different workflow (user-initiated
+    reversal) and do not test the automatic reversal path exercised here.
+    """
+
+    def _build_three_station_line(self) -> RailwayNetwork:
+        """Build A(0,0)--B(4,0)--C(8,0) line with blocks and stations."""
+        network = RailwayNetwork()
+        for x in range(9):
+            network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
+
+        network.add_station(
+            0,
+            0,
+            station_id="STA_A",
+            name="A",
+            length_cm=50.0,
+            top_speed_kmh=60.0,
+        )
+        network.add_station(
+            4,
+            0,
+            station_id="STA_B",
+            name="B",
+            length_cm=50.0,
+            top_speed_kmh=60.0,
+        )
+        network.add_station(
+            8,
+            0,
+            station_id="STA_C",
+            name="C",
+            length_cm=50.0,
+            top_speed_kmh=60.0,
+        )
+
+        network.create_block_with_tracks(
+            block_id="BLK_AB",
+            positions=[(1, 0), (2, 0), (3, 0)],
+            name="A-B",
+            length_cm=150.0,
+        )
+        network.create_block_with_tracks(
+            block_id="BLK_BC",
+            positions=[(5, 0), (6, 0), (7, 0)],
+            name="B-C",
+            length_cm=150.0,
+        )
+
+        for block in network.blocks.values():
+            block.max_speed_kmh = 60.0
+        return network
+
+    def _run_until(
+        self,
+        simulation: SimulationController,
+        condition,
+        failure_message: str,
+        max_steps: int = 20000,
+        dt: float = 0.02,
+    ) -> None:
+        for _ in range(max_steps):
+            simulation.update(dt)
+            if condition():
+                return
+        pytest.fail(failure_message)
+
+    def test_idle_train_with_facing_gets_backward_route_should_reverse_and_depart(self):
+        """
+        Isolated IDLE state test: Train at C, facing EAST, in IDLE with cab A.
+        Assign new backward route C->A. System should auto-reverse and depart.
+
+        This directly tests the state machine gap: _execute_route_for_train()
+        does not handle IDLE state, so the train stays stuck.
+        """
+        network = self._build_three_station_line()
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+
+        # Place train at C(8,0) facing WEST (place_train needs valid neighbor)
+        car = TrainCar(car_id="CAR_REV", car_type="LOCOMOTIVE", length=45.0)
+        train = Train(train_id="T_REV", consist=[car], max_speed=60.0)
+        network.add_train(train)
+        network.place_train(train, 7, 0, Direction.EAST)
+
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on = True
+        controller.control_mode = "ato"
+
+        # Simulate post-route-completion: IDLE, facing EAST, cab A.
+        # depart_from_station(has_more_waypoints=False) sets state=IDLE
+        # but does NOT clear active_cab or leading_end, so the train
+        # retains its cab and facing direction.
+        controller.active_cab = "A"
+        train.active_cab = "A"
+        train.state = TrainState.IDLE
+        controller.state = TrainState.IDLE
+
+        # Verify preconditions
+        assert train.facing_direction == Direction.EAST
+        assert train.state == TrainState.IDLE
+        assert controller.active_cab == "A"
+
+        # Assign new backward route to A
+        route = Route(route_id="ROUTE_CA", name="C to A", mode=RouteMode.ONE_OFF)
+        route.add_waypoint(Waypoint(platform_id="STA_A", dwell_time_sec=0.5))
+        route.assign_train(train.train_id)
+        route.activate(simulation.simulation_time)
+        network.routes[route.route_id] = route
+        train.assigned_route_id = route.route_id
+
+        # System should: IDLE->STANDBY, create path, auto-reverse cab, depart
+        self._run_until(
+            simulation,
+            lambda: (
+                train.state == TrainState.RUNNING_MOVING
+                and train.facing_direction == Direction.WEST
+            ),
+            f"BUG: Train did not auto-reverse and depart westbound from IDLE. "
+            f"State={train.state}, facing={train.facing_direction}, "
+            f"cab={controller.active_cab}, path={train.assigned_path_id}",
+            max_steps=5000,
+        )
+
+        assert controller.active_cab == "B", (
+            f"Expected cab B for westbound travel, got {controller.active_cab}"
+        )
+        assert controller.ato_running is True, "ATO should be running"
+
+    def test_idle_train_no_cab_gets_forward_route_should_depart(self):
+        """
+        Train in IDLE with no cab and no facing_direction (transition_to_idle
+        clears these). Assign forward route. System should auto-select cab
+        and depart.
+        """
+        network = self._build_three_station_line()
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+
+        car = TrainCar(car_id="CAR_FWD", car_type="LOCOMOTIVE", length=45.0)
+        train = Train(train_id="T_FWD", consist=[car], max_speed=60.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on = True
+        controller.control_mode = "ato"
+
+        # Simulate transition_to_idle(): clears cab and leading_end
+        train.state = TrainState.IDLE
+        controller.state = TrainState.IDLE
+        controller.active_cab = None
+        train.active_cab = None
+        if train.position:
+            train.position.leading_end = None
+
+        assert train.facing_direction is None
+        assert train.state == TrainState.IDLE
+
+        # Assign forward route A->C
+        route = Route(route_id="ROUTE_AC", name="A to C", mode=RouteMode.ONE_OFF)
+        route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.5))
+        route.assign_train(train.train_id)
+        route.activate(simulation.simulation_time)
+        network.routes[route.route_id] = route
+        train.assigned_route_id = route.route_id
+
+        # System should auto-select cab from path direction and depart
+        self._run_until(
+            simulation,
+            lambda: (
+                train.state == TrainState.RUNNING_MOVING
+                and train.facing_direction is not None
+            ),
+            f"BUG: Train did not depart from IDLE with no cab. "
+            f"State={train.state}, facing={train.facing_direction}, "
+            f"cab={controller.active_cab}",
+            max_steps=5000,
+        )
+
+        assert train.facing_direction == Direction.EAST, (
+            f"Expected EAST, got {train.facing_direction}"
+        )
+
+    def test_idle_train_no_cab_gets_backward_route_at_terminal(self):
+        """
+        Train at terminal C(7,0), IDLE, no cab, no facing_direction.
+        Assign route C->A. System should auto-determine WEST direction
+        from path and depart.
+        """
+        network = self._build_three_station_line()
+        dispatcher = PathDispatcher(network)
+        simulation = SimulationController(network, dispatcher)
+
+        # Place at (7,0) facing WEST so there's a track to connect
+        car = TrainCar(car_id="CAR_NF", car_type="LOCOMOTIVE", length=45.0)
+        train = Train(train_id="T_NF", consist=[car], max_speed=60.0)
+        network.add_train(train)
+        network.place_train(train, 7, 0, Direction.WEST)
+
+        controller = simulation._get_or_create_controller(train)
+        controller.power_on = True
+        controller.control_mode = "ato"
+
+        # Simulate transition_to_idle(): clears everything
+        train.state = TrainState.IDLE
+        controller.state = TrainState.IDLE
+        controller.active_cab = None
+        train.active_cab = None
+        if train.position:
+            train.position.leading_end = None
+
+        assert train.facing_direction is None
+        assert train.state == TrainState.IDLE
+
+        # Assign route to A (westbound)
+        route = Route(route_id="ROUTE_CA", name="C to A", mode=RouteMode.ONE_OFF)
+        route.add_waypoint(Waypoint(platform_id="STA_A", dwell_time_sec=0.5))
+        route.assign_train(train.train_id)
+        route.activate(simulation.simulation_time)
+        network.routes[route.route_id] = route
+        train.assigned_route_id = route.route_id
+
+        # System should auto-determine direction from path and depart
+        self._run_until(
+            simulation,
+            lambda: (
+                train.state == TrainState.RUNNING_MOVING
+                and train.facing_direction is not None
+            ),
+            f"BUG: Train with no facing_direction did not depart. "
+            f"State={train.state}, facing={train.facing_direction}, "
+            f"cab={controller.active_cab}",
+            max_steps=5000,
+        )
+
+        assert train.facing_direction == Direction.WEST, (
+            f"Expected WEST, got {train.facing_direction}"
+        )
+
+
 if __name__ == "__main__":
     print("Run tests with: pytest tests/test_trains.py -v")
-
-

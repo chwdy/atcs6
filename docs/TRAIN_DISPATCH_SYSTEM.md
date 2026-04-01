@@ -9,7 +9,8 @@
 5. [Dispatch System Components](#dispatch-system-components)
 6. [Train State Machine](#train-state-machine)
 7. [Component Integration](#component-integration)
-8. [Performance Considerations](#performance-considerations)
+8. [Path Data Lifecycle](#path-data-lifecycle)
+9. [Performance Considerations](#performance-considerations)
 
 ---
 
@@ -65,7 +66,7 @@ TrainPosition stores entry edges and distances for both ends of the train. When 
 
 ### Path Structure
 
-A path is a list of `(x, y, direction)` tuples:
+A path is a list of `(x, y, direction)` tuples. The canonical path lives in `PathDispatcher` (see [Path Data Lifecycle](#path-data-lifecycle) below). `TrainController` reads it via `get_path_tiles()`:
 
 ```python
 # Example path from (0,0) to (3,0) traveling east
@@ -75,9 +76,8 @@ path = [
     (2, 0, Direction.EAST),  # Continue east
     (3, 0, Direction.EAST),  # Destination
 ]
-
-train.current_path = path
-train.path_index = 0  # Currently at first position
+# Path is stored in PathDispatcher, not on train directly
+# Access via: controller.get_path_tiles(train)
 ```
 
 ### Direction Handling
@@ -735,6 +735,66 @@ while True:
 
 ---
 
+## Path Data Lifecycle
+
+### Single Source of Truth
+
+`PathDispatcher` is the canonical store for path tile data. All runtime reads of a train's path go through `PathDispatcher`, not through the train object directly.
+
+```
+PathDispatcher.active_paths[train.assigned_path_id].path_tiles
+    ↑ canonical, always current
+
+train.current_path
+    ↑ DEPRECATED as a runtime field — only used as a serialization
+      cache populated lazily for Train.to_dict()
+```
+
+### Reading Path Data in TrainController
+
+`TrainController` exposes `get_path_tiles(train)` which fetches the live path from the dispatcher and converts from `List[(x, y)]` to `List[(x, y, Direction)]`:
+
+```python
+# train_controller.py
+def get_path_tiles(train) -> List[Tuple[int, int, Direction]]:
+    path = dispatcher.active_paths.get(train.assigned_path_id)
+    if not path:
+        return []
+    return convert_tiles_to_train_path(path.path_tiles)
+    # convert_tiles_to_train_path() infers Direction from consecutive deltas
+```
+
+Any code inside `TrainController` or `TrainPhysics` that needs the path calls this helper. Direct access to `train.current_path` for movement logic is incorrect.
+
+### Train.to_dict() and Live Path Data
+
+`Train.to_dict()` must serialize live path state for API consumers. Since `train.current_path` is stale after `extend_path()`, callers pass live path data as parameters:
+
+```python
+# routes/trains.py (API layer)
+path_tiles, path_index = controller.get_live_path_data(train)
+data = train.to_dict(path_tiles=path_tiles, path_index=path_index)
+```
+
+`to_dict()` uses the passed-in values if provided; falls back to cached fields only if no live data is available (e.g., train has no active path).
+
+### ato_destination_block_id Synchronization
+
+When a path is extended via the `extend_path` API, `ato_destination_block_id` must be updated to point to the new terminal block. Without this sync, the ATO's `_is_at_station()` check triggers on the old terminal, stopping the train short.
+
+```python
+# On path extension (routes/paths.py):
+# 1. dispatcher.extend_path(path_id, new_tiles)
+# 2. controller.ato_destination_block_id = new_terminal_block_id
+# 3. train.ato_destination_block_id = new_terminal_block_id
+```
+
+### Path Completion Cleanup
+
+When a path is completed (`complete_path()`), `TrainController` clears `ato_destination_block_id` to prevent stale state affecting the next journey.
+
+---
+
 ## Performance Considerations
 
 ### Tick Rate
@@ -863,3 +923,6 @@ The train dispatch system integrates multiple components to provide realistic tr
 
 **Recently Completed:**
 - Speed profile REST API (`/api/speed-profiles` CRUD endpoints)
+- Path data single source of truth: PathDispatcher is canonical, `Train.to_dict()` accepts live path params (2026-02)
+- `ato_destination_block_id` sync on path extension (2026-03)
+- `TrainController.get_path_tiles()` and `get_live_path_data()` helpers for accessing canonical path data (2026-03)

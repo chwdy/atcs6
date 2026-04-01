@@ -93,7 +93,24 @@ This document tracks the implementation status of features described in referenc
 | [`simulation.py`](../simulation.py) | ✅ Complete | Simulation orchestrator |
 | [`path_dispatcher.py`](../path_dispatcher.py) | ⚠️ Partial | Basic path assignment |
 | [`pathfinder.py`](../pathfinder.py) | ⚠️ Partial | Basic A* implementation |
-| [`route_executor.py`](../route_executor.py) | ✅ Complete | Route execution logic |
+| [`route_executor.py`](../route_executor.py) | ✅ Complete | Waypoint navigation, dwell timing, flexible platform resolution |
+
+### Application Infrastructure
+| Module | Implementation Status | Notes |
+|--------|----------------------|-------|
+| [`app_state.py`](../app_state.py) | ✅ Complete | Dependency injection container for runtime objects |
+| [`app_factory.py`](../app_factory.py) | ✅ Complete | Flask app factory |
+| [`bootstrap.py`](../bootstrap.py) | ✅ Complete | Network initialization (demo or empty) |
+| [`runtime.py`](../runtime.py) | ✅ Complete | Background thread management (sim loop, autosave) |
+| [`model_scale.py`](../model_scale.py) | ✅ Complete | Model scale factor and speed conversion utilities |
+
+### Debugging & Testing
+| Module | Implementation Status | Notes |
+|--------|----------------------|-------|
+| [`debug_inspector.py`](../debug_inspector.py) | ✅ Complete | Generic object inspector API + `/debug` UI |
+| [`scenario_runner.py`](../scenario_runner.py) | ✅ Complete | Scenario replay engine with assertion checking |
+| [`step_recorder.py`](../step_recorder.py) | ✅ Complete | Records layout construction as ordered steps |
+| [`step_player.py`](../step_player.py) | ✅ Complete | Replays construction steps to rebuild a layout |
 
 ### Network Management
 | Module | Implementation Status | Notes |
@@ -109,6 +126,8 @@ This document tracks the implementation status of features described in referenc
 | [`static/js/renderer.js`](../static/js/renderer.js) | ✅ Complete | Isometric rendering |
 | [`static/js/editor.js`](../static/js/editor.js) | ⚠️ Partial | Basic editing, needs enhancement |
 | [`static/js/train-monitor.js`](../static/js/train-monitor.js) | ✅ Complete | Train control panel |
+| [`static/js/debug-inspector.js`](../static/js/debug-inspector.js) | ✅ Complete | Debug inspector tree-view UI at `/debug` |
+| [`static/js/scenario-recorder.js`](../static/js/scenario-recorder.js) | ✅ Complete | Activity recorder intercepting API calls |
 
 ---
 
@@ -143,4 +162,13 @@ Always check the actual code for definitive behavior.
 
 ---
 
-*Last Updated: January 27, 2026*
+## Recent Completions (2026)
+
+- **2026-03-31** — `Train.to_dict()` now accepts live path data from PathDispatcher; stale `train.current_path` cache removed from serialization. `ato_destination_block_id` synced on path extension.
+- **2026-03-30** — Debug inspector (`debug_inspector.py` + `/debug` UI) implemented.
+- **2026-03-30** — Scenario runner (`scenario_runner.py`) and step recorder/player implemented for regression testing.
+- **2026-02-24** — Future-aware ATO control: trend detection and asymmetric hysteresis implemented. Full predictive simulation (`_simulate_forward`) remains pending.
+- **2026-02-11** — PathDispatcher made single source of truth for path data; `TrainController.get_path_tiles()` reads from dispatcher.
+- **2026-02-06** — Route/station redesign complete: `RouteExecutor`, flexible platform resolution, PRESERVE travel direction policy.
+
+*Last Updated: April 1, 2026*

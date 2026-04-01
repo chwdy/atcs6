@@ -209,7 +209,7 @@ class ScenarioRunner:
         }
         fn = ops.get(op)
         if fn is None:
-            return False
+            raise ValueError(f"Unknown comparison operator: {op!r}")
         try:
             return fn(actual, expected)
         except TypeError:
@@ -329,6 +329,8 @@ class ScenarioRunner:
                 while sim_controller.simulation_time < t:
                     remaining = t - sim_controller.simulation_time
                     tick = min(self.TICK_DELTA, remaining)
+                    if tick <= 0:
+                        break  # Float imprecision: remaining rounded to ≤0 despite loop condition
                     sim_controller.update(tick)
 
                 if is_checkpoint:

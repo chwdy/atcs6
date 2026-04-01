@@ -187,60 +187,62 @@ def _build_state_and_app() -> tuple[AppState, Flask]:
     return state, app
 
 
-state, app = _build_state_and_app()
+# Guard against Flask's dev-server reloader re-importing this module and
+# starting duplicate simulation/autosave threads. When run via `python server.py`
+# (__main__), main() calls _build_state_and_app() and start_all_threads()
+# directly, so module-level init must be skipped. When imported by a WSGI
+# server (e.g. gunicorn), __name__ != "__main__" and this block runs normally.
+if __name__ != "__main__":
+    state, app = _build_state_and_app()
 
+    def simulation_loop():
+        global last_update_time
+        while True:
+            current_time = datetime.now()
+            delta_seconds = (current_time - last_update_time).total_seconds()
+            last_update_time = current_time
 
-def simulation_loop():
-    global last_update_time
-    while True:
-        current_time = datetime.now()
-        delta_seconds = (current_time - last_update_time).total_seconds()
-        last_update_time = current_time
+            if simulation_running:
+                # Scale delta by simulation speed
+                sim_delta = delta_seconds * simulation_speed
+                with simulation_lock:
+                    sim_controller.update(sim_delta)
 
-        if simulation_running:
-            # Scale delta by simulation speed
-            sim_delta = delta_seconds * simulation_speed
-            with simulation_lock:
-                sim_controller.update(sim_delta)
+            time.sleep(0.1)
 
-        time.sleep(0.1)
+    # Start simulation thread
+    sim_thread = threading.Thread(target=simulation_loop, daemon=True)
+    sim_thread.start()
 
+    # ============================================================================
+    # Auto-Save Configuration
+    # ============================================================================
+    AUTOSAVE_INTERVAL = 300  # 5 minutes in seconds
+    AUTOSAVE_FILENAME = "_autosave"
+    last_autosave_time = time.time()
 
-# Start simulation thread
-sim_thread = threading.Thread(target=simulation_loop, daemon=True)
-sim_thread.start()
+    def autosave_loop():
+        """Background thread that saves to _autosave every 5 minutes."""
+        global last_autosave_time
+        while True:
+            time.sleep(60)  # Check every minute
+            if time.time() - last_autosave_time >= AUTOSAVE_INTERVAL:
+                with simulation_lock:
+                    try:
+                        result = persistence_manager.save_merged_layout(
+                            AUTOSAVE_FILENAME, network, "Auto-saved"
+                        )
+                        last_autosave_time = time.time()
+                        msg = f"[AutoSave] Saved at {datetime.now().isoformat()}"
+                        if result.get("steps_error"):
+                            msg += f" (steps failed: {result['steps_error']})"
+                        print(msg)
+                    except Exception as e:
+                        print(f"[AutoSave] Failed: {e}")
 
-# ============================================================================
-# Auto-Save Configuration
-# ============================================================================
-AUTOSAVE_INTERVAL = 300  # 5 minutes in seconds
-AUTOSAVE_FILENAME = "_autosave"
-last_autosave_time = time.time()
-
-
-def autosave_loop():
-    """Background thread that saves to _autosave every 5 minutes."""
-    global last_autosave_time
-    while True:
-        time.sleep(60)  # Check every minute
-        if time.time() - last_autosave_time >= AUTOSAVE_INTERVAL:
-            with simulation_lock:
-                try:
-                    result = persistence_manager.save_merged_layout(
-                        AUTOSAVE_FILENAME, network, "Auto-saved"
-                    )
-                    last_autosave_time = time.time()
-                    msg = f"[AutoSave] Saved at {datetime.now().isoformat()}"
-                    if result.get("steps_error"):
-                        msg += f" (steps failed: {result['steps_error']})"
-                    print(msg)
-                except Exception as e:
-                    print(f"[AutoSave] Failed: {e}")
-
-
-# Start autosave thread
-autosave_thread = threading.Thread(target=autosave_loop, daemon=True)
-autosave_thread.start()
+    # Start autosave thread
+    autosave_thread = threading.Thread(target=autosave_loop, daemon=True)
+    autosave_thread.start()
 
 
 # ============================================================================
@@ -323,7 +325,9 @@ def main() -> None:
         autosave=not args.no_autosave,
     )
 
-    app.run(debug=True, port=args.port)
+    # use_reloader=False prevents Flask from spawning a child process that
+    # would re-import this module and run startup tests again.
+    app.run(debug=True, use_reloader=False, port=args.port)
 
 
 if __name__ == "__main__":
