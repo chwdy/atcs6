@@ -1,5 +1,25 @@
 # ATCS6 Architecture Overview
 
+## System Layers
+
+The system is organized into four layers:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  FRONTEND (Vanilla JS + HTML5 Canvas)                       │
+│  See: docs/FRONTEND_ARCHITECTURE.md                         │
+├─────────────────────────────────────────────────────────────┤
+│  REST API (Flask routes in routes/ directory)                │
+│  See: docs/API_CONVENTIONS.md                               │
+├─────────────────────────────────────────────────────────────┤
+│  DOMAIN LOGIC (Python modules: network, train, block, ...)  │
+│  See: module tables below                                   │
+├─────────────────────────────────────────────────────────────┤
+│  PERSISTENCE (JSON files in layouts/ directory)              │
+│  See: docs/PERSISTENCE_DESIGN.md                            │
+└─────────────────────────────────────────────────────────────┘
+```
+
 ## System Diagram
 
 ```
@@ -175,7 +195,7 @@ Tracks use a 6-bit encoding for geometry:
 | 4 | 16 | South-East diagonal |
 | 5 | 32 | South-West diagonal |
 
-See `Reference_6Bit_Track_System.md` for complete documentation (1,000+ lines of detailed track geometry docs).
+See `reference/Reference_6Bit_Track_System.md` for complete documentation (1,000+ lines of detailed track geometry docs).
 
 ### Two Pathfinders
 
@@ -430,4 +450,63 @@ TrainPhysics → BlockManager.clear_block(old_block, train_id)
 
 ---
 
-*For detailed documentation on TrainController, ATC/ATO logic, and the CBTC block-based signaling design, see `Reference_Train_System_v2.md`.*
+*For detailed documentation on TrainController, ATC/ATO logic, and the CBTC block-based signaling design, see `reference/Reference_Train_System_v2.md`.*
+
+## Cross-Cutting Concerns
+
+### Startup Sequence
+
+```
+server.py (entry point)
+  → Parses CLI args (--port, --no-test, etc.)
+  → bootstrap.py: initializes RailwayNetwork (demo data or empty)
+  → app_factory.py: creates Flask app, registers all routes
+  → runtime.py: starts background threads (simulation tick, auto-save)
+  → Flask dev server starts on port 5001
+```
+
+### Thread Model
+
+The server runs three threads:
+
+| Thread | Module | Purpose | Interval |
+|--------|--------|---------|----------|
+| Main | `server.py` | Flask request handling | Event-driven |
+| Simulation | `runtime.py` | Tick loop (train physics, block updates) | ~50ms |
+| Auto-save | `runtime.py` | Periodic layout persistence | 300s (5 min) |
+
+The `simulation_lock` (a `threading.Lock` in `AppState`) protects network state from concurrent modification by the simulation thread and Flask request handlers.
+
+### Dependency Injection
+
+`AppState` (`app_state.py`) is a dataclass that holds all shared runtime state:
+
+```python
+@dataclass
+class AppState:
+    network: RailwayNetwork
+    simulation: SimulationController
+    simulation_lock: threading.Lock
+    persistence: PersistenceManager
+    # ... etc
+```
+
+It is created once at startup and passed to all route modules via `register(app, state)`.
+
+## Documentation Index
+
+| Document | Location | Scope |
+|----------|----------|-------|
+| Architecture Overview | `docs/ARCHITECTURE.md` (this file) | System layers, module inventory, key concepts |
+| Frontend Architecture | `docs/FRONTEND_ARCHITECTURE.md` | JS file structure, rendering, state management |
+| API Conventions | `docs/API_CONVENTIONS.md` | REST patterns, response formats, route modules |
+| Persistence Design | `docs/PERSISTENCE_DESIGN.md` | JSON save/load, auto-save, schema migration |
+| API Reference | `docs/API.md` | Endpoint listing |
+| Dispatcher Design | `docs/DISPATCHER_DESIGN.md` | PathDispatcher block reservation logic |
+| State Management | `docs/STATE_MANAGEMENT_ARCHITECTURE.md` | State patterns |
+| Testing Specification | `docs/TESTING_SPECIFICATION.md` | Test requirements |
+| 6-Bit Track System | `reference/Reference_6Bit_Track_System.md` | Track geometry encoding (1000+ lines) |
+| Signals and Blocks | `reference/Reference_Signals_and_Blocks.md` | Signal/block system design |
+| Train System | `reference/Reference_Train_System_v2.md` | ATC/ATO, CBTC, train control |
+| Construction Pathfinding | `reference/Reference_Construction_Pathfinding.md` | Editor pathfinding |
+| Track Display | `reference/Reference_Track_Display.md` | Track rendering |

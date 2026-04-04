@@ -12,14 +12,14 @@ This document tracks the implementation status of features described in referenc
 
 ## Feature Status
 
-### 6-Bit Track System ([`Reference_6Bit_Track_System.md`](../Reference_6Bit_Track_System.md))
+### 6-Bit Track System ([`reference/Reference_6Bit_Track_System.md`](../reference/Reference_6Bit_Track_System.md))
 - ✅ Track bit constants and edge masks
 - ✅ Forbidden track bit validation
 - ✅ Switch point detection
 - ✅ Curve detection logic
 - ✅ Edge-to-edge path calculation
 
-### Train System v2 ([`Reference_Train_System_v2.md`](../Reference_Train_System_v2.md))
+### Train System v2 ([`reference/Reference_Train_System_v2.md`](../reference/Reference_Train_System_v2.md))
 - ✅ [`TrainController`](../train_controller.py) - ATC + ATO + command handling
 - ✅ [`TrainPhysics`](../train_physics.py) - Movement calculations and track navigation
 - ✅ Handle model with discrete notches (P1-P5, N, B1-B8, EB)
@@ -32,7 +32,7 @@ This document tracks the implementation status of features described in referenc
 - ⚠️ Automatic WAITING ↔ MOVING transitions (implemented but needs validation)
 - ⚠️ Multi-block occupancy (basic implementation, needs refinement)
 
-### Signal System ([`Reference_Signals_and_Blocks.md`](../Reference_Signals_and_Blocks.md))
+### Signal System ([`reference/Reference_Signals_and_Blocks.md`](../reference/Reference_Signals_and_Blocks.md))
 - ⚠️ Basic BLOCK signals (RED/GREEN only) - See [`railway_signal.py`](../railway_signal.py)
 - ❌ SWITCH signals (interlocking with switch points)
 - ❌ PRE_SIGNAL type (lookahead signaling)
@@ -47,7 +47,7 @@ This document tracks the implementation status of features described in referenc
 - ❌ Multi-train path coordination
 - ⚠️ Path dispatcher - Basic implementation in [`path_dispatcher.py`](../path_dispatcher.py)
 
-### Construction ([`Reference_Construction_Pathfinding.md`](../Reference_Construction_Pathfinding.md))
+### Construction ([`reference/Reference_Construction_Pathfinding.md`](../reference/Reference_Construction_Pathfinding.md))
 - ❌ Track building pathfinding algorithms
 - ❌ Construction preview system
 - ❌ Cost calculation for construction paths
@@ -57,7 +57,7 @@ This document tracks the implementation status of features described in referenc
 - ⚠️ Basic editor interaction exists in [`static/js/editor.js`](../static/js/editor.js)
 - ⚠️ Track placement UI (functional but not Simutrans-style)
 
-### Track Display ([`Reference_Track_Display.md`](../Reference_Track_Display.md))
+### Track Display ([`reference/Reference_Track_Display.md`](../reference/Reference_Track_Display.md))
 - ✅ Isometric rendering - See [`static/js/renderer.js`](../static/js/renderer.js)
 - ✅ Track tile rendering with 6-bit system
 - ✅ Track overlay rendering (blocks, signals)
@@ -137,7 +137,7 @@ The following references are archived as outdated:
 
 - **[`archive/Reference_TrainMover_ATC.md`](../archive/Reference_TrainMover_ATC.md)** - Superseded by current [`train_controller.py`](../train_controller.py) implementation. The `TrainMover` class described in this document was never implemented; functionality merged into `TrainController` + `TrainPhysics`.
 
-- **[`archive/Reference_Train_System.md`](../archive/Reference_Train_System.md)** - Superseded by [`Reference_Train_System_v2.md`](../Reference_Train_System_v2.md). Version 1 had overlapping responsibilities across too many classes. Version 2 simplified to a clean two-class model.
+- **[`archive/Reference_Train_System.md`](../archive/Reference_Train_System.md)** - Superseded by [`reference/Reference_Train_System_v2.md`](../reference/Reference_Train_System_v2.md). Version 1 had overlapping responsibilities across too many classes. Version 2 simplified to a clean two-class model.
 
 ---
 

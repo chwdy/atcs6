@@ -90,20 +90,20 @@ The `demo_main.py` automatically runs Python tests before starting. This ensures
 atcs6/
 ├── enums.py                 # Base enumeration types
 ├── track.py                 # Track segment with 6-bit geometry
-├── blocking.py              # Block section safety system
 ├── block.py                 # Block entity class
 ├── block_manager.py         # Centralized block state manager
 ├── block_validation.py      # Block continuity validation
-├── interlocking.py          # Interlocking and route management
 ├── train.py                 # Train and schedule definitions
-├── train_config.py          # Train physics configuration
+├── model_scale.py           # Model scale factor and speed conversions
 ├── train_physics.py         # Train movement and block occupancy
 ├── train_controller.py      # Train state machine and control
+├── train_state_manager.py   # Train state machine validation
 ├── train_route.py           # Route and waypoint definitions
 ├── network.py               # Railway network management
 ├── pathfinder.py            # A* pathfinding for trains
-├── dispatcher.py            # Train dispatching system
 ├── path_dispatcher.py       # Block/switch reservation for paths
+├── path.py                  # PathSegment entities
+├── path_utils.py            # Path/tile conversion utilities
 ├── route_executor.py        # Route and waypoint execution
 ├── railway_signal.py        # Signal entity class
 ├── signal_validation.py     # Signal placement validation
@@ -112,6 +112,9 @@ atcs6/
 ├── speed_profile.py         # Speed-to-voltage mapping
 ├── block_power.py           # DC voltage output to blocks
 ├── simulation.py            # Background simulation loop
+├── persistence.py           # JSON save/load for network state
+├── step_recorder.py         # Construction step recording
+├── step_player.py           # Construction step replay
 ├── bootstrap.py             # Network initialization (demo/empty)
 ├── runtime.py               # Background thread management
 ├── app_factory.py           # Flask application factory
@@ -160,45 +163,6 @@ atcs6/
 - Implement track wear and maintenance tracking
 - Add visual representation methods
 - Implement serialization for save/load
-
----
-
-### blocking.py
-**Definition:** Block section system for railway safety - prevents multiple trains in same section.
-
-**Classes:**
-- `BlockSection`: Safety block that only allows one train at a time
-
-**Key Features:**
-- Reservation system for upcoming trains
-- Occupancy tracking
-- Entry/exit signal integration
-
-**TODO:**
-- Add automatic block detection and creation
-- Implement block timing and performance metrics
-- Add support for different block types (automatic, manual)
-- Implement conflict resolution
-
----
-
-### interlocking.py
-**Definition:** Railway interlocking system ensuring safe route setting.
-
-**Classes:**
-- `InterlockingRoute`: Route definition with required switch positions and conflicts
-- `InterlockingSystem`: Central interlocking management
-
-**Key Features:**
-- Route locking and conflict detection
-- Switch position management
-- Signal aspect control
-
-**TODO:**
-- Add automatic route conflict detection
-- Implement approach locking
-- Add complex junction support
-- Implement automatic route release timing
 
 ---
 
@@ -261,26 +225,6 @@ atcs6/
 - Add dynamic re-routing for blocked paths
 - Implement path caching
 - Add speed-optimized vs distance-optimized paths
-
----
-
-### dispatcher.py
-**Definition:** Train dispatching and coordination system.
-
-**Classes:**
-- `TrainDispatcher`: Central dispatching system
-
-**Key Features:**
-- Train route planning and execution
-- Block section reservation management
-- Schedule conflict detection
-- Status reporting and monitoring
-
-**TODO:**
-- Implement priority-based scheduling
-- Add automatic conflict resolution
-- Implement predictive delay analysis
-- Add emergency stop and diversion support
 
 ---
 
