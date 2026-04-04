@@ -775,18 +775,6 @@ class App {
             targetContent.insertAdjacentHTML('beforeend', `<div class="train-debug-lookahead">${extra}</div>`);
         }
     }
-    
-    openSecondarySidebar(title, content) {
-        if (this.editor && this.editor.ui) {
-            this.editor.ui.showSecondarySidebar(title, content);
-        }
-    }
-    
-    closeSecondarySidebar() {
-        if (this.editor && this.editor.ui) {
-            this.editor.ui.hideSecondarySidebar();
-        }
-    }
 
     
     async fetchTrainLookahead(trainId, train) {

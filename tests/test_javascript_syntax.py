@@ -145,8 +145,6 @@ class TestJavaScriptSyntax:
         required_functions = [
             "function renderHeaderId",
             "function renderPropertyItem",
-            "function renderTextInput",
-            "function renderNumberInput",
             "function renderBitToggle",
         ]
 

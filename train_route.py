@@ -258,15 +258,6 @@ class Route:
         """Deactivate the route (pause execution)."""
         self.is_active = False
 
-    def reset(self) -> None:
-        """Reset route to initial state."""
-        self.is_active = False
-        self.started_at = None
-        self.last_error = None
-        self.error_time = None
-        self.current_waypoint_index = 0
-        self.direction = 1
-
     # ── Assignment Methods ─────────────────────────────────────────
 
     def assign_train(self, train_id: str) -> bool:

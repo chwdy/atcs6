@@ -120,7 +120,7 @@ function calculateNextTile(sortedPositions, orientation, direction, tracks) {
     const exits = getTrackExits(edgeTrack.track_bits);
     if (exits.length !== 2) throw new Error(`Edge tile must have exactly 2 exits, found ${exits.length}`);
 
-    console.log('[Editor] Edge tile:', {x: edgeX, y: edgeY, trackBits: edgeTrack.track_bits, exits});
+    console.debug('[Editor] Edge tile:', {x: edgeX, y: edgeY, trackBits: edgeTrack.track_bits, exits});
 
     const neighbors = exits.map(exit => getNeighborPosition(edgeX, edgeY, exit));
     const positionSet = new Set(sortedPositions.map(([x, y]) => `${x},${y}`));
@@ -153,13 +153,13 @@ function calculateNextTile(sortedPositions, orientation, direction, tracks) {
                 (sum1 > sum2 ? [n1x, n1y] : [n2x, n2y]) :
                 (sum1 < sum2 ? [n1x, n1y] : [n2x, n2y]);
         }
-        console.log('[Editor] Single-tile station, chose direction:', direction, 'position:', {x: nextX, y: nextY});
+        console.debug('[Editor] Single-tile station, chose direction:', direction, 'position:', {x: nextX, y: nextY});
     } else {
         [nextX, nextY] = availableNeighbors[0];
     }
 
     const trackBits = getTrackBitsForOrientation(orientation, nextX, nextY, edgeX, edgeY);
-    console.log('[Editor] Calculated next tile:', {x: nextX, y: nextY, trackBits});
+    console.debug('[Editor] Calculated next tile:', {x: nextX, y: nextY, trackBits});
 
     return { x: nextX, y: nextY, trackBits };
 }
@@ -201,74 +201,6 @@ function renderReadOnlyValue(label, value, cssClass = '', mono = false) {
             ${value}
         </div>
     `);
-}
-
-/**
- * Render text input field
- */
-function renderTextInput(id, label, value, options = {}) {
-    const { placeholder = '', dataAttrs = {} } = options;
-    return renderPropertyItem(label, `
-        <input type="text" id="${id}" value="${value}" placeholder="${placeholder}" class="property-input" ${renderAttributes(dataAttrs)}>
-    `);
-}
-
-/**
- * Render number input field
- */
-function renderNumberInput(id, label, value, options = {}) {
-    const { min = 0, max = '', step = 1, placeholder = '' } = options;
-    const maxAttr = max !== '' ? `max="${max}"` : '';
-    const placeholderAttr = placeholder ? `placeholder="${placeholder}"` : '';
-    
-    return renderPropertyItem(label, `
-        <input type="number" id="${id}" value="${value}" min="${min}" ${maxAttr} step="${step}" ${placeholderAttr} class="property-input">
-    `);
-}
-
-/**
- * Render dropdown select field
- */
-function renderDropdown(id, label, value, options, dataAttrs = {}) {
-    const optionsHtml = options.map(({value: v, label: l}) => 
-        `<option value="${v}" ${v === value ? 'selected' : ''}>${l}</option>`
-    ).join('');
-    
-    return renderPropertyItem(label, `
-        <select id="${id}" class="property-input" ${renderAttributes(dataAttrs)}>
-            ${optionsHtml}
-        </select>
-    `);
-}
-
-/**
- * Render status badge with color
- */
-function renderStatusBadge(label, status, cssClass) {
-    return renderPropertyItem(label, `
-        <div class="${cssClass}">
-            ${status}
-        </div>
-    `);
-}
-
-/**
- * Render action buttons (Save/Delete)
- */
-function renderActionButtons(saveBtnId, deleteBtnId, saveText = 'Save Changes', deleteText = 'Delete') {
-    return `
-        <div class="property-item-row">
-            <button id="${saveBtnId}" class="btn btn-primary text-lg font-bold" style="flex: 1;">${saveText}</button>
-            <button id="${deleteBtnId}" class="btn btn-danger text-lg font-bold" style="flex: 1;">${deleteText}</button>
-        </div>
-    `;
-}
-
-/**
- * Render conditional content
- */
-function renderConditional(condition, html) {
-    return condition ? html : '';
 }
 
 /**
@@ -674,68 +606,6 @@ function renderBitToggle(bit, name, trackBits) {
 }
 
 // ============================================================================
-// SIGNAL EDITOR COMPONENTS
-// ============================================================================
-
-function renderMultiSignalHeader(current, total, signalId, stateColor) {
-    return `
-        <div class="property-item">
-            <div class="text-lg text-track font-bold">Signal ${current} of ${total}</div>
-            <div class="value-display value-display-mono font-bold text-white" style="border-color: ${stateColor}; margin-top: 8px;">
-                ${signalId}
-            </div>
-        </div>
-    `;
-}
-
-function renderSignalStateDisplay(state, stateColor) {
-    return renderPropertyItem('Current State', `
-        <div class="value-display" style="display: flex; align-items: center; gap: 12px;">
-            <span style="display: inline-block; width: 20px; height: 20px; border-radius: 50%; background: ${stateColor}; box-shadow: 0 0 8px ${stateColor};"></span>
-            <span class="text-lg font-bold" style="color: ${stateColor};">${state}</span>
-        </div>
-    `);
-}
-
-// ============================================================================
-// ENTITY SUMMARY COMPONENTS
-// ============================================================================
-
-function renderEntitySummary({ type, id, state, borderColor, stateColor, editBtnId }) {
-    return `
-        <div class="property-item-row">
-            <div class="${type}-summary-row" style="border-left: 3px solid ${borderColor}">
-                <div class="${type}-info">
-                    <span class="${type}-id">${id}</span>
-                    <span class="${type}-state" style="color: ${stateColor}">${state}</span>
-                </div>
-                <button id="${editBtnId}" class="edit-btn btn-sm btn-secondary" data-${type}-id="${id}">Edit</button>
-            </div>
-        </div>
-    `;
-}
-
-// ============================================================================
-// BLOCK STATE DISPLAY
-// ============================================================================
-
-function renderBlockStateDisplay(state, cycleButtonId) {
-    const stateColor = getBlockStateColor(state);
-
-    return renderPropertyItem('Current State', `
-        <div class="flex items-center gap-12 bg-input p-10 rounded-lg">
-            <span class="inline-block rounded" style="width: 16px; height: 16px; border-radius: 50%; background: ${stateColor}; box-shadow: 0 0 8px ${stateColor};"></span>
-            <span id="block-state-display" class="text-lg font-bold" style="color: ${stateColor}; text-transform: uppercase;">
-                ${state || 'FREE'}
-            </span>
-            <button id="${cycleButtonId}" class="text-xs bg-hover rounded text-muted" style="margin-left: auto; padding: 6px 12px; border: 1px solid #4a4a6e; cursor: pointer;">
-                Cycle State
-            </button>
-        </div>
-    `);
-}
-
-// ============================================================================
 // TILE LIST RENDERING
 // ============================================================================
 
@@ -833,15 +703,6 @@ function getBlockStateColor(state) {
         reserved: '#ffcd1e',
         occupied: '#e83f5b',
         caution: '#ff9500'
-    };
-    return colors[(state || '').toLowerCase()] || '#888';
-}
-
-function getSignalStateColor(state) {
-    const colors = {
-        green: '#04d361',
-        yellow: '#ffd93d',
-        red: '#e83f5b'
     };
     return colors[(state || '').toLowerCase()] || '#888';
 }

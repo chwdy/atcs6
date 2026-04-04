@@ -101,18 +101,6 @@ class Block:
             self.state == BlockState.RESERVED and self.occupied_by == train_id
         )
 
-    def reserve(self, train_id: str) -> bool:
-        """Reserve block for specified train"""
-        if self.disabled:
-            return False
-        # Only genuinely free blocks may be reserved; CAUTION means the next block is occupied
-        # and must not be reserved until fully cleared.
-        if self.state == BlockState.FREE:
-            self.state = BlockState.RESERVED
-            self.occupied_by = train_id
-            return True
-        return False
-
     def occupy(self, train_id: str) -> bool:
         """Mark block as occupied by specified train"""
         if self.can_enter(train_id):
@@ -160,10 +148,6 @@ class Block:
     def is_free(self) -> bool:
         """Check if block is free and available for use"""
         return self.state == BlockState.FREE and not self.disabled
-
-    def is_occupied(self) -> bool:
-        """Check if block is occupied"""
-        return self.state == BlockState.OCCUPIED
 
     def is_reserved(self) -> bool:
         """Check if block is reserved"""
@@ -216,39 +200,6 @@ class Block:
             return True
         return False
 
-    def is_reserved_for_path(self, path_id: str) -> bool:
-        """Check if block is reserved for a specific path."""
-        return self.reserved_by_path == path_id
-
-    def can_reserve_for_path(
-        self, path_id: str, train_id: Optional[str] = None
-    ) -> bool:
-        """
-        Check if block can be reserved for a path without actually reserving.
-
-        Args:
-            path_id: The path ID that would reserve this block
-            train_id: Optional train ID that would use this block
-
-        Returns:
-            True if reservation would succeed, False otherwise
-        """
-        if self.disabled:
-            return False
-        if self.state == BlockState.FREE:
-            return True
-        # Already reserved by same path
-        if self.state == BlockState.RESERVED and self.reserved_by_path == path_id:
-            return True
-        # Occupied by the train that would use this path
-        if (
-            self.state == BlockState.OCCUPIED
-            and train_id
-            and self.occupied_by == train_id
-        ):
-            return True
-        return False
-
     def release_path_reservation(self) -> bool:
         """
         Release path reservation and return block to FREE state.
@@ -266,10 +217,6 @@ class Block:
             self.occupied_by = None
             return True
         return False
-
-    def get_path_id(self) -> Optional[str]:
-        """Get the path ID that has reserved this block."""
-        return self.reserved_by_path
 
     def is_available_for_path(
         self, path_id: str, train_id: Optional[str] = None

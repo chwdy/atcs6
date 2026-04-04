@@ -430,13 +430,6 @@ class API {
         }, 'removePlatformTile');
     }
 
-    async canExtendPlatform(platformId, x, y) {
-        return this._request(`/platform/${encodeURIComponent(platformId)}/can_extend`, {
-            method: 'POST',
-            body: { x, y }
-        }, 'canExtendPlatform');
-    }
-
     async assignPlatformTileToBlock(platformId, x, y, blockId) {
         return this._request(`/platform/${encodeURIComponent(platformId)}/assign_tile`, {
             method: 'POST',
@@ -444,103 +437,11 @@ class API {
         }, 'assignPlatformTileToBlock');
     }
 
-    async unassignPlatformTileFromBlock(platformId, x, y) {
-        return this._request(`/platform/${encodeURIComponent(platformId)}/unassign_tile`, {
-            method: 'POST',
-            body: { x, y }
-        }, 'unassignPlatformTileFromBlock');
-    }
-
-    async getPlatformBlockAssignments(platformId) {
-        return this._request(`/platform/${encodeURIComponent(platformId)}/block_assignments`, {}, 'getPlatformBlockAssignments');
-    }
-
-    /**
-     * Legacy compatibility wrapper: create physical platform.
-     */
-    async createStation(x, y, name, lengthCm, platformSide, topSpeedKmh, stationId = null) {
-        return this._request('/platform', {
-            method: 'POST',
-            body: {
-                x, y, name,
-                length_cm: lengthCm,
-                platform_side: platformSide,
-                top_speed_kmh: topSpeedKmh,
-                platform_id: stationId
-            }
-        }, 'createStation');
-    }
-
     /** Legacy compatibility wrapper: get physical platform by ID. */
     async getStation(stationId) {
         return this._request(`/platform/${encodeURIComponent(stationId)}`, {
             returnNullOn404: true
         }, 'getStation');
-    }
-
-    /** Legacy compatibility wrapper: update physical platform. */
-    async updateStation(stationId, updates) {
-        return this._request(`/platform/${encodeURIComponent(stationId)}`, {
-            method: 'PATCH',
-            body: updates
-        }, 'updateStation');
-    }
-
-    /** Legacy compatibility wrapper: delete physical platform. */
-    async deleteStation(stationId) {
-        return this._request(`/platform/${encodeURIComponent(stationId)}`, {
-            method: 'DELETE'
-        }, 'deleteStation');
-    }
-
-    /** Legacy compatibility wrapper: validate physical platform placement. */
-    async validateStationPlacement(x, y) {
-        return this._request(`/platform/validate/${x}/${y}`, {}, 'validateStationPlacement');
-    }
-
-    /** Legacy compatibility wrapper: extend physical platform. */
-    async extendStation(stationId, positions) {
-        return this._request(`/platform/${encodeURIComponent(stationId)}/extend`, {
-            method: 'POST',
-            body: { positions }
-        }, 'extendStation');
-    }
-
-    /** Legacy compatibility wrapper: remove tile from physical platform. */
-    async removeStationTile(stationId, x, y) {
-        return this._request(`/platform/${encodeURIComponent(stationId)}/remove_tile`, {
-            method: 'POST',
-            body: { x, y }
-        }, 'removeStationTile');
-    }
-
-    /** Legacy compatibility wrapper: can extend physical platform. */
-    async canExtendStation(stationId, x, y) {
-        return this._request(`/platform/${encodeURIComponent(stationId)}/can_extend`, {
-            method: 'POST',
-            body: { x, y }
-        }, 'canExtendStation');
-    }
-
-    /** Legacy compatibility wrapper: assign platform tile to block. */
-    async assignTileToBlock(stationId, x, y, blockId) {
-        return this._request(`/platform/${encodeURIComponent(stationId)}/assign_tile`, {
-            method: 'POST',
-            body: { x, y, block_id: blockId }
-        }, 'assignTileToBlock');
-    }
-
-    /** Legacy compatibility wrapper: unassign platform tile from block. */
-    async unassignTileFromBlock(stationId, x, y) {
-        return this._request(`/platform/${encodeURIComponent(stationId)}/unassign_tile`, {
-            method: 'POST',
-            body: { x, y }
-        }, 'unassignTileFromBlock');
-    }
-
-    /** Legacy compatibility wrapper: platform block assignments. */
-    async getBlockAssignments(stationId) {
-        return this._request(`/platform/${encodeURIComponent(stationId)}/block_assignments`, {}, 'getBlockAssignments');
     }
 
     // === Logical Station Group API Methods ===
@@ -554,19 +455,6 @@ class API {
 
     async listStationGroups() {
         return this._request('/station', {}, 'listStationGroups');
-    }
-
-    async getStationGroup(stationId) {
-        return this._request(`/station/${encodeURIComponent(stationId)}`, {
-            returnNullOn404: true
-        }, 'getStationGroup');
-    }
-
-    async updateStationGroup(stationId, updates) {
-        return this._request(`/station/${encodeURIComponent(stationId)}`, {
-            method: 'PATCH',
-            body: updates
-        }, 'updateStationGroup');
     }
 
     async deleteStationGroup(stationId) {

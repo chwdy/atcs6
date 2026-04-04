@@ -721,43 +721,6 @@ class RouteExecutor:
             raise ValueError("Cannot determine train direction for single-tile path")
         return convert_tiles_to_train_path(tiles)
 
-    def activate_route(self, train: "Train", route: "Route") -> bool:
-        """Activate route and assign train (compatibility helper)."""
-        route.activate(self.simulation_time)
-        route.assign_train(train.train_id)
-        train.assigned_route_id = route.route_id
-
-        self.execution_states[train.train_id] = RouteExecutionState(
-            train_id=train.train_id,
-            route_id=route.route_id,
-            route_start_time=self.simulation_time,
-        )
-
-        controller = self._get_controller(train)
-        if train.state == TrainState.IDLE and train.facing_direction:
-            controller.set_direction_and_standby(train.facing_direction)
-        return True
-
-    def deactivate_route(self, train: "Train", route: "Route") -> bool:
-        """Deactivate route for a single train (compatibility helper)."""
-        route.unassign_train(train.train_id)
-        if route.mode == RouteMode.ONE_OFF and not route.assigned_train_ids:
-            route.deactivate()
-
-        if train.assigned_route_id == route.route_id:
-            train.assigned_route_id = None
-
-        if train.train_id in self.execution_states:
-            del self.execution_states[train.train_id]
-
-        controller = self.controllers.get(train.train_id)
-        if controller and train.state != TrainState.OFF and train.is_stopped():
-            controller.power_off_cmd()
-
-        if self._owns_controllers and train.train_id in self.controllers:
-            del self.controllers[train.train_id]
-        return True
-
     def set_train_waypoint_index(self, train_id: str, waypoint_index: int) -> bool:
         """Override current waypoint index for an assigned train."""
         train = self.network.trains.get(train_id)
@@ -784,44 +747,3 @@ class RouteExecutor:
         exec_state.resolved_platform_id = None
         exec_state.waiting_for_path = False
         return True
-
-    def get_execution_status(self, train_id: str) -> Optional[Dict]:
-        """Get execution status for a train."""
-        exec_state = self.execution_states.get(train_id)
-        if not exec_state:
-            return None
-
-        route = getattr(self.network, "routes", {}).get(exec_state.route_id)
-        status = {
-            "train_id": train_id,
-            "route_id": exec_state.route_id,
-            "at_station": exec_state.arrived_at_platform_time is not None,
-            "waiting_for_path": exec_state.waiting_for_path,
-            "last_station": exec_state.last_waypoint_platform_id,
-            "waypoint_index": exec_state.current_waypoint_index,
-            "direction": exec_state.direction,
-            "resolved_platform_id": exec_state.resolved_platform_id,
-        }
-
-        if route:
-            waypoint = route.get_waypoint_at(exec_state.current_waypoint_index)
-            status["current_waypoint"] = waypoint.platform_id if waypoint else None
-            status["route_mode"] = route.mode.value
-            status["route_active"] = route.is_active
-
-            if exec_state.arrived_at_platform_time and waypoint:
-                time_at_platform = (
-                    self.simulation_time - exec_state.arrived_at_platform_time
-                )
-                route_start_time = (
-                    exec_state.route_start_time
-                    or route.started_at
-                    or self.simulation_time
-                )
-                status["dwell_remaining_sec"] = waypoint.get_remaining_dwell_time(
-                    time_at_platform,
-                    route_start_time,
-                    self.simulation_time,
-                )
-
-        return status

@@ -48,53 +48,6 @@ const IsometricGeometry = {
         };
         return angles[segment] || 0;
     },
-
-    /**
-     * Get the angle perpendicular to an edge grid line (inward toward tile).
-     * For short paths, half-circles should align perpendicular to the edge.
-     * @param {string} edge - Edge name ('N', 'E', 'S', 'W')
-     * @returns {number} Angle in radians pointing inward from edge
-     */
-    getEdgePerpendicularAngle(edge) {
-        // Edge orientations in isometric grid (45° rotated):
-        // N and S edges run diagonally (one orientation)
-        // E and W edges run diagonally (perpendicular orientation)
-        const angles = {
-            'N': -Math.PI / 4,    // N edge: perpendicular points down-left (-45°)
-            'E': Math.PI / 4,     // E edge: perpendicular points up-left (45°)
-            'S': Math.PI * 3 / 4, // S edge: perpendicular points up-right (135°)
-            'W': -Math.PI * 3 / 4 // W edge: perpendicular points down-right (-135° or 225°)
-        };
-        return angles[edge] || 0;
-    },
-
-    /**
-     * Draw a rectangle aligned with a track segment or edge.
-     * The rectangle is rotated to match the segment's orientation in screen space.
-     * 
-     * @param {CanvasRenderingContext2D} ctx - Canvas context
-     * @param {number} cx - Center X in screen coordinates
-     * @param {number} cy - Center Y in screen coordinates
-     * @param {number} width - Width (perpendicular to segment)
-     * @param {number} height - Height (parallel to segment)
-     * @param {string} e1 - First edge of segment ('N', 'E', 'S', or 'W')
-     * @param {string} e2 - Second edge of segment (optional, defaults to opposite of e1)
-     */
-    drawAlignedRect(ctx, cx, cy, width, height, e1, e2 = null) {
-        ctx.save();
-        ctx.translate(cx, cy);
-
-        // If e2 not provided, assume we want alignment perpendicular to the edge
-        // For boundary markers, we need to know the actual segment direction
-        // Use the segment angle to rotate the rectangle
-        const angle = this.getSegmentAngle(e1, e2 || e1);
-        ctx.rotate(angle);
-
-        // Draw rectangle centered at origin (after rotation)
-        ctx.fillRect(-width / 2, -height / 2, width, height);
-
-        ctx.restore();
-    }
 };
 
 class Renderer {

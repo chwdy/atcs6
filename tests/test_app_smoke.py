@@ -152,7 +152,6 @@ class TestAppSmoke:
             "railway_signal.py",
             "station.py",
             "train.py",
-            "pathfinder.py",
         ]
 
         for filename in required_files:

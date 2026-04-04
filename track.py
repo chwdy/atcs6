@@ -384,13 +384,6 @@ class TrackSegment:
         self.track_bits &= ~bit
         self._sync_switch_states()
 
-    def toggle_track_bit(self, bit: int) -> bool:
-        """Toggle a track segment. Returns False if toggling on would be forbidden."""
-        if self.track_bits & bit:
-            self.remove_track_bit(bit)
-            return True
-        return self.add_track_bit(bit)
-
     def _sync_switch_states(self) -> None:
         """Reset switch_state to MAIN (0) when track_bits change.
 
@@ -420,13 +413,6 @@ class TrackSegment:
         return bool(norm and norm in self.dead_end_ports)
 
     # === Switch helpers (global tile-level state) ===
-    def toggle_switch(self) -> bool:
-        """Toggle global switch state between MAIN (0) and DIVERGE (1)."""
-        if not self.is_switch:
-            return False
-        self._switch_state = 1 - self._switch_state
-        return True
-
     def set_switch_state(self, state: int) -> bool:
         """Set global switch state. 0=MAIN, 1=DIVERGE."""
         if not self.is_switch:
@@ -766,27 +752,6 @@ class TrackSegment:
 
         return "UNKNOWN"
 
-    # === Path helpers (directed-path API) ===
-    def remove_path(self, port1: str, port2: str) -> bool:
-        e1, e2 = _normalize_edge(port1), _normalize_edge(port2)
-        if not e1 or not e2:
-            return False
-        bit_idx = EDGES_TO_BIT.get((e1, e2))
-        if bit_idx is None:
-            return False
-        before = self.track_bits
-        self.remove_track_bit(1 << bit_idx)
-        return before != self.track_bits
-
-    def has_path(self, port1: str, port2: str) -> bool:
-        e1, e2 = _normalize_edge(port1), _normalize_edge(port2)
-        if not e1 or not e2:
-            return False
-        bit_idx = EDGES_TO_BIT.get((e1, e2))
-        if bit_idx is None:
-            return False
-        return bool(self.track_bits & (1 << bit_idx))
-
     # ========== Serialization ==========
     def to_dict(self) -> dict:
         return {
@@ -883,12 +848,6 @@ class TrackSegment:
         from datetime import datetime
 
         self.last_maintenance = datetime.now().isoformat()
-
-    def is_occupied(self) -> bool:
-        return self.occupied_by is not None
-
-    def is_reserved(self) -> bool:
-        return self.reserved_by is not None
 
     def is_available_for(self, train_id: str) -> bool:
         if self.occupied_by and self.occupied_by != train_id:

@@ -473,13 +473,6 @@ class RouteEditorHandler {
         return platformCount > 1;
     }
 
-    getFlexiblePlatformContext(platformId) {
-        const stationGroup = this.getStationGroupForPlatform(platformId);
-        const platformCount = stationGroup?.platform_ids?.length || 0;
-        const stationName = stationGroup?.name || stationGroup?.station_id || 'station';
-        return `${platformCount} platforms in ${stationName}`;
-    }
-
     normalizeWaypointFlexibility() {
         const waypoints = this.currentRoute?.waypoints || [];
         waypoints.forEach(waypoint => {

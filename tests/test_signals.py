@@ -42,30 +42,6 @@ class TestSignal:
         assert signal.detection_direction == "N"
         assert signal.signal_type == SignalType.BLOCK
 
-    def test_update_from_block(self):
-        signal = Signal(
-            signal_id="SIG_001",
-            position=(0, 0),
-            detection_direction="N",
-            signal_type=SignalType.BLOCK,
-        )
-        signal.update_from_block(block_occupied=False)
-        assert signal.state == SignalState.GREEN
-        signal.update_from_block(block_occupied=True)
-        assert signal.state == SignalState.RED
-
-    def test_signal_state_matrix(self):
-        signal = Signal(
-            signal_id="SIG_001",
-            position=(0, 0),
-            detection_direction="N",
-            signal_type=SignalType.BLOCK,
-        )
-        signal.update_from_block(block_occupied=False)
-        assert signal.state == SignalState.GREEN
-        signal.update_from_block(block_occupied=True)
-        assert signal.state == SignalState.RED
-
     def test_serialization(self):
         signal = Signal(
             signal_id="SIG_001",

@@ -1509,7 +1509,14 @@ class TestTrendAwareATOControl:
         handle = controller._ato_calculate_handle()
 
         # With speed (30) far below curve limit (~55), evaluator should power up
-        assert controller._is_power_handle(handle), (
+        _POWER_HANDLES = {
+            HandlePosition.P1,
+            HandlePosition.P2,
+            HandlePosition.P3,
+            HandlePosition.P4,
+            HandlePosition.P5,
+        }
+        assert handle in _POWER_HANDLES, (
             f"When far below curve, evaluator should select a power handle. Got {handle}"
         )
 
@@ -1525,7 +1532,14 @@ class TestTrendAwareATOControl:
 
         # Evaluator picks whatever best tracks the curve — should be power since
         # we're still below the operational limit
-        valid = controller._is_power_handle(handle) or handle == HandlePosition.N
+        _POWER_HANDLES = {
+            HandlePosition.P1,
+            HandlePosition.P2,
+            HandlePosition.P3,
+            HandlePosition.P4,
+            HandlePosition.P5,
+        }
+        valid = handle in _POWER_HANDLES or handle == HandlePosition.N
         assert valid, (
             f"When near target, evaluator should select power or neutral. Got {handle}"
         )
@@ -1602,38 +1616,6 @@ class TestTrendAwareATOControl:
         assert handle == HandlePosition.B5, (
             f"Priority: stopping (effective_target=0) should use _calculate_braking_notch. "
             f"For speed=15.0, expects B5 (speed > 14). Got {handle}"
-        )
-
-    def test_trend_detection_rising(self, train_and_controller):
-        train, controller = train_and_controller
-
-        train.current_speed = 55.5
-        controller._previous_speed = 55.0
-
-        trend = controller._detect_speed_trend(train.current_speed)
-
-        assert trend == "rising", f"Speed 55.0→55.5 should be 'rising', got {trend}"
-
-    def test_trend_detection_falling(self, train_and_controller):
-        train, controller = train_and_controller
-
-        train.current_speed = 54.5
-        controller._previous_speed = 55.0
-
-        trend = controller._detect_speed_trend(train.current_speed)
-
-        assert trend == "falling", f"Speed 55.0→54.5 should be 'falling', got {trend}"
-
-    def test_trend_detection_stable(self, train_and_controller):
-        train, controller = train_and_controller
-
-        train.current_speed = 55.0
-        controller._previous_speed = 55.05
-
-        trend = controller._detect_speed_trend(train.current_speed)
-
-        assert trend == "stable", (
-            f"Speed 55.05→55.0 (Δ=0.05 < epsilon) should be 'stable', got {trend}"
         )
 
 
@@ -2134,7 +2116,17 @@ class TestHandleEvaluator:
             current_speed_kmh=15.0,
             curve=curve,
         )
-        assert controller_with_profile._is_brake_handle(result), (
+        _BRAKE_HANDLES = {
+            HandlePosition.B1,
+            HandlePosition.B2,
+            HandlePosition.B3,
+            HandlePosition.B4,
+            HandlePosition.B5,
+            HandlePosition.B6,
+            HandlePosition.B7,
+            HandlePosition.B8,
+        }
+        assert result in _BRAKE_HANDLES, (
             f"Should brake when above curve, got {result.value}"
         )
 
@@ -2150,7 +2142,14 @@ class TestHandleEvaluator:
             current_speed_kmh=10.0,
             curve=curve,
         )
-        assert controller_with_profile._is_power_handle(result), (
+        _POWER_HANDLES = {
+            HandlePosition.P1,
+            HandlePosition.P2,
+            HandlePosition.P3,
+            HandlePosition.P4,
+            HandlePosition.P5,
+        }
+        assert result in _POWER_HANDLES, (
             f"Should accelerate when below curve, got {result.value}"
         )
 
@@ -2229,7 +2228,17 @@ class TestFutureAwareIntegration:
             curve=curve,
             horizon_cm=20.0,
         )
-        assert controller._is_brake_handle(result), (
+        _BRAKE_HANDLES = {
+            HandlePosition.B1,
+            HandlePosition.B2,
+            HandlePosition.B3,
+            HandlePosition.B4,
+            HandlePosition.B5,
+            HandlePosition.B6,
+            HandlePosition.B7,
+            HandlePosition.B8,
+        }
+        assert result in _BRAKE_HANDLES, (
             f"Should brake approaching stop, got {result.value}"
         )
 
@@ -2271,7 +2280,14 @@ class TestFutureAwareIntegration:
             curve=curve,
             horizon_cm=30.0,
         )
-        assert controller._is_power_handle(result), (
+        _POWER_HANDLES = {
+            HandlePosition.P1,
+            HandlePosition.P2,
+            HandlePosition.P3,
+            HandlePosition.P4,
+            HandlePosition.P5,
+        }
+        assert result in _POWER_HANDLES, (
             f"Should accelerate when well below curve, got {result.value}"
         )
 
@@ -2293,7 +2309,17 @@ class TestFutureAwareIntegration:
             curve=curve,
             horizon_cm=30.0,
         )
-        assert controller._is_brake_handle(result), (
+        _BRAKE_HANDLES = {
+            HandlePosition.B1,
+            HandlePosition.B2,
+            HandlePosition.B3,
+            HandlePosition.B4,
+            HandlePosition.B5,
+            HandlePosition.B6,
+            HandlePosition.B7,
+            HandlePosition.B8,
+        }
+        assert result in _BRAKE_HANDLES, (
             f"Should brake for speed reduction, got {result.value}"
         )
 

@@ -86,14 +86,14 @@ class TestBlock:
         assert block.state == BlockState.FREE
         assert block.is_free() == True
 
-        result = block.reserve(train_id="TRAIN_01")
-        assert result == True
+        # Simulate reserve by setting state directly (reserve() removed as dead code)
+        block.state = BlockState.RESERVED
+        block.occupied_by = "TRAIN_01"
         assert block.state == BlockState.RESERVED
         assert block.is_reserved() == True
 
         block.occupy(train_id="TRAIN_01")
         assert block.state == BlockState.OCCUPIED
-        assert block.is_occupied() == True
 
         block.set_to_caution()
         assert block.state == BlockState.CAUTION
@@ -101,36 +101,26 @@ class TestBlock:
         block.clear()
         assert block.state == BlockState.FREE
 
-    def test_reserve_block(self):
-        block = Block(block_id="BLK_TEST")
-        result = block.reserve(train_id="TRAIN_01")
-        assert result == True
-        assert block.occupied_by == "TRAIN_01"
-
     def test_occupy_block(self):
         block = Block(block_id="BLK_TEST")
-        block.reserve(train_id="TRAIN_01")
+        block.state = BlockState.RESERVED
+        block.occupied_by = "TRAIN_01"
         block.occupy(train_id="TRAIN_01")
         assert block.state == BlockState.OCCUPIED
 
     def test_release_block(self):
         block = Block(block_id="BLK_TEST")
-        block.reserve(train_id="TRAIN_01")
+        block.state = BlockState.RESERVED
+        block.occupied_by = "TRAIN_01"
         block.occupy(train_id="TRAIN_01")
         block.release()
         assert block.state == BlockState.FREE
 
-    def test_cannot_reserve_occupied_block(self):
-        block = Block(block_id="BLK_TEST")
-        block.reserve(train_id="TRAIN_01")
-        block.occupy(train_id="TRAIN_01")
-        result = block.reserve(train_id="TRAIN_02")
-        assert result == False
-
     def test_caution_state_cycle(self):
         block = Block(block_id="BLK_TEST")
         assert block.state == BlockState.FREE
-        block.reserve("TRAIN_01")
+        block.state = BlockState.RESERVED
+        block.occupied_by = "TRAIN_01"
         assert block.state == BlockState.RESERVED
         block.occupy("TRAIN_01")
         assert block.state == BlockState.OCCUPIED
@@ -160,12 +150,6 @@ class TestDisabledBlock:
         block = Block(block_id="BLK_001", disabled=True)
         assert block.can_enter("TRAIN_01") == False
 
-    def test_disabled_block_cannot_be_reserved(self):
-        block = Block(block_id="BLK_001", disabled=True)
-        result = block.reserve("TRAIN_01")
-        assert result == False
-        assert block.state == BlockState.FREE
-
     def test_disabled_block_cannot_be_occupied(self):
         block = Block(block_id="BLK_001", disabled=True)
         result = block.occupy("TRAIN_01")
@@ -181,7 +165,6 @@ class TestDisabledBlock:
         block = Block(block_id="BLK_001", disabled=False)
         assert block.is_free() == True
         assert block.can_enter("TRAIN_01") == True
-        assert block.reserve("TRAIN_01") == True
         assert block.occupy("TRAIN_01") == True
 
     def test_disabled_block_serialization(self):

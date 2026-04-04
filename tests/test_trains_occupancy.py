@@ -32,6 +32,7 @@ def straight_ew_track(network):
         network.add_track(track)
     return network
 
+
 class TestTrainPlacementOccupancy:
     """Tests for train placement and block occupancy."""
 
@@ -65,7 +66,6 @@ class TestTrainPlacementOccupancy:
         network.place_train(train, 1, 0, Direction.EAST)
         assert block.state == BlockState.OCCUPIED
         assert block.occupied_by == "TRAIN_03"
-
 
 
 class TestTrainPlacementValidation:
@@ -109,7 +109,6 @@ class TestTrainPlacementValidation:
             network.place_train(train, 1, 0, Direction.EAST)
 
 
-
 class TestTrainOccupiedTilesRich:
     """Tests for get_occupied_tiles_rich method."""
 
@@ -127,28 +126,3 @@ class TestTrainOccupiedTilesRich:
         assert len(rich) == 1
         assert rich[0]["tile"] == (1, 0)
         assert rich[0]["block_id"] == "BLOCK_1"
-
-
-
-class TestTrainReverse:
-    """Tests for train reversal."""
-
-    def test_reverse_train_swaps_leading_end(self, network):
-        for x in range(3):
-            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
-        network.create_block_with_tracks(
-            "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
-        )
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0)
-        train = Train(train_id="T1", consist=[car])
-        network.add_train(train)
-        network.place_train(train, 1, 0, Direction.EAST)
-        assert train.position.leading_end == LeadingEnd.A
-        assert train.position.facing_direction == Direction.EAST
-        old_head = train.position.head_tile
-        network.reverse_train(train)
-        assert train.position.leading_end == LeadingEnd.B
-        assert train.position.facing_direction == Direction.WEST
-
-
-

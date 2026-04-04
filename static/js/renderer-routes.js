@@ -21,10 +21,6 @@ class RendererRouteHandler {
         this.reachableHighlights = positionsSet || new Set();
     }
 
-    setRoutes(routes) {
-        this.activeRoutes = routes || [];
-    }
-
     highlightRoute(route) {
         this.highlightedRouteId = route ? route.route_id : null;
         if (this.currentNetwork) {

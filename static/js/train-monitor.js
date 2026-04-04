@@ -76,10 +76,6 @@ class TrainMonitor {
     isVisible() {
         return !this.bar.classList.contains('hidden');
     }
-    
-    getTrainId() {
-        return this.trainId;
-    }
 
     initViewDistanceButtons() {
         const buttons = document.querySelectorAll('.view-dist-btn');

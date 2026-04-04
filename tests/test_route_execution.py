@@ -271,22 +271,6 @@ class TestRouteAndWaypoint:
         assert simple_route.last_error is None
         assert simple_route.error_time is None
 
-    def test_route_reset(self, simple_route):
-        """Test resetting a route."""
-        # Activate and modify route
-        simple_route.activate(100.0)
-        simple_route.advance_to_next_waypoint()
-        simple_route.set_error("Test error", 110.0)
-
-        # Reset
-        simple_route.reset()
-        assert simple_route.current_waypoint_index == 0
-        assert simple_route.direction == 1
-        assert simple_route.is_active is False
-        assert simple_route.started_at is None
-        assert simple_route.last_error is None
-        assert simple_route.error_time is None
-
 
 class TestRouteExecutor:
     """Tests for RouteExecutor class."""
@@ -329,40 +313,6 @@ class TestRouteExecutor:
         assert len(executor.execution_states) == 0
         assert executor.simulation_time == 0.0
 
-    def test_route_executor_activate_route(self, simple_network, simple_route):
-        """Test activating a route via executor."""
-        executor = RouteExecutor(simple_network)
-        train = Train(train_id="T001", current_speed=0.0)
-        train.state = TrainState.IDLE
-        train.position = make_train_position((0, 0), Direction.EAST)
-
-        simple_network.routes[simple_route.route_id] = simple_route
-
-        # Activate route
-        result = executor.activate_route(train, simple_route)
-        assert result is True
-        assert train.assigned_route_id == "ROUTE_001"
-        assert simple_route.is_active is True
-        assert train.train_id in executor.execution_states
-
-    def test_route_executor_deactivate_route(self, simple_network, simple_route):
-        """Test deactivating a route."""
-        executor = RouteExecutor(simple_network)
-        train = Train(train_id="T001", current_speed=0.0)
-        train.state = TrainState.IDLE
-        train.position = make_train_position((0, 0), facing_direction=Direction.EAST)
-
-        simple_network.routes[simple_route.route_id] = simple_route
-
-        # Activate then deactivate
-        executor.activate_route(train, simple_route)
-        result = executor.deactivate_route(train, simple_route)
-
-        assert result is True
-        assert train.assigned_route_id is None
-        assert simple_route.is_active is False
-        assert train.train_id not in executor.execution_states
-
     def test_route_executor_is_train_at_station(self, simple_network):
         """Test checking if train is at station."""
         executor = RouteExecutor(simple_network)
@@ -378,30 +328,6 @@ class TestRouteExecutor:
         # Move train to STA_B
         train.position = make_train_position((1, 0), Direction.EAST)
         assert executor._is_train_at_station(train, "STA_B") is True
-
-    def test_route_executor_get_execution_status(self, simple_network, simple_route):
-        """Test getting execution status."""
-        executor = RouteExecutor(simple_network)
-        train = Train(train_id="T001", current_speed=0.0)
-        train.state = TrainState.IDLE
-        train.position = make_train_position((0, 0), facing_direction=Direction.EAST)
-
-        simple_network.routes[simple_route.route_id] = simple_route
-
-        # No status before activation
-        status = executor.get_execution_status("T001")
-        assert status is None
-
-        # Activate route
-        executor.activate_route(train, simple_route)
-        status = executor.get_execution_status("T001")
-
-        assert status is not None
-        assert status["train_id"] == "T001"
-        assert status["route_id"] == "ROUTE_001"
-        assert status["current_waypoint"] == "STA_A"
-        assert status["waypoint_index"] == 0
-        assert status["at_station"] is False
 
     def test_execution_state_dataclass(self):
         """Test RouteExecutionState dataclass."""
@@ -471,23 +397,3 @@ class TestRouteExecutorCompatibilityBugFixes:
         assert ("T_NEW", "ROUTE_NEW") in pair_ids
         assert ("T_OLD", "ROUTE_LEGACY") in pair_ids
         assert "T_OLD" in route_legacy.assigned_train_ids
-
-    def test_deactivate_route_does_not_recreate_owned_controller(self, simple_network):
-        """Owned controller entries should be cleaned up, not recreated."""
-        executor = RouteExecutor(simple_network)
-        route = Route(
-            route_id="ROUTE_001",
-            name="Test",
-            waypoints=[Waypoint(platform_id="STA_A")],
-        )
-        simple_network.routes[route.route_id] = route
-
-        train = Train(train_id="T001", current_speed=0.0)
-        train.state = TrainState.IDLE
-        train.position = make_train_position((0, 0), facing_direction=Direction.EAST)
-
-        executor.activate_route(train, route)
-        assert train.train_id in executor.controllers
-
-        executor.deactivate_route(train, route)
-        assert train.train_id not in executor.controllers

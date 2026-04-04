@@ -143,16 +143,6 @@ class StateManager {
         };
     }
 
-    /**
-     * Check if there are any subscribers for an entity.
-     * Useful for debugging and optimization.
-     */
-    hasSubscribers(type, id) {
-        const specific = this.subscribers[type]?.get(id)?.size > 0;
-        const wildcard = this.subscribers[type]?.get('*')?.size > 0;
-        return specific || wildcard;
-    }
-
     // ═══════════════════════════════════════════════════════════════════
     // DATA ACCESS API
     // ═══════════════════════════════════════════════════════════════════
@@ -191,30 +181,10 @@ class StateManager {
     }
 
     /**
-     * Get all entity IDs of a type.
-     * 
-     * @param {string} type - Entity type
-     * @returns {Array<string>} Array of entity IDs
-     */
-    getAllIds(type) {
-        const map = this.state[type];
-        if (!map) return [];
-        return Array.from(map.keys());
-    }
-
-    /**
      * Check if an entity exists in cache.
      */
     has(type, id) {
         return this.state[type]?.has(id) ?? false;
-    }
-
-    /**
-     * Get timestamp of last update for an entity.
-     * Returns undefined if entity was never updated.
-     */
-    getLastUpdate(type, id) {
-        return this.lastUpdate.get(`${type}:${id}`);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -492,22 +462,6 @@ class StateManager {
         return count;
     }
 
-    /**
-     * Log all subscribers for debugging.
-     */
-    debugSubscribers() {
-        console.group('[StateManager] Active Subscribers');
-        for (const [type, subs] of Object.entries(this.subscribers)) {
-            if (subs.size > 0) {
-                console.group(type);
-                for (const [id, callbacks] of subs) {
-                    console.log(`  ${id}: ${callbacks.size} subscriber(s)`);
-                }
-                console.groupEnd();
-            }
-        }
-        console.groupEnd();
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

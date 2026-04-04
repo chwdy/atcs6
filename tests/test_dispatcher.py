@@ -46,6 +46,62 @@ from tests.train_test_helpers import make_train_position
 from train_route import Route, RouteMode, Waypoint
 from enums import BlockState, Direction, LeadingEnd, TrainState, HandlePosition
 from simulation import SimulationController
+from route_executor import RouteExecutionState
+from datetime import datetime
+
+
+# ============================================================================
+# Test Helpers (replace removed on_train_enters_path/on_train_advances)
+# ============================================================================
+
+
+def activate_path_for_train(dispatcher, path, train_id, block_id):
+    """Simulate a train entering a path's first block.
+
+    Replaces the removed PathDispatcher.on_train_enters_path() for test setup.
+    Manually sets path state and occupies the block.
+    """
+    if path.train_id is None:
+        path.train_id = train_id
+    path.status = PathStatus.ACTIVE
+    path.activated_at = datetime.now()
+
+    if block_id in path.block_sequence:
+        path.current_block_index = path.block_sequence.index(block_id)
+
+    network = dispatcher.network
+    if network.block_manager:
+        network.block_manager.occupy_block(block_id, train_id)
+    else:
+        block = network.blocks.get(block_id)
+        if block:
+            block.occupy(train_id)
+    return True
+
+
+def advance_path_to_block(dispatcher, path, entered_block_id):
+    """Simulate a train advancing to a new block along the path.
+
+    Replaces the removed PathDispatcher.on_train_advances() for test setup.
+    Manually updates path position and occupies the block.
+    """
+    if entered_block_id in path.block_sequence:
+        path.current_block_index = path.block_sequence.index(entered_block_id)
+
+    network = dispatcher.network
+    if network.block_manager:
+        network.block_manager.occupy_block(entered_block_id, path.train_id)
+    else:
+        block = network.blocks.get(entered_block_id)
+        if block:
+            block.occupy(path.train_id)
+
+    dispatcher._release_blocks_behind_train(path)
+
+    if entered_block_id == path.block_sequence[-1]:
+        path.status = PathStatus.CLEARING
+
+    return True
 
 
 # ============================================================================
@@ -333,24 +389,6 @@ class TestBlockPathReservation:
         assert block.reserve_for_path("PATH_001")  # Same route - OK
         assert block.reserved_by_path == "PATH_001"
 
-    def test_is_reserved_for_path(self, network):
-        """Test is_reserved_for_path check."""
-        block = network.create_block("TEST_BLOCK")
-        block.reserve_for_path("PATH_001")
-
-        assert block.is_reserved_for_path("PATH_001")
-        assert not block.is_reserved_for_path("PATH_002")
-
-    def test_can_reserve_for_path(self, network):
-        """Test can_reserve_for_path check."""
-        block = network.create_block("TEST_BLOCK")
-
-        assert block.can_reserve_for_path("PATH_001")
-
-        block.reserve_for_path("PATH_001")
-        assert block.can_reserve_for_path("PATH_001")
-        assert not block.can_reserve_for_path("PATH_002")
-
     def test_release_path_reservation(self, network):
         """Test releasing route reservation."""
         block = network.create_block("TEST_BLOCK")
@@ -379,7 +417,6 @@ class TestBlockPathReservation:
         block = network.create_block("TEST_BLOCK")
         block.disabled = True
 
-        assert not block.can_reserve_for_path("PATH_001")
         assert not block.reserve_for_path("PATH_001")
         assert not block.is_available_for_path("PATH_001")
 
@@ -815,38 +852,6 @@ class TestPathCreation:
 class TestPathLifecycle:
     """Tests for route lifecycle management."""
 
-    def test_train_enters_path(self, simple_linear_network, dispatcher, train):
-        """Test train entering route."""
-        dispatcher.network = simple_linear_network
-        simple_linear_network.add_train(train)
-
-        result = dispatcher.create_path("BLOCK_A", "BLOCK_C")
-        assert result.success
-        path_id = result.path.path_id
-
-        # Train enters first block
-        success = dispatcher.on_train_enters_path(path_id, train.train_id, "BLOCK_A")
-
-        assert success
-        path = dispatcher.get_path(path_id)
-        assert path.status == PathStatus.ACTIVE
-        assert path.train_id == train.train_id
-
-    def test_train_advances(self, simple_linear_network, dispatcher, train):
-        """Test train advancing through route."""
-        dispatcher.network = simple_linear_network
-        simple_linear_network.add_train(train)
-
-        result = dispatcher.create_path("BLOCK_A", "BLOCK_C")
-        path_id = result.path.path_id
-
-        dispatcher.on_train_enters_path(path_id, train.train_id, "BLOCK_A")
-        success = dispatcher.on_train_advances(path_id, "BLOCK_B")
-
-        assert success
-        path = dispatcher.get_path(path_id)
-        assert path.current_block_index > 0
-
     def test_complete_path(self, simple_linear_network, dispatcher, train):
         """Test route completion.
 
@@ -860,9 +865,15 @@ class TestPathLifecycle:
         result = dispatcher.create_path("BLOCK_A", "BLOCK_C")
         path_id = result.path.path_id
 
-        dispatcher.on_train_enters_path(path_id, train.train_id, "BLOCK_A")
-        dispatcher.on_train_advances(path_id, "BLOCK_B")
-        dispatcher.on_train_advances(path_id, "BLOCK_C")
+        # Manually simulate path progression (replaces removed on_train_enters_path/on_train_advances)
+        path = dispatcher.get_path(path_id)
+        path.train_id = train.train_id
+        path.status = PathStatus.ACTIVE
+        path.current_block_index = len(path.block_sequence) - 1
+        for block_id in path.block_sequence:
+            block = simple_linear_network.blocks.get(block_id)
+            if block:
+                block.occupy(train.train_id)
 
         success = dispatcher.complete_path(path_id)
 
@@ -968,9 +979,11 @@ class TestPathExtension:
         result = dispatcher.create_path("BLOCK_A", "BLOCK_C")
         path_id = result.path.path_id
 
-        # Complete the route
-        dispatcher.on_train_enters_path(path_id, train.train_id, "BLOCK_A")
-        dispatcher.on_train_advances(path_id, "BLOCK_C")
+        # Complete the route (manually simulate path progression)
+        path = dispatcher.get_path(path_id)
+        path.train_id = train.train_id
+        path.status = PathStatus.ACTIVE
+        path.current_block_index = len(path.block_sequence) - 1
         dispatcher.complete_path(path_id)
 
         # Try to extend - should fail (route no longer exists)
@@ -1444,26 +1457,6 @@ class TestQueryMethods:
         dispatcher.create_path("BLOCK_A", "BLOCK_C")
 
         assert len(dispatcher.get_active_paths()) == 1
-
-    def test_get_routes_for_train(self, simple_linear_network, dispatcher, train):
-        """Test getting routes for specific train."""
-        dispatcher.network = simple_linear_network
-        simple_linear_network.add_train(train)
-
-        result = dispatcher.create_path("BLOCK_A", "BLOCK_C", train_id=train.train_id)
-
-        routes = dispatcher.get_paths_for_train(train.train_id)
-        assert len(routes) == 1
-        assert routes[0].path_id == result.path.path_id
-
-    def test_get_routes_using_block(self, simple_linear_network, dispatcher):
-        """Test getting routes using specific block."""
-        dispatcher.network = simple_linear_network
-
-        dispatcher.create_path("BLOCK_A", "BLOCK_C")
-
-        routes = dispatcher.get_paths_using_block("BLOCK_B")
-        assert len(routes) == 1
 
 
 # ============================================================================
@@ -1960,7 +1953,7 @@ class TestPathBasedBlockRelease:
 
         # Activate path (train enters first block)
         # This assigns the train to the path and transitions to ACTIVE
-        success = dispatcher.on_train_enters_path(path.path_id, "TRAIN_1", "BLOCK_A")
+        success = activate_path_for_train(dispatcher, path, "TRAIN_1", "BLOCK_A")
         assert success
         assert path.status == PathStatus.ACTIVE
         assert path.train_id == "TRAIN_1"
@@ -1977,7 +1970,7 @@ class TestPathBasedBlockRelease:
         train.position.occupied_blocks = ["BLOCK_A", "BLOCK_B"]
 
         # Train advances to Block B
-        dispatcher.on_train_advances(path.path_id, "BLOCK_B")
+        advance_path_to_block(dispatcher, path, "BLOCK_B")
 
         # Block A should STILL be OCCUPIED (tail hasn't cleared yet)
         assert network.blocks["BLOCK_A"].state == BlockState.OCCUPIED
@@ -2039,9 +2032,9 @@ class TestPathBasedBlockRelease:
         path = result.path
 
         # Activate path
-        dispatcher.on_train_enters_path(path.path_id, "TRAIN_LONG", "BLOCK_A")
-        dispatcher.on_train_advances(path.path_id, "BLOCK_B")
-        dispatcher.on_train_advances(path.path_id, "BLOCK_C")
+        activate_path_for_train(dispatcher, path, "TRAIN_LONG", "BLOCK_A")
+        advance_path_to_block(dispatcher, path, "BLOCK_B")
+        advance_path_to_block(dispatcher, path, "BLOCK_C")
 
         # All blocks should be OCCUPIED
         assert network.blocks["BLOCK_A"].state == BlockState.OCCUPIED
@@ -2075,7 +2068,7 @@ class TestPathBasedBlockRelease:
         path = result.path
 
         # Step 1: Train enters path
-        dispatcher.on_train_enters_path(path.path_id, "TRAIN_RW", "BLOCK_A")
+        activate_path_for_train(dispatcher, path, "TRAIN_RW", "BLOCK_A")
         assert network.blocks["BLOCK_A"].state == BlockState.OCCUPIED
 
         # Step 2: Head enters Block B, tail still in Block A
@@ -2085,8 +2078,7 @@ class TestPathBasedBlockRelease:
         train.position.end_b_distance_cm = 75.0
         train.position.occupied_blocks = ["BLOCK_A", "BLOCK_B"]
 
-        dispatcher.on_train_advances(path.path_id, "BLOCK_B")
-        dispatcher._release_blocks_behind_train(path)
+        advance_path_to_block(dispatcher, path, "BLOCK_B")
 
         # Block A still OCCUPIED (tail hasn't cleared)
         assert network.blocks["BLOCK_A"].state == BlockState.OCCUPIED
@@ -2113,8 +2105,7 @@ class TestPathBasedBlockRelease:
         train.position.end_b_distance_cm = 75.0
         train.position.occupied_blocks = ["BLOCK_B", "BLOCK_C"]
 
-        dispatcher.on_train_advances(path.path_id, "BLOCK_C")
-        dispatcher._release_blocks_behind_train(path)
+        advance_path_to_block(dispatcher, path, "BLOCK_C")
 
         # Block B still OCCUPIED
         assert network.blocks["BLOCK_B"].state == BlockState.OCCUPIED
@@ -2129,55 +2120,6 @@ class TestPathBasedBlockRelease:
 
         dispatcher._release_blocks_behind_train(path)
         assert network.blocks["BLOCK_B"].state == BlockState.FREE
-
-
-class TestPathDispatcherProgress:
-    """Tests for PathDispatcher progress updates."""
-
-    def test_on_train_progress_releases_blocks(self, simple_linear_network, dispatcher):
-        """Progress update should release blocks behind the tail."""
-        network = simple_linear_network
-        dispatcher.network = network
-
-        train = Train(
-            train_id="TRAIN_PROGRESS",
-            consist=[TrainCar("CAR", "LOCOMOTIVE", 50.0)],
-        )
-        train.position = TrainPosition(
-            end_a_tile=(0, 0),
-            end_a_distance_cm=0.0,
-            end_a_entry_edge="W",
-            end_b_tile=(0, 0),
-            end_b_distance_cm=0.0,
-            end_b_entry_edge="W",
-            leading_end=LeadingEnd.A,
-            occupied_tiles=[(0, 0)],
-            occupied_blocks=["BLOCK_A"],
-        )
-        network.add_train(train)
-
-        result = dispatcher.create_path("BLOCK_A", "BLOCK_C", train_id=train.train_id)
-        assert result.success
-        path = result.path
-
-        dispatcher.on_train_enters_path(path.path_id, train.train_id, "BLOCK_A")
-        dispatcher.on_train_advances(path.path_id, "BLOCK_B")
-
-        train.position = TrainPosition(
-            end_a_tile=(1, 0),
-            end_a_distance_cm=10.0,
-            end_a_entry_edge="W",
-            end_b_tile=(1, 0),
-            end_b_distance_cm=0.0,
-            end_b_entry_edge="W",
-            leading_end=LeadingEnd.A,
-            occupied_tiles=[(1, 0)],
-            occupied_blocks=["BLOCK_B"],
-        )
-
-        dispatcher.on_train_progress(path.path_id)
-
-        assert network.blocks["BLOCK_A"].state == BlockState.CAUTION
 
 
 class TestSimulationPathAdvancement:
@@ -2310,7 +2252,15 @@ class TestSimulationPathAdvancement:
         train.position = make_train_position((0, 0), Direction.EAST)
         network.add_train(train)
 
-        sim.route_executor.activate_route(train, route)
+        # Inline activate_route logic (method was removed from RouteExecutor)
+        route.activate(sim.route_executor.simulation_time)
+        route.assign_train(train.train_id)
+        train.assigned_route_id = route.route_id
+        sim.route_executor.execution_states[train.train_id] = RouteExecutionState(
+            train_id=train.train_id,
+            route_id=route.route_id,
+            route_start_time=sim.route_executor.simulation_time,
+        )
 
         controller = sim._get_or_create_controller(train)
         controller.power_on = True
@@ -2370,7 +2320,15 @@ class TestSimulationPathAdvancement:
         train.position = make_train_position((0, 0), Direction.EAST)
         network.add_train(train)
 
-        sim.route_executor.activate_route(train, route)
+        # Inline activate_route logic (method was removed from RouteExecutor)
+        route.activate(sim.route_executor.simulation_time)
+        route.assign_train(train.train_id)
+        train.assigned_route_id = route.route_id
+        sim.route_executor.execution_states[train.train_id] = RouteExecutionState(
+            train_id=train.train_id,
+            route_id=route.route_id,
+            route_start_time=sim.route_executor.simulation_time,
+        )
 
         controller = sim._get_or_create_controller(train)
         controller.power_on = True
@@ -2442,7 +2400,7 @@ class TestPathSwitchUnlockBugFix:
         switch_track = network.get_track(1, 0)
         assert switch_track.is_locked_by_path()
 
-        dispatcher.on_train_enters_path(path.path_id, train.train_id, "BLOCK_A")
+        activate_path_for_train(dispatcher, path, train.train_id, "BLOCK_A")
 
         train.position = TrainPosition(
             end_a_tile=(2, 0),
@@ -2456,7 +2414,7 @@ class TestPathSwitchUnlockBugFix:
             occupied_blocks=["BLOCK_B"],
         )
 
-        dispatcher.on_train_advances(path.path_id, "BLOCK_B")
+        advance_path_to_block(dispatcher, path, "BLOCK_B")
 
         assert network.blocks["BLOCK_A"].state == BlockState.CAUTION
         assert switch_track.is_locked_by_path()
@@ -2625,7 +2583,7 @@ class TestPathExtensionForMultiTileStations:
         path = result.path
 
         # Activate path
-        dispatcher.on_train_enters_path(path.path_id, train.train_id, "BLOCK_START")
+        activate_path_for_train(dispatcher, path, train.train_id, "BLOCK_START")
         assert path.status == PathStatus.ACTIVE
 
         # Move train to FIRST station tile (0,3)
@@ -2722,7 +2680,7 @@ class TestPathCompletionAtStoppedDestination:
         assert result.success, f"Path creation failed: {result.error}"
         path = result.path
 
-        dispatcher.on_train_enters_path(path.path_id, train.train_id, "BLOCK_START")
+        activate_path_for_train(dispatcher, path, train.train_id, "BLOCK_START")
         dispatcher.on_train_advances_from_physics(path.path_id, "BLOCK_END")
         assert path.status == PathStatus.CLEARING
 

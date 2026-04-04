@@ -7,16 +7,12 @@ to the voltage that should be output to the blocks it occupies. Each train model
 has unique motor characteristics represented by a speed-voltage curve.
 
 The module also provides:
-- Interpolation methods for speed ↔ voltage conversion
-- Acceleration/deceleration calculations for speed ramping
+- Interpolation methods for speed → voltage conversion
 - Default profile for trains without custom calibration
 """
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Any, Optional
-import math
-
-from model_scale import get_speed_conversion_factor
 
 
 @dataclass
@@ -121,153 +117,6 @@ class SpeedProfile:
                 return self._interpolate(s1, v1, s2, v2, speed_kmh)
 
         return curve[-1][1]
-
-    def voltage_to_speed(self, voltage: float) -> float:
-        """
-        Convert voltage to expected speed (interpolated).
-
-        Inverse of speed_to_voltage - useful for feedback/display.
-
-        Args:
-            voltage: Input voltage (0-12V typically)
-
-        Returns:
-            Expected speed in km/h
-        """
-        if not self.speed_voltage_curve:
-            # No curve defined - linear approximation
-            return max(0.0, voltage * 10.0)
-
-        if voltage <= 0:
-            return 0.0
-
-        # Build inverse curve (voltage → speed)
-        inverse_curve = [(v, s) for s, v in self.speed_voltage_curve]
-        inverse_curve.sort(key=lambda x: x[0])
-
-        # Below minimum voltage
-        if voltage <= inverse_curve[0][0]:
-            if inverse_curve[0][0] == 0:
-                return inverse_curve[0][1]
-            return 0.0
-
-        # Above maximum voltage
-        if voltage >= inverse_curve[-1][0]:
-            return inverse_curve[-1][1]
-
-        # Find bracketing points
-        for i in range(len(inverse_curve) - 1):
-            v1, s1 = inverse_curve[i]
-            v2, s2 = inverse_curve[i + 1]
-            if v1 <= voltage <= v2:
-                return self._interpolate(v1, s1, v2, s2, voltage)
-
-        return inverse_curve[-1][1]
-
-    def calculate_new_speed(
-        self,
-        current_speed: float,
-        target_speed: float,
-        delta_time: float,
-        is_emergency: bool = False,
-    ) -> float:
-        """
-        Calculate speed after delta_time given acceleration/deceleration.
-
-        Applies appropriate rate based on whether accelerating or braking,
-        and whether emergency braking is active.
-
-        Args:
-            current_speed: Current speed in km/h
-            target_speed: Target speed in km/h
-            delta_time: Time step in seconds
-            is_emergency: Whether to use emergency brake rate
-
-        Returns:
-            New speed in km/h (clamped to non-negative)
-        """
-        if abs(current_speed - target_speed) < 0.01:
-            return target_speed
-
-        if current_speed < target_speed:
-            # Accelerating
-            rate = self.acceleration_rate
-            new_speed = current_speed + (rate * delta_time)
-            return min(new_speed, target_speed)
-        else:
-            # Decelerating
-            rate = self.emergency_brake_rate if is_emergency else self.deceleration_rate
-            new_speed = current_speed - (rate * delta_time)
-            return max(new_speed, target_speed, 0.0)
-
-    def get_braking_distance_cm(
-        self,
-        current_speed: float,
-        target_speed: float = 0.0,
-        is_emergency: bool = False,
-    ) -> float:
-        """
-        Calculate braking distance in centimeters.
-
-        Uses physics: d = (v_initial² - v_final²) / (2 * a)
-        where a is deceleration rate.
-
-        Args:
-            current_speed: Current speed in km/h
-            target_speed: Target speed in km/h (default 0 = stop)
-            is_emergency: Whether to use emergency brake rate
-
-        Returns:
-            Braking distance in cm
-        """
-        if current_speed <= target_speed:
-            return 0.0
-
-        # Get deceleration rate in km/h per second
-        rate = self.emergency_brake_rate if is_emergency else self.deceleration_rate
-        if rate <= 0:
-            return float("inf")
-
-        km_h_to_cm_s = get_speed_conversion_factor()
-
-        v_initial_cm_s = current_speed * km_h_to_cm_s
-        v_final_cm_s = target_speed * km_h_to_cm_s
-
-        # Deceleration in cm/s²: km/h/s → cm/s² = multiply by km_h_to_cm_s
-        decel_cm_s2 = rate * km_h_to_cm_s
-
-        # d = (v_i² - v_f²) / (2 * a)
-        distance_cm = (v_initial_cm_s**2 - v_final_cm_s**2) / (2 * decel_cm_s2)
-
-        return max(0.0, distance_cm)
-
-    def get_time_to_speed(
-        self, current_speed: float, target_speed: float, is_emergency: bool = False
-    ) -> float:
-        """
-        Calculate time in seconds to reach target speed.
-
-        Args:
-            current_speed: Current speed in km/h
-            target_speed: Target speed in km/h
-            is_emergency: Whether to use emergency brake rate (for decel)
-
-        Returns:
-            Time in seconds
-        """
-        speed_diff = abs(target_speed - current_speed)
-        if speed_diff < 0.01:
-            return 0.0
-
-        if target_speed > current_speed:
-            rate = self.acceleration_rate
-        else:
-            rate = self.emergency_brake_rate if is_emergency else self.deceleration_rate
-
-        if rate <= 0:
-            return float("inf")
-
-        return speed_diff / rate
 
     def _interpolate(
         self, x1: float, y1: float, x2: float, y2: float, x: float

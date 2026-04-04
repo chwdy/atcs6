@@ -745,25 +745,6 @@ function getValidSignalDirections(trackBits) {
     return VALID_DETECTION_DIRECTIONS[trackBits] || [];
 }
 
-function canPlaceSignal(trackBits) {
-    return getValidSignalDirections(trackBits).length > 0;
-}
-
-function getDefaultSignalDirection(trackBits) {
-    const valid = getValidSignalDirections(trackBits);
-    return valid.length > 0 ? valid[0] : null;
-}
-
-function directionToFull(dir) {
-    const map = { 'N': 'NORTH', 'E': 'EAST', 'S': 'SOUTH', 'W': 'WEST' };
-    return map[dir] || dir;
-}
-
-function directionToShort(dir) {
-    if (!dir) return null;
-    return dir.charAt(0).toUpperCase();
-}
-
 // ============================================================================
 // Block Assignment Validation
 // ============================================================================

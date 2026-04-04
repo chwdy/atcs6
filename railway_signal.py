@@ -125,14 +125,3 @@ class Signal:
             monitored_signal_id=data.get("monitored_signal_id"),
             approaching_train_id=data.get("approaching_train_id"),
         )
-
-    def update_from_block(self, block_occupied: bool) -> None:
-        """
-        Update signal state based on monitored block occupancy.
-
-        For BLOCK type signals:
-        - RED if block is occupied
-        - GREEN if block is clear
-        """
-        if self.signal_type == SignalType.BLOCK:
-            self.state = SignalState.RED if block_occupied else SignalState.GREEN

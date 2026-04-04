@@ -87,13 +87,6 @@ class TestTrackSegment:
         exits_from_south = track.get_exits(entry_edge="S")
         assert "N" in exits_from_south
 
-    def test_switch_toggle(self):
-        track = TrackSegment(x=0, y=0, track_bits=(TRACK_NS | TRACK_NE))
-        assert track.is_switch == True
-        original_state = track.switch_state
-        track.toggle_switch()
-        assert track.switch_state != original_state
-
     def test_reject_forbidden_bits(self):
         for forbidden_bits in FORBIDDEN_TRACK_BITS:
             track = TrackSegment(x=0, y=0, track_bits=forbidden_bits)

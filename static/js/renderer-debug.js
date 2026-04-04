@@ -54,29 +54,6 @@ class RendererDebugHandler {
         return exits;
     }
 
-    drawSelection(gridX, gridY) {
-        this.ctx.save();
-
-        const tileSize = this.gridSize * this.scale;
-        const cx = this.gridToScreenX(gridX, gridY);
-        const cy = this.gridToScreenY(gridX, gridY);
-        const halfTile = tileSize / 2;
-
-        this.ctx.strokeStyle = '#8257e5';
-        this.ctx.lineWidth = 2 * this.scale;
-        this.ctx.setLineDash([4, 4]);
-
-        this.ctx.beginPath();
-        this.ctx.moveTo(cx, cy - halfTile);
-        this.ctx.lineTo(cx + halfTile, cy);
-        this.ctx.lineTo(cx, cy + halfTile);
-        this.ctx.lineTo(cx - halfTile, cy);
-        this.ctx.closePath();
-        this.ctx.stroke();
-
-        this.ctx.restore();
-    }
-
     drawTrackBitsIndicator(x, y, trackBits) {
         const screenX = this.gridToScreenX(x, y);
         const screenY = this.gridToScreenY(x, y);

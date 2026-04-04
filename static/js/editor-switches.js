@@ -299,48 +299,4 @@ class SwitchEditorHandler {
         this._localState = null;
         this._isDirty = false;
     }
-
-    // === Switch List Rendering ===
-
-    renderSwitchList(switches) {
-        if (!switches || switches.length === 0) {
-            return '<div class="text-muted text-sm p-8">No switches</div>';
-        }
-
-        return switches.map(sw => {
-            const stateText = sw.switch_state === 0 ? 'MAIN' : 'DIVERGE';
-            const stateClass = this.getSwitchStateClass(sw.switch_state);
-            const isLocked = sw.locked_by_path !== null;
-
-            return `
-                <div class="train-summary-row" data-switch-id="${sw.switch_id}">
-                    <div class="flex items-center gap-8">
-                        <span class="train-status-dot switch-state-dot ${stateClass}"></span>
-                        <div>
-                            <div class="text-sm font-bold text-track">${sw.switch_id}</div>
-                            <div class="text-xs text-muted">(${sw.x}, ${sw.y})</div>
-                        </div>
-                    </div>
-                    <div class="flex items-center gap-8">
-                        ${isLocked ? '<span class="badge badge-danger text-xxs">LOCKED</span>' : ''}
-                        <span class="text-xs switch-state-inline ${stateClass}">${stateText}</span>
-                        <button class="btn btn-secondary btn-sm edit-switch-btn" data-switch-id="${sw.switch_id}">Edit</button>
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
-
-    initSwitchListHandlers() {
-        const editBtns = document.querySelectorAll('.edit-switch-btn');
-        editBtns.forEach(btn => {
-            btn.onclick = (e) => {
-                e.stopPropagation();
-                const switchId = btn.dataset.switchId;
-                if (switchId) {
-                    this.showEditor(switchId);
-                }
-            };
-        });
-    }
 }

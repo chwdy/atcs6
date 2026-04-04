@@ -390,24 +390,8 @@ class Editor {
         }
     }
 
-    /**
-     * Refresh the main properties panel if the selected element is at the given position.
-     * Used after API calls that modify track data.
-     * @param {number} x - X coordinate
-     * @param {number} y - Y coordinate
-     */
-    async refreshPropertiesPanelIfNeeded(x, y) {
-        if (this.selectedElement && this.selectedElement.x === x && this.selectedElement.y === y) {
-            await this.selectElement({ x, y });
-        }
-    }
-
     async showBlockEditor(blockId) {
         return this.blockHandler.showEditor(blockId);
-    }
-
-    async initBlockEditorHandlers(blockId) {
-        return this.blockHandler.initEditorHandlers(blockId);
     }
 
     showPlatformEditor(platformId) {
@@ -416,19 +400,6 @@ class Editor {
 
     async showSwitchEditor(switchId) {
         return this.switchHandler.showEditor(switchId);
-    }
-
-    async initPlatformEditorHandlers(platformId) {
-        return this.platformHandler.initEditorHandlers(platformId);
-    }
-
-    async showBlockAssignmentDialog(platformId, x, y, tileIndex) {
-        return this.platformHandler.showBlockAssignmentDialog(platformId, x, y, tileIndex);
-    }
-
-
-    async enterPlatformExtendMode(platformId, direction) {
-        return this.platformHandler.enterExtendMode(platformId, direction);
     }
 
     exitPlatformExtendMode() {
@@ -443,20 +414,12 @@ class Editor {
         return this.stationGroupHandler.showPanel();
     }
 
-    async enterBlockExtendMode(blockId, direction) {
-        return this.blockHandler.enterExtendMode(blockId, direction);
-    }
-
     exitBlockExtendMode() {
         return this.blockHandler.exitExtendMode();
     }
 
     async handleBlockExtendClick(x, y) {
         return this.blockHandler.handleExtendClick(x, y);
-    }
-
-    async showTrainEditor(trainId) {
-        return this.trainHandler.showTrainControlPanel(trainId);
     }
 
     async initTrainEditorHandlers(trainId) {
@@ -901,14 +864,6 @@ class Editor {
         return this.blockHandler.refreshList();
     }
 
-    selectBlock(blockId) {
-        return this.blockHandler.select(blockId);
-    }
-
-    async editBlockDialog(blockId) {
-        return this.blockHandler.editDialog(blockId);
-    }
-
     async deleteBlock(blockId) {
         return this.blockHandler.delete(blockId);
     }
@@ -919,10 +874,6 @@ class Editor {
 
     showBlockModal(options) {
         return this.blockHandler.showModal(options);
-    }
-
-    showBlockPropertiesModal(options) {
-        return this.blockHandler.showPropertiesModal(options);
     }
 
     showPlatformModal(options) {

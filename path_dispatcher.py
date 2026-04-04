@@ -1024,93 +1024,6 @@ class PathDispatcher:
     # Path Lifecycle
     # ========================================================================
 
-    def on_train_enters_path(self, path_id: str, train_id: str, block_id: str) -> bool:
-        """
-        Called when a train physically enters a path's first block.
-
-        Args:
-            path_id: The path being entered
-            train_id: The train entering
-            block_id: The block being entered
-
-        Returns:
-            True if successful
-        """
-        path = self.active_paths.get(path_id)
-        if not path:
-            return False
-
-        if path.train_id is None:
-            # First train to enter claims the path
-            path.train_id = train_id
-            path.status = PathStatus.ACTIVE
-            path.activated_at = datetime.now()
-
-            # Inherit train priority if available
-            train = self.network.trains.get(train_id)
-            if train and hasattr(train, "priority"):
-                path.priority = train.priority
-
-        elif path.train_id != train_id:
-            # Wrong train!
-            return False
-
-        elif path.status == PathStatus.SET:
-            # Path was pre-assigned to this train but not yet activated
-            path.status = PathStatus.ACTIVE
-            path.activated_at = datetime.now()
-
-        # Update block state using BlockManager
-        if self.network.block_manager:
-            self.network.block_manager.occupy_block(block_id, train_id)
-        else:
-            # Fallback for tests without block_manager
-            block = self.network.blocks.get(block_id)
-            if block:
-                block.occupy(train_id)
-
-        # Update path position
-        if block_id in path.block_sequence:
-            path.current_block_index = path.block_sequence.index(block_id)
-
-        return True
-
-    def on_train_advances(self, path_id: str, entered_block_id: str) -> bool:
-        """
-        Called when a train enters a new block along the path.
-
-        Args:
-            path_id: The path
-            entered_block_id: The block just entered
-
-        Returns:
-            True if successful
-        """
-        path = self.active_paths.get(path_id)
-        if not path:
-            return False
-
-        # Update position
-        if entered_block_id in path.block_sequence:
-            new_index = path.block_sequence.index(entered_block_id)
-            path.current_block_index = new_index
-
-        if self.network.block_manager:
-            self.network.block_manager.occupy_block(entered_block_id, path.train_id)
-        else:
-            block = self.network.blocks.get(entered_block_id)
-            if block:
-                block.occupy(path.train_id)
-
-        # Release blocks behind train
-        self._release_blocks_behind_train(path)
-
-        # Check if entering final block
-        if entered_block_id == path.block_sequence[-1]:
-            path.status = PathStatus.CLEARING
-
-        return True
-
     def on_train_advances_from_physics(
         self, path_id: str, entered_block_id: str
     ) -> bool:
@@ -1292,26 +1205,6 @@ class PathDispatcher:
                 "time": datetime.now(),
             }
         )
-
-    def on_train_progress(self, path_id: str) -> bool:
-        """Update block releases based on current train position.
-
-        Args:
-            path_id: Path to update
-
-        Returns:
-            True if the path was updated, False if not applicable
-        """
-        path = self.active_paths.get(path_id)
-        if not path or path.status not in (
-            PathStatus.SET,
-            PathStatus.ACTIVE,
-            PathStatus.CLEARING,
-        ):
-            return False
-
-        self._release_blocks_behind_train(path)
-        return True
 
     def _release_blocks_behind_train(self, path: Path) -> None:
         """
@@ -1971,14 +1864,6 @@ class PathDispatcher:
     def get_active_paths(self) -> List[Path]:
         """Get all active paths."""
         return list(self.active_paths.values())
-
-    def get_paths_for_train(self, train_id: str) -> List[Path]:
-        """Get all paths assigned to a train."""
-        return [p for p in self.active_paths.values() if p.train_id == train_id]
-
-    def get_paths_using_block(self, block_id: str) -> List[Path]:
-        """Get all paths that use a specific block."""
-        return [p for p in self.active_paths.values() if block_id in p.block_sequence]
 
     def get_paths_using_switch(self, position: Tuple[int, int]) -> List[Path]:
         """Get all paths that use a specific switch."""

@@ -9,7 +9,6 @@ Individual test categories are in:
 - tests/test_blocks.py - Block state management and validation
 - tests/test_signals.py - Signal creation and behavior
 - tests/test_stations.py - Station creation and block integration
-- tests/test_pathfinding.py - Pathfinding algorithms and persistence
 - tests/test_trains_core.py - Core train tests (SimulationController, placement, position)
 - tests/test_trains_occupancy.py - Train occupancy and validation
 - tests/test_trains_cab.py - Cab switching tests
@@ -18,7 +17,6 @@ Individual test categories are in:
 - tests/test_trains_ato.py - ATO-specific tests
 - tests/test_trains_lookahead.py - Monitor lookahead and UI data
 - tests/test_trains_routes.py - Route execution and path assignment
-- tests/test_scenario_runner.py - Scenario recorder/runner system
 """
 
 import pytest
@@ -28,7 +26,6 @@ from tests.test_track import *
 from tests.test_blocks import *
 from tests.test_signals import *
 from tests.test_stations import *
-from tests.test_pathfinding import *
 
 # New modular train test files
 from tests.test_trains_core import *
@@ -39,9 +36,6 @@ from tests.test_trains_controller import *
 from tests.test_trains_ato import *
 from tests.test_trains_lookahead import *
 from tests.test_trains_routes import *
-
-# Scenario recorder/runner tests
-from tests.test_scenario_runner import *
 
 # Live path data tests
 from tests.test_to_dict_live_path import *
@@ -55,7 +49,6 @@ if __name__ == "__main__":
     print("  pytest tests/test_blocks.py -v")
     print("  pytest tests/test_signals.py -v")
     print("  pytest tests/test_stations.py -v")
-    print("  pytest tests/test_pathfinding.py -v")
     print("\nTrain tests (modular):")
     print("  pytest tests/test_trains_core.py -v")
     print("  pytest tests/test_trains_occupancy.py -v")
@@ -65,9 +58,6 @@ if __name__ == "__main__":
     print("  pytest tests/test_trains_ato.py -v")
     print("  pytest tests/test_trains_lookahead.py -v")
     print("  pytest tests/test_trains_routes.py -v")
-    print("\nScenario tests:")
-    print("  pytest tests/test_scenario_runner.py -v")
-    print("  pytest tests/test_scenarios.py -v")
     print("\nOr run all tests:")
     print("  pytest tests/test_backend.py -v")
     print("  conda run -n general pytest tests/test_backend.py -v")

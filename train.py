@@ -493,7 +493,7 @@ class Train:
         Get train's facing direction (calculated from position).
 
         This is READ-ONLY - calculated from position.leading_end and physical
-        train geometry. To change direction, use set_cab(), turn_around(), or
+        train geometry. To change direction, use set_cab(), TrainController.turn_around(), or
         update position.leading_end directly.
 
         Returns:
@@ -529,42 +529,6 @@ class Train:
         if self.schedule:
             return self.schedule.get_current_target(current_time)
         return None
-
-    def has_path(self) -> bool:
-        """Check if train has a planned path.
-
-        .. deprecated::
-            Reads from stale current_path cache. Use
-            TrainController.get_path_tiles() is not None instead.
-        """
-        import warnings
-
-        warnings.warn(
-            "train.has_path() reads stale cache. Use controller.get_path_tiles().",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if self.current_path is None:
-            return False
-        return len(self.current_path) > 0
-
-    def get_remaining_path_length(self) -> int:
-        """Get number of remaining steps in current path.
-
-        .. deprecated::
-            Reads from stale current_path cache. Use
-            TrainController.get_live_path_data() instead.
-        """
-        import warnings
-
-        warnings.warn(
-            "train.get_remaining_path_length() reads stale cache. Use controller.get_live_path_data().",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if self.current_path is None or len(self.current_path) == 0:
-            return 0
-        return len(self.current_path) - self.path_index
 
     # ========================================================================
     # Emergency Stop and Braking (Dispatcher System)
@@ -647,36 +611,6 @@ class Train:
 
     # Threshold for considering train stopped (km/h)
     STOPPED_SPEED_THRESHOLD_KMH: float = 0.1
-
-    def turn_around(self) -> bool:
-        """
-        Flip which end is leading (reverse train direction).
-
-        DEPRECATED: Use train.position.reverse() directly instead.
-        This method is kept for backward compatibility.
-
-        Only allowed when stopped. Simply flips leading_end: LeadingEnd.A ↔ LeadingEnd.B
-        The facing_direction is automatically recalculated from the new leading_end.
-
-        Returns:
-            True if successful, False if train is moving or no position
-        """
-        import warnings
-
-        warnings.warn(
-            "Train.turn_around() is deprecated. Use train.position.reverse() instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-        if self.current_speed > self.STOPPED_SPEED_THRESHOLD_KMH:
-            return False
-
-        if not self.position or not self.position.leading_end:
-            return False
-
-        self.position.reverse()
-        return True
 
     def get_effective_direction(self) -> Optional[Direction]:
         """

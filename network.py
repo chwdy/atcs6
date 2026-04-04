@@ -2245,26 +2245,6 @@ class RailwayNetwork:
 
         return result
 
-    def reverse_train(self, train: Train) -> bool:
-        """
-        Reverse a train's direction of travel.
-
-        This swaps which end is the leading end. Physical positions don't change,
-        only the interpretation of which end is "front".
-
-        Args:
-            train: Train to reverse
-
-        Returns:
-            True if reversed, False if train has no position
-        """
-        if not train.position:
-            return False
-
-        # Reverse just flips leading_end - facing_direction is recalculated automatically
-        train.position.reverse()
-        return True
-
     def remove_train(self, train_id: str) -> bool:
         train = self.trains.get(train_id)
         if not train:
@@ -2327,15 +2307,6 @@ class RailwayNetwork:
                 else:
                     row += " "
             print(row)
-
-    def get_network_stats(self) -> dict:
-        """Get network statistics"""
-        return {
-            "total_tracks": len(self.tracks),
-            "total_trains": len(self.trains),
-            "total_blocks": len(self.blocks),
-            "total_schedules": len(self.schedules),
-        }
 
     # === Centralized Station Management ===
 
@@ -3183,87 +3154,6 @@ class RailwayNetwork:
                     signal.state = self._calculate_signal_state(signal)
                 else:
                     signal.state = SignalState.RED
-
-    # === Helper methods for track_bits-based construction ===
-    def add_simple_straight_track(
-        self, x: int, y: int, orientation: str
-    ) -> TrackSegment:
-        """Create straight track (NS or EW) using track_bits.
-
-        Args:
-            x, y: Tile coordinates
-            orientation: 'NS' or 'EW'
-
-        Returns:
-            Created TrackSegment
-        """
-        from track import TRACK_NS, TRACK_EW
-
-        track_bits = TRACK_NS if orientation == "NS" else TRACK_EW
-        track = TrackSegment(x, y, track_bits=track_bits)
-        self.add_track(track)
-        return track
-
-    def add_simple_curve_track(self, x: int, y: int, curve: str) -> TrackSegment:
-        """Create curve track (NE, NW, SE, SW) using track_bits.
-
-        Args:
-            x, y: Tile coordinates
-            curve: 'NE', 'NW', 'SE', or 'SW'
-
-        Returns:
-            Created TrackSegment
-        """
-        from track import TRACK_NE, TRACK_NW, TRACK_SE, TRACK_SW
-
-        curve_map = {"NE": TRACK_NE, "NW": TRACK_NW, "SE": TRACK_SE, "SW": TRACK_SW}
-        track_bits = curve_map.get(curve, 0)
-        track = TrackSegment(x, y, track_bits=track_bits)
-        self.add_track(track)
-        return track
-
-    def add_simple_switch_track(self, x: int, y: int, paths: list) -> TrackSegment:
-        """Create switch track with multiple paths using track_bits.
-
-        Args:
-            x, y: Tile coordinates
-            paths: List of path names like ['NS', 'NE']
-
-        Returns:
-            Created TrackSegment
-
-        Raises:
-            ValueError if combination is forbidden
-        """
-        from track import (
-            TRACK_NS,
-            TRACK_EW,
-            TRACK_NE,
-            TRACK_NW,
-            TRACK_SE,
-            TRACK_SW,
-            FORBIDDEN_TRACK_BITS,
-        )
-
-        path_map = {
-            "NS": TRACK_NS,
-            "EW": TRACK_EW,
-            "NE": TRACK_NE,
-            "NW": TRACK_NW,
-            "SE": TRACK_SE,
-            "SW": TRACK_SW,
-        }
-
-        track_bits = 0
-        for path in paths:
-            track_bits |= path_map.get(path, 0)
-
-        if track_bits in FORBIDDEN_TRACK_BITS:
-            raise ValueError(f"Forbidden track configuration: {track_bits}")
-
-        track = TrackSegment(x, y, track_bits=track_bits)
-        self.add_track(track)
-        return track
 
     # === Centralized Switch Management ===
 

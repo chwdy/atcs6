@@ -2046,34 +2046,6 @@ class TrainController:
     # ATO (Automatic Train Operation) Logic
     # -------------------------------------------------------------------------
 
-    def _detect_speed_trend(self, current_speed: float) -> str:
-        if current_speed > self._previous_speed + SPEED_TREND_EPSILON:
-            return "rising"
-        elif current_speed < self._previous_speed - SPEED_TREND_EPSILON:
-            return "falling"
-        return "stable"
-
-    def _is_power_handle(self, handle: HandlePosition) -> bool:
-        return handle in (
-            HandlePosition.P1,
-            HandlePosition.P2,
-            HandlePosition.P3,
-            HandlePosition.P4,
-            HandlePosition.P5,
-        )
-
-    def _is_brake_handle(self, handle: HandlePosition) -> bool:
-        return handle in (
-            HandlePosition.B1,
-            HandlePosition.B2,
-            HandlePosition.B3,
-            HandlePosition.B4,
-            HandlePosition.B5,
-            HandlePosition.B6,
-            HandlePosition.B7,
-            HandlePosition.B8,
-        )
-
     # -------------------------------------------------------------------------
     # Future-Aware ATO Helpers
     # -------------------------------------------------------------------------
