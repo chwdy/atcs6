@@ -322,6 +322,7 @@ class TrainController:
     ato_running: bool = False
     ato_destination_block_id: Optional[str] = None  # Destination block ID (not station)
     ato_path_id: Optional[str] = None
+    path_backed_run_active: bool = False
 
     # -------------------------------------------------------------------------
     # ATC State (calculated each tick)
@@ -564,6 +565,9 @@ class TrainController:
             effective_limit,
         )
 
+        if self._has_path_backed_run_context(train):
+            self.path_backed_run_active = True
+
         # ===== 8. STATE TRANSITIONS =====
         if self.state == TrainState.RUNNING_MOVING:
             # Check for station arrival
@@ -574,6 +578,13 @@ class TrainController:
                 # RouteExecutor will handle dwell timing
                 logger.debug(
                     "[TrainController %s] state -> RUNNING_AT_STATION",
+                    self.train_id,
+                )
+
+            elif self._is_standalone_path_complete(train):
+                self.transition_to_standby()
+                logger.debug(
+                    "[TrainController %s] standalone path complete -> STANDBY",
                     self.train_id,
                 )
 
@@ -590,13 +601,26 @@ class TrainController:
                     )
 
         elif self.state == TrainState.RUNNING_WAITING:
+            if self._is_standalone_path_complete(train):
+                self.transition_to_standby()
+                logger.debug(
+                    "[TrainController %s] waiting state cleared by path completion -> STANDBY",
+                    self.train_id,
+                )
             # Check if path cleared AND train is ready to move
             # Only auto-transition if: power is on, EB is not active, and obstruction cleared
-            if (
+            elif (
                 effective_limit > STOPPED_SPEED_THRESHOLD_KMH
                 and self.power_on
                 and not self.eb_active
             ):
+                if not self._align_cab_to_required_path_direction():
+                    logger.warning(
+                        "[TrainController %s] cab auto-correction failed; remaining in RUNNING_WAITING",
+                        self.train_id,
+                    )
+                    return
+
                 self.state = TrainState.RUNNING_MOVING
                 train.state = TrainState.RUNNING_MOVING
                 train.wait_reason = None
@@ -1815,52 +1839,16 @@ class TrainController:
         if path_id and not path and not destination_block_id:
             return ATOInfo(path_id=path_id)
 
-        # Determine path heading and required cab by comparing
-        # the path's travel direction with the train's facing direction.
+        # Determine path heading and required cab using track connectivity.
+        # This checks which edge of the train's tile leads to the path's
+        # next tile, which is reliable even on zigzag / diagonal staircase
+        # tracks where per-tile cardinal directions are misleading.
         path_heading = "a"  # Default
         required_cab = self.active_cab or "A"  # Default to current cab
 
-        # Determine required cab from current_path direction vs facing_direction.
-        # Find the head tile in the path and look at the next tile to determine
-        # which direction the path is heading. Compare with facing_direction
-        # to decide if the train needs to switch cabs (turn around).
-        if (
-            path_tiles
-            and len(path_tiles) >= 2
-            and train.position
-            and train.facing_direction is not None
-        ):
-            path_direction = self._get_path_direction_at_head(train)
-            if path_direction is not None:
-                if path_direction == train.facing_direction:
-                    # Path goes same direction as train faces -> keep current cab
-                    required_cab = self.active_cab or "A"
-                elif path_direction == train.facing_direction.opposite():
-                    # Path goes opposite to train's facing -> need opposite cab
-                    # Use required_cab (defaults to active_cab or "A") for flip,
-                    # since active_cab may be None when auto-selecting
-                    required_cab = "B" if required_cab == "A" else "A"
-                else:
-                    # Path goes at 90 degrees at the head tile.  This can
-                    # happen on diagonal staircase track where the first
-                    # move is perpendicular but the overall trajectory is
-                    # actually opposite to the train's facing direction.
-                    #
-                    # Resolve by computing the dominant direction of the
-                    # overall path vector (first tile → last tile), using
-                    # the axis with the larger displacement.  If *that*
-                    # direction is opposite to the train's facing, switch
-                    # cabs.  Otherwise keep the current cab.
-                    overall_dir = self._dominant_direction_from_tiles(
-                        path_tiles[0], path_tiles[-1]
-                    )
-                    if (
-                        overall_dir is not None
-                        and overall_dir == train.facing_direction.opposite()
-                    ):
-                        required_cab = "B" if required_cab == "A" else "A"
-                    else:
-                        required_cab = self.active_cab or "A"
+        connectivity_cab = self._required_cab_for_path()
+        if connectivity_cab is not None:
+            required_cab = connectivity_cab
 
         # Get destination info - simple logic:
         # 1. Use ato_destination_block_id if set (controller/train)
@@ -1891,6 +1879,209 @@ class TrainController:
     # Path Direction Detection
     # -------------------------------------------------------------------------
 
+    def _get_effective_path_tiles(self):
+        """Get live path tiles for control decisions.
+
+        Control logic must only use dispatcher-backed path state, gated by the
+        train's active assigned_path_id. train.current_path is a serialization
+        cache and may remain stale after the dispatcher clears or replaces the
+        live path, so it must not be treated as movement authority here.
+        """
+        return self.get_path_tiles()
+
+    def _has_active_route_context(self, train: "Train") -> bool:
+        """Return True when the train still belongs to an active route."""
+        route_id = getattr(train, "assigned_route_id", None)
+        if not route_id:
+            return False
+
+        routes = getattr(self.network, "routes", None)
+        if not routes:
+            return False
+
+        route = routes.get(route_id)
+        return bool(route and route.is_active)
+
+    def _has_active_path_authority(self, train: "Train") -> bool:
+        """Return True while the train still has movement authority to follow."""
+        if getattr(train, "assigned_path_id", None):
+            return True
+        if self._get_effective_path_tiles():
+            return True
+        if self.ato_path_id:
+            return True
+        return False
+
+    def _has_path_backed_run_context(self, train: "Train") -> bool:
+        """Return True when the current run is tied to a path, route, or destination."""
+        if self._has_active_path_authority(train):
+            return True
+        if self._has_active_route_context(train):
+            return True
+        if self.ato_destination_block_id or getattr(train, "ato_destination_block_id", None):
+            return True
+        return False
+
+    def _is_standalone_path_complete(self, train: "Train") -> bool:
+        """Return True when a stopped running train has no remaining run context."""
+        if not self.path_backed_run_active:
+            return False
+        if train.current_speed > STOPPED_SPEED_THRESHOLD_KMH:
+            return False
+        if self.ato_running:
+            return False
+        if self._has_path_backed_run_context(train):
+            return False
+        return self.active_cab in ("A", "B")
+
+    def _align_cab_to_required_path_direction(self) -> bool:
+        """Ensure the stopped train's active cab matches the required path direction."""
+        train = self._get_train()
+        if not train:
+            return False
+
+        required_cab = self._required_cab_for_path()
+        if required_cab is None or self.active_cab == required_cab:
+            return True
+
+        logger.info(
+            "[TrainController %s] auto-correcting cab %s -> %s for path direction",
+            self.train_id,
+            self.active_cab,
+            required_cab,
+        )
+
+        if train.current_speed > 0:
+            train.current_speed = 0.0
+
+        result = self.set_cab(required_cab)
+        return result.success
+
+    def _path_needs_cab_flip(self) -> bool:
+        """Check if the current path requires the train to reverse direction.
+
+        Uses track connectivity: compares the head tile's entry edge with
+        the edge leading to the path's next tile.  If they match, the path
+        goes backward through the head (back the way it came), so the cab
+        must flip.
+
+        This is more reliable than comparing cardinal directions, which can
+        be misleading on zigzag / diagonal staircase tracks where the
+        per-tile direction differs from the overall travel direction.
+
+        Returns:
+            True if cab should be flipped, False otherwise or if the check
+            cannot be performed.
+        """
+        train = self._get_train()
+        if not train or not train.position or not train.position.leading_end:
+            return False
+
+        path_tiles = self._get_effective_path_tiles()
+        if not path_tiles or len(path_tiles) < 2:
+            return False
+
+        head_tile = train.position.head_tile
+        head_entry_edge = train.position.head_entry_edge
+        if not head_tile or not head_entry_edge:
+            return False
+
+        # Find head tile in path
+        head_idx = -1
+        for i, entry in enumerate(path_tiles):
+            if (entry[0], entry[1]) == head_tile:
+                head_idx = i
+                break
+
+        if head_idx < 0 or head_idx + 1 >= len(path_tiles):
+            return False
+
+        # Which edge of the head tile leads to the path's next tile?
+        next_entry = path_tiles[head_idx + 1]
+        dx = next_entry[0] - head_tile[0]
+        dy = next_entry[1] - head_tile[1]
+        _EDGE_MAP = {(1, 0): "E", (-1, 0): "W", (0, 1): "N", (0, -1): "S"}
+        needed_edge = _EDGE_MAP.get((dx, dy))
+
+        if not needed_edge:
+            return False
+
+        # Entry edge = the edge the head entered from (backward direction).
+        # If the path's next tile is through the same edge, the path goes
+        # backward → the cab must flip.
+        return needed_edge == head_entry_edge
+
+    def _required_cab_for_path(self) -> Optional[str]:
+        """Determine the required cab for the current path.
+
+        Strategy (in priority order):
+        1. **Track connectivity** — compare the head tile's entry edge with
+           the edge toward the path's next tile.  Reliable on zigzag /
+           diagonal staircase tracks where cardinal directions are misleading.
+        2. **Direction fallback** — when the head tile isn't in the path (e.g.
+           the path was prepended from a different tile), compare the
+           ``facing_direction`` with the path's overall direction vector.
+
+        Returns:
+            ``"A"`` or ``"B"``, or ``None`` if the check cannot be performed.
+        """
+        train = self._get_train()
+        if not train or not train.position:
+            return None
+
+        current_cab = self.active_cab or "A"
+
+        # --- Approach 1: track connectivity (preferred) ---
+        flip = self._path_needs_cab_flip()
+        if flip:
+            return "B" if current_cab == "A" else "A"
+
+        # --- Approach 2: direction fallback ---
+        # Compare the path's travel direction with the train's facing
+        # direction. This also resolves the "90 degrees at the head but overall
+        # reverse" diagonal case after the direct backtracking check above.
+        facing = train.facing_direction
+        if facing is None:
+            return current_cab if self._connectivity_check_was_conclusive(train) else None
+
+        path_direction = self._get_path_direction_at_head(train)
+        if path_direction is not None:
+            if path_direction == facing:
+                return current_cab
+            if path_direction == facing.opposite():
+                return "B" if current_cab == "A" else "A"
+
+        # 90 degrees or path direction unknown — use overall path vector
+        path_tiles = self._get_effective_path_tiles()
+        if path_tiles and len(path_tiles) >= 2:
+            overall = self._dominant_direction_from_tiles(
+                path_tiles[0], path_tiles[-1]
+            )
+            if overall is not None and overall == facing.opposite():
+                return "B" if current_cab == "A" else "A"
+
+        return current_cab
+
+    def _connectivity_check_was_conclusive(self, train) -> bool:
+        """Return True if _path_needs_cab_flip had enough data to decide.
+
+        Specifically: the head tile was found in the path and there was a
+        next tile to compare against.  If the head wasn't found, the
+        connectivity check was inconclusive and the caller should fall back.
+        """
+        if not train.position or not train.position.leading_end:
+            return False
+        path_tiles = self._get_effective_path_tiles()
+        if not path_tiles or len(path_tiles) < 2:
+            return False
+        head_tile = train.position.head_tile
+        if not head_tile:
+            return False
+        for i, entry in enumerate(path_tiles):
+            if (entry[0], entry[1]) == head_tile:
+                return i + 1 < len(path_tiles)  # has a next tile
+        return False  # head not in path
+
     def _get_path_direction_at_head(self, train: "Train") -> Optional[Direction]:
         """Determine the path's travel direction at or near the train's head tile.
 
@@ -1910,7 +2101,7 @@ class TrainController:
         Returns:
             Direction the path is heading at the train's head, or None.
         """
-        path_tiles = self.get_path_tiles()
+        path_tiles = self._get_effective_path_tiles()
         if not path_tiles or len(path_tiles) < 2:
             return None
         if not train.position:
@@ -2882,12 +3073,16 @@ class TrainController:
 
         self.active_cab = cab
 
-        # Update train state
+        # Update train state (preserve RUNNING_WAITING — train is stopped)
+        prev_state = self.state
         if cab is None:
             self.state = TrainState.IDLE
             train.set_cab(None)
         else:
-            self.state = TrainState.STANDBY
+            if prev_state == TrainState.RUNNING_WAITING:
+                self.state = TrainState.RUNNING_WAITING
+            else:
+                self.state = TrainState.STANDBY
             train.set_cab(cab)  # This only updates leading_end and state
 
             # When switching cabs (A <-> B), the physical train doesn't move.
@@ -3111,6 +3306,7 @@ class TrainController:
         self.state = TrainState.RUNNING_MOVING
         train.state = TrainState.RUNNING_MOVING
         self.ato_running = True
+        self.path_backed_run_active = True
         return CommandResult(True, "ATO started")
 
     def ato_stop(self) -> CommandResult:
@@ -3164,6 +3360,7 @@ class TrainController:
         train = self._get_train()
         self.state = TrainState.STANDBY
         self.ato_running = False
+        self.path_backed_run_active = False
         if train:
             train.state = TrainState.STANDBY
             train.wait_reason = None
@@ -3173,6 +3370,7 @@ class TrainController:
         train = self._get_train()
         self.state = TrainState.IDLE
         self.ato_running = False
+        self.path_backed_run_active = False
         self.active_cab = None
         if train:
             train.state = TrainState.IDLE
@@ -3219,6 +3417,7 @@ class TrainController:
             return False
         if train.facing_direction is None:
             return False
+        self.path_backed_run_active = self._has_path_backed_run_context(train)
         self.state = TrainState.RUNNING_MOVING
         train.state = TrainState.RUNNING_MOVING
         train.wait_reason = None
@@ -3434,6 +3633,9 @@ class TrainController:
         if self.state != TrainState.RUNNING_WAITING:
             return False
 
+        if not self._align_cab_to_required_path_direction():
+            return False
+
         self.state = TrainState.RUNNING_MOVING
         if train:
             train.state = TrainState.RUNNING_MOVING
@@ -3530,6 +3732,7 @@ class TrainController:
             "ato_running": self.ato_running,
             "ato_destination_block_id": self.ato_destination_block_id,
             "ato_path_id": self.ato_path_id,
+            "path_backed_run_active": self.path_backed_run_active,
             "clearance_ahead_cm": safe_float(self.clearance_ahead_cm),
             "atc_speed_limit": safe_float(self.atc_speed_limit),
             "current_block_speed_limit": safe_float(self.current_block_speed_limit),
@@ -4124,6 +4327,7 @@ class TrainController:
             ato_running=data.get("ato_running", False),
             ato_destination_block_id=data.get("ato_destination_block_id"),
             ato_path_id=data.get("ato_path_id"),
+            path_backed_run_active=data.get("path_backed_run_active", False),
         )
 
 

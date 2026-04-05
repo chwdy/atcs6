@@ -134,17 +134,30 @@ async function createSignal(x, y, detection_direction, signal_type = 'block', na
     });
 }
 
-// Helper function to create a station
-async function createStation(x, y, name = 'Test Station', length_cm = 100, platform_side = 'both', top_speed_kmh = 30) {
-    return await fetchJSON('/station', {
+// Helper function to create a physical platform
+async function createPlatform(x, y, name = 'Test Platform', length_cm = 100, platform_side = 'both', top_speed_kmh = 30, platform_id = undefined) {
+    return await fetchJSON('/platform', {
         method: 'POST',
         body: JSON.stringify({
             x,
             y,
+            platform_id,
             name,
             length_cm,
             platform_side,
             top_speed_kmh
+        })
+    });
+}
+
+// Helper function to create a logical station group
+async function createStationGroup(station_id, name = 'Test Station Group', platform_ids = []) {
+    return await fetchJSON('/station', {
+        method: 'POST',
+        body: JSON.stringify({
+            station_id,
+            name,
+            platform_ids
         })
     });
 }
@@ -669,115 +682,68 @@ async function test_signal_on_switch_rejected() {
     assert(!result.ok, 'Signal on switch should be rejected');
 }
 
-// ============= STATION ENDPOINTS (CORE) =============
+// ============= PLATFORM ENDPOINTS (CORE) =============
 
-async function test_POST_station_create() {
+async function test_POST_platform_create() {
     await resetNetwork();
-
-    // Create track
     await createTrack(0, 0, TRACK_NS);
 
-    // Create station
-    const result = await fetchJSON('/station', {
-        method: 'POST',
-        body: JSON.stringify({
-            x: 0,
-            y: 0,
-            name: 'Test Station',
-            length_cm: 100,
-            platform_side: 'both',
-            top_speed_kmh: 30
-        })
-    });
+    const result = await createPlatform(0, 0, 'Test Platform', 100, 'both', 30, 'PLT_CORE');
 
-    assert(result.ok, 'POST /station should succeed');
-    assert(result.data.name === 'Test Station', 'Station name should match');
+    assert(result.ok, 'POST /platform should succeed');
+    assert(result.data.name === 'Test Platform', 'Platform name should match');
+    assert(result.data.platform_id === 'PLT_CORE', 'Platform ID should match');
 }
 
-async function test_GET_station_by_id() {
+async function test_GET_platform_by_id() {
     await resetNetwork();
-
-    // Create track and station
     await createTrack(0, 0, TRACK_NS);
+    const createResult = await createPlatform(0, 0, 'Test Platform', 100, 'both', 30, 'PLT_GET');
 
-    const createResult = await fetchJSON('/station', {
-        method: 'POST',
-        body: JSON.stringify({
-            x: 0,
-            y: 0,
-            name: 'Test Station',
-            length_cm: 100
-        })
-    });
+    assert(createResult.ok, 'Platform creation should succeed');
 
-    if (createResult.ok && createResult.data.station_id) {
-        // Get station
-        const result = await fetchJSON(`/station/${createResult.data.station_id}`);
-        assert(result.ok, 'GET /station/{id} should succeed');
-    }
+    const result = await fetchJSON('/platform/PLT_GET');
+    assert(result.ok, 'GET /platform/{id} should succeed');
+    assert(result.data.platform_id === 'PLT_GET', 'Platform ID should match');
 }
 
-async function test_PATCH_station_update() {
+async function test_PATCH_platform_update() {
     await resetNetwork();
-
-    // Create track and station
     await createTrack(0, 0, TRACK_NS);
+    const createResult = await createPlatform(0, 0, 'Test Platform', 100, 'both', 30, 'PLT_PATCH');
 
-    const createResult = await fetchJSON('/station', {
-        method: 'POST',
-        body: JSON.stringify({
-            x: 0,
-            y: 0,
-            name: 'Test Station'
-        })
+    assert(createResult.ok, 'Platform creation should succeed');
+
+    const result = await fetchJSON('/platform/PLT_PATCH', {
+        method: 'PATCH',
+        body: JSON.stringify({ name: 'Updated Platform' })
     });
 
-    if (createResult.ok && createResult.data.station_id) {
-        // Update station
-        const result = await fetchJSON(`/station/${createResult.data.station_id}`, {
-            method: 'PATCH',
-            body: JSON.stringify({ name: 'Updated Station' })
-        });
-
-        assert(result.ok, 'PATCH /station/{id} should succeed');
-    }
+    assert(result.ok, 'PATCH /platform/{id} should succeed');
+    assert(result.data.name === 'Updated Platform', 'Platform name should be updated');
 }
 
-async function test_DELETE_station() {
+async function test_DELETE_platform() {
     await resetNetwork();
-
-    // Create track and station
     await createTrack(0, 0, TRACK_NS);
+    const createResult = await createPlatform(0, 0, 'Test Platform', 100, 'both', 30, 'PLT_DELETE');
 
-    const createResult = await fetchJSON('/station', {
-        method: 'POST',
-        body: JSON.stringify({
-            x: 0,
-            y: 0,
-            name: 'Test Station'
-        })
+    assert(createResult.ok, 'Platform creation should succeed');
+
+    const result = await fetchJSON('/platform/PLT_DELETE', {
+        method: 'DELETE'
     });
 
-    if (createResult.ok && createResult.data.station_id) {
-        // Delete station
-        const result = await fetchJSON(`/station/${createResult.data.station_id}`, {
-            method: 'DELETE'
-        });
-
-        assert(result.ok, 'DELETE /station/{id} should succeed');
-    }
+    assert(result.ok, 'DELETE /platform/{id} should succeed');
 }
 
-async function test_GET_station_validate() {
+async function test_GET_platform_validate() {
     await resetNetwork();
-
-    // Create track
     await createTrack(0, 0, TRACK_NS);
 
-    // Validate station placement
-    const result = await fetchJSON('/station/validate/0/0');
+    const result = await fetchJSON('/platform/validate/0/0');
 
-    assert(result.ok, 'GET /station/validate should succeed');
+    assert(result.ok, 'GET /platform/validate should succeed');
     assert(result.data.can_place !== undefined, 'Should return can_place');
 }
 
@@ -1104,111 +1070,140 @@ async function test_POST_train_emergency_stop() {
     assert(result.data.state === 'emergency_stop', 'Train state should be emergency_stop');
 }
 
-// ============= STATION ADDITIONAL ENDPOINTS =============
+// ============= PLATFORM ADDITIONAL ENDPOINTS =============
 
-async function test_POST_station_remove_tile() {
+async function test_POST_platform_remove_tile() {
     await resetNetwork();
-
-    // Create station with multiple tiles
     await createTrack(10, 10, TRACK_NS);
     await createTrack(10, 11, TRACK_NS);
-    const stationResult = await createStation(10, 10, 'Test Platform');
-    await fetchJSON(`/station/${stationResult.data.station_id}/extend`, {
+    const platformResult = await createPlatform(10, 10, 'Test Platform', 100, 'both', 30, 'PLT_MULTI');
+    assert(platformResult.ok, 'Platform creation should succeed');
+
+    await fetchJSON('/platform/PLT_MULTI/extend', {
         method: 'POST',
         body: JSON.stringify({ positions: [[10, 11]] })
     });
 
-    const result = await fetchJSON(`/station/${stationResult.data.station_id}/remove_tile`, {
+    const result = await fetchJSON('/platform/PLT_MULTI/remove_tile', {
         method: 'POST',
         body: JSON.stringify({ x: 10, y: 11 })
     });
 
-    assert(result.ok, 'POST /station/{id}/remove_tile should succeed');
+    assert(result.ok, 'POST /platform/{id}/remove_tile should succeed');
 }
 
-async function test_GET_station_end_tiles() {
+async function test_POST_platform_can_extend() {
     await resetNetwork();
-
-    // Create station with multiple tiles
     await createTrack(10, 10, TRACK_NS);
     await createTrack(10, 11, TRACK_NS);
-    const stationResult = await createStation(10, 10, 'Test Platform');
-    await fetchJSON(`/station/${stationResult.data.station_id}/extend`, {
-        method: 'POST',
-        body: JSON.stringify({ positions: [[10, 11]] })
-    });
+    const platformResult = await createPlatform(10, 10, 'Test Platform', 100, 'both', 30, 'PLT_CAN_EXTEND');
+    assert(platformResult.ok, 'Platform creation should succeed');
 
-    const result = await fetchJSON(`/station/${stationResult.data.station_id}/end_tiles`);
-
-    assert(result.ok, 'GET /station/{id}/end_tiles should succeed');
-    assert(result.data.start_tile !== undefined, 'Should have start_tile');
-    assert(result.data.end_tile !== undefined, 'Should have end_tile');
-}
-
-async function test_POST_station_can_extend() {
-    await resetNetwork();
-
-    // Create station and adjacent track
-    await createTrack(10, 10, TRACK_NS);
-    await createTrack(10, 11, TRACK_NS);
-    const stationResult = await createStation(10, 10, 'Test Platform');
-
-    const result = await fetchJSON(`/station/${stationResult.data.station_id}/can_extend`, {
+    const result = await fetchJSON('/platform/PLT_CAN_EXTEND/can_extend', {
         method: 'POST',
         body: JSON.stringify({ x: 10, y: 11 })
     });
 
-    assert(result.ok, 'POST /station/{id}/can_extend should succeed');
+    assert(result.ok, 'POST /platform/{id}/can_extend should succeed');
     assert(result.data.can_extend !== undefined, 'Should have can_extend field');
 }
 
-async function test_POST_station_assign_tile() {
+async function test_POST_platform_assign_tile() {
     await resetNetwork();
-
-    // Create station and block
     await createTrack(10, 10, TRACK_NS);
-    const stationResult = await createStation(10, 10, 'Test Platform');
+    const platformResult = await createPlatform(10, 10, 'Test Platform', 100, 'both', 30, 'PLT_ASSIGN');
+    assert(platformResult.ok, 'Platform creation should succeed');
     const blockResult = await createBlock('BLK_ASSIGN_TEST', 'Test Block');
 
-    const result = await fetchJSON(`/station/${stationResult.data.station_id}/assign_tile`, {
+    const result = await fetchJSON('/platform/PLT_ASSIGN/assign_tile', {
         method: 'POST',
         body: JSON.stringify({ x: 10, y: 10, block_id: blockResult.data.block_id })
     });
 
-    assert(result.ok, 'POST /station/{id}/assign_tile should succeed');
+    assert(result.ok, 'POST /platform/{id}/assign_tile should succeed');
 }
 
-async function test_POST_station_unassign_tile() {
+async function test_POST_platform_unassign_tile() {
     await resetNetwork();
-
-    // Create station, block, and assign
     await createTrack(10, 10, TRACK_NS);
-    const stationResult = await createStation(10, 10, 'Test Platform');
+    const platformResult = await createPlatform(10, 10, 'Test Platform', 100, 'both', 30, 'PLT_UNASSIGN');
+    assert(platformResult.ok, 'Platform creation should succeed');
     const blockResult = await createBlock('BLK_UNASSIGN_TEST', 'Test Block');
-    await fetchJSON(`/station/${stationResult.data.station_id}/assign_tile`, {
+    await fetchJSON('/platform/PLT_UNASSIGN/assign_tile', {
         method: 'POST',
         body: JSON.stringify({ x: 10, y: 10, block_id: blockResult.data.block_id })
     });
 
-    const result = await fetchJSON(`/station/${stationResult.data.station_id}/unassign_tile`, {
+    const result = await fetchJSON('/platform/PLT_UNASSIGN/unassign_tile', {
         method: 'POST',
         body: JSON.stringify({ x: 10, y: 10 })
     });
 
-    assert(result.ok, 'POST /station/{id}/unassign_tile should succeed');
+    assert(result.ok, 'POST /platform/{id}/unassign_tile should succeed');
 }
 
-async function test_GET_station_block_assignments() {
+async function test_GET_platform_block_assignments() {
     await resetNetwork();
-
-    // Create station
     await createTrack(10, 10, TRACK_NS);
-    const stationResult = await createStation(10, 10, 'Test Platform');
+    const platformResult = await createPlatform(10, 10, 'Test Platform', 100, 'both', 30, 'PLT_BLOCKS');
+    assert(platformResult.ok, 'Platform creation should succeed');
 
-    const result = await fetchJSON(`/station/${stationResult.data.station_id}/block_assignments`);
+    const result = await fetchJSON('/platform/PLT_BLOCKS/block_assignments');
 
-    assert(result.ok, 'GET /station/{id}/block_assignments should succeed');
+    assert(result.ok, 'GET /platform/{id}/block_assignments should succeed');
     assert(result.data.assignments !== undefined, 'Should have assignments field');
+}
+
+// ============= STATION GROUP ENDPOINTS =============
+
+async function test_POST_station_group_create() {
+    await resetNetwork();
+    await createTrack(0, 0, TRACK_NS);
+    const platformResult = await createPlatform(0, 0, 'Platform A', 100, 'both', 30, 'PLT_A');
+    assert(platformResult.ok, 'Platform creation should succeed');
+
+    const result = await createStationGroup('STA_MAIN', 'Main Station', ['PLT_A']);
+    assert(result.ok, 'POST /station should create station group');
+    assert(result.data.station_id === 'STA_MAIN', 'Station group ID should match');
+    assert(Array.isArray(result.data.platform_ids), 'Station group should expose platform_ids');
+}
+
+async function test_GET_station_group_by_id() {
+    await resetNetwork();
+    await createTrack(0, 0, TRACK_NS);
+    await createPlatform(0, 0, 'Platform A', 100, 'both', 30, 'PLT_A');
+    const createResult = await createStationGroup('STA_MAIN', 'Main Station', ['PLT_A']);
+    assert(createResult.ok, 'Station group creation should succeed');
+
+    const result = await fetchJSON('/station/STA_MAIN');
+    assert(result.ok, 'GET /station/{id} should return station group');
+    assert(result.data.station_id === 'STA_MAIN', 'Station group ID should match');
+}
+
+async function test_PATCH_station_group_update() {
+    await resetNetwork();
+    await createTrack(0, 0, TRACK_NS);
+    await createPlatform(0, 0, 'Platform A', 100, 'both', 30, 'PLT_A');
+    await createStationGroup('STA_MAIN', 'Main Station', ['PLT_A']);
+
+    const result = await fetchJSON('/station/STA_MAIN', {
+        method: 'PATCH',
+        body: JSON.stringify({ name: 'Updated Station Group' })
+    });
+    assert(result.ok, 'PATCH /station/{id} should update station group');
+    assert(result.data.name === 'Updated Station Group', 'Station group name should update');
+}
+
+async function test_DELETE_station_group() {
+    await resetNetwork();
+    await createTrack(0, 0, TRACK_NS);
+    await createPlatform(0, 0, 'Platform A', 100, 'both', 30, 'PLT_A');
+    await createStationGroup('STA_MAIN', 'Main Station', ['PLT_A']);
+
+    const result = await fetchJSON('/station/STA_MAIN', {
+        method: 'DELETE'
+    });
+    assert(result.ok, 'DELETE /station/{id} should delete station group');
 }
 
 // ============= BLOCK ADDITIONAL ENDPOINTS =============
@@ -1622,29 +1617,25 @@ async function test_GET_signal_reachable_blocks() {
     assert(Array.isArray(result.data.reachable_blocks), 'Reachable blocks should be an array');
 }
 
-async function test_POST_station_extend() {
+async function test_POST_platform_extend() {
     await resetNetwork();
 
-    // Create initial station track
     await createTrack(10, 10, TRACK_NS);
-    const stationResult = await createStation(10, 10, 'Test Platform');
+    const platformResult = await createPlatform(10, 10, 'Test Platform', 100, 'both', 30, 'PLT_EXTEND');
+    assert(platformResult.ok, 'Platform creation should succeed');
 
-    // Create adjacent track to extend into
     await createTrack(10, 11, TRACK_NS);
 
-    // Extend the station
-    const result = await fetchJSON(`/station/${stationResult.data.station_id}/extend`, {
+    const result = await fetchJSON('/platform/PLT_EXTEND/extend', {
         method: 'POST',
         body: JSON.stringify({ positions: [[10, 11]] })
     });
 
-    assert(result.ok, 'POST /station/{id}/extend should succeed');
-    // API returns station properties at root level, not wrapped
-    assert(result.data.station_id !== undefined, 'Response should contain updated station');
+    assert(result.ok, 'POST /platform/{id}/extend should succeed');
+    assert(result.data.platform_id !== undefined, 'Response should contain updated platform');
 
-    // Verify station now has multiple positions
-    const updatedStation = await fetchJSON(`/station/${stationResult.data.station_id}`);
-    assert(updatedStation.data.positions.length >= 2, 'Station should have at least 2 positions after extend');
+    const updatedPlatform = await fetchJSON('/platform/PLT_EXTEND');
+    assert(updatedPlatform.data.positions.length >= 2, 'Platform should have at least 2 positions after extend');
 }
 
 async function test_static_file_serving() {
@@ -1713,13 +1704,13 @@ async function runAllTests() {
     // Signal endpoints (Extensive)
     await runTest('Signal: Reject on switch', test_signal_on_switch_rejected);
 
-    // Station endpoints (Core)
-    await runTest('POST /api/station (create)', test_POST_station_create);
-    await runTest('GET /api/station/{id}', test_GET_station_by_id);
-    await runTest('PATCH /api/station/{id}', test_PATCH_station_update);
-    await runTest('DELETE /api/station/{id}', test_DELETE_station);
-    await runTest('GET /api/station/validate', test_GET_station_validate);
-    await runTest('POST /api/station/{id}/extend', test_POST_station_extend);
+    // Platform endpoints (Core)
+    await runTest('POST /api/platform (create)', test_POST_platform_create);
+    await runTest('GET /api/platform/{id}', test_GET_platform_by_id);
+    await runTest('PATCH /api/platform/{id}', test_PATCH_platform_update);
+    await runTest('DELETE /api/platform/{id}', test_DELETE_platform);
+    await runTest('GET /api/platform/validate', test_GET_platform_validate);
+    await runTest('POST /api/platform/{id}/extend', test_POST_platform_extend);
 
     // Train endpoints
     await runTest('POST /api/trains (create)', test_POST_trains_create);
@@ -1736,13 +1727,18 @@ async function runAllTests() {
     await runTest('POST /api/trains/{id}/travel-direction', test_POST_train_travel_direction);
     await runTest('POST /api/trains/{id}/emergency-stop', test_POST_train_emergency_stop);
 
-    // Station additional endpoints
-    await runTest('POST /api/station/{id}/remove_tile', test_POST_station_remove_tile);
-    await runTest('GET /api/station/{id}/end_tiles', test_GET_station_end_tiles);
-    await runTest('POST /api/station/{id}/can_extend', test_POST_station_can_extend);
-    await runTest('POST /api/station/{id}/assign_tile', test_POST_station_assign_tile);
-    await runTest('POST /api/station/{id}/unassign_tile', test_POST_station_unassign_tile);
-    await runTest('GET /api/station/{id}/block_assignments', test_GET_station_block_assignments);
+    // Platform additional endpoints
+    await runTest('POST /api/platform/{id}/remove_tile', test_POST_platform_remove_tile);
+    await runTest('POST /api/platform/{id}/can_extend', test_POST_platform_can_extend);
+    await runTest('POST /api/platform/{id}/assign_tile', test_POST_platform_assign_tile);
+    await runTest('POST /api/platform/{id}/unassign_tile', test_POST_platform_unassign_tile);
+    await runTest('GET /api/platform/{id}/block_assignments', test_GET_platform_block_assignments);
+
+    // Station group endpoints
+    await runTest('POST /api/station (create group)', test_POST_station_group_create);
+    await runTest('GET /api/station/{id} (group)', test_GET_station_group_by_id);
+    await runTest('PATCH /api/station/{id} (group)', test_PATCH_station_group_update);
+    await runTest('DELETE /api/station/{id} (group)', test_DELETE_station_group);
 
     // Block additional endpoints
     await runTest('DELETE /api/blocks/{id}/tracks', test_DELETE_block_tracks);
@@ -1945,7 +1941,8 @@ async function test_POST_train_arrive() {
 
     // Create station
     await createTrack(0, 0, TRACK_EW);
-    const stationResult = await createStation(0, 0, 'Arrival Station');
+    const platformResult = await createPlatform(0, 0, 'Arrival Platform', 100, 'both', 30, 'PLT_ARRIVE');
+    assert(platformResult.ok, 'Platform creation should succeed');
     
     await fetchJSON('/trains', {
         method: 'POST',
@@ -2138,8 +2135,9 @@ async function test_POST_train_route_create() {
     // Create stations for waypoints
     await createTrack(0, 0, TRACK_NS);
     await createTrack(0, 5, TRACK_NS);
-    const station1 = await createStation(0, 0, 'Station A');
-    const station2 = await createStation(0, 5, 'Station B');
+    const station1 = await createPlatform(0, 0, 'Platform A', 100, 'both', 30, 'PLT_A');
+    const station2 = await createPlatform(0, 5, 'Platform B', 100, 'both', 30, 'PLT_B');
+    assert(station1.ok && station2.ok, 'Platform creation should succeed');
 
     const result = await fetchJSON('/train-routes', {
         method: 'POST',
@@ -2148,8 +2146,8 @@ async function test_POST_train_route_create() {
             name: 'Test Route',
             mode: 'one_way',
             waypoints: [
-                { station_id: station1.data.station_id, dwell_time_sec: 30.0 },
-                { station_id: station2.data.station_id, dwell_time_sec: 60.0 }
+                { platform_id: station1.data.platform_id, dwell_time_sec: 30.0 },
+                { platform_id: station2.data.platform_id, dwell_time_sec: 60.0 }
             ]
         })
     });
@@ -2163,14 +2161,15 @@ async function test_GET_train_route_by_id() {
 
     // Create a route first
     await createTrack(0, 0, TRACK_NS);
-    const station1 = await createStation(0, 0, 'Station A');
+    const station1 = await createPlatform(0, 0, 'Platform A', 100, 'both', 30, 'PLT_A');
+    assert(station1.ok, 'Platform creation should succeed');
     
     await fetchJSON('/train-routes', {
         method: 'POST',
         body: JSON.stringify({
             route_id: 'ROUTE_GET_TEST',
             name: 'Test Route',
-            waypoints: [{ station_id: station1.data.station_id, dwell_time_sec: 30.0 }]
+            waypoints: [{ platform_id: station1.data.platform_id, dwell_time_sec: 30.0 }]
         })
     });
 
@@ -2185,14 +2184,15 @@ async function test_DELETE_train_route() {
 
     // Create a route first
     await createTrack(0, 0, TRACK_NS);
-    const station1 = await createStation(0, 0, 'Station A');
+    const station1 = await createPlatform(0, 0, 'Platform A', 100, 'both', 30, 'PLT_A');
+    assert(station1.ok, 'Platform creation should succeed');
     
     await fetchJSON('/train-routes', {
         method: 'POST',
         body: JSON.stringify({
             route_id: 'ROUTE_DEL_TEST',
             name: 'Test Route',
-            waypoints: [{ station_id: station1.data.station_id, dwell_time_sec: 30.0 }]
+            waypoints: [{ platform_id: station1.data.platform_id, dwell_time_sec: 30.0 }]
         })
     });
 
@@ -2383,13 +2383,13 @@ async function runAllTestsUpdated() {
     // Signal endpoints (Extensive)
     await runTest('Signal: Reject on switch', test_signal_on_switch_rejected);
 
-    // Station endpoints (Core)
-    await runTest('POST /api/station (create)', test_POST_station_create);
-    await runTest('GET /api/station/{id}', test_GET_station_by_id);
-    await runTest('PATCH /api/station/{id}', test_PATCH_station_update);
-    await runTest('DELETE /api/station/{id}', test_DELETE_station);
-    await runTest('GET /api/station/validate', test_GET_station_validate);
-    await runTest('POST /api/station/{id}/extend', test_POST_station_extend);
+    // Platform endpoints (Core)
+    await runTest('POST /api/platform (create)', test_POST_platform_create);
+    await runTest('GET /api/platform/{id}', test_GET_platform_by_id);
+    await runTest('PATCH /api/platform/{id}', test_PATCH_platform_update);
+    await runTest('DELETE /api/platform/{id}', test_DELETE_platform);
+    await runTest('GET /api/platform/validate', test_GET_platform_validate);
+    await runTest('POST /api/platform/{id}/extend', test_POST_platform_extend);
 
     // Train endpoints (Core)
     await runTest('POST /api/trains (create)', test_POST_trains_create);
@@ -2413,13 +2413,18 @@ async function runAllTestsUpdated() {
     await runTest('POST /api/trains/{id}/depart', test_POST_train_depart);
     await runTest('POST /api/trains/{id}/arrive', test_POST_train_arrive);
 
-    // Station additional endpoints
-    await runTest('POST /api/station/{id}/remove_tile', test_POST_station_remove_tile);
-    await runTest('GET /api/station/{id}/end_tiles', test_GET_station_end_tiles);
-    await runTest('POST /api/station/{id}/can_extend', test_POST_station_can_extend);
-    await runTest('POST /api/station/{id}/assign_tile', test_POST_station_assign_tile);
-    await runTest('POST /api/station/{id}/unassign_tile', test_POST_station_unassign_tile);
-    await runTest('GET /api/station/{id}/block_assignments', test_GET_station_block_assignments);
+    // Platform additional endpoints
+    await runTest('POST /api/platform/{id}/remove_tile', test_POST_platform_remove_tile);
+    await runTest('POST /api/platform/{id}/can_extend', test_POST_platform_can_extend);
+    await runTest('POST /api/platform/{id}/assign_tile', test_POST_platform_assign_tile);
+    await runTest('POST /api/platform/{id}/unassign_tile', test_POST_platform_unassign_tile);
+    await runTest('GET /api/platform/{id}/block_assignments', test_GET_platform_block_assignments);
+
+    // Station group endpoints
+    await runTest('POST /api/station (create group)', test_POST_station_group_create);
+    await runTest('GET /api/station/{id} (group)', test_GET_station_group_by_id);
+    await runTest('PATCH /api/station/{id} (group)', test_PATCH_station_group_update);
+    await runTest('DELETE /api/station/{id} (group)', test_DELETE_station_group);
 
     // Block additional endpoints
     await runTest('DELETE /api/blocks/{id}/tracks', test_DELETE_block_tracks);

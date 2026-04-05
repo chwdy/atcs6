@@ -1,44 +1,40 @@
 """
-Backend API Tests - Test index file
+Backend test index and import smoke checks.
 
-Run with: pytest tests/test_backend.py -v
+Historically this file imported every test module with ``from ... import *``,
+which caused pytest to collect the same tests twice. The real suite is already
+discovered directly from the individual ``tests/test_*.py`` files.
 
-This file imports all test modules so running test_backend.py runs everything.
-Individual test categories are in:
-- tests/test_track.py - Track geometry and switches
-- tests/test_blocks.py - Block state management and validation
-- tests/test_signals.py - Signal creation and behavior
-- tests/test_stations.py - Station creation and block integration
-- tests/test_trains_core.py - Core train tests (SimulationController, placement, position)
-- tests/test_trains_occupancy.py - Train occupancy and validation
-- tests/test_trains_cab.py - Cab switching tests
-- tests/test_trains_physics.py - Train physics and movement
-- tests/test_trains_controller.py - Train controller and ATC
-- tests/test_trains_ato.py - ATO-specific tests
-- tests/test_trains_lookahead.py - Monitor lookahead and UI data
-- tests/test_trains_routes.py - Route execution and path assignment
+This file now keeps the index documentation and adds a lightweight check that
+the major backend test modules remain importable.
 """
+
+import importlib
 
 import pytest
 
-# Import all test modules - pytest will discover and run all tests from these
-from tests.test_track import *
-from tests.test_blocks import *
-from tests.test_signals import *
-from tests.test_stations import *
 
-# New modular train test files
-from tests.test_trains_core import *
-from tests.test_trains_occupancy import *
-from tests.test_trains_cab import *
-from tests.test_trains_physics import *
-from tests.test_trains_controller import *
-from tests.test_trains_ato import *
-from tests.test_trains_lookahead import *
-from tests.test_trains_routes import *
+BACKEND_TEST_MODULES = [
+    "tests.test_track",
+    "tests.test_blocks",
+    "tests.test_signals",
+    "tests.test_stations",
+    "tests.test_trains_core",
+    "tests.test_trains_occupancy",
+    "tests.test_trains_cab",
+    "tests.test_trains_physics",
+    "tests.test_trains_controller",
+    "tests.test_trains_ato",
+    "tests.test_trains_lookahead",
+    "tests.test_trains_routes",
+    "tests.test_to_dict_live_path",
+]
 
-# Live path data tests
-from tests.test_to_dict_live_path import *
+
+@pytest.mark.parametrize("module_name", BACKEND_TEST_MODULES)
+def test_backend_module_imports(module_name):
+    """Backend test modules should stay importable for direct execution."""
+    importlib.import_module(module_name)
 
 
 if __name__ == "__main__":
@@ -58,6 +54,5 @@ if __name__ == "__main__":
     print("  pytest tests/test_trains_ato.py -v")
     print("  pytest tests/test_trains_lookahead.py -v")
     print("  pytest tests/test_trains_routes.py -v")
-    print("\nOr run all tests:")
-    print("  pytest tests/test_backend.py -v")
-    print("  conda run -n general pytest tests/test_backend.py -v")
+    print("\nOr run the whole backend suite directly:")
+    print("  pytest")

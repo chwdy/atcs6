@@ -1015,6 +1015,43 @@ class TestTrainStateTransitions:
         assert result is True
         assert train.state == TrainState.RUNNING_MOVING
 
+    def test_manual_depart_stop_does_not_auto_complete_without_path_context(self):
+        """Manual driving without path context should not auto-transition to STANDBY."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.STANDBY
+        )
+        train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
+        train.current_speed = 0.0
+        controller.control_mode = "manual"
+        controller.active_cab = "A"
+
+        assert controller.depart() is True
+        assert controller.path_backed_run_active is False
+
+        controller.tick(0.1)
+
+        assert train.state == TrainState.RUNNING_MOVING
+        assert controller.state == TrainState.RUNNING_MOVING
+
+    def test_path_backed_manual_run_still_completes_to_standby(self):
+        """A path-backed run should still complete after switching from ATO to manual."""
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.RUNNING_MOVING
+        )
+        train.current_speed = 0.0
+        train.state = TrainState.RUNNING_MOVING
+        controller.state = TrainState.RUNNING_MOVING
+        controller.control_mode = "manual"
+        controller.active_cab = "A"
+        controller.path_backed_run_active = True
+        controller.ato_running = False
+
+        controller.tick(0.1)
+
+        assert train.state == TrainState.STANDBY
+        assert controller.state == TrainState.STANDBY
+        assert controller.path_backed_run_active is False
+
     def test_depart_fails_without_direction(self):
         """Test depart() fails without facing direction."""
         train, controller, network = create_test_train_with_controller(

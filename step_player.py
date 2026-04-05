@@ -281,6 +281,7 @@ class StepPlayer:
             try:
                 direction = Direction[op["direction"]]
             except KeyError:
+                print(f"[StepPlayer] Unknown direction '{op['direction']}', defaulting to EAST")
                 direction = Direction.EAST
 
         network.add_train(train)

@@ -534,8 +534,16 @@ class TestSpeedCurveDebug:
                     f"{dist:8.0f}     | {point['atc_limit']:6.1f}    | {point['operational_limit']:6.1f}"
                 )
 
-        # This test always passes - it's for debug output
-        assert True
+        # Keep the debug output, but assert the scenario was actually built.
+        assert curves, "Speed curve lookahead should not be empty"
+        block_ids = [block["id"] for block in blocks]
+        assert block_ids[:3] == ["BLOCK_1", "BLOCK_2", "BLOCK_3"], (
+            "Lookahead should begin with the three configured line blocks"
+        )
+        assert len(block_ids) >= 4, "Lookahead should also include the station block"
+        assert len(stations) == 1, "Lookahead should include the test station"
+        assert stations[0]["name"] == "Test Station"
+        assert stations[0]["top_speed_kmh"] == 50.0
 
 
 class TestBlockSpeedLimitTransitions:

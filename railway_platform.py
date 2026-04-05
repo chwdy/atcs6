@@ -183,7 +183,8 @@ class Platform:
     def from_dict(cls, data: Dict[str, Any]) -> "Platform":
         """Create a Platform from a dictionary."""
         # Migration: accept both platform_id and legacy station_id
-        platform_id = data.get("platform_id") or data.get("station_id", "")
+        _pid = data.get("platform_id")
+        platform_id = _pid if _pid is not None else data.get("station_id", "")
 
         # Parse block_assignments from serialized format
         block_assignments_data = data.get("block_assignments", {})

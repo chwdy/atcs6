@@ -32,7 +32,7 @@ class TestStationBlockNaming:
         )
 
         # Check station block name
-        station_block_id = f"{station.station_id}_BLOCK"
+        station_block_id = f"{station.platform_id}_BLOCK"
         assert station_block_id in network.blocks
 
         station_block = network.blocks[station_block_id]
@@ -48,7 +48,7 @@ class TestStationBlockNaming:
         )
 
         # Check station block name
-        station_block_id = f"{station.station_id}_BLOCK"
+        station_block_id = f"{station.platform_id}_BLOCK"
         assert station_block_id in network.blocks
 
         station_block = network.blocks[station_block_id]
@@ -64,7 +64,7 @@ class TestStationBlockNaming:
         )
 
         # Check station block name
-        station_block_id = f"{station.station_id}_BLOCK"
+        station_block_id = f"{station.platform_id}_BLOCK"
         station_block = network.blocks[station_block_id]
         assert station_block.name == "Station Block - King's Cross"
 
@@ -92,7 +92,7 @@ class TestStationBlockLengthCalculation:
             0, 2, station_id="STA_001", name="Mid Station", length_cm=200.0
         )
 
-        station_block_id = f"{station.station_id}_BLOCK"
+        station_block_id = f"{station.platform_id}_BLOCK"
         station_block = network.blocks[station_block_id]
 
         # Station block should have 100cm (1 tile × 100cm/tile)
@@ -108,7 +108,7 @@ class TestStationBlockLengthCalculation:
             0, 0, station_id="STA_002", name="New Station", length_cm=300.0
         )
 
-        station_block_id = f"{station.station_id}_BLOCK"
+        station_block_id = f"{station.platform_id}_BLOCK"
         station_block = network.blocks[station_block_id]
 
         # Station block should use the input length
@@ -123,7 +123,7 @@ class TestStationBlockLengthCalculation:
             0, 0, station_id="STA_003", name="Zero Station", length_cm=0.0
         )
 
-        station_block_id = f"{station.station_id}_BLOCK"
+        station_block_id = f"{station.platform_id}_BLOCK"
         station_block = network.blocks[station_block_id]
 
         assert station_block.length_cm == 0.0
@@ -157,7 +157,7 @@ class TestBlockSplittingWithLengthCalculation:
         # Check child blocks
         child_1_id = "BLK_001_1"
         child_2_id = "BLK_001_2"
-        station_block_id = f"{station.station_id}_BLOCK"
+        station_block_id = f"{station.platform_id}_BLOCK"
 
         assert child_1_id in network.blocks
         assert child_2_id in network.blocks
@@ -198,7 +198,7 @@ class TestBlockSplittingWithLengthCalculation:
 
         child_1 = network.blocks["BLK_001_1"]
         child_2 = network.blocks["BLK_001_2"]
-        station_block = network.blocks[f"{station.station_id}_BLOCK"]
+        station_block = network.blocks[f"{station.platform_id}_BLOCK"]
 
         # Child 1: 2 tiles × 100cm = 200cm
         assert child_1.length_cm == 200.0
@@ -230,7 +230,7 @@ class TestBlockSplittingWithLengthCalculation:
 
         child_1 = network.blocks["BLK_001_1"]
         child_2 = network.blocks["BLK_001_2"]
-        station_block = network.blocks[f"{station.station_id}_BLOCK"]
+        station_block = network.blocks[f"{station.platform_id}_BLOCK"]
 
         # Calculate total length of all resulting blocks
         total_length = child_1.length_cm + child_2.length_cm + station_block.length_cm
@@ -288,7 +288,7 @@ class TestChildBlockNaming:
             0, 1, station_id="STA_NORTH", name="North Station", length_cm=180.0
         )
 
-        station_block = network.blocks[f"{station.station_id}_BLOCK"]
+        station_block = network.blocks[f"{station.platform_id}_BLOCK"]
         assert station_block.name == "Station Block - North Station"
 
 
@@ -309,7 +309,7 @@ class TestEdgeCases:
         )
 
         # Station block should get 100cm (calculated from original block)
-        station_block = network.blocks[f"{station.station_id}_BLOCK"]
+        station_block = network.blocks[f"{station.platform_id}_BLOCK"]
         assert station_block.length_cm == 100.0
 
         # Original block should be deleted (no child blocks created)
@@ -338,7 +338,7 @@ class TestEdgeCases:
         # Child blocks should have zero calculated length (0cm per tile)
         child_1 = network.blocks.get("BLK_001_1")
         child_2 = network.blocks.get("BLK_001_2")
-        station_block = network.blocks[f"{station.station_id}_BLOCK"]
+        station_block = network.blocks[f"{station.platform_id}_BLOCK"]
 
         if child_1:
             assert child_1.length_cm == 0.0
@@ -389,7 +389,7 @@ class TestRealWorldScenarios:
 
         child_1 = network.blocks.get("BLK_MAINLINE_1")
         child_2 = network.blocks.get("BLK_MAINLINE_2")
-        station_block = network.blocks[f"{station.station_id}_BLOCK"]
+        station_block = network.blocks[f"{station.platform_id}_BLOCK"]
 
         # This is tricky - station extended after creation, so initial split
         # would be different. Let me adjust the test to reflect actual behavior.
@@ -403,7 +403,7 @@ class TestRealWorldScenarios:
         # So we need to check final state
 
         # Let's just verify the station block has correct tile assignment
-        station_positions = network.get_block_positions(f"{station.station_id}_BLOCK")
+        station_positions = network.get_block_positions(f"{station.platform_id}_BLOCK")
         assert len(station_positions) == 2
         assert (0, 4) in station_positions
         assert (0, 5) in station_positions
@@ -432,12 +432,12 @@ class TestRealWorldScenarios:
         )
 
         # Verify both station blocks exist
-        assert f"{station1.station_id}_BLOCK" in network.blocks
-        assert f"{station2.station_id}_BLOCK" in network.blocks
+        assert f"{station1.platform_id}_BLOCK" in network.blocks
+        assert f"{station2.platform_id}_BLOCK" in network.blocks
 
         # Verify station blocks have calculated lengths (100cm per tile)
-        station_block_1 = network.blocks[f"{station1.station_id}_BLOCK"]
-        station_block_2 = network.blocks[f"{station2.station_id}_BLOCK"]
+        station_block_1 = network.blocks[f"{station1.platform_id}_BLOCK"]
+        station_block_2 = network.blocks[f"{station2.platform_id}_BLOCK"]
 
         assert station_block_1.length_cm == 100.0  # 1 tile × 100cm
         assert station_block_2.length_cm == 100.0  # 1 tile × 100cm
@@ -466,7 +466,7 @@ class TestStationBlockSpeedLimitInheritance:
         )
 
         # Check station block has inherited speed limit
-        station_block_id = f"{station.station_id}_BLOCK"
+        station_block_id = f"{station.platform_id}_BLOCK"
         station_block = network.blocks[station_block_id]
 
         assert station_block.max_speed_kmh == 30.0, (
@@ -489,7 +489,7 @@ class TestStationBlockSpeedLimitInheritance:
         )
 
         # Check station block has no speed limit
-        station_block_id = f"{station.station_id}_BLOCK"
+        station_block_id = f"{station.platform_id}_BLOCK"
         station_block = network.blocks[station_block_id]
 
         assert station_block.max_speed_kmh is None, (
@@ -516,10 +516,10 @@ class TestStationBlockSpeedLimitInheritance:
         )
 
         # Extend station to cover more tiles
-        network.extend_station(station.station_id, [(0, 1), (0, 2)])
+        network.extend_station(station.platform_id, [(0, 1), (0, 2)])
 
         # Check station block still has the speed limit
-        station_block_id = f"{station.station_id}_BLOCK"
+        station_block_id = f"{station.platform_id}_BLOCK"
         station_block = network.blocks[station_block_id]
 
         assert station_block.max_speed_kmh == 25.0, (

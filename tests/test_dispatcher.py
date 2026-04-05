@@ -15,6 +15,7 @@ See docs/DISPATCHER_DESIGN.md for full specification.
 """
 
 import pytest
+from types import SimpleNamespace
 
 from path import (
     Path,
@@ -2807,6 +2808,17 @@ class TestATODirectionDetection:
         network.add_train(train)
         return train
 
+    def _attach_live_path(self, controller, train, tiles, path_id="test_path"):
+        """Attach dispatcher-backed live path tiles to the controller."""
+        live_paths = {path_id: SimpleNamespace(path_tiles=tiles)}
+
+        class StubDispatcher:
+            def get_path(self, requested_path_id):
+                return live_paths.get(requested_path_id)
+
+        controller.path_dispatcher = StubDispatcher()
+        train.assigned_path_id = path_id
+
     # ===== _direction_from_tiles tests =====
 
     def test_direction_from_tiles_east(self):
@@ -2863,12 +2875,7 @@ class TestATODirectionDetection:
         controller = sim._get_or_create_controller(train)
         controller.active_cab = "A"
 
-        # Path goes east: (2,0) -> (3,0) -> (4,0)
-        train.current_path = [
-            (2, 0, Direction.EAST),
-            (3, 0, Direction.EAST),
-            (4, 0, Direction.EAST),
-        ]
+        self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
 
         result = controller._get_path_direction_at_head(train)
         assert result == Direction.EAST
@@ -2882,12 +2889,7 @@ class TestATODirectionDetection:
         controller = sim._get_or_create_controller(train)
         controller.active_cab = "A"
 
-        # Path goes west: (4,0) -> (3,0) -> (2,0)
-        train.current_path = [
-            (4, 0, Direction.WEST),
-            (3, 0, Direction.WEST),
-            (2, 0, Direction.WEST),
-        ]
+        self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)])
 
         result = controller._get_path_direction_at_head(train)
         assert result == Direction.WEST
@@ -2902,7 +2904,7 @@ class TestATODirectionDetection:
         controller.active_cab = "A"
 
         # Path doesn't include head tile (5,0)
-        train.current_path = [(2, 0, None), (3, 0, None), (4, 0, None)]
+        self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
 
         result = controller._get_path_direction_at_head(train)
         assert result == Direction.EAST  # from (2,0) -> (3,0)
@@ -2916,11 +2918,10 @@ class TestATODirectionDetection:
         controller = sim._get_or_create_controller(train)
         controller.active_cab = "A"
 
-        # Path entries have no stored direction
-        train.current_path = [(2, 0, None), (3, 0, None), (4, 0, None)]
+        self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
 
         result = controller._get_path_direction_at_head(train)
-        assert result == Direction.EAST  # inferred from (2,0) -> (3,0)
+        assert result == Direction.EAST
 
     def test_path_direction_at_head_last_tile_backward_infer(self):
         """When head is the last tile in path, infers from previous tile."""
@@ -2932,7 +2933,7 @@ class TestATODirectionDetection:
         controller.active_cab = "A"
 
         # Head is the last tile — no next tile to compare
-        train.current_path = [(2, 0, None), (3, 0, None), (4, 0, None)]
+        self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
 
         result = controller._get_path_direction_at_head(train)
         # Infers from (3,0) -> (4,0) = EAST
@@ -2951,12 +2952,7 @@ class TestATODirectionDetection:
         controller.power_on = True
 
         # Path goes EAST, train faces EAST -> same direction
-        train.current_path = [
-            (2, 0, Direction.EAST),
-            (3, 0, Direction.EAST),
-            (4, 0, Direction.EAST),
-        ]
-        train.assigned_path_id = "test_path"
+        self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
         controller.ato_destination_block_id = "BLK_EAST"
 
         info = controller._calculate_ato_info()
@@ -2974,12 +2970,7 @@ class TestATODirectionDetection:
         controller.power_on = True
 
         # Path goes WEST, train faces EAST -> opposite
-        train.current_path = [
-            (4, 0, Direction.WEST),
-            (3, 0, Direction.WEST),
-            (2, 0, Direction.WEST),
-        ]
-        train.assigned_path_id = "test_path"
+        self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)])
         controller.ato_destination_block_id = "BLK_WEST"
 
         info = controller._calculate_ato_info()
@@ -2997,8 +2988,7 @@ class TestATODirectionDetection:
         controller.power_on = True
 
         # Path goes EAST, train faces WEST (cab B) -> opposite
-        train.current_path = [(4, 0, Direction.EAST), (5, 0, Direction.EAST)]
-        train.assigned_path_id = "test_path"
+        self._attach_live_path(controller, train, [(4, 0), (5, 0)])
         controller.ato_destination_block_id = "BLK_EAST"
 
         info = controller._calculate_ato_info()
@@ -3018,8 +3008,7 @@ class TestATODirectionDetection:
         controller.power_on = True
 
         # Path goes NORTH, train faces EAST -> 90 degrees
-        train.current_path = [(2, 0, Direction.NORTH), (2, 1, Direction.NORTH)]
-        train.assigned_path_id = "test_path"
+        self._attach_live_path(controller, train, [(2, 0), (2, 1)])
         controller.ato_destination_block_id = "BLK_EAST"
 
         info = controller._calculate_ato_info()
@@ -3042,12 +3031,7 @@ class TestATODirectionDetection:
         assert controller.state == TrainState.STANDBY
 
         # Assign a path going WEST (opposite)
-        train.current_path = [
-            (4, 0, Direction.WEST),
-            (3, 0, Direction.WEST),
-            (2, 0, Direction.WEST),
-        ]
-        train.assigned_path_id = "test_path"
+        self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)])
         controller.ato_destination_block_id = "BLK_WEST"
         controller.control_mode = "ato"
 
@@ -3074,12 +3058,7 @@ class TestATODirectionDetection:
         assert controller.active_cab == "A"
 
         # Path goes EAST (same as facing)
-        train.current_path = [
-            (2, 0, Direction.EAST),
-            (3, 0, Direction.EAST),
-            (4, 0, Direction.EAST),
-        ]
-        train.assigned_path_id = "test_path"
+        self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
         controller.ato_destination_block_id = "BLK_EAST"
         controller.control_mode = "ato"
 
@@ -3108,14 +3087,7 @@ class TestATODirectionDetection:
 
         # Return path goes south through diagonal: (1,4) -> (1,3) -> (0,3) -> (0,2) -> (0,1)
         # Tile-coord direction from (1,4) -> (1,3) is dy=-1 = SOUTH
-        train.current_path = [
-            (1, 4, Direction.SOUTH),
-            (1, 3, Direction.WEST),
-            (0, 3, Direction.SOUTH),
-            (0, 2, Direction.SOUTH),
-            (0, 1, Direction.SOUTH),
-        ]
-        train.assigned_path_id = "test_return"
+        self._attach_live_path(controller, train, [(1, 4), (1, 3), (0, 3), (0, 2), (0, 1)], "test_return")
         controller.ato_destination_block_id = "BLK_SOUTH"
 
         info = controller._calculate_ato_info()
@@ -3144,12 +3116,7 @@ class TestATODirectionDetection:
         controller.power_on = True
 
         # Return path: (1,4) -> (1,3) = SOUTH
-        train.current_path = [
-            (1, 4, Direction.SOUTH),
-            (1, 3, Direction.WEST),
-            (0, 3, Direction.SOUTH),
-        ]
-        train.assigned_path_id = "test_return"
+        self._attach_live_path(controller, train, [(1, 4), (1, 3), (0, 3)], "test_return")
         controller.ato_destination_block_id = "BLK_SOUTH"
 
         info = controller._calculate_ato_info()
@@ -3175,12 +3142,7 @@ class TestATODirectionDetection:
         assert controller.active_cab == "A"
 
         # Assign a return path going WEST (no turn-around happens here anymore)
-        train.current_path = [
-            (4, 0, Direction.WEST),
-            (3, 0, Direction.WEST),
-            (2, 0, Direction.WEST),
-        ]
-        train.assigned_path_id = "test_path"
+        self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)])
         controller.ato_destination_block_id = "BLK_WEST"
         train.ato_destination_block_id = "BLK_WEST"
 
@@ -3207,12 +3169,7 @@ class TestATODirectionDetection:
         assert controller.active_cab == "A"
 
         # Assign forward path going EAST
-        train.current_path = [
-            (2, 0, Direction.EAST),
-            (3, 0, Direction.EAST),
-            (4, 0, Direction.EAST),
-        ]
-        train.assigned_path_id = "test_path"
+        self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
         controller.ato_destination_block_id = "BLK_EAST"
         train.ato_destination_block_id = "BLK_EAST"
 
@@ -3237,12 +3194,7 @@ class TestATODirectionDetection:
         controller.active_cab = "A"
         controller.power_on = True
 
-        train.current_path = [
-            (0, 4, Direction.SOUTH),
-            (0, 3, Direction.SOUTH),
-            (0, 2, Direction.SOUTH),
-        ]
-        train.assigned_path_id = "test_path"
+        self._attach_live_path(controller, train, [(0, 4), (0, 3), (0, 2)])
         controller.ato_destination_block_id = "BLK_SOUTH"
 
         info = controller._calculate_ato_info()

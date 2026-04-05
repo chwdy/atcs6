@@ -1300,7 +1300,7 @@ class PathDispatcher:
                 if switch_index >= current_pos_index:
                     can_release = False
             except ValueError:
-                # Switch not in path_tiles - shouldn't happen, but be safe
+                print(f"[PathDispatcher] Switch at {pos} not found in path_tiles for path {path.path_id}, allowing release")
                 can_release = True
 
             if can_release:

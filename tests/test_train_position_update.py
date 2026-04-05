@@ -48,7 +48,6 @@ class TestTrainPositionUpdates:
             end_b_distance_cm=10.0,  # Tail at 10cm (40cm train length)
             end_b_entry_edge="W",
             leading_end=LeadingEnd.A,
-            facing_direction=Direction.EAST,
         )
 
         # Set state to RUNNING_MOVING

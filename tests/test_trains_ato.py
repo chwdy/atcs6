@@ -6,6 +6,7 @@ Run with: pytest tests/test_trains_ato.py -v
 
 import logging
 import pytest
+from types import SimpleNamespace
 
 from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
@@ -1232,7 +1233,6 @@ class TestAtoInfoPersistenceWithoutActivePath:
             track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
             track.block_section_id = "BLOCK_DEST"
             network.add_track(track)
-
         network.blocks["BLOCK_DEST"] = Block(block_id="BLOCK_DEST", name="Destination")
 
         train = Train(train_id="TRAIN_ATO_INFO")
@@ -1274,6 +1274,170 @@ class TestAtoInfoPersistenceWithoutActivePath:
         assert controller.ato_destination_block_id == "BLOCK_DEST"
         assert controller.ato_info is not None
         assert controller.ato_info.destination_block_id == "BLOCK_DEST"
+
+
+class TestPathCompletionStateAndCabDirectionPlan:
+    def _setup_waiting_train(self, network):
+        for x in range(4):
+            network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
+        network.create_block_with_tracks(
+            "BLOCK_WAIT",
+            [(0, 0), (1, 0), (2, 0), (3, 0)],
+            length_cm=400.0,
+        )
+
+        car = TrainCar("CAR_WAIT", "LOCOMOTIVE", length=40.0)
+        train = Train(train_id="TRAIN_WAIT", consist=[car])
+        network.add_train(train)
+        network.place_train(train, 2, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        controller.power_on = True
+        controller.control_mode = "manual"
+        controller.set_cab("A")
+        controller.state = TrainState.RUNNING_WAITING
+        train.state = TrainState.RUNNING_WAITING
+        train.current_speed = 0.0
+        return train, controller
+
+    def test_completed_standalone_path_leaves_waiting_for_standby(self, network):
+        train, controller = self._setup_waiting_train(network)
+
+        train.assigned_path_id = None
+        train.current_path = None
+        train.assigned_route_id = None
+        train.ato_destination_block_id = None
+        controller.ato_path_id = None
+        controller.ato_destination_block_id = None
+
+        controller.tick(0.1)
+
+        assert controller.state == TrainState.STANDBY
+        assert train.state == TrainState.STANDBY
+        assert controller.active_cab == "A"
+
+    def test_completed_standalone_path_leaves_moving_for_standby(self, network):
+        train, controller = self._setup_waiting_train(network)
+
+        controller.state = TrainState.RUNNING_MOVING
+        train.state = TrainState.RUNNING_MOVING
+        train.assigned_path_id = None
+        train.current_path = None
+        train.assigned_route_id = None
+        train.ato_destination_block_id = None
+        controller.ato_path_id = None
+        controller.ato_destination_block_id = None
+
+        controller.tick(0.1)
+
+        assert controller.state == TrainState.STANDBY
+        assert train.state == TrainState.STANDBY
+
+    def test_stale_cached_path_does_not_block_standby_transition(self, network):
+        train, controller = self._setup_waiting_train(network)
+
+        train.assigned_path_id = None
+        train.current_path = [
+            (1, 0, Direction.WEST),
+            (0, 0, Direction.WEST),
+        ]
+        train.assigned_route_id = None
+        train.ato_destination_block_id = None
+        controller.ato_path_id = None
+        controller.ato_destination_block_id = None
+
+        controller.tick(0.1)
+
+        assert controller.state == TrainState.STANDBY
+        assert train.state == TrainState.STANDBY
+
+    def test_waiting_resume_uses_dispatcher_live_path_for_required_cab(
+        self, network
+    ):
+        train, _ = self._setup_waiting_train(network)
+
+        class StubDispatcher:
+            def __init__(self):
+                self.path = SimpleNamespace(path_tiles=[(2, 0), (1, 0), (0, 0)])
+
+            def get_path(self, path_id):
+                return self.path if path_id == "PATH_LIVE" else None
+
+        controller = TrainController(
+            train_id=train.train_id,
+            network=network,
+            path_dispatcher=StubDispatcher(),
+        )
+        controller.power_on = True
+        controller.control_mode = "manual"
+        controller.set_cab("A")
+        controller.state = TrainState.RUNNING_WAITING
+        train.state = TrainState.RUNNING_WAITING
+        train.current_speed = 0.0
+
+        train.assigned_path_id = "PATH_LIVE"
+        train.current_path = [
+            (2, 0, Direction.EAST),
+            (3, 0, Direction.EAST),
+        ]
+        train.assigned_route_id = None
+        train.ato_destination_block_id = None
+        controller.ato_path_id = None
+        controller.ato_destination_block_id = None
+
+        controller._calculate_lookahead = lambda: []
+        controller._get_current_block_speed_limit = lambda: 40.0
+        controller._calculate_clearance_ahead = lambda: 200.0
+        controller._calculate_atc_speed_limit = lambda: (40.0, None)
+        controller._calculate_ato_info = lambda: None
+
+        controller.tick(0.1)
+
+        assert controller.state == TrainState.RUNNING_MOVING
+        assert train.state == TrainState.RUNNING_MOVING
+        assert controller.active_cab == "B"
+        assert train.active_cab == "B"
+
+    def test_clear_to_move_uses_dispatcher_live_path_for_required_cab(
+        self, network
+    ):
+        train, _ = self._setup_waiting_train(network)
+
+        class StubDispatcher:
+            def __init__(self):
+                self.path = SimpleNamespace(path_tiles=[(2, 0), (1, 0), (0, 0)])
+
+            def get_path(self, path_id):
+                return self.path if path_id == "PATH_LIVE" else None
+
+        controller = TrainController(
+            train_id=train.train_id,
+            network=network,
+            path_dispatcher=StubDispatcher(),
+        )
+        controller.power_on = True
+        controller.control_mode = "manual"
+        controller.set_cab("A")
+        controller.state = TrainState.RUNNING_WAITING
+        train.state = TrainState.RUNNING_WAITING
+        train.current_speed = 0.0
+
+        train.assigned_path_id = "PATH_LIVE"
+        train.current_path = [
+            (2, 0, Direction.EAST),
+            (3, 0, Direction.EAST),
+        ]
+        train.assigned_route_id = None
+        train.ato_destination_block_id = None
+        controller.ato_path_id = None
+        controller.ato_destination_block_id = None
+
+        result = controller.clear_to_move()
+
+        assert result is True
+        assert controller.state == TrainState.RUNNING_MOVING
+        assert train.state == TrainState.RUNNING_MOVING
+        assert controller.active_cab == "B"
 
 
 class TestShorterMarginWithStationEnd:

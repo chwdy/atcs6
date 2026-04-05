@@ -941,9 +941,16 @@ class Train:
             if self.state == TrainState.OFF:
                 self.power_on()
 
-            # Setting a cab: must be IDLE or STANDBY (not moving)
-            if self.state not in (TrainState.IDLE, TrainState.STANDBY):
+            # Setting a cab: must be stopped (IDLE, STANDBY, or RUNNING_WAITING)
+            if self.state not in (
+                TrainState.IDLE,
+                TrainState.STANDBY,
+                TrainState.RUNNING_WAITING,
+            ):
                 return False
+
+            # Remember pre-switch state so RUNNING_WAITING is preserved
+            prev_state = self.state
 
             # Check if switching from other cab (need to swap position data)
             old_cab = self.active_cab
@@ -961,7 +968,12 @@ class Train:
 
                 self.position.leading_end = new_leading_end
 
-            self.state = TrainState.STANDBY
+            # Preserve RUNNING_WAITING (train is stopped, waiting for path);
+            # otherwise transition to STANDBY as before.
+            if prev_state == TrainState.RUNNING_WAITING:
+                self.state = TrainState.RUNNING_WAITING
+            else:
+                self.state = TrainState.STANDBY
             return True
         elif cab is None:
             # Turning cab off: must be STANDBY (stopped, not moving)
@@ -1336,6 +1348,7 @@ class Train:
             try:
                 train.state = TrainState(data["state"])
             except ValueError:
+                print(f"[Train] Unknown state '{data['state']}', defaulting to OFF")
                 train.state = TrainState.OFF
 
         # Speed profile and route

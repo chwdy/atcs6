@@ -186,7 +186,7 @@ class RouteExecutor:
         if not waypoint:
             return
 
-        target_platform_id = exec_state.resolved_platform_id or waypoint.platform_id
+        target_platform_id = exec_state.resolved_platform_id if exec_state.resolved_platform_id is not None else waypoint.platform_id
         platform = self._get_platform(target_platform_id)
         if not platform:
             error_msg = f"Platform {target_platform_id} not found"
@@ -257,7 +257,7 @@ class RouteExecutor:
         if not waypoint:
             return
 
-        target_platform_id = exec_state.resolved_platform_id or waypoint.platform_id
+        target_platform_id = exec_state.resolved_platform_id if exec_state.resolved_platform_id is not None else waypoint.platform_id
         if self._is_train_at_platform(train, target_platform_id):
             if exec_state.arrived_at_platform_time is None:
                 exec_state.arrived_at_platform_time = self.simulation_time
@@ -278,7 +278,9 @@ class RouteExecutor:
 
         time_at_platform = self.simulation_time - exec_state.arrived_at_platform_time
         route_start_time = (
-            exec_state.route_start_time or route.started_at or self.simulation_time
+            exec_state.route_start_time if exec_state.route_start_time is not None
+            else route.started_at if route.started_at is not None
+            else self.simulation_time
         )
 
         if not waypoint.should_depart(

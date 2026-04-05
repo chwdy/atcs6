@@ -417,7 +417,7 @@ class TrainEditorHandler {
                 }
             } catch (err) {
                 console.warn('[TrainEditorHandler] Failed to fetch path info:', err);
-                // Fallback to onboard info if available
+                window.showToast('Could not load path details — showing cached data', 'warning', 5000);
                 pathName = onboardAto?.path_id || assignedPathId;
                 destinationName = onboardAto?.destination_station_name || onboardAto?.destination_block_id || 'No path';
             }
