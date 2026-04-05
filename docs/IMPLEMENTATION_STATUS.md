@@ -108,7 +108,7 @@ This document tracks the implementation status of features described in referenc
 | Module | Implementation Status | Notes |
 |--------|----------------------|-------|
 | [`debug_inspector.py`](../debug_inspector.py) | ✅ Complete | Generic object inspector API + `/debug` UI |
-| [`scenario_runner.py`](../scenario_runner.py) | ✅ Complete | Scenario replay engine with assertion checking |
+| [`scenario_runner.py`](../scenario_runner.py) | ✅ Complete | Scenario replay engine with Flask test client and assertion checking |
 | [`step_recorder.py`](../step_recorder.py) | ✅ Complete | Records layout construction as ordered steps |
 | [`step_player.py`](../step_player.py) | ✅ Complete | Replays construction steps to rebuild a layout |
 
@@ -167,8 +167,10 @@ Always check the actual code for definitive behavior.
 - **2026-03-31** — `Train.to_dict()` now accepts live path data from PathDispatcher; stale `train.current_path` cache removed from serialization. `ato_destination_block_id` synced on path extension.
 - **2026-03-30** — Debug inspector (`debug_inspector.py` + `/debug` UI) implemented.
 - **2026-03-30** — Scenario runner (`scenario_runner.py`) and step recorder/player implemented for regression testing.
-- **2026-02-24** — Future-aware ATO control: trend detection and asymmetric hysteresis implemented. Full predictive simulation (`_simulate_forward`) remains pending.
+- **2026-02-24** — Future-aware ATO control: trend detection, asymmetric hysteresis, and full predictive simulation (`_simulate_forward`) implemented and integrated into `_ato_calculate_handle`.
 - **2026-02-11** — PathDispatcher made single source of truth for path data; `TrainController.get_path_tiles()` reads from dispatcher.
 - **2026-02-06** — Route/station redesign complete: `RouteExecutor`, flexible platform resolution, PRESERVE travel direction policy.
 
-*Last Updated: April 1, 2026*
+- **2026-04-04** — `scenario_runner.py` fully implemented: data classes, Flask test client replay, StepPlayer layout setup, checkpoint assertion evaluation. `tests/test_scenario_runner.py` and `tests/test_scenarios.py` (parametrized auto-discovery) added. Sample scenario `tests/scenarios/sample-block-state.json` created.
+
+*Last Updated: April 4, 2026*
