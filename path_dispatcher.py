@@ -1300,7 +1300,9 @@ class PathDispatcher:
                 if switch_index >= current_pos_index:
                     can_release = False
             except ValueError:
-                print(f"[PathDispatcher] Switch at {pos} not found in path_tiles for path {path.path_id}, allowing release")
+                print(
+                    f"[PathDispatcher] Switch at {pos} not found in path_tiles for path {path.path_id}, allowing release"
+                )
                 can_release = True
 
             if can_release:
@@ -1380,6 +1382,24 @@ class PathDispatcher:
                 train_obj.current_path = None
                 train_obj.path_index = 0
                 train_obj.reserved_blocks = []
+
+                # Clear ato_running on the controller so that
+                # _is_standalone_path_complete() and the
+                # RUNNING_WAITING → RUNNING_MOVING guard work correctly
+                # after this path is torn down.
+                if (
+                    hasattr(self.network, "power_controller")
+                    and self.network.power_controller
+                ):
+                    sim_controller = getattr(
+                        self.network.power_controller, "_sim_controller", None
+                    )
+                    if sim_controller:
+                        controller = sim_controller.get_controller(path.train_id)
+                        if controller:
+                            controller.ato_running = False
+                            controller.ato_destination_block_id = None
+                            controller.ato_path_id = None
 
         del self.active_paths[path_id]
 

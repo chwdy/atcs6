@@ -1918,7 +1918,9 @@ class TrainController:
             return True
         if self._has_active_route_context(train):
             return True
-        if self.ato_destination_block_id or getattr(train, "ato_destination_block_id", None):
+        if self.ato_destination_block_id or getattr(
+            train, "ato_destination_block_id", None
+        ):
             return True
         return False
 
@@ -1928,7 +1930,10 @@ class TrainController:
             return False
         if train.current_speed > STOPPED_SPEED_THRESHOLD_KMH:
             return False
-        if self.ato_running:
+        # ato_running=True is acceptable if there is no surviving path context —
+        # it is a stale flag left by ATC braking the train to 0.  Trust
+        # _has_path_backed_run_context() to confirm the path is truly gone.
+        if self.ato_running and self._has_path_backed_run_context(train):
             return False
         if self._has_path_backed_run_context(train):
             return False
@@ -2042,7 +2047,9 @@ class TrainController:
         # reverse" diagonal case after the direct backtracking check above.
         facing = train.facing_direction
         if facing is None:
-            return current_cab if self._connectivity_check_was_conclusive(train) else None
+            return (
+                current_cab if self._connectivity_check_was_conclusive(train) else None
+            )
 
         path_direction = self._get_path_direction_at_head(train)
         if path_direction is not None:
@@ -2054,9 +2061,7 @@ class TrainController:
         # 90 degrees or path direction unknown — use overall path vector
         path_tiles = self._get_effective_path_tiles()
         if path_tiles and len(path_tiles) >= 2:
-            overall = self._dominant_direction_from_tiles(
-                path_tiles[0], path_tiles[-1]
-            )
+            overall = self._dominant_direction_from_tiles(path_tiles[0], path_tiles[-1])
             if overall is not None and overall == facing.opposite():
                 return "B" if current_cab == "A" else "A"
 

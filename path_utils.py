@@ -152,12 +152,15 @@ def prepare_path_for_train(
             )
 
         if train_idx > path_start_idx:
-            # Train is past path start - this shouldn't happen in same block
-            # Path start should be ahead of or at train
-            return PathPrepareResult(
-                success=False,
-                error=f"Train at {train_pos} is past path start {path_start} in block",
-            )
+            # The train is "ahead" of the path start in the current facing
+            # direction, which means the new path goes in the reverse
+            # direction.  Return success with no prepend tiles so that
+            # _path_needs_cab_flip() can detect the reversal and flip the
+            # cab correctly.  (The old hard failure prevented the head tile
+            # from ever being added to the path tile list, which caused
+            # _path_needs_cab_flip() to return False and let the train
+            # accelerate in the wrong direction.)
+            return PathPrepareResult(success=True, prepend_tiles=[], path_index=0)
 
         # Train is before path start - prepend tiles
         prepend_positions = sorted_positions[train_idx:path_start_idx]
