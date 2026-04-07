@@ -74,6 +74,8 @@ def bootstrap_runtime(
         setup_demo_train(network, path_dispatcher)
 
     sim_controller = SimulationController(network, path_dispatcher)
+    if sim_controller.power_controller:
+        sim_controller.power_controller._sim_controller = sim_controller
     persistence_manager = PersistenceManager()
 
     return network, path_dispatcher, sim_controller, persistence_manager

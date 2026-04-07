@@ -1190,7 +1190,10 @@ class PathDispatcher:
                             controller.ato_running = False
                             controller.ato_destination_block_id = None
                             controller.ato_path_id = None
-                            if train_obj.state == TrainState.RUNNING_MOVING:
+                            if train_obj.state in (
+                                TrainState.RUNNING_MOVING,
+                                TrainState.RUNNING_WAITING,
+                            ):
                                 controller.transition_to_standby()
 
         del self.active_paths[path.path_id]

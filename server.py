@@ -164,6 +164,8 @@ def _build_state_and_app() -> tuple[AppState, Flask]:
     path_dispatcher = PathDispatcher(network)
     demo_main.setup_demo_train(network, path_dispatcher)
     sim_controller = SimulationController(network, path_dispatcher)
+    if sim_controller.power_controller:
+        sim_controller.power_controller._sim_controller = sim_controller
     persistence_manager = PersistenceManager()
     simulation_lock = threading.Lock()
     simulation_running = False

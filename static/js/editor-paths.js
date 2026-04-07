@@ -167,11 +167,7 @@ class PathEditorHandler {
                 options.train_id = this.pathToolState.trainId;
             }
 
-            const result = await this.api.createPath(
-                this.pathToolState.startBlockId,
-                endBlockId,
-                options
-            );
+            const result = await this.createPathWithConflictResolution(endBlockId, options);
 
             if (result.success) {
                 window.showToast(`Path ${result.path.path_id} created`, 'success', 5000);
@@ -187,6 +183,54 @@ class PathEditorHandler {
         } catch (err) {
             console.error('[Editor] Failed to create path:', err);
             window.showToast('Failed to create path: ' + err.message, 'error', 5000);
+        }
+    }
+
+    async createPathWithConflictResolution(endBlockId, options) {
+        try {
+            return await this.api.createPath(
+                this.pathToolState.startBlockId,
+                endBlockId,
+                options
+            );
+        } catch (err) {
+            if (err.status !== 409 || err.conflict !== 'train_has_active_path') {
+                throw err;
+            }
+
+            const existingPathId = err.existing_path_id;
+            const trainId = err.train_id || options.train_id;
+            const existingPath = err.existing_path || {};
+            const detail =
+                `Existing path: ${existingPathId}` +
+                (existingPath.start_block_id && existingPath.end_block_id
+                    ? `\nFrom: ${existingPath.start_block_id}\nTo: ${existingPath.end_block_id}`
+                    : '');
+
+            const confirmed = await showConfirmModal({
+                title: 'Train Already Has Active Path',
+                message: `Train ${trainId} already has an active path. Cancel it and assign the new path?`,
+                detail,
+                confirmText: 'Cancel Existing Path',
+                confirmVariant: 'danger'
+            });
+            if (!confirmed) {
+                return { success: false, error: 'Path assignment cancelled' };
+            }
+
+            const cancelResult = await this.api.cancelPath(existingPathId);
+            if (!cancelResult.success) {
+                return {
+                    success: false,
+                    error: cancelResult.error || cancelResult.message || 'Failed to cancel existing path'
+                };
+            }
+
+            return await this.api.createPath(
+                this.pathToolState.startBlockId,
+                endBlockId,
+                options
+            );
         }
     }
 

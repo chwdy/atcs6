@@ -37,16 +37,23 @@ class API {
 
             if (!response.ok) {
                 let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                let errorData = null;
                 try {
-                    const data = await response.json();
-                    if (data.error) errorMessage = data.error;
+                    errorData = await response.json();
+                    if (errorData.error) errorMessage = errorData.error;
                 } catch (e) {
                     try {
                         const text = await response.text();
                         if (text) errorMessage = `HTTP ${response.status}: ${text}`;
                     } catch (e2) {}
                 }
-                throw new Error(errorMessage);
+                const error = new Error(errorMessage);
+                error.status = response.status;
+                error.data = errorData;
+                if (errorData) {
+                    Object.assign(error, errorData);
+                }
+                throw error;
             }
 
             if (response.status === 204) return null;

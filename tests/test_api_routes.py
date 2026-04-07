@@ -597,6 +597,47 @@ class TestPathRoutes:
         # May succeed or fail depending on pathfinding
         assert response.status_code in [200, 400]
 
+    def test_create_path_conflicts_when_train_already_has_active_path(
+        self, client, app_state, network_with_tracks
+    ):
+        """POST /api/paths should not silently assign a second path to one train."""
+        app_state.network.create_block_with_tracks("BLK_001", [(0, 0), (1, 0)])
+        app_state.network.create_block_with_tracks("BLK_002", [(2, 0), (3, 0)])
+        app_state.network.create_block_with_tracks("BLK_003", [(4, 0)])
+
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0, max_speed=100.0)
+        train = Train("TRAIN_001", consist=[car])
+        app_state.network.add_train(train)
+        app_state.network.place_train(train, 0, 0, Direction.EAST)
+
+        first_response = client.post(
+            "/api/paths",
+            json={
+                "start_block_id": "BLK_001",
+                "end_block_id": "BLK_002",
+                "train_id": "TRAIN_001",
+            },
+        )
+        assert first_response.status_code == 200
+        first_data = first_response.get_json()
+        assert first_data["success"] is True
+        assert train.assigned_path_id == first_data["path"]["path_id"]
+
+        second_response = client.post(
+            "/api/paths",
+            json={
+                "start_block_id": "BLK_001",
+                "end_block_id": "BLK_003",
+                "train_id": "TRAIN_001",
+            },
+        )
+        assert second_response.status_code == 409
+        second_data = second_response.get_json()
+        assert second_data["success"] is False
+        assert second_data["conflict"] == "train_has_active_path"
+        assert second_data["existing_path_id"] == first_data["path"]["path_id"]
+        assert train.assigned_path_id == first_data["path"]["path_id"]
+
     def test_list_paths(self, client):
         """GET /api/paths should list all paths."""
         response = client.get("/api/paths")

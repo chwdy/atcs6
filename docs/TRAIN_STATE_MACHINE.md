@@ -35,7 +35,8 @@ Train is powered on, stopped, and ready to depart.
 
 - Stopped
 - Active cab selected
-- Not currently executing a path or route
+- ATO is not running
+- May still have an assigned dispatcher path after an operator service stop
 - Ready for manual departure or ATO/path start
 
 ### `RUNNING_MOVING`
@@ -83,6 +84,9 @@ Train is under manual operating mode.
 - Powered on
 - Driver-controlled
 - Not part of automatic ATO execution
+- `control_mode == "manual"`
+- `ato_running == False`
+- ATC can still limit or brake manual movement for safety
 
 This is a control-mode state and should only be used if the codebase continues to model manual as a top-level state.
 
@@ -143,6 +147,7 @@ The transitions below describe intended behavior.
 ### From `IDLE`
 
 - `set_cab(A|B)` -> `STANDBY`
+- `ato_go` -> auto-select required cab from assigned path, then `RUNNING_MOVING`
 - `power_off` -> `OFF`
 - `enable_manual` -> `MANUAL` only if manual-with-no-cab is a supported model; otherwise require cab first
 
@@ -150,12 +155,14 @@ The transitions below describe intended behavior.
 
 - `set_cab(None)` -> `IDLE`
 - `power_off` -> `OFF`
-- `manual depart / start path / ato_go` -> `RUNNING_MOVING`
+- `ato_go` -> `RUNNING_MOVING`, with `ato_running = True`
+- manual depart / start path -> `RUNNING_MOVING`
 - `enable_manual` -> `MANUAL`
 - `set_cab(A|B)` -> `STANDBY` (cab switch while stopped)
 
 ### From `RUNNING_MOVING`
 
+- `ato_stop` -> remains `RUNNING_MOVING` while braking, with `ato_running = False`
 - obstruction / red signal / occupied track / waiting on continuation -> `RUNNING_WAITING`
 - scheduled station stop under active route -> `RUNNING_AT_STATION`
 - standalone path completed, no remaining active route/path continuation -> `STANDBY`
@@ -183,6 +190,43 @@ The transitions below describe intended behavior.
 - `set_cab(None)` -> `IDLE`
 - `power_off` -> `OFF`
 - start moving manually -> remain `MANUAL` if manual is treated as a persistent operating state
+- `set_mode("ato")` -> `STANDBY` if an active cab/facing direction exists, otherwise `IDLE`
+- `ato_go` is invalid while `control_mode == "manual"`
+- `ato_stop` is normally invalid because ATO is not running in manual mode
+
+## Command Effects
+
+### Manual Control
+
+Manual control is both a control mode and, in the current implementation, a top-level
+train state.
+
+- `set_mode("manual")` or `enable_manual` requires the train to be stopped and not `OFF`
+- Entering manual sets `state = MANUAL`, `control_mode = "manual"`, and `ato_running = False`
+- Manual speed/handle commands are operator-controlled, but ATC remains active and can apply braking
+- Leaving manual with an active cab returns to `STANDBY`
+- Leaving manual with no cab or no facing direction returns to `IDLE`
+
+### ATO Start
+
+`ato_go` starts automatic operation.
+
+- Requires `control_mode == "ato"`, power on, and state `IDLE` or `STANDBY`
+- If no cab is selected, the controller may auto-select the required cab from the assigned path
+- If a selected cab conflicts with the assigned path direction, the controller may correct it while stopped
+- On success, sets `state = RUNNING_MOVING`, `train.state = RUNNING_MOVING`, `ato_running = True`, and `path_backed_run_active = True`
+- Fails in `MANUAL`, `OFF`, `RUNNING_MOVING`, `RUNNING_WAITING`, or `RUNNING_AT_STATION`
+
+### ATO Stop
+
+`ato_stop` is a service stop, not an emergency stop and not a path cancellation.
+
+- Requires `ato_running == True`
+- Sets `ato_running = False`
+- Keeps the current running state while the train brakes
+- During subsequent ticks, ATO mode targets zero speed and applies service braking
+- When speed reaches the stopped threshold, the controller transitions to `STANDBY`
+- It does not cancel the assigned dispatcher path or clear `assigned_path_id`; assigning a different path is handled by the API/frontend conflict flow
 
 ## Transition Rules
 

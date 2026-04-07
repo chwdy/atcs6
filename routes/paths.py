@@ -47,6 +47,32 @@ def register(app, state: AppState) -> None:
 
         try:
             with state.simulation_lock:
+                if train_id and train_id in state.network.trains:
+                    train = state.network.trains[train_id]
+                    existing_path_id = getattr(train, "assigned_path_id", None)
+                    existing_path = (
+                        state.path_dispatcher.get_path(existing_path_id)
+                        if existing_path_id
+                        else None
+                    )
+                    if existing_path:
+                        return (
+                            jsonify(
+                                {
+                                    "success": False,
+                                    "error": (
+                                        f"Train {train_id} already has active path "
+                                        f"{existing_path_id}"
+                                    ),
+                                    "conflict": "train_has_active_path",
+                                    "train_id": train_id,
+                                    "existing_path_id": existing_path_id,
+                                    "existing_path": existing_path.to_dict(),
+                                }
+                            ),
+                            409,
+                        )
+
                 result = state.path_dispatcher.create_path(
                     start_block_id=start_block_id,
                     end_block_id=end_block_id,
