@@ -906,6 +906,7 @@ class TestPathLifecycle:
         train.position = make_train_position(
             end_tile, Direction.EAST, occupied_blocks=["BLOCK_C"]
         )
+        train.current_speed = 0.0
 
         block_c = simple_linear_network.blocks.get("BLOCK_C")
         assert block_c is not None
@@ -931,6 +932,29 @@ class TestPathLifecycle:
         assert events[0]["path_id"] == path_id
         assert events[0]["end_tile"] == end_tile
         assert events[0]["time"] is not None
+
+    def test_moving_train_on_final_tile_does_not_complete_path(
+        self, simple_linear_network, dispatcher, train
+    ):
+        """A path must not be cleared just because a moving head reaches the final tile."""
+        dispatcher.network = simple_linear_network
+        simple_linear_network.add_train(train)
+
+        result = dispatcher.create_path("BLOCK_A", "BLOCK_C", train_id=train.train_id)
+        assert result.success
+        path = result.path
+
+        end_tile = path.path_tiles[-1]
+        train.position = make_train_position(
+            end_tile, Direction.EAST, occupied_blocks=["BLOCK_C"]
+        )
+        train.current_speed = 25.0
+
+        updated = dispatcher.on_train_progress_from_physics(path.path_id)
+
+        assert updated
+        assert dispatcher.get_path(path.path_id) is path
+        assert dispatcher.get_and_clear_completion_events() == []
 
 
 # ============================================================================

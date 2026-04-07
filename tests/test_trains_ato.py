@@ -2294,6 +2294,36 @@ class TestHandleEvaluator:
             f"Should brake when above curve, got {result.value}"
         )
 
+    def test_evaluate_brakes_when_current_speed_exceeds_curve_at_train(
+        self, controller_with_profile
+    ):
+        """Evaluator must score the train's current curve point, not just future samples."""
+        curve = [
+            {"distance_cm": 0.0, "operational_limit": 40.0, "atc_limit": 45.0},
+            {"distance_cm": 50.0, "operational_limit": 40.0, "atc_limit": 45.0},
+            {"distance_cm": 100.0, "operational_limit": 40.0, "atc_limit": 45.0},
+        ]
+
+        result = controller_with_profile._evaluate_handles_against_curve(
+            current_speed_kmh=50.0,
+            curve=curve,
+            horizon_cm=30.0,
+        )
+
+        _BRAKE_HANDLES = {
+            HandlePosition.B1,
+            HandlePosition.B2,
+            HandlePosition.B3,
+            HandlePosition.B4,
+            HandlePosition.B5,
+            HandlePosition.B6,
+            HandlePosition.B7,
+            HandlePosition.B8,
+        }
+        assert result in _BRAKE_HANDLES, (
+            f"Should brake when current speed exceeds curve@0, got {result.value}"
+        )
+
     def test_evaluate_selects_power_when_below_curve(self, controller_with_profile):
         """When speed is well below curve, should select a power handle."""
         # Flat curve at 40 km/h

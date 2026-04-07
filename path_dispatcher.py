@@ -1085,7 +1085,7 @@ class PathDispatcher:
                 self._complete_path_on_head_arrival(path, train)
                 return True
 
-        if train.position.head_tile == path.path_tiles[-1]:
+        if train.position.head_tile == path.path_tiles[-1] and train.is_stopped():
             self._complete_path_on_head_arrival(path, train)
             return True
 

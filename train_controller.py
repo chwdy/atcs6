@@ -92,8 +92,8 @@ CURVE_SAMPLE_RESOLUTION_CM = (
 )
 ATO_SPEED_MARGIN_KMH = 5.0  # ATO stays 5 km/h below ATC limit
 NEAR_STOP_DETECTION_CM = 50.0  # Distance to detect approaching stop for rate limiting
+ATO_RESTRICTION_LOOKAHEAD_CM = 150.0
 ATO_OVERSHOOT_WEIGHT = 10.0  # Penalty weight for exceeding speed curve in evaluator
-ATO_EARLY_EXIT_OVERSHOOT_KMH = 5.0  # Skip handle if first-sample overshoot exceeds this
 
 
 # =============================================================================
@@ -1926,8 +1926,6 @@ class TrainController:
 
     def _is_standalone_path_complete(self, train: "Train") -> bool:
         """Return True when a stopped running train has no remaining run context."""
-        if not self.path_backed_run_active:
-            return False
         if train.current_speed > STOPPED_SPEED_THRESHOLD_KMH:
             return False
         # ato_running=True is acceptable if there is no surviving path context —
@@ -2442,7 +2440,7 @@ class TrainController:
             if i in INDEX_TO_HANDLE_POSITION
         ]
 
-        sample_distances = [
+        sample_distances = [0.0] + [
             horizon_cm * (i + 1) / sample_count for i in range(sample_count)
         ]
 
@@ -2468,10 +2466,6 @@ class TrainController:
                     # Above curve - heavy penalty
                     overshoot = predicted_speed - curve_limits[j]
                     score += overshoot * ATO_OVERSHOOT_WEIGHT
-                    # Early exit: if overshot at first sample, this handle is bad
-                    if j == 0 and overshoot > ATO_EARLY_EXIT_OVERSHOOT_KMH:
-                        skip = True
-                        break
                 else:
                     # Below curve - mild penalty (want to be close to curve)
                     gap = curve_limits[j] - predicted_speed
@@ -2547,6 +2541,22 @@ class TrainController:
             self.handle_reason = reason
             return result_handle
 
+        if current_speed > effective_limit_at_zero + ATO_SPEED_TOLERANCE:
+            result_handle = self._calculate_braking_notch_for_speed(
+                current_speed, effective_limit_at_zero
+            )
+            result_handle = _rate_limit_handle(
+                current=self.handle_position,
+                target=result_handle,
+                allow_fast=True,
+            )
+            self._previous_speed = current_speed
+            self.handle_reason = (
+                f"Curve overspeed: speed={current_speed:.1f} "
+                f"> curve@0={effective_limit_at_zero:.1f}"
+            )
+            return result_handle
+
         # =================================================================
         # FUTURE-AWARE CONTROL: Evaluate handles against curve
         # =================================================================
@@ -2555,8 +2565,44 @@ class TrainController:
         km_h_to_cm_s = get_speed_conversion_factor()
         speed_cm_s = current_speed * km_h_to_cm_s
 
-        # Horizon = distance covered in ~1 second, clamped to [5, 50] cm
-        horizon_cm = max(5.0, min(50.0, speed_cm_s * 1.0))
+        # Horizon is long enough to see upcoming speed restrictions, but the
+        # evaluator still tracks the whole curve instead of clamping to the
+        # lowest future point.
+        profile = self._get_speed_profile()
+        operational_decel = max(
+            0.1, profile.deceleration_rate * profile.operational_decel_ratio
+        )
+        restriction_window_cm = min(
+            ATO_RESTRICTION_LOOKAHEAD_CM,
+            curves[-1].get("distance_cm", ATO_RESTRICTION_LOOKAHEAD_CM),
+        )
+        lower_curve_limits = [
+            point.get("operational_limit", effective_limit_at_zero)
+            for point in curves
+            if 0.0 < point.get("distance_cm", 0.0) <= restriction_window_cm
+            and (
+                point.get("operational_limit", effective_limit_at_zero)
+                > STOPPED_SPEED_THRESHOLD_KMH
+                or point.get("distance_cm", 0.0) <= NEAR_STOP_DETECTION_CM
+            )
+            and point.get("operational_limit", effective_limit_at_zero)
+            < current_speed - ATO_SPEED_TOLERANCE
+        ]
+        braking_horizon_cm = 0.0
+        if lower_curve_limits:
+            future_target_speed = min(lower_curve_limits)
+            decel_cm_s2 = operational_decel * km_h_to_cm_s
+            current_cm_s = current_speed * km_h_to_cm_s
+            target_cm_s = future_target_speed * km_h_to_cm_s
+            braking_horizon_cm = max(
+                0.0,
+                (current_cm_s * current_cm_s - target_cm_s * target_cm_s)
+                / (2 * decel_cm_s2),
+            )
+
+        horizon_cm = max(5.0, min(restriction_window_cm, speed_cm_s * 3.0))
+        if braking_horizon_cm > 0.0:
+            horizon_cm = max(horizon_cm, min(restriction_window_cm, braking_horizon_cm))
 
         result_handle = self._evaluate_handles_against_curve(
             current_speed_kmh=current_speed,
