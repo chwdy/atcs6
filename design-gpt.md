@@ -298,7 +298,9 @@ Review anchors:
 TODO: desired switch entity:
 - `Switch` should become a first-class resource entity at the same level as a block.
 - Add `switch_id: str` as a unique identifier with the same role as a block ID.
+- Add `state: int` as the authoritative physical switch state.
 - Replace single-owner `locked_by_path` / `locked_state` fields with `locks: Dict[str, int]`, mapping `path_id -> locked_state`.
+- `acquire_lock(path_id, state)` should first ensure the physical switch state matches `state`; if the current state differs, it should attempt to change the switch into `state` before recording the lock entry.
 - `acquire_lock(path_id, state)` should add a lock entry if the switch is free or all existing entries have the same state, and reject conflicting states.
 - `release_lock(path_id)` should remove only that path's entry; the switch should be free when the dict is empty.
 - Compatible locks from multiple paths holding the same state should be explicitly valid.
@@ -413,16 +415,19 @@ TODO: desired block-manager model:
 - `BlockManager` should become the database-style lock manager for block resources and the single serialization point for all-or-nothing acquisition.
 - Keep `occupy_blocks(block_ids, train_id)` as the existing atomic occupy helper.
 - Add `reserve_blocks_for_path(block_ids, path_id, train_id, directions)` to replace one-by-one block reservation with atomic reservation.
-- Add `release_path_blocks(block_ids, path_id)` to replace scattered direct `block.release()` calls during completion and cancellation.
+- `reserve_blocks_for_path(...)` should allow the assigned train's currently occupied start block to become path-reserved without clearing physical occupancy, because path creation may begin while the train is already in the start block.
+- Add `release_path_blocks(block_ids, path_id)` to release reservation ownership only; it should replace scattered direct `block.release()` calls during completion and cancellation without modifying physical occupancy state.
 - Update `set_block_to_caution()` to clear `occupied_by` so it matches the block ownership model.
-- Treat `release_block()` as the intended entry point for normal train-vacated and path-cancellation transitions, and keep `clear_block()` as an override or cleanup path.
+- Treat `release_block()` as the intended entry point for normal train-vacated physical transitions only, and keep `clear_block()` as an override or cleanup path.
+- Use distinct naming for physical vacate and reservation teardown so the responsibilities stay explicit. A physical-lifecycle name such as `on_block_tail_vacated(...)` and a reservation-teardown name such as `release_path_block_reservations(...)` would be clearer than two generic `release_*` names.
 - `BlockManager` should continue to hold a reference to `Network.blocks` rather than maintaining a separate block registry.
 
 TODO: desired `release_block()` behaviour (CAUTION neighbour-free logic):
 
 - When `TrainPhysics` detects a tail-vacate, it calls `block_manager.release_block(block_id, train_id)` instead of `set_block_to_caution()` directly.
-- `release_block()` sets the vacated block to `CAUTION`.
-- After setting the block to `CAUTION`, `BlockManager` checks all blocks that are currently in `CAUTION` state and advances each one to `FREE` if it is both non-reserved (`reserved_by_path` is `None`) and non-occupied (`occupied_by` is `None`).
+- `release_block()` sets the just-vacated block to `CAUTION`.
+- After setting that block to `CAUTION`, `BlockManager` should reevaluate all blocks currently in `CAUTION`.
+- A `CAUTION` block should advance to `FREE` only if it is non-occupied (`occupied_by is None`), non-reserved (`reserved_by_path is None`), and no adjacent block is currently `OCCUPIED`.
 - This means the `CAUTION → FREE` transition is driven by the manager on each `release_block()` call, not by a separate periodic scan or direct `clear_block()` call from physics.
 
 ## Path And PathDispatcher
@@ -438,8 +443,9 @@ TODO: desired `release_block()` behaviour (CAUTION neighbour-free logic):
 - `flank_protection_switches`, `overlap_blocks`, `approach_locked_blocks`: protection data.
 
 TODO: desired path model:
-- Replace `block_sequence` and `switch_positions` with `resource_sequence`, an ordered list of block IDs and switch IDs interleaved in traversal order.
-- Replace `current_block_index` with `current_resource_index`.
+- Replace `block_sequence` and `switch_positions` with `resource_sequence`, an ordered list of path-step records interleaving blocks and switches in traversal order.
+- Each `resource_sequence` entry should carry at least `sequence_index`, `resource_type`, and stable network `resource_id`.
+- Replace `current_block_index` with `current_resource_index`, which should track the active `sequence_index`, not the first matching raw resource ID.
 - Replace `blocks_cleared` with `resources_cleared`.
 - Remove `flank_protection_switches` from `Path`; flank protection should live on the switch entity and be acquired automatically when the switch is locked.
 
@@ -456,9 +462,11 @@ TODO: desired path model:
 
 TODO: desired `create_path()` flow:
 1. Keep the same high-level candidate-search and validation flow.
-2. Build `resource_sequence` in traversal order so both blocks and switches are tracked in one sequence.
-3. After storing the path in `active_paths`, copy block IDs from `resource_sequence` to `train.reserved_blocks` when needed.
-4. Push a path plan to the controller after successful creation so the controller receives path tiles, per-block speed limits, and `stop_position_cm`.
+2. Allow `create_path(start_block_id == end_block_id, ...)` for same-block repositioning.
+3. For same-block repositioning, build a synthetic local path with one block in the resource plan and an explicit `stop_position_cm` ahead of the train's current position.
+4. Build `resource_sequence` in traversal order so both blocks and switches are tracked in one sequence.
+5. After storing the path in `active_paths`, copy block IDs from `resource_sequence` to `train.reserved_blocks` when needed.
+6. Push a path plan to the controller after successful creation so the controller receives `path_id`, path tiles, per-block speed limits, destination block, and `stop_position_cm`.
 
 Resource acquisition:
 
@@ -472,8 +480,10 @@ TODO: desired resource acquisition:
 - Acquire switches first, then blocks, so switch conflicts fail before any blocks are reserved.
 - For each switch in path order, call `switch.acquire_lock(path_id, required_state)` and immediately acquire any `switch.flank_protection` locks.
 - Acquire blocks atomically through `BlockManager.reserve_blocks_for_path(...)`.
-- On failure, roll back in reverse acquisition order.
+- Resource acquisition should also set `track.path_direction` for the tiles owned by the path.
+- On failure, roll back in reverse acquisition order, including switch locks, block reservations, and any `path_direction` assignments.
 - Replace direct `block.release()` calls in completion and cancellation with `BlockManager.release_path_blocks(...)`.
+- If `track.path_direction` remains a single tile field, concurrent live paths must not share a tile when that would require different direction metadata.
 - If partial-path handling is kept, make its behavior explicit through a single failure-mode setting instead of scattering policy across acquisition code.
 
 Physics-driven progress:
@@ -497,15 +507,15 @@ Review anchors (current model only — all of these are superseded by the TODO b
 - `_complete_path_on_head_arrival` itself is TODO to remove; it is replaced by `_complete_path_on_full_stop` in the new model.
 
 TODO: desired physics-driven progress:
-- `TrainPhysics` should detect newly entered blocks and tail-vacated switches.
-- `SimulationController` should pass resource-entry transitions to `PathDispatcher.on_train_advances_from_physics(path_id, resource_id)`.
-- Dispatcher progress should update `current_resource_index`.
+- `TrainPhysics` should detect newly entered blocks, newly entered switches, and tail-vacated switches.
+- `SimulationController` should pass ordered resource-entry transitions to `PathDispatcher.on_train_advances_from_physics(path_id, resource_id)`.
+- Dispatcher progress should update `current_resource_index` using the path-step `sequence_index`, not by searching for the first matching raw `resource_id`.
 - Entering the final block should move the path into `CLEARING`, but it should not complete the path.
 - Completion should be performed by `_complete_path_on_full_stop(path, train)` only after the train is fully stopped at the terminal stop point.
 - Completed paths should release non-occupied resources, clear path directions, unlock switches, remove the path from `active_paths`, call `controller.on_path_complete()`, and then call `route_executor.handle_path_completion(...)` directly.
 - Remove `_record_completion_event()`, `completed_path_events`, and `get_and_clear_completion_events()`.
 - When creating a path, include `stop_position_cm` in the controller path plan so the controller brakes to the exact stop point before the path is released.
-- Drive switch release from tail-vacate detection in `TrainPhysics`, not from `_release_switches_for_block()`.
+- Drive switch release from tail-vacate detection in `TrainPhysics`, but let dispatcher-owned resource teardown use the reported switch ID and path ID rather than relying on block-based release helpers.
 - Route any normal block release through `block_manager.release_block()` so `OCCUPIED -> CAUTION -> FREE` remains a single-manager state machine.
 
 Path extension:
@@ -519,6 +529,7 @@ Path extension:
 TODO: desired path extension:
 - Keep forward-only extension.
 - When the path model switches to `resource_sequence`, append new tiles and new resources while skipping duplicated connection/start entries.
+- Reject any extension that would cause a resource to appear twice in the combined path.
 
 Cancellation:
 
@@ -540,7 +551,8 @@ Review anchors:
 
 TODO: desired path review anchors:
 - `resource_sequence` replaces both `block_sequence` and `switch_positions`, so existing callers iterating those fields need updating.
-- `current_resource_index` uses the first index of the entered resource in `resource_sequence`; repeated resource IDs in a complex path need careful review.
+- `current_resource_index` should track `sequence_index`, not the first occurrence of a raw resource ID.
+- For v1, repeated resources in a single path are invalid and should be rejected during both `create_path()` and `extend_path()`.
 - Switch zero-length means approach-lock, overlap, and braking-distance calculations remain unchanged; switches in `resource_sequence` simply contribute 0 cm.
 - `FLANK_PROTECTION_DISTANCE_CM` should be a global config, not a per-path setting.
 - Multi-lock switches must allow the same state to be acquired by more than one path.
@@ -573,6 +585,11 @@ TODO: desired path review anchors:
 7. If train is `RUNNING_WAITING` and waiting for path, retry path request.
 8. Manual trains only get arrival checks.
 
+TODO: desired route-executor state reads:
+- `RouteExecutor` should read live operational state from `TrainController`, not from mirrored runtime fields on `Train`.
+- Departure, retry, arrival, dwell, and waiting decisions should use controller state as the operational source of truth.
+- `Train` may still expose persisted or UI-facing state, but route-control decisions should not depend on it being a live mirror.
+
 Concrete `RouteExecutor.update(delta_time)` call chain:
 
 - `update(delta_time)` increments `RouteExecutor.simulation_time`.
@@ -589,6 +606,15 @@ Concrete `RouteExecutor.update(delta_time)` call chain:
 - If the train state is `RUNNING_WAITING` and `exec_state.waiting_for_path` is true, `_execute_route_for_train()` calls `_try_depart_to_waypoint(train, route, exec_state)` again.
 - If the train state is `MANUAL`, `_execute_route_for_train()` calls `_check_waypoint_arrival(train, route, exec_state)`.
 
+TODO: desired concrete `RouteExecutor.update(delta_time)` calls:
+- `update(delta_time)` should continue to increment `RouteExecutor.simulation_time`, scan active route/train pairs, and call `_execute_route_for_train(train, route)`.
+- `_execute_route_for_train()` should continue to create or reuse `RouteExecutionState`, resolve the current waypoint, and store the resolved platform in `exec_state`.
+- The operational state checks inside `_execute_route_for_train()` should read controller state rather than `train.state`.
+- If controller state is `STANDBY` or `IDLE`, `_execute_route_for_train()` should call `_try_depart_to_waypoint(train, route, exec_state)`.
+- If controller state is `RUNNING_MOVING` or manual-in-motion, `_execute_route_for_train()` should call `_check_waypoint_arrival(train, route, exec_state)`.
+- If controller state is `RUNNING_AT_STATION`, `_execute_route_for_train()` should call `_check_dwell_complete(train, route, exec_state)`.
+- If controller state is `RUNNING_WAITING` and `exec_state.waiting_for_path` is true, `_execute_route_for_train()` should call `_try_depart_to_waypoint(train, route, exec_state)` again.
+
 Departure to waypoint:
 
 - Resolve target platform and platform block.
@@ -603,10 +629,12 @@ Departure to waypoint:
 
 TODO: desired departure-to-waypoint flow:
 - Keep the same waypoint resolution and path-request flow.
+- If the train is already within the waypoint stop window in the target block, do not call `controller.depart()`. Treat the waypoint as already arrived and hand off directly to arrival/dwell handling.
+- If the train is in the target block but not yet at the waypoint stop window, request a synthetic same-block path with an explicit `stop_position_cm`.
 - On successful path, set `train.current_path`, `train.path_index`, and `train.assigned_path_id`.
-- Set `controller.ato_path_id`, but stop setting destination-block info directly on either `Train` or `TrainController`.
-- Deliver destination block and exact stop position inside the controller path plan pushed by `PathDispatcher`.
-- Keep `controller.depart()` as the way movement begins.
+- Do not set destination-block or path-id fields directly on either `Train` or `TrainController`; controller authority should come only from the pushed path plan.
+- Deliver `path_id`, destination block, and exact `stop_position_cm` inside the controller path plan pushed by `PathDispatcher`.
+- Keep `controller.depart()` as the way movement begins once a valid path plan exists.
 
 Concrete departure calls:
 
@@ -623,10 +651,12 @@ Concrete departure calls:
 - `controller.depart()` delegates to `controller.ato_go()` in ATO mode, or directly sets `RUNNING_MOVING` in manual mode after precondition checks.
 
 TODO: desired concrete departure calls:
+- If current block already equals target block and the train is already inside the waypoint stop window, bypass `controller.depart()` and enter the same arrival/dwell path used after normal path completion.
+- If current block already equals target block but the train is not yet inside the waypoint stop window, call `path_dispatcher.create_path(...)` with the same start and end block and a requested `stop_position_cm` for a synthetic local path.
 - After `_convert_path_to_train_path(path_result.path)`, set `train.current_path`, `train.path_index`, and `train.assigned_path_id` as before.
-- Set `controller.ato_path_id`, but do not set `train.ato_destination_block_id`.
-- Let `PathDispatcher` push destination block and `stop_position_cm` to the controller as part of the path plan.
-- Keep the fallback behavior where `controller.depart()` is called directly if no dispatcher exists.
+- Do not set `controller.ato_path_id` or any destination field directly from `RouteExecutor`.
+- Let `PathDispatcher` push `path_id`, destination block, and `stop_position_cm` to the controller as part of the path plan.
+- Remove the route-controlled fallback where `controller.depart()` is called directly without dispatcher authority; route-driven movement should require a dispatcher path plan.
 
 Arrival and dwell:
 
@@ -736,8 +766,9 @@ Important state:
 TODO: desired controller state:
 - Add `manual_mode_type`, such as `simulation` or `voltage`.
 - Add `manual_power_percent` for voltage-mode manual control.
-- Keep `ato_path_id`, but derive `ato_destination_block_id` from a controller-owned `received_path_plan` instead of storing it independently.
 - Add `received_path_plan` as the controller inbox for the active path plan pushed by `PathDispatcher`.
+- `received_path_plan` should carry at least `path_id`, destination block, path tiles, per-block speed limits, and `stop_position_cm`.
+- Derive `ato_path_id` and `ato_destination_block_id` from `received_path_plan` instead of storing or writing them independently.
 - Keep `lookahead`, but make it the canonical cached series used by ATC, ATO, UI, and monitor consumers.
 - Remove standalone scalar fields such as `target_speed`, `speed_limit_reason`, and `effective_limit` once those values are represented through lookahead-at-distance-0 reads.
 
@@ -855,9 +886,11 @@ TODO: desired driver/operator inputs:
 - Add `set_manual_power_percent()` as the active driver input for `voltage` submode manual control.
 
 TODO: desired dispatcher/route-executor inputs:
-- Add `receive_path_plan(path_plan)`, called by `PathDispatcher` after successful `create_path()` and with `None` on cancellation.
+- Add `receive_path_plan(path_plan)`, called by `PathDispatcher` after successful `create_path()` and with `None` on cancellation or replacement.
+- `path_plan` should include `path_id`, destination block, path tiles, per-block speed limits, and `stop_position_cm`.
 - Add `on_path_complete()`, called by `PathDispatcher._complete_path_on_full_stop()` when the train has fully stopped at the terminal stop point.
 - Keep `depart()`, `wait_for_path(reason)`, `arrive_at_station()`, and `depart_from_station(has_more_waypoints)` as route-executor-facing controller commands.
+- `RouteExecutor` should not set controller path or destination fields directly; controller authority should be derived entirely from `receive_path_plan(...)`.
 - Replace `transition_to_standby()` as the completion hook with `on_path_complete()` once completion teardown is controller-owned.
 
 TODO: desired read accessors:
@@ -1085,16 +1118,19 @@ Typical route-controlled run:
 
 TODO: desired end-to-end ATO run:
 1. Route is active and assigned to the train.
-2. In Phase 1 setup, `RouteExecutor` resolves the next platform waypoint and calls `PathDispatcher.create_path()`.
-3. `RouteExecutor` stores `assigned_path_id` on the train and the controller receives destination block plus `stop_position_cm` through the pushed path plan.
-4. Each simulation tick runs in setup, execute, and feedback phases:
-  - setup: route/path planning
-  - execute: controller lookahead, ATC, and ATO/manual command generation, followed by physics movement
-  - feedback: dispatcher resource progress, release, and completion checks
-5. On path completion, `PathDispatcher._complete_path_on_full_stop()` releases remaining resources, calls `controller.on_path_complete()`, and calls `RouteExecutor.handle_path_completion()` directly.
-6. `RouteExecutor.handle_path_completion()` clears train path fields and hands route-level arrival/dwell logic to `_check_waypoint_arrival()`.
-7. Dwell continues through `RUNNING_AT_STATION` and `Waypoint.should_depart()`.
-8. When dwell completes, `RouteExecutor` advances the waypoint index and the cycle repeats.
+2. In Phase 1 setup, `RouteExecutor` resolves the next platform waypoint.
+3. If the train is already within the waypoint stop window, `RouteExecutor` treats the waypoint as arrived and hands off directly to dwell logic.
+4. If the train is in the target block but not yet at the stop point, `RouteExecutor` requests a synthetic same-block path with explicit `stop_position_cm`.
+5. Otherwise `RouteExecutor` calls `PathDispatcher.create_path()` normally.
+6. `RouteExecutor` stores `assigned_path_id` on the train and the controller receives `path_id`, destination block, and `stop_position_cm` through the pushed path plan.
+7. Each simulation tick runs in setup, execute, and feedback phases:
+   - setup: route/path planning
+   - execute: controller lookahead, ATC, and ATO/manual command generation, followed by physics movement
+   - feedback: dispatcher resource progress, release, and completion checks
+8. On path completion, `PathDispatcher._complete_path_on_full_stop()` releases remaining resources, calls `controller.on_path_complete()`, and calls `RouteExecutor.handle_path_completion()` directly.
+9. `RouteExecutor.handle_path_completion()` clears train path fields and hands route-level arrival/dwell logic to `_check_waypoint_arrival()`.
+10. Dwell continues through `RUNNING_AT_STATION` and `Waypoint.should_depart()`.
+11. When dwell completes, `RouteExecutor` advances the waypoint index and the cycle repeats.
 
 ## Logic Review Checklist
 
@@ -1115,12 +1151,15 @@ Use this checklist when reviewing train-running behavior:
 - Are controller fields and train fields being kept in sync when API commands bypass the simulation loop?
 
 TODO: desired review checklist:
-- Is the controller receiving a path plan with `stop_position_cm` when path-end stopping matters?
+- Is the controller receiving a path plan with `path_id` and `stop_position_cm` when path-end stopping matters?
 - Is controller lookahead the only source of target speed and speed-limit reason?
 - In manual mode, does ATC enforce the end of the assigned path as a hard stop through `_calculate_authority_boundary_limit()`?
 - Can any path-complete event still fire while the train is braking or creeping toward the terminal stop point?
-- Is `PathDispatcher._release_blocks_behind_train()` dead production code, or does it still need to be wired into runtime behavior?
 - Does `_ato_calculate_handle()` read only the current tick's canonical lookahead payload, not stale scalar fields?
+- Does `RouteExecutor` read controller state rather than mirrored runtime state on `Train`?
+- For same-block waypoints, does the route either treat the train as already arrived or create a synthetic same-block path rather than starting movement without dispatcher authority?
+- Are repeated resources rejected during both `create_path()` and `extend_path()`?
+- Does `CAUTION -> FREE` require the block to be non-occupied, non-reserved, and no longer adjacent to an occupied block?
 
 Current verified notes:
 - Switches release immediately on tail-vacate, not on full stop. `TrainPhysics` calls `switch.release_lock(path_id)` when the train tail fully vacates a switch tile.
