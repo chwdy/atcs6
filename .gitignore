@@ -37,3 +37,4 @@ plans
 !docs/plans/
 !docs/plans/**
 AGENTS.md
+.opencode/package-lock.json
