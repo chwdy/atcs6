@@ -620,11 +620,6 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
         path_dispatcher=path_dispatcher,
     )
 
-    # Set ATO destination block from the path's end block
-    # This is critical for proper stopping position calculation
-    if path_result and path_result.success and path_result.path:
-        controller.ato_destination_block_id = path_result.path.end_block_id
-
     controller.power_on_cmd()
     controller.set_direction_and_standby(Direction.EAST)
     controller.depart()

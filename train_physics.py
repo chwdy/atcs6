@@ -10,7 +10,7 @@ Responsibilities:
 - Convert handle position to acceleration/deceleration rates
 - Update train speed based on acceleration and time delta
 - Move train position along the track (head and tail)
-- Manage block occupancy (occupy new blocks, release vacated blocks)
+- Track tile-level traversal frames per crossed resource boundary
 - Output voltage to BlockPowerController
 
 Architecture:
@@ -18,30 +18,26 @@ Architecture:
             |
             v
     +-----------------+     +---------------+
-    | TrainController |---->| TrainPhysics  |
+    | TrainController |<----| TrainPhysics  |
     | (Control Logic) |     | (Movement)    |
     +-----------------+     +---------------+
             |                      |
             v                      v
-        +-------+           +-------------+
-        | Train |           | BlockManager|
-        | (Data)|           +-------------+
-        +-------+                  |
-                                   v
-                           +------------------+
-                           |BlockPowerController|
-                           +------------------+
+        +-------+           +------------------+
+        | Train |           |BlockPowerController|
+        | (Data)|           +------------------+
+        +-------+
 
 Design Principles:
 1. Pure Physics: Only handles movement calculations and world interactions
-2. Reads from Controller: Gets handle_position, power state from TrainController
-3. Writes to Train: Updates position, current_speed on Train entity
-4. Writes to World: Updates BlockManager states, BlockPowerController voltages
+2. Reads from Controller: Gets handle_position, power state, current_speed_kmh
+3. Writes to Controller: Movement results delivered via on_physics_updated
+4. Writes to World: BlockPowerController voltage emission (hardware-output path)
 5. No Decision Making: Doesn't decide speed limits or handle positions
-
 """
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
@@ -55,6 +51,7 @@ from enums import (
     TrainState,
 )
 from model_scale import kmh_to_cm_per_sec
+from runtime_payloads import PhysicsSpanUpdate, TileTraversal
 
 if TYPE_CHECKING:
     from block_manager import BlockManager
@@ -108,6 +105,11 @@ class TrainPhysics:
     # Tick counter for periodic sync validation
     _tick_count: int = 0
     _sync_validation_interval: int = 10  # Validate every N ticks
+    # Set transiently inside _advance_end when the train hits the end of track.
+    # The tick body inspects this flag, applies the stop to new_speed, and then
+    # delivers it to TrainController.on_physics_updated(...). The flag is reset
+    # at the start of every movement step.
+    _force_stop: bool = False
 
     # =========================================================================
     # Internal Helpers
@@ -162,7 +164,12 @@ class TrainPhysics:
         """
         Called each simulation tick by SimulationController.
 
-        Executes physical movement based on TrainController state.
+        Executes physical movement and emits one ordered PhysicsSpanUpdate per
+        crossed resource boundary plus one final no-boundary callback every tick
+        through TrainController.on_physics_updated(event_time, span_update).
+
+        The voltage emission to BlockPowerController is preserved as the
+        software-to-hardware output layer.
 
         Args:
             delta: Time elapsed since last tick (seconds)
@@ -175,12 +182,30 @@ class TrainPhysics:
         if not controller:
             return
 
-        # 1. Skip if powered off - set all blocks to 0V
+        event_time = time.time()
+
+        # 1. Skip movement if powered off, but still set voltage to 0 and emit
+        # the canonical no-boundary callback so controller-owned span/speed
+        # storage stays canonical even on OFF ticks.
         if not controller.power_on:
             self._set_voltage_for_blocks(train, 0.0)
+            current_speed_kmh = self._read_current_speed(train)
+            self._emit_final_no_boundary_callback(
+                controller, train, event_time, current_speed_kmh
+            )
             return
 
-        # 2. Get acceleration from handle position
+        # 2. Capture pre-move state for tile-delta computation. The previous
+        # occupied tile list and the pre-move tail/head locator drive the
+        # added_tiles / removed_tiles delta the controller consumes.
+        prev_occupied_tiles = (
+            list(train.position.occupied_tiles)
+            if train.position and train.position.occupied_tiles
+            else []
+        )
+        prev_tail_locator = self._get_tail_locator(train)
+
+        # 3. Get acceleration from handle position
         profile = self._get_speed_profile()
         acceleration = self._get_acceleration_for_handle(
             controller.handle_position,
@@ -189,61 +214,64 @@ class TrainPhysics:
             profile.emergency_brake_rate,
         )
 
-        # 3. Update speed based on acceleration
-        previous_speed = train.current_speed
+        # 4. Integrate speed. Read previous speed from controller-owned storage
+        # when available (canonical source per design); fall back to the
+        # train-side mirror only as a transitional safety net.
+        previous_speed = self._read_current_speed(train)
         new_speed = previous_speed + (acceleration * delta)
 
-        # 4. Clamp speed to valid range [0, inf)
+        # 5. Clamp speed to valid range [0, inf)
         new_speed = max(0.0, new_speed)
 
-        # 5. If braking and speed is low enough, stop completely
+        # 6. If braking and speed is low enough, stop completely
         if acceleration < 0 and new_speed <= STOPPED_SPEED_THRESHOLD_KMH:
             new_speed = 0.0
 
-        # 6. When coasting (N), apply minimal friction/resistance
-        if controller.handle_position == HandlePosition.N and train.current_speed > 0:
-            # Gentle deceleration from friction (using profile's friction_rate)
+        # 7. When coasting (N), apply minimal friction/resistance
+        if controller.handle_position == HandlePosition.N and previous_speed > 0:
             friction_decel = profile.friction_rate * delta
             new_speed = max(0.0, new_speed - friction_decel)
 
-        # 6a. Apply air resistance to ALL running trains (simulation feature)
-        # Air drag increases with speed squared for realistic physics
-        # Can be disabled by setting air_resistance_enabled=False in profile
+        # 8. Apply air resistance for any moving train
         if (
             profile.air_resistance_enabled
-            and train.current_speed > 0
+            and previous_speed > 0
             and profile.reference_speed_kmh > 0
         ):
-            # Calculate drag force: F_drag ~ v^2
-            # Convert to deceleration: a_drag = F_drag / mass ~ v^2 / mass
-            # Using profile's reference_speed to normalize
-            speed_ratio = train.current_speed / profile.reference_speed_kmh
+            speed_ratio = previous_speed / profile.reference_speed_kmh
             drag_decel = profile.drag_coefficient * (speed_ratio**2) * delta
             new_speed = max(0.0, new_speed - drag_decel)
 
-        speed_delta = new_speed - previous_speed
         logger.debug(
             "[TrainPhysics %s] speed update: new_speed=%.2f delta=%.2f speed_delta=%.2f",
             self.train_id,
             new_speed,
             delta,
-            speed_delta,
+            new_speed - previous_speed,
         )
 
-        train.current_speed = new_speed
-
-        # 7. Calculate distance to move
+        # 9. Calculate distance to move
         distance_cm = self._speed_to_distance(new_speed, delta)
         logger.debug("[TrainPhysics %s] distance_cm=%.2f", self.train_id, distance_cm)
 
-        # 8. Move train position
+        # 10. Move train position. _move_train / _advance_end may force a stop
+        # when the train hits the end of track; that stop is captured in
+        # self._force_stop and applied to new_speed before the callback.
+        self._force_stop = False
         if distance_cm > 0:
             self._move_train(train, distance_cm)
             logger.debug(
                 "[TrainPhysics %s] moved distance_cm=%.2f", self.train_id, distance_cm
             )
 
-        # 9. Update block occupancy
+        if self._force_stop:
+            new_speed = 0.0
+
+        # 11. Update block occupancy. The dispatcher-mediated block release
+        # path remains in place for in-flight v1 wiring; it will be lifted to
+        # PathDispatcher.on_controller_progress(...) by Agent B. The line that
+        # mirrors occupied_blocks back onto train.position has been removed —
+        # the controller derives that via the just-delivered span_update.
         self._update_block_occupancy(train)
         logger.debug(
             "[TrainPhysics %s] occupied_blocks=%s caution_blocks=%s",
@@ -252,13 +280,36 @@ class TrainPhysics:
             sorted(self._caution_blocks),
         )
 
-        # 10. Periodic position sync validation (every N ticks)
+        # 12. Build and emit per-boundary PhysicsSpanUpdate callbacks plus
+        # one final no-boundary callback for this tick.
+        new_occupied_tiles = (
+            list(train.position.occupied_tiles)
+            if train.position and train.position.occupied_tiles
+            else []
+        )
+        added_traversals = self._build_added_tile_traversals(
+            prev_occupied_tiles, new_occupied_tiles
+        )
+        removed_traversals = self._build_removed_tile_traversals(
+            prev_occupied_tiles, new_occupied_tiles, prev_tail_locator
+        )
+        self._emit_span_updates(
+            controller,
+            train,
+            event_time,
+            new_speed,
+            added_traversals,
+            removed_traversals,
+        )
+
+        # 13. Periodic position-block sync diagnostic (no auto-correction now
+        # that the controller owns occupied_blocks state via the span).
         self._tick_count += 1
         if self._tick_count >= self._sync_validation_interval:
             self._validate_position_sync(train)
             self._tick_count = 0
 
-        # 11. Output voltage to occupied blocks
+        # 14. Output voltage to occupied blocks (hardware-output path)
         self._update_voltage_output(train, controller)
         logger.debug("[TrainPhysics %s] voltage update complete", self.train_id)
 
@@ -320,6 +371,274 @@ class TrainPhysics:
         """
         cm_per_second = kmh_to_cm_per_sec(speed_kmh)
         return cm_per_second * delta
+
+    # =========================================================================
+    # Span-update / boundary-callback helpers
+    # =========================================================================
+
+    def _read_current_speed(self, train: "Train") -> float:
+        """Return the canonical current speed.
+
+        Per design_new.md the controller owns ``current_speed_kmh``; we read
+        from there when present and fall back to ``train.current_speed`` for
+        transitional safety until the controller-side mirror lands.
+        """
+        controller_speed = getattr(self.controller, "current_speed_kmh", None)
+        if controller_speed is not None:
+            return float(controller_speed)
+        return float(getattr(train, "current_speed", 0.0))
+
+    def _get_tail_locator(
+        self, train: "Train"
+    ) -> Optional[Tuple[Tuple[int, int], str]]:
+        """Return (tail_tile, tail_entry_edge) for the current train position."""
+        if not train.position:
+            return None
+        if train.position.leading_end == LeadingEnd.A:
+            return (train.position.end_b_tile, train.position.end_b_entry_edge)
+        return (train.position.end_a_tile, train.position.end_a_entry_edge)
+
+    def _walk_tile_frames(
+        self,
+        start_tile: Tuple[int, int],
+        start_entry_edge: str,
+        target_tiles: Set[Tuple[int, int]],
+    ) -> List[TileTraversal]:
+        """Walk tiles forward from ``start_tile`` (entered via ``start_entry_edge``)
+        and emit one ``TileTraversal`` per visited tile, stopping after the walk
+        has covered every tile in ``target_tiles``.
+
+        The walk uses the same exit-edge resolution as ``_calculate_exit_edge``,
+        which honors live track/switch geometry. Each emitted ``TileTraversal``
+        carries the tile-level entry/exit edges plus best-effort
+        ``resource_type`` / ``resource_id`` / ``block_id`` populated from the
+        ``RailwayNetwork`` track index so the controller can derive resource
+        events without re-walking the network.
+        """
+        frames: List[TileTraversal] = []
+        if not target_tiles:
+            return frames
+
+        remaining = set(target_tiles)
+        current_tile = start_tile
+        current_entry = start_entry_edge
+
+        max_iterations = 200
+        for _ in range(max_iterations):
+            exit_edge = self._calculate_exit_edge(current_tile, current_entry)
+            if not exit_edge:
+                # End of track / unresolvable exit; emit current tile with
+                # entry but no clean exit, then stop.
+                if current_tile in remaining:
+                    frames.append(
+                        self._make_tile_traversal(
+                            current_tile, current_entry, current_entry
+                        )
+                    )
+                    remaining.discard(current_tile)
+                break
+
+            if current_tile in remaining:
+                frames.append(
+                    self._make_tile_traversal(current_tile, current_entry, exit_edge)
+                )
+                remaining.discard(current_tile)
+                if not remaining:
+                    break
+
+            next_tile = self._get_neighbor_tile(current_tile, exit_edge)
+            if next_tile is None:
+                break
+            current_tile = next_tile
+            current_entry = OPPOSITE_EDGES[exit_edge]
+
+        return frames
+
+    def _make_tile_traversal(
+        self,
+        tile: Tuple[int, int],
+        entry_edge: str,
+        exit_edge: str,
+    ) -> TileTraversal:
+        """Build a ``TileTraversal`` populated with resource metadata from the
+        live network track index when available."""
+        resource_type: Optional[str] = None
+        resource_id: Optional[str] = None
+        block_id: Optional[str] = None
+
+        if self.network:
+            track = self.network.get_track(*tile)
+            if track is not None:
+                # block_id always reflects the block this tile sits inside,
+                # even when the primary resource for the tile is a switch.
+                if track.block_section_id:
+                    block_id = track.block_section_id
+                if getattr(track, "is_switch", False) and track.switch_id:
+                    resource_type = "switch"
+                    resource_id = track.switch_id
+                elif track.block_section_id:
+                    resource_type = "block"
+                    resource_id = track.block_section_id
+
+        return TileTraversal(
+            tile_xy=tile,
+            entry_edge=entry_edge,
+            exit_edge=exit_edge,
+            resource_type=resource_type,  # type: ignore[arg-type]
+            resource_id=resource_id,
+            block_id=block_id,
+        )
+
+    def _build_added_tile_traversals(
+        self,
+        prev_occupied_tiles: List[Tuple[int, int]],
+        new_occupied_tiles: List[Tuple[int, int]],
+    ) -> List[TileTraversal]:
+        """Compute per-tile traversal frames for tiles newly covered by the
+        post-move span. Walk forward from the post-move tail through the new
+        occupied tile chain so every added tile gets a directed entry/exit
+        edge in physical traversal order."""
+        prev_set = set(prev_occupied_tiles)
+        new_set = set(new_occupied_tiles)
+        added_set = new_set - prev_set
+        if not added_set:
+            return []
+
+        train = self._get_train()
+        if not train or not train.position:
+            return []
+
+        # Walk from the post-move tail forward; this covers every tile in the
+        # new span, including the new head-side additions.
+        tail_locator = self._get_tail_locator(train)
+        if tail_locator is None:
+            return []
+
+        tail_tile, tail_entry = tail_locator
+        return self._walk_tile_frames(tail_tile, tail_entry, added_set)
+
+    def _build_removed_tile_traversals(
+        self,
+        prev_occupied_tiles: List[Tuple[int, int]],
+        new_occupied_tiles: List[Tuple[int, int]],
+        prev_tail_locator: Optional[Tuple[Tuple[int, int], str]],
+    ) -> List[TileTraversal]:
+        """Compute per-tile traversal frames for tiles vacated since the
+        previous tick. Walk forward from the pre-move tail; the vacated tiles
+        emerge in tail-vacate order (closest to old tail first)."""
+        prev_set = set(prev_occupied_tiles)
+        new_set = set(new_occupied_tiles)
+        removed_set = prev_set - new_set
+        if not removed_set:
+            return []
+
+        if prev_tail_locator is None:
+            return []
+
+        prev_tail_tile, prev_tail_entry = prev_tail_locator
+        return self._walk_tile_frames(prev_tail_tile, prev_tail_entry, removed_set)
+
+    def _group_traversals_by_resource(
+        self, traversals: List[TileTraversal]
+    ) -> List[List[TileTraversal]]:
+        """Group consecutive same-resource tile traversals into one batch per
+        resource boundary. Tiles without resolved resource metadata fall into
+        their own single-tile groups so the controller can still account for
+        them.
+        """
+        if not traversals:
+            return []
+        groups: List[List[TileTraversal]] = []
+        current: List[TileTraversal] = []
+        current_key: Optional[Tuple[Optional[str], Optional[str]]] = None
+        for tile in traversals:
+            key = (tile.resource_type, tile.resource_id)
+            if current_key is None:
+                current_key = key
+                current = [tile]
+                continue
+            if key == current_key and key != (None, None):
+                current.append(tile)
+            else:
+                groups.append(current)
+                current = [tile]
+                current_key = key
+        if current:
+            groups.append(current)
+        return groups
+
+    def _emit_span_updates(
+        self,
+        controller: "TrainController",
+        train: "Train",
+        event_time: float,
+        new_speed: float,
+        added_traversals: List[TileTraversal],
+        removed_traversals: List[TileTraversal],
+    ) -> None:
+        """Emit one PhysicsSpanUpdate per resource boundary plus one final
+        no-boundary callback for this tick.
+
+        Per design_new.md "Physical progress / deviation procedure":
+          - one ordered span_update per crossed resource boundary in physical
+            traversal order
+          - one final no-boundary callback every tick so Phase 3 always has a
+            deterministic consume point
+
+        The current span object passed as ``new_span`` is the post-move
+        ``train.position`` snapshot; the controller owns the canonical span
+        storage and uses ``span_update.new_span`` to refresh it.
+        """
+        new_span = train.position
+
+        added_groups = self._group_traversals_by_resource(added_traversals)
+        removed_groups = self._group_traversals_by_resource(removed_traversals)
+
+        # Per-boundary callbacks for entered resources first.
+        for group in added_groups:
+            update = PhysicsSpanUpdate(
+                new_span=new_span,
+                current_speed_kmh=new_speed,
+                added_tiles=group,
+                removed_tiles=[],
+            )
+            controller.on_physics_updated(event_time, update)
+
+        # Per-boundary callbacks for tail-vacated resources next.
+        for group in removed_groups:
+            update = PhysicsSpanUpdate(
+                new_span=new_span,
+                current_speed_kmh=new_speed,
+                added_tiles=[],
+                removed_tiles=group,
+            )
+            controller.on_physics_updated(event_time, update)
+
+        # Final no-boundary callback (always emitted).
+        final_update = PhysicsSpanUpdate(
+            new_span=new_span,
+            current_speed_kmh=new_speed,
+            added_tiles=[],
+            removed_tiles=[],
+        )
+        controller.on_physics_updated(event_time, final_update)
+
+    def _emit_final_no_boundary_callback(
+        self,
+        controller: "TrainController",
+        train: "Train",
+        event_time: float,
+        current_speed_kmh: float,
+    ) -> None:
+        """Emit the final no-boundary PhysicsSpanUpdate for ticks where no
+        movement occurred (powered-off ticks)."""
+        update = PhysicsSpanUpdate(
+            new_span=train.position,
+            current_speed_kmh=current_speed_kmh,
+            added_tiles=[],
+            removed_tiles=[],
+        )
+        controller.on_physics_updated(event_time, update)
 
     # =========================================================================
     # Movement Logic
@@ -402,13 +721,13 @@ class TrainPhysics:
                 exit_edge = self._calculate_exit_edge(new_tile, new_entry_edge)
                 if not exit_edge:
                     new_distance = 0.0
-                    train.current_speed = 0.0
+                    self._force_stop = True
                     break
 
                 next_tile = self._get_neighbor_tile(new_tile, exit_edge)
                 if next_tile is None:
                     new_distance = 0.0
-                    train.current_speed = 0.0
+                    self._force_stop = True
                     break
 
                 new_tile = next_tile
@@ -425,7 +744,7 @@ class TrainPhysics:
             if not exit_edge:
                 # End of track - stop at tile boundary
                 new_distance = tile_length
-                train.current_speed = 0.0
+                self._force_stop = True
                 break
 
             # Get next tile
@@ -433,7 +752,7 @@ class TrainPhysics:
             if next_tile is None:
                 # End of track - stop at tile boundary
                 new_distance = tile_length
-                train.current_speed = 0.0
+                self._force_stop = True
                 break
 
             # Move to next tile
@@ -658,12 +977,10 @@ class TrainPhysics:
             if block_manager.set_block_to_caution(block_id):
                 self._caution_blocks.add(block_id)
 
-        # Update tracking
+        # Update tracking. occupied_blocks is no longer mirrored back onto
+        # train.position; the controller derives it from the span_update
+        # delivered through TrainController.on_physics_updated(...).
         self._last_occupied_blocks = new_occupied
-
-        # Update TrainPosition's occupied_blocks if available
-        if train.position:
-            train.position.occupied_blocks = list(new_occupied)
 
     def _get_blocks_for_train(self, train: "Train") -> Set[str]:
         """
@@ -691,52 +1008,27 @@ class TrainPhysics:
 
     def _validate_position_sync(self, train: "Train") -> bool:
         """
-        Validate that tile positions and block occupancy are in sync.
+        Diagnostic-only sync check between tile-derived blocks and the local
+        last-occupied-blocks tracker.
 
-        Called periodically as a safety check. If desync detected,
-        auto-corrects by using tile-derived blocks as the source of truth.
-
-        Args:
-            train: Train to validate
-
-        Returns:
-            True if in sync, False if desync was detected and corrected
+        Per design_new.md the controller now owns occupied_resources via the
+        span_update; the tile-derived block set should match the local
+        _last_occupied_blocks set on every tick. We only log the discrepancy
+        here — block-state corrections belong to the dispatcher progress flow.
         """
         if not train.position:
             return True
 
-        # Calculate expected blocks from tiles (source of truth)
         expected_blocks = self._get_blocks_for_train(train)
-
-        # Get recorded occupied blocks
-        actual_blocks = (
-            set(train.position.occupied_blocks)
-            if train.position.occupied_blocks
-            else set()
-        )
-
-        if expected_blocks != actual_blocks:
+        if expected_blocks != self._last_occupied_blocks:
             logger.warning(
-                "[TrainPhysics %s] Position desync detected! "
-                "Expected blocks (from tiles): %s, Actual recorded: %s. "
-                "Auto-correcting to tile-derived blocks.",
+                "[TrainPhysics %s] tile-derived blocks %s differ from local "
+                "tracker %s",
                 train.train_id,
                 sorted(expected_blocks),
-                sorted(actual_blocks),
+                sorted(self._last_occupied_blocks),
             )
-
-            # Auto-correct: update TrainPosition.occupied_blocks
-            train.position.occupied_blocks = list(expected_blocks)
-
-            # Also update BlockManager to match
-            block_manager = self._get_block_manager()
-            if block_manager:
-                # Occupy blocks that should be occupied but aren't
-                for block_id in expected_blocks - actual_blocks:
-                    block_manager.occupy_block(block_id, train.train_id)
-
             return False
-
         return True
 
     # =========================================================================
@@ -749,7 +1041,9 @@ class TrainPhysics:
         """
         Output voltage to all blocks occupied by this train.
 
-        Uses SpeedProfile to convert target speed to voltage.
+        Uses SpeedProfile to convert target speed to voltage. Voltage is
+        per-tick derived state owned by TrainPhysics and emitted as the
+        software-to-hardware output layer through BlockPowerController.
         """
         power_controller = self._get_power_controller()
         if not power_controller:
@@ -757,25 +1051,19 @@ class TrainPhysics:
 
         profile = self._get_speed_profile()
 
-        # Determine voltage based on train state
-        if train.state == TrainState.OFF:
+        # State source: prefer controller state (canonical owner per
+        # design_new.md); fall back to train.state for transitional safety.
+        operational_state = getattr(controller, "state", None) or train.state
+
+        # Voltage selection by operational state. v1 states are OFF, IDLE,
+        # STANDBY, RUNNING_MOVING, RUNNING_AT_STATION.
+        if operational_state == TrainState.OFF:
             voltage = 0.0
-        elif train.state in (
-            TrainState.IDLE,
-            TrainState.STANDBY,
-            TrainState.RUNNING_WAITING,
-            TrainState.RUNNING_AT_STATION,
-        ):
-            # Lighting voltage for non-moving states
-            voltage = profile.lighting_voltage
-        elif train.state == TrainState.RUNNING_MOVING:
-            # Speed-based voltage
+        elif operational_state == TrainState.RUNNING_MOVING:
             voltage = profile.speed_to_voltage(controller.target_speed)
-        elif train.state == TrainState.MANUAL:
-            # Manual mode - use manual target speed
-            voltage = profile.speed_to_voltage(train.manual_target_speed)
         else:
-            voltage = 0.0
+            # IDLE / STANDBY / RUNNING_AT_STATION: powered but not moving.
+            voltage = profile.lighting_voltage
 
         # Emergency stop override
         if controller.eb_active:

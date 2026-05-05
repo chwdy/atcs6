@@ -41,6 +41,13 @@ from path import (
 from enums import BlockState, TrainState, direction_from_delta, DIRECTION_OFFSETS
 from track import OPPOSITE_EDGE
 from model_scale import kmh_to_cm_per_sec
+from runtime_payloads import (
+    ControllerProgressReport,
+    ResourceEvent,
+    PathCancellationKind,
+    PendingPathCancelRequest,
+    PathCompletionResult,
+)
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -69,6 +76,16 @@ class PathDispatcher:
         self.active_paths: Dict[str, Path] = {}
         self.path_sequence_counter: int = 0
         self.completed_path_events: List[Dict[str, Any]] = []
+
+    @property
+    def paths_by_id(self) -> Dict[str, Path]:
+        """Canonical alias for the dispatcher path registry.
+
+        design_new.md refers to the registry as `paths_by_id`. The existing
+        attribute is `active_paths`; expose the same dict under the canonical
+        name so consumers written against the doc still work.
+        """
+        return self.active_paths
 
     # ========================================================================
     # Path ID Generation
@@ -795,10 +812,12 @@ class PathDispatcher:
                         path_segment.tiles, end_block_id
                     )
 
-                    # Create path object
+                    # Create path object — per design_new.md a freshly created
+                    # path is born ACTIVE; v1 has no SET / SETTING / PENDING /
+                    # CLEARING intermediate states.
                     path = Path(
                         path_id=path_id,
-                        status=PathStatus.SET,
+                        status=PathStatus.ACTIVE,
                         priority=priority,
                         start_block_id=start_block_id,
                         end_block_id=end_block_id,
@@ -1024,179 +1043,331 @@ class PathDispatcher:
     # Path Lifecycle
     # ========================================================================
 
-    def on_train_advances_from_physics(
-        self, path_id: str, entered_block_id: str
-    ) -> bool:
-        """Advance path position without modifying block states.
-
-        Args:
-            path_id: The path
-            entered_block_id: The block just entered
-
-        Returns:
-            True if successful
-        """
-        path = self.active_paths.get(path_id)
-        if not path:
-            return False
-
-        if entered_block_id in path.block_sequence:
-            path.current_block_index = path.block_sequence.index(entered_block_id)
-
-        if entered_block_id == path.block_sequence[-1]:
-            path.status = PathStatus.CLEARING
-
-        return True
-
-    def on_train_progress_from_physics(self, path_id: str) -> bool:
-        """Update cleared blocks/switches using physics-driven positions.
-
-        Args:
-            path_id: Path to update
-
-        Returns:
-            True if the path was updated, False if not applicable
-        """
-        path = self.active_paths.get(path_id)
-        if not path or path.status not in (
-            PathStatus.SET,
-            PathStatus.ACTIVE,
-            PathStatus.CLEARING,
-        ):
-            return False
-
-        if not path.train_id:
-            return False
-
-        train = self.network.trains.get(path.train_id)
-        if not train or not train.position:
-            return False
-
-        if not path.path_tiles:
-            return False
-
-        # If the train has entered the destination block (CLEARING) and is fully
-        # stopped there, complete the path even if it has not reached the exact
-        # final tile. This matches station-stop behavior where ATO may stop before
-        # the physical end tile of the block.
-        if path.status == PathStatus.CLEARING and train.is_stopped():
-            head_track = self.network.get_track(*train.position.head_tile)
-            if head_track and head_track.block_section_id == path.end_block_id:
-                self._complete_path_on_head_arrival(path, train)
-                return True
-
-        if train.position.head_tile == path.path_tiles[-1]:
-            self._complete_path_on_head_arrival(path, train)
-            return True
-
-        occupied_block_ids = set(train.position.occupied_blocks)
-
-        for i, block_id in enumerate(path.block_sequence):
-            if i >= path.current_block_index:
-                break
-            if block_id in path.blocks_cleared:
-                continue
-            if block_id in occupied_block_ids:
-                continue
-            block = self.network.blocks.get(block_id)
-            if not block or block.state != BlockState.FREE:
-                continue
-            path.blocks_cleared.add(block_id)
-            self._release_switches_for_block(path, block_id)
-
-        return True
-
     def get_and_clear_completion_events(self) -> List[Dict[str, Any]]:
         """Return completion events and clear the queue."""
         events = list(self.completed_path_events)
         self.completed_path_events.clear()
         return events
 
-    def _complete_path_on_head_arrival(self, path: Path, train: "Train") -> None:
-        """Complete path when train head reaches the end tile."""
-        path.status = PathStatus.COMPLETED
-        path.completed_at = datetime.now()
+    # ========================================================================
+    # Phase 3 Progress Consumer (controller-mediated)
+    # ========================================================================
 
-        occupied_block_ids = set(train.position.occupied_blocks)
+    def on_controller_progress(self, report: ControllerProgressReport) -> None:
+        """Phase 3 progress consumer for controller-reported movement.
 
-        for block_id in path.block_sequence:
-            block = self.network.blocks.get(block_id)
-            if not block:
-                continue
+        Per design_new.md "Physical progress / deviation procedure":
+          - Record clean physical entry for each entered resource (blocks via
+            BlockManager.occupy_blocks, switches via Switch.occupied_by).
+          - On a fatal physical-entry conflict, escalate to
+            SimulationController.enter_failed_runtime(...) and stop processing
+            this report.
+          - If report.deviation == True, map deviation_kind to a
+            PathCancellationKind and call cancel_path(...) inline.
+          - Otherwise update Path.current_resource_index and call
+            RouteExecutor.handle_train_advanced(...) for each entered block.
+          - Process tail_vacated_resources after entered_resources.
+        """
+        if report is None:
+            return
 
-            if block_id not in occupied_block_ids:
-                if self.network.block_manager:
-                    self.network.block_manager.clear_block(block_id)
-                else:
-                    block.release()
+        train_id = report.train_id
+        if not train_id:
+            return
 
-            block.reserved_by_path = None
-            block.reserved_direction = None
+        # Resolve the active path lazily; it may be None when the train has
+        # no live authority but is still moving.
+        active_path = self.get_active_path(train_id)
 
-        for block_id in path.overlap_blocks:
-            block = self.network.blocks.get(block_id)
-            if not block:
-                continue
+        # ----- Step 1: handle entered_resources -----
+        entered = list(report.entered_resources or [])
+        for event in entered:
+            if not self._record_clean_physical_entry(event, train_id):
+                # Fatal conflict — stop processing this report entirely.
+                return
 
-            if block_id not in occupied_block_ids:
-                if self.network.block_manager:
-                    self.network.block_manager.clear_block(block_id)
-                else:
-                    block.release()
+        # ----- Step 2: deviation handling -----
+        if report.deviation:
+            kind = self._map_deviation_kind_to_cancellation(
+                report.deviation_kind
+            )
+            if active_path is not None:
+                self.cancel_path(
+                    active_path.path_id,
+                    cancellation_kind=kind,
+                    reason=report.deviation_reason,
+                )
+            # No further bookkeeping after deviation cancellation.
+            return
 
-            block.reserved_by_path = None
-            block.reserved_direction = None
+        # ----- Step 3: ordinary head progress + route head-advance callbacks -----
+        if active_path is not None:
+            for event in entered:
+                # Update Path.current_resource_index when we know the index
+                # the controller reported.
+                if event.sequence_index is not None:
+                    if event.sequence_index > active_path.current_block_index:
+                        # Path schema in this codebase tracks block index.
+                        # Switch entries do not advance the block index.
+                        if event.resource_type == "block":
+                            active_path.current_block_index = (
+                                self._block_index_for_resource(
+                                    active_path, event.resource_id
+                                )
+                                if event.resource_id
+                                else event.sequence_index
+                            )
+                # Fire the route-side head-advance callback.
+                self._fire_route_advanced_callback(
+                    train_id=train_id,
+                    path_id=active_path.path_id,
+                    event=event,
+                )
 
-        for pos in path.path_tiles:
-            track = self.network.get_track(*pos)
-            if track:
-                track.path_direction = None
+        # ----- Step 4: process tail_vacated_resources -----
+        for event in list(report.tail_vacated_resources or []):
+            self._release_tail_vacated_resource(event, train_id)
 
-        for pos in path.switch_positions:
-            track = self.network.get_track(*pos)
-            if track:
-                track.unlock_for_path(path.path_id)
+    def _record_clean_physical_entry(
+        self, event: ResourceEvent, train_id: str
+    ) -> bool:
+        """Apply a clean physical-entry update for one resource event.
 
-        for pos in path.flank_protection_switches:
-            track = self.network.get_track(*pos)
-            if track:
-                track.unlock_for_path(path.path_id)
+        Returns True on success, False on a fatal conflict that should stop
+        further processing of this report. On fatal conflict, the dispatcher
+        attempts to escalate to SimulationController.enter_failed_runtime(...)
+        when available; otherwise it logs a diagnostic and returns False.
+        """
+        if event is None or not event.resource_id:
+            return True
 
-        self._record_completion_event(path, train.position.head_tile)
+        if event.resource_type == "block":
+            block = self.network.blocks.get(event.resource_id)
+            if block is None:
+                return True
+            # Conflict check: the block is already physically owned by a
+            # different train.
+            current_owner = getattr(block, "occupied_by", None)
+            if current_owner and current_owner != train_id:
+                self._escalate_fatal_physical_entry_conflict(
+                    resource_type="block",
+                    resource_id=event.resource_id,
+                    incoming_train_id=train_id,
+                    prior_owner_train_id=current_owner,
+                )
+                return False
+            # Reserved for another train is also a fatal conflict.
+            reserved_for = getattr(block, "reserved_for_train", None)
+            if reserved_for and reserved_for != train_id:
+                self._escalate_fatal_physical_entry_conflict(
+                    resource_type="block",
+                    resource_id=event.resource_id,
+                    incoming_train_id=train_id,
+                    prior_owner_train_id=reserved_for,
+                )
+                return False
+            # Apply through BlockManager when available.
+            if self.network.block_manager:
+                self.network.block_manager.occupy_blocks(
+                    [event.resource_id], train_id
+                )
+            else:
+                block.occupy(train_id)
+            return True
 
-        # Clear train's stale path/destination state — path is done
-        if path.train_id:
-            train_obj = self.network.trains.get(path.train_id)
-            if train_obj:
-                train_obj.ato_destination_block_id = None
-                train_obj.assigned_path_id = None
-                train_obj.current_path = None
-                train_obj.path_index = 0
-                train_obj.reserved_blocks = []
+        if event.resource_type == "switch":
+            # Switch resource_id may be a tile coordinate string or a switch
+            # identifier; the existing codebase stores switch state on
+            # TrackSegment, keyed by tile (x, y). The reported resource_id is
+            # opaque to this layer — find a track by id-like resolution.
+            track = self._resolve_switch_track(event.resource_id)
+            if track is None:
+                return True
+            current_owner = getattr(track, "occupied_by", None)
+            if current_owner and current_owner != train_id:
+                self._escalate_fatal_physical_entry_conflict(
+                    resource_type="switch",
+                    resource_id=event.resource_id,
+                    incoming_train_id=train_id,
+                    prior_owner_train_id=current_owner,
+                )
+                return False
+            track.occupied_by = train_id
+            return True
 
-                # Stop ATO and transition to standby when path completes
-                # This ensures train state changes from RUNNING_MOVING to STANDBY
-                # even when stopped at a waypoint that's not a station
-                if (
-                    hasattr(self.network, "power_controller")
-                    and self.network.power_controller
-                ):
-                    sim_controller = getattr(
-                        self.network.power_controller, "_sim_controller", None
+        return True
+
+    def _resolve_switch_track(self, resource_id: str):
+        """Resolve a switch resource_id to a TrackSegment.
+
+        The current codebase keys TrackSegments by (x, y) tile. The
+        controller-reported resource_id may be either a "x,y" string or a
+        switch identifier. Try both forms; return None when unresolved.
+        """
+        if not resource_id:
+            return None
+        # Try "x,y" form first.
+        if "," in resource_id:
+            try:
+                x_str, y_str = resource_id.split(",", 1)
+                pos = (int(x_str.strip()), int(y_str.strip()))
+                return self.network.get_track(*pos)
+            except (ValueError, AttributeError):
+                pass
+        # Fallback: scan tracks looking for a matching switch_id.
+        for track in self.network.tracks.values():
+            if getattr(track, "switch_id", None) == resource_id:
+                return track
+        return None
+
+    def _block_index_for_resource(
+        self, path: Path, block_id: str
+    ) -> int:
+        """Resolve block index in path.block_sequence for an entered block.
+
+        Returns the existing current_block_index unchanged if the block is
+        not in the sequence (defensive — should not happen for legal entries).
+        """
+        try:
+            return path.block_sequence.index(block_id)
+        except ValueError:
+            return path.current_block_index
+
+    def _map_deviation_kind_to_cancellation(
+        self, deviation_kind: Optional[str]
+    ) -> PathCancellationKind:
+        """Map a controller deviation_kind string to a PathCancellationKind."""
+        if deviation_kind == "beyond_authorized_target":
+            return PathCancellationKind.AUTHORITY_OVERSHOOT
+        # Default and explicit "out_of_sequence" both map to OUT_OF_SEQUENCE.
+        return PathCancellationKind.OUT_OF_SEQUENCE
+
+    def _fire_route_advanced_callback(
+        self,
+        train_id: str,
+        path_id: str,
+        event: ResourceEvent,
+    ) -> None:
+        """Invoke RouteExecutor.handle_train_advanced(...) for one entered resource."""
+        route_executor = self._get_route_executor()
+        if route_executor is None:
+            return
+        handler = getattr(route_executor, "handle_train_advanced", None)
+        if not callable(handler):
+            return
+        try:
+            handler(
+                train_id,
+                path_id,
+                event.resource_type,
+                event.resource_id,
+                event.direction,
+            )
+        except TypeError:
+            # Older signature without resource_traversal_direction.
+            try:
+                handler(train_id, path_id, event.resource_type, event.resource_id)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _release_tail_vacated_resource(
+        self, event: ResourceEvent, train_id: str
+    ) -> None:
+        """Release a tail-vacated resource per its type."""
+        if event is None or not event.resource_id:
+            return
+
+        if event.resource_type == "block":
+            # Route through BlockManager when available; the block release
+            # is the only path that drives OCCUPIED -> CAUTION -> FREE.
+            block_manager = self.network.block_manager
+            if block_manager is None:
+                return
+            tail_vacate = getattr(block_manager, "on_block_tail_vacated", None)
+            if callable(tail_vacate):
+                try:
+                    tail_vacate(event.resource_id, train_id, event.direction)
+                except TypeError:
+                    try:
+                        tail_vacate(event.resource_id, train_id)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            return
+
+        if event.resource_type == "switch":
+            track = self._resolve_switch_track(event.resource_id)
+            if track is None:
+                return
+            # Clear physical occupancy when this train owned it.
+            if getattr(track, "occupied_by", None) == train_id:
+                track.occupied_by = None
+            # Clear any train-owned protection through the canonical helper
+            # if the switch entity exposes one.
+            release_protection = getattr(
+                track, "release_train_protection_from", None
+            )
+            if callable(release_protection):
+                try:
+                    release_protection(
+                        source_switch_id=event.resource_id,
+                        train_id=train_id,
                     )
-                    if sim_controller:
-                        controller = sim_controller.get_controller(train_obj.train_id)
-                        if controller:
-                            controller.ato_running = False
-                            controller.ato_destination_block_id = None
-                            controller.ato_path_id = None
-                            if train_obj.state in (
-                                TrainState.RUNNING_MOVING,
-                                TrainState.RUNNING_WAITING,
-                            ):
-                                controller.transition_to_standby()
+                except TypeError:
+                    try:
+                        release_protection(event.resource_id, train_id)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
 
-        del self.active_paths[path.path_id]
+    def _escalate_fatal_physical_entry_conflict(
+        self,
+        resource_type: str,
+        resource_id: str,
+        incoming_train_id: str,
+        prior_owner_train_id: Optional[str],
+    ) -> None:
+        """Escalate a fatal physical-entry conflict to SimulationController.
+
+        Per design_new.md "Fatal physical-entry conflict procedure":
+        the runtime owner enters failed_runtime; the dispatcher does not
+        attempt cancellation/recovery. If the runtime surface is not wired,
+        log a diagnostic — the layer above is responsible for halting.
+        """
+        power_controller = getattr(self.network, "power_controller", None)
+        sim_controller = (
+            getattr(power_controller, "_sim_controller", None)
+            if power_controller is not None
+            else None
+        )
+        enter_failed = (
+            getattr(sim_controller, "enter_failed_runtime", None)
+            if sim_controller is not None
+            else None
+        )
+        payload = {
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "incoming_train_id": incoming_train_id,
+            "prior_owner_train_id": prior_owner_train_id,
+        }
+        if callable(enter_failed):
+            try:
+                enter_failed(payload)
+                return
+            except Exception:
+                pass
+        # Fallback: print a diagnostic. Higher layers can detect and halt.
+        print(
+            "[PathDispatcher] FATAL physical-entry conflict: "
+            f"resource_type={resource_type} resource_id={resource_id} "
+            f"incoming_train={incoming_train_id} "
+            f"prior_owner={prior_owner_train_id}"
+        )
 
     def _record_completion_event(self, path: Path, end_tile: Tuple[int, int]) -> None:
         """Record a completion event for consumption by other systems."""
@@ -1311,102 +1482,211 @@ class PathDispatcher:
             if can_release:
                 track.unlock_for_path(path.path_id)
 
-    def complete_path(self, path_id: str) -> bool:
+    def try_complete_active_path(
+        self, train_id: str, event_time: float
+    ) -> PathCompletionResult:
+        """Attempt to complete the train's currently ACTIVE path.
+
+        Per design_new.md Active-path completion procedure:
+        1. Look up the active path for train_id.
+        2. Verify the controller's post-physics stop check via
+           `is_stopped_at_authority_end()`.
+        3. Verify `Path.authority_end_block_id == Path.requested_destination_block_id`
+           and terminal traversal direction matches.
+        4. Release not-yet-entered block reservations and switch/flank locks.
+        5. Transition Path.status to COMPLETED.
+        6. Call `TrainController.on_path_complete()`.
+        7. Call `RouteExecutor.handle_path_completion(...)`.
+
+        Returns a PathCompletionResult describing whether completion committed.
         """
-        Complete a path and release all resources.
+        path = self.get_active_path(train_id)
+        if path is None:
+            return PathCompletionResult(
+                success=False,
+                path_id=None,
+                new_status=None,
+                reason="no active path",
+            )
 
-        Args:
-            path_id: Path to complete
+        path_id = path.path_id
 
-        Returns:
-            True if successful
-        """
-        path = self.active_paths.get(path_id)
-        if not path:
-            return False
+        controller = self._get_controller(train_id)
+        if controller is None:
+            return PathCompletionResult(
+                success=False,
+                path_id=path_id,
+                new_status=path.status,
+                reason="controller not available",
+            )
 
-        path.status = PathStatus.COMPLETED
-        path.completed_at = datetime.now()
+        # Controller stop check: train fully stopped at the usable end of
+        # live authority. Agent A is adding `is_stopped_at_authority_end()`
+        # on the controller; if the runtime predicate is unavailable, refuse
+        # completion rather than guessing.
+        stop_check = getattr(controller, "is_stopped_at_authority_end", None)
+        if not callable(stop_check) or not stop_check():
+            return PathCompletionResult(
+                success=False,
+                path_id=path_id,
+                new_status=path.status,
+                reason="controller is not stopped at authority end",
+            )
 
-        # Release all blocks using BlockManager
+        # Path-level acceptance: live authority must reach the requested
+        # destination block, and the terminal traversal direction must match
+        # the requested destination direction. The current Path schema stores
+        # the destination as `end_block_id` and the authority end as the last
+        # block in `block_sequence`. The equivalence
+        #   authority_end_block_id == requested_destination_block_id
+        # is satisfied when `block_sequence[-1] == end_block_id`.
+        authority_end_block_id = (
+            path.block_sequence[-1] if path.block_sequence else None
+        )
+        requested_destination_block_id = path.end_block_id or None
+        if not authority_end_block_id or not requested_destination_block_id:
+            return PathCompletionResult(
+                success=False,
+                path_id=path_id,
+                new_status=path.status,
+                reason="path missing terminal block geometry",
+            )
+        if authority_end_block_id != requested_destination_block_id:
+            return PathCompletionResult(
+                success=False,
+                path_id=path_id,
+                new_status=path.status,
+                reason="authority end has not reached requested destination block/direction",
+            )
+
+        # Compute physically held tiles/blocks so we never clear a block or
+        # tile the train physically holds.
+        train_occupied_tiles: set[Tuple[int, int]] = set()
+        train_occupied_blocks: set[str] = set()
+        train = self.network.trains.get(train_id) if train_id else None
+        if train and train.position:
+            if train.position.occupied_tiles:
+                train_occupied_tiles = set(train.position.occupied_tiles)
+            if train.position.occupied_blocks:
+                train_occupied_blocks = set(train.position.occupied_blocks)
+
+        # Release not-yet-entered block reservations.
         for block_id in path.block_sequence:
             block = self.network.blocks.get(block_id)
             if not block:
                 continue
-
-            # Only clear blocks that are not currently occupied by a train
+            if block_id in train_occupied_blocks:
+                # Physically occupied: release reservation ownership only.
+                block.reserved_by_path = None
+                block.reserved_direction = None
+                continue
             if block.state != BlockState.OCCUPIED:
                 if self.network.block_manager:
                     self.network.block_manager.clear_block(block_id)
                 else:
                     block.release()
-
             block.reserved_by_path = None
+            block.reserved_direction = None
 
-        # Release overlap blocks
+        # Release overlap blocks (no train physically holds them).
         for block_id in path.overlap_blocks:
             block = self.network.blocks.get(block_id)
             if not block:
                 continue
-
-            # Only clear blocks that are not currently occupied by a train
+            if block_id in train_occupied_blocks:
+                block.reserved_by_path = None
+                block.reserved_direction = None
+                continue
             if block.state != BlockState.OCCUPIED:
                 if self.network.block_manager:
                     self.network.block_manager.clear_block(block_id)
                 else:
                     block.release()
-
             block.reserved_by_path = None
+            block.reserved_direction = None
 
-        # Clear path direction on all path tiles
+        # Clear path direction on tiles the train no longer holds.
         for pos in path.path_tiles:
+            if pos in train_occupied_tiles:
+                continue
             track = self.network.get_track(*pos)
             if track:
                 track.path_direction = None
 
-        # Unlock all switches
+        # Release not-yet-entered switch locks (skip switches the train
+        # physically straddles).
         for pos in path.switch_positions:
+            if pos in train_occupied_tiles:
+                continue
             track = self.network.get_track(*pos)
             if track:
                 track.unlock_for_path(path_id)
 
         for pos in path.flank_protection_switches:
+            if pos in train_occupied_tiles:
+                continue
             track = self.network.get_track(*pos)
             if track:
                 track.unlock_for_path(path_id)
 
-        # Remove from active paths
-        # Clear train's stale path/destination state — path is done
-        if path.train_id:
-            train_obj = self.network.trains.get(path.train_id)
-            if train_obj:
-                train_obj.ato_destination_block_id = None
-                train_obj.assigned_path_id = None
-                train_obj.current_path = None
-                train_obj.path_index = 0
-                train_obj.reserved_blocks = []
+        # Transition path status to COMPLETED. After this point the
+        # controller's received_path_plan property auto-returns None on its
+        # next read.
+        path.status = PathStatus.COMPLETED
+        path.completed_at = datetime.now()
 
-                # Clear ato_running on the controller so that
-                # _is_standalone_path_complete() and the
-                # RUNNING_WAITING → RUNNING_MOVING guard work correctly
-                # after this path is torn down.
-                if (
-                    hasattr(self.network, "power_controller")
-                    and self.network.power_controller
-                ):
-                    sim_controller = getattr(
-                        self.network.power_controller, "_sim_controller", None
+        # Record a completion event for any legacy consumer that drains
+        # `get_and_clear_completion_events()`.
+        end_tile = path.path_tiles[-1] if path.path_tiles else None
+        if end_tile is not None:
+            self._record_completion_event(path, end_tile)
+
+        # Notify the controller that its path has completed (state machine
+        # handoff). Use on_path_complete() per design_new.md II.1.
+        on_complete = getattr(controller, "on_path_complete", None)
+        if callable(on_complete):
+            try:
+                on_complete()
+            except Exception:
+                pass
+
+        # Notify the route executor that the path completed.
+        route_executor = self._get_route_executor()
+        if route_executor is not None:
+            handler = getattr(route_executor, "handle_path_completion", None)
+            if callable(handler):
+                try:
+                    handler(
+                        train_id,
+                        path_id,
+                        authority_end_block_id,
+                        getattr(path, "requested_destination_direction", None),
+                        event_time,
                     )
-                    if sim_controller:
-                        controller = sim_controller.get_controller(path.train_id)
-                        if controller:
-                            controller.ato_running = False
-                            controller.ato_destination_block_id = None
-                            controller.ato_path_id = None
+                except TypeError:
+                    # Older signature compatibility.
+                    try:
+                        handler(
+                            train_id=train_id,
+                            path_id=path_id,
+                            _end_tile=end_tile,
+                            _event_time=event_time,
+                        )
+                    except Exception:
+                        pass
 
-        del self.active_paths[path_id]
+        # Drop the completed record from the active registry. The doc says
+        # COMPLETED rows may live on for history; this implementation
+        # follows the existing behavior of removing on terminal transition.
+        if path_id in self.active_paths:
+            del self.active_paths[path_id]
 
-        return True
+        return PathCompletionResult(
+            success=True,
+            path_id=path_id,
+            new_status=PathStatus.COMPLETED,
+            reason=None,
+        )
 
     # ========================================================================
     # Path Extension
@@ -1711,115 +1991,152 @@ class PathDispatcher:
     # Path Cancellation
     # ========================================================================
 
-    def cancel_path(self, path_id: str, force: bool = False) -> CancellationResult:
-        """
-        Cancel a path and release resources.
+    def cancel_path(
+        self,
+        path_id: str,
+        cancellation_kind: Optional[PathCancellationKind] = None,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Cancel a path and release not-yet-entered authority resources.
+
+        Per design_new.md cancel_path() contract:
+        - Transition Path.status to CANCELLED.
+        - Release not-yet-entered block reservations.
+        - Release not-yet-entered switch/flank locks.
+        - Call RouteExecutor.handle_path_cancellation(...) callback.
+        - The controller's `received_path_plan` property auto-returns None
+          once `Path.status != ACTIVE`; no setter is invoked from here.
 
         Args:
             path_id: Path to cancel
-            force: If True, cancel even approach-locked blocks
+            cancellation_kind: Diagnostic enum value (EB / OPERATOR_CANCELLED /
+                POWER_OFF / REVOKED / OUT_OF_SEQUENCE / AUTHORITY_OVERSHOOT)
+            reason: Optional plain-text diagnostic; never used for branching.
 
         Returns:
-            CancellationResult with released resources
+            True if the path was cancelled, False on missing or terminal path.
         """
         path = self.active_paths.get(path_id)
         if not path:
-            return CancellationResult(
-                success=False, message=f"Path {path_id} not found"
-            )
+            return False
 
-        if not path.can_be_cancelled():
-            return CancellationResult(
-                success=False,
-                message=f"Path cannot be cancelled (status: {path.status.value})",
-            )
+        if path.status in (PathStatus.COMPLETED, PathStatus.CANCELLED):
+            return False
 
-        path.status = PathStatus.CANCELLED
-
-        blocks_released: List[str] = []
-        switches_released: List[Tuple[int, int]] = []
-        approach_locked: List[str] = list(path.approach_locked_blocks)
-
-        # Get train's occupied tiles and blocks if train is assigned to this path
+        # Collect physically held tiles/blocks so we never clear physical
+        # occupancy through cancellation. Cancellation only clears future
+        # reservation/lock ownership; physical state is owned by tail-vacate.
         train_occupied_tiles: set[Tuple[int, int]] = set()
         train_occupied_blocks: set[str] = set()
         if path.train_id:
             train = self.network.trains.get(path.train_id)
-            if train:
-                # Train will need new path after stopping
-                train.state = (
-                    train.state
-                )  # Keep current state, train will handle stopping
-
-                # Collect all tiles and blocks the train physically occupies
-                if train.position and train.position.occupied_tiles:
+            if train and train.position:
+                if train.position.occupied_tiles:
                     train_occupied_tiles = set(train.position.occupied_tiles)
-                if train.position and train.position.occupied_blocks:
+                if train.position.occupied_blocks:
                     train_occupied_blocks = set(train.position.occupied_blocks)
 
-        # Release non-approach-locked blocks
+        # Release not-yet-entered block reservations (skip blocks the train
+        # physically occupies).
         for block_id in path.block_sequence:
-            if block_id not in path.approach_locked_blocks or force:
-                block = self.network.blocks.get(block_id)
-                if not block:
-                    continue
+            block = self.network.blocks.get(block_id)
+            if not block:
+                continue
+            if block_id in train_occupied_blocks:
+                continue
+            if block.state != BlockState.OCCUPIED:
+                if self.network.block_manager:
+                    self.network.block_manager.clear_block(block_id)
+                else:
+                    block.release()
+            block.reserved_by_path = None
+            block.reserved_direction = None
 
-                # Skip blocks that the train is physically occupying
-                if block_id in train_occupied_blocks:
-                    continue
-
-                # Only clear blocks that are not currently occupied by a train
-                if block.state != BlockState.OCCUPIED:
-                    if self.network.block_manager:
-                        self.network.block_manager.clear_block(block_id)
-                    else:
-                        block.release()
-
-                block.reserved_by_path = None
-                blocks_released.append(block_id)
-
-        # Release switches
+        # Release not-yet-entered switch locks (skip switches the train
+        # physically straddles).
         for pos in path.switch_positions:
+            if pos in train_occupied_tiles:
+                continue
             track = self.network.get_track(*pos)
             if track:
-                # Skip switches that the train is physically over
-                if pos in train_occupied_tiles:
-                    continue
+                track.unlock_for_path(path_id)
 
-                # Check if switch is in approach-locked block
-                if force or not self._is_switch_in_approach_locked_block(path, pos):
-                    track.unlock_for_path(path_id)
-                    switches_released.append(pos)
+        # Clear path direction on tiles the train is not physically on.
+        for pos in path.path_tiles:
+            if pos in train_occupied_tiles:
+                continue
+            track = self.network.get_track(*pos)
+            if track:
+                track.path_direction = None
 
-        # Clear path direction on all path tiles (if fully releasing or forced)
-        if not path.approach_locked_blocks or force:
-            for pos in path.path_tiles:
-                track = self.network.get_track(*pos)
-                if track:
-                    track.path_direction = None
-
-        # Release flank protection switches
+        # Release flank protection switch locks.
         for pos in path.flank_protection_switches:
+            if pos in train_occupied_tiles:
+                continue
             track = self.network.get_track(*pos)
             if track:
-                # Skip switches that the train is physically over
-                if pos not in train_occupied_tiles:
-                    track.unlock_for_path(path_id)
-                    switches_released.append(pos)
+                track.unlock_for_path(path_id)
 
-        # Remove from active paths if fully released
-        if not path.approach_locked_blocks or force:
+        # Transition path status to CANCELLED. After this, get_active_path()
+        # returns None for this train, and the controller's received_path_plan
+        # property auto-returns None on its next read.
+        path.status = PathStatus.CANCELLED
+        path.completed_at = datetime.now()
+
+        # Notify the route executor of the cancellation (route-side correlation
+        # cleanup). Resolved through the SimulationController surface; if not
+        # wired, the callback is skipped gracefully.
+        train_id_for_callback = path.train_id
+        if train_id_for_callback:
+            route_executor = self._get_route_executor()
+            if route_executor is not None:
+                handler = getattr(
+                    route_executor, "handle_path_cancellation", None
+                )
+                if callable(handler):
+                    try:
+                        handler(
+                            train_id_for_callback,
+                            path_id,
+                            cancellation_kind,
+                        )
+                    except TypeError:
+                        # Older signature without cancellation_kind.
+                        handler(train_id_for_callback, path_id)
+
+        # Drop the cancelled record from the active registry. Per the doc the
+        # registry retains terminal paths for history; this implementation
+        # follows existing behavior of removing from `active_paths`.
+        if path_id in self.active_paths:
             del self.active_paths[path_id]
 
-        return CancellationResult(
-            success=True,
-            blocks_released=blocks_released,
-            switches_released=switches_released,
-            approach_locked=approach_locked,
-            message="Approach-locked blocks will release when train stops"
-            if approach_locked
-            else None,
-        )
+        return True
+
+    def _get_route_executor(self):
+        """Resolve the route executor through the SimulationController surface.
+
+        Returns None when no simulation runtime is wired (editor sessions).
+        """
+        power_controller = getattr(self.network, "power_controller", None)
+        if power_controller is None:
+            return None
+        sim_controller = getattr(power_controller, "_sim_controller", None)
+        if sim_controller is None:
+            return None
+        return getattr(sim_controller, "route_executor", None)
+
+    def _get_controller(self, train_id: str):
+        """Resolve the TrainController through the SimulationController surface."""
+        power_controller = getattr(self.network, "power_controller", None)
+        if power_controller is None:
+            return None
+        sim_controller = getattr(power_controller, "_sim_controller", None)
+        if sim_controller is None:
+            return None
+        getter = getattr(sim_controller, "get_controller", None)
+        if not callable(getter):
+            return None
+        return getter(train_id)
 
     def _is_switch_in_approach_locked_block(
         self, path: Path, switch_pos: Tuple[int, int]
@@ -1887,6 +2204,23 @@ class PathDispatcher:
     def get_active_paths(self) -> List[Path]:
         """Get all active paths."""
         return list(self.active_paths.values())
+
+    def get_active_path(self, train_id: str) -> Optional[Path]:
+        """Return the unique ACTIVE Path for the given train, or None.
+
+        A train has at most one ACTIVE path at a time per design_new.md.
+        """
+        if train_id is None:
+            return None
+        for path in self.active_paths.values():
+            if path.train_id == train_id and path.status == PathStatus.ACTIVE:
+                return path
+        return None
+
+    def active_path_id_by_train(self, train_id: str) -> Optional[str]:
+        """Return the unique ACTIVE path_id for the given train, or None."""
+        path = self.get_active_path(train_id)
+        return path.path_id if path else None
 
     def get_paths_using_switch(self, position: Tuple[int, int]) -> List[Path]:
         """Get all paths that use a specific switch."""

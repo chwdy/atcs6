@@ -307,11 +307,14 @@ class TestRouteExecutor:
         return route
 
     def test_route_executor_creation(self, simple_network):
-        """Test creating a route executor."""
+        """Test creating a route executor.
+
+        v1: simulation_time accumulator was removed; the executor uses
+        time.time() as the canonical timestamp source.
+        """
         executor = RouteExecutor(simple_network)
         assert executor.network == simple_network
         assert len(executor.execution_states) == 0
-        assert executor.simulation_time == 0.0
 
     def test_route_executor_is_train_at_station(self, simple_network):
         """Test checking if train is at station."""

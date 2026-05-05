@@ -365,8 +365,11 @@ class Train:
     - state: TrainState for DC analog control
     - speed_profile_id: SpeedProfile for this train
     - assigned_route_id: Route (travel plan) assigned to train
-    - target_speed: ATC-limited target speed
     - manual_target_speed: User-set speed in MANUAL mode
+
+    Note: target_speed and speed_limit_reason are derived from
+    TrainController.lookahead[0] per design_new.md and are not stored on
+    Train. UI/API consumers must read them from the controller directly.
     """
 
     train_id: str
@@ -448,9 +451,11 @@ class Train:
     assigned_route_id: Optional[str] = None  # Route (travel plan) assigned
 
     # Speed targets
-    target_speed: float = 0.0  # ATC-limited target speed
+    # NOTE: per design_new.md, `target_speed` and `speed_limit_reason` are
+    # controller-derived properties (read from TrainController.lookahead[0]).
+    # They are no longer stored on Train; consumers must read them from the
+    # controller directly.
     manual_target_speed: float = 0.0  # User-set speed in MANUAL mode
-    speed_limit_reason: Optional[str] = None  # Reason for current speed limit
 
     # Emergency control
     emergency_brake: bool = False  # Emergency braking active
@@ -514,7 +519,7 @@ class Train:
     def is_moving(self) -> bool:
         """Check if train is currently in motion"""
         return (
-            self.state in (TrainState.RUNNING_MOVING, TrainState.MANUAL)
+            self.state == TrainState.RUNNING_MOVING
             and self.current_speed > 0
         )
 
@@ -543,11 +548,7 @@ class Train:
         status becomes IDLE.
         """
         self.is_emergency_braking = True
-        if self.state == TrainState.RUNNING_MOVING:
-            self.state = TrainState.RUNNING_WAITING
-            self.wait_reason = "Emergency stop"
-        else:
-            self.wait_reason = "Emergency stop"
+        self.wait_reason = "Emergency stop"
 
     def get_braking_distance(self) -> float:
         """
@@ -656,7 +657,6 @@ class Train:
         if not self.is_stopped():
             return False
         self.state = TrainState.OFF
-        self.target_speed = 0.0
         self.manual_target_speed = 0.0
         return True
 
@@ -664,7 +664,7 @@ class Train:
         """
         Clear facing direction and return to IDLE state (STANDBY -> IDLE).
 
-        Allowed only when stopped and in STANDBY (or MANUAL when stopped).
+        Allowed only when stopped and in STANDBY.
         Clears leading_end to None, travel_direction to 'forward',
         and speed targets to 0.
 
@@ -674,7 +674,7 @@ class Train:
         if not self.is_stopped():
             return False
 
-        if self.state not in (TrainState.STANDBY, TrainState.MANUAL):
+        if self.state != TrainState.STANDBY:
             return False
 
         # Clear leading_end (no direction)
@@ -683,79 +683,40 @@ class Train:
 
         self.travel_direction = "forward"
         self.manual_target_speed = 0.0
-        self.target_speed = 0.0
         self.state = TrainState.IDLE
         return True
 
     def enable_manual(self) -> bool:
-        """
-        Enable manual control mode. Must be stopped.
-
-        Returns:
-            True if successful, False if moving
-        """
-        if not self.is_stopped():
-            return False
-        if self.state == TrainState.OFF:
-            return False
-        self.state = TrainState.MANUAL
-        return True
+        """removed in v1"""
+        pass  # removed in v1
 
     def disable_manual(self) -> bool:
-        """
-        Disable manual control mode. Must be stopped.
-
-        Returns to STANDBY if facing_direction set, else IDLE.
-
-        Returns:
-            True if successful, False if not in MANUAL mode or moving
-        """
-        if self.state != TrainState.MANUAL:
-            return False
-        if not self.is_stopped():
-            return False
-
-        if self.facing_direction is not None:
-            self.state = TrainState.STANDBY
-        else:
-            self.state = TrainState.IDLE
-
-        self.manual_target_speed = 0.0
-        return True
+        """removed in v1"""
+        pass  # removed in v1
 
     def set_manual_speed(self, speed: float) -> bool:
         """
-        Set manual target speed (only in MANUAL mode).
+        Set manual target speed.
 
         Args:
             speed: Target speed in km/h
 
         Returns:
-            True if successful, False if not in MANUAL mode
+            True if successful
         """
-        if self.state != TrainState.MANUAL:
-            return False
         self.manual_target_speed = max(0.0, min(speed, self.max_speed))
         return True
 
     def set_travel_direction(self, direction: Literal["forward", "reverse"]) -> bool:
         """
-        Set travel direction for MANUAL mode.
-
-        This allows the user to drive the train in reverse (tail-first).
-        In MANUAL reverse mode, the train moves opposite to facing_direction.
-
-        Note: This only affects MANUAL mode. In normal operation,
-        travel_direction is always 'forward'.
+        Set travel direction.
 
         Args:
             direction: 'forward' or 'reverse'
 
         Returns:
-            True if successful, False if not in MANUAL mode
+            True if successful, False if invalid direction
         """
-        if self.state != TrainState.MANUAL:
-            return False
         if direction not in ("forward", "reverse"):
             return False
         self.travel_direction = direction
@@ -783,35 +744,12 @@ class Train:
         return True
 
     def wait_for_path(self, reason: Optional[str] = None) -> bool:
-        """
-        Stop and wait for path/signal (RUNNING_MOVING -> RUNNING_WAITING).
-
-        Train must be in RUNNING_MOVING state.
-
-        Returns:
-            True if successful, False if not in correct state
-        """
-        if self.state != TrainState.RUNNING_MOVING:
-            return False
-        self.state = TrainState.RUNNING_WAITING
-        self.target_speed = 0.0
-        self.wait_reason = reason
-        return True
+        """removed in v1"""
+        pass  # removed in v1
 
     def clear_to_move(self) -> bool:
-        """
-        Resume movement (RUNNING_WAITING -> RUNNING_MOVING).
-
-        Train must be in RUNNING_WAITING state.
-
-        Returns:
-            True if successful, False if not in correct state
-        """
-        if self.state != TrainState.RUNNING_WAITING:
-            return False
-        self.state = TrainState.RUNNING_MOVING
-        self.wait_reason = None
-        return True
+        """removed in v1"""
+        pass  # removed in v1
 
     def arrive_at_station(self) -> bool:
         """
@@ -825,7 +763,6 @@ class Train:
         if self.state != TrainState.RUNNING_MOVING:
             return False
         self.state = TrainState.RUNNING_AT_STATION
-        self.target_speed = 0.0  # Stop at station
         self.wait_reason = None
         return True
 
@@ -851,7 +788,6 @@ class Train:
             # Route complete - unassign route and go to IDLE
             self.state = TrainState.IDLE
             self.assigned_route_id = None
-            self.target_speed = 0.0
 
         self.wait_reason = None
         return True
@@ -860,13 +796,11 @@ class Train:
         """
         Emergency stop from any operational state.
 
-        Transitions to RUNNING_WAITING and sets speed to 0.
+        Sets emergency braking and stays in RUNNING_MOVING.
 
         Returns:
             True if successful
         """
-        self.state = TrainState.RUNNING_WAITING
-        self.target_speed = 0.0
         self.is_emergency_braking = True
         self.wait_reason = "Emergency stop"
         return True
@@ -878,14 +812,13 @@ class Train:
         This is the normal ATO stop that brings the train to a controlled stop
         and transitions to STANDBY, ready to depart again.
 
-        Can only be called from running states (RUNNING_MOVING, RUNNING_WAITING).
+        Can only be called from RUNNING_MOVING.
 
         Returns:
             True if successful, False if train is not in a running state
         """
-        if self.state not in (TrainState.RUNNING_MOVING, TrainState.RUNNING_WAITING):
+        if self.state != TrainState.RUNNING_MOVING:
             return False
-        self.target_speed = 0.0
         self.current_speed = 0.0  # Immediately stop for now (simulation handles decel)
         self.state = TrainState.STANDBY
         self.wait_reason = None
@@ -941,16 +874,12 @@ class Train:
             if self.state == TrainState.OFF:
                 self.power_on()
 
-            # Setting a cab: must be stopped (IDLE, STANDBY, or RUNNING_WAITING)
+            # Setting a cab: must be stopped (IDLE or STANDBY)
             if self.state not in (
                 TrainState.IDLE,
                 TrainState.STANDBY,
-                TrainState.RUNNING_WAITING,
             ):
                 return False
-
-            # Remember pre-switch state so RUNNING_WAITING is preserved
-            prev_state = self.state
 
             # Check if switching from other cab (need to swap position data)
             old_cab = self.active_cab
@@ -968,12 +897,7 @@ class Train:
 
                 self.position.leading_end = new_leading_end
 
-            # Preserve RUNNING_WAITING (train is stopped, waiting for path);
-            # otherwise transition to STANDBY as before.
-            if prev_state == TrainState.RUNNING_WAITING:
-                self.state = TrainState.RUNNING_WAITING
-            else:
-                self.state = TrainState.STANDBY
+            self.state = TrainState.STANDBY
             return True
         elif cab is None:
             # Turning cab off: must be STANDBY (stopped, not moving)
@@ -1097,10 +1021,8 @@ class Train:
             "assigned_route_id": self.assigned_route_id,
             "assigned_path_id": self.assigned_path_id,
             "ato_destination_block_id": self.ato_destination_block_id,
-            "target_speed": self.target_speed,
             "manual_target_speed": self.manual_target_speed,
             "wait_reason": self.wait_reason,
-            "speed_limit_reason": self.speed_limit_reason,
             # Path info for debug
             "path_index": effective_index,
             "path_length": len(effective_path) if effective_path else 0,
@@ -1356,10 +1278,11 @@ class Train:
         train.assigned_route_id = data.get("assigned_route_id")
 
         # Speed targets
-        train.target_speed = float(data.get("target_speed", 0.0))
+        # target_speed and speed_limit_reason are no longer stored on Train;
+        # they are controller-derived. Persisted snapshots that still contain
+        # them are ignored on load.
         train.manual_target_speed = float(data.get("manual_target_speed", 0.0))
         train.wait_reason = data.get("wait_reason")
-        train.speed_limit_reason = data.get("speed_limit_reason")
         train.ato_destination_block_id = data.get("ato_destination_block_id")
 
         return train

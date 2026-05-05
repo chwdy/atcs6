@@ -158,7 +158,6 @@ class TestBugDualPathAfterAtoStop:
         train.assigned_path_id = path.path_id
 
         controller = simulation._get_or_create_controller(train)
-        controller.ato_destination_block_id = path.end_block_id
         train.ato_destination_block_id = path.end_block_id
 
         controller.power_on_cmd()
@@ -332,8 +331,6 @@ class TestBugRunningWaitingAtPathEnd:
         train.assigned_path_id = path.path_id
 
         controller = simulation._get_or_create_controller(train)
-        controller.ato_destination_block_id = path.end_block_id
-        controller.ato_path_id = path.path_id
         train.ato_destination_block_id = path.end_block_id
 
         controller.power_on_cmd()

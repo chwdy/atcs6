@@ -91,25 +91,26 @@ class BlockState(Enum):
 
 class TrainState(Enum):
     """
-    Train power and operational states for DC analog control.
+    Train power and operational states.
 
-    States determine voltage output and lighting:
-    - OFF: 0V, no lights
-    - IDLE: Lighting voltage, red lights both ends (if safe)
-    - STANDBY: Lighting voltage, headlight/taillight, ready to depart
-    - RUNNING_MOVING: Speed-based voltage, actively moving
-    - RUNNING_WAITING: Lighting voltage, stopped waiting for path/signal
-    - RUNNING_AT_STATION: Lighting voltage, dwelling at station
-    - MANUAL: User-controlled speed, ATC protected
+    Per design_new.md, the canonical operational state set in v1 is:
+    - OFF: power off
+    - IDLE: powered on, no cab selected
+    - STANDBY: powered on, cab selected, stopped, not dwelling
+    - RUNNING_MOVING: depart accepted; physically moving or stopped at zero
+      ATC clearance under the same live authority
+    - RUNNING_AT_STATION: route-managed dwell at a confirmed stop task
+
+    Manual driving is a control mode (control_mode == "manual"), not a
+    separate operational state; a stopped manual train sits in STANDBY/IDLE
+    just like an ATO train.
     """
 
-    OFF = "off"  # 0V, no lights
-    IDLE = "idle"  # Lighting V, red both ends if safe
-    STANDBY = "standby"  # Lighting V, headlight/taillight, ready
-    RUNNING_MOVING = "running_moving"  # Speed-based V, actively moving
-    RUNNING_WAITING = "running_waiting"  # Lighting V, waiting for path/signal
-    RUNNING_AT_STATION = "running_at_station"  # Lighting V, dwelling at station
-    MANUAL = "manual"  # User-controlled speed, ATC protected
+    OFF = "off"
+    IDLE = "idle"
+    STANDBY = "standby"
+    RUNNING_MOVING = "running_moving"
+    RUNNING_AT_STATION = "running_at_station"
 
 
 class PlatformSide(Enum):

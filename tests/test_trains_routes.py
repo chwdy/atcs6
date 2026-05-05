@@ -84,37 +84,29 @@ class TestBlockTileSyncValidation:
         return network, train, physics
 
     def test_sync_validation_returns_true_when_synced(self, physics_setup):
-        """Validation should return True when tiles and blocks match."""
-        _, train, physics = physics_setup
+        """Validation should return True when tiles and the local tracker match.
 
-        # Position is synced by default
+        v1: physics._validate_position_sync now compares tile-derived blocks
+        against the physics-local last-occupied-blocks tracker (not against
+        train.position.occupied_blocks).
+        """
+        _, train, physics = physics_setup
+        # Seed the physics internal tracker so tiles match the tracker.
+        physics._last_occupied_blocks = {"B1"}
         result = physics._validate_position_sync(train)
         assert result is True, "Should return True when synced"
 
     def test_sync_validation_detects_desync(self, physics_setup):
-        """Validation should detect when blocks don't match tiles."""
+        """Validation should detect when local tracker doesn't match tiles."""
         _, train, physics = physics_setup
-
-        # Create a desync: tiles say B1, but occupied_blocks is empty
-        train.position.occupied_blocks = []
-
+        # Force a tracker mismatch.
+        physics._last_occupied_blocks = set()
         result = physics._validate_position_sync(train)
         assert result is False, "Should return False when desynced"
 
     def test_sync_validation_auto_corrects(self, physics_setup):
-        """Validation should auto-correct occupied_blocks from tiles."""
-        _, train, physics = physics_setup
-
-        # Create a desync
-        train.position.occupied_blocks = []
-
-        # Validate (which should correct)
-        physics._validate_position_sync(train)
-
-        # Should now have B1 in occupied_blocks
-        assert "B1" in train.position.occupied_blocks, (
-            "Should auto-correct to include B1"
-        )
+        """v1: _validate_position_sync is diagnostic-only; no auto-correction."""
+        pytest.skip("v1: physics._validate_position_sync is diagnostic-only; corrections live in the dispatcher progress flow")
 
 
 class TestRouteExecutorThreeStationLoopSimulation:
@@ -205,7 +197,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
 
         if simulation.path_dispatcher:
             for path_id in list(simulation.path_dispatcher.active_paths.keys()):
-                simulation.path_dispatcher.cancel_path(path_id, force=True)
+                simulation.path_dispatcher.cancel_path(path_id)
 
         train.state = TrainState.RUNNING_MOVING
         controller.state = TrainState.RUNNING_MOVING
@@ -474,7 +466,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
         simulation.route_executor.execution_states.pop(train.train_id, None)
 
         if train.assigned_path_id:
-            dispatcher.cancel_path(train.assigned_path_id, force=True)
+            dispatcher.cancel_path(train.assigned_path_id)
         train.assigned_path_id = None
         train.current_path = None
         train.reserved_blocks = []
@@ -621,7 +613,6 @@ class TestMultiTilePlatformStopping:
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
-        controller.ato_destination_block_id = "STATION_BLOCK"
 
         # Calculate clearance - should include distance to end of platform
         clearance = controller._calculate_clearance_to_end_of_current_block()
@@ -672,7 +663,6 @@ class TestMultiTilePlatformStopping:
 
         # Create controller
         controller = TrainController(train_id=train.train_id, network=network)
-        controller.ato_destination_block_id = "STATION_BLOCK"
 
         # Calculate clearance to end of current block
         clearance = controller._calculate_clearance_to_end_of_current_block()
@@ -925,7 +915,7 @@ class TestManualPathAssignmentAfterArrival:
 
         # Cancel the path from A to B
         if train.assigned_path_id:
-            dispatcher.cancel_path(train.assigned_path_id, force=True)
+            dispatcher.cancel_path(train.assigned_path_id)
         train.assigned_path_id = None
         train.current_path = None
         train.reserved_blocks = []
@@ -1180,6 +1170,7 @@ class TestManualPathAssignmentAfterArrival:
         FIX: _is_at_station() now returns False at non-destination stations
         when ato_destination_block_id is set.
         """
+        pytest.skip("v1: RUNNING_WAITING/MANUAL state removed")
         network = self._build_terminal_line_with_switch()
         dispatcher = PathDispatcher(network)
         simulation = SimulationController(network, dispatcher)
@@ -1226,8 +1217,6 @@ class TestManualPathAssignmentAfterArrival:
         # Apply the fix: Stop ATO and clear destination
         if controller.ato_running:
             controller.ato_stop()
-        controller.ato_destination_block_id = None
-        controller.ato_path_id = None
         train.ato_destination_block_id = None
 
         # Clear route executor state
@@ -1292,7 +1281,6 @@ class TestManualPathAssignmentAfterArrival:
         train.assigned_route_id = None
         if controller.ato_running:
             controller.ato_stop()
-        controller.ato_destination_block_id = None
         train.ato_destination_block_id = None
 
         assert controller.ato_running is False
@@ -1318,15 +1306,11 @@ class TestManualPathAssignmentAfterArrival:
         controller.set_direction_and_standby(Direction.EAST)
 
         # Set some path state
-        controller.ato_path_id = "PATH_123"
-        controller.ato_destination_block_id = "BLK_C"
         train.ato_destination_block_id = "BLK_C"
 
         # Cancel
         if controller.ato_running:
             controller.ato_stop()
-        controller.ato_destination_block_id = None
-        controller.ato_path_id = None
         train.ato_destination_block_id = None
 
         assert controller.ato_path_id is None, "Path ID should be cleared"
@@ -1392,7 +1376,6 @@ class TestManualPathAssignmentAfterArrival:
         train.assigned_path_id = path_result.path.path_id
 
         # Set destination
-        controller.ato_destination_block_id = "STA_A_BLOCK"
         train.ato_destination_block_id = "STA_A_BLOCK"
 
         # Apply the fix: Auto-turn if path requires opposite direction
@@ -1544,7 +1527,6 @@ class TestManualPathAssignmentAfterArrival:
         train.assigned_route_id = None
         if controller.ato_running:
             controller.ato_stop()
-        controller.ato_destination_block_id = None
         train.ato_destination_block_id = None
 
         # Wait for train to stop
@@ -1568,7 +1550,6 @@ class TestManualPathAssignmentAfterArrival:
         train.current_path = raw_path
         train.path_index = 0
         train.assigned_path_id = path_result.path.path_id
-        controller.ato_destination_block_id = "STA_A_BLOCK"
         train.ato_destination_block_id = "STA_A_BLOCK"
 
         # Auto-turn logic
@@ -1707,8 +1688,6 @@ class TestUserReportedBugExactWorkflow:
         train.current_path = path_tiles
         train.assigned_path_id = "PATH_TO_EAST_TERMINAL"
         train.path_index = 0
-        controller.ato_destination_block_id = "EAST_TERMINAL_BLOCK"
-        controller.ato_path_id = "PATH_TO_EAST_TERMINAL"
 
         # Step 4: User turns power on
         result = controller.power_on_cmd()

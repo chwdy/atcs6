@@ -399,11 +399,15 @@ class TestTrainPhysicsDebugLogging:
     """Regression tests for TrainPhysics debug details (2026-01-22)."""
 
     def test_train_physics_tick_updates_speed_correctly(self):
-        """TrainPhysics.tick should update speed based on handle position."""
+        """TrainPhysics.tick should update speed based on handle position.
+
+        v1: target_speed is read-only on the controller; physics doesn't read
+        target_speed at all — it computes speed deltas from handle_position
+        plus the speed profile.
+        """
         network = RailwayNetwork()
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_PHYS_LOG", consist=[car], max_speed=60.0)
-        train.current_speed = 12.0
         network.add_train(train)
 
         sim = SimulationController(network)
@@ -412,13 +416,15 @@ class TestTrainPhysicsDebugLogging:
 
         controller.power_on = True
         controller.handle_position = HandlePosition.P2
-        controller.target_speed = 40.0
+        # v1: write canonical speed onto the controller; train.current_speed mirrors.
+        controller.current_speed_kmh = 12.0
+        train.current_speed = 12.0
 
-        initial_speed = train.current_speed
+        initial_speed = controller.current_speed_kmh
         physics.tick(0.1)
 
         # Speed should increase with P2 handle (power)
-        assert train.current_speed > initial_speed
+        assert controller.current_speed_kmh > initial_speed
 
 
 

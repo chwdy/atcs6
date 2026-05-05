@@ -144,10 +144,9 @@ class BlockPowerController:
 
         Determines voltage based on train state:
         - OFF: 0V
-        - IDLE/STANDBY/RUNNING_WAITING/RUNNING_AT_STATION: lighting_voltage
+        - IDLE/STANDBY/RUNNING_AT_STATION: lighting_voltage
           (IDLE with ≥2 blocks may use opposite polarity for red lights both ends)
         - RUNNING_MOVING: voltage based on target speed
-        - MANUAL: voltage based on manual_target_speed
 
         Args:
             train: Train to update voltage for
@@ -213,7 +212,6 @@ class BlockPowerController:
         if train.state in (
             TrainState.IDLE,
             TrainState.STANDBY,
-            TrainState.RUNNING_WAITING,
             TrainState.RUNNING_AT_STATION,
         ):
             return lighting_voltage

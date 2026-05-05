@@ -169,7 +169,6 @@ class TestBugStandbyPathAutostart:
         train.assigned_path_id = path.path_id
 
         controller = simulation._get_or_create_controller(train)
-        controller.ato_destination_block_id = path.end_block_id
         train.ato_destination_block_id = path.end_block_id
 
         controller.power_on_cmd()
@@ -276,8 +275,6 @@ class TestBugStandbyPathAutostart:
         train.assigned_path_id = None
         train.current_path = None
         train.ato_destination_block_id = None
-        controller.ato_destination_block_id = None
-        controller.ato_path_id = None
 
         is_complete_stale = controller._is_standalone_path_complete(train)
         has_context_after = controller._has_path_backed_run_context(train)
@@ -314,8 +311,6 @@ class TestBugStandbyPathAutostart:
 
         # Complete old path to release switch
         dispatcher.complete_path(path_id)
-        controller.ato_destination_block_id = None
-        controller.ato_path_id = None
         controller.transition_to_standby()
 
         # Place train at north end of branch (y=5)
@@ -379,7 +374,6 @@ class TestBugStandbyPathAutostart:
             train.current_path = new_raw_path
             train.path_index = 0
         train.assigned_path_id = new_path.path_id
-        controller.ato_destination_block_id = new_path.end_block_id
         train.ato_destination_block_id = new_path.end_block_id
 
         # Now check what _required_cab_for_path returns
@@ -459,7 +453,6 @@ class TestBugStandbyPathAutostart:
         # Complete old path to release switch lock
         dispatcher.complete_path(path_id)
         # After complete_path, train.assigned_path_id is cleared by dispatcher
-        controller.ato_destination_block_id = None
 
         # Create new reverse path EAST_BRANCH → MAIN
         reverse_path_result = dispatcher.create_path(
@@ -479,7 +472,6 @@ class TestBugStandbyPathAutostart:
             train.current_path = new_raw_path
             train.path_index = 0
         train.assigned_path_id = new_path.path_id
-        controller.ato_destination_block_id = new_path.end_block_id
         train.ato_destination_block_id = new_path.end_block_id
 
         dump_state(
