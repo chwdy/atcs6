@@ -19,25 +19,32 @@ def register(app, state: AppState) -> None:
         return state.sim_controller._get_or_create_controller(train)
 
     def _train_to_dict(train, network=None):
-        """Convert train to dict with live path data from controller.
+        """Convert train to dict with live path data and onboard snapshot.
 
         This replaces direct calls to train.to_dict() in API endpoints.
         It passes live path_tiles and path_index from the PathDispatcher
         (via TrainController) so the frontend sees accurate, up-to-date
-        path data instead of a stale cache.
+        path data instead of a stale cache. It also merges the controller
+        snapshot under ``train["onboard"]`` so downstream readers can find
+        controller-derived values (target_speed, speed_limit_reason, state,
+        control_mode, eb_active, ...) on every train-mutating response, not
+        only on the ``/api/network`` payload.
 
         Args:
             train: Train instance to serialize.
             network: RailwayNetwork for position conversion. Defaults to None.
 
         Returns:
-            Dictionary representation of the train with live path data.
+            Dictionary representation of the train with live path data and
+            onboard snapshot merged in.
         """
+        controller = None
         live_path = None
-        if state.sim_controller and train.assigned_path_id:
+        if state.sim_controller:
             try:
                 controller = _get_train_controller(train)
-                live_path = controller.get_live_path_data()
+                if controller is not None and train.assigned_path_id:
+                    live_path = controller.get_live_path_data()
             except Exception as e:
                 import logging
 
@@ -46,12 +53,25 @@ def register(app, state: AppState) -> None:
                 )
 
         if live_path:
-            return train.to_dict(
+            train_dict = train.to_dict(
                 network=network,
                 path_tiles=live_path["path_tiles"],
                 path_index=live_path["path_index"],
             )
-        return train.to_dict(network=network)
+        else:
+            train_dict = train.to_dict(network=network)
+
+        if controller is not None:
+            try:
+                train_dict["onboard"] = controller.to_dict()
+            except Exception as e:
+                import logging
+
+                logging.getLogger(__name__).debug(
+                    "Failed to serialize onboard for train %s: %s", train.train_id, e
+                )
+
+        return train_dict
 
     def _get_platforms() -> Dict[str, object]:
         """Get physical platforms map."""
@@ -359,18 +379,17 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/trains/<train_id>/depart", methods=["POST"])
     def train_depart(train_id):
-        """Depart from station."""
+        """Depart from station or STANDBY.
+
+        - RUNNING_AT_STATION -> depart_from_station(has_more_waypoints=True)
+        - STANDBY            -> depart()
+        - other states       -> 400
+        """
         train = state.network.trains.get(train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
 
         controller = _get_train_controller(train)
-
-        if train.state == TrainState.RUNNING_WAITING:
-            if controller.clear_to_move():
-                return jsonify(
-                    {"status": "success", "train": _train_to_dict(train, state.network)}
-                )
 
         if train.state == TrainState.RUNNING_AT_STATION:
             if controller.depart_from_station(has_more_waypoints=True):
@@ -762,12 +781,13 @@ def register(app, state: AppState) -> None:
                     current_route.unassign_train(train_id)
             train.assigned_route_id = None
 
-            # Stop ATO and clear destination when canceling route
+            # Stop ATO and clear destination when canceling route. The
+            # controller's ato_destination_block_id and ato_path_id are
+            # read-only properties derived from received_path_plan, so we
+            # only clear the Train-side mirror here.
             controller = _get_train_controller(train)
             if controller.ato_running:
                 controller.ato_stop()
-            controller.ato_destination_block_id = None
-            controller.ato_path_id = None
             train.ato_destination_block_id = None
 
             route_executor = (

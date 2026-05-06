@@ -961,7 +961,9 @@ async function test_POST_train_enable_manual() {
     });
 
     assert(result.ok, 'POST /trains/{id}/enable-manual should succeed');
-    assert(result.data.state === 'manual', 'Train state should be manual');
+    // In v1 manual is a control mode, not an operational state.
+    assert(result.data.onboard?.control_mode === 'manual',
+        'onboard.control_mode should be "manual" after enable-manual');
 }
 
 async function test_POST_train_disable_manual() {
@@ -986,7 +988,10 @@ async function test_POST_train_disable_manual() {
     });
 
     assert(result.ok, 'POST /trains/{id}/disable-manual should succeed');
-    assert(result.data.state === 'idle', 'Train state should be idle after disabling manual');
+    // disable-manual flips onboard.control_mode back to "ato"; the operational
+    // state is unrelated and stays where it was (IDLE/STANDBY/etc).
+    assert(result.data.onboard?.control_mode === 'ato',
+        'onboard.control_mode should be "ato" after disable-manual');
 }
 
 async function test_POST_train_manual_speed() {
@@ -1067,7 +1072,11 @@ async function test_POST_train_emergency_stop() {
     });
 
     assert(result.ok, 'POST /trains/{id}/emergency-stop should succeed');
-    assert(result.data.state === 'emergency_stop', 'Train state should be emergency_stop');
+    // emergency_stop is no longer a TrainState value in v1; EB is signalled by
+    // onboard.eb_active. The state itself stays at the operational value the
+    // train was in when EB was applied.
+    assert(result.data.onboard?.eb_active === true,
+        'onboard.eb_active should be true after emergency-stop');
 }
 
 // ============= PLATFORM ADDITIONAL ENDPOINTS =============

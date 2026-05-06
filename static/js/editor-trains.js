@@ -176,9 +176,7 @@ class TrainEditorHandler {
             idle: 'train-state-idle',
             standby: 'train-state-standby',
             running_moving: 'train-state-running',
-            running_waiting: 'train-state-waiting',
-            running_at_station: 'train-state-station',
-            manual: 'train-state-manual'
+            running_at_station: 'train-state-station'
         };
         return map[state] || 'train-state-off';
     }
@@ -480,7 +478,7 @@ class TrainEditorHandler {
                         </div>
                     </div>
                     
-                    ${(onboard?.train_state || train.state) === 'running_waiting' && train.wait_reason ? `
+                    ${train.wait_reason ? `
                         <div class="mt-4 pt-4 border-t border-gray-700 text-xs text-warning train-wait-reason">
                             <span class="block text-muted mb-1">Waiting Reason:</span>
                             ${train.wait_reason}
@@ -629,7 +627,7 @@ class TrainEditorHandler {
                         <!-- Legacy speed slider for debug (hidden by default) -->
                         <div class="hidden">
                             <label class="property-label">Speed: <span id="manual-speed-label">${train.manual_target_speed || 0}</span> km/h</label>
-                            <input type="range" id="train-manual-speed-slider" class="slider-full" min="0" max="${train.max_speed || 100}" step="1" value="${train.manual_target_speed || 0}" ${train.state !== 'manual' ? 'disabled' : ''}>
+                            <input type="range" id="train-manual-speed-slider" class="slider-full" min="0" max="${train.max_speed || 100}" step="1" value="${train.manual_target_speed || 0}" ${train.onboard?.control_mode !== 'manual' ? 'disabled' : ''}>
                         </div>
                     </div>
                 </div>
@@ -753,8 +751,23 @@ class TrainEditorHandler {
         }
 
         if (powerOffBtn) {
-            powerOffBtn.onclick = () => executeAction('Power Off',
-                () => window.api.trainPowerOff(trainId));
+            powerOffBtn.onclick = async () => {
+                // Power-off is latched in v1: the OFF transition lands one or
+                // two ticks later, after Phase 3 consumes pending_power_off.
+                // The first refresh shows the latched state; schedule a
+                // follow-up refresh so the panel reconciles to OFF without
+                // user intervention.
+                await executeAction('Power Off',
+                    () => window.api.trainPowerOff(trainId));
+                setTimeout(async () => {
+                    try {
+                        await window.app.refreshNetwork();
+                        await this.showTrainControlPanel(trainId);
+                    } catch (err) {
+                        console.warn('[TrainControl] Deferred power-off refresh failed:', err);
+                    }
+                }, 500);
+            };
         }
 
         // ═══════════════════════════════════════════════════════════════════
@@ -1153,16 +1166,11 @@ class TrainEditorHandler {
             `;
         }
 
-        // Update waiting reason
+        // Update waiting reason. wait_reason is the only signal of "stalled
+        // with live authority" since running_waiting was removed in v1.
         let reasonEl = panel.querySelector('.train-wait-reason');
-        if (trainState === 'running_waiting' && train.wait_reason) {
-            if (!reasonEl) {
-                // If element doesn't exist but should, we might need to recreate the info block,
-                // but simpler to just append if missing or update parent.
-                // For simplicity, we'll assume the basic structure exists.
-                // If it's too complex to inject, we can just reload the panel, but that flickers.
-                // Let's try to update the text content if it exists.
-            } else {
+        if (train.wait_reason) {
+            if (reasonEl) {
                 reasonEl.innerHTML = `<span class="block text-muted mb-1">Waiting Reason:</span> ${train.wait_reason}`;
             }
         } else if (reasonEl) {
@@ -1353,7 +1361,11 @@ class TrainEditorHandler {
 
     updateButtonStates(train) {
         const state = train.state;
-        const powerOn = train.onboard?.power_on ?? false;
+        const onboard = train.onboard || null;
+        const powerOn = onboard?.power_on ?? false;
+        // In v1, manual is a control mode (onboard.control_mode), not a state.
+        const isManual = onboard?.control_mode === 'manual';
+        const travelDirection = onboard?.travel_direction ?? train.travel_direction;
 
         const powerOnBtn = document.getElementById('train-power-on-btn');
         const powerOffBtn = document.getElementById('train-power-off-btn');
@@ -1381,21 +1393,21 @@ class TrainEditorHandler {
 
         const manualOnBtn = document.getElementById('train-manual-on-btn');
         const manualOffBtn = document.getElementById('train-manual-off-btn');
-        if (manualOnBtn) manualOnBtn.disabled = state === 'manual';
-        if (manualOffBtn) manualOffBtn.disabled = state !== 'manual';
+        if (manualOnBtn) manualOnBtn.disabled = isManual;
+        if (manualOffBtn) manualOffBtn.disabled = !isManual;
 
         const travelFwdBtn = document.getElementById('train-travel-fwd-btn');
         const travelRevBtn = document.getElementById('train-travel-rev-btn');
         const speedSlider = document.getElementById('train-manual-speed-slider');
-        if (travelFwdBtn) travelFwdBtn.disabled = state !== 'manual';
-        if (travelRevBtn) travelRevBtn.disabled = state !== 'manual';
-        if (speedSlider) speedSlider.disabled = state !== 'manual';
+        if (travelFwdBtn) travelFwdBtn.disabled = !isManual;
+        if (travelRevBtn) travelRevBtn.disabled = !isManual;
+        if (speedSlider) speedSlider.disabled = !isManual;
 
         if (travelFwdBtn) {
-            travelFwdBtn.classList.toggle('btn-active', train.travel_direction === 'forward');
+            travelFwdBtn.classList.toggle('btn-active', travelDirection === 'forward');
         }
         if (travelRevBtn) {
-            travelRevBtn.classList.toggle('btn-active', train.travel_direction === 'reverse');
+            travelRevBtn.classList.toggle('btn-active', travelDirection === 'reverse');
         }
     }
 }

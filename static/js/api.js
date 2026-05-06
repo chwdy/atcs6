@@ -70,6 +70,20 @@ class API {
     }
 
     /**
+     * Get the inspector snapshot for a single train.
+     * Returns null when the train was deleted between polls.
+     * @param {string} trainId
+     * @returns {Promise<object|null>}
+     */
+    async getInspectorEntityTrain(trainId) {
+        return this._request(
+            `/inspector/entity/train/${encodeURIComponent(trainId)}`,
+            { returnNullOn404: true },
+            'getInspectorEntityTrain'
+        );
+    }
+
+    /**
      * Get current network layout as StepRecorder steps.
      * Used by the scenario recorder to embed layout in scenario files.
      * @returns {Promise<Array>} List of step objects
@@ -530,6 +544,14 @@ class API {
 
     /**
      * Turn train power off.
+     *
+     * In v1 power-off is latched: ``power_off_cmd()`` writes
+     * ``pending_power_off`` (and a ``pending_path_cancel_request`` when there
+     * is a live path), and Phase 3 commits the OFF transition on a later
+     * tick. The response indicates the request was accepted; callers must
+     * observe ``train.onboard.power_on === false`` on a subsequent fetch
+     * before treating the train as actually OFF.
+     *
      * @param {string} trainId - Train ID
      * @returns {Promise<object>} Result
      */
@@ -796,14 +818,24 @@ class API {
     }
 
     /**
-     * Cancel a path and release its resources.
+     * Request cancellation of a path.
+     *
+     * In v1 the backend latches API-driven cancellations: when the path has
+     * a live train, the response resolves with ``status: "queued"`` once the
+     * pending_path_cancel_request latch is written. The path is not actually
+     * removed and the train has not yet stopped at that point — Phase 3 of
+     * the simulation tick commits the cancel after the train brakes to a
+     * stop. Callers should refresh from /api/paths or /api/network on the
+     * next tick rather than mutating local state synchronously.
+     *
+     * Paths with no assigned train still cancel synchronously and resolve
+     * with ``status: "success"``.
+     *
      * @param {string} pathId - Path ID to cancel
-     * @param {boolean} force - If true, force cancellation even with approach locking
-     * @returns {Promise<object>} CancellationResult
+     * @returns {Promise<object>} `{ success, status, path_id, train_id?, note? }`
      */
-    async cancelPath(pathId, force = false) {
-        const query = force ? '?force=true' : '';
-        return this._request(`/paths/${encodeURIComponent(pathId)}${query}`, {
+    async cancelPath(pathId) {
+        return this._request(`/paths/${encodeURIComponent(pathId)}`, {
             method: 'DELETE'
         }, 'cancelPath');
     }

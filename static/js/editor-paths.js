@@ -439,9 +439,26 @@ class PathEditorHandler {
                 try {
                     const result = await this.api.cancelPath(pathId);
                     if (result.success) {
-                        window.showToast(`Path ${pathId} cancelled`, 'success', 5000);
+                        const queued = result.status === 'queued';
+                        const message = queued
+                            ? `Path ${pathId} cancellation queued — train is braking`
+                            : `Path ${pathId} cancelled`;
+                        window.showToast(message, 'success', 5000);
                         await window.app.refreshNetwork();
                         await this.showPathsPanel();
+                        // For latched cancels, the path is not yet removed.
+                        // Reconcile after one tick (~200 ms) so the UI catches
+                        // up with the Phase-3 commit in the simulation.
+                        if (queued) {
+                            setTimeout(async () => {
+                                try {
+                                    await window.app.refreshNetwork();
+                                    await this.showPathsPanel();
+                                } catch (err) {
+                                    console.warn('[Editor] Deferred path refresh failed:', err);
+                                }
+                            }, 500);
+                        }
                     } else {
                         window.showToast(`Failed to cancel: ${result.message || result.error}`, 'error', 5000);
                     }
@@ -598,12 +615,26 @@ class PathEditorHandler {
                 try {
                     const result = await this.api.cancelPath(pathId);
                     if (result.success) {
-                        window.showToast(`Path ${pathId} cancelled`, 'success', 5000);
+                        const queued = result.status === 'queued';
+                        const message = queued
+                            ? `Path ${pathId} cancellation queued — train is braking`
+                            : `Path ${pathId} cancelled`;
+                        window.showToast(message, 'success', 5000);
                         await window.app.refreshNetwork();
                         if (this.renderer.clearPathHighlight) {
                             this.renderer.clearPathHighlight();
                         }
                         await this.showPathsPanel();
+                        if (queued) {
+                            setTimeout(async () => {
+                                try {
+                                    await window.app.refreshNetwork();
+                                    await this.showPathsPanel();
+                                } catch (err) {
+                                    console.warn('[Editor] Deferred path refresh failed:', err);
+                                }
+                            }, 500);
+                        }
                     } else {
                         window.showToast(`Failed to cancel: ${result.message || result.error}`, 'error', 5000);
                     }
@@ -903,16 +934,29 @@ class PathEditorHandler {
             }
 
             document.getElementById('status-state').textContent = 'Cancel Path: Cancelling...';
-            
+
             const cancelResult = await this.api.cancelPath(pathToCancel.path_id);
-            
+
             if (cancelResult.success) {
-                window.showToast(`Path ${pathToCancel.path_id} cancelled`, 'success', 5000);
+                const queued = cancelResult.status === 'queued';
+                const message = queued
+                    ? `Path ${pathToCancel.path_id} cancellation queued — train is braking`
+                    : `Path ${pathToCancel.path_id} cancelled`;
+                window.showToast(message, 'success', 5000);
                 await window.app.refreshNetwork();
+                if (queued) {
+                    setTimeout(async () => {
+                        try {
+                            await window.app.refreshNetwork();
+                        } catch (err) {
+                            console.warn('[Editor] Deferred path refresh failed:', err);
+                        }
+                    }, 500);
+                }
             } else {
                 window.showToast(`Failed to cancel: ${cancelResult.message || cancelResult.error}`, 'error', 5000);
             }
-            
+
             document.getElementById('status-state').textContent = 'Cancel Path: Click on a path to cancel';
         } catch (err) {
             console.error('[Editor] Failed to cancel path:', err);

@@ -1,0 +1,268 @@
+/* Inspector Phase 1 — floating, draggable debug panel.
+   Shows a live snapshot of one Train + its TrainController organized into
+   four collapsible groups (config / live / derived / latches). */
+
+.inspector-panel {
+    position: fixed;
+    top: 80px;
+    right: 20px;
+    width: 420px;
+    max-height: 80vh;
+    z-index: 9000;
+    background-color: var(--bg-panel);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+    font-family: var(--font-main);
+    font-size: 12px;
+    display: flex;
+    flex-direction: column;
+    user-select: none;
+}
+
+.inspector-panel.hidden {
+    display: none;
+}
+
+.inspector-panel.inspector-panel-dragging {
+    opacity: 0.92;
+}
+
+/* ---- Header / drag handle ---- */
+.inspector-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-color);
+    cursor: move;
+    background-color: var(--bg-hover);
+    border-top-left-radius: var(--control-radius-sm);
+    border-top-right-radius: var(--control-radius-sm);
+}
+
+.inspector-panel-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: 0.02em;
+}
+
+.inspector-panel-close {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+    border-radius: 3px;
+}
+.inspector-panel-close:hover {
+    color: var(--text-primary);
+    background-color: var(--bg-panel);
+}
+
+/* ---- Toolbar (train + rate + refresh) ---- */
+.inspector-panel-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.inspector-panel-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 0;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+}
+
+.inspector-panel-field select {
+    height: var(--control-height-xs);
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    padding: 0 6px;
+    font-family: var(--font-main);
+    font-size: 12px;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.inspector-panel-refresh-btn {
+    align-self: flex-end;
+    height: var(--control-height-xs);
+    width: var(--control-height-xs);
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    cursor: pointer;
+    font-size: 14px;
+}
+.inspector-panel-refresh-btn:hover {
+    border-color: var(--accent-color);
+    color: var(--accent-hover);
+}
+
+/* ---- Body ---- */
+.inspector-panel-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 4px 0;
+}
+
+.inspector-panel-empty {
+    padding: 24px 16px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+.inspector-panel-empty.inspector-panel-warn {
+    color: var(--warning-color);
+    font-style: normal;
+}
+.inspector-panel-empty.inspector-panel-error {
+    color: var(--danger-color);
+    font-style: normal;
+}
+
+/* ---- Footer ---- */
+.inspector-panel-footer {
+    padding: 4px 10px 6px;
+    border-top: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-family: var(--font-mono);
+}
+
+/* ---- Group ---- */
+.inspector-group {
+    border-bottom: 1px solid var(--border-color);
+}
+
+.inspector-group:last-child {
+    border-bottom: none;
+}
+
+.inspector-group-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    cursor: pointer;
+    background-color: rgba(255, 255, 255, 0.02);
+    user-select: none;
+}
+.inspector-group-header:hover {
+    background-color: var(--bg-hover);
+}
+
+.inspector-group-caret {
+    width: 10px;
+    color: var(--text-secondary);
+    font-size: 10px;
+}
+
+.inspector-group-name {
+    flex: 1 1 auto;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+}
+
+.inspector-group-count {
+    background-color: var(--bg-dark);
+    color: var(--text-secondary);
+    border-radius: 999px;
+    padding: 1px 8px;
+    font-size: 10px;
+    font-family: var(--font-mono);
+}
+
+.inspector-group.collapsed .inspector-group-items {
+    display: none;
+}
+
+.inspector-group-items {
+    padding: 2px 0 4px;
+}
+
+/* ---- Row ---- */
+.inspector-row {
+    display: grid;
+    grid-template-columns: 11em 4.5em 1fr;
+    align-items: baseline;
+    padding: 3px 10px;
+    gap: 6px;
+    line-height: 1.4;
+    border-left: 3px solid transparent;
+}
+.inspector-row:hover {
+    background-color: var(--bg-hover);
+}
+
+.inspector-row-name {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.inspector-row-value {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+/* ---- Source badge ---- */
+.inspector-row-source-badge {
+    display: inline-block;
+    text-align: center;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 1px 4px;
+    border-radius: 3px;
+    color: #fff;
+    background-color: #777;
+    font-family: var(--font-main);
+}
+.inspector-row-source-badge[data-source="stored"] { background-color: #555560; }
+.inspector-row-source-badge[data-source="property"] { background-color: var(--accent-blue); color: #001a22; }
+.inspector-row-source-badge[data-source="latch"] { background-color: var(--warning-color); color: #2a1f00; }
+.inspector-row-source-badge[data-source="external"] { background-color: var(--accent-green); color: #00200d; }
+
+/* ---- Diff flash ---- */
+@keyframes inspector-row-flash-anim {
+    0%   { background-color: rgba(255, 205, 30, 0.45); }
+    100% { background-color: transparent; }
+}
+.inspector-row-flash {
+    animation: inspector-row-flash-anim 1s ease-out 1;
+    border-left-color: var(--warning-color);
+}
+
+/* ---- Errored property ---- */
+.inspector-row-error {
+    border-left-color: var(--danger-color);
+    background-color: rgba(232, 63, 91, 0.08);
+}
+.inspector-row-error .inspector-row-value {
+    color: var(--danger-color);
+    white-space: pre-wrap;
+}

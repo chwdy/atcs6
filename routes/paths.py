@@ -6,6 +6,7 @@ from flask import jsonify, request
 
 from app_state import AppState
 from path_utils import assign_complete_path_to_train, convert_tiles_to_train_path
+from runtime_payloads import PathCancellationKind, PendingPathCancelRequest
 
 
 def register(app, state: AppState) -> None:
@@ -95,15 +96,11 @@ def register(app, state: AppState) -> None:
                             train.path_index = 0
                         train.assigned_path_id = result.path.path_id
 
-                        # Set destination on controller for immediate ATO use.
-                        # In future, controller could read Path.end_block_id directly.
-                        controller = state.sim_controller._get_or_create_controller(
-                            train
-                        )
-                        if controller and result.path.end_block_id:
-                            controller.ato_destination_block_id = (
-                                result.path.end_block_id
-                            )
+                        # In v1 the controller derives ato_destination_block_id
+                        # from received_path_plan (a property over the active
+                        # path); no manual write is needed. Mirror it onto the
+                        # Train for serialization and legacy callers.
+                        if result.path.end_block_id:
                             train.ato_destination_block_id = result.path.end_block_id
             return jsonify(result.to_dict()), 200 if result.success else 400
         except Exception as e:
@@ -155,48 +152,65 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/paths/<path_id>", methods=["DELETE"])
     def cancel_path(path_id):
-        """Cancel a path and release its resources.
+        """Request cancellation of a path.
 
-        Also stops the assigned train's ATO and clears path-related fields
-        so the train brakes to a stop instead of continuing to the destination.
+        v1 semantics: cancellation is latched. The handler writes
+        `controller.pending_path_cancel_request` and returns immediately with
+        ``status: "queued"``. Phase 3 of the simulation tick consumes the
+        latch and calls ``PathDispatcher.cancel_path(...)`` once the train is
+        fully stopped. Block reservations and switch locks are released by
+        the same Phase-3 consumer; clients should refresh path state on a
+        subsequent poll instead of mutating local UI state.
 
-        Query params:
-            force: If "true", force cancellation even with approach locking
+        Paths with no assigned train are cancelled synchronously (no train
+        means nothing to brake first).
 
         Returns:
-            CancellationResult with released resources info
+            200 OK with ``{"status": "queued", ...}`` when latched.
+            200 OK with ``CancellationResult`` when cancelled synchronously.
         """
-        force = request.args.get("force", "").lower() == "true"
-
         with state.simulation_lock:
             path = state.path_dispatcher.get_path(path_id)
             if not path:
                 return jsonify({"error": f"Path {path_id} not found"}), 404
 
-            # Before cancelling the path, stop the assigned train's ATO
-            # and clear path-related fields so it brakes to a stop
-            if path.train_id and state.sim_controller:
-                train = state.network.trains.get(path.train_id)
-                if train and train.assigned_path_id == path_id:
+            train_id = path.train_id
+            if train_id and state.sim_controller:
+                train = state.network.trains.get(train_id)
+                if train:
                     controller = state.sim_controller._get_or_create_controller(train)
-                    if controller:
-                        if controller.ato_running:
-                            controller.ato_stop()
-                        controller.ato_destination_block_id = None
-                        controller.ato_path_id = None
-                    train.ato_destination_block_id = None
-                    train.assigned_path_id = None
-                    train.current_path = None
-                    train.path_index = 0
-                    train.reserved_blocks = []
+                    if controller is not None:
+                        controller.pending_path_cancel_request = (
+                            PendingPathCancelRequest(
+                                cancellation_kind=PathCancellationKind.OPERATOR_CANCELLED,
+                                reason="api cancel",
+                                expected_path_id=path_id,
+                            )
+                        )
+                        return jsonify(
+                            {
+                                "success": True,
+                                "status": "queued",
+                                "path_id": path_id,
+                                "train_id": train_id,
+                                "note": "cancel committed when train is stopped",
+                            }
+                        ), 200
 
-            result = state.path_dispatcher.cancel_path(path_id, force=force)
-
-            # Update signal states after path cancellation (blocks are now released)
-            if result.success:
+            # No train assigned (or controller unavailable): cancel synchronously.
+            success = state.path_dispatcher.cancel_path(
+                path_id,
+                cancellation_kind=PathCancellationKind.OPERATOR_CANCELLED,
+                reason="api cancel",
+            )
+            if success:
                 state.network.update_signals_from_blocks()
-
-        return jsonify(result.to_dict()), 200 if result.success else 400
+                return jsonify(
+                    {"status": "success", "path_id": path_id, "success": True}
+                ), 200
+            return jsonify(
+                {"error": "Failed to cancel path", "path_id": path_id}
+            ), 400
 
     @app.route("/api/paths/<path_id>/extend", methods=["PUT"])
     def extend_path(path_id):
@@ -227,25 +241,21 @@ def register(app, state: AppState) -> None:
 
             result = state.path_dispatcher.extend_path(path_id, new_end_block_id)
 
-            # Sync train and controller state after successful extension
+            # Sync train state after successful extension. The controller
+            # derives ato_destination_block_id from received_path_plan
+            # (now a property over Path.authority_end_block_id), so no
+            # controller-side write is needed here.
             if result.success and path.train_id:
                 train = state.network.trains.get(path.train_id)
                 if train:
-                    # Update destination so ATO doesn't stop at old terminal
+                    # Mirror destination on Train for serialization and
+                    # legacy consumers.
                     train.ato_destination_block_id = new_end_block_id
 
                     # Update current_path cache for to_dict() serialization
                     train.current_path = _convert_path_tiles_to_train_path(
                         path.path_tiles
                     )
-
-                    # Sync controller destination
-                    if state.sim_controller:
-                        controller = state.sim_controller._get_or_create_controller(
-                            train
-                        )
-                        if controller:
-                            controller.ato_destination_block_id = new_end_block_id
 
             if result.success:
                 state.network.update_signals_from_blocks()
@@ -306,28 +316,6 @@ def register(app, state: AppState) -> None:
                 "error": None,
             }
         )
-
-    @app.route("/api/paths/<path_id>/complete", methods=["POST"])
-    def complete_path(path_id):
-        """Mark a path as completed and release all resources.
-
-        Used when train reaches destination.
-
-        Returns:
-            Success message or error
-        """
-        with state.simulation_lock:
-            path = state.path_dispatcher.get_path(path_id)
-            if not path:
-                return jsonify({"error": f"Path {path_id} not found"}), 404
-
-            success = state.path_dispatcher.complete_path(path_id)
-
-        if success:
-            return jsonify(
-                {"status": "success", "message": f"Path {path_id} completed"}
-            )
-        return jsonify({"error": "Failed to complete path"}), 400
 
     @app.route("/api/dispatcher/paths", methods=["POST"])
     def find_dispatcher_paths():

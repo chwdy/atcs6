@@ -213,13 +213,15 @@ class TrainMonitor {
                 pathIndex: train.path_index
             });
             
-            // Build minimal lookahead data with just speed/state info
+            // Build minimal lookahead data with just speed/state info.
+            // target_speed and speed_limit_reason live on the controller in v1
+            // and are exposed via train.onboard (merged in by the backend).
             this.lookaheadData = {
                 current_speed_kmh: train.speed || 0,
-                target_speed_kmh: train.target_speed || 0,
+                target_speed_kmh: train.onboard?.target_speed ?? 0,
                 state: train.state,
                 wait_reason: train.wait_reason,
-                speed_limit_reason: train.speed_limit_reason,
+                speed_limit_reason: train.onboard?.speed_limit_reason ?? null,
                 blocks: [],
                 signals: [],
                 switches: [],
@@ -243,25 +245,28 @@ class TrainMonitor {
                 this.clearanceEl.textContent = '0.0';
             }
             
+            // wait_reason is set by the train/controller whenever the train
+            // is stalled. running_waiting state was removed in v1; the wait
+            // reason field is now the single source of "waiting" UI.
             if (this.waitReasonEl) {
-                if (this.lookaheadData.state === 'running_waiting' && this.lookaheadData.wait_reason) {
+                if (this.lookaheadData.wait_reason) {
                     this.waitReasonEl.textContent = this.lookaheadData.wait_reason;
                     this.waitReasonEl.classList.remove('hidden');
                 } else {
                     this.waitReasonEl.classList.add('hidden');
                 }
             }
-            
+
             if (this.speedLimitReasonEl) {
                 const speedLimitReason = this.lookaheadData.speed_limit_reason;
-                if (speedLimitReason && this.lookaheadData.state !== 'running_waiting') {
+                if (speedLimitReason && !this.lookaheadData.wait_reason) {
                     this.speedLimitReasonEl.textContent = speedLimitReason;
                     this.speedLimitReasonEl.classList.remove('hidden');
                 } else {
                     this.speedLimitReasonEl.classList.add('hidden');
                 }
             }
-            
+
             this.updateUpcomingElements(this.lookaheadData);
             this.render();
             return;
@@ -375,13 +380,16 @@ class TrainMonitor {
             totalClearance = Math.max(0, lastTileStart) + (lastTile.length_cm || 50);
         }
         
-        // Build lookahead-compatible data structure
+        // Build lookahead-compatible data structure.
+        // target_speed and speed_limit_reason now come from train.onboard
+        // (the controller snapshot merged into the train payload by the
+        // backend) rather than from train fields, which were removed in v1.
         this.lookaheadData = {
             current_speed_kmh: train.speed || 0,
-            target_speed_kmh: train.target_speed || 0,
+            target_speed_kmh: train.onboard?.target_speed ?? 0,
             state: train.state,
             wait_reason: train.wait_reason,
-            speed_limit_reason: train.speed_limit_reason,
+            speed_limit_reason: train.onboard?.speed_limit_reason ?? null,
             blocks: blocks,
             signals: signals,
             switches: switches,
@@ -407,24 +415,24 @@ class TrainMonitor {
         }
         
         if (this.waitReasonEl) {
-            if (this.lookaheadData.state === 'running_waiting' && this.lookaheadData.wait_reason) {
+            if (this.lookaheadData.wait_reason) {
                 this.waitReasonEl.textContent = this.lookaheadData.wait_reason;
                 this.waitReasonEl.classList.remove('hidden');
             } else {
                 this.waitReasonEl.classList.add('hidden');
             }
         }
-        
+
         if (this.speedLimitReasonEl) {
             const speedLimitReason = this.lookaheadData.speed_limit_reason;
-            if (speedLimitReason && this.lookaheadData.state !== 'running_waiting') {
+            if (speedLimitReason && !this.lookaheadData.wait_reason) {
                 this.speedLimitReasonEl.textContent = speedLimitReason;
                 this.speedLimitReasonEl.classList.remove('hidden');
             } else {
                 this.speedLimitReasonEl.classList.add('hidden');
             }
         }
-        
+
         // NEW: Check for configuration warnings
         // User requirement: Show warnings but allow operation (non-blocking)
         if (this.lookaheadData.warnings && this.lookaheadData.warnings.length > 0) {
@@ -444,7 +452,8 @@ class TrainMonitor {
         }
 
         const lookahead = payload && payload.lookahead ? payload.lookahead : null;
-        const speedLimitReason = payload?.speed_limit_reason ?? train.speed_limit_reason;
+        const speedLimitReason =
+            payload?.speed_limit_reason ?? train.onboard?.speed_limit_reason ?? null;
 
         const safetyMarginCm = lookahead?.safety_margin_cm ?? 25;
         const clearanceCm = lookahead?.clearance_cm || 0;
@@ -453,7 +462,7 @@ class TrainMonitor {
 
         this.lookaheadData = {
             current_speed_kmh: train.speed || 0,
-            target_speed_kmh: train.target_speed || 0,
+            target_speed_kmh: train.onboard?.target_speed ?? 0,
             state: train.state,
             wait_reason: train.wait_reason,
             speed_limit_reason: speedLimitReason,
@@ -502,7 +511,7 @@ class TrainMonitor {
         }
 
         if (this.waitReasonEl) {
-            if (this.lookaheadData.state === 'running_waiting' && this.lookaheadData.wait_reason) {
+            if (this.lookaheadData.wait_reason) {
                 this.waitReasonEl.textContent = this.lookaheadData.wait_reason;
                 this.waitReasonEl.classList.remove('hidden');
             } else {
@@ -512,7 +521,7 @@ class TrainMonitor {
 
         if (this.speedLimitReasonEl) {
             const speedLimitReason = this.lookaheadData.speed_limit_reason;
-            if (speedLimitReason && this.lookaheadData.state !== 'running_waiting') {
+            if (speedLimitReason && !this.lookaheadData.wait_reason) {
                 this.speedLimitReasonEl.textContent = speedLimitReason;
                 this.speedLimitReasonEl.classList.remove('hidden');
             } else {

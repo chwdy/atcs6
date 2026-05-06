@@ -1265,10 +1265,23 @@ class Train:
         else:
             train.travel_direction = "forward"
 
-        # State (DC analog control)
+        # State (DC analog control). Pre-v1 snapshots may carry the dropped
+        # values "running_waiting" or "manual"; remap them to the closest v1
+        # operational state so autosaves stay loadable.
         if data.get("state"):
+            raw_state = data["state"]
+            legacy_state_remap = {
+                "running_waiting": "running_moving",
+                "manual": "idle",
+            }
+            if raw_state in legacy_state_remap:
+                print(
+                    f"[Train] Legacy state '{raw_state}' remapped to "
+                    f"'{legacy_state_remap[raw_state]}' (v1 migration)"
+                )
+                raw_state = legacy_state_remap[raw_state]
             try:
-                train.state = TrainState(data["state"])
+                train.state = TrainState(raw_state)
             except ValueError:
                 print(f"[Train] Unknown state '{data['state']}', defaulting to OFF")
                 train.state = TrainState.OFF

@@ -1,0 +1,480 @@
+"""Inspector Routes — debug snapshot of live entity state.
+
+Phase 1 scope (intentional): Train + TrainController only.
+Path / Block / Switch / Route inspectors are Phase 2+.
+
+Single endpoint: GET /api/inspector/entity/train/<train_id>
+Returns a structured snapshot organized into 4 groups:
+    1. Train (config) — static-ish dataclass fields
+    2. TrainController (live stored) — per-tick mutating fields
+    3. TrainController (derived properties) — @property reads with formula docs
+    4. TrainController (mailbox & latches) — pending_*/queued_* with writer/consumer
+
+Each item carries a `source` tag (stored / property / latch / external) and,
+where applicable, `computed_from` and `formula_doc` strings to make the
+backend → spec → UI link traceable.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import enum
+import time
+from typing import Any, Dict, List, Optional
+
+from flask import jsonify
+
+from app_state import AppState
+
+
+# ---------------------------------------------------------------------------
+# Field lists — enumerate explicitly so we never leak helper internals via
+# vars(...) and never miss @property values that aren't in the dataclass dict.
+# ---------------------------------------------------------------------------
+
+_TRAIN_CONFIG_FIELDS: List[str] = [
+    "train_id",
+    "max_speed",
+    "num_cars",
+    "priority",
+    "max_braking_rate",
+    "model",
+    "car_number",
+    "min_radius_cm",
+    "length_cm",  # @property on Train but a pure config readout
+]
+
+_CONTROLLER_STORED_FIELDS: List[str] = [
+    "state",
+    "active_cab",
+    "current_span",
+    "current_speed_kmh",
+    "eb_active",
+    "atc_warning_active",
+    "ato_running",
+    "control_mode",
+    "manual_mode_type",
+    "handle_position",
+    "manual_power_percent",
+    "power_on",
+    "path_backed_run_active",
+    "clearance_ahead_cm",
+    "atc_speed_limit",
+    "current_block_speed_limit",
+    "safety_margin_cm",
+    "signal_lookahead_blocks",
+    "ato_info",
+    "handle_reason",
+]
+
+_CONTROLLER_DERIVED_FIELDS: List[str] = [
+    "received_path_plan",
+    "assigned_path_id",
+    "ato_path_id",
+    "ato_destination_block_id",
+    "travel_direction",
+    "lookahead",
+    "target_speed",
+    "speed_limit_reason",
+]
+
+_CONTROLLER_LATCH_FIELDS: List[str] = [
+    "queued_progress_reports",
+    "pending_path_cancel_request",
+    "pending_route_abort",
+    "pending_power_off",
+    "pending_route_finished",
+    "pending_route_deactivate",
+    "pending_notifications",
+]
+
+
+# ---------------------------------------------------------------------------
+# Documentation tables. Edit these — not handler logic — when formulas drift.
+# `formula_doc` strings cite both the implementation file (stable line via
+# `@property` blocks) and the design_new.md spec section.
+# ---------------------------------------------------------------------------
+
+_DERIVED_DOC: Dict[str, Dict[str, Any]] = {
+    "received_path_plan": {
+        "computed_from": ["path_dispatcher.get_active_path(train_id)"],
+        "formula_doc": (
+            "train_controller.py:417 / design_new.md §Path — live read of "
+            "PathDispatcher.get_active_path(train_id); auto-flips to None "
+            "when dispatcher transitions path away from ACTIVE."
+        ),
+    },
+    "assigned_path_id": {
+        "computed_from": ["received_path_plan.path_id"],
+        "formula_doc": "train_controller.py:433 — derived from received_path_plan.path_id (or .id fallback).",
+    },
+    "ato_path_id": {
+        "computed_from": ["assigned_path_id"],
+        "formula_doc": "train_controller.py:441 — alias for assigned_path_id.",
+    },
+    "ato_destination_block_id": {
+        "computed_from": [
+            "received_path_plan.authority_end_block_id",
+            "received_path_plan.end_block_id (legacy fallback)",
+        ],
+        "formula_doc": (
+            "train_controller.py:446 — derived from "
+            "received_path_plan.authority_end_block_id; falls back to "
+            "legacy end_block_id when v0 schema."
+        ),
+    },
+    "travel_direction": {
+        "computed_from": ["active_cab", "train.position.facing_direction", "current_span"],
+        "formula_doc": (
+            "train_controller.py:462 / design_new.md ~L1311 — cab end = head; "
+            "direction is from the opposite physical end through the cab end "
+            "into the next span resource ahead. Returns None when no cab is "
+            "selected."
+        ),
+    },
+    "lookahead": {
+        "computed_from": [
+            "current_span",
+            "active_cab",
+            "received_path_plan",
+            "network",
+            "signals",
+            "current_speed_kmh",
+            "eb_active",
+        ],
+        "formula_doc": (
+            "train_controller.py:498 / design_new.md §Lookahead — pure "
+            "derived; recomputes on every read via _calculate_lookahead(). "
+            "Distance-0 entry carries the ATC operational limit."
+        ),
+    },
+    "target_speed": {
+        "computed_from": ["lookahead[0].speed_limit_kmh"],
+        "formula_doc": (
+            "train_controller.py:509 / design_new.md §Lookahead — first "
+            "lookahead point's speed_limit_kmh; returns 0.0 when inf."
+        ),
+    },
+    "speed_limit_reason": {
+        "computed_from": ["_last_speed_limit_reason (cached during _calculate_atc_speed_limit())"],
+        "formula_doc": (
+            "train_controller.py:526 — last ATC speed-limit reason cached "
+            "during this tick's ATC step; recomputed next tick."
+        ),
+    },
+}
+
+_LATCH_META: Dict[str, Dict[str, str]] = {
+    "queued_progress_reports": {
+        "writer": "Phase 2 — TrainController.on_physics_updated",
+        "consumer": "Phase 3 — PathDispatcher.on_controller_progress (drains list)",
+    },
+    "pending_path_cancel_request": {
+        "writer": "Phase 1 reconcile / Phase 2 cmd-drain or ATC / API handler",
+        "consumer": "Phase 3 cancel step (gated by is_stopped() == True)",
+    },
+    "pending_route_abort": {
+        "writer": "API / route executor",
+        "consumer": "Phase 3 — RouteExecutor.on_train_progress (route abort step)",
+    },
+    "pending_power_off": {
+        "writer": "Phase 2 — operator command drain",
+        "consumer": "Phase 3 — power-off step (gated by is_stopped())",
+    },
+    "pending_route_finished": {
+        "writer": "Phase 2 — route completion detection",
+        "consumer": "Phase 3 — route-finished step",
+    },
+    "pending_route_deactivate": {
+        "writer": "API / route executor",
+        "consumer": "Phase 3 — route-deactivate step",
+    },
+    "pending_notifications": {
+        "writer": "Any phase — controller helpers append diagnostic strings",
+        "consumer": "Phase 3 — SimulationController collects + clears",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Serialization helpers
+# ---------------------------------------------------------------------------
+
+# Cap nested-list rendering so payloads stay sane for slow trains with long
+# lookaheads or deeply queued reports.
+_LIST_CAP = 12
+
+
+def _safe_property(obj: Any, name: str) -> Dict[str, Any]:
+    """Read attribute and capture exceptions verbatim.
+
+    Returns either {"ok": True, "value": <raw>} or
+    {"ok": False, "error": "<TypeName>: <msg>"}.
+
+    Errored property reads are themselves debug signal — the inspector
+    surfaces them as red rows in the UI.
+    """
+    try:
+        return {"ok": True, "value": getattr(obj, name)}
+    except Exception as exc:  # noqa: BLE001 — intentional broad catch
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _serialize_value(value: Any, depth: int = 0) -> Any:
+    """Convert arbitrary Python values to JSON-safe shapes.
+
+    Strategy (top to bottom):
+      - None / primitives → as-is
+      - Enum → .value (snake_case where applicable)
+      - dataclass → asdict (recurse to convert nested fields)
+      - list/tuple → recurse, cap at _LIST_CAP entries with placeholder
+      - dict → recurse over values
+      - object with __dict__ → repr() (avoids leaking large internal graphs)
+      - fallback → repr()
+    """
+    if depth > 4:
+        return repr(value)
+
+    if value is None or isinstance(value, (bool, int, float, str)):
+        # JSON can choke on inf/nan; keep them as strings for inspection.
+        if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+            return repr(value)
+        return value
+
+    if isinstance(value, enum.Enum):
+        return value.value if hasattr(value, "value") else value.name
+
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        try:
+            raw = dataclasses.asdict(value)
+        except Exception:  # noqa: BLE001
+            return repr(value)
+        return {k: _serialize_value(v, depth + 1) for k, v in raw.items()}
+
+    if isinstance(value, (list, tuple)):
+        items = list(value)
+        if len(items) > _LIST_CAP:
+            head = [_serialize_value(v, depth + 1) for v in items[:_LIST_CAP]]
+            head.append(f"... {len(items) - _LIST_CAP} more")
+            return head
+        return [_serialize_value(v, depth + 1) for v in items]
+
+    if isinstance(value, dict):
+        return {str(k): _serialize_value(v, depth + 1) for k, v in value.items()}
+
+    # Any other object — try its __dict__ shallowly.
+    if hasattr(value, "__dict__"):
+        try:
+            shallow = {
+                k: _serialize_value(v, depth + 1)
+                for k, v in vars(value).items()
+                if not k.startswith("_")
+            }
+            shallow["__type__"] = type(value).__name__
+            return shallow
+        except Exception:  # noqa: BLE001
+            return repr(value)
+
+    return repr(value)
+
+
+def _type_name(value: Any) -> str:
+    """Best-effort type label for the UI."""
+    if value is None:
+        return "None"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, enum.Enum):
+        return type(value).__name__
+    if isinstance(value, (list, tuple)):
+        if value:
+            inner = type(value[0]).__name__
+            return f"List[{inner}]"
+        return "List[Any]"
+    if isinstance(value, dict):
+        return "Dict"
+    return type(value).__name__
+
+
+def _build_item(
+    name: str,
+    raw_value: Any,
+    source: str,
+    *,
+    error: Optional[str] = None,
+    computed_from: Optional[List[str]] = None,
+    formula_doc: Optional[str] = None,
+    writer: Optional[str] = None,
+    consumer: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Assemble one row of the inspector payload."""
+    item: Dict[str, Any] = {
+        "name": name,
+        "value": _serialize_value(raw_value) if error is None else None,
+        "type": _type_name(raw_value) if error is None else "error",
+        "source": source,
+    }
+    if error is not None:
+        item["error"] = error
+    if computed_from is not None:
+        item["computed_from"] = computed_from
+    if formula_doc is not None:
+        item["formula_doc"] = formula_doc
+    if writer is not None:
+        item["writer"] = writer
+    if consumer is not None:
+        item["consumer"] = consumer
+    return item
+
+
+# ---------------------------------------------------------------------------
+# Group builders
+# ---------------------------------------------------------------------------
+
+
+def _build_train_config_group(train: Any) -> Dict[str, Any]:
+    items = []
+    for name in _TRAIN_CONFIG_FIELDS:
+        try:
+            raw = getattr(train, name)
+            items.append(_build_item(name, raw, "stored"))
+        except Exception as exc:  # noqa: BLE001
+            items.append(
+                _build_item(
+                    name,
+                    None,
+                    "stored",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            )
+    return {"name": "Train (config)", "items": items}
+
+
+def _build_controller_live_group(controller: Any) -> Dict[str, Any]:
+    items = []
+    for name in _CONTROLLER_STORED_FIELDS:
+        try:
+            raw = getattr(controller, name)
+            items.append(_build_item(name, raw, "stored"))
+        except Exception as exc:  # noqa: BLE001
+            items.append(
+                _build_item(
+                    name,
+                    None,
+                    "stored",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            )
+    return {"name": "TrainController (live)", "items": items}
+
+
+def _build_controller_derived_group(controller: Any) -> Dict[str, Any]:
+    items = []
+    for name in _CONTROLLER_DERIVED_FIELDS:
+        result = _safe_property(controller, name)
+        meta = _DERIVED_DOC.get(name, {})
+        if result["ok"]:
+            items.append(
+                _build_item(
+                    name,
+                    result["value"],
+                    "property",
+                    computed_from=meta.get("computed_from"),
+                    formula_doc=meta.get("formula_doc"),
+                )
+            )
+        else:
+            items.append(
+                _build_item(
+                    name,
+                    None,
+                    "property",
+                    error=result["error"],
+                    computed_from=meta.get("computed_from"),
+                    formula_doc=meta.get("formula_doc"),
+                )
+            )
+    return {"name": "TrainController (derived)", "items": items}
+
+
+def _build_controller_latches_group(controller: Any) -> Dict[str, Any]:
+    items = []
+    for name in _CONTROLLER_LATCH_FIELDS:
+        meta = _LATCH_META.get(name, {})
+        try:
+            raw = getattr(controller, name)
+            items.append(
+                _build_item(
+                    name,
+                    raw,
+                    "latch",
+                    writer=meta.get("writer"),
+                    consumer=meta.get("consumer"),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            items.append(
+                _build_item(
+                    name,
+                    None,
+                    "latch",
+                    error=f"{type(exc).__name__}: {exc}",
+                    writer=meta.get("writer"),
+                    consumer=meta.get("consumer"),
+                )
+            )
+    return {"name": "TrainController (mailbox & latches)", "items": items}
+
+
+# ---------------------------------------------------------------------------
+# Top-level snapshot assembly
+# ---------------------------------------------------------------------------
+
+
+def _build_train_inspector(train: Any, controller: Any) -> Dict[str, Any]:
+    return {
+        "type": "train",
+        "id": getattr(train, "train_id", None),
+        "label": getattr(train, "model", "") or getattr(train, "train_id", ""),
+        "groups": [
+            _build_train_config_group(train),
+            _build_controller_live_group(controller),
+            _build_controller_derived_group(controller),
+            _build_controller_latches_group(controller),
+        ],
+        "fetched_at": time.time(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Blueprint registration
+# ---------------------------------------------------------------------------
+
+
+def register(app, state: AppState) -> None:
+    """Register inspector routes."""
+
+    def _get_train_controller(train):
+        # Mirrors routes/trains.py:19 — existing project convention.
+        return state.sim_controller._get_or_create_controller(train)
+
+    @app.route("/api/inspector/entity/train/<train_id>", methods=["GET"])
+    def get_train_inspector(train_id: str):
+        if not getattr(state, "network", None):
+            return jsonify({"error": "Network not initialized"}), 503
+
+        train = state.network.trains.get(train_id)
+        if not train:
+            return jsonify({"error": "Train not found"}), 404
+
+        if not getattr(state, "sim_controller", None):
+            return jsonify({"error": "Simulation not initialized"}), 503
+
+        controller = _get_train_controller(train)
+        return jsonify(_build_train_inspector(train, controller))

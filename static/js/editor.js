@@ -1975,10 +1975,10 @@ class Editor {
                 <div class="property-item-row">
                     <div class="train-summary-row">
                         <div class="train-status-dot" style="background-color: ${
+                            train.wait_reason ? '#ffd93d' :
+                            train.onboard?.control_mode === 'manual' ? '#ff9500' :
                             train.state === 'running_moving' ? '#04d361' :
-                            train.state === 'running_waiting' ? '#ffd93d' :
                             train.state === 'running_at_station' ? '#00bfff' :
-                            train.state === 'manual' ? '#ff9500' :
                             train.state === 'idle' ? '#888' : '#e83f5b'
                         }"></div>
                         <div class="train-info">
