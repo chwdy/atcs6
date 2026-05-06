@@ -1072,6 +1072,8 @@ class TrainPhysics:
         train = self._get_train()
         path_tiles = self._get_path_tiles()
         if train and path_tiles:
+            if (path_tiles[-1][0], path_tiles[-1][1]) == tile:
+                return None
             next_tile_in_path = self._get_next_tile_in_path(path_tiles, tile)
             if next_tile_in_path:
                 # Determine which edge leads to the next tile
