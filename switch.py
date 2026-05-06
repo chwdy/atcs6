@@ -7,19 +7,17 @@ with configurable physical properties for each branch (MAIN and DIVERGE paths).
 
 Design Notes:
 - Each switch has separate length and radius for MAIN (state 0) and DIVERGE (state 1) paths
-- Switch state is still stored on TrackSegment for backward compatibility
+- Switch state is authoritative on the Switch entity (not on TrackSegment) in v1
 - Switches are auto-created when switch tracks are placed
 - Default length is 0.0 cm (unconfigured) which triggers warnings but allows operation
-- Switch locking prevents state changes during path execution
-
-TODO List:
-- [ ] Add switch type library with predefined dimensions
-- [ ] Add validation for radius/length relationship
-- [ ] Add automatic length calculation based on track geometry
+- Multi-owner future-authority locks: same-state path locks may co-exist; physical
+  occupancy (`occupied_by`) is single-owner
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, Tuple, TYPE_CHECKING
+from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
+
+from enums import SwitchState
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -28,16 +26,19 @@ if TYPE_CHECKING:
 @dataclass
 class Switch:
     """
-    Railway switch (turnout) configuration.
+    Railway switch (turnout) configuration and runtime state.
 
     A switch is placed at a specific track tile and defines the physical
-    characteristics of each path through the turnout mechanism.
+    characteristics of each path through the turnout mechanism, plus the
+    authoritative runtime state (state, occupied_by, locks, protection).
 
-    Locking:
-    - Switches can be locked by a path to prevent state changes during train movement
-    - locked_by_path: ID of the path that holds the lock
-    - locked_state: The state (0/1) the switch is locked to
-    - Only the path that locked a switch can unlock it
+    Locking model (v1):
+    - `locks` is a multi-owner future-authority lock collection keyed by
+      `(path_id, claim_role, source_switch_id)` mapped to `(train_id, locked_state)`.
+      Compatible same-state lock claims may co-exist.
+    - `train_protection_claims` is the train-owned physical protection set used
+      after the train head has entered a switch and consumed the path lock.
+    - Physical occupancy (`occupied_by`) is single-owner.
     """
 
     switch_id: str  # Unique identifier (e.g., "SW_5_10")
@@ -45,164 +46,80 @@ class Switch:
     y: int  # Track tile Y coordinate
 
     # Physical properties - PER BRANCH
-    # Requirement: Record length and radius separately for each path
-    main_length_cm: float = 0.0  # Length of MAIN path (state 0) - default unconfigured
-    diverge_length_cm: float = (
-        0.0  # Length of DIVERGE path (state 1) - default unconfigured
-    )
+    main_length_cm: float = 0.0  # Length of MAIN path (state 0)
+    diverge_length_cm: float = 0.0  # Length of DIVERGE path (state 1)
 
-    # Radii - also per branch
+    # Radii - per branch
     main_radius_cm: Optional[float] = None  # Radius of MAIN path (None = straight)
     diverge_radius_cm: Optional[float] = None  # Radius of DIVERGE path
 
     # Switch type metadata
     switch_type: str = "standard"  # "standard", "wye", "crossover", "slip", "scissor"
     name: str = ""  # User-friendly name
-
-    # Metadata
     notes: str = ""  # User notes about this switch
 
     # ========================================================================
-    # SWITCH LOCKING (moved from TrackSegment)
+    # AUTHORITATIVE RUNTIME STATE (v1)
     # ========================================================================
-    locked_by_path: Optional[str] = None  # Path ID that locked this switch
-    locked_state: Optional[int] = None  # The state the switch is locked to (0 or 1)
+    state: SwitchState = SwitchState.MAIN
+    """Authoritative physical alignment of the switch (MAIN=0, DIVERGE=1)."""
+
+    occupied_by: Optional[str] = None
+    """train_id of the train physically straddling the switch tile, or None."""
+
+    disabled: bool = False
+    """When True, the switch is treated as missing track / open circuit."""
+
+    flank_protection: List[Tuple[str, int]] = field(default_factory=list)
+    """List of (neighbour_switch_id, blocking_state) tuples computed at network
+    load time. `blocking_state` is the neighbour state that would create a flank
+    conflict if the neighbour were aligned toward this switch."""
+
+    train_protection_claims: List[Tuple[str, str, int]] = field(default_factory=list)
+    """List of (train_id, source_switch_id, locked_state) tuples representing
+    train-owned physical protection. Cleared via tail-vacate cleanup."""
+
+    # ========================================================================
+    # MULTI-OWNER FUTURE-AUTHORITY LOCKS
+    # ========================================================================
+    locks: Dict[Tuple[str, str, Optional[str]], Tuple[str, int]] = field(
+        default_factory=dict
+    )
+    """Composite-key lock collection.
+
+    Key: (path_id, claim_role, source_switch_id)
+      - claim_role is one of "primary" / "flank" / "overlap".
+      - source_switch_id is None for "primary"; the source switch_id for "flank".
+    Value: (train_id, locked_state)
+    """
+
+    # ========================================================================
+    # RUNTIME BACK-REFERENCE (NOT SERIALIZED)
+    # ========================================================================
+    simulation_controller: Optional[Any] = None
+    """Back-reference to the owning SimulationController (Any to avoid circular
+    import). Optional in editor mode; required for runtime mutations that must
+    notify BlockManager."""
+
+    # ========================================================================
+    # PHYSICAL HELPERS
+    # ========================================================================
 
     def get_active_length(self, state: int) -> float:
-        """
-        Get length for the active path based on switch state.
-
-        Args:
-            state: Switch state (0=MAIN, 1=DIVERGE)
-
-        Returns:
-            Length in cm for the active path
-        """
+        """Get length for the active path based on switch state."""
         return self.main_length_cm if state == 0 else self.diverge_length_cm
 
     def get_active_radius(self, state: int) -> Optional[float]:
-        """
-        Get radius for the active path based on switch state.
-
-        Args:
-            state: Switch state (0=MAIN, 1=DIVERGE)
-
-        Returns:
-            Radius in cm for the active path, or None if straight
-        """
+        """Get radius for the active path based on switch state."""
         return self.main_radius_cm if state == 0 else self.diverge_radius_cm
 
-    # ========================================================================
-    # SWITCH LOCKING METHODS
-    # ========================================================================
-
-    def is_locked(self) -> bool:
-        """Check if switch is currently locked by any path."""
-        return self.locked_by_path is not None
-
-    def lock(self, path_id: str, state: int) -> bool:
-        """
-        Lock this switch in a specific state for a path.
-
-        Args:
-            path_id: The path ID requesting the lock
-            state: The switch state to lock to (0=MAIN, 1=DIVERGE)
-
-        Returns:
-            True if lock successful, False if already locked by different path
-        """
-        # Already locked by same path in same state - OK
-        if self.locked_by_path == path_id and self.locked_state == state:
-            return True
-
-        # Already locked by different path
-        if self.locked_by_path is not None and self.locked_by_path != path_id:
-            return False
-
-        # Lock the switch
-        self.locked_by_path = path_id
-        self.locked_state = state
-        return True
-
-    def unlock(self, path_id: str) -> bool:
-        """
-        Unlock this switch if it was locked by the specified path.
-
-        Args:
-            path_id: The path ID that should own the lock
-
-        Returns:
-            True if unlocked, False if not locked by this path
-        """
-        if self.locked_by_path == path_id:
-            self.locked_by_path = None
-            self.locked_state = None
-            return True
-        return False
-
-    def request_state_change(
-        self, new_state: int, network: "RailwayNetwork"
-    ) -> Tuple[bool, str]:
-        """
-        Request to change switch state. Fails if switch is locked.
-
-        This method checks both the Switch entity lock and the TrackSegment lock
-        to ensure path-locked switches cannot be changed via the API.
-
-        Args:
-            new_state: Desired switch state (0=MAIN, 1=DIVERGE)
-            network: Railway network to update track state
-
-        Returns:
-            Tuple of (success: bool, message: str)
-            - On success: (True, "Switch state changed to MAIN/DIVERGE")
-            - On failure: (False, "Switch locked by path {path_id}")
-        """
-        # Check Switch entity lock
-        if self.is_locked():
-            if self.locked_state == new_state:
-                return (
-                    True,
-                    f"Switch already in requested state (locked by {self.locked_by_path})",
-                )
-            return (False, f"Switch locked by path {self.locked_by_path}")
-
-        # Check TrackSegment lock (switches locked by path dispatcher)
-        track = network.get_track(self.x, self.y)
-        if track and track.is_locked_by_path():
-            lock_info = track.get_lock_info()
-            path_id = lock_info.get("path_id") if lock_info else "unknown"
-            if track.locked_state == new_state:
-                return (
-                    True,
-                    f"Switch already in requested state (locked by {path_id})",
-                )
-            return (False, f"Switch locked by path {path_id}")
-
-        # Get track and change state
-        track = network.get_track(self.x, self.y)
-        if not track:
-            return (False, f"No track at switch position ({self.x}, {self.y})")
-
-        if not track.is_switch:
-            return (False, f"Track at ({self.x}, {self.y}) is not a switch")
-
-        track.set_switch_state(new_state)
-        state_name = "MAIN" if new_state == 0 else "DIVERGE"
-        return (True, f"Switch state changed to {state_name}")
-
     def is_configured(self, state: Optional[int] = None) -> bool:
-        """
-        Check if switch is configured (has non-zero length).
+        """Check if switch is configured (has non-zero length).
 
         Args:
             state: If provided, check specific path. If None, check if any path is configured.
-
-        Returns:
-            True if configured, False otherwise
         """
         if state is None:
-            # Check if either path is configured
             return self.main_length_cm > 0 or self.diverge_length_cm > 0
         elif state == 0:
             return self.main_length_cm > 0
@@ -210,30 +127,142 @@ class Switch:
             return self.diverge_length_cm > 0
 
     def get_current_state(self, network: "RailwayNetwork") -> int:
+        """Get current switch state.
+
+        v1: state is authoritative on the Switch entity. The `network` argument
+        is retained for signature compatibility with legacy callers.
         """
-        Get current switch state from track tile.
+        return int(self.state)
+
+    # ========================================================================
+    # MULTI-OWNER LOCK METHODS (v1)
+    # ========================================================================
+
+    def is_locked(self) -> bool:
+        """Check if switch holds any future-authority lock claim."""
+        return bool(self.locks)
+
+    def acquire_lock(
+        self,
+        path_id: str,
+        claim_role: str,
+        train_id: str,
+        locked_state: int,
+        source_switch_id: Optional[str] = None,
+    ) -> bool:
+        """Acquire a future-authority lock claim on the switch.
+
+        Compatible same-state locks may co-exist. The acquisition succeeds when
+        every existing lock has the same `locked_state` as the requested one.
 
         Args:
-            network: Railway network to query
+            path_id: Path that owns this future claim.
+            claim_role: "primary", "flank", or "overlap".
+            train_id: Train associated with this claim.
+            locked_state: Required physical state (0=MAIN, 1=DIVERGE).
+            source_switch_id: Source main switch_id for "flank" claims; None for "primary".
 
         Returns:
-            Current switch state (0=MAIN, 1=DIVERGE)
+            True if recorded (or already present idempotently); False on conflict.
         """
-        track = network.get_track(self.x, self.y)
-        if track and track.is_switch:
-            return track.switch_state
-        return 0  # Default to MAIN if track not found
+        key = (path_id, claim_role, source_switch_id)
+        # Idempotent re-acquire of the same canonical claim with the same state.
+        if key in self.locks:
+            existing_train_id, existing_state = self.locks[key]
+            if existing_state == locked_state:
+                return True
+            return False
+
+        # Reject if any existing lock requires a different state.
+        for existing_train_id, existing_state in self.locks.values():
+            if existing_state != locked_state:
+                return False
+
+        self.locks[key] = (train_id, locked_state)
+        return True
+
+    def release_lock(
+        self,
+        path_id: str,
+        claim_role: str,
+        source_switch_id: Optional[str] = None,
+    ) -> bool:
+        """Release a single future-authority lock entry by composite key.
+
+        Returns:
+            True if a matching entry was removed; False if none found.
+        """
+        key = (path_id, claim_role, source_switch_id)
+        if key in self.locks:
+            del self.locks[key]
+            return True
+        return False
+
+    def release_train_protection_from(
+        self, source_switch_id: str, train_id: str
+    ) -> None:
+        """Remove all train_protection_claims with the given (source, train) combo.
+
+        Called on tail-vacate cleanup. Does not inspect or mutate `occupied_by`;
+        the caller is responsible for the `train_id == self.occupied_by` ordering
+        check before invoking this helper.
+        """
+        self.train_protection_claims = [
+            claim
+            for claim in self.train_protection_claims
+            if not (claim[0] == train_id and claim[1] == source_switch_id)
+        ]
+
+    def request_state_change(
+        self, new_state: int, network: "RailwayNetwork"
+    ) -> Tuple[bool, str]:
+        """Request to change switch state.
+
+        Fails if any future lock or train-owned protection requires a different
+        state. On success, mutates `self.state` and notifies `BlockManager` via
+        the wired `simulation_controller` (if any).
+
+        Args:
+            new_state: Desired switch state (0=MAIN, 1=DIVERGE).
+            network: Railway network (retained for signature compatibility).
+
+        Returns:
+            (success, message) tuple.
+        """
+        # Block any future lock that requires a different state.
+        for key, (train_id, locked_state) in self.locks.items():
+            if locked_state != new_state:
+                path_id = key[0]
+                return (False, f"Switch locked by path {path_id}")
+
+        # Block any train-owned protection that requires a different state.
+        for claim_train_id, claim_source_id, claim_state in self.train_protection_claims:
+            if claim_state != new_state:
+                return (
+                    False,
+                    f"Switch protected by train {claim_train_id} (source {claim_source_id})",
+                )
+
+        # Mutate authoritative state and notify BlockManager.
+        self.state = SwitchState(new_state)
+        if self.simulation_controller is not None:
+            self.simulation_controller.block_manager.on_switch_state_changed(
+                self.switch_id
+            )
+
+        state_name = "MAIN" if new_state == 0 else "DIVERGE"
+        return (True, f"Switch state changed to {state_name}")
+
+    # ========================================================================
+    # SERIALIZATION
+    # ========================================================================
 
     def to_dict(self, network: "RailwayNetwork" = None) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization.
 
-        Args:
-            network: Optional network to check TrackSegment lock status
-
-        Returns:
-            Dictionary with switch data including lock information
+        Note: `simulation_controller` is intentionally NOT serialized.
         """
-        data = {
+        return {
             "switch_id": self.switch_id,
             "x": self.x,
             "y": self.y,
@@ -244,21 +273,32 @@ class Switch:
             "switch_type": self.switch_type,
             "name": self.name,
             "notes": self.notes,
-            "locked_by_path": self.locked_by_path,
-            "locked_state": self.locked_state,
+            "state": int(self.state),
+            "occupied_by": self.occupied_by,
+            "disabled": self.disabled,
+            "flank_protection": [
+                [neighbour_id, blocking_state]
+                for (neighbour_id, blocking_state) in self.flank_protection
+            ],
+            "train_protection_claims": [
+                [train_id, source_id, locked_state]
+                for (train_id, source_id, locked_state) in self.train_protection_claims
+            ],
+            # Locks: dict keys are non-JSON tuples, so serialize as a list of records.
+            "locks": [
+                {
+                    "path_id": path_id,
+                    "claim_role": claim_role,
+                    "source_switch_id": source_switch_id,
+                    "train_id": train_id,
+                    "locked_state": locked_state,
+                }
+                for (
+                    (path_id, claim_role, source_switch_id),
+                    (train_id, locked_state),
+                ) in self.locks.items()
+            ],
         }
-
-        # Include TrackSegment lock info if network is provided
-        if network:
-            track = network.get_track(self.x, self.y)
-            if track:
-                data["track_locked"] = track.is_locked_by_path()
-                lock_info = track.get_lock_info()
-                if lock_info:
-                    data["track_locked_by_path"] = lock_info.get("path_id")
-                    data["track_locked_state"] = lock_info.get("locked_state")
-
-        return data
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Switch":
@@ -274,15 +314,39 @@ class Switch:
             switch_type=data.get("switch_type", "standard"),
             name=data.get("name", ""),
             notes=data.get("notes", ""),
-            locked_by_path=data.get("locked_by_path"),
-            locked_state=data.get("locked_state"),
         )
+        switch.state = SwitchState(int(data.get("state", 0)))
+        switch.occupied_by = data.get("occupied_by")
+        switch.disabled = bool(data.get("disabled", False))
+        switch.flank_protection = [
+            (neighbour_id, int(blocking_state))
+            for (neighbour_id, blocking_state) in data.get("flank_protection", [])
+        ]
+        switch.train_protection_claims = [
+            (train_id, source_id, int(locked_state))
+            for (train_id, source_id, locked_state) in data.get(
+                "train_protection_claims", []
+            )
+        ]
+        switch.locks = {}
+        for entry in data.get("locks", []):
+            key = (
+                entry["path_id"],
+                entry["claim_role"],
+                entry.get("source_switch_id"),
+            )
+            switch.locks[key] = (
+                entry["train_id"],
+                int(entry["locked_state"]),
+            )
         return switch
 
     def __repr__(self) -> str:
         """String representation for debugging."""
-        lock_info = f", locked by {self.locked_by_path}" if self.is_locked() else ""
+        lock_info = f", locks={len(self.locks)}" if self.locks else ""
+        occ = f", occupied_by={self.occupied_by}" if self.occupied_by else ""
         return (
             f"Switch({self.switch_id} at ({self.x},{self.y}): "
-            f"MAIN={self.main_length_cm}cm, DIVERGE={self.diverge_length_cm}cm{lock_info})"
+            f"state={self.state.name}, MAIN={self.main_length_cm}cm, "
+            f"DIVERGE={self.diverge_length_cm}cm{lock_info}{occ})"
         )

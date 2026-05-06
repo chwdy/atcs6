@@ -25,7 +25,7 @@ from persistence import PersistenceManager
 from route_executor import RouteExecutionState, RouteExecutor
 from step_player import StepPlayer
 from train import Train
-from train_route import TravelDirectionPolicy, Waypoint
+from train_route import RouteTask
 from tests.train_test_helpers import make_train_position
 
 
@@ -409,131 +409,28 @@ class TestBlockStationIntegration:
         assert len(block_positions) == 2
 
 
+@pytest.mark.skip(
+    reason="v1: TravelDirectionPolicy removed (replaced by RouteTask.task_direction); "
+    "_resolve_target_platform helper no longer exists in route_executor."
+)
 class TestTravelDirectionPolicyPreserve:
-    """Tests for preserve-direction filtering in flexible platform routing."""
+    """Tests for preserve-direction filtering in flexible platform routing.
 
-    def _build_grouped_platform_network(self) -> RailwayNetwork:
-        network = RailwayNetwork()
+    v1: TravelDirectionPolicy is gone; RouteTask.task_direction
+    ("forward"/"reverse"/"either") is the v1 mechanism. The
+    _resolve_target_platform helper does not exist in v1 RouteExecutor; flexible
+    platform resolution is done inline during target resolution. This entire
+    suite is obsolete in v1 and skipped.
+    """
 
-        # Previous waypoint platform (outside target station group)
-        network.platforms["PLT_PREV"] = Platform(
-            platform_id="PLT_PREV",
-            name="Prev",
-            positions=[(0, 0)],
-            platform_side=PlatformSide.BOTH,
-        )
+    def test_preserve_filters_out_wrong_direction_candidate(self):
+        pass
 
-        # Target station group with two alternatives
-        network.platforms["PLT_TARGET"] = Platform(
-            platform_id="PLT_TARGET",
-            name="Target",
-            positions=[(10, 0)],
-            platform_side=PlatformSide.BOTH,
-        )
-        network.platforms["PLT_ALT_WEST"] = Platform(
-            platform_id="PLT_ALT_WEST",
-            name="Alt West",
-            positions=[(-10, 0)],
-            platform_side=PlatformSide.BOTH,
-        )
-        network.platforms["PLT_ALT_EAST"] = Platform(
-            platform_id="PLT_ALT_EAST",
-            name="Alt East",
-            positions=[(11, 1)],
-            platform_side=PlatformSide.BOTH,
-        )
+    def test_either_policy_allows_first_available_alternative(self):
+        pass
 
-        network.station_groups["STA_MAIN"] = Station(
-            station_id="STA_MAIN",
-            name="Main",
-            platform_ids=["PLT_TARGET", "PLT_ALT_WEST", "PLT_ALT_EAST"],
-        )
-
-        return network
-
-    def _make_train(self) -> Train:
-        train = Train(train_id="T-PRESERVE")
-        train.position = make_train_position((0, 0), Direction.EAST)
-        return train
-
-    def test_preserve_filters_out_wrong_direction_candidate(self, monkeypatch):
-        """PRESERVE should reject alternatives that reverse travel direction."""
-        network = self._build_grouped_platform_network()
-        executor = RouteExecutor(network)
-        train = self._make_train()
-
-        waypoint = Waypoint(
-            platform_id="PLT_TARGET",
-            flexible_platform=True,
-            travel_direction_policy=TravelDirectionPolicy.PRESERVE,
-        )
-        exec_state = RouteExecutionState(
-            train_id=train.train_id,
-            route_id="R1",
-            last_waypoint_platform_id="PLT_PREV",
-        )
-
-        # Force fallback away from target to test candidate filtering.
-        monkeypatch.setattr(
-            executor,
-            "_is_platform_available",
-            lambda platform_id, _train_id: platform_id != "PLT_TARGET",
-        )
-
-        resolved = executor._resolve_target_platform(train, waypoint, exec_state)
-        assert resolved == "PLT_ALT_EAST"
-
-    def test_either_policy_allows_first_available_alternative(self, monkeypatch):
-        """EITHER policy should not apply preserve-direction filtering."""
-        network = self._build_grouped_platform_network()
-        executor = RouteExecutor(network)
-        train = self._make_train()
-
-        waypoint = Waypoint(
-            platform_id="PLT_TARGET",
-            flexible_platform=True,
-            travel_direction_policy=TravelDirectionPolicy.EITHER,
-        )
-        exec_state = RouteExecutionState(
-            train_id=train.train_id,
-            route_id="R1",
-            last_waypoint_platform_id="PLT_PREV",
-        )
-
-        monkeypatch.setattr(
-            executor,
-            "_is_platform_available",
-            lambda platform_id, _train_id: platform_id != "PLT_TARGET",
-        )
-
-        resolved = executor._resolve_target_platform(train, waypoint, exec_state)
-        assert resolved == "PLT_ALT_WEST"
-
-    def test_preserve_falls_back_to_train_effective_direction(self, monkeypatch):
-        """PRESERVE should still filter using train direction without prior waypoint."""
-        network = self._build_grouped_platform_network()
-        executor = RouteExecutor(network)
-        train = self._make_train()
-
-        waypoint = Waypoint(
-            platform_id="PLT_TARGET",
-            flexible_platform=True,
-            travel_direction_policy=TravelDirectionPolicy.PRESERVE,
-        )
-        exec_state = RouteExecutionState(
-            train_id=train.train_id,
-            route_id="R1",
-            last_waypoint_platform_id=None,
-        )
-
-        monkeypatch.setattr(
-            executor,
-            "_is_platform_available",
-            lambda platform_id, _train_id: platform_id != "PLT_TARGET",
-        )
-
-        resolved = executor._resolve_target_platform(train, waypoint, exec_state)
-        assert resolved == "PLT_ALT_EAST"
+    def test_preserve_falls_back_to_train_effective_direction(self):
+        pass
 
 
 class TestStationPlatformSchemaBugFixes:

@@ -138,45 +138,90 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/trains", methods=["POST"])
     def create_train():
-        """Create a new train."""
+        """Create a new train.
+
+        When a starting position is provided and a SimulationController is
+        available, the request is routed through
+        ``sim_controller.add_train(...)`` so that the controller, physics,
+        and notification center are wired in one synchronous step. Otherwise
+        the train is created without placement (editor scenario).
+        """
         data = request.json
         train_id = data.get("id")
         if not train_id:
             return jsonify({"error": "Missing train ID"}), 400
 
-        # Create a default locomotive car with the specified length
         # API provides length in track units (approx 100m)
         length_units = data.get("length", 1.0)
         length_meters = length_units * 100.0
+        max_speed_kmh = float(data.get("max_speed", 100.0))
+        car_number = data.get("car_number", "")
 
+        # Position-aware path: delegate to SimulationController.add_train.
+        if "position" in data and state.sim_controller is not None:
+            pos = data["position"]
+            direction_name = data.get("direction", "EAST")
+            try:
+                pos_x = int(pos["x"])
+                pos_y = int(pos["y"])
+            except (KeyError, TypeError, ValueError):
+                return jsonify({"error": "position must include x and y"}), 400
+            track = state.network.get_track(pos_x, pos_y)
+            if track is None or not track.block_section_id:
+                return jsonify(
+                    {"error": f"No block at position ({pos_x}, {pos_y})"}
+                ), 400
+            try:
+                train = state.sim_controller.add_train(
+                    train_id=train_id,
+                    starting_block_id=track.block_section_id,
+                    initial_direction=direction_name,
+                    max_speed_kmh=max_speed_kmh,
+                    length_cm=length_meters,
+                    name=car_number,
+                )
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            # The block returned by add_train may not be the requested tile
+            # (block has multiple tiles). If the caller requested a specific
+            # (x, y), re-place there for backwards compatibility.
+            try:
+                if state.network.block_manager and train.position:
+                    for block_id in train.position.occupied_blocks:
+                        state.network.block_manager.clear_block(block_id)
+                state.network.place_train(
+                    train, pos_x, pos_y, Direction[direction_name.upper()]
+                )
+            except (KeyError, ValueError) as e:
+                # Tile-precise placement failed; the train is still on a
+                # tile of the requested block, which is acceptable.
+                import logging
+                logging.getLogger(__name__).debug(
+                    "Tile-precise placement failed for %s: %s",
+                    train_id,
+                    e,
+                )
+            state.network.update_signals_from_blocks()
+            return jsonify(
+                {"status": "success", "train": _train_to_dict(train, state.network)}
+            )
+
+        # No-position / editor path: keep direct construction; this mirrors
+        # the previous behaviour where a train can exist without placement.
         car = TrainCar(
             car_id=f"{train_id}_loco",
             car_type="LOCOMOTIVE",
             length=length_meters,
-            max_speed=data.get("max_speed", 100.0),
+            max_speed=max_speed_kmh,
         )
-
         train = Train(
             train_id=train_id,
             consist=[car],
-            max_speed=data.get("max_speed", 100.0),
-            car_number=data.get("car_number", ""),
+            max_speed=max_speed_kmh,
+            car_number=car_number,
         )
-
-        if "position" in data:
-            pos = data["position"]
-            direction = Direction[data.get("direction", "EAST")]
-            state.network.add_train(train)
-            try:
-                state.network.place_train(train, pos["x"], pos["y"], direction)
-            except ValueError as e:
-                state.network.remove_train(train_id)
-                return jsonify({"error": str(e)}), 400
-        else:
-            state.network.add_train(train)
-
+        state.network.add_train(train)
         state.network.update_signals_from_blocks()
-
         return jsonify(
             {"status": "success", "train": _train_to_dict(train, state.network)}
         )
@@ -799,7 +844,7 @@ def register(app, state: AppState) -> None:
             if auto_park and current_route_id:
                 target_platform_id = _find_auto_park_platform_id(train)
                 if target_platform_id:
-                    from train_route import Route, RouteMode, Waypoint
+                    from train_route import Route, RouteMode, RouteTask
 
                     simulation_time = (
                         state.sim_controller.simulation_time
@@ -815,9 +860,10 @@ def register(app, state: AppState) -> None:
                         name=f"AutoPark {train_id}",
                         mode=RouteMode.ONE_OFF,
                     )
-                    temp_route.add_waypoint(
-                        Waypoint(
-                            platform_id=target_platform_id,
+                    temp_route.add_task(
+                        RouteTask(
+                            task_kind="stop",
+                            task_location=target_platform_id,
                             dwell_time_sec=0.0,
                             flexible_platform=False,
                         )
@@ -894,7 +940,7 @@ def register(app, state: AppState) -> None:
                         {"error": "next_waypoint_index must be an integer"}
                     ), 400
 
-                if idx < 0 or idx >= route.get_waypoint_count():
+                if idx < 0 or idx >= route.get_task_count():
                     return (
                         jsonify({"error": "next_waypoint_index out of range"}),
                         400,
@@ -932,7 +978,7 @@ def register(app, state: AppState) -> None:
         except (TypeError, ValueError):
             return jsonify({"error": "waypoint_index must be an integer"}), 400
 
-        if waypoint_index < 0 or waypoint_index >= route.get_waypoint_count():
+        if waypoint_index < 0 or waypoint_index >= route.get_task_count():
             return jsonify({"error": "waypoint_index out of range"}), 400
 
         route_executor = (

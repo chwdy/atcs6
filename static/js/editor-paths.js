@@ -20,10 +20,11 @@ class PathEditorHandler {
             startPosition: null,
             reachableEndpoints: [],
             reachablePositions: new Set(),
-            priority: 5,
+            requestedDirection: 'forward',
+            acquisitionMode: 'all_or_nothing',
             trainId: null
         };
-        document.getElementById('status-state').textContent = 'Path: Click start block';
+        document.getElementById('status-state').textContent = 'Path: Click train (start) block';
     }
 
     async exitRouteToolMode() {
@@ -38,7 +39,8 @@ class PathEditorHandler {
             startPosition: null,
             reachableEndpoints: [],
             reachablePositions: new Set(),
-            priority: 5,
+            requestedDirection: 'forward',
+            acquisitionMode: 'all_or_nothing',
             trainId: null
         };
         if (this.renderer.setReachableHighlights) {
@@ -90,12 +92,10 @@ class PathEditorHandler {
         const block = this.cachedNetwork?.blocks?.[blockId];
         if (block?.occupied_by) {
             this.pathToolState.trainId = block.occupied_by;
-
-            const trains = this.cachedNetwork?.trains || [];
-            const train = trains.find(t => t.train_id === block.occupied_by);
-            if (train?.priority) {
-                this.pathToolState.priority = train.priority;
-            }
+        } else {
+            window.showToast('No train at start block; pick a block occupied by a train', 'warning', 3000);
+            await this.resetRouteToolState();
+            return;
         }
 
         try {
@@ -158,23 +158,22 @@ class PathEditorHandler {
 
         try {
             document.getElementById('status-state').textContent = 'Path: Creating...';
-            
+
             const options = {
-                priority: this.pathToolState.priority
+                train_id: this.pathToolState.trainId,
+                requested_destination_direction: this.pathToolState.requestedDirection,
+                acquisition_mode: this.pathToolState.acquisitionMode
             };
-            
-            if (this.pathToolState.trainId) {
-                options.train_id = this.pathToolState.trainId;
-            }
 
             const result = await this.createPathWithConflictResolution(endBlockId, options);
 
             if (result.success) {
-                window.showToast(`Path ${result.path.path_id} created`, 'success', 5000);
+                window.showToast(`Path ${result.path_id} created`, 'success', 5000);
                 await window.app.refreshNetwork();
                 await this.resetRouteToolState();
             } else {
-                window.showToast(`Path failed: ${result.error}`, 'error', 5000);
+                const errorMsg = result.error || result.failure_kind || 'Unknown error';
+                window.showToast(`Path failed: ${errorMsg}`, 'error', 5000);
 
                 if (result.conflict_tiles && this.renderer.flashConflictTiles) {
                     this.renderer.flashConflictTiles(result.conflict_tiles, 2000);
@@ -187,12 +186,15 @@ class PathEditorHandler {
     }
 
     async createPathWithConflictResolution(endBlockId, options) {
+        const buildArgs = () => ({
+            train_id: options.train_id,
+            requested_destination_block_id: endBlockId,
+            requested_destination_direction: options.requested_destination_direction || 'forward',
+            acquisition_mode: options.acquisition_mode || 'all_or_nothing'
+        });
+
         try {
-            return await this.api.createPath(
-                this.pathToolState.startBlockId,
-                endBlockId,
-                options
-            );
+            return await this.api.createPath(buildArgs());
         } catch (err) {
             if (err.status !== 409 || err.conflict !== 'train_has_active_path') {
                 throw err;
@@ -203,8 +205,8 @@ class PathEditorHandler {
             const existingPath = err.existing_path || {};
             const detail =
                 `Existing path: ${existingPathId}` +
-                (existingPath.start_block_id && existingPath.end_block_id
-                    ? `\nFrom: ${existingPath.start_block_id}\nTo: ${existingPath.end_block_id}`
+                (existingPath.authority_end_block_id
+                    ? `\nDestination: ${existingPath.authority_end_block_id}`
                     : '');
 
             const confirmed = await showConfirmModal({
@@ -226,11 +228,7 @@ class PathEditorHandler {
                 };
             }
 
-            return await this.api.createPath(
-                this.pathToolState.startBlockId,
-                endBlockId,
-                options
-            );
+            return await this.api.createPath(buildArgs());
         }
     }
 
@@ -247,29 +245,48 @@ class PathEditorHandler {
             `
             : '<div class="text-muted text-sm py-8">No train at start block</div>';
 
+        const direction = this.pathToolState.requestedDirection || 'forward';
+        const mode = this.pathToolState.acquisitionMode || 'all_or_nothing';
+
         const content = `
             <div class="path-setup-panel">
                 ${renderHeaderId(this.pathToolState.startBlockId, '#00d4ff')}
-                
+
                 <div class="property-item">
-                    <label class="property-label">Priority (1-10)</label>
-                    <div class="flex items-center gap-12">
-                        <input type="range" id="path-priority-slider" 
-                               min="1" max="10" value="${this.pathToolState.priority}"
-                               class="property-input flex-1">
-                        <span id="path-priority-value" class="text-lg font-bold text-track path-priority-value">
-                            ${this.pathToolState.priority}
-                        </span>
+                    <label class="property-label">Direction</label>
+                    <div class="switch-group">
+                        <button id="path-direction-forward-btn"
+                                class="switch-btn ${direction === 'forward' ? 'active' : ''}"
+                                data-direction="forward">▶ Forward</button>
+                        <button id="path-direction-reverse-btn"
+                                class="switch-btn ${direction === 'reverse' ? 'active' : ''}"
+                                data-direction="reverse">◀ Reverse</button>
                     </div>
                     <div class="text-xxs text-muted mt-4">
-                        5 = Normal, 10 = Critical
+                        Direction the train should travel away from its current position.
                     </div>
                 </div>
-                
+
+                <div class="property-item">
+                    <label class="property-label">Acquisition Mode</label>
+                    <div class="switch-group">
+                        <button id="path-mode-all-btn"
+                                class="switch-btn ${mode === 'all_or_nothing' ? 'active' : ''}"
+                                data-mode="all_or_nothing">All-or-nothing</button>
+                        <button id="path-mode-best-btn"
+                                class="switch-btn ${mode === 'best_effort' ? 'active' : ''}"
+                                data-mode="best_effort">Best-effort</button>
+                    </div>
+                    <div class="text-xxs text-muted mt-4">
+                        All-or-nothing: fail if any resource cannot be acquired.
+                        Best-effort: take what is currently free.
+                    </div>
+                </div>
+
                 ${trainInfo}
-                
+
                 <div class="info-box text-sm mt-16">
-                    Click on an <span class="text-warning">orange</span> destination block to create path.
+                    Click on an <span class="text-warning">orange</span> destination block to create the path.
                     <br><br>
                     Right-click or press ESC to cancel.
                 </div>
@@ -277,21 +294,28 @@ class PathEditorHandler {
         `;
 
         this.editor.showSecondarySidebar('🛤️ Create Path', content);
-        
+
         const sidebar = document.getElementById('secondary-sidebar');
         if (sidebar) {
             sidebar.classList.add('compact');
         }
 
         setTimeout(() => {
-            const slider = document.getElementById('path-priority-slider');
-            const valueDisplay = document.getElementById('path-priority-value');
-            if (slider && valueDisplay) {
-                slider.addEventListener('input', (e) => {
-                    this.pathToolState.priority = parseInt(e.target.value);
-                    valueDisplay.textContent = e.target.value;
+            const dirButtons = document.querySelectorAll('[data-direction]');
+            dirButtons.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    this.pathToolState.requestedDirection = btn.dataset.direction;
+                    dirButtons.forEach(b => b.classList.toggle('active', b === btn));
                 });
-            }
+            });
+
+            const modeButtons = document.querySelectorAll('[data-mode]');
+            modeButtons.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    this.pathToolState.acquisitionMode = btn.dataset.mode;
+                    modeButtons.forEach(b => b.classList.toggle('active', b === btn));
+                });
+            });
         }, 0);
     }
 
@@ -335,10 +359,18 @@ class PathEditorHandler {
 
     renderPathListItem(path) {
         const statusClass = this.getPathStatusClass(path.status);
-        const progress = path.block_sequence?.length > 0
-            ? Math.round((path.current_block_index / path.block_sequence.length) * 100)
+        const resources = path.resource_sequence || [];
+        const totalSteps = resources.length;
+        const currentIndex = path.current_resource_index ?? 0;
+        const progress = totalSteps > 0
+            ? Math.round((currentIndex / totalSteps) * 100)
             : 0;
         const statusText = path.status.toUpperCase();
+        const direction = path.requested_destination_direction || 'forward';
+        const directionLabel = direction === 'reverse' ? '◀' : '▶';
+        const destination = path.authority_end_block_id
+            || path.requested_destination_block_id
+            || '—';
 
         return `
             <div class="path-row ${statusClass} mb-8">
@@ -348,7 +380,7 @@ class PathEditorHandler {
                         <div class="text-xxs font-bold uppercase tracking-wider path-status-label">
                             ${statusText}
                         </div>
-                        <div class="text-xxs font-bold text-muted path-priority-tag" title="Priority">P${path.priority}</div>
+                        <div class="text-xxs font-bold text-muted path-priority-tag" title="Direction">${directionLabel}</div>
                     </div>
                     <div class="train-info flex-1 path-row-content">
                         <div class="flex flex-col gap-1 mb-6">
@@ -359,9 +391,7 @@ class PathEditorHandler {
                         <div class="flex justify-between items-end gap-2">
                             <div class="text-xs text-muted flex-1 path-meta-col">
                                 <div class="path-endpoints-stack">
-                                    <div class="font-mono text-white opacity-90">${path.start_block_id}</div>
-                                    <div class="text-xxs opacity-50 py-1 path-arrow-divider">↓</div>
-                                    <div class="font-mono text-white opacity-90">${path.end_block_id}</div>
+                                    <div class="font-mono text-white opacity-90">→ ${destination}</div>
                                 </div>
                                 <div class="mb-4">${path.train_id ? `🚂 ${path.train_id}` : 'No Train'}</div>
                                 ${path.status === 'active' ? `
@@ -460,7 +490,7 @@ class PathEditorHandler {
                             }, 500);
                         }
                     } else {
-                        window.showToast(`Failed to cancel: ${result.message || result.error}`, 'error', 5000);
+                        window.showToast(`Failed to cancel: ${result.reason || result.error || 'unknown error'}`, 'error', 5000);
                     }
                 } catch (err) {
                     console.error('[Editor] Failed to cancel path:', err);
@@ -484,44 +514,53 @@ class PathEditorHandler {
         }
 
         const statusClass = this.getPathStatusClass(path.status);
-        const progress = path.block_sequence?.length > 0
-            ? Math.round((path.current_block_index / path.block_sequence.length) * 100)
+        const statusColor = this.getPathStatusColor(path.status);
+        const resources = path.resource_sequence || [];
+        const totalSteps = resources.length;
+        const currentIndex = path.current_resource_index ?? 0;
+        const progress = totalSteps > 0
+            ? Math.round((currentIndex / totalSteps) * 100)
             : 0;
+        const direction = path.requested_destination_direction || 'forward';
+        const destination = path.authority_end_block_id
+            || path.requested_destination_block_id
+            || '—';
 
-        const blocksListHtml = (path.block_sequence || []).map((blockId, i) => {
-            const isCurrent = i === path.current_block_index;
-            const isCleared = path.blocks_cleared?.includes(blockId);
+        const resourceListHtml = resources.map((resource, i) => {
+            const isCurrent = i === currentIndex;
+            const isCleared = i < currentIndex;
             let cssClass = 'text-muted';
             if (isCurrent) cssClass = 'text-success font-bold';
             else if (isCleared) cssClass = 'text-muted';
-            
+
+            const label = resource.resource_id || `${resource.resource_type || '?'} #${resource.sequence_index ?? i}`;
+            const kind = resource.resource_type || 'resource';
+
             return `<div class="block-item text-xs ${cssClass}">
-                ${isCurrent ? '▶ ' : '  '}${blockId}${isCleared ? ' ✓' : ''}
+                ${isCurrent ? '▶ ' : '  '}${label}<span class="text-muted ml-2">[${kind}]</span>${isCleared ? ' ✓' : ''}
             </div>`;
         }).join('');
 
         const content = `
             <div class="path-editor-panel" data-path-id="${pathId}">
                 ${renderHeaderId(path.path_id, statusColor)}
-                
+
                 <!-- INFO SECTION (Read-only, styled like Train Control) -->
                 <div class="info-box-track mb-12 info-display-large">
                     <div class="flex justify-between items-start mb-4">
                         <span class="info-label text-muted">Status</span>
-                        <span class="info-meta">P${path.priority}</span>
+                        <span class="info-meta">${direction === 'reverse' ? '◀ Reverse' : '▶ Forward'}</span>
                     </div>
-                    
+
                     <div class="text-2xl font-bold mb-6 font-mono path-status-title ${statusClass}">
                         ${path.status.toUpperCase()}
                     </div>
-                    
+
                     <div class="grid grid-cols-1 gap-y-4 text-sm font-mono">
                         <div>
-                            <span class="info-label text-muted block mb-2">Route</span>
+                            <span class="info-label text-muted block mb-2">Destination</span>
                             <div class="path-route-stack">
-                                <div class="info-value text-white opacity-90">${path.start_block_id}</div>
-                                <div class="info-meta py-1">↓</div>
-                                <div class="info-value text-white opacity-90">${path.end_block_id}</div>
+                                <div class="info-value text-white opacity-90">→ ${destination}</div>
                             </div>
                         </div>
                         <div>
@@ -534,18 +573,12 @@ class PathEditorHandler {
                             <div class="progress-container path-progress-full">
                                 <progress class="path-progress-meter ${statusClass}" value="${progress}" max="100"></progress>
                             </div>
-                            <span class="info-meta mt-1">${progress}%</span>
+                            <span class="info-meta mt-1">${progress}% (${currentIndex}/${totalSteps})</span>
                         </div>
                         ` : ''}
                     </div>
-                    
-                    ${path.approach_locked_blocks?.length > 0 ? `
-                        <div class="mt-4 pt-4 border-t border-gray-700 text-xs text-warning">
-                            ⚠️ ${path.approach_locked_blocks.length} blocks approach-locked
-                        </div>
-                    ` : ''}
                 </div>
-                
+
                 <!-- CONTROL BUTTONS -->
                 <div class="control-section mt-12">
                     <h4 class="text-sm text-muted mb-8">Actions</h4>
@@ -560,15 +593,15 @@ class PathEditorHandler {
                         </button>
                     </div>
                 </div>
-                
-                <!-- BLOCKS LIST (Scrollable) -->
+
+                <!-- RESOURCE LIST (Scrollable) -->
                 <div class="control-section control-section-divider mt-12 pt-12">
-                    <h4 class="text-sm text-muted mb-8">Blocks (${path.block_sequence?.length || 0})</h4>
+                    <h4 class="text-sm text-muted mb-8">Resources (${totalSteps})</h4>
                     <div class="bg-input rounded-lg path-block-list-wrap">
-                        ${blocksListHtml || '<div class="text-muted text-xs">No blocks</div>'}
+                        ${resourceListHtml || '<div class="text-muted text-xs">No resources</div>'}
                     </div>
                 </div>
-                
+
                 <button id="back-to-paths-btn" class="btn btn-secondary btn-full btn-sm mt-12">
                     ← Back to Paths List
                 </button>
@@ -598,11 +631,8 @@ class PathEditorHandler {
         const cancelBtn = document.getElementById('cancel-path-btn');
         if (cancelBtn) {
             cancelBtn.onclick = async () => {
-                const hasApproachLocked = path.approach_locked_blocks?.length > 0;
-                const detail = hasApproachLocked
-                    ? `${path.approach_locked_blocks.length} approach-locked block(s) will be released when the train stops.`
-                    : 'Reserved blocks for this path will be released.';
-                
+                const detail = 'Reserved blocks and switches for this path will be released.';
+
                 const confirmed = await showConfirmModal({
                     title: 'Cancel Path',
                     message: `Cancel path "${pathId}"?`,
@@ -616,9 +646,18 @@ class PathEditorHandler {
                     const result = await this.api.cancelPath(pathId);
                     if (result.success) {
                         const queued = result.status === 'queued';
-                        const message = queued
-                            ? `Path ${pathId} cancellation queued — train is braking`
-                            : `Path ${pathId} cancelled`;
+                        let message;
+                        if (queued) {
+                            message = `Path ${pathId} cancellation queued — train is braking`;
+                        } else {
+                            const releasedCount =
+                                (result.released_block_ids?.length || 0)
+                                + (result.released_switch_ids?.length || 0);
+                            const suffix = releasedCount > 0
+                                ? ` (${releasedCount} resource${releasedCount === 1 ? '' : 's'} released)`
+                                : '';
+                            message = `Path ${pathId} cancelled${suffix}`;
+                        }
                         window.showToast(message, 'success', 5000);
                         await window.app.refreshNetwork();
                         if (this.renderer.clearPathHighlight) {
@@ -636,7 +675,7 @@ class PathEditorHandler {
                             }, 500);
                         }
                     } else {
-                        window.showToast(`Failed to cancel: ${result.message || result.error}`, 'error', 5000);
+                        window.showToast(`Failed to cancel: ${result.reason || result.message || result.error}`, 'error', 5000);
                     }
                 } catch (err) {
                     console.error('[Editor] Failed to cancel path:', err);
@@ -719,18 +758,25 @@ class PathEditorHandler {
 
         try {
             const paths = await this.api.getPaths();
-            
-            const matchingPaths = paths.filter(p => 
-                p.end_block_id === blockId && 
+
+            const pathContainsBlock = (p) => {
+                const resources = p.resource_sequence || [];
+                return resources.some(r =>
+                    r.resource_type === 'block' && r.resource_id === blockId
+                );
+            };
+
+            const matchingPaths = paths.filter(p =>
+                p.authority_end_block_id === blockId &&
                 ['pending', 'setting', 'set', 'active'].includes(p.status)
             );
 
             if (matchingPaths.length === 0) {
-                const partOfPath = paths.find(p => 
-                    p.block_sequence?.includes(blockId) && 
+                const partOfPath = paths.find(p =>
+                    pathContainsBlock(p) &&
                     ['pending', 'setting', 'set', 'active'].includes(p.status)
                 );
-                
+
                 if (partOfPath) {
                     window.showToast('Can only extend from the END of a path. Click on the end block.', 'warning', 4000);
                 } else {
@@ -816,10 +862,15 @@ class PathEditorHandler {
 
         try {
             document.getElementById('status-state').textContent = 'Extend Path: Extending...';
-            
+
+            const direction = this.extendPathState.selectedPath?.requested_destination_direction || 'forward';
             const result = await this.api.extendPath(
                 this.extendPathState.selectedPathId,
-                newEndBlockId
+                {
+                    requested_destination_block_id: newEndBlockId,
+                    requested_destination_direction: direction,
+                    acquisition_mode: 'all_or_nothing'
+                }
             );
 
             if (result.success) {
@@ -828,7 +879,8 @@ class PathEditorHandler {
                 await this.resetExtendRouteState();
                 document.getElementById('status-state').textContent = 'Extend Path: Click on a path to extend';
             } else {
-                window.showToast(`Extend failed: ${result.error || result.message}`, 'error', 5000);
+                const errorMsg = result.error || result.failure_kind || result.message || 'unknown error';
+                window.showToast(`Extend failed: ${errorMsg}`, 'error', 5000);
             }
         } catch (err) {
             console.error('[Editor] Failed to extend route:', err);
@@ -845,11 +897,15 @@ class PathEditorHandler {
         const exitDirText = exitDir ? this.getDirectionName(exitDir) : 'Unknown';
         const reachableCount = this.extendPathState.reachableEndpoints.length;
 
+        const currentEnd = route.authority_end_block_id
+            || route.requested_destination_block_id
+            || '—';
+
         const content = `
                 <div class="extend-route-panel">
                 ${renderHeaderId(route.path_id, this.getPathStatusColor(route.status))}
-                
-                ${renderReadOnlyValue('Current End', route.end_block_id, 'value-display-mono text-sm')}
+
+                ${renderReadOnlyValue('Current End', currentEnd, 'value-display-mono text-sm')}
                 ${renderReadOnlyValue('Direction', `${exitDirText} (${exitDir || '?'})`, 'text-info font-bold')}
                 ${renderReadOnlyValue('Status', route.status.toUpperCase(), `font-bold`)}
                 ${route.train_id
@@ -905,9 +961,16 @@ class PathEditorHandler {
 
         try {
             const paths = await this.api.getPaths();
-            
-            const matchingPaths = paths.filter(p => 
-                p.block_sequence?.includes(blockId) && 
+
+            const pathContainsBlock = (p) => {
+                const resources = p.resource_sequence || [];
+                return resources.some(r =>
+                    r.resource_type === 'block' && r.resource_id === blockId
+                );
+            };
+
+            const matchingPaths = paths.filter(p =>
+                pathContainsBlock(p) &&
                 ['pending', 'setting', 'set', 'active'].includes(p.status)
             );
 
@@ -917,11 +980,13 @@ class PathEditorHandler {
             }
 
             const pathToCancel = matchingPaths[0];
+            const destination = pathToCancel.authority_end_block_id
+                || pathToCancel.requested_destination_block_id
+                || '—';
             const detail =
-                `From: ${pathToCancel.start_block_id}\n` +
-                `To: ${pathToCancel.end_block_id}` +
+                `Destination: ${destination}` +
                 (pathToCancel.train_id ? `\nTrain: ${pathToCancel.train_id}` : '');
-            
+
             const confirmed = await showConfirmModal({
                 title: 'Cancel Path',
                 message: `Cancel path "${pathToCancel.path_id}"?`,
@@ -954,7 +1019,7 @@ class PathEditorHandler {
                     }, 500);
                 }
             } else {
-                window.showToast(`Failed to cancel: ${cancelResult.message || cancelResult.error}`, 'error', 5000);
+                window.showToast(`Failed to cancel: ${cancelResult.reason || cancelResult.error || 'unknown error'}`, 'error', 5000);
             }
 
             document.getElementById('status-state').textContent = 'Cancel Path: Click on a path to cancel';

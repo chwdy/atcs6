@@ -86,15 +86,22 @@ class TestBlock:
         assert block.state == BlockState.FREE
         assert block.is_free() == True
 
-        # Simulate reserve by setting state directly (reserve() removed as dead code)
-        block.state = BlockState.RESERVED
-        block.occupied_by = "TRAIN_01"
+        # v1: state is read-only @property; force RESERVED via primitives.
+        block.reserved_by_path = "P1"
+        block.reserved_direction = "forward"
+        block.reserved_for_train = "TRAIN_01"
         assert block.state == BlockState.RESERVED
         assert block.is_reserved() == True
 
+        # Clear reservation primitives before occupying so state is OCCUPIED.
+        block.reserved_by_path = None
+        block.reserved_direction = None
+        block.reserved_for_train = None
         block.occupy(train_id="TRAIN_01")
         assert block.state == BlockState.OCCUPIED
 
+        # CAUTION applies only when block is physically free.
+        block.release()
         block.set_to_caution()
         assert block.state == BlockState.CAUTION
 
@@ -103,27 +110,36 @@ class TestBlock:
 
     def test_occupy_block(self):
         block = Block(block_id="BLK_TEST")
-        block.state = BlockState.RESERVED
-        block.occupied_by = "TRAIN_01"
+        # Pre-reserved for the same train, then physically enters.
+        block.reserved_by_path = "P1"
+        block.reserved_for_train = "TRAIN_01"
         block.occupy(train_id="TRAIN_01")
         assert block.state == BlockState.OCCUPIED
 
     def test_release_block(self):
         block = Block(block_id="BLK_TEST")
-        block.state = BlockState.RESERVED
-        block.occupied_by = "TRAIN_01"
+        block.reserved_by_path = "P1"
+        block.reserved_for_train = "TRAIN_01"
         block.occupy(train_id="TRAIN_01")
         block.release()
+        block.reserved_by_path = None
+        block.reserved_for_train = None
         assert block.state == BlockState.FREE
 
     def test_caution_state_cycle(self):
         block = Block(block_id="BLK_TEST")
         assert block.state == BlockState.FREE
-        block.state = BlockState.RESERVED
-        block.occupied_by = "TRAIN_01"
+        # Reserve via primitives.
+        block.reserved_by_path = "P1"
+        block.reserved_for_train = "TRAIN_01"
         assert block.state == BlockState.RESERVED
+        # Occupy.
         block.occupy("TRAIN_01")
         assert block.state == BlockState.OCCUPIED
+        # Release physically; CAUTION is meaningful only when free.
+        block.release()
+        block.reserved_by_path = None
+        block.reserved_for_train = None
         block.set_to_caution()
         assert block.state == BlockState.CAUTION
         block.clear()
@@ -368,7 +384,7 @@ class TestBlockManager:
 
         blocks = {"B1": Block("B1")}
         manager = BlockManager(blocks)
-        blocks["B1"].state = BlockState.OCCUPIED
+        # v1: set_block_to_caution() only transitions OCCUPIED -> CAUTION.
         blocks["B1"].occupied_by = "TRAIN_1"
         result = manager.set_block_to_caution("B1")
         assert result == True
@@ -379,8 +395,8 @@ class TestBlockManager:
 
         blocks = {"B1": Block("B1")}
         manager = BlockManager(blocks)
-        blocks["B1"].state = BlockState.CAUTION
-        blocks["B1"].occupied_by = "TRAIN_1"
+        # v1: CAUTION is computed when _is_caution and not occupied.
+        blocks["B1"]._is_caution = True
         result = manager.clear_block("B1")
         assert result == True
         assert blocks["B1"].state == BlockState.FREE
@@ -413,13 +429,14 @@ class TestBlockManager:
         from block_manager import BlockManager
 
         blocks = {"B1": Block("B1")}
-        blocks["B1"].state = BlockState.RESERVED
-        blocks["B1"].occupied_by = "TRAIN_A"
+        # v1: reserve via primitives. reserved_for_train = TRAIN_A.
+        blocks["B1"].reserved_by_path = "P1"
+        blocks["B1"].reserved_for_train = "TRAIN_A"
         manager = BlockManager(blocks)
         result = manager.occupy_block("B1", "TRAIN_B")
         assert result == False
         assert blocks["B1"].state == BlockState.RESERVED
-        assert blocks["B1"].occupied_by == "TRAIN_A"
+        assert blocks["B1"].reserved_for_train == "TRAIN_A"
 
 
 if __name__ == "__main__":

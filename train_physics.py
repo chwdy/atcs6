@@ -910,13 +910,16 @@ class TrainPhysics:
 
     def _update_block_occupancy(self, train: "Train") -> None:
         """
-        Update which blocks this train occupies based on head/tail positions.
+        Recompute which blocks this train occupies and record the per-tick
+        delta. TrainPhysics does not write Block state — those writes flow
+        through PathDispatcher.on_controller_progress(report) →
+        BlockManager.occupy_blocks(...) / on_block_tail_vacated(...). This
+        method only maintains local diagnostics:
 
-        - Occupy new blocks as head enters them
-        - Release old blocks as tail exits them
+        - last_block_transitions: entered/vacated sets, read by tests
+        - _last_occupied_blocks: cached set used by _validate_position_sync
+          and by serialize/restore round-trips
         """
-        block_manager = self._get_block_manager()
-
         # Calculate current occupied blocks from position
         new_occupied = self._get_blocks_for_train(train)
 
@@ -927,55 +930,6 @@ class TrainPhysics:
             "entered": newly_entered,
             "vacated": newly_vacated,
         }
-
-        if not block_manager:
-            self._last_occupied_blocks = new_occupied
-            return
-
-        newly_vacated = old_occupied - new_occupied
-
-        should_clear_caution = (
-            bool(newly_vacated) or not new_occupied or train.is_stopped()
-        )
-
-        # Clear caution blocks once the train has fully left them.
-        # A block should only be cleared from CAUTION to FREE when:
-        # 1. The train has fully exited the block (not in new_occupied)
-        # 2. The block is still in CAUTION state (not freed by another train)
-        for block_id in list(self._caution_blocks):
-            if block_id in new_occupied:
-                # Train still in this block, keep in CAUTION state
-                continue
-            if not should_clear_caution:
-                # Keep the last vacated block in CAUTION until another block is vacated
-                continue
-            block = block_manager.blocks.get(block_id)
-            if not block:
-                # Block doesn't exist, remove from tracking
-                self._caution_blocks.discard(block_id)
-                continue
-            if (
-                block.state == BlockState.CAUTION
-                and block.occupied_by == train.train_id
-            ):
-                # Train has fully exited, safe to clear to FREE
-                block_manager.clear_block(block_id)
-            # Remove from tracking regardless of state
-            # (if already FREE, we don't need to track it anymore)
-            self._caution_blocks.discard(block_id)
-
-        # Occupy new blocks
-        for block_id in new_occupied - old_occupied:
-            block_manager.occupy_block(block_id, train.train_id)
-
-        # Release old blocks (tail has exited)
-        for block_id in newly_vacated:
-            # Use set_block_to_caution for proper safety transition
-            # (OCCUPIED -> CAUTION -> FREE, not OCCUPIED -> FREE)
-            # The block will be cleared to FREE on a subsequent tick
-            # when we detect the train has fully exited
-            if block_manager.set_block_to_caution(block_id):
-                self._caution_blocks.add(block_id)
 
         # Update tracking. occupied_blocks is no longer mirrored back onto
         # train.position; the controller derives it from the span_update

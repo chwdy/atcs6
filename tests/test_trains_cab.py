@@ -16,7 +16,7 @@ from tests.train_test_helpers import make_train_position
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
 from path_dispatcher import PathDispatcher
-from train_route import Route, RouteMode, Waypoint
+from train_route import Route, RouteMode, RouteTask
 from switch import Switch
 
 

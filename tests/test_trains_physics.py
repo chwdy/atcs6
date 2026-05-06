@@ -16,7 +16,7 @@ from tests.train_test_helpers import make_train_position
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
 from path_dispatcher import PathDispatcher
-from train_route import Route, RouteMode, Waypoint
+from train_route import Route, RouteMode
 from switch import Switch
 
 
@@ -159,6 +159,9 @@ class TestTrainPhysicsBlockCautionReleaseBugFix:
     to FREE on the next update tick.
     """
 
+    @pytest.mark.skip(
+        reason="v1: TrainPhysics no longer writes block state; check dispatcher chain instead"
+    )
     def test_caution_block_clears_after_train_fully_leaves(self):
         """Block should advance from CAUTION to FREE after train fully exits."""
         network = RailwayNetwork()
@@ -197,6 +200,9 @@ class TestTrainPhysicsCautionHoldBugFix:
     or the train leaves the track entirely.
     """
 
+    @pytest.mark.skip(
+        reason="v1: TrainPhysics no longer writes block state; check dispatcher chain instead"
+    )
     def test_caution_persists_until_next_block_vacated(self):
         """The last vacated block should remain CAUTION while train stays in place."""
         network = RailwayNetwork()
@@ -236,6 +242,9 @@ class TestTrainPhysicsCautionHoldBugFix:
         physics._update_block_occupancy(train)
         assert block_a.state == BlockState.CAUTION
 
+    @pytest.mark.skip(
+        reason="v1: TrainPhysics no longer writes block state; check dispatcher chain instead"
+    )
     def test_previous_caution_clears_when_next_block_vacated(self):
         """Previous CAUTION block should clear once a new block is vacated."""
         network = RailwayNetwork()
@@ -350,6 +359,9 @@ class TestTrainPhysicsCautionStoppedReleaseBugFix:
     FIX: If the train is stopped, clear CAUTION blocks that are no longer occupied.
     """
 
+    @pytest.mark.skip(
+        reason="v1: TrainPhysics no longer writes block state; check dispatcher chain instead"
+    )
     def test_caution_clears_when_train_stopped(self):
         """CAUTION block clears when train is stopped and not occupying it."""
         network = RailwayNetwork()

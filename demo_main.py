@@ -590,28 +590,32 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
         )
     network.update_signals_from_blocks()
 
-    # Create path to destination
+    # Create path to destination (v1 PathDispatcher API)
     path_result = None
     if start_track and start_track.block_section_id and target_block_id:
+        from runtime_payloads import AcquisitionMode
         path_result = path_dispatcher.create_path(
-            start_block_id=start_track.block_section_id,
-            end_block_id=target_block_id,
             train_id=demo_train.train_id,
+            requested_destination_block_id=target_block_id,
+            requested_destination_direction="forward",
+            acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
         )
-        if path_result.success and path_result.path:
-            # Convert path tiles to train path format
-            raw_path = executor._convert_path_to_train_path(path_result.path)
-            # Use assign_complete_path_to_train to handle:
-            # 1. Prepending tiles from train position to path start
-            # 2. Appending tiles to complete destination block (e.g., station platform)
-            success, error = assign_complete_path_to_train(
-                network, demo_train, raw_path
-            )
-            if not success:
-                # Fall back to direct assignment if prepend/append fails
-                demo_train.current_path = raw_path
-                demo_train.path_index = 0
-            demo_train.assigned_path_id = path_result.path.path_id
+        if path_result.success and path_result.path_id:
+            new_path = path_dispatcher.get_path(path_result.path_id)
+            if new_path is not None:
+                # Convert path tiles to train path format
+                raw_path = executor._convert_path_to_train_path(new_path)
+                # Use assign_complete_path_to_train to handle:
+                # 1. Prepending tiles from train position to path start
+                # 2. Appending tiles to complete destination block
+                success, error = assign_complete_path_to_train(
+                    network, demo_train, raw_path
+                )
+                if not success:
+                    # Fall back to direct assignment if prepend/append fails
+                    demo_train.current_path = raw_path
+                    demo_train.path_index = 0
+                demo_train.assigned_path_id = new_path.path_id
 
     # Use TrainController for state transitions
     controller = create_controller_for_train(

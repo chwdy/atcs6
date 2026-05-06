@@ -25,18 +25,19 @@ Architecture:
 import logging
 import time
 from datetime import datetime
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, Literal, Optional, TYPE_CHECKING
 
 from network import RailwayNetwork
-from train import Train
-from enums import TrainState
+from train import Train, TrainCar
+from enums import TrainState, Direction
 from block_power import BlockPowerController
+from notification_center import NotificationCenter, Severity
 from route_executor import RouteExecutor
 from speed_profile import SpeedProfileRegistry
 
 from train_controller import TrainController, create_controller_for_train
 from train_physics import TrainPhysics, create_physics_for_train
-from runtime_payloads import PathCancellationKind
+from runtime_payloads import FatalPhysicalEntryConflict, PathCancellationKind
 
 if TYPE_CHECKING:
     from path_dispatcher import PathDispatcher
@@ -59,10 +60,21 @@ class SimulationController:
         self,
         network: RailwayNetwork,
         path_dispatcher: Optional["PathDispatcher"] = None,
+        notification_center: Optional[NotificationCenter] = None,
     ):
         self.network = network
         self.path_dispatcher = path_dispatcher
         self.last_update_time = datetime.now()
+
+        # Single notification owner for the whole runtime. If the caller did
+        # not supply one, construct a fresh instance.
+        self.notification_center: NotificationCenter = (
+            notification_center if notification_center is not None else NotificationCenter()
+        )
+
+        # Halt flag set by enter_failed_runtime(...). While True, train ticks
+        # are skipped (only simulation_time still advances).
+        self.failed_runtime: bool = False
 
         # TrainController + TrainPhysics instances (shared across components)
         self.controllers: Dict[str, TrainController] = {}
@@ -74,6 +86,34 @@ class SimulationController:
         self.route_executor = RouteExecutor(network, path_dispatcher, self.controllers)
         self.speed_profile_registry = SpeedProfileRegistry()
         self.simulation_time: float = 0.0
+
+        # Wire back-references so peer components can reach the notification
+        # center, the route executor, and each other.
+        if self.path_dispatcher is not None:
+            self.path_dispatcher.simulation_controller = self
+        if self.route_executor is not None:
+            # RouteExecutor may not have a back-reference attribute today, but
+            # if it does we set it; harmless no-op otherwise.
+            try:
+                self.route_executor.simulation_controller = self
+            except Exception:
+                pass
+
+        # Wire BlockManager so it can report fatal physical-entry conflicts
+        # via enter_failed_runtime(...).
+        if self.network is not None and getattr(self.network, "block_manager", None) is not None:
+            try:
+                self.network.block_manager.simulation_controller = self
+            except Exception:
+                pass
+
+        # Wire every Switch in the network.
+        if self.network is not None and getattr(self.network, "switches", None):
+            for sw in self.network.switches.values():
+                try:
+                    sw.simulation_controller = self
+                except Exception:
+                    pass
 
     # =========================================================================
     # Top-level update loop (per design_new.md "Core Runtime Loop")
@@ -95,6 +135,12 @@ class SimulationController:
           5. After all trains have committed, refresh signals from blocks.
         """
         self.simulation_time += delta_seconds
+
+        # When a fatal physical-entry conflict has been reported, halt all
+        # train ticks (Phase 1/2/3 skipped) until the operator manually
+        # cleans up and calls release_failed_runtime_after_manual_cleanup().
+        if self.failed_runtime:
+            return
 
         # Refresh route-managed scheduling state (time advancement only).
         self.route_executor.update(delta_seconds)
@@ -351,6 +397,12 @@ class SimulationController:
                 network=self.network,
                 path_dispatcher=self.path_dispatcher,
             )
+            # Wire the back-reference so the controller can reach the
+            # NotificationCenter and other simulation services.
+            try:
+                controller.simulation_controller = self
+            except Exception:
+                pass
             # Inherit ATO state from train (for demo_main workflow)
             if hasattr(train, "ato_running") and train.ato_running:
                 controller.ato_running = True
@@ -385,6 +437,28 @@ class SimulationController:
         """Get physics instance for a train, or None if not yet created."""
         return self.physics_instances.get(train_id)
 
+    def get_or_create_controller(self, train_id: str) -> TrainController:
+        """Public accessor that promotes the legacy
+        ``_get_or_create_controller(train)`` helper to the new
+        train-id-based v1 API. Looks the train up in ``network.trains`` and
+        delegates to the private helper.
+
+        Raises:
+            KeyError: If no train with that id exists in the network.
+        """
+        train = self.network.trains.get(train_id)
+        if train is None:
+            raise KeyError(f"Unknown train: {train_id}")
+        return self._get_or_create_controller(train)
+
+    def get_or_create_physics(self, train_id: str) -> TrainPhysics:
+        """Public counterpart of :meth:`get_or_create_controller` for the
+        TrainPhysics instance. Mirrors the same lookup semantics."""
+        train = self.network.trains.get(train_id)
+        if train is None:
+            raise KeyError(f"Unknown train: {train_id}")
+        return self._get_or_create_physics(train)
+
     def remove_train_controller(self, train_id: str) -> None:
         """Remove controller instance for a train (cleanup on train removal)."""
         if train_id in self.controllers:
@@ -399,6 +473,231 @@ class SimulationController:
         """Remove all simulation instances for a train."""
         self.remove_train_controller(train_id)
         self.remove_train_physics(train_id)
+
+    # =========================================================================
+    # Train lifecycle
+    # =========================================================================
+
+    def add_train(
+        self,
+        train_id: str,
+        starting_block_id: str,
+        initial_direction: str,
+        max_speed_kmh: float,
+        length_cm: float,
+        train_type: Optional[str] = None,
+        name: Optional[str] = None,
+        initial_cab: Optional[Literal["A", "B"]] = None,
+    ) -> Train:
+        """Sole entry point for adding a train at runtime.
+
+        Synchronous all-or-nothing. Constructs the Train, places it on a tile
+        of ``starting_block_id`` facing ``initial_direction``, registers the
+        controller and physics instances, wires back-references, and emits a
+        ``train_added`` notification.
+
+        Args:
+            train_id: Identifier for the new train.
+            starting_block_id: Block id whose tiles host the placement.
+            initial_direction: Initial heading: "NORTH", "EAST", "SOUTH", or
+                "WEST" (case-insensitive).
+            max_speed_kmh: Operational max speed in km/h.
+            length_cm: Train length in centimeters.
+            train_type: Optional train model / type label.
+            name: Optional display name (also used for the locomotive id).
+            initial_cab: Optional initial cab ("A" or "B"); set as a direct
+                write before the first tick.
+
+        Returns:
+            The freshly created and registered ``Train``.
+
+        Raises:
+            ValueError: If a train with this id already exists, the block is
+                unknown, or the train cannot be placed.
+        """
+        if train_id in self.network.trains:
+            raise ValueError(f"Train {train_id!r} already exists")
+        if starting_block_id not in self.network.blocks:
+            raise ValueError(f"Unknown block: {starting_block_id!r}")
+
+        # Resolve a starting tile inside the named block.
+        start_positions = self.network.get_block_positions(starting_block_id)
+        if not start_positions:
+            raise ValueError(
+                f"Block {starting_block_id!r} has no tiles to place a train on"
+            )
+        start_tile = start_positions[0]
+
+        # Resolve direction enum.
+        try:
+            direction = Direction[initial_direction.upper()]
+        except (AttributeError, KeyError):
+            raise ValueError(
+                f"Invalid initial_direction: {initial_direction!r}"
+            )
+
+        car = TrainCar(
+            car_id=f"{train_id}_loco",
+            car_type=(train_type or "LOCOMOTIVE"),
+            length=float(length_cm),
+            max_speed=float(max_speed_kmh),
+        )
+
+        train = Train(
+            train_id=train_id,
+            consist=[car],
+            max_speed=float(max_speed_kmh),
+            model=(train_type or ""),
+            car_number=(name or ""),
+        )
+
+        # Register and place. place_train raises ValueError if the train does
+        # not fit on available track.
+        self.network.add_train(train)
+        try:
+            self.network.place_train(train, start_tile[0], start_tile[1], direction)
+        except ValueError:
+            self.network.remove_train(train_id)
+            raise
+
+        # Refresh signals so the new occupancy is reflected.
+        try:
+            self.network.update_signals_from_blocks()
+        except Exception:
+            pass
+
+        # Register controller and physics instances. The controller's
+        # current_span is initialised on the first physics tick from the
+        # train's position; we don't need to seed it here.
+        controller = self.get_or_create_controller(train_id)
+        self.get_or_create_physics(train_id)
+
+        # If an initial cab was requested, write it directly. add_train runs
+        # before the first tick, so this bypasses the command queue by design.
+        if initial_cab is not None:
+            try:
+                controller.cab = initial_cab
+            except Exception:
+                pass
+            try:
+                controller.active_cab = initial_cab
+            except Exception:
+                pass
+
+        # Emit notification.
+        self.notification_center.emit(
+            source="SimulationController",
+            kind="train_added",
+            severity=Severity.INFO,
+            event_time=self.simulation_time,
+            train_id=train_id,
+            payload={
+                "starting_block_id": starting_block_id,
+                "initial_direction": direction.name,
+                "max_speed_kmh": float(max_speed_kmh),
+                "length_cm": float(length_cm),
+            },
+        )
+        return train
+
+    # =========================================================================
+    # Failed-runtime gate
+    # =========================================================================
+
+    def enter_failed_runtime(self, payload: FatalPhysicalEntryConflict) -> None:
+        """Halt further train ticks until manually released.
+
+        Sets :attr:`failed_runtime` and emits a FATAL notification carrying
+        the conflict details. While the flag is set, :meth:`update` only
+        advances ``simulation_time`` and skips Phase 1/2/3 for every train.
+        """
+        self.failed_runtime = True
+        self.notification_center.emit(
+            source="SimulationController",
+            kind="fatal_runtime",
+            severity=Severity.FATAL,
+            event_time=self.simulation_time,
+            train_id=payload.train_id,
+            payload={
+                "block_id": payload.block_id,
+                "reason": payload.reason,
+                "conflicting_train_id": payload.conflicting_train_id,
+            },
+        )
+
+    def release_failed_runtime_after_manual_cleanup(self) -> None:
+        """Clear the :attr:`failed_runtime` flag.
+
+        The caller is responsible for cleaning up the conflicting state
+        before invoking this method.
+        """
+        self.failed_runtime = False
+        self.notification_center.emit(
+            source="SimulationController",
+            kind="failed_runtime_released",
+            severity=Severity.INFO,
+            event_time=self.simulation_time,
+        )
+
+    # =========================================================================
+    # Path completion / cancellation delegation
+    # =========================================================================
+
+    def handle_path_completion(
+        self,
+        train_id: str,
+        path_id: str,
+        authority_end_block_id: str,
+        requested_destination_direction: str,
+        event_time: float,
+    ) -> None:
+        """Forward a path-completion event to the RouteExecutor and emit a
+        notification.
+        """
+        self.route_executor.handle_path_completion(
+            train_id,
+            path_id,
+            authority_end_block_id,
+            requested_destination_direction,
+            event_time,
+        )
+        self.notification_center.emit(
+            source="SimulationController",
+            kind="path_completion",
+            severity=Severity.INFO,
+            event_time=event_time,
+            train_id=train_id,
+            path_id=path_id,
+            payload={
+                "authority_end_block_id": authority_end_block_id,
+                "requested_destination_direction": requested_destination_direction,
+            },
+        )
+
+    def handle_path_cancellation(
+        self,
+        train_id: str,
+        path_id: str,
+        kind: PathCancellationKind,
+        reason: str,
+        event_time: float,
+    ) -> None:
+        """Forward a path-cancellation event to the RouteExecutor and emit a
+        notification.
+        """
+        self.route_executor.handle_path_cancellation(
+            train_id, path_id, kind, reason
+        )
+        kind_str = kind.value if hasattr(kind, "value") else str(kind)
+        self.notification_center.emit(
+            source="SimulationController",
+            kind="path_cancellation",
+            severity=Severity.WARNING,
+            event_time=event_time,
+            train_id=train_id,
+            path_id=path_id,
+            payload={"cancellation_kind": kind_str, "reason": reason},
+        )
 
 
 def build_network_payload(

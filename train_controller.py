@@ -61,6 +61,7 @@ from enums import (
 )
 from model_scale import get_speed_conversion_factor
 from runtime_payloads import (
+    Command,
     ControllerProgressReport,
     PathCancellationKind,
     PendingPathCancelRequest,
@@ -369,6 +370,32 @@ class TrainController:
     pending_route_deactivate: Optional[PendingRouteDeactivateRequest] = None
 
     # -------------------------------------------------------------------------
+    # Operator Command Inbox (per design_new.md "Command queue + drain")
+    # -------------------------------------------------------------------------
+    # Operator commands enter the controller via the public command methods
+    # (power_on_cmd, set_cab, set_mode, etc.). Each command is enqueued into
+    # `command_inbox` and then drained by `_drain_command_inbox(...)` at the
+    # very top of `tick(...)`. Commands are processed in the canonical kind
+    # order (power_on -> set_cab -> set_mode -> set_manual_mode_type ->
+    # set_handle/set_manual_power_percent -> activate_eb -> release_eb ->
+    # power_off), with FIFO order within each kind bucket.
+    command_inbox: List[Any] = field(default_factory=list)
+    # Canonical drain order from design_new.md.
+    _command_drain_order: tuple = (
+        "power_on",
+        "set_cab",
+        "set_mode",
+        "set_manual_mode_type",
+        "set_handle",
+        "set_manual_power_percent",
+        "activate_eb",
+        "release_eb",
+        "power_off",
+        "ato_go",
+        "ato_stop",
+    )
+
+    # -------------------------------------------------------------------------
     # Controller-owned live span / speed (per design_new.md)
     #
     # `current_span` is the canonical TrainSpan storage, written by
@@ -544,7 +571,8 @@ class TrainController:
         Called each simulation tick by SimulationController.
 
         Workflow:
-        0. Power check
+        0. Drain operator command inbox (per design_new.md)
+        0a. Power check
         1. Emergency brake (EB) check
         2. Lookahead calculation (shared)
         3. ATC info collection
@@ -559,6 +587,16 @@ class TrainController:
         Args:
             delta: Time elapsed since last tick (seconds)
         """
+        # ===== 0. DRAIN OPERATOR COMMAND INBOX =====
+        # Process any commands enqueued by power_on_cmd / set_cab / etc. in the
+        # canonical drain order before running the rest of the tick. Without
+        # this, queued commands would never take effect.
+        try:
+            self._drain_command_inbox(self._estimate_event_time())
+        except Exception:
+            # Defensive: do not let a single bad command crash the tick.
+            pass
+
         train = self._get_train()
         if not train:
             return
@@ -3190,6 +3228,238 @@ class TrainController:
         notifications = self.pending_notifications.copy()
         self.pending_notifications.clear()
         return notifications
+
+    # -------------------------------------------------------------------------
+    # Operator Command Inbox (drain helpers)
+    # -------------------------------------------------------------------------
+
+    def _estimate_event_time(self) -> float:
+        """Best-effort current event time for drain bookkeeping."""
+        sc = getattr(self, "simulation_controller", None)
+        getter = getattr(sc, "current_event_time", None) if sc is not None else None
+        if callable(getter):
+            try:
+                return float(getter())
+            except Exception:
+                pass
+        try:
+            import time as _time
+            return _time.time()
+        except Exception:
+            return 0.0
+
+    def _enqueue_command(self, kind: str, payload: Optional[Dict[str, Any]] = None) -> Command:
+        """Push a Command onto command_inbox and return it."""
+        import uuid as _uuid
+        cmd = Command(
+            kind=kind,
+            payload=dict(payload or {}),
+            command_id=_uuid.uuid4().hex,
+            accepted_at=self._estimate_event_time(),
+        )
+        self.command_inbox.append(cmd)
+        return cmd
+
+    def _drain_command_inbox(self, event_time: float) -> None:
+        """Drain the command inbox in canonical kind order, FIFO within each.
+
+        Per design_new.md (lines 107-125), commands are drained in the order:
+        power_on -> set_cab -> set_mode -> set_manual_mode_type ->
+        set_handle / set_manual_power_percent -> activate_eb -> release_eb ->
+        power_off. ato_go / ato_stop are processed at the end.
+
+        Each drained command re-checks acceptance gates by delegating to the
+        existing inline command method. Rejected commands are silently dropped
+        (their inline method's CommandResult.success=False is observed via
+        notifications, not by the caller).
+        """
+        if not self.command_inbox:
+            return
+
+        # Bucket commands by kind preserving FIFO within each bucket.
+        buckets: Dict[str, List[Command]] = {}
+        for cmd in self.command_inbox:
+            buckets.setdefault(cmd.kind, []).append(cmd)
+        self.command_inbox.clear()
+
+        for kind in self._command_drain_order:
+            cmds = buckets.pop(kind, [])
+            for cmd in cmds:
+                self._execute_drained_command(cmd, event_time)
+        # Any unknown kinds left over: drop with a notification.
+        for kind, cmds in buckets.items():
+            for cmd in cmds:
+                self.pending_notifications.append(
+                    f"Unknown command kind: {kind}"
+                )
+
+    def _execute_drained_command(self, cmd: Command, event_time: float) -> None:
+        """Dispatch one drained command to its inline executor.
+
+        Re-checks acceptance gates inside the inline method. Notifies the
+        operator on failure via pending_notifications. When wired, also emits
+        a `command_result` notification through the simulation controller's
+        notification center.
+        """
+        kind = cmd.kind
+        payload = cmd.payload or {}
+        result: Optional[CommandResult] = None
+        try:
+            if kind == "power_on":
+                result = self._execute_power_on(payload, event_time)
+            elif kind == "power_off":
+                result = self._execute_power_off(payload, event_time)
+            elif kind == "activate_eb":
+                result = self._execute_activate_eb(payload, event_time)
+            elif kind == "release_eb":
+                result = self._execute_release_eb(payload, event_time)
+            elif kind == "set_cab":
+                result = self._execute_set_cab(payload, event_time)
+            elif kind == "set_mode":
+                result = self._execute_set_mode(payload, event_time)
+            elif kind == "set_manual_mode_type":
+                result = self._execute_set_manual_mode_type(payload, event_time)
+            elif kind == "set_handle":
+                result = self._execute_set_handle(payload, event_time)
+            elif kind == "set_manual_power_percent":
+                result = self._execute_set_manual_power_percent(payload, event_time)
+            elif kind == "ato_go":
+                result = self._execute_ato_go(payload, event_time)
+            elif kind == "ato_stop":
+                result = self._execute_ato_stop(payload, event_time)
+        except Exception as exc:
+            self.pending_notifications.append(
+                f"Command {kind} raised: {exc}"
+            )
+            return
+
+        if result is None:
+            return
+
+        # Emit a command_result notification through the simulation
+        # controller's notification center.
+        sc = getattr(self, "simulation_controller", None)
+        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        if nc is not None:
+            try:
+                from notification_center import Severity as _Severity
+                severity = _Severity.INFO if result.success else _Severity.WARNING
+                nc.emit(
+                    source="TrainController",
+                    kind="command_result",
+                    severity=severity,
+                    event_time=event_time,
+                    train_id=self.train_id,
+                    payload={
+                        "command_id": cmd.command_id,
+                        "kind": kind,
+                        "success": result.success,
+                        "message": result.message,
+                    },
+                )
+            except Exception:
+                pass
+
+        if not result.success:
+            self.pending_notifications.append(result.message)
+
+    # Inline executors — these contain the actual command bodies. The public
+    # methods below (`power_on_cmd` etc.) call them after enqueuing so the
+    # behaviour is identical when no drain is needed (e.g. tests that call
+    # the command directly without ever ticking).
+
+    def _execute_power_on(self, payload, event_time) -> CommandResult:
+        train = self._get_train()
+        if train is None:
+            return CommandResult(False, "Train not found")
+        if self.power_on:
+            return CommandResult(False, "Power already on")
+        self.power_on = True
+        self.state = TrainState.IDLE
+        self.handle_position = HandlePosition.N
+        return CommandResult(True, "Power on")
+
+    def _execute_power_off(self, payload, event_time) -> CommandResult:
+        train = self._get_train()
+        if train is None:
+            return CommandResult(False, "Train not found")
+        if not train.is_stopped():
+            return CommandResult(False, "Cannot power off while moving")
+        self.ato_running = False
+        self.pending_power_off = True
+        if self.received_path_plan is not None:
+            self.pending_path_cancel_request = PendingPathCancelRequest(
+                cancellation_kind=PathCancellationKind.POWER_OFF,
+                reason="power off",
+                expected_path_id=self.assigned_path_id,
+            )
+        return CommandResult(True, "Power off accepted")
+
+    def _execute_activate_eb(self, payload, event_time) -> CommandResult:
+        if self.eb_active:
+            return CommandResult(False, "Emergency brake already active")
+        train = self._get_train()
+        self.eb_active = True
+        self.handle_position = HandlePosition.EB
+        self.ato_running = False
+        if (
+            self.state != TrainState.RUNNING_AT_STATION
+            and self.received_path_plan is not None
+        ):
+            self.pending_path_cancel_request = PendingPathCancelRequest(
+                cancellation_kind=PathCancellationKind.EB,
+                reason="operator EB",
+                expected_path_id=self.assigned_path_id,
+            )
+        if train:
+            train.emergency_brake = True
+        return CommandResult(True, "Emergency stop activated")
+
+    def _execute_release_eb(self, payload, event_time) -> CommandResult:
+        train = self._get_train()
+        if train is None:
+            return CommandResult(False, "Train not found")
+        if not self.power_on:
+            return CommandResult(False, "Power is off")
+        if not self.eb_active:
+            return CommandResult(False, "Emergency brake not active")
+        if not train.is_stopped():
+            return CommandResult(False, "Cannot release emergency while moving")
+        if self.pending_path_cancel_request is not None:
+            return CommandResult(False, "EB cancellation has not committed yet")
+        if self.received_path_plan is not None:
+            return CommandResult(False, "Pre-EB path authority has not cleared yet")
+        self.eb_active = False
+        if train:
+            train.emergency_brake = False
+        self.handle_position = HandlePosition.N
+        if self.state != TrainState.RUNNING_AT_STATION:
+            if self.active_cab in ("A", "B"):
+                self.state = TrainState.STANDBY
+            else:
+                self.state = TrainState.IDLE
+        return CommandResult(True, "Emergency stop released")
+
+    def _execute_set_cab(self, payload, event_time) -> CommandResult:
+        return self.set_cab(payload.get("cab"))
+
+    def _execute_set_mode(self, payload, event_time) -> CommandResult:
+        return self.set_mode(payload.get("mode"))
+
+    def _execute_set_manual_mode_type(self, payload, event_time) -> CommandResult:
+        return self.set_manual_mode_type(payload.get("mode_type"))
+
+    def _execute_set_handle(self, payload, event_time) -> CommandResult:
+        return self.set_handle(payload.get("position"))
+
+    def _execute_set_manual_power_percent(self, payload, event_time) -> CommandResult:
+        return self.set_manual_power_percent(payload.get("percent"))
+
+    def _execute_ato_go(self, payload, event_time) -> CommandResult:
+        return self.ato_go()
+
+    def _execute_ato_stop(self, payload, event_time) -> CommandResult:
+        return self.ato_stop()
 
     # -------------------------------------------------------------------------
     # Power Commands

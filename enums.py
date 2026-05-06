@@ -7,8 +7,33 @@ These enums define the possible states, types, and directions for various railwa
 """
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import Any, Dict, Optional
+
+
+class PathStatus(Enum):
+    """Path lifecycle states.
+
+    A path is born ACTIVE on a successful create_path(...). It transitions to
+    COMPLETED when the train reaches the requested destination, or to
+    CANCELLED when the path is revoked. Both terminal states are sticky.
+    """
+
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class SwitchState(IntEnum):
+    """Switch alignment state.
+
+    Binary in v1: MAIN (0) selects the main route, DIVERGE (1) selects the
+    diverging route. Used for stored switch state and for required-state
+    locks.
+    """
+
+    MAIN = 0
+    DIVERGE = 1
 
 
 class TrackType(Enum):
