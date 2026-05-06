@@ -83,7 +83,6 @@ _CONTROLLER_LATCH_FIELDS: List[str] = [
     "pending_path_cancel_request",
     "pending_route_abort",
     "pending_power_off",
-    "pending_route_finished",
     "pending_route_deactivate",
     "pending_notifications",
 ]
@@ -180,10 +179,6 @@ _LATCH_META: Dict[str, Dict[str, str]] = {
     "pending_power_off": {
         "writer": "Phase 2 — operator command drain",
         "consumer": "Phase 3 — power-off step (gated by is_stopped())",
-    },
-    "pending_route_finished": {
-        "writer": "Phase 2 — route completion detection",
-        "consumer": "Phase 3 — route-finished step",
     },
     "pending_route_deactivate": {
         "writer": "API / route executor",

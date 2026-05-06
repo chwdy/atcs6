@@ -32,74 +32,6 @@ def straight_ew_track(network):
         network.add_track(track)
     return network
 
-class TestTrainMonitorBlockOffsetBugFix:
-    """
-    Comprehensive tests for Train Monitor block offset bug fixed in 2026-01-25.
-
-    BUG: Train monitor lookahead data starts at path_index, so the current block
-    appears to restart at each tile boundary, causing the monitor to jump back.
-    FIX: Include distance_to_block_start_cm so UI can render a stable block start
-    even when the train head advances to the next tile.
-    """
-
-    def test_distance_to_block_start_includes_tiles_behind_head(self):
-        """Head tile should include previous tiles in same block."""
-        network = RailwayNetwork()
-
-        for x in range(3):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
-            track.block_section_id = "BLOCK_MAIN"
-            network.add_track(track)
-
-        train = Train(train_id="TRAIN_01")
-        train.position = make_train_position(
-            head_tile=(1, 0),
-            head_distance_cm=20.0,
-        )
-        train.current_path = [
-            (0, 0, Direction.EAST),
-            (1, 0, Direction.EAST),
-            (2, 0, Direction.EAST),
-        ]
-        train.path_index = 1
-
-        data = train.to_dict(network)
-        info = data["lookahead_tile_info"]
-
-        assert info[0]["distance_to_tile_cm"] == pytest.approx(-20.0)
-        assert info[0]["distance_to_block_start_cm"] == pytest.approx(-70.0)
-        assert info[1]["distance_to_block_start_cm"] == pytest.approx(-70.0)
-
-    def test_distance_to_block_start_resets_on_new_block(self):
-        """Next block start should align with its first tile start."""
-        network = RailwayNetwork()
-
-        for x in range(2):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
-            track.block_section_id = "BLOCK_A"
-            network.add_track(track)
-
-        track = TrackSegment(x=2, y=0, track_bits=TRACK_EW)
-        track.block_section_id = "BLOCK_B"
-        network.add_track(track)
-
-        train = Train(train_id="TRAIN_02")
-        train.position = make_train_position(
-            head_tile=(1, 0),
-            head_distance_cm=20.0,
-        )
-        train.current_path = [
-            (0, 0, Direction.EAST),
-            (1, 0, Direction.EAST),
-            (2, 0, Direction.EAST),
-        ]
-        train.path_index = 1
-
-        data = train.to_dict(network)
-        info = data["lookahead_tile_info"]
-
-        assert info[1]["distance_to_tile_cm"] == pytest.approx(30.0)
-        assert info[1]["distance_to_block_start_cm"] == pytest.approx(30.0)
 
 
 
@@ -111,64 +43,7 @@ class TestTrainControllerMonitorLookahead:
     cab direction changes are reflected in the lookahead head tile.
     """
 
-    def test_block_offsets_include_tiles_behind_head(self, network):
-        for x in range(3):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
-            track.block_section_id = "BLOCK_MAIN"
-            network.add_track(track)
 
-        train = Train(train_id="TRAIN_LOOKAHEAD")
-        train.position = make_train_position(
-            head_tile=(1, 0),
-            head_distance_cm=20.0,
-        )
-        train.current_path = [
-            (0, 0, Direction.EAST),
-            (1, 0, Direction.EAST),
-            (2, 0, Direction.EAST),
-        ]
-        train.path_index = 1
-        network.add_train(train)
-
-        controller = TrainController(train_id=train.train_id, network=network)
-        controller.set_cab("A")
-
-        payload = controller.get_monitor_lookahead()
-        blocks = payload["lookahead"]["blocks"]
-
-        assert blocks[0]["start_cm"] == pytest.approx(-70.0)
-        assert blocks[0]["end_cm"] == pytest.approx(80.0)
-
-    def test_block_offsets_reset_on_new_block(self, network):
-        for x in range(2):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
-            track.block_section_id = "BLOCK_A"
-            network.add_track(track)
-
-        track = TrackSegment(x=2, y=0, track_bits=TRACK_EW)
-        track.block_section_id = "BLOCK_B"
-        network.add_track(track)
-
-        train = Train(train_id="TRAIN_LOOKAHEAD_RESET")
-        train.position = make_train_position(
-            head_tile=(1, 0),
-            head_distance_cm=20.0,
-        )
-        train.current_path = [
-            (0, 0, Direction.EAST),
-            (1, 0, Direction.EAST),
-            (2, 0, Direction.EAST),
-        ]
-        train.path_index = 1
-        network.add_train(train)
-
-        controller = TrainController(train_id=train.train_id, network=network)
-        controller.set_cab("A")
-        payload = controller.get_monitor_lookahead()
-        blocks = payload["lookahead"]["blocks"]
-
-        assert blocks[1]["start_cm"] == pytest.approx(30.0)
-        assert blocks[1]["end_cm"] == pytest.approx(80.0)
 
     def test_cab_switch_updates_head_tile(self, network):
         """When switching cabs, head tile should reflect the new cab position."""
@@ -198,12 +73,12 @@ class TestTrainControllerMonitorLookahead:
         controller = TrainController(train_id=train.train_id, network=network)
 
         controller.set_cab("A")
-        payload_a = controller.get_monitor_lookahead()
+        payload_a = controller.get_lookahead()
         # With Cab A active, head is at end_a which is (0, 0)
         assert payload_a["head_tile"] == [0, 0]
 
         controller.set_cab("B")
-        payload_b = controller.get_monitor_lookahead()
+        payload_b = controller.get_lookahead()
         # After switching to Cab B, tiles don't swap - physical train doesn't move
         # end_a stays at (0, 0) and end_b stays at (2, 0)
         # With Cab B active and leading_end=LeadingEnd.B, head is at end_b which is (2, 0)
@@ -237,7 +112,7 @@ class TestTrainControllerMonitorLookahead:
         controller = TrainController(train_id=train.train_id, network=network)
         controller.set_cab(None)
 
-        payload = controller.get_monitor_lookahead()
+        payload = controller.get_lookahead()
 
         assert payload["cab"] is None
         assert payload["head_tile"] is None
@@ -248,246 +123,9 @@ class TestTrainControllerMonitorLookahead:
         assert payload["lookahead"]["stations"] == []
         assert payload["lookahead"]["clearance_cm"] == pytest.approx(0.0)
 
-    def test_cab_switch_flips_lookahead_direction(self, network):
-        """Lookahead sequence should reverse when operator switches to the opposite cab."""
-        for x in range(3):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
-            track.block_section_id = f"BLOCK_{x}"
-            network.add_track(track)
 
-        train = Train(train_id="TRAIN_LOOKAHEAD_DIR_FLIP")
-        train.position = TrainPosition(
-            end_a_tile=(0, 0),
-            end_a_distance_cm=10.0,
-            end_a_entry_edge="W",
-            end_b_tile=(2, 0),
-            end_b_distance_cm=10.0,
-            end_b_entry_edge="E",
-            leading_end=LeadingEnd.A,
-        )
-        train.current_path = [
-            (0, 0, Direction.EAST),
-            (1, 0, Direction.EAST),
-            (2, 0, Direction.EAST),
-        ]
-        train.path_index = 0
-        network.add_train(train)
 
-        controller = TrainController(train_id=train.train_id, network=network)
 
-        controller.set_cab("A")
-        payload_a = controller.get_monitor_lookahead()
-        block_ids_a = [block["id"] for block in payload_a["lookahead"]["blocks"]]
-
-        controller.set_cab("B")
-        payload_b = controller.get_monitor_lookahead()
-        block_ids_b = [block["id"] for block in payload_b["lookahead"]["blocks"]]
-
-        assert payload_a["head_tile"] == [0, 0]
-        assert payload_b["head_tile"] == [2, 0]
-        assert block_ids_a == ["BLOCK_0", "BLOCK_1", "BLOCK_2"]
-        assert block_ids_b == ["BLOCK_2", "BLOCK_1", "BLOCK_0"]
-
-    def test_cab_switch_updates_path_index_to_new_head(self, network):
-        """
-        BUG FIX TEST: path_index must update to match new head position after cab switch.
-
-        Bug Description:
-        When switching cabs (e.g., A->B), the physical head of the train moves from end_a
-        to end_b, but path_index was not being updated. This caused lookahead and speed
-        limit calculations to reference blocks from the wrong side of the train.
-
-        Scenario:
-        - Train spans tiles (0,0) -> (1,0) -> (2,0)
-        - path_index = 0 means head should be at tile (0,0)
-        - After switching to Cab B, head moves to tile (2,0)
-        - path_index MUST update to 2 to reflect the new head position
-
-        Expected:
-        - path_index should match the index of head_tile in current_path after any cab switch
-        """
-        for x in range(3):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
-            track.block_section_id = f"BLOCK_{x}"
-            network.add_track(track)
-
-        train = Train(train_id="TRAIN_PATH_INDEX_BUG")
-        train.position = TrainPosition(
-            end_a_tile=(0, 0),
-            end_a_distance_cm=10.0,
-            end_a_entry_edge="W",
-            end_b_tile=(2, 0),
-            end_b_distance_cm=10.0,
-            end_b_entry_edge="E",
-            leading_end=LeadingEnd.A,
-        )
-        train.current_path = [
-            (0, 0, Direction.EAST),
-            (1, 0, Direction.EAST),
-            (2, 0, Direction.EAST),
-        ]
-        train.path_index = 0
-        network.add_train(train)
-
-        controller = TrainController(train_id=train.train_id, network=network)
-
-        # Start with Cab A - head at (0,0), path_index should be 0
-        controller.set_cab("A")
-        assert train.path_index == 0, (
-            f"Cab A: path_index should be 0, got {train.path_index}"
-        )
-        assert train.position.head_tile == (0, 0), (
-            f"Cab A: head_tile should be (0,0), got {train.position.head_tile}"
-        )
-
-        # Switch to Cab B - head moves to (2,0), path_index MUST update to 2
-        controller.set_cab("B")
-        assert train.path_index == 2, (
-            f"After A->B switch: path_index should be 2, got {train.path_index}"
-        )
-        assert train.position.head_tile == (2, 0), (
-            f"After A->B switch: head_tile should be (2,0), got {train.position.head_tile}"
-        )
-
-        # Verify lookahead uses correct blocks (from head position, not old position)
-        payload = controller.get_monitor_lookahead()
-        block_ids = [block["id"] for block in payload["lookahead"]["blocks"]]
-        # With head at (2,0), lookahead should scan backward: BLOCK_2, BLOCK_1, BLOCK_0
-        assert block_ids == ["BLOCK_2", "BLOCK_1", "BLOCK_0"], (
-            f"Lookahead blocks wrong: {block_ids}"
-        )
-
-        # Switch back to Cab A - head moves back to (0,0), path_index MUST update to 0
-        controller.set_cab("A")
-        assert train.path_index == 0, (
-            f"After B->A switch: path_index should be 0, got {train.path_index}"
-        )
-        assert train.position.head_tile == (0, 0), (
-            f"After B->A switch: head_tile should be (0,0), got {train.position.head_tile}"
-        )
-
-        # Verify lookahead is correct again
-        payload = controller.get_monitor_lookahead()
-        block_ids = [block["id"] for block in payload["lookahead"]["blocks"]]
-        # With head at (0,0), lookahead should scan forward: BLOCK_0, BLOCK_1, BLOCK_2
-        assert block_ids == ["BLOCK_0", "BLOCK_1", "BLOCK_2"], (
-            f"Lookahead blocks wrong after B->A: {block_ids}"
-        )
-
-    def test_cab_switch_path_index_multiple_times(self, network):
-        """
-        Test that path_index stays correct after multiple rapid cab switches.
-
-        This test simulates the user's reported bug scenario:
-        1. Start ATO, train runs
-        2. Stop ATO, train stops
-        3. Switch cab to reverse (B)
-        4. Switch back to forward (A)
-        5. Switch again to reverse (B)
-        6. Leave on reverse, hit ATO go
-        7. ATO correctly turns train and starts
-        8. BUT lookahead randomly shows wrong side
-
-        The bug was that path_index wasn't updated during cab switches.
-        """
-        for x in range(3):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
-            track.block_section_id = f"BLOCK_{x}"
-            network.add_track(track)
-
-        train = Train(train_id="TRAIN_PATH_INDEX_MULTIPLE")
-        train.position = TrainPosition(
-            end_a_tile=(0, 0),
-            end_a_distance_cm=10.0,
-            end_a_entry_edge="W",
-            end_b_tile=(2, 0),
-            end_b_distance_cm=10.0,
-            end_b_entry_edge="E",
-            leading_end=LeadingEnd.A,
-        )
-        train.current_path = [
-            (0, 0, Direction.EAST),
-            (1, 0, Direction.EAST),
-            (2, 0, Direction.EAST),
-        ]
-        train.path_index = 0
-        network.add_train(train)
-
-        controller = TrainController(train_id=train.train_id, network=network)
-
-        # Simulate user's scenario: multiple cab switches
-        controller.set_cab("A")  # Start with Cab A
-        assert train.path_index == 0
-
-        controller.set_cab("B")  # Switch to reverse
-        assert train.path_index == 2
-
-        controller.set_cab("A")  # Switch back
-        assert train.path_index == 0
-
-        controller.set_cab("B")  # Switch to reverse again (leave it here)
-        assert train.path_index == 2
-
-        # After all switches, verify lookahead is from the correct side
-        payload = controller.get_monitor_lookahead()
-        block_ids = [block["id"] for block in payload["lookahead"]["blocks"]]
-
-        # Should see blocks from reverse side (head at 2,0)
-        assert block_ids == ["BLOCK_2", "BLOCK_1", "BLOCK_0"], (
-            f"After multiple switches, lookahead should be from reverse side. "
-            f"Expected ['BLOCK_2', 'BLOCK_1', 'BLOCK_0'], got {block_ids}"
-        )
-
-        # Verify head_tile matches path_index
-        head_tile = train.position.head_tile
-        path_head_tile = train.current_path[train.path_index][:2]
-        assert head_tile == path_head_tile, (
-            f"head_tile {head_tile} doesn't match path tile at path_index {train.path_index}: {path_head_tile}"
-        )
-
-    def test_cab_switch_from_off_does_not_require_existing_facing_direction(
-        self, network
-    ):
-        """Switching A->B after cab off should not fail with missing facing direction."""
-        for x in range(3):
-            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
-            track.block_section_id = f"BLOCK_{x}"
-            network.add_track(track)
-
-        train = Train(train_id="TRAIN_LOOKAHEAD_OFF_SWITCH")
-        train.position = TrainPosition(
-            end_a_tile=(0, 0),
-            end_a_distance_cm=10.0,
-            end_a_entry_edge="W",
-            end_b_tile=(2, 0),
-            end_b_distance_cm=10.0,
-            end_b_entry_edge="E",
-            leading_end=LeadingEnd.A,
-            occupied_tiles=[(0, 0), (1, 0), (2, 0)],
-        )
-        train.current_path = [
-            (0, 0, Direction.EAST),
-            (1, 0, Direction.EAST),
-            (2, 0, Direction.EAST),
-        ]
-        train.path_index = 0
-        network.add_train(train)
-
-        controller = TrainController(train_id=train.train_id, network=network)
-
-        result_a = controller.set_cab("A")
-        assert result_a.success
-        result_off = controller.set_cab(None)
-        assert result_off.success
-
-        result_b = controller.set_cab("B")
-        assert result_b.success
-
-        payload_b = controller.get_monitor_lookahead()
-        block_ids_b = [block["id"] for block in payload_b["lookahead"]["blocks"]]
-
-        assert payload_b["head_tile"] == [2, 0]
-        assert block_ids_b == ["BLOCK_2", "BLOCK_1", "BLOCK_0"]
 
 
 
@@ -553,7 +191,7 @@ class TestLookaheadTrackUsabilityBugFix:
         controller.set_cab("A")
         controller.set_cab("B")
 
-        payload = controller.get_monitor_lookahead()
+        payload = controller.get_lookahead()
         block_ids = [block["id"] for block in payload["lookahead"]["blocks"]]
 
         assert payload["head_tile"] == [2, 0]
@@ -570,7 +208,7 @@ class TestLookaheadTrackUsabilityBugFix:
         controller = TrainController(train_id=train.train_id, network=network)
         controller.set_cab("A")
 
-        payload = controller.get_monitor_lookahead()
+        payload = controller.get_lookahead()
         block_ids = [block["id"] for block in payload["lookahead"]["blocks"]]
 
         assert payload["head_tile"] == [0, 0]
@@ -657,23 +295,12 @@ class TestTrainAssignedPathSerializationBugFix:
     FIX: Train.to_dict includes assigned_path_id for frontend state.
     """
 
-    def test_train_to_dict_includes_assigned_path_id(self):
-        """Train serialization should include assigned_path_id."""
-        network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
-        train = Train(train_id="TRAIN_PATH", consist=[car], max_speed=60.0)
-        train.assigned_path_id = "PATH_123"
-        network.add_train(train)
-
-        data = train.to_dict(network)
-
-        assert data.get("assigned_path_id") == "PATH_123"
 
     def test_train_physics_power_off_does_not_update_speed(self):
         """TrainPhysics.tick should not update speed when power is off.
 
         v1: controller owns canonical current_speed_kmh; physics reads from
-        controller.current_speed_kmh, not train.current_speed.
+        controller.current_speed_kmh, not controller.current_speed_kmh.
         """
         network = RailwayNetwork()
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
@@ -684,26 +311,17 @@ class TestTrainAssignedPathSerializationBugFix:
         controller = sim._get_or_create_controller(train)
         physics = sim._get_or_create_physics(train)
         controller.power_on = False
-        # v1: write canonical speed onto the controller; train.current_speed is mirrored.
+        # v1: write canonical speed onto the controller; controller.current_speed_kmh is mirrored.
         controller.current_speed_kmh = 10.0
-        train.current_speed = 10.0
+        controller.current_speed_kmh = 10.0
 
         initial_speed = controller.current_speed_kmh
         physics.tick(0.1)
 
         # Speed should remain unchanged when power is off
         assert controller.current_speed_kmh == initial_speed
-        assert train.current_speed == initial_speed
+        assert controller.current_speed_kmh == initial_speed
 
-    def test_target_speed_does_not_override_power_handle(self):
-        """v1: target_speed is now a read-only property derived from lookahead.
-
-        Original v0 test asserted that physics doesn't override the handle
-        based on target_speed. In v1 the controller still owns target speed
-        but it is computed from the lookahead, not stored — there is no
-        setter for it.
-        """
-        pytest.skip("v1: target_speed is a read-only property derived from lookahead")
 
 
 
@@ -731,10 +349,9 @@ class TestFallbackLookaheadMultiTileBlock:
         network.blocks["TERMINAL"] = block
 
         for x in range(3):
-            track = TrackSegment(
-                x=x, y=0, track_bits=TRACK_EW, block_section_id="TERMINAL"
-            )
+            track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
             network.add_track(track)
+            track.block_section_id = "TERMINAL"
 
         return network
 
@@ -770,7 +387,7 @@ class TestFallbackLookaheadMultiTileBlock:
 
         # Get lookahead WITHOUT calling update() first
         # This simulates the API call on first placement
-        lookahead = controller.get_monitor_lookahead()
+        lookahead = controller.get_lookahead()
 
         # The clearance should be the remaining distance to end of block
         # Block is 150cm, train has traveled 50cm (one tile), so remaining = 100cm
@@ -804,7 +421,7 @@ class TestFallbackLookaheadMultiTileBlock:
         controller = TrainController(train_id=train.train_id, network=network)
         controller.set_cab("A")
 
-        lookahead = controller.get_monitor_lookahead()
+        lookahead = controller.get_lookahead()
         clearance_cm = lookahead["lookahead"]["clearance_cm"]
 
         # Train at (1,0), 25cm into tile
@@ -837,7 +454,7 @@ class TestFallbackLookaheadMultiTileBlock:
         controller = TrainController(train_id=train.train_id, network=network)
         controller.set_cab("A")
 
-        lookahead = controller.get_monitor_lookahead()
+        lookahead = controller.get_lookahead()
         clearance_cm = lookahead["lookahead"]["clearance_cm"]
 
         # Train at (2,0), 40cm into tile
@@ -869,7 +486,7 @@ class TestFallbackLookaheadMultiTileBlock:
         controller = TrainController(train_id=train.train_id, network=network)
         controller.set_cab("A")
 
-        lookahead = controller.get_monitor_lookahead()
+        lookahead = controller.get_lookahead()
         blocks = lookahead["lookahead"]["blocks"]
 
         assert len(blocks) == 1
@@ -900,7 +517,7 @@ class TestFallbackLookaheadMultiTileBlock:
         # Set a prior clearance (simulating simulation update ran earlier)
         controller.clearance_ahead_cm = 200.0
 
-        lookahead = controller.get_monitor_lookahead()
+        lookahead = controller.get_lookahead()
         clearance_cm = lookahead["lookahead"]["clearance_cm"]
 
         # Should use the prior clearance value

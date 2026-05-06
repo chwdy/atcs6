@@ -105,7 +105,7 @@ def dump_state(label: str, train, controller, extra: dict = None) -> None:
     )
     print(f"  controller.handle_position = {controller.handle_position}")
     print(f"  train.assigned_path_id = {getattr(train, 'assigned_path_id', None)}")
-    print(f"  train.current_speed    = {train.current_speed:.2f} km/h")
+    print(f"  controller.current_speed_kmh    = {controller.current_speed_kmh:.2f} km/h")
     print(f"  train.facing_direction = {train.facing_direction}")
     head = train.position.head_tile if train.position else None
     print(f"  train head tile        = {head}")
@@ -196,7 +196,7 @@ class TestBugStandbyPathAutostart:
         controller.state = TrainState.RUNNING_AT_STATION
         train.state = TrainState.RUNNING_AT_STATION
         controller.ato_running = False
-        train.current_speed = 0.0
+        controller.current_speed_kmh = 0.0
 
         dump_state(
             "BEFORE tick() (RUNNING_AT_STATION, ato_running=False)", train, controller
@@ -249,7 +249,7 @@ class TestBugStandbyPathAutostart:
             facing_direction=Direction.NORTH,
             occupied_blocks=["BLOCK_EAST_BRANCH"],
         )
-        train.current_speed = 0.0
+        controller.current_speed_kmh = 0.0
         train.reserved_blocks = []
 
         controller.state = TrainState.RUNNING_WAITING
@@ -320,7 +320,7 @@ class TestBugStandbyPathAutostart:
             facing_direction=Direction.NORTH,
             occupied_blocks=["BLOCK_EAST_BRANCH"],
         )
-        train.current_speed = 0.0
+        controller.current_speed_kmh = 0.0
 
         # Occupy north block
         if network.block_manager:
@@ -431,7 +431,7 @@ class TestBugStandbyPathAutostart:
             facing_direction=Direction.NORTH,
             occupied_blocks=["BLOCK_EAST_BRANCH"],
         )
-        train.current_speed = 0.0
+        controller.current_speed_kmh = 0.0
         train.reserved_blocks = []
 
         # Manually force RUNNING_WAITING with ato_running=True (bug precondition)

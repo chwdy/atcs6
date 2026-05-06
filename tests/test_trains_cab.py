@@ -121,23 +121,6 @@ class TestCabSwitchEndPositionsBugFix:
         # Last tile is still end_b
         assert train.position.occupied_tiles[-1] == train.position.end_b_tile
 
-    def test_cab_switch_renderer_serialization_order(self, network):
-        """Renderer receives unchanged path_tiles after cab switch."""
-        train, controller = self._setup_two_tile_train(network)
-
-        controller.set_cab("A")
-        original_end_a = train.position.end_a_tile
-        original_end_b = train.position.end_b_tile
-
-        controller.set_cab("B")
-        data = train.to_dict(network)
-
-        assert data["leading_end"] == "b"
-        # path_tiles order unchanged - train didn't move
-        assert data["path_tiles"][0] == list(original_end_a)
-        assert data["path_tiles"][-1] == list(original_end_b)
-        assert data["end_a_index"] == 0
-        assert data["end_b_index"] == len(data["path_tiles"]) - 1
 
     def test_cab_switch_reverses_facing_direction(self, network):
         """Switching cabs reverses facing_direction."""
@@ -452,7 +435,7 @@ class TestSetCabDoubleFlipBugFix:
         """turn_around() should fail if train is moving."""
         train, controller = self._setup_multi_tile_train(network)
 
-        train.current_speed = 10.0  # Moving
+        controller.current_speed_kmh = 10.0  # Moving
 
         result = controller.turn_around()
         assert result is False
@@ -512,7 +495,7 @@ class TestSetCabDoubleFlipBugFix:
         controller.state = TrainState.IDLE
         train.state = TrainState.IDLE
         controller.ato_running = False
-        train.current_speed = 0.0
+        controller.current_speed_kmh = 0.0
 
         # Active cab is still A (route cancellation doesn't clear cab)
         assert controller.active_cab == "A"

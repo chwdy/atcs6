@@ -83,20 +83,17 @@ class TestBlock:
 
     def test_state_transitions(self):
         block = Block(block_id="BLK_TEST")
+        block.ordered_tiles = [(0, 0, "S")]
         assert block.state == BlockState.FREE
         assert block.is_free() == True
 
-        # v1: state is read-only @property; force RESERVED via primitives.
-        block.reserved_by_path = "P1"
-        block.reserved_direction = "forward"
-        block.reserved_for_train = "TRAIN_01"
+        # v1: reservation is one record.
+        block.reserve_for_path("P1", "TRAIN_01", "forward")
         assert block.state == BlockState.RESERVED
         assert block.is_reserved() == True
 
-        # Clear reservation primitives before occupying so state is OCCUPIED.
-        block.reserved_by_path = None
-        block.reserved_direction = None
-        block.reserved_for_train = None
+        # Clear reservation before occupying so state is OCCUPIED.
+        block.release_path_reservation()
         block.occupy(train_id="TRAIN_01")
         assert block.state == BlockState.OCCUPIED
 
@@ -110,36 +107,31 @@ class TestBlock:
 
     def test_occupy_block(self):
         block = Block(block_id="BLK_TEST")
+        block.ordered_tiles = [(0, 0, "S")]
         # Pre-reserved for the same train, then physically enters.
-        block.reserved_by_path = "P1"
-        block.reserved_for_train = "TRAIN_01"
+        block.reserve_for_path("P1", "TRAIN_01", "forward")
         block.occupy(train_id="TRAIN_01")
         assert block.state == BlockState.OCCUPIED
 
     def test_release_block(self):
         block = Block(block_id="BLK_TEST")
-        block.reserved_by_path = "P1"
-        block.reserved_for_train = "TRAIN_01"
+        block.ordered_tiles = [(0, 0, "S")]
+        block.reserve_for_path("P1", "TRAIN_01", "forward")
         block.occupy(train_id="TRAIN_01")
         block.release()
-        block.reserved_by_path = None
-        block.reserved_for_train = None
+        block.release_path_reservation()
         assert block.state == BlockState.FREE
 
     def test_caution_state_cycle(self):
         block = Block(block_id="BLK_TEST")
+        block.ordered_tiles = [(0, 0, "S")]
         assert block.state == BlockState.FREE
-        # Reserve via primitives.
-        block.reserved_by_path = "P1"
-        block.reserved_for_train = "TRAIN_01"
+        block.reserve_for_path("P1", "TRAIN_01", "forward")
         assert block.state == BlockState.RESERVED
-        # Occupy.
         block.occupy("TRAIN_01")
         assert block.state == BlockState.OCCUPIED
-        # Release physically; CAUTION is meaningful only when free.
         block.release()
-        block.reserved_by_path = None
-        block.reserved_for_train = None
+        block.release_path_reservation()
         block.set_to_caution()
         assert block.state == BlockState.CAUTION
         block.clear()
@@ -428,15 +420,176 @@ class TestBlockManager:
     def test_occupy_block_rejects_wrong_train_on_reserved_block(self):
         from block_manager import BlockManager
 
-        blocks = {"B1": Block("B1")}
-        # v1: reserve via primitives. reserved_for_train = TRAIN_A.
-        blocks["B1"].reserved_by_path = "P1"
-        blocks["B1"].reserved_for_train = "TRAIN_A"
+        blocks = {"B1": Block("B1", ordered_tiles=[(0, 0, "S")])}
+        # v1: reserve via the canonical record so reserved_for_train = TRAIN_A.
+        blocks["B1"].reserve_for_path("P1", "TRAIN_A", "forward")
         manager = BlockManager(blocks)
+        # Without a simulation_controller wired, the manager should fall back
+        # to the silent-False path (fatal-conflict reporting needs the sim
+        # controller).
         result = manager.occupy_block("B1", "TRAIN_B")
         assert result == False
         assert blocks["B1"].state == BlockState.RESERVED
         assert blocks["B1"].reserved_for_train == "TRAIN_A"
+
+
+class _FakeSimulationController:
+    """Minimal simulation controller stand-in for fatal-conflict tests."""
+
+    def __init__(self):
+        self.failed_runtime = False
+        self.failed_runtime_payload = None
+        self.calls = 0
+
+    def enter_failed_runtime(self, payload):
+        self.failed_runtime = True
+        self.failed_runtime_payload = payload
+        self.calls += 1
+
+
+class TestFatalConflict:
+    """`BlockManager.occupy_block(...)` must route physical-entry conflicts
+    through `SimulationController.enter_failed_runtime(...)` instead of
+    silently returning False."""
+
+    def test_reserved_for_other_train_emits_fatal(self):
+        from block_manager import BlockManager
+        from runtime_payloads import FatalConflictKind
+
+        blocks = {"B1": Block("B1", ordered_tiles=[(0, 0, "S")])}
+        blocks["B1"].reserve_for_path("P1", "TRAIN_A", "forward")
+        sim = _FakeSimulationController()
+        manager = BlockManager(blocks, simulation_controller=sim)
+
+        ok = manager.occupy_block("B1", "TRAIN_B")
+        assert ok is False
+        assert sim.failed_runtime is True
+        payload = sim.failed_runtime_payload
+        assert payload is not None
+        assert payload.conflict_kind == FatalConflictKind.RESERVED_FOR_OTHER_TRAIN
+        assert payload.resource_type == "block"
+        assert payload.resource_id == "B1"
+        assert payload.incoming_train_id == "TRAIN_B"
+        assert payload.prior_owner_train_id == "TRAIN_A"
+
+    def test_occupied_by_other_train_emits_fatal(self):
+        from block_manager import BlockManager
+        from runtime_payloads import FatalConflictKind
+
+        blocks = {"B1": Block("B1")}
+        blocks["B1"].occupied_by = "TRAIN_A"
+        sim = _FakeSimulationController()
+        manager = BlockManager(blocks, simulation_controller=sim)
+
+        ok = manager.occupy_block("B1", "TRAIN_B")
+        assert ok is False
+        assert sim.failed_runtime is True
+        payload = sim.failed_runtime_payload
+        assert payload.conflict_kind == FatalConflictKind.OCCUPIED_BY_OTHER_TRAIN
+        assert payload.prior_owner_train_id == "TRAIN_A"
+
+    def test_disabled_block_entry_emits_fatal_with_none_owner(self):
+        from block_manager import BlockManager
+        from runtime_payloads import FatalConflictKind
+
+        blocks = {"B1": Block("B1")}
+        blocks["B1"].disabled = True
+        sim = _FakeSimulationController()
+        manager = BlockManager(blocks, simulation_controller=sim)
+
+        ok = manager.occupy_block("B1", "TRAIN_A")
+        assert ok is False
+        assert sim.failed_runtime is True
+        payload = sim.failed_runtime_payload
+        assert payload.conflict_kind == FatalConflictKind.DISABLED_RESOURCE_ENTRY
+        assert payload.prior_owner_train_id is None
+
+    def test_no_back_reference_silently_returns_false(self):
+        """Without a wired controller, conflicts still return False without
+        crashing — tests and editor sessions exercise this path."""
+        from block_manager import BlockManager
+
+        blocks = {"B1": Block("B1")}
+        blocks["B1"].occupied_by = "TRAIN_A"
+        manager = BlockManager(blocks)
+        assert manager.occupy_block("B1", "TRAIN_B") is False
+
+
+class TestDirectionalCaution:
+    """Directional `_reevaluate_caution_blocks()` must only inspect the
+    forward-adjacent block in `caution_direction`, never the follower
+    behind."""
+
+    def _build_three_block_chain(self):
+        """A -> B -> C laid out west-to-east on row y=0.
+
+        Forward direction is east; ``caution_direction`` for vacating B
+        toward C is "E". The test ensures the walk inspects C, not A.
+        """
+        from network import RailwayNetwork
+
+        network = RailwayNetwork()
+        # Three single-tile blocks A, B, C at x=0, x=1, x=2.
+        for x in range(3):
+            network.add_track(TrackSegment(x=x, y=0, track_bits=TRACK_EW))
+        # Assign each tile to its own block.
+        a = network.create_block("A", "A")
+        b = network.create_block("B", "B")
+        c = network.create_block("C", "C")
+        network.assign_track_to_block(0, 0, "A")
+        network.assign_track_to_block(1, 0, "B")
+        network.assign_track_to_block(2, 0, "C")
+        # ordered_tiles records (x, y, entry_edge) for forward traversal.
+        a.ordered_tiles = [(0, 0, "W")]
+        b.ordered_tiles = [(1, 0, "W")]
+        c.ordered_tiles = [(2, 0, "W")]
+        return network
+
+    def test_forward_neighbor_occupied_keeps_caution(self):
+        network = self._build_three_block_chain()
+        manager = network.block_manager
+        # Setup: C is OCCUPIED. B becomes CAUTION with caution_direction = "E".
+        network.blocks["C"].occupied_by = "TRAIN_FORWARD"
+        network.blocks["B"]._is_caution = True
+        network.blocks["B"].caution_direction = "E"
+
+        manager._reevaluate_caution_blocks()
+
+        # Because the next forward block (C) is OCCUPIED, B's caution stays.
+        assert network.blocks["B"]._is_caution is True
+        assert network.blocks["B"].caution_direction == "E"
+        assert network.blocks["B"].state == BlockState.CAUTION
+
+    def test_follower_behind_does_not_block_clear(self):
+        """A follower behind B (entering A) must NOT keep B in CAUTION when
+        the forward neighbor C is free."""
+        network = self._build_three_block_chain()
+        manager = network.block_manager
+        # B in CAUTION pointing east. C is FREE. A is OCCUPIED by a follower.
+        network.blocks["B"]._is_caution = True
+        network.blocks["B"].caution_direction = "E"
+        network.blocks["A"].occupied_by = "FOLLOWER"
+
+        manager._reevaluate_caution_blocks()
+
+        # B's caution should clear: forward (C) is free, A is irrelevant.
+        assert network.blocks["B"]._is_caution is False
+        assert network.blocks["B"].caution_direction is None
+        assert network.blocks["B"].state == BlockState.FREE
+
+    def test_no_reachable_forward_block_clears_caution(self):
+        """If walking forward runs off the network, caution clears because
+        nothing protectable lies ahead."""
+        network = self._build_three_block_chain()
+        manager = network.block_manager
+        # Vacate C with caution_direction east — nothing is east of C.
+        network.blocks["C"]._is_caution = True
+        network.blocks["C"].caution_direction = "E"
+
+        manager._reevaluate_caution_blocks()
+
+        assert network.blocks["C"]._is_caution is False
+        assert network.blocks["C"].caution_direction is None
 
 
 if __name__ == "__main__":

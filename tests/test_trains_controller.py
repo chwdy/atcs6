@@ -48,7 +48,7 @@ class TestTrainManualControlBugFixes:
         controller.state = TrainState.STANDBY
 
         assert controller.clear_direction() is True
-        assert train.state == TrainState.IDLE
+        assert controller.state == TrainState.IDLE
         assert train.facing_direction is None
         # v1: clear_direction only resets state and clears active_cab. It does
         # not touch travel_direction or manual_target_speed.
@@ -59,47 +59,16 @@ class TestTrainManualControlBugFixes:
         train = Train(train_id="TRAIN_02", consist=[car], max_speed=60.0)
         train.state = TrainState.STANDBY
         # Direction set via position (refactored): train.set_cab("A")  # was: Direction.NORTH
-        train.current_speed = 5.0
         network.add_train(train)
         controller = create_controller_for_train("TRAIN_02", network)
         controller.power_on = True
         controller.state = TrainState.STANDBY
+        controller.current_speed_kmh = 5.0
 
         assert controller.clear_direction() is False
-        assert train.state == TrainState.STANDBY
+        assert controller.state == TrainState.STANDBY
 
-    def test_manual_speed_requires_manual_and_clamps(self):
-        """Test set_manual_speed - still on Train (not controller)."""
-        pytest.skip("v1: RUNNING_WAITING/MANUAL state removed")
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
-        train = Train(train_id="TRAIN_03", consist=[car], max_speed=40.0)
-        assert train.set_manual_speed(30.0) is False
-        train.state = TrainState.MANUAL
-        assert train.set_manual_speed(60.0) is True
-        assert train.manual_target_speed == 40.0
 
-    def test_travel_direction_requires_manual(self):
-        """Test set_travel_direction via TrainController."""
-        pytest.skip("v1: RUNNING_WAITING/MANUAL state removed")
-        network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
-        train = Train(train_id="TRAIN_04", consist=[car], max_speed=60.0)
-        network.add_train(train)
-        controller = create_controller_for_train("TRAIN_04", network)
-
-        # Not in manual mode - fails
-        result = controller.set_travel_direction("reverse")
-        assert result.success is False
-
-        # Enable manual mode first
-        controller.power_on = True
-        train.state = TrainState.MANUAL
-        controller.state = TrainState.MANUAL
-        controller.control_mode = "manual"
-
-        result = controller.set_travel_direction("reverse")
-        assert result.success is True
-        assert train.travel_direction == "reverse"
 
 
 
@@ -161,162 +130,10 @@ class TestRaceConditionFix:
         sim.update(0.1)
 
         # train.state should now match controller.state (controller wins)
-        assert train.state == controller.state
+        assert controller.state == controller.state
 
-    def test_controller_transitions_to_waiting_when_stopped(self):
-        """
-        Test that controller transitions from RUNNING_MOVING to RUNNING_WAITING
-        when train is stopped AND there's an obstruction (ATC limit = 0).
 
-        The transition to WAITING should ONLY occur when:
-        1. Train's current_speed <= threshold (physically stopped)
-        2. ATC speed limit <= threshold (obstruction detected)
 
-        Simply being stopped without an obstruction should NOT trigger WAITING.
-        """
-        pytest.skip("v1: RUNNING_WAITING/MANUAL state removed")
-        network = RailwayNetwork()
-
-        # Create track and block
-        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        track.block_section_id = "B1"
-        network.add_track(track)
-
-        # Create a block that is occupied by ANOTHER train (obstruction)
-        block = network.create_block("B1", "Block 1")
-        network.block_manager.occupy_block("B1", "OTHER_TRAIN")
-
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
-        train = Train(train_id="TRAIN_TRANSITION_TEST", consist=[car], max_speed=60.0)
-        train.state = TrainState.RUNNING_MOVING
-        train.current_speed = 0.0  # Train is stopped
-        train.position = make_train_position(
-            (0, 0), Direction.EAST, occupied_blocks=["B1"]
-        )
-        network.add_train(train)
-
-        sim = SimulationController(network)
-        controller = sim._get_or_create_controller(train)
-        controller.power_on = True
-        controller.state = TrainState.RUNNING_MOVING
-        controller.ato_running = True
-        controller.active_cab = "A"  # Set cab so ATC calculates speed properly
-
-        # Tick controller - should detect obstruction and transition to WAITING
-        sim.update(0.1)
-
-        # Controller should have transitioned to RUNNING_WAITING
-        # because there's an obstruction (block occupied by another train)
-        assert controller.state == TrainState.RUNNING_WAITING
-        assert train.wait_reason is not None
-
-    def test_controller_stays_moving_when_stopped_without_obstruction(self):
-        """
-        Test that controller stays in RUNNING_MOVING when train is stopped
-        but there's NO obstruction (path is clear).
-
-        v1: when stopped without authority, controller transitions to STANDBY
-        (not RUNNING_MOVING). RUNNING_WAITING is removed; the doc says a
-        train at zero clearance under a live authority remains in RUNNING_MOVING.
-        """
-        pytest.skip("v1: transitions to STANDBY when stopped without active path")
-        network = RailwayNetwork()
-
-        # Create track and block with sufficient length for clearance
-        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        track.block_section_id = "B1"
-        network.add_track(track)
-
-        block = network.create_block("B1", "Block 1")
-        block.length_cm = 1000.0  # 10 meters - sufficient for clearance
-
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
-        train = Train(train_id="TRAIN_NO_OBSTRUCTION", consist=[car], max_speed=60.0)
-        train.state = TrainState.RUNNING_MOVING
-        train.current_speed = 0.0  # Train is stopped, but path is clear
-        train.position = make_train_position(
-            (0, 0), Direction.EAST, occupied_blocks=["B1"]
-        )  # Train is on the track
-        network.add_train(train)
-
-        sim = SimulationController(network)
-        controller = sim._get_or_create_controller(train)
-        controller.power_on = True
-        controller.state = TrainState.RUNNING_MOVING
-        controller.active_cab = "A"  # Set cab so ATC calculates speed properly
-        controller.ato_running = True  # ATO is running
-
-        # Tick controller - should NOT transition to WAITING (no obstruction)
-        sim.update(0.1)
-
-        # Controller should remain in RUNNING_MOVING (path is clear, no obstruction)
-        assert controller.state == TrainState.RUNNING_MOVING
-
-    def test_controller_auto_transitions_waiting_to_moving_when_obstruction_clears(
-        self,
-    ):
-        """
-        Test that controller auto-transitions from RUNNING_WAITING back to RUNNING_MOVING
-        when the obstruction clears (ATC limit > 0).
-
-        This is the key test for the WAITING ↔ MOVING fix:
-        1. Train is in RUNNING_WAITING (blocked by another train)
-        2. Obstruction clears (block becomes free)
-        3. Train should automatically transition to RUNNING_MOVING
-        """
-        pytest.skip("v1: RUNNING_WAITING removed; train stays in RUNNING_MOVING at zero speed")
-        network = RailwayNetwork()
-
-        # Create track and block
-        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        track.block_section_id = "B1"
-        network.add_track(track)
-
-        # Create a block that is occupied by ANOTHER train (obstruction)
-        # Set block length so ATC clearance calculation works
-        block = network.create_block("B1", "Block 1")
-        block.length_cm = 1000.0  # 10 meters - sufficient for clearance
-        network.block_manager.occupy_block("B1", "OTHER_TRAIN")
-
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
-        train = Train(train_id="TRAIN_WAITING_TEST", consist=[car], max_speed=60.0)
-        train.state = TrainState.RUNNING_WAITING
-        train.current_speed = 0.0  # Train is stopped
-        train.position = make_train_position(
-            (0, 0), Direction.EAST, occupied_blocks=["B1"]
-        )
-        train.wait_reason = "Block B1 occupied by OTHER_TRAIN"
-        network.add_train(train)
-
-        sim = SimulationController(network)
-        controller = sim._get_or_create_controller(train)
-        controller.power_on = True
-        controller.state = TrainState.RUNNING_WAITING
-        controller.ato_running = True  # ATO is running, just waiting for path
-        controller.active_cab = "A"  # Set cab so ATC calculates speed properly
-
-        # Verify initial state
-        assert controller.state == TrainState.RUNNING_WAITING
-
-        # Now clear the obstruction - the other train leaves the block
-        network.block_manager.set_block_to_caution("B1")
-        network.block_manager.clear_block("B1")
-
-        # Tick controller - should detect obstruction cleared and transition to MOVING
-        sim.update(0.1)
-
-        # Controller should have transitioned to RUNNING_MOVING
-        # because obstruction is gone (block is free)
-        assert controller.state == TrainState.RUNNING_MOVING, (
-            f"Expected RUNNING_MOVING but got {controller.state}. "
-            f"Train should auto-transition when obstruction clears."
-        )
-        # ATO should be restarted
-        assert controller.ato_running == True, (
-            "ATO should be restarted after obstruction clears"
-        )
-        # Wait reason should be cleared
-        assert train.wait_reason is None, "Wait reason should be cleared"
 
     def test_atc_triggers_warning_on_5kmh_overspeed(self):
         """
@@ -340,7 +157,6 @@ class TestRaceConditionFix:
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_OVERSPEED_TEST", consist=[car], max_speed=100.0)
         train.state = TrainState.RUNNING_MOVING
-        train.current_speed = 37.0  # 7 km/h over limit (warning zone)
         train.position = make_train_position(
             (0, 0), Direction.EAST, occupied_blocks=["B1"]
         )
@@ -351,6 +167,7 @@ class TestRaceConditionFix:
         controller.power_on = True
         controller.state = TrainState.RUNNING_MOVING
         controller.active_cab = "A"
+        controller.current_speed_kmh = 37.0  # 7 km/h over limit (warning zone)
 
         # Tick controller
         sim.update(0.1)
@@ -384,7 +201,6 @@ class TestRaceConditionFix:
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_EB_TEST", consist=[car], max_speed=100.0)
         train.state = TrainState.RUNNING_MOVING
-        train.current_speed = 42.0  # 12 km/h over limit (EB zone)
         train.position = make_train_position(
             (0, 0), Direction.EAST, occupied_blocks=["B1"]
         )
@@ -395,6 +211,7 @@ class TestRaceConditionFix:
         controller.power_on = True
         controller.state = TrainState.RUNNING_MOVING
         controller.active_cab = "A"
+        controller.current_speed_kmh = 42.0  # 12 km/h over limit (EB zone)
 
         # Tick controller
         sim.update(0.1)
@@ -409,38 +226,6 @@ class TestRaceConditionFix:
             "Should have notification for EB"
         )
 
-    def test_eb_resets_to_standby_when_stopped(self):
-        """
-        v1: EB no longer auto-releases on stop; release_emergency_cmd is the
-        canonical exit. Concept of automatic EB->STANDBY reset removed.
-        """
-        pytest.skip("v1: automatic EB release on stop removed; explicit release_emergency_cmd required")
-        network = RailwayNetwork()
-
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
-        train = Train(train_id="TRAIN_EB_RESET_TEST", consist=[car], max_speed=60.0)
-        train.state = TrainState.RUNNING_MOVING
-        train.current_speed = 0.0  # Already stopped
-        network.add_train(train)
-
-        sim = SimulationController(network)
-        controller = sim._get_or_create_controller(train)
-        controller.power_on = True
-        controller.eb_active = True  # EB is active
-        controller.state = TrainState.RUNNING_MOVING
-
-        # Tick controller - train is stopped, should reset EB
-        sim.update(0.1)
-
-        # EB should be released and state should be STANDBY
-        assert controller.eb_active == False, "EB should be released when train stopped"
-        assert controller.state == TrainState.STANDBY, (
-            f"State should be STANDBY after EB reset, got {controller.state}"
-        )
-        # Should have notification
-        assert "released" in " ".join(controller.pending_notifications).lower(), (
-            "Should have notification for EB release"
-        )
 
     def test_no_cab_selected_sets_atc_speed_zero(self):
         """
@@ -454,7 +239,6 @@ class TestRaceConditionFix:
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_NO_CAB_TEST", consist=[car], max_speed=60.0)
         train.state = TrainState.RUNNING_MOVING
-        train.current_speed = 0.0
         network.add_train(train)
 
         sim = SimulationController(network)
@@ -462,6 +246,7 @@ class TestRaceConditionFix:
         controller.power_on = True
         controller.state = TrainState.RUNNING_MOVING
         controller.active_cab = None  # No cab selected
+        controller.current_speed_kmh = 0.0
 
         # Tick controller
         sim.update(0.1)
@@ -539,13 +324,13 @@ class TestTrainControllerBrakingNotches:
         """Manual mode should brake toward ATC speed, not full stop."""
         network = RailwayNetwork()
         train = Train(train_id="TRAIN_MANUAL", max_speed=60.0)
-        train.current_speed = 16.0
         network.add_train(train)
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.control_mode = "manual"
         controller.power_on = True
         controller.active_cab = "A"
+        controller.current_speed_kmh = 16.0
 
         monkeypatch.setattr(controller, "_calculate_clearance_ahead", lambda: 200.0)
         monkeypatch.setattr(

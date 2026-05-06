@@ -142,11 +142,6 @@ class Path:
     requested_destination_block_id: str = ""
     requested_destination_direction: str = ""
 
-    # Live authority end. Equal to requested_destination_block_id when the
-    # live authority has reached the requested target; otherwise it is the
-    # current block-terminated truncation point.
-    authority_end_block_id: str = ""
-
     # Geometry. resource_sequence is the single source of truth; path_tiles
     # is the concatenation of resource_sequence[*].path_tiles in
     # sequence_index order, rebuilt on every successful create/extend.
@@ -176,6 +171,24 @@ class Path:
         always preserved."""
         self.status = new_status
         self.last_status_updated_time = when
+
+    @property
+    def authority_end_block_id(self) -> str:
+        """Derived live authority end block.
+
+        Per design_new.md "Path field schema": this is read-only and reflects
+        the terminal block resource of the current `resource_sequence`.
+        Returns "" when the sequence is empty (e.g. before initial
+        construction has populated it). Path invariants require the terminal
+        entry to be a `block` resource; switch-terminated authority is not
+        valid in v1 (see "Path invariants").
+        """
+        if not self.resource_sequence:
+            return ""
+        terminal = self.resource_sequence[-1]
+        if getattr(terminal, "resource_type", None) != "block":
+            return ""
+        return str(getattr(terminal, "resource_id", "") or "")
 
     def is_active(self) -> bool:
         return self.status == PathStatus.ACTIVE
@@ -350,7 +363,8 @@ class Path:
             requested_destination_direction=str(
                 data.get("requested_destination_direction", "")
             ),
-            authority_end_block_id=str(data.get("authority_end_block_id", "")),
+            # `authority_end_block_id` is derived from resource_sequence;
+            # the serialized value is ignored on read.
             resource_sequence=[
                 ResourceSequenceEntry.from_dict(e)
                 for e in data.get("resource_sequence", [])

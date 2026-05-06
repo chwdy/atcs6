@@ -5,8 +5,6 @@ It is intended to guide an engineer refactoring the existing implementation, not
 Unchanged entity-local fields, helper internals, and serialization details continue to follow the current code unless this document states otherwise.
 If current code conflicts with a changed contract stated here, this document wins.
 
-Implementation note: use `design_new_implementation_index.md` as the compact working map during coding. This file remains the authoritative source for changed contracts.
-
 ## Authoring Rules
 
 These rules govern every edit to this document. Reviewers must reject any patch that violates them.

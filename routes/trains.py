@@ -19,59 +19,63 @@ def register(app, state: AppState) -> None:
         return state.sim_controller._get_or_create_controller(train)
 
     def _train_to_dict(train, network=None):
-        """Convert train to dict with live path data and onboard snapshot.
+        """Convert train to the canonical sibling-payload shape.
 
-        This replaces direct calls to train.to_dict() in API endpoints.
-        It passes live path_tiles and path_index from the PathDispatcher
-        (via TrainController) so the frontend sees accurate, up-to-date
-        path data instead of a stale cache. It also merges the controller
-        snapshot under ``train["onboard"]`` so downstream readers can find
-        controller-derived values (target_speed, speed_limit_reason, state,
-        control_mode, eb_active, ...) on every train-mutating response, not
-        only on the ``/api/network`` payload.
+        Per `design_new.md` "Data Flow To UI", live runtime state belongs to
+        the TrainController and PathDispatcher rather than to Train itself.
+        This helper returns three sibling sub-payloads:
+
+          - ``train``: persistent/configuration state from `Train.to_dict()`
+          - ``controller``: live runtime state from `TrainController.to_dict()`
+            (span, lookahead, mode/handle/eb/ato, current_speed, is_stopped...)
+          - ``dispatcher_progress``: dispatcher-owned path projection from
+            `PathDispatcher.get_active_path_progress(train_id)` (or None
+            when no active path exists)
 
         Args:
             train: Train instance to serialize.
-            network: RailwayNetwork for position conversion. Defaults to None.
+            network: RailwayNetwork (currently unused; reserved).
 
         Returns:
-            Dictionary representation of the train with live path data and
-            onboard snapshot merged in.
+            Sibling-payload dict.
         """
-        controller = None
-        live_path = None
+        controller_dict = None
+        dispatcher_dict = None
+
         if state.sim_controller:
             try:
                 controller = _get_train_controller(train)
-                if controller is not None and train.assigned_path_id:
-                    live_path = controller.get_live_path_data()
+                if controller is not None:
+                    controller_dict = controller.to_dict()
             except Exception as e:
                 import logging
 
                 logging.getLogger(__name__).debug(
-                    "Failed to get live path for train %s: %s", train.train_id, e
+                    "Failed to serialize controller for train %s: %s",
+                    train.train_id,
+                    e,
                 )
 
-        if live_path:
-            train_dict = train.to_dict(
-                network=network,
-                path_tiles=live_path["path_tiles"],
-                path_index=live_path["path_index"],
-            )
-        else:
-            train_dict = train.to_dict(network=network)
+            dispatcher = getattr(state.sim_controller, "path_dispatcher", None)
+            if dispatcher is not None:
+                try:
+                    dispatcher_dict = dispatcher.get_active_path_progress(
+                        train.train_id
+                    )
+                except Exception as e:
+                    import logging
 
-        if controller is not None:
-            try:
-                train_dict["onboard"] = controller.to_dict()
-            except Exception as e:
-                import logging
+                    logging.getLogger(__name__).debug(
+                        "Failed to read dispatcher progress for train %s: %s",
+                        train.train_id,
+                        e,
+                    )
 
-                logging.getLogger(__name__).debug(
-                    "Failed to serialize onboard for train %s: %s", train.train_id, e
-                )
-
-        return train_dict
+        return {
+            "train": train.to_dict(network=network),
+            "controller": controller_dict,
+            "dispatcher_progress": dispatcher_dict,
+        }
 
     def _get_platforms() -> Dict[str, object]:
         """Get physical platforms map."""
@@ -203,7 +207,7 @@ def register(app, state: AppState) -> None:
                 )
             state.network.update_signals_from_blocks()
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
 
         # No-position / editor path: keep direct construction; this mirrors
@@ -223,16 +227,32 @@ def register(app, state: AppState) -> None:
         state.network.add_train(train)
         state.network.update_signals_from_blocks()
         return jsonify(
-            {"status": "success", "train": _train_to_dict(train, state.network)}
+            {"status": "success", **_train_to_dict(train, state.network)}
         )
 
     @app.route("/api/trains", methods=["GET"])
     def list_trains():
-        """List all trains in the network."""
-        trains = []
+        """List all trains in the canonical sibling-payload shape.
+
+        Per design_new.md "Data Flow To UI": expose `trains`,
+        `controllers_by_train_id`, and `dispatcher_progress_by_train_id` as
+        sibling collections.
+        """
+        trains_list = []
+        controllers_by_train_id: Dict[str, object] = {}
+        dispatcher_by_train_id: Dict[str, object] = {}
         for train in state.network.trains.values():
-            trains.append(_train_to_dict(train, state.network))
-        return jsonify({"trains": trains})
+            payload = _train_to_dict(train, state.network)
+            trains_list.append(payload["train"])
+            controllers_by_train_id[train.train_id] = payload["controller"]
+            dispatcher_by_train_id[train.train_id] = payload["dispatcher_progress"]
+        return jsonify(
+            {
+                "trains": trains_list,
+                "controllers_by_train_id": controllers_by_train_id,
+                "dispatcher_progress_by_train_id": dispatcher_by_train_id,
+            }
+        )
 
     @app.route("/api/trains/<train_id>", methods=["GET"])
     def get_train(train_id):
@@ -289,7 +309,7 @@ def register(app, state: AppState) -> None:
             ), 400
 
         return jsonify(
-            {"status": "success", "train": _train_to_dict(train, state.network)}
+            {"status": "success", **_train_to_dict(train, state.network)}
         )
 
     @app.route("/api/trains/<train_id>", methods=["DELETE"])
@@ -315,7 +335,7 @@ def register(app, state: AppState) -> None:
         result = controller.power_on_cmd()
         if result.success:
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
         return jsonify({"error": result.message}), 400
 
@@ -330,7 +350,7 @@ def register(app, state: AppState) -> None:
         result = controller.power_off_cmd()
         if result.success:
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
         return jsonify({"error": result.message}), 400
 
@@ -354,7 +374,7 @@ def register(app, state: AppState) -> None:
         controller = _get_train_controller(train)
         if controller.set_direction_and_standby(direction):
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
         return jsonify({"error": "Cannot set direction (train not in IDLE state)"}), 400
 
@@ -368,7 +388,7 @@ def register(app, state: AppState) -> None:
         controller = _get_train_controller(train)
         if controller.clear_direction():
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
         return jsonify(
             {"error": "Cannot clear direction (train not in STANDBY state)"}
@@ -402,7 +422,7 @@ def register(app, state: AppState) -> None:
         result = controller.set_cab(cab)
         if result.success:
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
         return jsonify({"error": result.message}), 400
 
@@ -416,7 +436,7 @@ def register(app, state: AppState) -> None:
         controller = _get_train_controller(train)
         if controller.arrive_at_station():
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
         return jsonify(
             {"error": "Cannot arrive (train not in RUNNING_MOVING state)"}
@@ -436,15 +456,15 @@ def register(app, state: AppState) -> None:
 
         controller = _get_train_controller(train)
 
-        if train.state == TrainState.RUNNING_AT_STATION:
+        if controller.state == TrainState.RUNNING_AT_STATION:
             if controller.depart_from_station(has_more_waypoints=True):
                 return jsonify(
-                    {"status": "success", "train": _train_to_dict(train, state.network)}
+                    {"status": "success", **_train_to_dict(train, state.network)}
                 )
 
         if controller.depart():
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
         return jsonify({"error": "Cannot depart (train not in STANDBY state)"}), 400
 
@@ -458,7 +478,7 @@ def register(app, state: AppState) -> None:
         controller = _get_train_controller(train)
         if controller.turn_around():
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
         return jsonify(
             {"error": "Cannot turn around (train is moving or no direction set)"}
@@ -478,7 +498,7 @@ def register(app, state: AppState) -> None:
         controller = _get_train_controller(train)
         if controller.enable_manual():
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
         return jsonify(
             {"error": "Cannot enable manual mode (train must be stopped and not OFF)"}
@@ -494,7 +514,7 @@ def register(app, state: AppState) -> None:
         controller = _get_train_controller(train)
         if controller.disable_manual():
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
         return jsonify(
             {
@@ -516,7 +536,7 @@ def register(app, state: AppState) -> None:
 
         if train.set_manual_speed(float(speed)):
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
         return jsonify(
             {"error": "Cannot set manual speed (train not in MANUAL mode)"}
@@ -540,7 +560,7 @@ def register(app, state: AppState) -> None:
 
         if train.set_travel_direction(direction):
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
         return jsonify(
             {"error": "Cannot set travel direction (train not in MANUAL mode)"}
@@ -561,7 +581,7 @@ def register(app, state: AppState) -> None:
         result = controller.emergency_stop_cmd()
         if result.success:
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
         return jsonify({"error": result.message}), 400
 
@@ -576,7 +596,7 @@ def register(app, state: AppState) -> None:
         result = controller.ato_stop()
         if result.success:
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
         return jsonify({"error": result.message}), 400
 
@@ -828,12 +848,11 @@ def register(app, state: AppState) -> None:
 
             # Stop ATO and clear destination when canceling route. The
             # controller's ato_destination_block_id and ato_path_id are
-            # read-only properties derived from received_path_plan, so we
-            # only clear the Train-side mirror here.
+            # read-only properties derived from received_path_plan; the
+            # Train-side mirror is gone.
             controller = _get_train_controller(train)
             if controller.ato_running:
                 controller.ato_stop()
-            train.ato_destination_block_id = None
 
             route_executor = (
                 state.sim_controller.route_executor if state.sim_controller else None
@@ -879,20 +898,20 @@ def register(app, state: AppState) -> None:
                         route_executor.execution_states[train_id] = RouteExecutionState(
                             train_id=train_id,
                             route_id=temp_route_id,
-                            route_start_time=simulation_time,
+                            started_at=simulation_time,
                         )
 
                     return jsonify(
                         {
                             "status": "success",
-                            "train": _train_to_dict(train, state.network),
+                            **_train_to_dict(train, state.network),
                             "temporary_route_id": temp_route_id,
                             "target_platform_id": target_platform_id,
                         }
                     )
 
             return jsonify(
-                {"status": "success", "train": _train_to_dict(train, state.network)}
+                {"status": "success", **_train_to_dict(train, state.network)}
             )
 
         route = state.network.routes.get(route_id)
@@ -928,7 +947,7 @@ def register(app, state: AppState) -> None:
                 exec_state = RouteExecutionState(
                     train_id=train_id,
                     route_id=route_id,
-                    route_start_time=state.sim_controller.simulation_time,
+                    started_at=state.sim_controller.simulation_time,
                 )
                 route_executor.execution_states[train_id] = exec_state
 
@@ -952,7 +971,7 @@ def register(app, state: AppState) -> None:
                 exec_state.resolved_platform_id = None
 
         return jsonify(
-            {"status": "success", "train": _train_to_dict(train, state.network)}
+            {"status": "success", **_train_to_dict(train, state.network)}
         )
 
     @app.route("/api/trains/<train_id>/set-waypoint", methods=["POST"])
@@ -993,7 +1012,7 @@ def register(app, state: AppState) -> None:
         return jsonify(
             {
                 "status": "success",
-                "train": _train_to_dict(train, state.network),
+                **_train_to_dict(train, state.network),
                 "waypoint_index": waypoint_index,
             }
         )

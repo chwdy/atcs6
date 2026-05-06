@@ -5,6 +5,7 @@ Run with: pytest tests/test_interlocking.py -v
 """
 
 import pytest
+from types import SimpleNamespace
 
 from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NE, TRACK_NW
 from network import RailwayNetwork
@@ -19,6 +20,16 @@ from path_utils import (
 )
 
 
+def _stub_controller(network=None):
+    """Minimal SimulationController stub for Switch runtime operations.
+
+    Provides the .block_manager.on_switch_state_changed call site and a
+    .network attribute so Switch.on_train_tail_vacated can walk neighbours.
+    """
+    block_manager = SimpleNamespace(on_switch_state_changed=lambda switch_id: None)
+    return SimpleNamespace(block_manager=block_manager, network=network)
+
+
 @pytest.fixture
 def network():
     return RailwayNetwork()
@@ -31,6 +42,7 @@ class TestSwitchLocking:
         from switch import Switch
 
         switch = Switch(switch_id="SW_1", x=0, y=0)
+        switch.simulation_controller = _stub_controller()
         assert (
             switch.acquire_lock("PATH_1", "primary", "TRAIN_A", 0, source_switch_id=None)
             is True
@@ -48,6 +60,7 @@ class TestSwitchLocking:
         from switch import Switch
 
         switch = Switch(switch_id="SW_1", x=0, y=0)
+        switch.simulation_controller = _stub_controller()
         # Same-state locks may co-exist; different-state locks conflict.
         assert (
             switch.acquire_lock("PATH_1", "primary", "TRAIN_A", 0)
@@ -64,6 +77,7 @@ class TestSwitchLocking:
         network = RailwayNetwork()
         network.add_track(TrackSegment(0, 0, track_bits=TRACK_EW | TRACK_NE))
         switch = Switch(switch_id="SW_1", x=0, y=0)
+        switch.simulation_controller = _stub_controller(network)
         network.add_switch(switch)
         switch.acquire_lock("PATH_1", "primary", "TRAIN_A", 0)
         success, msg = switch.request_state_change(1, network)
@@ -76,6 +90,7 @@ class TestSwitchLocking:
         network = RailwayNetwork()
         network.add_track(TrackSegment(0, 0, track_bits=TRACK_EW | TRACK_NE))
         switch = Switch(switch_id="SW_1", x=0, y=0)
+        switch.simulation_controller = _stub_controller(network)
         network.add_switch(switch)
         success, msg = switch.request_state_change(1, network)
         assert success is True
@@ -86,6 +101,7 @@ class TestSwitchLocking:
         from switch import Switch
 
         switch = Switch(switch_id="SW_1", x=0, y=0)
+        switch.simulation_controller = _stub_controller()
         switch.acquire_lock("PATH_1", "primary", "TRAIN_A", 1)
         data = switch.to_dict()
         # v1: locks is a list of dicts.
@@ -148,20 +164,7 @@ class TestSwitchLockingInRoutes:
         assert switch.get_required_switch_state("W", "S") is None
         assert switch.get_required_switch_state("N", "E") is None
 
-    def test_path_locks_switch_entering_from_non_switch_point(self):
-        pytest.skip(
-            "v1: Path.switch_positions field GONE (replaced by resource_sequence); "
-            "create_path now requires train_id and TrackSegment.is_locked_by_path "
-            "uses legacy single-lock state. Switch lock semantics covered in "
-            "TestSwitchLocking; integration covered by test_dispatcher.py."
-        )
 
-    def test_path_cancellation_unlocks_switch(self):
-        pytest.skip(
-            "v1: cancel_path now returns CancellationResult and create_path "
-            "requires train_id. Switch lock release semantics covered by "
-            "TestSwitchLocking; integration covered by test_dispatcher.py."
-        )
 
 
 class TestPathPrepending:

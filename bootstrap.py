@@ -39,16 +39,22 @@ def create_empty_network() -> RailwayNetwork:
     return RailwayNetwork()
 
 
-def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher) -> None:
+def setup_demo_train(
+    network: RailwayNetwork,
+    path_dispatcher: PathDispatcher,
+    sim_controller: SimulationController,
+) -> None:
     """Set up demo train on the network.
 
-    Args:
-        network: RailwayNetwork to add train to.
-        path_dispatcher: PathDispatcher for path management.
+    Per design_new.md ~line 1292, live operational state lives on
+    `TrainController`; the demo bootstrap therefore needs the
+    `SimulationController` (the controller-registry owner) so it can
+    configure controller state directly rather than mirroring through
+    `Train`.
     """
     import demo_main
 
-    demo_main.setup_demo_train(network, path_dispatcher)
+    demo_main.setup_demo_train(network, path_dispatcher, sim_controller)
 
 
 def bootstrap_runtime(
@@ -71,13 +77,9 @@ def bootstrap_runtime(
 
     path_dispatcher = PathDispatcher(network)
 
-    if demo and setup_train:
-        setup_demo_train(network, path_dispatcher)
-
-    # Construct a single NotificationCenter and hand it to the simulation
-    # controller. SimulationController also creates one by default; passing
-    # an explicit instance here is cheap and lets future bootstrap paths
-    # share the same center across runtime objects if needed.
+    # Construct SimulationController BEFORE the demo train setup so that
+    # demo_main can configure controller state directly via the canonical
+    # controller registry (design_new.md ~line 1292).
     notification_center = NotificationCenter()
     sim_controller = SimulationController(
         network,
@@ -86,6 +88,10 @@ def bootstrap_runtime(
     )
     if sim_controller.power_controller:
         sim_controller.power_controller._sim_controller = sim_controller
+
+    if demo and setup_train:
+        setup_demo_train(network, path_dispatcher, sim_controller)
+
     persistence_manager = PersistenceManager()
 
     return network, path_dispatcher, sim_controller, persistence_manager

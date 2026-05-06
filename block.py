@@ -25,12 +25,61 @@ v1 model:
 """
 
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Dict, Any, Set
+from typing import List, NamedTuple, Tuple, Optional, Dict, Any, Set
 from enums import BlockState
 
 
 # Block-relative directions used in the static block-level travel policy.
 _BLOCK_RELATIVE_DIRECTIONS: Set[str] = {"forward", "reverse"}
+
+
+class BlockTileEntry(NamedTuple):
+    """One tile entry in `Block.ordered_tiles`.
+
+    Per design_new.md "Block model" — each entry carries `(x, y, entry_edge)`,
+    where `entry_edge` is the external edge through which forward traversal
+    enters that tile. `Block.ordered_tiles[0].entry_edge` is the canonical
+    forward-entry anchor for the block.
+
+    Defined as a NamedTuple so existing code that unpacks `(x, y, edge)` keeps
+    working while typed callers can reach `.x`, `.y`, `.entry_edge` by name.
+    """
+
+    x: int
+    y: int
+    entry_edge: str
+
+
+@dataclass
+class BlockReservation:
+    """One active path's dispatcher reservation on a Block.
+
+    Per design_new.md "Block model" — the three fields are always written
+    together by `BlockManager.reserve_blocks_for_path(...)` and cleared
+    together by `Block.release_path_reservation()`, so they live as one
+    Optional record rather than three parallel optional scalars. The
+    convenience reads `reserved_by_path`, `reserved_for_train`, and
+    `reserved_direction` are derived from this record.
+    """
+
+    path_id: str
+    train_id: str
+    exit_edge: str  # "N" | "E" | "S" | "W"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "path_id": self.path_id,
+            "train_id": self.train_id,
+            "exit_edge": self.exit_edge,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "BlockReservation":
+        return cls(
+            path_id=str(data["path_id"]),
+            train_id=str(data["train_id"]),
+            exit_edge=str(data["exit_edge"]),
+        )
 
 
 @dataclass
@@ -56,9 +105,9 @@ class Block:
     occupied_by: Optional[str] = None  # Train ID currently physically present
     _is_caution: bool = False  # Physical safety-margin flag
     caution_direction: Optional[str] = None  # Direction of departing train (N/E/S/W)
-    reserved_by_path: Optional[str] = None  # Path ID that holds the reservation
-    reserved_direction: Optional[str] = None  # Reserved exit edge (N/E/S/W)
-    reserved_for_train: Optional[str] = None  # Train ID the reservation is intended for
+    # Single Optional reservation record. The legacy reserved_by_path,
+    # reserved_for_train, reserved_direction reads are derived properties below.
+    reservation: Optional[BlockReservation] = None
     disabled: bool = False  # Static availability flag
 
     # Voltage control (Phase 2 - DC analog control)
@@ -69,10 +118,29 @@ class Block:
         default_factory=lambda: {"forward", "reverse"}
     )
 
-    # Canonical local traversal order. Each entry is (x, y, entry_edge) where
-    # entry_edge is the external edge through which forward traversal enters
-    # that tile. ordered_tiles[0].entry_edge is the forward-entry anchor.
-    ordered_tiles: List[Tuple[int, int, str]] = field(default_factory=list)
+    # Canonical local traversal order. Each entry is a `BlockTileEntry`
+    # (x, y, entry_edge); `ordered_tiles[0].entry_edge` is the forward-entry
+    # anchor for the block.
+    ordered_tiles: List[BlockTileEntry] = field(default_factory=list)
+
+    # ========================================================================
+    # Derived reservation reads
+    # ========================================================================
+
+    @property
+    def reserved_by_path(self) -> Optional[str]:
+        """Path ID currently reserving this block, or None."""
+        return self.reservation.path_id if self.reservation is not None else None
+
+    @property
+    def reserved_for_train(self) -> Optional[str]:
+        """Train ID this reservation is held for, or None."""
+        return self.reservation.train_id if self.reservation is not None else None
+
+    @property
+    def reserved_direction(self) -> Optional[str]:
+        """Reserved exit edge ('N'|'E'|'S'|'W'), or None."""
+        return self.reservation.exit_edge if self.reservation is not None else None
 
     # ========================================================================
     # Computed state property
@@ -83,17 +151,12 @@ class Block:
         """Compute current block state from underlying primitives.
 
         Priority order (per spec): OCCUPIED > CAUTION > RESERVED > FREE.
-
-        - OCCUPIED: a train is physically present (`occupied_by is not None`)
-        - CAUTION: physically free and `_is_caution` is True
-        - RESERVED: physically free, not in CAUTION, and `reserved_by_path` is set
-        - FREE: otherwise
         """
         if self.occupied_by is not None:
             return BlockState.OCCUPIED
         if self._is_caution:
             return BlockState.CAUTION
-        if self.reserved_by_path is not None:
+        if self.reservation is not None:
             return BlockState.RESERVED
         return BlockState.FREE
 
@@ -118,6 +181,10 @@ class Block:
             "occupied_by": self.occupied_by,
             "_is_caution": self._is_caution,
             "caution_direction": self.caution_direction,
+            "reservation": (
+                self.reservation.to_dict() if self.reservation is not None else None
+            ),
+            # Convenience reads (derived from reservation).
             "reserved_by_path": self.reserved_by_path,
             "reserved_direction": self.reserved_direction,
             "reserved_for_train": self.reserved_for_train,
@@ -143,7 +210,7 @@ class Block:
             allowed = {str(d) for d in atd}
 
         raw_tiles = data.get("ordered_tiles") or []
-        ordered_tiles: List[Tuple[int, int, str]] = []
+        ordered_tiles: List[BlockTileEntry] = []
         for entry in raw_tiles:
             if isinstance(entry, dict):
                 x = int(entry["x"])
@@ -153,7 +220,24 @@ class Block:
                 x = int(entry[0])
                 y = int(entry[1])
                 edge = str(entry[2])
-            ordered_tiles.append((x, y, edge))
+            ordered_tiles.append(BlockTileEntry(x=x, y=y, entry_edge=edge))
+
+        # Reconstruct reservation. Prefer the new "reservation" record; fall
+        # back to the legacy three-field shape so older saved data still loads.
+        reservation: Optional[BlockReservation] = None
+        raw_reservation = data.get("reservation")
+        if raw_reservation:
+            reservation = BlockReservation.from_dict(raw_reservation)
+        else:
+            legacy_path = data.get("reserved_by_path")
+            legacy_train = data.get("reserved_for_train")
+            legacy_dir = data.get("reserved_direction")
+            if legacy_path and legacy_train and legacy_dir:
+                reservation = BlockReservation(
+                    path_id=str(legacy_path),
+                    train_id=str(legacy_train),
+                    exit_edge=str(legacy_dir),
+                )
 
         return cls(
             block_id=data["block_id"],
@@ -164,9 +248,7 @@ class Block:
             occupied_by=data.get("occupied_by"),
             _is_caution=bool(data.get("_is_caution", False)),
             caution_direction=data.get("caution_direction"),
-            reserved_by_path=data.get("reserved_by_path"),
-            reserved_direction=data.get("reserved_direction"),
-            reserved_for_train=data.get("reserved_for_train"),
+            reservation=reservation,
             disabled=bool(data.get("disabled", False)),
             current_voltage=float(data.get("current_voltage", 0.0)),
             allowed_travel_directions=allowed,
@@ -286,42 +368,68 @@ class Block:
     # They never check or mutate physical occupancy / caution fields.
     # ========================================================================
 
-    def _reserve_for_path(
+    def reserve_for_path(
         self,
+        path_id: str,
         train_id: str,
         direction: Optional[str] = None,
     ) -> None:
-        """Internal: write the path-reservation primitives.
+        """Internal: write the path-reservation record atomically.
 
         Called only by `BlockManager.reserve_blocks_for_path(...)`. Stores
-        `train_id` in `reserved_for_train` (NOT in `occupied_by`, which is
+        a single `BlockReservation` (NOT touching `occupied_by`, which is
         physical-only). The `direction` argument may be a compass exit_edge
         ("N"/"E"/"S"/"W") or a block-relative "forward"/"reverse"; we
         normalize block-relative values into the corresponding compass exit
         edge using `ordered_tiles` adjacency.
-
-        `path_id` is recorded separately by `BlockManager` writing
-        `block.reserved_by_path` directly.
         """
-        self.reserved_for_train = train_id
-        self.reserved_direction = self._resolve_reservation_direction(direction)
+        exit_edge = self._resolve_reservation_direction(direction)
+        if exit_edge is None:
+            raise ValueError(
+                f"Block {self.block_id} reservation requires a non-null direction"
+            )
+        self.reservation = BlockReservation(
+            path_id=path_id, train_id=train_id, exit_edge=exit_edge
+        )
 
     def release_path_reservation(self) -> None:
-        """Internal: clear path-reservation primitives.
+        """Internal: clear the path-reservation record.
 
         Called only by `BlockManager.release_path_block_reservations(...)`.
-        Clears `reserved_by_path`, `reserved_direction`, and
-        `reserved_for_train` with no state guard. MUST NOT touch
+        Clears `block.reservation` with no state guard. MUST NOT touch
         `caution_direction` or `_is_caution` (those are physical-lifecycle
         fields owned by `BlockManager`).
         """
-        self.reserved_by_path = None
-        self.reserved_direction = None
-        self.reserved_for_train = None
+        self.reservation = None
 
     # ------------------------------------------------------------------
     # Direction normalization
     # ------------------------------------------------------------------
+
+    def block_direction_for_compass_exit(
+        self, exit_edge: Optional[str]
+    ) -> Optional[str]:
+        """Inverse of `_resolve_reservation_direction`: given a compass exit
+        edge (`"N"/"E"/"S"/"W"`), return this block's relative direction
+        (`"forward"` or `"reverse"`). Returns `None` when the input is
+        missing/unrecognized or the block lacks geometry to disambiguate.
+
+        Used by `PathDispatcher.try_complete_active_path(...)` to verify
+        that the terminal authority traversal direction matches
+        `Path.requested_destination_direction` (block-relative).
+        """
+        if exit_edge is None:
+            return None
+        upper = str(exit_edge).strip().upper()
+        if upper not in ("N", "E", "S", "W"):
+            return None
+        forward_compass = self._resolve_reservation_direction("forward")
+        if forward_compass is not None and upper == forward_compass:
+            return "forward"
+        reverse_compass = self._resolve_reservation_direction("reverse")
+        if reverse_compass is not None and upper == reverse_compass:
+            return "reverse"
+        return None
 
     def _resolve_reservation_direction(
         self, direction: Optional[str]

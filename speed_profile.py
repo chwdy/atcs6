@@ -27,6 +27,8 @@ class SpeedProfile:
         profile_id: Unique identifier for this profile
         name: Display name (e.g., "HO Generic", "N Scale Slow")
         speed_voltage_curve: List of (speed_kmh, voltage) calibration points
+        power_speed_curve: List of (power_percent, speed_kmh) calibration points
+            for manual `power_percent` mode. Default is linear 0-100% -> 0-100 km/h.
         min_start_voltage: Minimum voltage to overcome static friction
         lighting_voltage: Voltage for lights without movement (IDLE/STANDBY states)
         acceleration_rate: Speed increase rate (km/h per second)
@@ -38,6 +40,9 @@ class SpeedProfile:
     profile_id: str
     name: str
     speed_voltage_curve: List[Tuple[float, float]] = field(default_factory=list)
+    power_speed_curve: List[Tuple[float, float]] = field(
+        default_factory=lambda: [(0.0, 0.0), (100.0, 100.0)]
+    )
 
     min_start_voltage: float = 2.0  # Voltage to overcome static friction
     lighting_voltage: float = 2.5  # Voltage for lights without movement
@@ -54,10 +59,14 @@ class SpeedProfile:
     reference_speed_kmh: float = 100.0  # Speed at which drag = drag_coefficient km/h/s
 
     def __post_init__(self) -> None:
-        """Ensure speed_voltage_curve is sorted by speed."""
+        """Ensure both calibration curves are sorted by their independent axis."""
         if self.speed_voltage_curve:
             self.speed_voltage_curve = sorted(
                 self.speed_voltage_curve, key=lambda x: x[0]
+            )
+        if self.power_speed_curve:
+            self.power_speed_curve = sorted(
+                self.power_speed_curve, key=lambda x: x[0]
             )
 
     def disable_air_resistance(self) -> None:
@@ -118,6 +127,34 @@ class SpeedProfile:
 
         return curve[-1][1]
 
+    def power_percent_to_speed(self, percent: float) -> float:
+        """Convert manual power percentage (0-100) to target speed (km/h).
+
+        Used by manual `power_percent` mode. Linear interpolation between
+        calibration points; clamps at curve bounds.
+        """
+        if not self.power_speed_curve:
+            return 0.0
+
+        if percent <= 0:
+            return 0.0
+
+        curve = self.power_speed_curve
+
+        if percent <= curve[0][0]:
+            return curve[0][1]
+
+        if percent >= curve[-1][0]:
+            return curve[-1][1]
+
+        for i in range(len(curve) - 1):
+            p1, s1 = curve[i]
+            p2, s2 = curve[i + 1]
+            if p1 <= percent <= p2:
+                return self._interpolate(p1, s1, p2, s2, percent)
+
+        return curve[-1][1]
+
     def _interpolate(
         self, x1: float, y1: float, x2: float, y2: float, x: float
     ) -> float:
@@ -133,6 +170,7 @@ class SpeedProfile:
             "profile_id": self.profile_id,
             "name": self.name,
             "speed_voltage_curve": [[s, v] for s, v in self.speed_voltage_curve],
+            "power_speed_curve": [[p, s] for p, s in self.power_speed_curve],
             "min_start_voltage": self.min_start_voltage,
             "lighting_voltage": self.lighting_voltage,
             "acceleration_rate": self.acceleration_rate,
@@ -152,10 +190,17 @@ class SpeedProfile:
         # Convert from list of lists to list of tuples
         curve_tuples = [(float(s), float(v)) for s, v in curve]
 
+        power_curve = data.get("power_speed_curve")
+        if power_curve is None:
+            power_tuples = [(0.0, 0.0), (100.0, 100.0)]
+        else:
+            power_tuples = [(float(p), float(s)) for p, s in power_curve]
+
         return cls(
             profile_id=data.get("profile_id", ""),
             name=data.get("name", ""),
             speed_voltage_curve=curve_tuples,
+            power_speed_curve=power_tuples,
             min_start_voltage=float(data.get("min_start_voltage", 2.0)),
             lighting_voltage=float(data.get("lighting_voltage", 2.5)),
             acceleration_rate=float(data.get("acceleration_rate", 10.0)),

@@ -139,8 +139,27 @@ class Switch:
     # ========================================================================
 
     def is_locked(self) -> bool:
-        """Check if switch holds any future-authority lock claim."""
-        return bool(self.locks)
+        """Check if switch holds any future-authority lock claim or train-owned
+        physical protection."""
+        return bool(self.locks) or bool(self.train_protection_claims)
+
+    def can_lock(self, state: int) -> bool:
+        """Read-only predicate: can a future lock be acquired for `state`?
+
+        Returns True iff:
+        - the switch is not disabled,
+        - no existing future lock requires a different state, and
+        - no train-owned protection requires a different state.
+        """
+        if self.disabled:
+            return False
+        for _existing_train_id, existing_state in self.locks.values():
+            if existing_state != state:
+                return False
+        for _claim_train_id, _claim_source_id, claim_state in self.train_protection_claims:
+            if claim_state != state:
+                return False
+        return True
 
     def acquire_lock(
         self,
@@ -153,7 +172,9 @@ class Switch:
         """Acquire a future-authority lock claim on the switch.
 
         Compatible same-state locks may co-exist. The acquisition succeeds when
-        every existing lock has the same `locked_state` as the requested one.
+        every existing lock has the same `locked_state` as the requested one,
+        no train-owned protection requires a different state, and physical
+        occupancy does not block a switch throw.
 
         Args:
             path_id: Path that owns this future claim.
@@ -164,19 +185,46 @@ class Switch:
 
         Returns:
             True if recorded (or already present idempotently); False on conflict.
+
+        Raises:
+            RuntimeError: If `simulation_controller` is not wired.
         """
+        if self.simulation_controller is None:
+            raise RuntimeError(
+                "Switch runtime operations require a SimulationController"
+            )
+
+        # Disabled switches cannot be locked.
+        if self.disabled:
+            return False
+
         key = (path_id, claim_role, source_switch_id)
         # Idempotent re-acquire of the same canonical claim with the same state.
         if key in self.locks:
-            existing_train_id, existing_state = self.locks[key]
+            _existing_train_id, existing_state = self.locks[key]
             if existing_state == locked_state:
                 return True
             return False
 
         # Reject if any existing lock requires a different state.
-        for existing_train_id, existing_state in self.locks.values():
+        for _existing_train_id, existing_state in self.locks.values():
             if existing_state != locked_state:
                 return False
+
+        # Reject if any train-owned protection requires a different state.
+        for _claim_train_id, _claim_source_id, claim_state in self.train_protection_claims:
+            if claim_state != locked_state:
+                return False
+
+        # Physical occupancy by a different train blocks new locks.
+        if self.occupied_by is not None and self.occupied_by != train_id:
+            return False
+
+        # If the requested state differs from the current physical state, a
+        # switch throw is required; that is forbidden while the switch is
+        # physically occupied (even by the same train).
+        if int(self.state) != locked_state and self.occupied_by is not None:
+            return False
 
         self.locks[key] = (train_id, locked_state)
         return True
@@ -213,14 +261,55 @@ class Switch:
             if not (claim[0] == train_id and claim[1] == source_switch_id)
         ]
 
+    def on_train_tail_vacated(self, train_id: str) -> None:
+        """Handle a tail-vacate event for `train_id` on this switch.
+
+        If `self.occupied_by` matches the releasing `train_id`, clear it and
+        walk every neighbour switch that lists this switch as a flank-protection
+        source, releasing the train-owned protection sourced from this switch.
+        If `self.occupied_by` is set to a different train, leave state unchanged
+        and emit a diagnostic.
+        """
+        if self.occupied_by != train_id:
+            other = self.occupied_by
+            print(
+                f"switch {self.switch_id} release for train {train_id} skipped: "
+                f"currently occupied by {other}"
+            )
+            return
+
+        self.occupied_by = None
+
+        # Walk neighbour switches and release train-owned protection sourced
+        # from this switch. Without a wired simulation_controller we cannot
+        # discover neighbours; the dispatcher hook always runs with one.
+        if self.simulation_controller is None:
+            return
+        network = getattr(self.simulation_controller, "network", None)
+        if network is None:
+            return
+        switches = getattr(network, "switches", None)
+        if not switches:
+            return
+        for neighbour in switches.values():
+            if neighbour is self:
+                continue
+            for entry in neighbour.flank_protection:
+                if entry[0] == self.switch_id:
+                    neighbour.release_train_protection_from(
+                        source_switch_id=self.switch_id, train_id=train_id
+                    )
+                    break
+
     def request_state_change(
         self, new_state: int, network: "RailwayNetwork"
     ) -> Tuple[bool, str]:
         """Request to change switch state.
 
-        Fails if any future lock or train-owned protection requires a different
-        state. On success, mutates `self.state` and notifies `BlockManager` via
-        the wired `simulation_controller` (if any).
+        Fails if the switch is disabled, physically occupied, or if any future
+        lock or train-owned protection requires a different state. On success,
+        mutates `self.state` and notifies `BlockManager` via the wired
+        `simulation_controller`.
 
         Args:
             new_state: Desired switch state (0=MAIN, 1=DIVERGE).
@@ -228,9 +317,28 @@ class Switch:
 
         Returns:
             (success, message) tuple.
+
+        Raises:
+            RuntimeError: If `simulation_controller` is not wired.
         """
+        if self.simulation_controller is None:
+            raise RuntimeError(
+                "Switch runtime operations require a SimulationController"
+            )
+
+        # Disabled switches cannot be targeted by manual/API state-change commands.
+        if self.disabled:
+            return (False, f"Switch {self.switch_id} is disabled")
+
+        # Physical occupancy blocks any state mutation.
+        if self.occupied_by is not None:
+            return (
+                False,
+                f"Switch occupied by train {self.occupied_by}",
+            )
+
         # Block any future lock that requires a different state.
-        for key, (train_id, locked_state) in self.locks.items():
+        for key, (_train_id, locked_state) in self.locks.items():
             if locked_state != new_state:
                 path_id = key[0]
                 return (False, f"Switch locked by path {path_id}")
@@ -245,10 +353,9 @@ class Switch:
 
         # Mutate authoritative state and notify BlockManager.
         self.state = SwitchState(new_state)
-        if self.simulation_controller is not None:
-            self.simulation_controller.block_manager.on_switch_state_changed(
-                self.switch_id
-            )
+        self.simulation_controller.block_manager.on_switch_state_changed(
+            self.switch_id
+        )
 
         state_name = "MAIN" if new_state == 0 else "DIVERGE"
         return (True, f"Switch state changed to {state_name}")

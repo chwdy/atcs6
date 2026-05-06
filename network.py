@@ -61,14 +61,90 @@ class RailwayNetwork:
         self.block_manager: Optional[BlockManager] = None
         self.power_controller: Optional["BlockPowerController"] = None
 
+        # Reverse indices from tile -> owning block / platform.
+        # Maintained in sync by network mutators (block creation, deletion,
+        # platform creation, platform deletion, etc.). Readers should call
+        # tile_to_block_id / tile_to_platform_id / tile_to_station_id below.
+        self._tile_to_block: Dict[Tuple[int, int], str] = {}
+        self._tile_to_platform: Dict[Tuple[int, int], str] = {}
+
     def _ensure_block_manager(self):
         if self.block_manager is None:
-            self.block_manager = BlockManager(self.blocks)
+            self.block_manager = BlockManager(self.blocks, network=self)
+
+    # === Tile -> owning entity reverse indices (v1) ===
+
+    def tile_to_block_id(self, x: int, y: int) -> Optional[str]:
+        """Reverse index from tile coordinate to owning Block id, or None.
+
+        Per design_new.md: TrackSegment does not store block membership.
+        All "which block owns this tile?" lookups go through this method.
+        """
+        return self._tile_to_block.get((x, y))
+
+    def tile_to_platform_id(self, x: int, y: int) -> Optional[str]:
+        """Reverse index from tile coordinate to owning Platform id, or None.
+
+        Per design_new.md: TrackSegment does not store platform membership.
+        Returns the concrete physical Platform that owns this tile.
+        """
+        return self._tile_to_platform.get((x, y))
+
+    def tile_to_station_id(self, x: int, y: int) -> Optional[str]:
+        """Reverse index from tile coordinate to owning logical Station id.
+
+        v1: a Station is a logical group of platforms. This resolves the
+        platform first, then walks Station.platform_ids to find the group.
+        Returns None if the tile has no platform or the platform is not in
+        any station group.
+        """
+        platform_id = self._tile_to_platform.get((x, y))
+        if platform_id is None:
+            return None
+        for station_id, station in self.station_groups.items():
+            if platform_id in station.platform_ids:
+                return station_id
+        return None
+
+    def _set_tile_block(self, x: int, y: int, block_id: Optional[str]) -> None:
+        """Update the tile -> block reverse index.
+
+        Network-internal helper. Use this whenever a tile's block membership
+        changes (block creation, extension, deletion, station split, etc.).
+        """
+        key = (x, y)
+        if block_id is None:
+            self._tile_to_block.pop(key, None)
+        else:
+            self._tile_to_block[key] = block_id
+
+    def _set_tile_platform(self, x: int, y: int, platform_id: Optional[str]) -> None:
+        """Update the tile -> platform reverse index.
+
+        Network-internal helper. Use this whenever a tile's platform
+        membership changes (platform creation, extension, deletion).
+        """
+        key = (x, y)
+        if platform_id is None:
+            self._tile_to_platform.pop(key, None)
+        else:
+            self._tile_to_platform[key] = platform_id
 
     def add_track(self, track: TrackSegment):
         """Add a track segment to the network and propagate updates"""
         key = (track.x, track.y)
         self.tracks[key] = track
+
+        # Move any pre-attachment local-fallback values for station_id /
+        # block_section_id into the network reverse indices so that reads
+        # via the property continue to see the same value after attach.
+        local_block = track._block_section_id_local
+        local_station = track._station_id_local
+        track.network = self
+        if local_block is not None:
+            track.block_section_id = local_block
+        if local_station is not None:
+            track.station_id = local_station
 
         # Propagate to this tile and neighbors
         self.propagate_from_tile(track.x, track.y)

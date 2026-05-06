@@ -62,6 +62,34 @@ class PathCancellationKind(Enum):
 
 
 # =============================================================================
+# Per-run / per-task error record
+# =============================================================================
+
+
+@dataclass
+class ErrorRecord:
+    """Paired error message + timestamp.
+
+    The canonical shape used by `RouteRun.last_error` and
+    `RouteTaskRun.last_error` per design_new.md so the message and its
+    timestamp are always either both present or both absent. Replaces the
+    legacy two-field `last_error: Optional[str]` + `error_time: Optional[float]`
+    pair so callers cannot ever observe a mismatched state where one is set
+    and the other is not.
+    """
+
+    text: str
+    time: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"text": self.text, "time": self.time}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ErrorRecord":
+        return cls(text=str(data["text"]), time=float(data["time"]))
+
+
+# =============================================================================
 # Physics → Controller payload
 # =============================================================================
 
@@ -238,28 +266,38 @@ class PathAcquisitionResultKind(Enum):
 
 
 class PathAcquisitionFailureKind(Enum):
-    """Failure kinds returned by create_path / extend_path."""
+    """Failure kinds returned by create_path / extend_path.
 
-    NO_PATH_GEOMETRY = "no_path_geometry"
-    RESOURCE_HELD = "resource_held"
-    INVALID_DESTINATION = "invalid_destination"
-    INVALID_DIRECTION = "invalid_direction"
-    NO_TRAIN = "no_train"
-    ALREADY_HAS_PATH = "already_has_path"
+    Canonical v1 values per design_new.md "create_path() / extend_path()
+    return contract".
+    """
+
+    NO_VIABLE_PATH = "no_viable_path"
+    BLOCKED_BEFORE_TARGET = "blocked_before_target"
+    INVALID_REVERSE = "invalid_reverse"
+    INVALID_REQUEST = "invalid_request"
+    HEAD_ON_SWITCH_NO_BLOCK_AUTHORITY = "head_on_switch_no_block_authority"
+    MISSING_OR_INACTIVE_PATH = "missing_or_inactive_path"
 
 
 @dataclass
 class PathAcquisitionResult:
-    """8-field structured result for create_path / extend_path.
+    """Structured result for create_path / extend_path.
 
     `granted_resource_sequence` carries `ResourceSequenceEntry` objects (typed
-    as `Any` here to avoid the path.py forward import).
+    as `Any` here to avoid the path.py forward import). Per design_new.md
+    "create_path() / extend_path() return contract", successful returns echo
+    `requested_destination_block_id` / `requested_destination_direction` (the
+    caller-supplied target contract for that attempt) alongside the live
+    `authority_end_block_id`.
     """
 
     success: bool
     result_kind: Optional[PathAcquisitionResultKind] = None
     failure_kind: Optional[PathAcquisitionFailureKind] = None
     path_id: Optional[str] = None
+    requested_destination_block_id: Optional[str] = None
+    requested_destination_direction: Optional[str] = None
     authority_end_block_id: Optional[str] = None
     granted_resource_sequence: List[Any] = field(default_factory=list)
     reason: str = ""
@@ -271,6 +309,8 @@ class PathAcquisitionResult:
             "result_kind": self.result_kind.value if self.result_kind else None,
             "failure_kind": self.failure_kind.value if self.failure_kind else None,
             "path_id": self.path_id,
+            "requested_destination_block_id": self.requested_destination_block_id,
+            "requested_destination_direction": self.requested_destination_direction,
             "authority_end_block_id": self.authority_end_block_id,
             "granted_resource_sequence": [
                 e.to_dict() if hasattr(e, "to_dict") else e
@@ -317,8 +357,8 @@ class Command:
 
     `kind` is one of the canonical command kind strings (power_on, set_cab,
     set_mode, set_manual_mode_type, set_handle, set_manual_power_percent,
-    activate_eb, release_eb, power_off, ato_go, ato_stop). `payload` carries
-    kind-specific args.
+    activate_emergency_cmd, release_emergency_cmd, power_off, ato_go,
+    ato_stop). `payload` carries kind-specific args.
     """
 
     kind: str
@@ -333,21 +373,45 @@ class Command:
 
 
 class FatalConflictKind(Enum):
-    """Diagnostic categories for fatal conflicts surfaced by the runtime."""
+    """Diagnostic categories for fatal physical-entry conflicts surfaced by
+    the runtime.
 
-    PHYSICAL_ENTRY = "physical_entry"
-    DEADLOCK = "deadlock"
-    OVERSHOOT = "overshoot"
+    Per design_new.md "Fatal physical-entry conflict procedure" v1 values:
+    a train tried to enter a block already held by another train, a block
+    reserved for another train, a switch already occupied by another train,
+    or a resource (block/switch) flagged disabled.
+    """
+
+    OCCUPIED_BY_OTHER_TRAIN = "occupied_by_other_train"
+    RESERVED_FOR_OTHER_TRAIN = "reserved_for_other_train"
+    SWITCH_OCCUPIED_BY_OTHER_TRAIN = "switch_occupied_by_other_train"
+    DISABLED_RESOURCE_ENTRY = "disabled_resource_entry"
 
 
 @dataclass
 class FatalPhysicalEntryConflict:
-    """Fatal conflict report when a train enters a block held against it."""
+    """Fatal conflict report when a train would enter a resource held against
+    it, or enters a disabled resource.
 
-    train_id: str
-    block_id: str
-    conflicting_train_id: Optional[str]
-    reason: str
+    Per design_new.md "Fatal physical-entry conflict procedure":
+    - ``resource_type``: ``"block"`` or ``"switch"``.
+    - ``resource_id``: the conflicting block or switch ID.
+    - ``incoming_train_id``: the train attempting the entry.
+    - ``prior_owner_train_id``: the previously recorded owner (or reservation
+      holder) for conflicting train ownership; ``None`` when
+      ``conflict_kind == FatalConflictKind.DISABLED_RESOURCE_ENTRY``.
+    - ``conflict_kind``: the ``FatalConflictKind`` diagnostic category.
+    - ``incoming_path_id`` / ``prior_owner_path_id``: active path IDs at the
+      point of detection, when known.
+    """
+
+    resource_type: str  # "block" | "switch"
+    resource_id: str
+    incoming_train_id: str
+    prior_owner_train_id: Optional[str]
+    conflict_kind: FatalConflictKind
+    incoming_path_id: Optional[str] = None
+    prior_owner_path_id: Optional[str] = None
 
 
 # =============================================================================

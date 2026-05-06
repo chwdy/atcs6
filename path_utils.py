@@ -15,10 +15,78 @@ Key Concepts:
 - Path should extend through all tiles of destination block to the far edge
 """
 
-from typing import List, Optional, Tuple, Dict, Any, Union
-from dataclasses import dataclass
+from typing import List, Literal, Optional, Tuple, Dict, Any, Union
+from dataclasses import dataclass, field
 
 from enums import Direction
+
+
+@dataclass(order=False)
+class GraphWalkCandidate:
+    """Canonical candidate-comparison payload per design_new.md.
+
+    Returned by the shared `RailwayPathfinder.find_ordered_walk(...)`
+    helper. Every site that compares candidate paths — `RouteExecutor`
+    platform-end resolution, `PathDispatcher.create_path` start-side
+    selection, station-target candidate enumeration — uses this exact
+    shape and the canonical comparison ordering defined here so the two
+    layers cannot drift on tie-break rules.
+
+    Comparison order (lowest wins):
+      1. `tile_count` — fewer tiles is better
+      2. `walk_length_cm` — shorter physical distance is better
+      3. `candidate_rank` — caller-provided secondary rank (lower is
+         better); used by route logic to honour explicit candidate
+         ordering such as "earlier in `Station.platform_ids`"
+      4. `end_a` dead-heat — when every prior key is exactly equal,
+         prefer the candidate whose start side is `end_a`. This is the
+         final deterministic tie-break.
+
+    Use `comparison_key()` to obtain a sortable tuple matching this
+    order.
+    """
+
+    tile_count: int
+    walk_length_cm: float
+    candidate_rank: int = 0
+    # Which physical end of the train this candidate started from.
+    # `"end_a"` or `"end_b"`; the former wins all dead-heats per the
+    # canonical tie-break rule.
+    end_a: Literal["end_a", "end_b"] = "end_a"
+    # Optional payload carried alongside the comparison metrics. The
+    # walk ordering helper consumes only the metric fields; downstream
+    # callers (e.g. PathDispatcher) read `walk` to build
+    # `Path.resource_sequence` and `metadata` for diagnostics.
+    walk: Optional[Any] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def comparison_key(self) -> Tuple[int, float, int, int]:
+        """Return the sortable tuple for canonical candidate comparison.
+
+        `end_a` is encoded as `0` for end_a and `1` for end_b so end_a
+        wins all dead-heats per the design's tie-break rule.
+        """
+        return (
+            self.tile_count,
+            self.walk_length_cm,
+            self.candidate_rank,
+            0 if self.end_a == "end_a" else 1,
+        )
+
+
+def select_best_candidate(
+    candidates: List[GraphWalkCandidate],
+) -> Optional[GraphWalkCandidate]:
+    """Pick the canonical winner from a candidate list.
+
+    Returns the candidate with the lowest `comparison_key()` per the
+    design's tile_count -> walk_length_cm -> candidate_rank -> end_a
+    dead-heat order. `None` when the list is empty.
+    """
+
+    if not candidates:
+        return None
+    return min(candidates, key=lambda c: c.comparison_key())
 
 
 @dataclass
@@ -322,39 +390,25 @@ def assign_path_to_train_with_prepend(
     path_tiles: List[Tuple[int, int, Direction]],
 ) -> Tuple[bool, Optional[str]]:
     """
-    Assign a path to a train, prepending tiles if necessary.
+    Validate and prepare a path for a train.
 
-    This is the main entry point for path assignment. It:
-    1. Validates and prepares the path using prepare_path_for_train()
-    2. Prepends tiles if needed
-    3. Sets train.current_path and train.path_index
+    Per design_new.md ~line 1292, `Train.current_path` and `Train.path_index`
+    are forbidden — the dispatcher's `Path` is the source of truth for path
+    geometry. This helper now only runs the validation logic and returns
+    its outcome; UI consumers read the live path tiles from
+    `PathDispatcher.get_active_path_progress(train_id)`.
 
     Args:
         network: RailwayNetwork instance
-        train: Train to assign path to
+        train: Train to validate against
         path_tiles: Original path as List[(x, y, Direction)]
 
     Returns:
         (success, error_message)
-        - success: True if path was assigned
-        - error_message: Error description if failed, None if success
     """
     result = prepare_path_for_train(network, train, path_tiles)
-
     if not result.success:
         return False, result.error
-
-    # Build final path
-    if result.prepend_tiles:
-        # Prepend tiles to path
-        final_path = result.prepend_tiles + list(path_tiles)
-    else:
-        final_path = list(path_tiles)
-
-    # Assign to train
-    train.current_path = final_path
-    train.path_index = result.path_index
-
     return True, None
 
 
@@ -512,41 +566,23 @@ def assign_complete_path_to_train(
     path_tiles: List[Tuple[int, int, Direction]],
 ) -> Tuple[bool, Optional[str]]:
     """
-    Assign a complete path to a train, with both prepending and appending.
+    Validate and prepare a complete path (prepend + append) for a train.
 
-    This is the recommended entry point for path assignment. It:
-    1. Prepends tiles from train position to path start
-    2. Appends tiles to complete the destination block
-    3. Sets train.current_path and train.path_index
+    Per design_new.md ~line 1292, `Train.current_path` and `Train.path_index`
+    are forbidden — the dispatcher's `Path` is the source of truth. This
+    helper now only validates the path and returns its outcome.
 
     Args:
         network: RailwayNetwork instance
-        train: Train to assign path to
+        train: Train to validate against
         path_tiles: Original path as List[(x, y, Direction)]
 
     Returns:
         (success, error_message)
-        - success: True if path was assigned
-        - error_message: Error description if failed, None if success
     """
     result = prepare_complete_path(network, train, path_tiles)
-
     if not result.success:
         return False, result.error
-
-    # Build final path
-    final_path = list(path_tiles)
-
-    if result.prepend_tiles:
-        final_path = result.prepend_tiles + final_path
-
-    if result.append_tiles:
-        final_path = final_path + result.append_tiles
-
-    # Assign to train
-    train.current_path = final_path
-    train.path_index = result.path_index
-
     return True, None
 
 

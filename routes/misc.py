@@ -465,7 +465,7 @@ def register(app, state: AppState) -> None:
         if not route:
             return jsonify({"error": "Route not found"}), 404
 
-        route.deactivate()
+        route.deactivate(state.sim_controller)
         return jsonify({"status": "success", "route": route.to_dict()})
 
     @app.route("/api/train-routes/<route_id>/status", methods=["GET"])

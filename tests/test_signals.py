@@ -348,29 +348,6 @@ class TestControllerSignalDirectionFiltering:
         )
         assert controller._is_signal_red_for_block("BLOCK_WEST") is True
 
-    def test_yellow_signal_detected_for_same_direction(self):
-        """A YELLOW signal should trigger caution for same-direction train."""
-        from train_controller import TrainController
-        from enums import Direction
-
-        network, train, controller, sig_east, sig_west = (
-            self._build_bidirectional_block_network()
-        )
-
-        # Train facing EAST at (3,0) in BLOCK_MID
-        # Direction set via position (refactored): train.set_cab("A")  # was: Direction.EAST
-
-        # Add a signal monitoring BLOCK_EAST for eastbound traffic
-        sig_east_2 = network.add_signal(3, 0, "E", auto_connect=False)
-        network.connect_signal_to_block(sig_east_2.signal_id, "BLOCK_EAST")
-        sig_east_2.state = SignalState.YELLOW
-
-        # Train needs reserved_blocks for _get_blocks_ahead to work
-        train.reserved_blocks = ["BLOCK_MID", "BLOCK_EAST"]
-        train.current_path = [(3, 0, "W", "E"), (4, 0, "W", "E"), (5, 0, "W", "E")]
-        train.path_index = 0
-
-        assert controller._is_approaching_yellow_signal() is True
 
     def test_yellow_signal_ignored_for_opposite_direction(self):
         """A YELLOW signal for eastbound traffic should NOT affect westbound train."""

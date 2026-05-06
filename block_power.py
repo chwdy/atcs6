@@ -134,7 +134,7 @@ class BlockPowerController:
 
     # SimulationController back-reference, set by bootstrap so this controller
     # can fetch the live TrainController for a train and read controller-owned
-    # state (control_mode, target_speed, manual_target_speed).
+    # state (control_mode, target_speed, manual_power_percent, current_speed_kmh).
     _sim_controller: Optional[Any] = None
 
     def set_network(self, network: "RailwayNetwork") -> None:
@@ -163,9 +163,16 @@ class BlockPowerController:
         if not occupied_blocks:
             return
 
+        # Per design_new.md ~line 1292, operational state lives on the
+        # controller; resolve it through the wired SimulationController.
+        controller_state = None
+        if self._sim_controller is not None:
+            ctrl = self._sim_controller.get_or_create_controller(train.train_id)
+            controller_state = getattr(ctrl, "state", None) if ctrl else None
+
         # Check if we should use opposite polarity for IDLE state
         if (
-            train.state == TrainState.IDLE
+            controller_state == TrainState.IDLE
             and len(occupied_blocks) >= 2
             and train.is_opposite_polarity_safe(self.network)
         ):
@@ -204,8 +211,23 @@ class BlockPowerController:
         Returns:
             Voltage to output to train's blocks
         """
+        # Fetch the live controller so we read controller-owned state per
+        # design_new.md (state, control_mode, manual_mode_type,
+        # manual_power_percent, current_speed_kmh, target_speed via lookahead).
+        controller = None
+        if self._sim_controller is not None:
+            controller = self._sim_controller.get_or_create_controller(train.train_id)
+
+        # Resolve operational state from the controller (canonical home).
+        # Fall back to any state on Train only when no controller exists yet.
+        operational_state = (
+            getattr(controller, "state", None) if controller is not None else None
+        )
+        if operational_state is None:
+            operational_state = getattr(train, "state", TrainState.OFF)
+
         # OFF state = 0V
-        if train.state == TrainState.OFF:
+        if operational_state == TrainState.OFF:
             return 0.0
 
         # Get lighting voltage from profile or use default
@@ -214,29 +236,34 @@ class BlockPowerController:
             lighting_voltage = speed_profile.lighting_voltage
 
         # States that use lighting voltage
-        if train.state in (
+        if operational_state in (
             TrainState.IDLE,
             TrainState.STANDBY,
             TrainState.RUNNING_AT_STATION,
         ):
             return lighting_voltage
 
-        # Fetch the live controller so we read controller-owned state
-        # (control_mode, target_speed, manual_target_speed) per design_new.md.
-        controller = None
-        if self._sim_controller is not None:
-            controller = self._sim_controller.get_or_create_controller(train.train_id)
-
-        # Manual mode: use manual target speed (controller-owned)
+        # Manual mode: voltage source depends on the manual submode.
         if controller is not None and controller.control_mode == "manual":
-            manual_speed = controller.manual_target_speed
+            if controller.manual_mode_type == "power_percent":
+                # Map percentage -> speed via SpeedProfile.power_speed_curve,
+                # then speed -> voltage. Fall back to a linear voltage on the
+                # raw percentage when no profile is supplied.
+                if speed_profile:
+                    speed = speed_profile.power_percent_to_speed(
+                        controller.manual_power_percent
+                    )
+                    return speed_profile.speed_to_voltage(speed)
+                return self._linear_speed_to_voltage(controller.manual_power_percent)
+            # `simulation` submode: voltage tracks the controller's integrated
+            # current speed (handle drives the speed change rate).
+            current_speed = float(getattr(controller, "current_speed_kmh", 0.0) or 0.0)
             if speed_profile:
-                return speed_profile.speed_to_voltage(manual_speed)
-            else:
-                return self._linear_speed_to_voltage(manual_speed)
+                return speed_profile.speed_to_voltage(current_speed)
+            return self._linear_speed_to_voltage(current_speed)
 
         # RUNNING_MOVING: use target speed (live read from controller lookahead)
-        if train.state == TrainState.RUNNING_MOVING:
+        if operational_state == TrainState.RUNNING_MOVING:
             target_speed = controller.target_speed if controller is not None else 0.0
             if speed_profile:
                 return speed_profile.speed_to_voltage(target_speed)
@@ -252,21 +279,19 @@ class BlockPowerController:
         return min(self.max_voltage, max(0.0, speed_kmh / 10.0))
 
     def _get_train_occupied_blocks(self, train: "Train") -> list:
-        """Get list of block IDs occupied by train."""
-        # Use train's new get_occupied_blocks method (Phase 6)
+        """Get list of block IDs occupied by train.
+
+        Per design_new.md ~line 1292, `Train.reserved_blocks` is forbidden;
+        physical occupancy is read from `train.position.occupied_blocks`
+        (the canonical span projection) and authority-future blocks live on
+        the dispatcher's active path.
+        """
         if hasattr(train, "get_occupied_blocks"):
             return train.get_occupied_blocks(self.network)
-
-        # Fallback for old code: use reserved_blocks
-        if hasattr(train, "reserved_blocks") and train.reserved_blocks:
-            return train.reserved_blocks
-
-        # Last fallback: get block from head position
         if self.network and train.position:
             track = self.network.tracks.get(train.position.head_tile)
             if track and track.block_section_id:
                 return [track.block_section_id]
-
         return []
 
     def set_block_voltage(self, block_id: str, voltage: float) -> bool:

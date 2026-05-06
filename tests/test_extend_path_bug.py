@@ -248,7 +248,7 @@ class TestExtendPathBug:
         demo_train.ato_running = controller.ato_running
 
         # Get initial lookahead
-        initial_lookahead = controller.get_monitor_lookahead()
+        initial_lookahead = controller.get_lookahead()
         initial_blocks = initial_lookahead.get("lookahead", {}).get("blocks", [])
         initial_block_ids = [b["id"] for b in initial_blocks]
 
@@ -270,7 +270,7 @@ class TestExtendPathBug:
         # automatically. No explicit cache to set.
 
         # Get updated lookahead
-        updated_lookahead = controller.get_monitor_lookahead()
+        updated_lookahead = controller.get_lookahead()
         updated_blocks = updated_lookahead.get("lookahead", {}).get("blocks", [])
         updated_block_ids = [b["id"] for b in updated_blocks]
 
@@ -842,26 +842,22 @@ class TestGetPathTiles:
             "get_path_tiles should reflect extension immediately"
         )
 
-    def test_get_path_tiles_fallback_without_dispatcher(self, simple_network):
-        """Without a dispatcher, get_path_tiles falls back to train.current_path."""
+    def test_get_path_tiles_returns_none_without_dispatcher(self, simple_network):
+        """Per design_new.md ~line 1292, the dispatcher's `Path` is the
+        single source of truth for path tiles. With no dispatcher wired
+        and no active path, `get_path_tiles()` returns `None` (the legacy
+        train-side `current_path` mirror is gone)."""
         network = simple_network
         train = Train(train_id="TEST", consist=[TrainCar("C1", "LOCOMOTIVE", 40.0)])
         network.add_train(train)
 
-        # Create controller WITHOUT dispatcher
         controller = create_controller_for_train(
             train_id=train.train_id,
             network=network,
         )
 
-        # Set a fake current_path and assigned_path_id on the train
-        fake_path = [(0, 0, Direction.EAST), (1, 0, Direction.EAST)]
-        train.current_path = fake_path
-        train.assigned_path_id = "FAKE_PATH"
-
-        # Should fall back to train.current_path
         result = controller.get_path_tiles()
-        assert result == fake_path
+        assert result is None
 
 
 class TestAtoDestinationCleanup:
@@ -897,10 +893,4 @@ class TestAtoDestinationCleanup:
 
         return network
 
-    def test_destination_cleared_on_complete_path(self, simple_network):
-        """v1: dispatcher.complete_path was replaced by try_complete_active_path."""
-        pytest.skip("v1: complete_path replaced by try_complete_active_path; integration-tested elsewhere")
 
-    def test_destination_cleared_on_internal_completion(self, simple_network):
-        """v1: _complete_path_on_head_arrival was removed."""
-        pytest.skip("v1: _complete_path_on_head_arrival removed; replaced by try_complete_active_path")

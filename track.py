@@ -25,7 +25,7 @@ Curve Detection (connection-based):
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 import warnings
 
 from enums import TrackType, Direction, SwitchPosition
@@ -180,9 +180,19 @@ class TrackSegment:
     signal_ids: List[str] = field(
         default_factory=list
     )  # Max 2 signals per tile (one per direction)
-    station_id: Optional[str] = None  # Reference to Station.station_id
-    block_section_id: Optional[str] = None
+    # station_id / block_section_id are exposed as @property below; the
+    # _-prefixed fields are local fallbacks used only when the track is not
+    # attached to a RailwayNetwork (e.g. unit tests that construct a bare
+    # TrackSegment). When the track is attached, the network's reverse
+    # indices (tile_to_platform_id / tile_to_block_id) are the source of
+    # truth and these locals stay None.
+    _station_id_local: Optional[str] = None
+    _block_section_id_local: Optional[str] = None
     switch_id: Optional[str] = None  # Reference to Switch.switch_id (if is_switch)
+    # Back-reference to the owning RailwayNetwork. Set by
+    # RailwayNetwork.add_track. Used by the station_id / block_section_id
+    # properties to resolve membership through the network reverse indices.
+    network: Optional[Any] = None
 
     # === OTHER PROPERTIES ===
     length: float = 1.0
@@ -208,6 +218,55 @@ class TrackSegment:
         }
         # Ensure switch state is valid (0 or 1)
         self._switch_state = 0 if self._switch_state == 0 else 1
+
+    # ========== Station / block membership (network-derived) ==========
+    # Per design_new.md: TrackSegment does not store station, platform, or
+    # block membership. The owning RailwayNetwork holds the canonical
+    # tile -> platform_id and tile -> block_id reverse indices. These
+    # property shims keep the existing readers/writers working: when the
+    # track is attached to a network, reads/writes go through the network;
+    # when not attached (bare construction in tests), reads/writes fall
+    # back to a local field stored on the dataclass.
+
+    @property
+    def station_id(self) -> Optional[str]:
+        if self.network is not None:
+            try:
+                return self.network.tile_to_platform_id(self.x, self.y)
+            except AttributeError:
+                pass
+        return self._station_id_local
+
+    @station_id.setter
+    def station_id(self, value: Optional[str]) -> None:
+        if self.network is not None:
+            try:
+                self.network._set_tile_platform(self.x, self.y, value)
+                self._station_id_local = None
+                return
+            except AttributeError:
+                pass
+        self._station_id_local = value
+
+    @property
+    def block_section_id(self) -> Optional[str]:
+        if self.network is not None:
+            try:
+                return self.network.tile_to_block_id(self.x, self.y)
+            except AttributeError:
+                pass
+        return self._block_section_id_local
+
+    @block_section_id.setter
+    def block_section_id(self, value: Optional[str]) -> None:
+        if self.network is not None:
+            try:
+                self.network._set_tile_block(self.x, self.y, value)
+                self._block_section_id_local = None
+                return
+            except AttributeError:
+                pass
+        self._block_section_id_local = value
 
     # ========== Computed properties ==========
     @property

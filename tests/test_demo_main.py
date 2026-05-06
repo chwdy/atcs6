@@ -72,7 +72,7 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
                     "tick": tick,
                     "head_tile": head_tile,
                     "block_id": block_id,
-                    "speed": train.current_speed,
+                    "speed": controller.current_speed_kmh,
                     "atc_limit": controller.atc_speed_limit,
                     "reason": controller.speed_limit_reason,
                     "handle_reason": controller.handle_reason,
@@ -81,13 +81,13 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
 
         if block_id in terminal_blocks:
             reached_terminal = True
-            max_terminal_speed = max(max_terminal_speed, train.current_speed)
-            if train.current_speed > terminal_limit + 0.5:
+            max_terminal_speed = max(max_terminal_speed, controller.current_speed_kmh)
+            if controller.current_speed_kmh > terminal_limit + 0.5:
                 terminal_overspeed_events.append(
                     {
                         "tick": tick,
                         "head_tile": head_tile,
-                        "speed": train.current_speed,
+                        "speed": controller.current_speed_kmh,
                         "limit": terminal_limit,
                         "atc_limit": controller.atc_speed_limit,
                         "handle": controller.handle_position.value,
@@ -95,14 +95,15 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
                     }
                 )
 
+        # Per design_new.md ~line 1292, operational state lives on the
+        # controller; check the controller's state machine directly.
         if (
             tick > 30
-            and train.current_speed <= 0.5
-            and train.state
+            and controller.current_speed_kmh <= 0.5
+            and controller.state
             in (
                 TrainState.STANDBY,
                 TrainState.RUNNING_AT_STATION,
-                TrainState.RUNNING_WAITING,
             )
         ):
             break
@@ -113,7 +114,7 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
 
     assert reached_terminal, (
         f"Demo train should reach East Terminal; final block={final_block_id}, "
-        f"head={final_head_tile}, speed={train.current_speed:.2f}"
+        f"head={final_head_tile}, speed={controller.current_speed_kmh:.2f}"
     )
     assert final_block_id in terminal_blocks, (
         f"Demo train should stop in East Terminal; final block={final_block_id}, "

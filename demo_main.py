@@ -541,12 +541,23 @@ def create_comprehensive_demo():
     return network
 
 
-def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
-    """Set up the demo train with a path. Called after global path_dispatcher is created."""
+def setup_demo_train(
+    network: RailwayNetwork,
+    path_dispatcher: PathDispatcher,
+    sim_controller=None,
+):
+    """Set up the demo train with a path.
+
+    Per design_new.md ~line 1292, live operational state lives on the
+    `TrainController`. The demo bootstrap therefore configures power-on /
+    cab / depart through `sim_controller.get_or_create_controller(...)`
+    when a `SimulationController` is provided; the older
+    `create_controller_for_train` path is only used as a last-resort
+    fallback for callers that have not yet wired the simulation controller.
+    """
     from route_executor import RouteExecutor
     from train import TrainCar, Train
     from enums import Direction
-    from train_controller import create_controller_for_train
     from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
 
     executor = RouteExecutor(network, path_dispatcher)
@@ -603,37 +614,31 @@ def setup_demo_train(network: RailwayNetwork, path_dispatcher: PathDispatcher):
         if path_result.success and path_result.path_id:
             new_path = path_dispatcher.get_path(path_result.path_id)
             if new_path is not None:
-                # Convert path tiles to train path format
+                # Use assign_complete_path_to_train so the train's `position`
+                # is brought up to a path-consistent layout. The dispatcher
+                # owns `assigned_path_id` (resolved live via
+                # `path_dispatcher.active_path_id_by_train(train_id)`), so we
+                # do not also mirror the path id back onto the Train entity.
                 raw_path = executor._convert_path_to_train_path(new_path)
-                # Use assign_complete_path_to_train to handle:
-                # 1. Prepending tiles from train position to path start
-                # 2. Appending tiles to complete destination block
-                success, error = assign_complete_path_to_train(
-                    network, demo_train, raw_path
-                )
-                if not success:
-                    # Fall back to direct assignment if prepend/append fails
-                    demo_train.current_path = raw_path
-                    demo_train.path_index = 0
-                demo_train.assigned_path_id = new_path.path_id
+                assign_complete_path_to_train(network, demo_train, raw_path)
 
-    # Use TrainController for state transitions
-    controller = create_controller_for_train(
-        train_id=demo_train.train_id,
-        network=network,
-        path_dispatcher=path_dispatcher,
-    )
+    # Configure operational state on the canonical controller. When a
+    # SimulationController is supplied (the normal bootstrap path), use its
+    # controller registry so the configuration takes effect on the same
+    # controller the simulation tick will use.
+    if sim_controller is not None:
+        controller = sim_controller.get_or_create_controller(demo_train.train_id)
+    else:
+        from train_controller import create_controller_for_train
+        controller = create_controller_for_train(
+            train_id=demo_train.train_id,
+            network=network,
+            path_dispatcher=path_dispatcher,
+        )
 
     controller.power_on_cmd()
     controller.set_direction_and_standby(Direction.EAST)
     controller.depart()
-
-    # Sync train state to match controller (so SimulationController's controller will inherit it)
-    demo_train.state = controller.state
-    demo_train.ato_running = controller.ato_running  # Sync ATO running state
-    demo_train.ato_destination_block_id = (
-        controller.ato_destination_block_id
-    )  # Sync destination
 
 
 def create_track_showcase(network: RailwayNetwork):

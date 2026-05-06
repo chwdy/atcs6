@@ -30,9 +30,9 @@ class TestRouteAndTask:
             name="Test Route",
             mode=RouteMode.ONE_OFF,
             tasks=[
-                RouteTask(task_kind="dwell", task_location="STA_A", dwell_time_sec=10.0),
-                RouteTask(task_kind="dwell", task_location="STA_B", dwell_time_sec=15.0),
-                RouteTask(task_kind="dwell", task_location="STA_C", dwell_time_sec=5.0),
+                RouteTask(task_kind="dwell", task_location="STA_A", task_time=10.0),
+                RouteTask(task_kind="dwell", task_location="STA_B", task_time=15.0),
+                RouteTask(task_kind="dwell", task_location="STA_C", task_time=5.0),
             ],
         )
         return route
@@ -49,107 +49,13 @@ class TestRouteAndTask:
         simple_route.activate(100.0)
         assert simple_route.is_active is True
         assert simple_route.started_at == 100.0
-        assert simple_route.current_task_index == 0
-        assert simple_route.direction == 1
-
-    def test_get_current_task(self, simple_route):
-        """Test getting current task."""
-        task = simple_route.get_current_task()
-        assert task is not None
-        assert task.task_location == "STA_A"
-
-    def test_advance_to_next_task_one_off(self, simple_route):
-        """Test advancing tasks in ONE_OFF mode."""
-        # Start at task 0 (STA_A)
-        assert simple_route.current_task_index == 0
-
-        # Advance to task 1 (STA_B)
-        next_task = simple_route.advance_to_next_task()
-        assert next_task is not None
-        assert next_task.task_location == "STA_B"
-        assert simple_route.current_task_index == 1
-
-        # Advance to task 2 (STA_C)
-        next_task = simple_route.advance_to_next_task()
-        assert next_task is not None
-        assert next_task.task_location == "STA_C"
-        assert simple_route.current_task_index == 2
-
-        # Advance past end (route complete)
-        next_task = simple_route.advance_to_next_task()
-        assert next_task is None
-        assert simple_route.current_task_index == 3
-
-    def test_advance_to_next_task_loop(self):
-        """Test advancing tasks in CIRCULAR mode."""
-        route = Route(
-            route_id="ROUTE_LOOP",
-            mode=RouteMode.CIRCULAR,
-            tasks=[
-                RouteTask(task_kind="dwell", task_location="STA_A"),
-                RouteTask(task_kind="dwell", task_location="STA_B"),
-                RouteTask(task_kind="dwell", task_location="STA_C"),
-            ],
-        )
-
-        # Advance through tasks
-        assert route.current_task_index == 0
-
-        route.advance_to_next_task()  # -> STA_B (index 1)
-        assert route.current_task_index == 1
-
-        route.advance_to_next_task()  # -> STA_C (index 2)
-        assert route.current_task_index == 2
-
-        # Loop back to start
-        next_task = route.advance_to_next_task()  # -> STA_A (index 0)
-        assert next_task is not None
-        assert next_task.task_location == "STA_A"
-        assert route.current_task_index == 0
-
-    def test_advance_to_next_task_round_trip(self):
-        """Test advancing tasks in ROUND_TRIP mode."""
-        route = Route(
-            route_id="ROUTE_RT",
-            mode=RouteMode.ROUND_TRIP,
-            tasks=[
-                RouteTask(task_kind="dwell", task_location="STA_A"),
-                RouteTask(task_kind="dwell", task_location="STA_B"),
-                RouteTask(task_kind="dwell", task_location="STA_C"),
-            ],
-        )
-
-        # Forward: A -> B -> C
-        assert route.current_task_index == 0
-        assert route.direction == 1
-
-        route.advance_to_next_task()  # -> STA_B (index 1)
-        assert route.current_task_index == 1
-
-        route.advance_to_next_task()  # -> STA_C (index 2)
-        assert route.current_task_index == 2
-
-        # Bounce back: C -> B
-        route.advance_to_next_task()
-        assert route.current_task_index == 1
-        assert route.direction == -1  # Now going reverse
-
-        # Continue reverse: B -> A
-        route.advance_to_next_task()
-        assert route.current_task_index == 0
-        assert route.direction == -1
-
-        # Bounce forward again: A -> B
-        route.advance_to_next_task()
-        assert route.current_task_index == 1
-        assert route.direction == 1  # Back to forward
 
     def test_dwell_task_should_depart_none_mode(self):
         """Test dwell task depart logic with NONE timing mode."""
         task = RouteTask(
             task_kind="dwell",
             task_location="STA_A",
-            dwell_time_sec=30.0,
+            task_time=30.0,
             timing_mode=TimingMode.NONE,
         )
 
@@ -166,7 +72,7 @@ class TestRouteAndTask:
         task = RouteTask(
             task_kind="dwell",
             task_location="STA_A",
-            dwell_time_sec=10.0,
+            task_time=10.0,
             timing_mode=TimingMode.ABSOLUTE,
             target_time=1000.0,
         )
@@ -213,7 +119,7 @@ class TestRouteAndTask:
         task = RouteTask(
             task_kind="dwell",
             task_location="STA_A",
-            dwell_time_sec=45.0,
+            task_time=45.0,
             timing_mode=TimingMode.RELATIVE,
             target_time=120.0,
         )
@@ -221,7 +127,7 @@ class TestRouteAndTask:
         data = task.to_dict()
         assert data["task_kind"] == "dwell"
         assert data["task_location"] == "STA_A"
-        assert data["dwell_time_sec"] == 45.0
+        assert data["task_time"] == 45.0
         assert data["timing_mode"] == "relative"
         assert data["target_time"] == 120.0
 
@@ -238,26 +144,9 @@ class TestRouteAndTask:
         task = RouteTask.from_dict(data)
         assert task.task_kind == "dwell"
         assert task.task_location == "STA_B"
-        assert task.dwell_time_sec == 60.0
+        assert task.task_time == 60.0
         assert task.timing_mode == TimingMode.ABSOLUTE
         assert task.target_time == 500.0
-
-    def test_route_error_handling(self, simple_route):
-        """Test route error tracking."""
-        # No error initially
-        assert simple_route.last_error is None
-        assert simple_route.error_time is None
-
-        # Set error
-        simple_route.set_error("Path not found", 123.45)
-        assert simple_route.last_error == "Path not found"
-        assert simple_route.error_time == 123.45
-
-        # Clear error
-        simple_route.clear_error()
-        assert simple_route.last_error is None
-        assert simple_route.error_time is None
-
 
 class TestRouteExecutor:
     """Tests for RouteExecutor class."""
@@ -286,9 +175,9 @@ class TestRouteExecutor:
             name="Test Route",
             mode=RouteMode.ONE_OFF,
             tasks=[
-                RouteTask(task_kind="dwell", task_location="STA_A", dwell_time_sec=10.0),
-                RouteTask(task_kind="dwell", task_location="STA_B", dwell_time_sec=15.0),
-                RouteTask(task_kind="dwell", task_location="STA_C", dwell_time_sec=5.0),
+                RouteTask(task_kind="dwell", task_location="STA_A", task_time=10.0),
+                RouteTask(task_kind="dwell", task_location="STA_B", task_time=15.0),
+                RouteTask(task_kind="dwell", task_location="STA_C", task_time=5.0),
             ],
         )
         return route

@@ -25,7 +25,7 @@ import logging
 import time
 from typing import Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
-from enums import Direction, TrainState, PlatformSide
+from enums import Direction, TrainState
 from train_controller import TrainController, create_controller_for_train
 from train_route import (
     RouteMode,
@@ -35,6 +35,7 @@ from train_route import (
 )
 from runtime_payloads import (
     AcquisitionMode,
+    ErrorRecord,
     PathCancellationKind,
     PendingPathCancelRequest,
     ResolvedRouteTarget,
@@ -77,11 +78,7 @@ class ResolvedNextTaskProjection:
 
 @dataclass
 class RouteExecutionState:
-    """Per-train route run state.
-
-    The current implementation keeps the legacy class name
-    `RouteExecutionState`; the design doc names the concept `RouteRun`. They
-    are the same thing.
+    """Per-train route run state (the design doc calls this `RouteRun`).
 
     Per design_new.md "Route-run state" table.
     """
@@ -89,15 +86,12 @@ class RouteExecutionState:
     train_id: str
     route_id: str
     # Physical-progress cursor: index in Route.tasks of the last task the train
-    # has actually finished. Initialized to 0 in Wave 1 (legacy code base);
-    # design_new.md specifies `-1` as the canonical sentinel — Wave 2 may flip
-    # this once tests/UI consumers are updated.
+    # has actually finished.
     current_waypoint_index: int = 0
     # Planning cursor: index of the task currently armed for create/extend.
     target_waypoint_index: int = 0
     # Effective traversal direction for the current directed walk.
-    # Stored as a signed int for legacy compatibility; design_new.md uses
-    # "forward" / "reverse". `1` means forward, `-1` means reverse.
+    # `1` means forward, `-1` means reverse.
     direction: int = 1
     # Latest route_version successfully reconciled into this run.
     route_version_seen: int = 1
@@ -108,26 +102,24 @@ class RouteExecutionState:
     started_at: Optional[float] = None
     # Composite run-instance number assigned by RouteExecutor (diagnostic only).
     run_number: int = 0
-    # Legacy alias for `started_at` (some callers still reference it).
-    route_start_time: Optional[float] = None
     arrived_at_platform_time: Optional[float] = None
     waiting_for_path: bool = False
     last_waypoint_platform_id: Optional[str] = None
     resolved_platform_id: Optional[str] = None
     # v1 latch consumed by Phase-1 route-deviation cleanup.
     path_cancelled: bool = False
-    # Per-run diagnostic status. design_new.md specifies a `current_route_status`
-    # object with `state` and `last_cancellation_kind`; for now we store the
-    # state as a string and the cancellation kind as a separate field, matching
-    # legacy code shape.
+    # Per-run diagnostic status. The string `route_state` mirrors the
+    # `current_route_status.state` field for callers that read it as a string,
+    # and `last_cancellation_kind` is stored alongside.
     route_state: str = "RUNNING"
     current_route_status: RouteRunStatus = RouteRunStatus.RUNNING
     last_cancellation_kind: Optional[PathCancellationKind] = None
-    # Active-path correlation for Phase 3 callbacks.
-    active_path_id: Optional[str] = None
-    # Per-run error tracking.
-    last_error: Optional[str] = None
-    error_time: Optional[float] = None
+    # Per-run error tracking. Per design_new.md "Canonical ownership split"
+    # the active path is read live from `path_dispatcher.active_path_id_by_train`
+    # / `received_path_plan.path_id`; route runs do not store a correlation
+    # field of their own. `last_error` is the canonical ErrorRecord shape so
+    # message and timestamp are always either both present or both absent.
+    last_error: Optional["ErrorRecord"] = None
 
 
 class RouteExecutor:
@@ -240,7 +232,6 @@ class RouteExecutor:
                 train_id=train.train_id,
                 route_id=route.route_id,
                 started_at=now,
-                route_start_time=now,
                 run_number=run_count,
                 route_version_seen=int(getattr(route, "route_version", 1)),
             )
@@ -347,8 +338,8 @@ class RouteExecutor:
         # ---------- Step 3: lookup next non-finished task --------------------
         projection = self._find_next_task_target(train_id)
         if projection is None:
-            # Terminal walk for ONE_OFF; latch pending_route_finished.
-            self._maybe_latch_route_finished(controller, exec_state)
+            # Terminal walk for ONE_OFF; finalize the run directly.
+            self.finish_route_run(train_id)
             return
 
         # If next task is a dwell, skip directly to step 5.
@@ -360,7 +351,7 @@ class RouteExecutor:
             # Re-resolve after a possible cursor change.
             projection = self._find_next_task_target(train_id)
             if projection is None:
-                self._maybe_latch_route_finished(controller, exec_state)
+                self.finish_route_run(train_id)
                 return
 
         # ---------- Step 5: dwell-entry transition ---------------------------
@@ -472,7 +463,7 @@ class RouteExecutor:
         ):
             exec_state.task_runs[next_index].started_at = now
 
-        # Advance route per legacy mode-aware advance helper.
+        # Advance the per-run cursor based on the route mode.
         has_more = self._advance_to_next_task(route, exec_state)
         exec_state.arrived_at_platform_time = None
         exec_state.waiting_for_path = False
@@ -482,19 +473,19 @@ class RouteExecutor:
             try:
                 finish_dwell()
             except Exception:
+                logger.warning(
+                    "finish_dwell() raised for train %s; trying legacy "
+                    "depart_from_station fallback",
+                    getattr(train, "train_id", "?"),
+                    exc_info=True,
+                )
                 fallback = getattr(controller, "depart_from_station", None)
                 if callable(fallback):
-                    try:
-                        fallback(has_more_waypoints=has_more)
-                    except Exception:
-                        pass
+                    fallback(has_more_waypoints=has_more)
         else:
             fallback = getattr(controller, "depart_from_station", None)
             if callable(fallback):
-                try:
-                    fallback(has_more_waypoints=has_more)
-                except Exception:
-                    pass
+                fallback(has_more_waypoints=has_more)
 
     def _covered_task_index_advance(
         self,
@@ -576,19 +567,19 @@ class RouteExecutor:
             try:
                 enter_station_dwell()
             except Exception:
+                logger.warning(
+                    "enter_station_dwell() raised for train %s; trying legacy "
+                    "arrive_at_station fallback",
+                    getattr(train, "train_id", "?"),
+                    exc_info=True,
+                )
                 fallback = getattr(controller, "arrive_at_station", None)
                 if callable(fallback):
-                    try:
-                        fallback()
-                    except Exception:
-                        pass
+                    fallback()
         else:
             fallback = getattr(controller, "arrive_at_station", None)
             if callable(fallback):
-                try:
-                    fallback()
-                except Exception:
-                    pass
+                fallback()
         if exec_state.arrived_at_platform_time is None:
             exec_state.arrived_at_platform_time = self._now()
 
@@ -640,8 +631,6 @@ class RouteExecutor:
                     acquisition_mode=acquisition_mode,
                 )
                 success = bool(getattr(result, "success", False))
-                if success:
-                    exec_state.active_path_id = active_path_id
             else:
                 result = self.path_dispatcher.create_path(
                     train_id=train.train_id,
@@ -650,11 +639,6 @@ class RouteExecutor:
                     acquisition_mode=acquisition_mode,
                 )
                 success = bool(getattr(result, "success", False))
-                if success:
-                    exec_state.active_path_id = (
-                        getattr(result, "path_id", None)
-                        or self._get_active_path_id(train.train_id)
-                    )
         except Exception as exc:  # pragma: no cover — defensive
             logger.debug(
                 "authority acquisition raised for %s: %s", train.train_id, exc
@@ -684,11 +668,6 @@ class RouteExecutor:
         exec_state.current_route_status = RouteRunStatus.RUNNING
         exec_state.route_state = "RUNNING"
         exec_state.waiting_for_path = False
-        if hasattr(route, "clear_error"):
-            try:
-                route.clear_error()
-            except Exception:
-                pass
 
         # Effective departure mode.
         effective_mode = getattr(route, "default_departure_mode", "auto") or "auto"
@@ -699,28 +678,63 @@ class RouteExecutor:
                 try:
                     depart()
                 except Exception:
-                    pass
+                    # Phase 1 retries depart() on a later tick; logging the
+                    # raised reason keeps non-acceptance visible without
+                    # aborting the planning kernel.
+                    logger.warning(
+                        "depart() raised for train %s; will retry on a later tick",
+                        getattr(train, "train_id", "?"),
+                        exc_info=True,
+                    )
 
-    def _maybe_latch_route_finished(
-        self,
-        controller: TrainController,
-        exec_state: RouteExecutionState,
-    ) -> None:
-        """Latch `pending_route_finished` on the controller mailbox.
+    def finish_route_run(self, train_id: str) -> None:
+        """Phase 1 terminal-walk handler.
 
-        Phase 3's `pending_route_finished` consumer performs the actual state
-        transition to FINISHED, calls `route.unassign_train(...)`, etc.
-        Phase 1 does NOT write `state = FINISHED` itself.
+        Per design_new.md line 159 + the `current_route_status` write contract:
+          * sets `RouteRun.current_route_status` to FINISHED
+          * sets `target_waypoint_index = current_waypoint_index`
+          * calls `route.unassign_train(train_id)`
+          * clears `train.assigned_route_id` if it matches
+          * leaves the RouteRun in `execution_states` forever as a historical
+            FINISHED record
+          * for `RouteMode.ONE_OFF` routes with no remaining assigned trains,
+            also calls `route.deactivate()` (no other trains remain, so this
+            only flips `Route.is_active = False`)
         """
+        train = (
+            self.network.trains.get(train_id)
+            if hasattr(self.network, "trains")
+            else None
+        )
+        exec_state = self.execution_states.get(train_id)
+        if exec_state is None:
+            return
         if exec_state.current_route_status in (
             RouteRunStatus.FINISHED,
             RouteRunStatus.DEACTIVATED,
         ):
             return
-        try:
-            controller.pending_route_finished = True
-        except Exception:
-            pass
+
+        route_id = exec_state.route_id
+        route = getattr(self.network, "routes", {}).get(route_id)
+
+        exec_state.current_route_status = RouteRunStatus.FINISHED
+        exec_state.route_state = "FINISHED"
+        exec_state.target_waypoint_index = exec_state.current_waypoint_index
+
+        if route is not None:
+            route.unassign_train(train_id)
+
+        if train is not None and getattr(train, "assigned_route_id", None) == route_id:
+            train.assigned_route_id = None
+
+        if (
+            route is not None
+            and getattr(route, "mode", None) == RouteMode.ONE_OFF
+            and not getattr(route, "assigned_train_ids", [])
+        ):
+            simulation_controller = getattr(self, "simulation_controller", None)
+            route.deactivate(simulation_controller)
 
     # ------------------------------------------------------------------ Phase 3
     def handle_train_advanced(
@@ -804,8 +818,6 @@ class RouteExecutor:
         exec_state.waiting_for_path = False
         # Reset planning cursor to physical progress.
         exec_state.target_waypoint_index = exec_state.current_waypoint_index
-        if exec_state.active_path_id == path_id:
-            exec_state.active_path_id = None
 
     def handle_path_completion(
         self,
@@ -841,9 +853,6 @@ class RouteExecutor:
         train, route, exec_state = self._resolve_run_route(train_id)
         if train is None or route is None or exec_state is None:
             return False
-
-        if exec_state.active_path_id == path_id:
-            exec_state.active_path_id = None
 
         exec_state.waiting_for_path = False
 
@@ -910,8 +919,6 @@ class RouteExecutor:
             exec_state.current_waypoint_index, match_index
         )
         exec_state.target_waypoint_index = exec_state.current_waypoint_index
-        if hasattr(route, "current_task_index"):
-            route.current_task_index = exec_state.current_waypoint_index
         exec_state.arrived_at_platform_time = event_time
         # Phase 3 must NOT call enter_station_dwell — that fires from the next
         # eligible Phase 1 dwell-entry step.
@@ -930,19 +937,19 @@ class RouteExecutor:
                 try:
                     finish_dwell()
                 except Exception:
+                    logger.warning(
+                        "finish_dwell() raised for train %s during route-run "
+                        "removal; trying legacy depart_from_station fallback",
+                        train_id,
+                        exc_info=True,
+                    )
                     fallback = getattr(controller, "depart_from_station", None)
                     if callable(fallback):
-                        try:
-                            fallback(has_more_waypoints=False)
-                        except Exception:
-                            pass
+                        fallback(has_more_waypoints=False)
             else:
                 fallback = getattr(controller, "depart_from_station", None)
                 if callable(fallback):
-                    try:
-                        fallback(has_more_waypoints=False)
-                    except Exception:
-                        pass
+                    fallback(has_more_waypoints=False)
 
         train = (
             self.network.trains.get(train_id)
@@ -954,15 +961,9 @@ class RouteExecutor:
             if route_id:
                 route = getattr(self.network, "routes", {}).get(route_id)
                 if route is not None:
-                    try:
-                        route.unassign_train(train_id)
-                    except Exception:
-                        pass
-            try:
-                if getattr(train, "assigned_route_id", None) == route_id:
-                    train.assigned_route_id = None
-            except Exception:
-                pass
+                    route.unassign_train(train_id)
+            if getattr(train, "assigned_route_id", None) == route_id:
+                train.assigned_route_id = None
 
         if train_id in self.execution_states:
             del self.execution_states[train_id]
@@ -1076,9 +1077,8 @@ class RouteExecutor:
           * direct block_id
           * platform_id (lookup via network.platforms)
           * station_id (lookup via network.station_groups, then pick a platform)
-        The legacy schema stored task_location as a single string; we try
-        block, platform, station in that order. Wave 2 may add an explicit
-        kind discriminator if the storage layer can supply one.
+        task_location is stored as a single string; we probe block, platform,
+        station in that order.
         """
         location = getattr(task, "task_location", "")
         if not location:
@@ -1157,7 +1157,7 @@ class RouteExecutor:
             return idx
         return None
 
-    # ------------------------------------------------------------------ legacy
+    # ------------------------------------------------------------------ helpers
     def _get_active_route_train_pairs(self) -> List[Tuple["Train", "Route"]]:
         """Collect active (train, route) pairs."""
         pairs: List[Tuple["Train", "Route"]] = []
@@ -1202,8 +1202,6 @@ class RouteExecutor:
         if route.mode == RouteMode.ONE_OFF:
             exec_state.current_waypoint_index += 1
             exec_state.resolved_platform_id = None
-            if hasattr(route, "current_task_index"):
-                route.current_task_index = exec_state.current_waypoint_index
             return exec_state.current_waypoint_index < task_count
 
         if route.mode == RouteMode.CIRCULAR:
@@ -1211,8 +1209,6 @@ class RouteExecutor:
             if exec_state.current_waypoint_index >= task_count:
                 exec_state.current_waypoint_index = 0
             exec_state.resolved_platform_id = None
-            if hasattr(route, "current_task_index"):
-                route.current_task_index = exec_state.current_waypoint_index
             return True
 
         # ROUND_TRIP
@@ -1229,10 +1225,6 @@ class RouteExecutor:
                 exec_state.current_waypoint_index = 0
 
         exec_state.resolved_platform_id = None
-        if hasattr(route, "current_task_index"):
-            route.current_task_index = exec_state.current_waypoint_index
-        if hasattr(route, "direction"):
-            route.direction = exec_state.direction
         return True
 
     # ------------------------------------------------------------------ network helpers
@@ -1261,7 +1253,7 @@ class RouteExecutor:
         return train.position.head_tile == target_tile
 
     def _is_train_at_platform(self, train: "Train", platform_id: str) -> bool:
-        """Compatibility helper for legacy callers."""
+        """Return True when the train head sits at the named platform's tile."""
         if not train.position:
             return False
         platform = self._get_platform(platform_id)
@@ -1282,7 +1274,12 @@ class RouteExecutor:
         if len(positions) == 1:
             return positions[0]
 
-        direction = train.get_effective_direction()
+        # Per design_new.md ~line 1292, direction derives from cab via the
+        # controller. Use the train's geometric facing direction (which is
+        # itself a read-only projection of `position.leading_end`) as the
+        # canonical input here; the controller's `travel_direction` is the
+        # same projection in compass-edge form.
+        direction = train.facing_direction
         if not direction:
             return positions[0]
 
@@ -1318,21 +1315,19 @@ class RouteExecutor:
         return None
 
     def _get_platform_block_id(self, platform_id: str) -> Optional[str]:
-        """Get primary block for a platform."""
+        """Get primary block for a platform.
+
+        Uses the canonical `Platform.ordered_blocks` (per design_new.md
+        "Platform and station model"); falls back to tile-by-tile lookup for
+        platforms whose block assignments have not been populated yet.
+        """
         platform = self._get_platform(platform_id)
         if not platform:
             return None
 
-        get_all_assigned_blocks = getattr(platform, "get_all_assigned_blocks", None)
-        if callable(get_all_assigned_blocks):
-            assigned_blocks = get_all_assigned_blocks()
-            block_ids = (
-                list(assigned_blocks)
-                if isinstance(assigned_blocks, (list, set, tuple))
-                else []
-            )
-            if block_ids:
-                return block_ids[0]
+        ordered_blocks = getattr(platform, "ordered_blocks", None)
+        if ordered_blocks:
+            return ordered_blocks[0]
 
         for x, y in getattr(platform, "positions", []):
             track = self.network.get_track(x, y)
@@ -1397,7 +1392,6 @@ class RouteExecutor:
                 train_id=train_id,
                 route_id=route.route_id,
                 started_at=now,
-                route_start_time=now,
                 run_number=run_count,
                 route_version_seen=int(getattr(route, "route_version", 1)),
             )

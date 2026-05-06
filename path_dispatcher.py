@@ -24,7 +24,10 @@ them out of path.py.
 
 from collections import deque
 from datetime import datetime
+import logging
 import time
+
+logger = logging.getLogger(__name__)
 import uuid
 from typing import Dict, List, Optional, Set, Tuple, Any, TYPE_CHECKING
 
@@ -53,6 +56,8 @@ from runtime_payloads import (
     ConflictResolutionType,
     DEFAULT_PATH_PRIORITY,
     ExtensionResult,
+    FatalConflictKind,
+    FatalPhysicalEntryConflict,
     PathAcquisitionFailureKind,
     PathAcquisitionResult,
     PathAcquisitionResultKind,
@@ -67,6 +72,7 @@ from runtime_payloads import (
     ValidationResult,
 )
 from block_manager import ReservedBlockTraversal
+from railway_pathfinder import RailwayPathfinder
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -99,7 +105,6 @@ class PathDispatcher:
         get_reachable_endpoints_for_extension(path_id, include_stations)
         validate_path(path_segment, path_id, train_id)
         get_and_clear_completion_events()
-        update_approach_locking(path_id)  # no-op in v1
     """
 
     def __init__(self, network: "RailwayNetwork"):
@@ -111,17 +116,28 @@ class PathDispatcher:
         # available. Used to resolve TrainController instances and the
         # NotificationCenter for progress callbacks.
         self.simulation_controller: Optional[Any] = None
+        # Canonical pathfinding home shared with RouteExecutor (per
+        # design_new.md line 605). The same instance services dispatcher
+        # candidate enumeration and any RouteExecutor platform-end
+        # selection that needs the shared comparison rules.
+        self._pathfinder = RailwayPathfinder(network)
 
     @property
     def active_paths(self) -> Dict[str, Path]:
-        """Legacy alias used by older call sites that still say
-        `dispatcher.active_paths`. Returns the same dict as `self.paths`.
+        """Legacy alias for the underlying path registry.
+
+        Per design_new.md ~line 80, completed/cancelled paths are retained
+        as historical records in the same dict (skipped by the canonical
+        `active_path_id_by_train(...)` projection because their status is
+        no longer ACTIVE). Callers that want only ACTIVE-status rows
+        should use `get_active_paths()` instead of this raw view.
         """
         return self.paths
 
     @property
     def paths_by_id(self) -> Dict[str, Path]:
-        """Canonical alias from design_new.md."""
+        """Canonical alias from design_new.md ~line 78. Same dict as
+        `self.paths`; includes retained terminal rows."""
         return self.paths
 
     # ========================================================================
@@ -217,6 +233,57 @@ class PathDispatcher:
         if track is None:
             return None
         return track.block_section_id
+
+    def _train_head_is_on_switch(self, train) -> bool:
+        """Whether the train's head tile is a switch resource."""
+        if train is None:
+            return False
+        position = getattr(train, "position", None)
+        if position is None:
+            return False
+        head_tile = getattr(position, "head_tile", None)
+        if not head_tile:
+            return False
+        track = self.network.get_track(*head_tile)
+        if track is None:
+            return False
+        return bool(track.is_switch)
+
+    def _segment_continues_forward(
+        self, path: Path, segment: PathSegment
+    ) -> bool:
+        """Whether ``segment`` continues forward from ``path``'s authority end.
+
+        ``segment`` is a candidate produced by ``find_paths`` whose first tile
+        sits on the path's current authority-end block. The segment continues
+        forward when its first hop exits that block at the same tile and edge
+        the existing prefix was about to use; any other exit would force a
+        180-degree reverse through the authority-end block.
+        """
+        if not segment.tiles or len(segment.tiles) < 2:
+            # Can't tell from geometry alone; treat as forward and let
+            # downstream validation/acquisition reject if needed.
+            return True
+        if not path.path_tiles:
+            return True
+        terminal = path.path_tiles[-1]
+        terminal_exit = terminal.exit_edge or None
+        if not terminal_exit:
+            # Existing prefix has no recorded exit_edge; cannot prove a
+            # reverse from geometry, so allow the candidate through.
+            return True
+        first = segment.tiles[0]
+        nxt = segment.tiles[1]
+        if (first[0], first[1]) != (terminal.x, terminal.y):
+            # Candidate starts from a different tile on the authority-end
+            # block than the existing prefix's terminal. find_paths is free
+            # to start from any tile on the start block, so this means the
+            # candidate would have to traverse the start block in a way
+            # the existing prefix did not — that is a reversal of the
+            # existing travel frame.
+            return False
+        seg_exit = direction_from_delta(nxt[0] - first[0], nxt[1] - first[1])
+        return seg_exit == terminal_exit
 
     # ========================================================================
     # Endpoint Discovery
@@ -358,141 +425,24 @@ class PathDispatcher:
     # ========================================================================
 
     def find_paths(
-        self, start_block_id: str, end_block_id: str, train_id: Optional[str] = None
-    ) -> List[PathSegment]:
-        """BFS through the network to find all PathSegment candidates."""
-        if start_block_id not in self.network.blocks:
-            return []
-        if end_block_id not in self.network.blocks:
-            return []
-
-        start_positions = self.network.get_block_positions(start_block_id)
-        if not start_positions:
-            return []
-
-        paths: List[PathSegment] = []
-        for start_pos in start_positions:
-            track = self.network.get_track(*start_pos)
-            if not track:
-                continue
-            for edge in track.edges:
-                neighbor = self.network.get_neighbor(*start_pos, edge)
-                if neighbor and neighbor.block_section_id != start_block_id:
-                    found_paths = self._bfs_find_paths(
-                        start_pos, edge, start_block_id, end_block_id
-                    )
-                    paths.extend(found_paths)
-
-        unique_paths = self._deduplicate_paths(paths)
-        unique_paths.sort(key=lambda p: p.distance_cm)
-        return unique_paths
-
-    def _bfs_find_paths(
         self,
-        start_pos: Tuple[int, int],
-        start_exit: str,
         start_block_id: str,
         end_block_id: str,
+        train_id: Optional[str] = None,
+        direction_constraint: Optional[str] = None,
     ) -> List[PathSegment]:
-        paths: List[PathSegment] = []
-        queue: deque = deque()
-        queue.append(
-            (
-                start_pos[0],
-                start_pos[1],
-                start_exit,
-                [start_pos],
-                [start_block_id],
-                {},
-                0.0,
-            )
+        """Return the geometry candidates between two blocks.
+
+        Thin wrapper over the shared `RailwayPathfinder.find_ordered_walk`.
+        Each surviving candidate's geometry payload is unwrapped into a
+        `PathSegment` for the existing dispatcher callers.
+        """
+        candidates = self._pathfinder.find_ordered_walk(
+            start_block_id=start_block_id,
+            end_block_id=end_block_id,
+            direction_constraint=direction_constraint,
         )
-        visited: Set[Tuple[int, int, str, frozenset]] = set()
-
-        while queue:
-            curr_x, curr_y, exit_edge, path_tiles, blocks, switches, distance = (
-                queue.popleft()
-            )
-            visited_key = (curr_x, curr_y, exit_edge, frozenset(blocks))
-            if visited_key in visited:
-                continue
-            visited.add(visited_key)
-            if len(path_tiles) > 200:
-                continue
-            offset = EDGE_OFFSETS.get(exit_edge)
-            if not offset:
-                continue
-            dx, dy = offset
-            next_x, next_y = curr_x + dx, curr_y + dy
-            next_track = self.network.get_track(next_x, next_y)
-            if not next_track:
-                continue
-            segment_distance = next_track.length * 100.0
-            new_distance = distance + segment_distance
-            new_path_tiles = path_tiles + [(next_x, next_y)]
-            new_blocks = list(blocks)
-            next_block_id = next_track.block_section_id
-            if next_block_id and next_block_id not in new_blocks:
-                new_blocks.append(next_block_id)
-            if next_block_id == end_block_id:
-                paths.append(
-                    PathSegment(
-                        tiles=new_path_tiles,
-                        distance_cm=new_distance,
-                        required_switches=dict(switches),
-                        blocks=new_blocks,
-                    )
-                )
-                continue
-            entry_edge = OPPOSITE_EDGE.get(exit_edge)
-            if not entry_edge or entry_edge not in next_track.edges:
-                continue
-            all_exits = next_track.get_exits(entry_edge, use_switch_state=False)
-            if not all_exits:
-                continue
-            if next_track.is_switch:
-                for next_exit in all_exits:
-                    new_switches = dict(switches)
-                    required_state = next_track.get_required_switch_state(
-                        entry_edge, next_exit
-                    )
-                    if required_state is not None:
-                        new_switches[(next_x, next_y)] = required_state
-                    queue.append(
-                        (
-                            next_x,
-                            next_y,
-                            next_exit,
-                            new_path_tiles,
-                            new_blocks,
-                            new_switches,
-                            new_distance,
-                        )
-                    )
-            else:
-                for next_exit in all_exits:
-                    queue.append(
-                        (
-                            next_x,
-                            next_y,
-                            next_exit,
-                            new_path_tiles,
-                            new_blocks,
-                            dict(switches),
-                            new_distance,
-                        )
-                    )
-        return paths
-
-    def _deduplicate_paths(self, paths: List[PathSegment]) -> List[PathSegment]:
-        seen: Set[Any] = set()
-        unique = []
-        for p in paths:
-            key = (tuple(p.blocks), tuple(sorted(p.required_switches.items())))
-            if key not in seen:
-                seen.add(key)
-                unique.append(p)
-        return unique
+        return [c.walk for c in candidates if isinstance(c.walk, PathSegment)]
 
     # ========================================================================
     # Validation
@@ -614,14 +564,18 @@ class PathDispatcher:
         if requested_destination_direction not in ("forward", "reverse"):
             return PathAcquisitionResult(
                 success=False,
-                failure_kind=PathAcquisitionFailureKind.INVALID_DIRECTION,
+                failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
+                requested_destination_block_id=requested_destination_block_id or None,
+                requested_destination_direction=requested_destination_direction,
                 reason=f"Invalid direction: {requested_destination_direction!r}",
             )
 
         if not train_id:
             return PathAcquisitionResult(
                 success=False,
-                failure_kind=PathAcquisitionFailureKind.NO_TRAIN,
+                failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
+                requested_destination_block_id=requested_destination_block_id or None,
+                requested_destination_direction=requested_destination_direction,
                 reason="train_id required in v1",
             )
 
@@ -629,20 +583,25 @@ class PathDispatcher:
         if train is None:
             return PathAcquisitionResult(
                 success=False,
-                failure_kind=PathAcquisitionFailureKind.NO_TRAIN,
+                failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
+                requested_destination_block_id=requested_destination_block_id or None,
+                requested_destination_direction=requested_destination_direction,
                 reason=f"Train {train_id} not found",
             )
 
         if not requested_destination_block_id:
             return PathAcquisitionResult(
                 success=False,
-                failure_kind=PathAcquisitionFailureKind.INVALID_DESTINATION,
+                failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
+                requested_destination_direction=requested_destination_direction,
                 reason="requested_destination_block_id required",
             )
         if requested_destination_block_id not in self.network.blocks:
             return PathAcquisitionResult(
                 success=False,
-                failure_kind=PathAcquisitionFailureKind.INVALID_DESTINATION,
+                failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=requested_destination_direction,
                 reason=f"Unknown block {requested_destination_block_id}",
             )
 
@@ -651,8 +610,10 @@ class PathDispatcher:
         if existing is not None:
             return PathAcquisitionResult(
                 success=False,
-                failure_kind=PathAcquisitionFailureKind.ALREADY_HAS_PATH,
+                failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 path_id=existing.path_id,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=requested_destination_direction,
                 reason=f"Train {train_id} already has active path {existing.path_id}",
             )
 
@@ -663,7 +624,9 @@ class PathDispatcher:
         if not start_block_id_resolved:
             return PathAcquisitionResult(
                 success=False,
-                failure_kind=PathAcquisitionFailureKind.NO_PATH_GEOMETRY,
+                failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=requested_destination_direction,
                 reason=f"Cannot resolve current block for train {train_id}",
             )
 
@@ -674,7 +637,9 @@ class PathDispatcher:
         if not candidates:
             return PathAcquisitionResult(
                 success=False,
-                failure_kind=PathAcquisitionFailureKind.NO_PATH_GEOMETRY,
+                failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=requested_destination_direction,
                 reason="No path exists between start and destination",
             )
 
@@ -721,11 +686,12 @@ class PathDispatcher:
                     now=now,
                 )
                 self.paths[path_id] = path
-                self._populate_train_reserved_blocks(train_id, path)
                 return PathAcquisitionResult(
                     success=True,
                     result_kind=PathAcquisitionResultKind.TRUNCATED_GREW,
                     path_id=path_id,
+                    requested_destination_block_id=requested_destination_block_id,
+                    requested_destination_direction=requested_destination_direction,
                     authority_end_block_id=path.authority_end_block_id,
                     granted_resource_sequence=list(path.resource_sequence),
                     reason="best_effort partial acquisition",
@@ -741,21 +707,39 @@ class PathDispatcher:
                 now=now,
             )
             self.paths[path_id] = path
-            self._populate_train_reserved_blocks(train_id, path)
             return PathAcquisitionResult(
                 success=True,
                 result_kind=PathAcquisitionResultKind.CREATED,
                 path_id=path_id,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=requested_destination_direction,
                 authority_end_block_id=path.authority_end_block_id,
                 granted_resource_sequence=list(path.resource_sequence),
                 reason="created",
             )
 
-        # All candidates failed.
+        # All candidates failed. In best_effort mode, when the train head
+        # currently sits on a switch resource we cannot store a block-
+        # terminated holding authority, so surface the head-on-switch case
+        # explicitly per design_new.md "create_path() / extend_path() return
+        # contract".
+        if (
+            acquisition_mode == AcquisitionMode.BEST_EFFORT
+            and self._train_head_is_on_switch(train)
+        ):
+            return PathAcquisitionResult(
+                success=False,
+                failure_kind=PathAcquisitionFailureKind.HEAD_ON_SWITCH_NO_BLOCK_AUTHORITY,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=requested_destination_direction,
+                failed_resource_id=last_failed_resource_id,
+                reason="cannot create best-effort authority while head is on a switch",
+            )
         return PathAcquisitionResult(
             success=False,
-            result_kind=PathAcquisitionResultKind.BLOCKED_NO_GROWTH,
-            failure_kind=PathAcquisitionFailureKind.RESOURCE_HELD,
+            failure_kind=PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
+            requested_destination_block_id=requested_destination_block_id,
+            requested_destination_direction=requested_destination_direction,
             failed_resource_id=last_failed_resource_id,
             reason=last_reason or "All candidate paths blocked",
         )
@@ -776,24 +760,31 @@ class PathDispatcher:
         if requested_destination_direction not in ("forward", "reverse"):
             return PathAcquisitionResult(
                 success=False,
-                failure_kind=PathAcquisitionFailureKind.INVALID_DIRECTION,
+                failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
+                path_id=path_id or None,
+                requested_destination_block_id=requested_destination_block_id or None,
+                requested_destination_direction=requested_destination_direction,
                 reason=f"Invalid direction: {requested_destination_direction!r}",
             )
 
         path = self.paths.get(path_id)
-        if path is None or not path.can_be_extended():
+        if path is None or path.status != PathStatus.ACTIVE:
             return PathAcquisitionResult(
                 success=False,
-                failure_kind=PathAcquisitionFailureKind.INVALID_DESTINATION,
+                failure_kind=PathAcquisitionFailureKind.MISSING_OR_INACTIVE_PATH,
                 path_id=path_id,
-                reason=f"Path {path_id} not extendable",
+                requested_destination_block_id=requested_destination_block_id or None,
+                requested_destination_direction=requested_destination_direction,
+                reason=f"Path {path_id} missing or not ACTIVE",
             )
 
         if not requested_destination_block_id:
             return PathAcquisitionResult(
                 success=False,
-                failure_kind=PathAcquisitionFailureKind.INVALID_DESTINATION,
+                failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 path_id=path_id,
+                requested_destination_direction=requested_destination_direction,
+                authority_end_block_id=path.authority_end_block_id or None,
                 reason="requested_destination_block_id required",
             )
 
@@ -801,8 +792,11 @@ class PathDispatcher:
         if requested_destination_block_id in existing_blocks:
             return PathAcquisitionResult(
                 success=False,
-                failure_kind=PathAcquisitionFailureKind.INVALID_DESTINATION,
+                failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 path_id=path_id,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=requested_destination_direction,
+                authority_end_block_id=path.authority_end_block_id or None,
                 reason=f"{requested_destination_block_id} is already in path",
             )
 
@@ -811,8 +805,11 @@ class PathDispatcher:
         if train is None:
             return PathAcquisitionResult(
                 success=False,
-                failure_kind=PathAcquisitionFailureKind.NO_TRAIN,
+                failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 path_id=path_id,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=requested_destination_direction,
+                authority_end_block_id=path.authority_end_block_id or None,
                 reason="path has no train",
             )
 
@@ -824,10 +821,36 @@ class PathDispatcher:
         if not candidates:
             return PathAcquisitionResult(
                 success=False,
-                failure_kind=PathAcquisitionFailureKind.NO_PATH_GEOMETRY,
+                failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
                 path_id=path_id,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=requested_destination_direction,
+                authority_end_block_id=path.authority_end_block_id or None,
                 reason=f"No forward path from {start_block_id} to {requested_destination_block_id}",
             )
+
+        # Reject candidates that would reverse 180 degrees through the
+        # current authority-end block. Per design_new.md "extend_path()
+        # contract", the new suffix must continue forward from the existing
+        # prefix's travel frame; if every candidate would have to exit the
+        # authority-end block via an edge other than the prefix's terminal
+        # exit_edge, the request is an invalid reverse.
+        forward_candidates = [
+            seg
+            for seg in candidates
+            if self._segment_continues_forward(path, seg)
+        ]
+        if not forward_candidates:
+            return PathAcquisitionResult(
+                success=False,
+                failure_kind=PathAcquisitionFailureKind.INVALID_REVERSE,
+                path_id=path_id,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=requested_destination_direction,
+                authority_end_block_id=path.authority_end_block_id or None,
+                reason="extend would reverse at authority end",
+            )
+        candidates = forward_candidates
 
         now = self._now()
         last_reason = ""
@@ -861,16 +884,18 @@ class PathDispatcher:
             path.path_tiles = self._flatten_resource_sequence_tiles(
                 path.resource_sequence
             )
-            path.authority_end_block_id = requested_destination_block_id
+            # authority_end_block_id is derived from resource_sequence[-1];
+            # the resource_sequence.extend(...) above advanced it.
             path.requested_destination_block_id = requested_destination_block_id
             path.requested_destination_direction = requested_destination_direction
             path._set_status(PathStatus.ACTIVE, now)
 
-            self._populate_train_reserved_blocks(train_id, path)
             return PathAcquisitionResult(
                 success=True,
                 result_kind=PathAcquisitionResultKind.EXTENDED,
                 path_id=path_id,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=requested_destination_direction,
                 authority_end_block_id=path.authority_end_block_id,
                 granted_resource_sequence=list(path.resource_sequence),
                 reason="extended",
@@ -878,9 +903,11 @@ class PathDispatcher:
 
         return PathAcquisitionResult(
             success=False,
-            result_kind=PathAcquisitionResultKind.BLOCKED_NO_GROWTH,
-            failure_kind=PathAcquisitionFailureKind.RESOURCE_HELD,
+            failure_kind=PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
             path_id=path_id,
+            requested_destination_block_id=requested_destination_block_id,
+            requested_destination_direction=requested_destination_direction,
+            authority_end_block_id=path.authority_end_block_id or None,
             failed_resource_id=last_resource,
             reason=last_reason or "All extension paths blocked",
         )
@@ -922,21 +949,16 @@ class PathDispatcher:
         if block_manager is not None and hasattr(
             block_manager, "release_path_block_reservations"
         ):
-            try:
-                block_manager.release_path_block_reservations(
-                    all_blocks, path_id, completed=False
-                )
-                released_blocks = list(all_blocks)
-            except Exception:
-                pass
+            block_manager.release_path_block_reservations(
+                all_blocks, path_id, completed=False
+            )
+            released_blocks = list(all_blocks)
         else:
-            # Fallback: clear reserved primitives directly.
+            # Fallback: clear reservation record directly.
             for bid in all_blocks:
                 blk = self.network.blocks.get(bid)
                 if blk is not None and getattr(blk, "reserved_by_path", None) == path_id:
-                    blk.reserved_by_path = None
-                    blk.reserved_direction = None
-                    blk.reserved_for_train = None
+                    blk.reservation = None
                     released_blocks.append(bid)
 
         # Release switch locks.
@@ -970,17 +992,14 @@ class PathDispatcher:
                     try:
                         handler(train_id, path_id, kind)
                     except TypeError:
-                        try:
-                            handler(train_id, path_id)
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
+                        # Legacy 2-arg signature fallback.
+                        handler(train_id, path_id)
 
-        # Drop from registry. (Per design_new.md the registry could keep
-        # terminal rows for history; current behaviour matches old code.)
-        if path_id in self.paths:
-            del self.paths[path_id]
+        # Per design_new.md ~line 80: cancelled or completed paths remain
+        # in `paths_by_id[path_id]` for history. They are no longer active
+        # authority because `Path.status` is no longer ACTIVE, so
+        # `active_path_id_by_train(...)` skips them and the controller's
+        # `received_path_plan` property returns None on its next read.
 
         return CancellationResult(
             success=True,
@@ -1078,12 +1097,9 @@ class PathDispatcher:
         if block_manager is not None and hasattr(
             block_manager, "release_path_block_reservations"
         ):
-            try:
-                block_manager.release_path_block_reservations(
-                    list(segment.blocks), path_id, completed=False
-                )
-            except Exception:
-                pass
+            block_manager.release_path_block_reservations(
+                list(segment.blocks), path_id, completed=False
+            )
         for pos in segment.required_switches.keys():
             switch_entity = self._resolve_switch_at_position(pos)
             if switch_entity is None:
@@ -1377,23 +1393,16 @@ class PathDispatcher:
             train_id=train_id,
             requested_destination_block_id=requested_destination_block_id,
             requested_destination_direction=requested_destination_direction,
-            authority_end_block_id=authority_end,
             resource_sequence=sequence,
             path_tiles=path_tiles,
             current_resource_index=0,
             cancellation_kind=None,
             last_status_updated_time=now,
         )
+        # authority_end_block_id is derived from resource_sequence[-1];
+        # `authority_end` is no longer assigned here (it would be redundant
+        # with the property when the sequence is well-formed).
         return path
-
-    def _populate_train_reserved_blocks(self, train_id: str, path: Path) -> None:
-        train = self._get_train(train_id)
-        if train is None:
-            return
-        try:
-            train.reserved_blocks = path.get_all_blocks()
-        except Exception:
-            pass
 
     # ========================================================================
     # Phase 3 progress consumer
@@ -1444,18 +1453,112 @@ class PathDispatcher:
         if event.resource_type == "block":
             block_manager = getattr(self.network, "block_manager", None)
             if block_manager is not None:
-                try:
-                    block_manager.occupy_block(event.resource_id, train_id)
-                except Exception:
-                    pass
+                block_manager.occupy_block(event.resource_id, train_id)
             return
         if event.resource_type == "switch":
             switch = self._resolve_switch_entity(event.resource_id)
             if switch is None:
                 return
+            # Disabled switches are unrecoverable per the fatal-conflict
+            # procedure (design_new.md "Fatal physical-entry conflict
+            # procedure").
+            if getattr(switch, "disabled", False):
+                self._report_fatal_switch_conflict(
+                    switch_id=event.resource_id,
+                    train_id=train_id,
+                    conflict_kind=FatalConflictKind.DISABLED_RESOURCE_ENTRY,
+                    prior_owner_train_id=None,
+                )
+                return
             current = getattr(switch, "occupied_by", None)
-            if not current or current == train_id:
-                switch.occupied_by = train_id
+            if current is not None and current != train_id:
+                # Per design_new.md ~lines 236-238 and 328: a conflicting
+                # physical entry is unrecoverable in v1. Leave the prior
+                # owner intact and enter the fatal-runtime path.
+                self._report_fatal_switch_conflict(
+                    switch_id=event.resource_id,
+                    train_id=train_id,
+                    conflict_kind=FatalConflictKind.SWITCH_OCCUPIED_BY_OTHER_TRAIN,
+                    prior_owner_train_id=current,
+                )
+                return
+            # Clean entry. Record physical occupancy, consume the path-owned
+            # primary switch lock, and convert applicable flank-protection
+            # locks on neighbours into train-owned physical protection that
+            # tail-vacate will later clear.
+            switch.occupied_by = train_id
+            active_path = self.get_active_path(train_id)
+            if active_path is not None:
+                self._convert_switch_locks_on_entry(
+                    switch, train_id, active_path.path_id
+                )
+
+    def _report_fatal_switch_conflict(
+        self,
+        *,
+        switch_id: str,
+        train_id: str,
+        conflict_kind: FatalConflictKind,
+        prior_owner_train_id: Optional[str],
+    ) -> None:
+        """Forward a fatal switch-entry conflict to the runtime.
+
+        Parallel to `BlockManager._report_fatal_conflict` — builds a typed
+        `FatalPhysicalEntryConflict` payload and calls
+        `SimulationController.enter_failed_runtime(...)`. Receiver issues
+        must not mask the underlying conflict, so this helper does not
+        swallow exceptions raised by the wired controller.
+        """
+        sim_controller = getattr(self, "simulation_controller", None)
+        if sim_controller is None:
+            return
+        active_path = self.get_active_path(train_id)
+        payload = FatalPhysicalEntryConflict(
+            resource_type="switch",
+            resource_id=switch_id,
+            incoming_train_id=train_id,
+            prior_owner_train_id=prior_owner_train_id,
+            conflict_kind=conflict_kind,
+            incoming_path_id=active_path.path_id if active_path else None,
+        )
+        sim_controller.enter_failed_runtime(payload)
+
+    def _convert_switch_locks_on_entry(
+        self, switch_entity, train_id: str, path_id: str
+    ) -> None:
+        """Per design_new.md ~line 328: on clean physical entry into a
+        switch, consume the path-owned primary lock for that switch and
+        convert any required flank-protection claims on neighbours into
+        train-owned physical protection.
+
+        The neighbour-side flank lock acquired during `create_path(...)`
+        was keyed by `(path_id, "flank", entered_switch_id)`. After the
+        train physically occupies this switch, that future-authority lock
+        is replaced by a `(train_id, this_switch_id, locked_state)` entry
+        in the neighbour's `train_protection_claims`, which is later
+        cleared on tail-vacate via `Switch.release_train_protection_from(...)`.
+        """
+        # Consume the primary lock for the entered switch.
+        primary_key = (path_id, "primary", None)
+        if primary_key in switch_entity.locks:
+            switch_entity.release_lock(path_id, "primary", None)
+
+        # For each neighbour where this switch is the flank source,
+        # convert the path-owned flank lock into train-owned protection.
+        for neighbour_switch_id, _blocking_state in list(
+            getattr(switch_entity, "flank_protection", []) or []
+        ):
+            neighbour = self._resolve_switch_entity(neighbour_switch_id)
+            if neighbour is None:
+                continue
+            flank_key = (path_id, "flank", switch_entity.switch_id)
+            if flank_key not in neighbour.locks:
+                continue
+            _claim_train_id, locked_state = neighbour.locks[flank_key]
+            neighbour.release_lock(path_id, "flank", switch_entity.switch_id)
+            claim = (train_id, switch_entity.switch_id, int(locked_state))
+            if claim not in neighbour.train_protection_claims:
+                neighbour.train_protection_claims.append(claim)
 
     def _fire_route_advanced_callback(
         self, train_id: str, path_id: str, event: ResourceEvent
@@ -1475,12 +1578,8 @@ class PathDispatcher:
                 event.direction,
             )
         except TypeError:
-            try:
-                handler(train_id, path_id, event.resource_type, event.resource_id)
-            except Exception:
-                pass
-        except Exception:
-            pass
+            # Legacy 4-arg signature fallback.
+            handler(train_id, path_id, event.resource_type, event.resource_id)
 
     def _release_tail_vacated_resource(
         self, event: ResourceEvent, train_id: str
@@ -1496,32 +1595,14 @@ class PathDispatcher:
                 try:
                     handler(event.resource_id, train_id, event.direction)
                 except TypeError:
-                    try:
-                        handler(event.resource_id, train_id)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+                    # Legacy 2-arg signature fallback.
+                    handler(event.resource_id, train_id)
             return
         if event.resource_type == "switch":
             switch = self._resolve_switch_entity(event.resource_id)
             if switch is None:
                 return
-            if getattr(switch, "occupied_by", None) == train_id:
-                switch.occupied_by = None
-            release_protection = getattr(switch, "release_train_protection_from", None)
-            if callable(release_protection):
-                try:
-                    release_protection(
-                        source_switch_id=event.resource_id, train_id=train_id
-                    )
-                except TypeError:
-                    try:
-                        release_protection(event.resource_id, train_id)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+            switch.on_train_tail_vacated(train_id)
 
     def _map_deviation_kind_to_cancellation(
         self, deviation_kind: Optional[str]
@@ -1580,18 +1661,51 @@ class PathDispatcher:
                 reason="authority end has not reached requested destination",
             )
 
+        # Per design_new.md "Active-path completion procedure": completion
+        # accepts only when the terminal authority traversal direction
+        # equals `Path.requested_destination_direction`. Compute the
+        # terminal direction from the final `resource_sequence` block entry
+        # against the block's `ordered_tiles` and compare.
+        requested_direction = (path.requested_destination_direction or "").strip().lower()
+        if requested_direction not in ("forward", "reverse"):
+            return PathCompletionResult(
+                success=False,
+                path_id=path_id,
+                new_status=path.status,
+                reason="path missing requested destination direction",
+            )
+        terminal_entry = path.resource_sequence[-1] if path.resource_sequence else None
+        terminal_block = self.network.blocks.get(path.authority_end_block_id)
+        if terminal_entry is None or terminal_block is None:
+            return PathCompletionResult(
+                success=False,
+                path_id=path_id,
+                new_status=path.status,
+                reason="terminal authority resource missing",
+            )
+        terminal_block_direction = terminal_block.block_direction_for_compass_exit(
+            terminal_entry.exit_edge
+        )
+        if terminal_block_direction != requested_direction:
+            return PathCompletionResult(
+                success=False,
+                path_id=path_id,
+                new_status=path.status,
+                reason=(
+                    "terminal authority direction does not match requested "
+                    "destination direction"
+                ),
+            )
+
         # Release reservations (completed=True).
         all_blocks = path.get_all_blocks()
         block_manager = getattr(self.network, "block_manager", None)
         if block_manager is not None and hasattr(
             block_manager, "release_path_block_reservations"
         ):
-            try:
-                block_manager.release_path_block_reservations(
-                    all_blocks, path_id, completed=True
-                )
-            except Exception:
-                pass
+            block_manager.release_path_block_reservations(
+                all_blocks, path_id, completed=True
+            )
 
         # Release switch locks.
         for switch_id in path.get_all_switches():
@@ -1628,10 +1742,7 @@ class PathDispatcher:
         # Notify controller.
         on_complete = getattr(controller, "on_path_complete", None)
         if callable(on_complete):
-            try:
-                on_complete()
-            except Exception:
-                pass
+            on_complete()
 
         # Notify route executor.
         route_executor = self._get_route_executor()
@@ -1647,15 +1758,12 @@ class PathDispatcher:
                         event_time,
                     )
                 except TypeError:
-                    try:
-                        handler(train_id, path_id)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+                    # Legacy 2-arg signature fallback.
+                    handler(train_id, path_id)
 
-        if path_id in self.paths:
-            del self.paths[path_id]
+        # Per design_new.md ~line 80: completed paths remain in
+        # `paths_by_id[path_id]` for history. `Path.status == COMPLETED`
+        # is what makes `active_path_id_by_train(...)` skip them.
 
         return PathCompletionResult(
             success=True,
@@ -1680,7 +1788,13 @@ class PathDispatcher:
         return self.paths.get(path_id)
 
     def get_active_paths(self) -> List[Path]:
-        return list(self.paths.values())
+        """Return all currently ACTIVE path records.
+
+        Per design_new.md ~line 80 cancelled/completed rows remain in
+        `paths_by_id` as historical records; they are filtered out here so
+        callers that ask for "active paths" never see terminal rows.
+        """
+        return [p for p in self.paths.values() if p.status == PathStatus.ACTIVE]
 
     def get_active_path(self, train_id: str) -> Optional[Path]:
         if train_id is None:
@@ -1694,8 +1808,41 @@ class PathDispatcher:
         path = self.get_active_path(train_id)
         return path.path_id if path else None
 
+    def get_active_path_progress(self, train_id: str) -> Optional[Dict[str, Any]]:
+        """Read-only projection of dispatcher state for a single train.
+
+        Used by the API/UI layer per design_new.md "Data Flow To UI". Returns
+        ``None`` when no active path exists for the train.
+        """
+        path = self.get_active_path(train_id)
+        if path is None:
+            return None
+        return {
+            "path_id": path.path_id,
+            "status": path.status.value,
+            "current_resource_index": path.current_resource_index,
+            "authority_end_block_id": path.authority_end_block_id,
+            "requested_destination_block_id": path.requested_destination_block_id,
+            "requested_destination_direction": path.requested_destination_direction,
+            "resource_sequence": [
+                {
+                    "sequence_index": entry.sequence_index,
+                    "resource_type": entry.resource_type,
+                    "resource_id": entry.resource_id,
+                    "entry_edge": entry.entry_edge,
+                    "exit_edge": entry.exit_edge,
+                }
+                for entry in path.resource_sequence
+            ],
+        }
+
     def get_paths_using_switch(self, position: Tuple[int, int]) -> List[Path]:
-        """Return paths that traverse a switch at the given tile position."""
+        """Return ACTIVE paths that traverse a switch at the given tile position.
+
+        Terminal (COMPLETED/CANCELLED) rows retained in `paths_by_id` for
+        history are not returned, since they no longer hold authority over
+        the switch.
+        """
         switch = self._resolve_switch_at_position(position)
         if switch is None:
             return []
@@ -1703,7 +1850,10 @@ class PathDispatcher:
         if switch_id is None:
             return []
         return [
-            p for p in self.paths.values() if switch_id in p.get_all_switches()
+            p
+            for p in self.paths.values()
+            if p.status == PathStatus.ACTIVE
+            and switch_id in p.get_all_switches()
         ]
 
     def get_and_clear_completion_events(self) -> List[Dict[str, Any]]:
@@ -1711,10 +1861,3 @@ class PathDispatcher:
         self.completed_path_events.clear()
         return events
 
-    def update_approach_locking(self, path_id: str) -> None:
-        """Approach locking is recomputed by the train's overlap controller in v1.
-
-        This call is retained as a no-op to keep legacy tick wiring compiling
-        until the per-tick caller is removed in Wave 6.
-        """
-        return None

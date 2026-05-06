@@ -317,3 +317,27 @@ class Platform:
             # Returns: {"BLK_001", "BLK_002", "BLK_003"}
         """
         return set(self.block_assignments.values())
+
+    @property
+    def ordered_blocks(self) -> List[str]:
+        """
+        Canonical ordered list of block IDs in the platform per design_new.md
+        "Platform and station model".
+
+        Derived from `block_assignments`: blocks are listed in the order they
+        first appear when iterating `positions` (the tile order supplied by
+        the platform editor). Duplicates are removed while preserving first
+        appearance, so a multi-tile platform with several blocks returns each
+        block exactly once in physical traversal order. Identifying the two
+        platform-end blocks for path planning is therefore
+        `ordered_blocks[0]` and `ordered_blocks[-1]`.
+        """
+        seen: Set[str] = set()
+        result: List[str] = []
+        for pos in self.positions:
+            block_id = self.block_assignments.get(pos)
+            if block_id is None or block_id in seen:
+                continue
+            seen.add(block_id)
+            result.append(block_id)
+        return result

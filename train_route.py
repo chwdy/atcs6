@@ -14,17 +14,13 @@ The module provides:
 - Route: shared travel plan (ordered tasks + route-level policy).
 - RouteMode: ONE_OFF, CIRCULAR, ROUND_TRIP.
 - TimingMode: NONE, RELATIVE, ABSOLUTE.
-- PlatformSide: re-exported from enums.
-
-Removed in v1: Waypoint (replaced by RouteTask), TravelDirectionPolicy
-(replaced by block-relative task_direction).
 """
 
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 
-from enums import PlatformSide
+from runtime_payloads import AcquisitionMode, ErrorRecord
 
 if TYPE_CHECKING:
     # Forward reference to ResolvedRouteTarget which lives in route_executor.py
@@ -33,7 +29,7 @@ if TYPE_CHECKING:
 
 
 class TimingMode(Enum):
-    """Timing mode for task departure (legacy field, retained for serialization)."""
+    """Timing mode for task departure."""
 
     NONE = "none"
     RELATIVE = "relative"
@@ -83,27 +79,34 @@ class RouteTask:
         task_direction: Block-relative traversal preference. RouteExecutor
             resolves "either" to a concrete direction before any dispatcher
             call; the dispatcher never receives "either".
-        dwell_time_sec: Hold duration in seconds for `dwell` kind. Equivalent
-            to the `task_time` semantic on a dwell task in design_new.md.
+        task_time: Semantics depend on task_kind. For dwell: hold duration
+            in seconds; omit (None) means depart immediately. For
+            waypoint/stop: expected travel time in seconds from the previous
+            task's location to this one (used for early/on-time/late
+            classification).
         target_time: Optional absolute system-time Unix departure timestamp
             for `stop` tasks; granted immediately if the train arrives late.
-        timing_mode: Legacy timing classification (NONE / RELATIVE / ABSOLUTE).
-            Retained for serialization of timing intent.
+        timing_mode: Timing classification (NONE / RELATIVE / ABSOLUTE).
         flexible_platform: For waypoint/stop on a platform_id task, allow
             covered-task index advance to count any compatible platform in
             the allowed set. No effect on station/block tasks.
-        required_platform_side: Side filter for flexible-platform selection.
-            Defaults to EITHER.
+        departure_mode: Optional per-task override of
+            Route.default_departure_mode. Applies to stop tasks; ignored for
+            others. None means inherit the route default.
+        task_metadata: Optional kind-specific extension payload reserved for
+            future fields; must not contain `flexible_platform` or
+            `departure_mode` (those are top-level fields).
     """
 
     task_kind: Literal["waypoint", "stop", "dwell"]
     task_location: str
     task_direction: Literal["forward", "reverse", "either"] = "either"
-    dwell_time_sec: float = 0.0
+    task_time: Optional[float] = None
     target_time: Optional[float] = None
     timing_mode: TimingMode = TimingMode.NONE
     flexible_platform: bool = False
-    required_platform_side: PlatformSide = PlatformSide.EITHER
+    departure_mode: Optional[Literal["auto", "manual"]] = None
+    task_metadata: Optional[Dict[str, Any]] = None
 
     def should_depart(
         self,
@@ -114,7 +117,7 @@ class RouteTask:
 
         For `dwell` tasks, returns True when:
           * `target_time` is present and `now >= target_time`, or
-          * `dwell_time_sec` has elapsed since `dwell_started_at`, or
+          * `task_time` has elapsed since `dwell_started_at`, or
           * neither is set (depart immediately).
 
         For `waypoint` and `stop` tasks, returns True (the caller controls
@@ -131,10 +134,10 @@ class RouteTask:
             # No predecessor finish yet → not ready.
             return False
 
-        if self.dwell_time_sec <= 0.0:
+        if self.task_time is None or self.task_time <= 0.0:
             return True
 
-        return (now - dwell_started_at) >= self.dwell_time_sec
+        return (now - dwell_started_at) >= self.task_time
 
     def get_remaining_dwell_time(
         self,
@@ -149,12 +152,12 @@ class RouteTask:
             return max(0.0, self.target_time - now)
 
         if dwell_started_at is None:
-            return self.dwell_time_sec
+            return self.task_time if self.task_time is not None else 0.0
 
-        if self.dwell_time_sec <= 0.0:
+        if self.task_time is None or self.task_time <= 0.0:
             return 0.0
 
-        return max(0.0, self.dwell_time_sec - (now - dwell_started_at))
+        return max(0.0, self.task_time - (now - dwell_started_at))
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to a JSON-compatible dict."""
@@ -162,11 +165,12 @@ class RouteTask:
             "task_kind": self.task_kind,
             "task_location": self.task_location,
             "task_direction": self.task_direction,
-            "dwell_time_sec": self.dwell_time_sec,
+            "task_time": self.task_time,
             "target_time": self.target_time,
             "timing_mode": self.timing_mode.value,
             "flexible_platform": self.flexible_platform,
-            "required_platform_side": self.required_platform_side.value,
+            "departure_mode": self.departure_mode,
+            "task_metadata": self.task_metadata,
         }
 
     @classmethod
@@ -178,12 +182,6 @@ class RouteTask:
         except ValueError:
             timing_mode = TimingMode.NONE
 
-        side_value = data.get("required_platform_side", "either")
-        try:
-            required_side = PlatformSide(side_value)
-        except ValueError:
-            required_side = PlatformSide.EITHER
-
         kind = data.get("task_kind", "waypoint")
         if kind not in ("waypoint", "stop", "dwell"):
             kind = "waypoint"
@@ -192,15 +190,34 @@ class RouteTask:
         if direction not in ("forward", "reverse", "either"):
             direction = "either"
 
+        # Accept the canonical `task_time` and fall back to legacy
+        # `dwell_time_sec` saved data.
+        if "task_time" in data and data["task_time"] is not None:
+            task_time: Optional[float] = float(data["task_time"])
+        elif "dwell_time_sec" in data:
+            legacy = float(data.get("dwell_time_sec", 0.0))
+            task_time = legacy if legacy > 0.0 else None
+        else:
+            task_time = None
+
+        departure_mode = data.get("departure_mode")
+        if departure_mode not in ("auto", "manual", None):
+            departure_mode = None
+
+        task_metadata = data.get("task_metadata")
+        if task_metadata is not None and not isinstance(task_metadata, dict):
+            task_metadata = None
+
         return cls(
             task_kind=kind,  # type: ignore[arg-type]
             task_location=str(data.get("task_location", "")),
             task_direction=direction,  # type: ignore[arg-type]
-            dwell_time_sec=float(data.get("dwell_time_sec", 0.0)),
+            task_time=task_time,
             target_time=data.get("target_time"),
             timing_mode=timing_mode,
             flexible_platform=bool(data.get("flexible_platform", False)),
-            required_platform_side=required_side,
+            departure_mode=departure_mode,  # type: ignore[arg-type]
+            task_metadata=task_metadata,
         )
 
 
@@ -217,8 +234,7 @@ class RouteTaskRun:
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
     delay_class: Optional[Literal["early", "on_time", "late"]] = None
-    last_error: Optional[str] = None
-    error_time: Optional[float] = None
+    last_error: Optional["ErrorRecord"] = None
     current_route_status: RouteRunStatus = RouteRunStatus.PLANNING
 
 
@@ -246,12 +262,6 @@ class Route:
             route edit that changes task order or execution policy.
         reconciliation_policy: How active runs reconcile against later
             shared-route edits ("nearest_valid_target" / "restart_from_top").
-        last_error: Per-train errors live on the run, not here, but kept on
-            Route for legacy callers that still write definition-level errors.
-        error_time: Same as last_error.
-        current_task_index: Legacy route-level cursor; route runs own per-train
-            cursors. Kept for legacy code paths still mutating it.
-        direction: Legacy route-level direction; superseded by per-run direction.
     """
 
     route_id: str
@@ -268,19 +278,10 @@ class Route:
 
     # Route-level policy (v1)
     priority: int = 5
-    acquisition_mode: Literal["all_or_nothing", "best_effort"] = "all_or_nothing"
+    acquisition_mode: AcquisitionMode = AcquisitionMode.ALL_OR_NOTHING
     default_departure_mode: Literal["auto", "manual"] = "auto"
     route_version: int = 1
     reconciliation_policy: str = "nearest_valid_target"
-
-    # Error tracking (kept for legacy callers; per-run errors are canonical)
-    last_error: Optional[str] = None
-    error_time: Optional[float] = None
-
-    # Legacy execution fields retained for current-code callers; route runs
-    # are the canonical owner of per-train cursor state.
-    current_task_index: int = 0
-    direction: int = 1
 
     # ── Definition Methods ─────────────────────────────────────────
 
@@ -312,48 +313,55 @@ class Route:
             return self.tasks[index]
         return None
 
-    def get_current_task(self) -> Optional[RouteTask]:
-        """Return the task at the legacy route-level cursor."""
-        return self.get_task_at(self.current_task_index)
-
-    def advance_to_next_task(self) -> Optional[RouteTask]:
-        """Advance the legacy route-level cursor and return the new task."""
-        if not self.tasks:
-            return None
-
-        if self.mode == RouteMode.ONE_OFF:
-            self.current_task_index += 1
-            if self.current_task_index >= len(self.tasks):
-                return None
-
-        elif self.mode == RouteMode.CIRCULAR:
-            self.current_task_index += 1
-            if self.current_task_index >= len(self.tasks):
-                self.current_task_index = 0
-
-        elif self.mode == RouteMode.ROUND_TRIP:
-            self.current_task_index += self.direction
-            if self.current_task_index >= len(self.tasks):
-                self.direction = -1
-                self.current_task_index = max(0, len(self.tasks) - 2)
-            elif self.current_task_index < 0:
-                self.direction = 1
-                self.current_task_index = 0 if len(self.tasks) == 1 else 1
-
-        return self.get_task_at(self.current_task_index)
-
     # ── Activation Methods ─────────────────────────────────────────
 
     def activate(self, simulation_time: float) -> None:
         """Activate the route for execution (per-run cursors are managed by RouteExecutor)."""
         self.is_active = True
         self.started_at = simulation_time
-        self.last_error = None
-        self.error_time = None
 
-    def deactivate(self) -> None:
-        """Deactivate the route (pause execution)."""
+    def deactivate(self, simulation_controller: Optional[Any] = None) -> None:
+        """Deactivate the route.
+
+        Per design_new.md line 199 (inclusive-latch rule): when a
+        ``simulation_controller`` is supplied, walk every assigned train and
+        write ``pending_route_deactivate`` on its controller. If that train
+        has a live path, also write ``pending_path_cancel_request`` with
+        ``cancellation_kind = PathCancellationKind.REVOKED``. The Phase-3
+        consume pass for each train then performs the actual cancel and
+        route-run teardown.
+
+        ``simulation_controller`` is optional so direct-pause callers (tests,
+        internal route definition tooling) can flip the flag without needing
+        the runtime surface; production deactivation through the admin
+        handler MUST pass it so the controller mailboxes are written.
+        """
         self.is_active = False
+        if simulation_controller is None:
+            return
+
+        from runtime_payloads import (
+            PathCancellationKind,
+            PendingPathCancelRequest,
+            PendingRouteDeactivateRequest,
+        )
+
+        diagnostic = f"route_deactivated:{self.route_id}"
+        for train_id in list(self.assigned_train_ids):
+            controller = simulation_controller.get_controller(train_id)
+            if controller is None:
+                continue
+            path_id = controller.assigned_path_id
+            controller.pending_route_deactivate = PendingRouteDeactivateRequest(
+                reason=diagnostic,
+                expected_path_id=path_id,
+            )
+            if controller.received_path_plan is not None:
+                controller.pending_path_cancel_request = PendingPathCancelRequest(
+                    cancellation_kind=PathCancellationKind.REVOKED,
+                    reason=diagnostic,
+                    expected_path_id=path_id,
+                )
 
     # ── Assignment Methods ─────────────────────────────────────────
 
@@ -379,25 +387,13 @@ class Route:
         """Return the count of trains assigned to this route."""
         return len(self.assigned_train_ids)
 
-    # ── Progress (legacy helpers) ──────────────────────────────────
+    # ── Progress ───────────────────────────────────────────────────
 
     def get_progress(self, task_index: int) -> float:
         """Get route progress as fraction (0.0 to 1.0) for ONE_OFF mode."""
         if self.mode != RouteMode.ONE_OFF or not self.tasks:
             return 0.0
         return min(1.0, task_index / len(self.tasks))
-
-    # ── Error Methods ──────────────────────────────────────────────
-
-    def set_error(self, message: str, simulation_time: float) -> None:
-        """Record an execution error on the route definition (legacy)."""
-        self.last_error = message
-        self.error_time = simulation_time
-
-    def clear_error(self) -> None:
-        """Clear any recorded definition-level error (legacy)."""
-        self.last_error = None
-        self.error_time = None
 
     # ── Serialization ──────────────────────────────────────────────
 
@@ -412,12 +408,10 @@ class Route:
             "is_active": self.is_active,
             "started_at": self.started_at,
             "priority": self.priority,
-            "acquisition_mode": self.acquisition_mode,
+            "acquisition_mode": self.acquisition_mode.value,
             "default_departure_mode": self.default_departure_mode,
             "route_version": self.route_version,
             "reconciliation_policy": self.reconciliation_policy,
-            "last_error": self.last_error,
-            "error_time": self.error_time,
         }
 
     @classmethod
@@ -431,9 +425,14 @@ class Route:
 
         tasks = [RouteTask.from_dict(td) for td in data.get("tasks", [])]
 
-        acquisition_mode = data.get("acquisition_mode", "all_or_nothing")
-        if acquisition_mode not in ("all_or_nothing", "best_effort"):
-            acquisition_mode = "all_or_nothing"
+        raw_acq = data.get("acquisition_mode", AcquisitionMode.ALL_OR_NOTHING)
+        if isinstance(raw_acq, AcquisitionMode):
+            acquisition_mode = raw_acq
+        else:
+            try:
+                acquisition_mode = AcquisitionMode(raw_acq)
+            except ValueError:
+                acquisition_mode = AcquisitionMode.ALL_OR_NOTHING
 
         default_departure_mode = data.get("default_departure_mode", "auto")
         if default_departure_mode not in ("auto", "manual"):
@@ -454,6 +453,4 @@ class Route:
             reconciliation_policy=str(
                 data.get("reconciliation_policy", "nearest_valid_target")
             ),
-            last_error=data.get("last_error"),
-            error_time=data.get("error_time"),
         )

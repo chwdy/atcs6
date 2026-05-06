@@ -20,9 +20,13 @@ State Descriptions:
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Dict, List, Mapping, Set
+from typing import Optional, Dict, List, Mapping, Set, Tuple, TYPE_CHECKING
 
 from block import Block, BlockState
+from runtime_payloads import FatalPhysicalEntryConflict, FatalConflictKind
+
+if TYPE_CHECKING:
+    from network import RailwayNetwork
 
 
 # ============================================================================
@@ -79,19 +83,44 @@ class BlockManager:
         self,
         blocks: Dict[str, Block],
         simulation_controller: Optional[object] = None,
+        network: Optional["RailwayNetwork"] = None,
     ):
         """Initialize BlockManager with existing blocks.
 
         Args:
-            blocks: Dictionary mapping block_id to Block instances
+            blocks: Dictionary mapping block_id to Block instances. Used as a
+                fallback registry when ``network`` is None.
             simulation_controller: optional back-reference used only to report
                 fatal physical-entry conflicts via
                 `enter_failed_runtime(...)`. Wired by the runtime once the
                 controller is constructed; stays `None` in early bootstrap.
+            network: optional `RailwayNetwork` reference. When provided, the
+                manager prefers `network.blocks` and `network.switches` over
+                the local fallback dict, and uses the shared topology graph
+                for directional caution reevaluation.
         """
         self.blocks = blocks
         self.simulation_controller = simulation_controller
+        self.network = network
         self.history: deque = deque(maxlen=100)
+
+    # ------------------------------------------------------------------
+    # Registry accessors (prefer network over fallback dict)
+    # ------------------------------------------------------------------
+
+    @property
+    def _block_registry(self) -> Dict[str, Block]:
+        """Authoritative block registry — `network.blocks` if wired."""
+        if self.network is not None:
+            return self.network.blocks
+        return self.blocks
+
+    @property
+    def _switch_registry(self) -> Dict[str, object]:
+        """Authoritative switch registry — `network.switches` if wired."""
+        if self.network is not None:
+            return self.network.switches
+        return {}
 
     # ------------------------------------------------------------------
     # History helper
@@ -133,11 +162,21 @@ class BlockManager:
             RESERVED  -> OCCUPIED (only the reserved train may consume it)
             CAUTION   -> OCCUPIED (clean entry overrides stale caution)
             OCCUPIED  -> OCCUPIED (idempotent, same train only)
+
+        Conflicts (target block held against this train) are reported to
+        ``SimulationController.enter_failed_runtime(...)`` via a typed
+        ``FatalPhysicalEntryConflict`` payload, then return False.
         """
-        block = self.blocks.get(block_id)
+        block = self._block_registry.get(block_id)
         if not block:
             return False
         if block.disabled:
+            self._report_fatal_conflict(
+                block_id=block_id,
+                train_id=train_id,
+                conflict_kind=FatalConflictKind.DISABLED_RESOURCE_ENTRY,
+                prior_owner_train_id=None,
+            )
             return False
 
         prior_state = block.state
@@ -145,6 +184,12 @@ class BlockManager:
         if prior_state == BlockState.OCCUPIED:
             if block.occupied_by == train_id:
                 return True
+            self._report_fatal_conflict(
+                block_id=block_id,
+                train_id=train_id,
+                conflict_kind=FatalConflictKind.OCCUPIED_BY_OTHER_TRAIN,
+                prior_owner_train_id=block.occupied_by,
+            )
             return False
 
         if prior_state == BlockState.RESERVED:
@@ -153,14 +198,18 @@ class BlockManager:
                 block.reserved_for_train is not None
                 and block.reserved_for_train != train_id
             ):
+                self._report_fatal_conflict(
+                    block_id=block_id,
+                    train_id=train_id,
+                    conflict_kind=FatalConflictKind.RESERVED_FOR_OTHER_TRAIN,
+                    prior_owner_train_id=block.reserved_for_train,
+                )
                 return False
             block.occupied_by = train_id
             block._is_caution = False
             block.caution_direction = None
             # Same-train reservation is consumed by clean entry.
-            block.reserved_by_path = None
-            block.reserved_direction = None
-            block.reserved_for_train = None
+            block.reservation = None
             self._record_history(
                 block_id, "occupy", prior_state, BlockState.OCCUPIED, train_id
             )
@@ -175,12 +224,45 @@ class BlockManager:
         )
         return True
 
+    # ------------------------------------------------------------------
+    # Fatal-conflict reporting helper
+    # ------------------------------------------------------------------
+
+    def _report_fatal_conflict(
+        self,
+        *,
+        block_id: str,
+        train_id: str,
+        conflict_kind: FatalConflictKind,
+        prior_owner_train_id: Optional[str],
+    ) -> None:
+        """Build a `FatalPhysicalEntryConflict` and forward it to the runtime.
+
+        Skips the call when no `simulation_controller` back-reference is
+        wired (early bootstrap / unit tests that exercise `BlockManager`
+        in isolation).
+        """
+        if self.simulation_controller is None:
+            return
+        payload = FatalPhysicalEntryConflict(
+            resource_type="block",
+            resource_id=block_id,
+            incoming_train_id=train_id,
+            prior_owner_train_id=prior_owner_train_id,
+            conflict_kind=conflict_kind,
+        )
+        try:
+            self.simulation_controller.enter_failed_runtime(payload)
+        except Exception:
+            # Receiver issues must not mask the underlying conflict.
+            pass
+
     def set_block_to_caution(self, block_id: str) -> bool:
         """Set a block to CAUTION (legacy single-block helper).
 
         Prefer `on_block_tail_vacated(...)` for the v1 lifecycle entry point.
         """
-        block = self.blocks.get(block_id)
+        block = self._block_registry.get(block_id)
         if not block:
             return False
 
@@ -207,7 +289,7 @@ class BlockManager:
         Used for manual overrides and path cancellation cleanup. Note: this
         clears reservation primitives and physical primitives both.
         """
-        block = self.blocks.get(block_id)
+        block = self._block_registry.get(block_id)
         if not block:
             return False
 
@@ -217,9 +299,7 @@ class BlockManager:
         block.occupied_by = None
         block._is_caution = False
         block.caution_direction = None
-        block.reserved_by_path = None
-        block.reserved_direction = None
-        block.reserved_for_train = None
+        block.reservation = None
 
         self._record_history(
             block_id, "clear", prior_state, BlockState.FREE, prev_train
@@ -233,7 +313,7 @@ class BlockManager:
         is not yet available. Validates `train_id` against current occupant
         when provided.
         """
-        block = self.blocks.get(block_id)
+        block = self._block_registry.get(block_id)
         if not block:
             return False
 
@@ -251,12 +331,12 @@ class BlockManager:
 
     def get_block_state(self, block_id: str) -> Optional[BlockState]:
         """Return the computed state for a block, or `None` if unknown."""
-        block = self.blocks.get(block_id)
+        block = self._block_registry.get(block_id)
         return block.state if block else None
 
     def get_block_occupant(self, block_id: str) -> Optional[str]:
         """Return the train ID currently in a block, or `None`."""
-        block = self.blocks.get(block_id)
+        block = self._block_registry.get(block_id)
         return block.occupied_by if block else None
 
     def is_block_available(
@@ -267,7 +347,7 @@ class BlockManager:
         Available if FREE, or already RESERVED/OCCUPIED by `for_train_id`
         (re-entry case).
         """
-        block = self.blocks.get(block_id)
+        block = self._block_registry.get(block_id)
         if not block:
             return False
         if block.disabled:
@@ -287,6 +367,10 @@ class BlockManager:
 
         Returns True on full success. On any per-block failure, blocks
         successfully occupied earlier in this call are rolled back to FREE.
+        Fatal physical-entry conflicts (occupied/reserved by another train,
+        or entry into a disabled block) are reported through the inner
+        ``occupy_block`` call, which forwards a ``FatalPhysicalEntryConflict``
+        to ``SimulationController.enter_failed_runtime(...)``.
         """
         occupied: List[str] = []
         try:
@@ -337,7 +421,7 @@ class BlockManager:
         """
         # First pass: validate every block before writing any field.
         for block_id in block_ids:
-            block = self.blocks.get(block_id)
+            block = self._block_registry.get(block_id)
             if block is None:
                 return ReserveResult(
                     success=False,
@@ -382,10 +466,9 @@ class BlockManager:
 
         # Second pass: commit. By here every block is eligible.
         for block_id in block_ids:
-            block = self.blocks[block_id]
+            block = self._block_registry[block_id]
             traversal = directions[block_id]
-            block.reserved_by_path = path_id
-            block._reserve_for_path(train_id, traversal.exit_edge)
+            block.reserve_for_path(path_id, train_id, traversal.exit_edge)
             self._record_history(
                 block_id,
                 "reserve",
@@ -423,7 +506,7 @@ class BlockManager:
         caution-fields exception.
         """
         for block_id in block_ids:
-            block = self.blocks.get(block_id)
+            block = self._block_registry.get(block_id)
             if block is None:
                 # Quiet ignore for unknown IDs; nothing to release.
                 continue
@@ -465,7 +548,7 @@ class BlockManager:
           `caution_direction = direction`, then call
           `_reevaluate_caution_blocks()` to cascade any ready-to-FREE blocks.
         """
-        block = self.blocks.get(block_id)
+        block = self._block_registry.get(block_id)
         if block is None:
             return
 
@@ -497,7 +580,7 @@ class BlockManager:
         CAUTION reevaluation across all blocks. Safe to call before any
         blocks/switches have been registered (empty registry => no-op).
         """
-        if not self.blocks:
+        if not self._block_registry:
             return
         self._reevaluate_caution_blocks()
 
@@ -509,30 +592,44 @@ class BlockManager:
         """Walk all CAUTION blocks and clear the ones whose forward
         protection chain no longer needs them.
 
-        Wave 1 stub: the full algorithm (see `design_new.md`, section
-        "`on_block_tail_vacated()` behaviour (directional CAUTION
-        evaluation)") walks the shared `RailwayNetwork` topology graph
-        through the vacated block's `caution_direction` exit edge, follows
-        live tile connectivity through any intervening switch tile based on
-        the current `Switch.state`, and clears `_is_caution` /
-        `caution_direction` if the next reachable forward block is not
-        OCCUPIED, or if no forward block is reachable at all.
+        Per design_new.md "`on_block_tail_vacated()` behaviour (directional
+        CAUTION evaluation)": for each block currently in CAUTION, follow
+        live tile connectivity from the block's exit tile in
+        ``caution_direction`` through any intervening switch (using the
+        current ``Switch.state``) until the next reachable block resource is
+        found. If that next reachable block is OCCUPIED, keep caution. If it
+        is FREE/RESERVED/CAUTION, or if no reachable block exists at all,
+        clear caution by writing ``_is_caution = False`` and
+        ``caution_direction = None``.
 
-        We do not yet have access to `RailwayNetwork` here (BlockManager
-        construction wires only the block dict in v1 bootstrap); a follow-up
-        wave will pass the network in and replace this body. For now the
-        stub iterates `self.blocks.values()` and only clears caution when
-        the block's `caution_direction` is missing entirely - i.e. nothing
-        ahead can be protected because the direction was never recorded.
-        That keeps the call side-effect free for normal state.
+        When the manager has no network back-reference (early bootstrap or
+        unit tests), the only safe behaviour is to clear caution entries that
+        never recorded a direction — there is no topology graph to walk.
         """
+        registry = self._block_registry
         cleared: List[str] = []
-        for block in self.blocks.values():
+        for block in list(registry.values()):
             if not block._is_caution:
                 continue
+            # Direction never recorded: nothing to protect.
             if block.caution_direction is None:
-                # Nothing left to protect; clear caution metadata.
                 block._is_caution = False
+                cleared.append(block.block_id)
+                continue
+            # Without a network we cannot walk topology; bail safely.
+            if self.network is None:
+                continue
+            next_block = self._next_block_along_direction(
+                block, block.caution_direction
+            )
+            if next_block is None:
+                block._is_caution = False
+                block.caution_direction = None
+                cleared.append(block.block_id)
+                continue
+            if next_block.state != BlockState.OCCUPIED:
+                block._is_caution = False
+                block.caution_direction = None
                 cleared.append(block.block_id)
 
         for block_id in cleared:
@@ -540,6 +637,84 @@ class BlockManager:
                 block_id,
                 "caution_cleared",
                 BlockState.CAUTION,
-                self.blocks[block_id].state,
+                registry[block_id].state,
                 None,
             )
+
+    # ------------------------------------------------------------------
+    # Topology walk helper for directional caution reevaluation
+    # ------------------------------------------------------------------
+
+    _EDGE_OFFSETS: Dict[str, Tuple[int, int]] = {
+        "N": (0, 1),
+        "E": (1, 0),
+        "S": (0, -1),
+        "W": (-1, 0),
+    }
+    _OPPOSITE_EDGE: Dict[str, str] = {"N": "S", "S": "N", "E": "W", "W": "E"}
+
+    def _next_block_along_direction(
+        self, block: Block, direction: str
+    ) -> Optional[Block]:
+        """Return the next reachable block when walking forward from ``block``
+        through its ``direction`` exit edge.
+
+        Walks tile connectivity through any intervening switch tiles using
+        the current ``Switch.state``. Returns None if the walk runs off the
+        network, hits a dead end, or loops back into the same block.
+        """
+        if self.network is None:
+            return None
+        direction = direction.upper() if direction else None
+        if direction not in self._EDGE_OFFSETS:
+            return None
+
+        # Locate the exit tile inside `block` for this direction: the tile
+        # whose neighbour in `direction` is not part of the same block.
+        exit_tile: Optional[Tuple[int, int]] = None
+        for entry in block.ordered_tiles:
+            tx, ty = int(entry[0]), int(entry[1])
+            dx, dy = self._EDGE_OFFSETS[direction]
+            neighbour = self.network.get_track(tx + dx, ty + dy)
+            if neighbour is None or neighbour.block_section_id != block.block_id:
+                exit_tile = (tx, ty)
+                break
+        if exit_tile is None:
+            return None
+
+        # Step out into the neighbour tile and walk forward.
+        dx, dy = self._EDGE_OFFSETS[direction]
+        cur_x, cur_y = exit_tile[0] + dx, exit_tile[1] + dy
+        entry_edge = self._OPPOSITE_EDGE[direction]
+        visited: Set[Tuple[int, int]] = set()
+
+        while True:
+            if (cur_x, cur_y) in visited:
+                return None
+            visited.add((cur_x, cur_y))
+            tile = self.network.get_track(cur_x, cur_y)
+            if tile is None:
+                return None
+            # Plain block tile: this is the next reachable block.
+            if tile.block_section_id and not tile.is_switch:
+                return self._block_registry.get(tile.block_section_id)
+            if tile.block_section_id and tile.is_switch:
+                # Block-internal switch tile: still part of a block; treat as
+                # reaching that block.
+                return self._block_registry.get(tile.block_section_id)
+            # Bare switch tile (boundary between blocks). Cross via the live
+            # active exit determined by the current Switch.state.
+            if tile.is_switch:
+                exits = tile.get_exits(entry_edge, use_switch_state=True)
+                if not exits:
+                    return None
+                exit_edge = exits[0]
+                ndx, ndy = self._EDGE_OFFSETS.get(exit_edge, (0, 0))
+                if (ndx, ndy) == (0, 0):
+                    return None
+                cur_x, cur_y = cur_x + ndx, cur_y + ndy
+                entry_edge = self._OPPOSITE_EDGE[exit_edge]
+                continue
+            # Plain track tile not assigned to any block: nothing protectable
+            # ahead.
+            return None

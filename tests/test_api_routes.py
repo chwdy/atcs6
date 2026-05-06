@@ -646,7 +646,7 @@ class TestPathRoutes:
             },
         )
         # v1 routes/paths.py returns the dispatcher's PathAcquisitionResult
-        # which includes a failure_kind=="ALREADY_HAS_PATH" when the train
+        # which includes a failure_kind=="invalid_request" when the train
         # already holds a path. The HTTP layer doesn't promote this to 409,
         # so we assert on the result kind, not the legacy 409 status code.
         assert second_response.status_code in (200, 400, 409)

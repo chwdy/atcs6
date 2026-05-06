@@ -119,23 +119,15 @@ def register(app, state: AppState) -> None:
                     path = state.path_dispatcher.get_path(result.path_id)
                     train = state.network.trains[train_id]
                     if path is not None:
+                        # Bring the train's `position` into a path-consistent
+                        # layout. Per design_new.md ~line 1292 the dispatcher
+                        # owns `assigned_path_id` and the controller derives
+                        # `ato_destination_block_id` from `received_path_plan`,
+                        # so we no longer mirror those fields back onto Train.
                         raw_path = _convert_path_tiles_to_train_path(path.path_tiles)
-                        success, error = assign_complete_path_to_train(
+                        assign_complete_path_to_train(
                             state.network, train, raw_path
                         )
-                        if not success:
-                            train.current_path = raw_path
-                            train.path_index = 0
-                        train.assigned_path_id = path.path_id
-
-                        # In v1 the controller derives ato_destination_block_id
-                        # from received_path_plan (a property over the active
-                        # path); no manual write is needed. Mirror it onto the
-                        # Train for serialization and legacy callers.
-                        if path.authority_end_block_id:
-                            train.ato_destination_block_id = (
-                                path.authority_end_block_id
-                            )
             return jsonify(result.to_dict()), 200 if result.success else 400
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -154,7 +146,11 @@ def register(app, state: AppState) -> None:
         status = request.args.get("status")
 
         with state.simulation_lock:
-            paths = state.path_dispatcher.get_active_paths()
+            # Per design_new.md ~line 80, terminal (COMPLETED/CANCELLED)
+            # rows are retained in `paths_by_id` for history. Read the
+            # full registry here so the `status` filter can surface
+            # historical paths as well.
+            paths = list(state.path_dispatcher.paths_by_id.values())
 
         if train_id:
             paths = [p for p in paths if p.train_id == train_id]
@@ -296,22 +292,10 @@ def register(app, state: AppState) -> None:
             # Sync train state after successful extension. The controller
             # derives ato_destination_block_id from received_path_plan
             # (now a property over Path.authority_end_block_id), so no
-            # controller-side write is needed here.
-            if result.success and path.train_id:
-                train = state.network.trains.get(path.train_id)
-                if train:
-                    # Mirror destination on Train for serialization and
-                    # legacy consumers.
-                    train.ato_destination_block_id = (
-                        result.authority_end_block_id
-                        or requested_destination_block_id
-                    )
-
-                    # Update current_path cache for to_dict() serialization
-                    train.current_path = _convert_path_tiles_to_train_path(
-                        path.path_tiles
-                    )
-
+            # Per design_new.md ~line 1292, the dispatcher's `Path` is the
+            # source of truth for path tiles; UI consumers read tiles via
+            # `PathDispatcher.get_active_path_progress(train_id)` rather than
+            # from a Train-side mirror.
             if result.success:
                 state.network.update_signals_from_blocks()
 

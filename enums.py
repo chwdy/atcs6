@@ -193,6 +193,25 @@ OPPOSITE_DIRECTIONS = {
 }
 
 
+class AtcLimitReasonCode(Enum):
+    """Canonical reason codes for the ATC speed-limit selection.
+
+    Per design_new.md "canonical lookahead payload", every consumer that
+    inspects the reason behind the current ATC limit must use one of these
+    codes rather than a free-form string. The values here are the canonical
+    `.value` strings emitted in the lookahead payload's
+    `speed_curves[*].atc_limit_reason_code` field.
+    """
+
+    AUTHORITY_STOP = "authority_stop"
+    CAUTION = "caution"
+    OBSTRUCTION = "obstruction"
+    NO_AUTHORITY = "no_authority"
+    NO_CAB = "no_cab"
+    WRONG_DIRECTION_CAB = "wrong_direction_cab"
+    EB = "eb"
+
+
 class HandlePosition(Enum):
     """Throttle/brake handle positions for train control.
 

@@ -25,11 +25,11 @@ Architecture:
 import logging
 import time
 from datetime import datetime
-from typing import Any, Dict, Literal, Optional, TYPE_CHECKING
+from typing import Any, Dict, Literal, Optional, Tuple, TYPE_CHECKING
 
 from network import RailwayNetwork
 from train import Train, TrainCar
-from enums import TrainState, Direction
+from enums import TrainState, Direction, LeadingEnd
 from block_power import BlockPowerController
 from notification_center import NotificationCenter, Severity
 from route_executor import RouteExecutor
@@ -37,7 +37,12 @@ from speed_profile import SpeedProfileRegistry
 
 from train_controller import TrainController, create_controller_for_train
 from train_physics import TrainPhysics, create_physics_for_train
-from runtime_payloads import FatalPhysicalEntryConflict, PathCancellationKind
+from train_span import TrainSpan
+from runtime_payloads import (
+    FatalConflictKind,
+    FatalPhysicalEntryConflict,
+    PathCancellationKind,
+)
 
 if TYPE_CHECKING:
     from path_dispatcher import PathDispatcher
@@ -73,8 +78,11 @@ class SimulationController:
         )
 
         # Halt flag set by enter_failed_runtime(...). While True, train ticks
-        # are skipped (only simulation_time still advances).
+        # are skipped (only simulation_time still advances). The typed fatal
+        # payload is retained for inspection until manual cleanup releases
+        # the gate.
         self.failed_runtime: bool = False
+        self.failed_runtime_payload: Optional[FatalPhysicalEntryConflict] = None
 
         # TrainController + TrainPhysics instances (shared across components)
         self.controllers: Dict[str, TrainController] = {}
@@ -92,28 +100,23 @@ class SimulationController:
         if self.path_dispatcher is not None:
             self.path_dispatcher.simulation_controller = self
         if self.route_executor is not None:
-            # RouteExecutor may not have a back-reference attribute today, but
-            # if it does we set it; harmless no-op otherwise.
-            try:
-                self.route_executor.simulation_controller = self
-            except Exception:
-                pass
+            self.route_executor.simulation_controller = self
 
         # Wire BlockManager so it can report fatal physical-entry conflicts
-        # via enter_failed_runtime(...).
-        if self.network is not None and getattr(self.network, "block_manager", None) is not None:
-            try:
-                self.network.block_manager.simulation_controller = self
-            except Exception:
-                pass
+        # via enter_failed_runtime(...) and read network topology directly.
+        # Per design line 222, expose `block_manager` on SimulationController
+        # as the canonical access point for external callers.
+        self.block_manager = (
+            getattr(self.network, "block_manager", None) if self.network is not None else None
+        )
+        if self.block_manager is not None:
+            self.block_manager.simulation_controller = self
+            self.block_manager.network = self.network
 
         # Wire every Switch in the network.
         if self.network is not None and getattr(self.network, "switches", None):
             for sw in self.network.switches.values():
-                try:
-                    sw.simulation_controller = self
-                except Exception:
-                    pass
+                sw.simulation_controller = self
 
     # =========================================================================
     # Top-level update loop (per design_new.md "Core Runtime Loop")
@@ -129,8 +132,8 @@ class SimulationController:
           3. RouteExecutor.order_runnable_trains(...) returns the ordered
              runnable train ids. SimulationController owns running each
              train transaction in that order.
-          4. For each ordered train, run one full three-phase transaction
-             (Phase 1 routing, Phase 2 controller+physics, Phase 3 cleanup)
+          4. For each ordered train, run Phase 1 (RouteExecutor planning,
+             skipped while controller is OFF) followed by Phase 2 + Phase 3
              via _update_train(...).
           5. After all trains have committed, refresh signals from blocks.
         """
@@ -155,6 +158,15 @@ class SimulationController:
             train = self.network.trains.get(train_id)
             if train is None:
                 continue
+
+            # Phase 1 - Setup. Run before the per-train transaction so the
+            # planning kernel sits in the outer loop. Skip while the
+            # controller is OFF; the Phase-2 command drain must run first so
+            # that power_on_cmd() can be accepted.
+            controller = self._get_or_create_controller(train)
+            if controller.state != TrainState.OFF:
+                self.route_executor.tick_train_phase1(train_id, delta_seconds)
+
             self._update_train(train, delta_seconds)
 
         # After all trains, refresh signals so they reflect every block state
@@ -166,11 +178,11 @@ class SimulationController:
     # =========================================================================
 
     def _update_train(self, train: Train, delta_seconds: float) -> None:
-        """Run one per-train three-phase transaction.
+        """Run Phase 2 + Phase 3 of one per-train transaction.
 
-        Phase 1 - Setup: RouteExecutor.tick_train_phase1(...) (skipped while
-            controller is OFF; route planning cannot run before the command
-            drain has had a chance to accept power_on_cmd()).
+        Phase 1 (`RouteExecutor.tick_train_phase1(...)`) runs in the outer
+        `update()` loop immediately before this call.
+
         Phase 2 - Execute: TrainController.tick(...) drains operator commands
             then runs control logic; TrainPhysics.tick(...) integrates motion
             and calls TrainController.on_physics_updated(...) per Agent D.
@@ -180,12 +192,6 @@ class SimulationController:
         """
         controller = self._get_or_create_controller(train)
         physics = self._get_or_create_physics(train)
-
-        # Phase 1 - Setup. Skip while controller is OFF; the command drain in
-        # Phase 2 must be allowed to run first so power_on_cmd() can be
-        # accepted.
-        if controller.state != TrainState.OFF:
-            self.route_executor.tick_train_phase1(train.train_id, delta_seconds)
 
         # Phase 2 - Execute.
         # TrainController.tick(...) begins by draining the queued operator
@@ -220,7 +226,6 @@ class SimulationController:
         self._consume_pending_path_cancel_request(controller, train)
         self._consume_pending_route_abort(controller, train)
         self._consume_pending_power_off(controller, train)
-        self._consume_pending_route_finished(controller, train)
         self._consume_pending_route_deactivate(controller, train)
 
         # Sync only persistent/configuration state back to Train. Live state
@@ -326,21 +331,6 @@ class SimulationController:
         controller.power_on = False
         controller.pending_power_off = False
 
-    def _consume_pending_route_finished(
-        self, controller: TrainController, train: Train
-    ) -> None:
-        """Consume pending_route_finished: terminal route-run teardown.
-
-        The matching live path has already been cleared by normal stop
-        completion in step (b) of this same Phase 3 pass, so no dispatcher
-        cancel is needed.
-        """
-        if not controller.pending_route_finished:
-            return
-
-        self.route_executor.remove_train_route_run(train.train_id, "route_finished")
-        controller.pending_route_finished = False
-
     def _consume_pending_route_deactivate(
         self, controller: TrainController, train: Train
     ) -> None:
@@ -399,22 +389,12 @@ class SimulationController:
             )
             # Wire the back-reference so the controller can reach the
             # NotificationCenter and other simulation services.
-            try:
-                controller.simulation_controller = self
-            except Exception:
-                pass
-            # Inherit ATO state from train (for demo_main workflow)
-            if hasattr(train, "ato_running") and train.ato_running:
-                controller.ato_running = True
-            # Inherit active_cab from train (for demo_main workflow)
-            if hasattr(train, "active_cab") and train.active_cab:
-                controller.active_cab = train.active_cab
-            # Inherit control_mode from train if set
-            if hasattr(train, "control_mode") and train.control_mode:
-                controller.control_mode = train.control_mode
-            # Inherit controller state from train state so that pre-armed
-            # trains start in the correct state (e.g. RUNNING_MOVING).
-            controller.state = train.state
+            controller.simulation_controller = self
+            # Per design_new.md ~line 1292, live operational state
+            # (`state`, `active_cab`, `ato_running`, `control_mode`) lives
+            # exclusively on the controller; we no longer inherit it from
+            # `Train`. Tests and demo bootstrap that need pre-armed state
+            # configure it on the controller directly after this call.
             self.controllers[train.train_id] = controller
         return self.controllers[train.train_id]
 
@@ -438,10 +418,8 @@ class SimulationController:
         return self.physics_instances.get(train_id)
 
     def get_or_create_controller(self, train_id: str) -> TrainController:
-        """Public accessor that promotes the legacy
-        ``_get_or_create_controller(train)`` helper to the new
-        train-id-based v1 API. Looks the train up in ``network.trains`` and
-        delegates to the private helper.
+        """Public train-id-based accessor that returns the controller for the
+        named train, creating it on first call.
 
         Raises:
             KeyError: If no train with that id exists in the network.
@@ -560,29 +538,40 @@ class SimulationController:
             self.network.remove_train(train_id)
             raise
 
-        # Refresh signals so the new occupancy is reflected.
+        # Refresh signals so the new occupancy is reflected. Signal refresh
+        # is a UI projection only — log and continue if it fails so the
+        # train-add itself still succeeds.
         try:
             self.network.update_signals_from_blocks()
         except Exception:
-            pass
+            logger.warning(
+                "update_signals_from_blocks() failed during add_train(%s)",
+                train_id,
+                exc_info=True,
+            )
 
-        # Register controller and physics instances. The controller's
-        # current_span is initialised on the first physics tick from the
-        # train's position; we don't need to seed it here.
+        # Register controller and physics instances. add_train is the sole
+        # entry point that writes the initial TrainController.current_span,
+        # so we derive it from the placed TrainPosition before the first tick.
         controller = self.get_or_create_controller(train_id)
         self.get_or_create_physics(train_id)
+
+        if train.position is not None:
+            try:
+                controller.current_span = TrainSpan.from_train_position(train.position)
+            except Exception:
+                self.network.remove_train(train_id)
+                raise
 
         # If an initial cab was requested, write it directly. add_train runs
         # before the first tick, so this bypasses the command queue by design.
         if initial_cab is not None:
-            try:
-                controller.cab = initial_cab
-            except Exception:
-                pass
-            try:
-                controller.active_cab = initial_cab
-            except Exception:
-                pass
+            controller.cab = initial_cab
+            controller.active_cab = initial_cab
+            if controller.current_span is not None:
+                controller.current_span.leading_end = (
+                    LeadingEnd.A if initial_cab == "A" else LeadingEnd.B
+                )
 
         # Emit notification.
         self.notification_center.emit(
@@ -607,37 +596,129 @@ class SimulationController:
     def enter_failed_runtime(self, payload: FatalPhysicalEntryConflict) -> None:
         """Halt further train ticks until manually released.
 
-        Sets :attr:`failed_runtime` and emits a FATAL notification carrying
-        the conflict details. While the flag is set, :meth:`update` only
-        advances ``simulation_time`` and skips Phase 1/2/3 for every train.
+        Sets :attr:`failed_runtime`, stores the typed fatal payload for
+        inspection, and emits a FATAL notification carrying the conflict
+        details. While the flag is set, :meth:`update` only advances
+        ``simulation_time`` and skips Phase 1/2/3 for every train.
         """
         self.failed_runtime = True
+        self.failed_runtime_payload: Optional[FatalPhysicalEntryConflict] = payload
         self.notification_center.emit(
             source="SimulationController",
             kind="fatal_runtime",
             severity=Severity.FATAL,
             event_time=self.simulation_time,
-            train_id=payload.train_id,
+            train_id=payload.incoming_train_id,
             payload={
-                "block_id": payload.block_id,
-                "reason": payload.reason,
-                "conflicting_train_id": payload.conflicting_train_id,
+                "resource_type": payload.resource_type,
+                "resource_id": payload.resource_id,
+                "incoming_train_id": payload.incoming_train_id,
+                "prior_owner_train_id": payload.prior_owner_train_id,
+                "conflict_kind": payload.conflict_kind.value,
+                "incoming_path_id": payload.incoming_path_id,
+                "prior_owner_path_id": payload.prior_owner_path_id,
             },
         )
 
-    def release_failed_runtime_after_manual_cleanup(self) -> None:
-        """Clear the :attr:`failed_runtime` flag.
+    def release_failed_runtime_after_manual_cleanup(self) -> bool:
+        """Clear the :attr:`failed_runtime` flag after verifying that the
+        conflicting condition reported in :attr:`failed_runtime_payload`
+        has actually been cleaned up.
 
-        The caller is responsible for cleaning up the conflicting state
-        before invoking this method.
+        Per design_new.md ~lines 264-265, this release helper must verify
+        that the fatal resource no longer has the conflicting physical
+        owner / disabled-entry condition recorded in the stored fatal
+        payload before clearing the flag and emitting the resume
+        notification. If verification fails, leave the runtime failed and
+        return ``False``; the operator must repair the underlying state
+        first.
+
+        Returns ``True`` when the flag was cleared, ``False`` when
+        verification failed.
         """
+        if not self.failed_runtime:
+            return True
+        payload = self.failed_runtime_payload
+        if payload is None:
+            # Defensive: no stored payload means we cannot verify. Refuse
+            # to release rather than silently clear.
+            self.notification_center.emit(
+                source="SimulationController",
+                kind="failed_runtime_release_rejected",
+                severity=Severity.WARNING,
+                event_time=self.simulation_time,
+                payload={"reason": "missing_fatal_payload"},
+            )
+            return False
+
+        ok, reason = self._verify_fatal_conflict_cleared(payload)
+        if not ok:
+            self.notification_center.emit(
+                source="SimulationController",
+                kind="failed_runtime_release_rejected",
+                severity=Severity.WARNING,
+                event_time=self.simulation_time,
+                train_id=payload.incoming_train_id,
+                payload={
+                    "resource_type": payload.resource_type,
+                    "resource_id": payload.resource_id,
+                    "conflict_kind": payload.conflict_kind.value,
+                    "reason": reason,
+                },
+            )
+            return False
+
         self.failed_runtime = False
+        self.failed_runtime_payload = None
         self.notification_center.emit(
             source="SimulationController",
             kind="failed_runtime_released",
             severity=Severity.INFO,
             event_time=self.simulation_time,
         )
+        return True
+
+    def _verify_fatal_conflict_cleared(
+        self, payload: FatalPhysicalEntryConflict
+    ) -> Tuple[bool, str]:
+        """Inspect live network state and verify the conflict described
+        by ``payload`` is no longer present. Returns ``(True, "")`` when
+        the resource is clean; ``(False, reason)`` otherwise.
+        """
+        kind = payload.conflict_kind
+        prior_owner = payload.prior_owner_train_id
+        if payload.resource_type == "block":
+            block = self.network.blocks.get(payload.resource_id)
+            if block is None:
+                return (False, "resource_missing")
+            if kind == FatalConflictKind.DISABLED_RESOURCE_ENTRY:
+                if block.disabled:
+                    return (False, "resource_still_disabled")
+                return (True, "")
+            if kind == FatalConflictKind.OCCUPIED_BY_OTHER_TRAIN:
+                if block.occupied_by == prior_owner:
+                    return (False, "block_still_occupied_by_prior_owner")
+                return (True, "")
+            if kind == FatalConflictKind.RESERVED_FOR_OTHER_TRAIN:
+                if block.reserved_for_train == prior_owner:
+                    return (False, "block_still_reserved_for_prior_owner")
+                return (True, "")
+            return (False, "unsupported_block_conflict_kind")
+        if payload.resource_type == "switch":
+            switches = getattr(self.network, "switches", None)
+            switch = switches.get(payload.resource_id) if switches else None
+            if switch is None:
+                return (False, "resource_missing")
+            if kind == FatalConflictKind.DISABLED_RESOURCE_ENTRY:
+                if getattr(switch, "disabled", False):
+                    return (False, "resource_still_disabled")
+                return (True, "")
+            if kind == FatalConflictKind.SWITCH_OCCUPIED_BY_OTHER_TRAIN:
+                if getattr(switch, "occupied_by", None) == prior_owner:
+                    return (False, "switch_still_occupied_by_prior_owner")
+                return (True, "")
+            return (False, "unsupported_switch_conflict_kind")
+        return (False, "unknown_resource_type")
 
     # =========================================================================
     # Path completion / cancellation delegation
@@ -728,8 +809,12 @@ def build_network_payload(
         controller = sim_controller._get_or_create_controller(train)
         train_data["onboard"] = controller.to_dict()
 
-        # Inject live path data (overwrite stale values from network.to_dict)
-        if train.assigned_path_id:
+        # Inject live path data into the legacy `train_data` payload for
+        # backwards-compatible UI consumers. Per design_new.md ~line 1292,
+        # the dispatcher's `Path` is the source of truth, so the path id
+        # comes from `controller.assigned_path_id` (a derived property over
+        # the active dispatcher path), not from a Train-side mirror.
+        if controller.assigned_path_id:
             try:
                 live_path = controller.get_live_path_data()
                 if live_path:

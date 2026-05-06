@@ -409,28 +409,6 @@ class TestBlockStationIntegration:
         assert len(block_positions) == 2
 
 
-@pytest.mark.skip(
-    reason="v1: TravelDirectionPolicy removed (replaced by RouteTask.task_direction); "
-    "_resolve_target_platform helper no longer exists in route_executor."
-)
-class TestTravelDirectionPolicyPreserve:
-    """Tests for preserve-direction filtering in flexible platform routing.
-
-    v1: TravelDirectionPolicy is gone; RouteTask.task_direction
-    ("forward"/"reverse"/"either") is the v1 mechanism. The
-    _resolve_target_platform helper does not exist in v1 RouteExecutor; flexible
-    platform resolution is done inline during target resolution. This entire
-    suite is obsolete in v1 and skipped.
-    """
-
-    def test_preserve_filters_out_wrong_direction_candidate(self):
-        pass
-
-    def test_either_policy_allows_first_available_alternative(self):
-        pass
-
-    def test_preserve_falls_back_to_train_effective_direction(self):
-        pass
 
 
 class TestStationPlatformSchemaBugFixes:

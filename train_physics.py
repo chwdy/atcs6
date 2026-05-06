@@ -41,6 +41,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
+from constants import STOPPED_SPEED_THRESHOLD_KMH
 from enums import (
     BRAKE_MULTIPLIERS,
     POWER_MULTIPLIERS,
@@ -66,8 +67,6 @@ logger = logging.getLogger(__name__)
 
 # Edge opposites for track geometry
 OPPOSITE_EDGES = {"N": "S", "S": "N", "E": "W", "W": "E"}
-
-STOPPED_SPEED_THRESHOLD_KMH = 0.5
 
 
 @dataclass
@@ -125,8 +124,7 @@ class TrainPhysics:
         """Get path tiles from controller (reads from dispatcher)."""
         if self.controller:
             return self.controller.get_path_tiles()
-        train = self._get_train()
-        return train.current_path if train else None
+        return None
 
     def _get_speed_profile(self) -> "SpeedProfile":
         """Get the SpeedProfile for this train."""
@@ -205,42 +203,51 @@ class TrainPhysics:
         )
         prev_tail_locator = self._get_tail_locator(train)
 
-        # 3. Get acceleration from handle position
+        # 3. Resolve speed for this tick. Read previous speed from controller-
+        # owned storage when available (canonical source per design); fall back
+        # to the train-side mirror only as a transitional safety net.
         profile = self._get_speed_profile()
-        acceleration = self._get_acceleration_for_handle(
-            controller.handle_position,
-            profile.acceleration_rate,
-            profile.deceleration_rate,
-            profile.emergency_brake_rate,
-        )
-
-        # 4. Integrate speed. Read previous speed from controller-owned storage
-        # when available (canonical source per design); fall back to the
-        # train-side mirror only as a transitional safety net.
         previous_speed = self._read_current_speed(train)
-        new_speed = previous_speed + (acceleration * delta)
 
-        # 5. Clamp speed to valid range [0, inf)
-        new_speed = max(0.0, new_speed)
-
-        # 6. If braking and speed is low enough, stop completely
-        if acceleration < 0 and new_speed <= STOPPED_SPEED_THRESHOLD_KMH:
-            new_speed = 0.0
-
-        # 7. When coasting (N), apply minimal friction/resistance
-        if controller.handle_position == HandlePosition.N and previous_speed > 0:
-            friction_decel = profile.friction_rate * delta
-            new_speed = max(0.0, new_speed - friction_decel)
-
-        # 8. Apply air resistance for any moving train
+        # Manual power_percent mode: per design_new.md "Ownership split", the
+        # controller passes raw percentage power to TrainPhysics, which
+        # immediately converts it via SpeedProfile.power_speed_curve into the
+        # calibrated current speed when no braking override is active. ATC and
+        # EB braking force the percent contribution to 0 for the tick. Handle
+        # mode (simulation) keeps the existing acceleration-integration path.
         if (
-            profile.air_resistance_enabled
-            and previous_speed > 0
-            and profile.reference_speed_kmh > 0
+            controller.control_mode == "manual"
+            and getattr(controller, "manual_mode_type", None) == "power_percent"
         ):
-            speed_ratio = previous_speed / profile.reference_speed_kmh
-            drag_decel = profile.drag_coefficient * (speed_ratio**2) * delta
-            new_speed = max(0.0, new_speed - drag_decel)
+            new_speed = self._compute_power_percent_speed(
+                controller, profile, previous_speed, delta
+            )
+        else:
+            acceleration = self._get_acceleration_for_handle(
+                controller.handle_position,
+                profile.acceleration_rate,
+                profile.deceleration_rate,
+                profile.emergency_brake_rate,
+            )
+
+            new_speed = previous_speed + (acceleration * delta)
+            new_speed = max(0.0, new_speed)
+
+            if acceleration < 0 and new_speed <= STOPPED_SPEED_THRESHOLD_KMH:
+                new_speed = 0.0
+
+            if controller.handle_position == HandlePosition.N and previous_speed > 0:
+                friction_decel = profile.friction_rate * delta
+                new_speed = max(0.0, new_speed - friction_decel)
+
+            if (
+                profile.air_resistance_enabled
+                and previous_speed > 0
+                and profile.reference_speed_kmh > 0
+            ):
+                speed_ratio = previous_speed / profile.reference_speed_kmh
+                drag_decel = profile.drag_coefficient * (speed_ratio**2) * delta
+                new_speed = max(0.0, new_speed - drag_decel)
 
         logger.debug(
             "[TrainPhysics %s] speed update: new_speed=%.2f delta=%.2f speed_delta=%.2f",
@@ -356,6 +363,60 @@ class TrainPhysics:
 
         return 0.0
 
+    def _compute_power_percent_speed(
+        self,
+        controller: "TrainController",
+        profile: "SpeedProfile",
+        previous_speed: float,
+        delta: float,
+    ) -> float:
+        """
+        Compute the new speed for manual power_percent mode.
+
+        Per design_new.md "Ownership split":
+            user drives with percentage power; the controller passes raw
+            percentage power to TrainPhysics, which immediately converts it
+            via SpeedProfile.power_speed_curve into both track voltage and
+            the calibrated current speed when no braking override is active.
+
+        Per the implementation index manual-mode rule, "ATC/service/EB braking
+        forces the percent to 0 for that tick." The controller publishes the
+        live ATC ceiling at distance 0 in `controller.atc_speed_limit`.
+
+        Behavior summary:
+        - EB latched: emergency-brake decel from previous_speed.
+        - ATC ceiling below previous speed (service brake required): force
+          percent contribution to 0 and apply service decel from
+          previous_speed.
+        - Otherwise: convert percent through SpeedProfile.power_speed_curve
+          and clamp at the ATC ceiling.
+        """
+        if controller.eb_active:
+            new_speed = max(
+                0.0, previous_speed - profile.emergency_brake_rate * delta
+            )
+            if new_speed <= STOPPED_SPEED_THRESHOLD_KMH:
+                new_speed = 0.0
+            return new_speed
+
+        atc_limit_kmh = float(getattr(controller, "atc_speed_limit", 0.0) or 0.0)
+
+        # ATC requires deceleration: percent treated as 0 for this tick.
+        if previous_speed > atc_limit_kmh + 0.01:
+            new_speed = max(
+                0.0, previous_speed - profile.deceleration_rate * delta
+            )
+            if new_speed <= STOPPED_SPEED_THRESHOLD_KMH:
+                new_speed = 0.0
+            return new_speed
+
+        # No braking override: convert percent through calibration curve.
+        pct = float(getattr(controller, "manual_power_percent", 0.0) or 0.0)
+        target_kmh = profile.power_percent_to_speed(pct)
+        if atc_limit_kmh > 0 and target_kmh > atc_limit_kmh:
+            target_kmh = atc_limit_kmh
+        return max(0.0, target_kmh)
+
     def _speed_to_distance(self, speed_kmh: float, delta: float) -> float:
         """
         Convert speed (km/h) and time (seconds) to distance (cm).
@@ -379,14 +440,9 @@ class TrainPhysics:
     def _read_current_speed(self, train: "Train") -> float:
         """Return the canonical current speed.
 
-        Per design_new.md the controller owns ``current_speed_kmh``; we read
-        from there when present and fall back to ``train.current_speed`` for
-        transitional safety until the controller-side mirror lands.
+        Per design_new.md the controller owns ``current_speed_kmh``.
         """
-        controller_speed = getattr(self.controller, "current_speed_kmh", None)
-        if controller_speed is not None:
-            return float(controller_speed)
-        return float(getattr(train, "current_speed", 0.0))
+        return float(getattr(self.controller, "current_speed_kmh", 0.0) or 0.0)
 
     def _get_tail_locator(
         self, train: "Train"
@@ -1005,16 +1061,27 @@ class TrainPhysics:
 
         profile = self._get_speed_profile()
 
-        # State source: prefer controller state (canonical owner per
-        # design_new.md); fall back to train.state for transitional safety.
-        operational_state = getattr(controller, "state", None) or train.state
+        # State source: controller state (canonical owner per design_new.md).
+        operational_state = getattr(controller, "state", TrainState.OFF)
 
         # Voltage selection by operational state. v1 states are OFF, IDLE,
         # STANDBY, RUNNING_MOVING, RUNNING_AT_STATION.
         if operational_state == TrainState.OFF:
             voltage = 0.0
         elif operational_state == TrainState.RUNNING_MOVING:
-            voltage = profile.speed_to_voltage(controller.target_speed)
+            # Manual power_percent mode: voltage tracks the calibrated speed
+            # produced by SpeedProfile.power_speed_curve (per design_new.md
+            # "Ownership split"). All other modes use lookahead target_speed.
+            if (
+                controller.control_mode == "manual"
+                and getattr(controller, "manual_mode_type", None)
+                == "power_percent"
+            ):
+                voltage = profile.speed_to_voltage(
+                    float(getattr(controller, "current_speed_kmh", 0.0) or 0.0)
+                )
+            else:
+                voltage = profile.speed_to_voltage(controller.target_speed)
         else:
             # IDLE / STANDBY / RUNNING_AT_STATION: powered but not moving.
             voltage = profile.lighting_voltage
