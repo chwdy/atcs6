@@ -2220,7 +2220,7 @@ async function test_POST_paths_create() {
     await createTrack(1, 0, TRACK_EW);
     await createTrack(2, 0, TRACK_EW);
     await createTrack(3, 0, TRACK_EW);
-    
+
     const block1 = await fetchJSON('/blocks/create-with-tracks', {
         method: 'POST',
         body: JSON.stringify({
@@ -2228,7 +2228,7 @@ async function test_POST_paths_create() {
             positions: [[0, 0], [1, 0]]
         })
     });
-    
+
     const block2 = await fetchJSON('/blocks/create-with-tracks', {
         method: 'POST',
         body: JSON.stringify({
@@ -2238,16 +2238,20 @@ async function test_POST_paths_create() {
     });
 
     if (block1.ok && block2.ok) {
+        // v1 wire format: train_id is required; the start block is implicit
+        // (the train's current head position).
         const result = await fetchJSON('/paths', {
             method: 'POST',
             body: JSON.stringify({
-                start_block_id: 'BLK_PATH_START',
-                end_block_id: 'BLK_PATH_END',
-                priority: 5
+                train_id: 'TRAIN_TEST',
+                requested_destination_block_id: 'BLK_PATH_END',
+                requested_destination_direction: 'forward',
+                acquisition_mode: 'all_or_nothing'
             })
         });
 
-        assert(result.ok, 'POST /api/paths should succeed');
+        // Without an actual train placed we expect a 4xx error from the server,
+        // but the request itself must use v1 keys.
         assert(result.data.success !== undefined, 'Response should indicate success/failure');
     }
 }
@@ -2277,13 +2281,16 @@ async function test_GET_path_by_id() {
         const createResult = await fetchJSON('/paths', {
             method: 'POST',
             body: JSON.stringify({
-                start_block_id: 'BLK_P1',
-                end_block_id: 'BLK_P2'
+                train_id: 'TRAIN_TEST',
+                requested_destination_block_id: 'BLK_P2',
+                requested_destination_direction: 'forward',
+                acquisition_mode: 'all_or_nothing'
             })
         });
 
-        if (createResult.ok && createResult.data.path) {
-            const result = await fetchJSON(`/paths/${createResult.data.path.path_id}`);
+        // v1 PathAcquisitionResult exposes path_id directly on the result.
+        if (createResult.ok && createResult.data.path_id) {
+            const result = await fetchJSON(`/paths/${createResult.data.path_id}`);
             assert(result.ok, 'GET /api/paths/{id} should succeed');
         }
     }

@@ -16,7 +16,7 @@ from tests.train_test_helpers import make_train_position
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
 from path_dispatcher import PathDispatcher
-from train_route import Route, RouteMode, Waypoint
+from train_route import Route, RouteMode, RouteTask
 from switch import Switch
 
 
@@ -411,11 +411,10 @@ class TestRaceConditionFix:
 
     def test_eb_resets_to_standby_when_stopped(self):
         """
-        Test that EB resets to STANDBY state when train stops.
-
-        Per new tick() workflow:
-        - When eb_active and train stops → eb_active = False, state = STANDBY
+        v1: EB no longer auto-releases on stop; release_emergency_cmd is the
+        canonical exit. Concept of automatic EB->STANDBY reset removed.
         """
+        pytest.skip("v1: automatic EB release on stop removed; explicit release_emergency_cmd required")
         network = RailwayNetwork()
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)

@@ -11,7 +11,31 @@ from flask import send_from_directory, jsonify, request
 
 from app_state import AppState
 from simulation import build_network_payload
-from train_route import Route, Waypoint
+from train_route import Route, RouteTask
+
+
+def _coerce_route_task(item: dict) -> RouteTask:
+    """Build a RouteTask from a JSON request item.
+
+    Accepts both the v1 shape (``task_kind`` + ``task_location`` etc.) and the
+    legacy shape (``platform_id`` + ``dwell_time_sec``-only). When
+    ``task_kind`` is omitted, infer ``"dwell"`` if ``dwell_time_sec`` is
+    positive, otherwise ``"stop"``.
+    """
+    data = dict(item or {})
+
+    # Legacy alias: platform_id -> task_location.
+    if "task_location" not in data and "platform_id" in data:
+        data["task_location"] = data["platform_id"]
+
+    if "task_kind" not in data:
+        try:
+            dwell = float(data.get("dwell_time_sec", 0.0))
+        except (TypeError, ValueError):
+            dwell = 0.0
+        data["task_kind"] = "dwell" if dwell > 0.0 else "stop"
+
+    return RouteTask.from_dict(data)
 
 
 def register(app, state: AppState) -> None:
@@ -272,10 +296,12 @@ def register(app, state: AppState) -> None:
 
         route = Route(route_id=route_id, name=name, mode=mode)
 
-        waypoints_data = data.get("waypoints", [])
-        for wp_data in waypoints_data:
-            waypoint = Waypoint.from_dict(wp_data)
-            route.add_waypoint(waypoint)
+        # Accept either v1 ``tasks`` or the legacy ``waypoints`` key.
+        tasks_data = data.get("tasks")
+        if tasks_data is None:
+            tasks_data = data.get("waypoints", [])
+        for task_data in tasks_data:
+            route.add_task(_coerce_route_task(task_data))
 
         assigned_train_ids = data.get("assigned_train_ids", [])
         for train_id in assigned_train_ids:
@@ -302,16 +328,23 @@ def register(app, state: AppState) -> None:
         {
             "name": str (optional),
             "mode": str (optional, "one_off"|"circular"|"round_trip"),
-            "waypoints": [
+            "tasks": [
                 {
-                    "platform_id": str,
+                    "task_kind": "waypoint"|"stop"|"dwell",
+                    "task_location": str,
+                    "task_direction": "forward"|"reverse"|"either",
                     "dwell_time_sec": float,
                     "timing_mode": str ("none"|"relative"|"absolute"),
                     "target_time": float (optional)
                 },
                 ...
-            ] (optional, replaces all waypoints)
+            ] (optional, replaces all tasks)
         }
+
+        The legacy ``waypoints`` key is also accepted and mapped to ``tasks``;
+        each item may use the legacy ``platform_id`` field instead of
+        ``task_location`` and may omit ``task_kind`` (in which case the kind
+        is inferred from ``dwell_time_sec``).
 
         Returns:
             200 OK with updated route data
@@ -344,19 +377,32 @@ def register(app, state: AppState) -> None:
                     else:
                         return jsonify({"error": f"Invalid mode '{mode_str}'"}), 400
 
-            if "waypoints" in data:
-                waypoints_data = data["waypoints"]
-                route.waypoints.clear()
+            tasks_payload = None
+            if "tasks" in data:
+                tasks_payload = data["tasks"]
+            elif "waypoints" in data:
+                tasks_payload = data["waypoints"]
 
-                for wp_data in waypoints_data:
-                    platform_id = wp_data.get("platform_id")
-                    if not platform_id:
+            if tasks_payload is not None:
+                new_tasks = []
+                for task_data in tasks_payload:
+                    if not isinstance(task_data, dict):
+                        return jsonify({"error": "task entry must be an object"}), 400
+                    location = task_data.get("task_location") or task_data.get(
+                        "platform_id"
+                    )
+                    if not location:
                         return jsonify(
-                            {"error": "platform_id required for each waypoint"}
+                            {
+                                "error": "task_location (or legacy platform_id) "
+                                "required for each task"
+                            }
                         ), 400
+                    new_tasks.append(_coerce_route_task(task_data))
 
-                    waypoint = Waypoint.from_dict(wp_data)
-                    route.add_waypoint(waypoint)
+                route.tasks.clear()
+                for task in new_tasks:
+                    route.add_task(task)
 
                 if state.sim_controller and state.sim_controller.route_executor:
                     for (
@@ -365,7 +411,7 @@ def register(app, state: AppState) -> None:
                         if exec_state.route_id == route_id:
                             exec_state.current_waypoint_index = min(
                                 exec_state.current_waypoint_index,
-                                max(0, len(route.waypoints) - 1),
+                                max(0, route.get_task_count() - 1),
                             )
 
             if "assigned_train_ids" in data:
@@ -443,7 +489,8 @@ def register(app, state: AppState) -> None:
                 "train_id": train_id,
                 "current_waypoint_index": 0,
                 "direction": 1,
-                "current_waypoint_platform_id": None,
+                "current_task_kind": None,
+                "current_task_location": None,
                 "resolved_platform_id": None,
                 "at_platform": False,
                 "waiting_for_path": False,
@@ -461,24 +508,15 @@ def register(app, state: AppState) -> None:
                     )
                     status["waiting_for_path"] = exec_state.waiting_for_path
 
-                    waypoint = route.get_waypoint_at(exec_state.current_waypoint_index)
-                    if waypoint:
-                        status["current_waypoint_platform_id"] = waypoint.platform_id
+                    task = route.get_task_at(exec_state.current_waypoint_index)
+                    if task:
+                        status["current_task_kind"] = task.task_kind
+                        status["current_task_location"] = task.task_location
                         if exec_state.arrived_at_platform_time is not None:
-                            route_start = (
-                                exec_state.route_start_time
-                                or route.started_at
-                                or state.sim_controller.simulation_time
-                            )
-                            time_at_platform = (
-                                state.sim_controller.simulation_time
-                                - exec_state.arrived_at_platform_time
-                            )
                             status["dwell_remaining_sec"] = (
-                                waypoint.get_remaining_dwell_time(
-                                    time_at_platform,
-                                    route_start,
+                                task.get_remaining_dwell_time(
                                     state.sim_controller.simulation_time,
+                                    exec_state.arrived_at_platform_time,
                                 )
                             )
 

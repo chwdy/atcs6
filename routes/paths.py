@@ -1,111 +1,159 @@
 """
-Path Management Routes - Path creation, extension, completion, and dispatcher pathfinding.
+Path Management Routes - v1 wire format.
+
+JSON shape (request and response) uses the v1 Path field names directly:
+- requested_destination_block_id
+- requested_destination_direction ("forward" | "reverse")
+- acquisition_mode ("all_or_nothing" | "best_effort")
+- authority_end_block_id
+- resource_sequence
+
+The v0 keys `start_block_id`, `end_block_id`, `priority`, `dispatcher_id`,
+`new_end_block_id`, `block_sequence` are no longer accepted on the request side.
 """
 
 from flask import jsonify, request
 
 from app_state import AppState
 from path_utils import assign_complete_path_to_train, convert_tiles_to_train_path
+from runtime_payloads import AcquisitionMode, PathCancellationKind
 
 
 def register(app, state: AppState) -> None:
     """Register path routes."""
 
+    def _path_tiles_to_coords(path_tiles):
+        """Convert PathTileEntry list (v1) to plain (x, y) tuple list."""
+        out = []
+        for t in path_tiles or []:
+            if hasattr(t, "x") and hasattr(t, "y"):
+                out.append((t.x, t.y))
+            elif isinstance(t, (tuple, list)) and len(t) >= 2:
+                out.append((int(t[0]), int(t[1])))
+        return out
+
     def _convert_path_tiles_to_train_path(tiles):
         """Convert path dispatcher tiles to train path format."""
-        return convert_tiles_to_train_path(tiles)
+        coords = _path_tiles_to_coords(tiles)
+        return convert_tiles_to_train_path(coords)
+
+    def _parse_acquisition_mode(raw):
+        if not raw:
+            return AcquisitionMode.ALL_OR_NOTHING
+        if isinstance(raw, AcquisitionMode):
+            return raw
+        try:
+            return AcquisitionMode(raw)
+        except ValueError:
+            return AcquisitionMode.ALL_OR_NOTHING
 
     @app.route("/api/paths", methods=["POST"])
     def create_path():
-        """Create a new path between two blocks.
+        """Create a new path for a train.
 
-        Request body:
+        Request body (v1):
         {
-            "start_block_id": "BLK_001",
-            "end_block_id": "BLK_002",
-            "train_id": "TRAIN_001",       // Optional: pre-assign a train
-            "priority": 5,                 // Optional: 1-10, default 5
-            "dispatcher_id": "user"        // Optional: who created this
+            "train_id": "TRAIN_001",
+            "requested_destination_block_id": "BLK_002",
+            "requested_destination_direction": "forward",
+            "acquisition_mode": "all_or_nothing"
         }
 
         Returns:
-            PathResult with success flag and path details or error info
+            PathAcquisitionResult JSON.
         """
         data = request.json or {}
 
-        start_block_id = data.get("start_block_id")
-        end_block_id = data.get("end_block_id")
-
-        if not start_block_id:
-            return jsonify({"error": "start_block_id required"}), 400
-        if not end_block_id:
-            return jsonify({"error": "end_block_id required"}), 400
+        # Reject legacy keys explicitly.
+        if "start_block_id" in data or "end_block_id" in data:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": (
+                            "v1 wire format: pass requested_destination_block_id "
+                            "and requested_destination_direction; do not pass "
+                            "start_block_id/end_block_id"
+                        ),
+                    }
+                ),
+                400,
+            )
 
         train_id = data.get("train_id")
-        priority = data.get("priority", 5)
-        dispatcher_id = data.get("dispatcher_id", "user")
+        requested_destination_block_id = data.get("requested_destination_block_id")
+        requested_destination_direction = data.get(
+            "requested_destination_direction", "forward"
+        )
+        acquisition_mode = _parse_acquisition_mode(data.get("acquisition_mode"))
+
+        if not train_id:
+            return jsonify({"error": "train_id required"}), 400
+        if not requested_destination_block_id:
+            return (
+                jsonify({"error": "requested_destination_block_id required"}),
+                400,
+            )
 
         try:
             with state.simulation_lock:
-                if train_id and train_id in state.network.trains:
-                    train = state.network.trains[train_id]
-                    existing_path_id = getattr(train, "assigned_path_id", None)
-                    existing_path = (
-                        state.path_dispatcher.get_path(existing_path_id)
-                        if existing_path_id
-                        else None
+                if train_id not in state.network.trains:
+                    return (
+                        jsonify({"error": f"Train {train_id} not found"}),
+                        404,
                     )
-                    if existing_path:
-                        return (
-                            jsonify(
-                                {
-                                    "success": False,
-                                    "error": (
-                                        f"Train {train_id} already has active path "
-                                        f"{existing_path_id}"
-                                    ),
-                                    "conflict": "train_has_active_path",
-                                    "train_id": train_id,
-                                    "existing_path_id": existing_path_id,
-                                    "existing_path": existing_path.to_dict(),
-                                }
-                            ),
-                            409,
-                        )
 
                 result = state.path_dispatcher.create_path(
-                    start_block_id=start_block_id,
-                    end_block_id=end_block_id,
-                    dispatcher_id=dispatcher_id,
-                    priority=priority,
                     train_id=train_id,
+                    requested_destination_block_id=requested_destination_block_id,
+                    requested_destination_direction=requested_destination_direction,
+                    acquisition_mode=acquisition_mode,
                 )
-                if result.success and result.path:
+
+                if result.success and result.path_id:
                     state.network.update_signals_from_blocks()
-                    if train_id and train_id in state.network.trains:
-                        train = state.network.trains[train_id]
-                        raw_path = _convert_path_tiles_to_train_path(
-                            result.path.path_tiles
-                        )
+                    path = state.path_dispatcher.get_path(result.path_id)
+                    train = state.network.trains[train_id]
+                    if path is not None:
+                        raw_path = _convert_path_tiles_to_train_path(path.path_tiles)
                         success, error = assign_complete_path_to_train(
                             state.network, train, raw_path
                         )
                         if not success:
                             train.current_path = raw_path
                             train.path_index = 0
-                        train.assigned_path_id = result.path.path_id
+                        train.assigned_path_id = path.path_id
 
-                        # Set destination on controller for immediate ATO use.
-                        # In future, controller could read Path.end_block_id directly.
-                        controller = state.sim_controller._get_or_create_controller(
-                            train
-                        )
-                        if controller and result.path.end_block_id:
-                            controller.ato_destination_block_id = (
-                                result.path.end_block_id
+                        # Set destination on controller for ATO.
+                        sim_controller = state.sim_controller
+                        controller = None
+                        if sim_controller:
+                            getter = (
+                                getattr(sim_controller, "get_or_create_controller", None)
+                                or getattr(
+                                    sim_controller, "_get_or_create_controller", None
+                                )
                             )
-                            train.ato_destination_block_id = result.path.end_block_id
-            return jsonify(result.to_dict()), 200 if result.success else 400
+                            if callable(getter):
+                                try:
+                                    controller = getter(train)
+                                except TypeError:
+                                    try:
+                                        controller = getter(train.train_id)
+                                    except Exception:
+                                        controller = None
+                        if controller and path.authority_end_block_id:
+                            controller.ato_destination_block_id = (
+                                path.authority_end_block_id
+                            )
+                            train.ato_destination_block_id = (
+                                path.authority_end_block_id
+                            )
+
+            return (
+                jsonify(result.to_dict()),
+                200 if result.success else 400,
+            )
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -115,11 +163,8 @@ def register(app, state: AppState) -> None:
 
         Query params:
             train_id: Filter by train
-            block_id: Filter by block usage
-            status: Filter by status (set, active, etc.)
-
-        Returns:
-            List of path objects
+            block_id: Filter by block usage (in resource_sequence blocks)
+            status: Filter by status
         """
         train_id = request.args.get("train_id")
         block_id = request.args.get("block_id")
@@ -128,60 +173,66 @@ def register(app, state: AppState) -> None:
         with state.simulation_lock:
             paths = state.path_dispatcher.get_active_paths()
 
-        # Apply filters
         if train_id:
             paths = [p for p in paths if p.train_id == train_id]
         if block_id:
-            paths = [p for p in paths if block_id in p.block_sequence]
+            paths = [p for p in paths if block_id in p.get_all_blocks()]
         if status:
             paths = [p for p in paths if p.status.value == status]
 
-        return jsonify({"paths": [p.to_dict() for p in paths], "count": len(paths)})
+        return jsonify(
+            {"paths": [p.to_dict() for p in paths], "count": len(paths)}
+        )
 
     @app.route("/api/paths/<path_id>", methods=["GET"])
     def get_path(path_id):
-        """Get details of a specific path.
-
-        Returns:
-            Path object or 404 error
-        """
+        """Get details of a specific path."""
         with state.simulation_lock:
             path = state.path_dispatcher.get_path(path_id)
-
         if not path:
             return jsonify({"error": f"Path {path_id} not found"}), 404
-
         return jsonify(path.to_dict())
 
     @app.route("/api/paths/<path_id>", methods=["DELETE"])
     def cancel_path(path_id):
-        """Cancel a path and release its resources.
+        """Cancel a path and release resources.
 
-        Also stops the assigned train's ATO and clears path-related fields
-        so the train brakes to a stop instead of continuing to the destination.
-
-        Query params:
-            force: If "true", force cancellation even with approach locking
-
-        Returns:
-            CancellationResult with released resources info
+        Returns CancellationResult JSON.
         """
-        force = request.args.get("force", "").lower() == "true"
+        # `force` retained for legacy callers but no longer used in v1.
+        _ = request.args.get("force", "").lower() == "true"
 
         with state.simulation_lock:
             path = state.path_dispatcher.get_path(path_id)
             if not path:
                 return jsonify({"error": f"Path {path_id} not found"}), 404
 
-            # Before cancelling the path, stop the assigned train's ATO
-            # and clear path-related fields so it brakes to a stop
-            if path.train_id and state.sim_controller:
-                train = state.network.trains.get(path.train_id)
+            # Stop train ATO before cancelling path so it brakes to a stop.
+            train_id = path.train_id
+            if train_id and state.sim_controller:
+                train = state.network.trains.get(train_id)
                 if train and train.assigned_path_id == path_id:
-                    controller = state.sim_controller._get_or_create_controller(train)
-                    if controller:
-                        if controller.ato_running:
-                            controller.ato_stop()
+                    sim_controller = state.sim_controller
+                    controller = None
+                    getter = (
+                        getattr(sim_controller, "get_or_create_controller", None)
+                        or getattr(
+                            sim_controller, "_get_or_create_controller", None
+                        )
+                    )
+                    if callable(getter):
+                        try:
+                            controller = getter(train)
+                        except TypeError:
+                            try:
+                                controller = getter(train.train_id)
+                            except Exception:
+                                controller = None
+                    if controller is not None:
+                        if getattr(controller, "ato_running", False):
+                            stop_fn = getattr(controller, "ato_stop", None)
+                            if callable(stop_fn):
+                                stop_fn()
                         controller.ato_destination_block_id = None
                         controller.ato_path_id = None
                     train.ato_destination_block_id = None
@@ -190,9 +241,12 @@ def register(app, state: AppState) -> None:
                     train.path_index = 0
                     train.reserved_blocks = []
 
-            result = state.path_dispatcher.cancel_path(path_id, force=force)
+            result = state.path_dispatcher.cancel_path(
+                path_id,
+                cancellation_kind=PathCancellationKind.OPERATOR_CANCELLED,
+                reason="operator_cancelled",
+            )
 
-            # Update signal states after path cancellation (blocks are now released)
             if result.success:
                 state.network.update_signals_from_blocks()
 
@@ -200,52 +254,91 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/paths/<path_id>/extend", methods=["PUT"])
     def extend_path(path_id):
-        """Extend an existing path to a new destination.
+        """Extend an existing path.
 
-        Request body:
+        Request body (v1):
         {
-            "new_end_block_id": "BLK_003"
+            "requested_destination_block_id": "BLK_003",
+            "requested_destination_direction": "forward",
+            "acquisition_mode": "all_or_nothing"
         }
 
-        Also syncs ato_destination_block_id on both controller and train
-        so the ATO knows the new terminal, and updates train.current_path
-        cache for to_dict() serialization.
-
         Returns:
-            ExtensionResult with extended blocks or error info
+            PathAcquisitionResult JSON (with result_kind=EXTENDED on success).
         """
         data = request.json or {}
-        new_end_block_id = data.get("new_end_block_id")
 
-        if not new_end_block_id:
-            return jsonify({"error": "new_end_block_id required"}), 400
+        # Reject legacy key.
+        if "new_end_block_id" in data and "requested_destination_block_id" not in data:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": (
+                            "v1 wire format: use requested_destination_block_id "
+                            "instead of new_end_block_id"
+                        ),
+                    }
+                ),
+                400,
+            )
+
+        requested_destination_block_id = data.get("requested_destination_block_id")
+        requested_destination_direction = data.get(
+            "requested_destination_direction", "forward"
+        )
+        acquisition_mode = _parse_acquisition_mode(data.get("acquisition_mode"))
+
+        if not requested_destination_block_id:
+            return (
+                jsonify({"error": "requested_destination_block_id required"}),
+                400,
+            )
 
         with state.simulation_lock:
             path = state.path_dispatcher.get_path(path_id)
             if not path:
                 return jsonify({"error": f"Path {path_id} not found"}), 404
 
-            result = state.path_dispatcher.extend_path(path_id, new_end_block_id)
+            result = state.path_dispatcher.extend_path(
+                path_id=path_id,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=requested_destination_direction,
+                acquisition_mode=acquisition_mode,
+            )
 
-            # Sync train and controller state after successful extension
             if result.success and path.train_id:
                 train = state.network.trains.get(path.train_id)
                 if train:
-                    # Update destination so ATO doesn't stop at old terminal
-                    train.ato_destination_block_id = new_end_block_id
-
-                    # Update current_path cache for to_dict() serialization
+                    train.ato_destination_block_id = (
+                        result.authority_end_block_id
+                        or requested_destination_block_id
+                    )
                     train.current_path = _convert_path_tiles_to_train_path(
                         path.path_tiles
                     )
-
-                    # Sync controller destination
-                    if state.sim_controller:
-                        controller = state.sim_controller._get_or_create_controller(
-                            train
+                    sim_controller = state.sim_controller
+                    if sim_controller:
+                        getter = (
+                            getattr(sim_controller, "get_or_create_controller", None)
+                            or getattr(
+                                sim_controller, "_get_or_create_controller", None
+                            )
                         )
-                        if controller:
-                            controller.ato_destination_block_id = new_end_block_id
+                        controller = None
+                        if callable(getter):
+                            try:
+                                controller = getter(train)
+                            except TypeError:
+                                try:
+                                    controller = getter(train.train_id)
+                                except Exception:
+                                    controller = None
+                        if controller is not None:
+                            controller.ato_destination_block_id = (
+                                result.authority_end_block_id
+                                or requested_destination_block_id
+                            )
 
             if result.success:
                 state.network.update_signals_from_blocks()
@@ -254,23 +347,7 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/paths/<path_id>/reachable-extensions", methods=["GET"])
     def get_path_reachable_extensions(path_id):
-        """Get all blocks reachable from a path's end in the FORWARD direction only.
-
-        This is used for path extension to ensure users can only extend in the
-        direction the path is already heading (no backward extension).
-
-        Query params:
-            include_stations: If "true", include station IDs (default: true)
-
-        Returns:
-            {
-                "path_id": str,
-                "reachable_endpoints": [str],
-                "count": int,
-                "exit_direction": str | null,  // N/E/S/W
-                "error": str | null
-            }
-        """
+        """Get all blocks reachable from a path's end in the FORWARD direction."""
         include_stations = (
             request.args.get("include_stations", "true").lower() != "false"
         )
@@ -287,15 +364,18 @@ def register(app, state: AppState) -> None:
             )
 
         if error:
-            return jsonify(
-                {
-                    "path_id": path_id,
-                    "reachable_endpoints": [],
-                    "count": 0,
-                    "exit_direction": None,
-                    "error": error,
-                }
-            ), 400
+            return (
+                jsonify(
+                    {
+                        "path_id": path_id,
+                        "reachable_endpoints": [],
+                        "count": 0,
+                        "exit_direction": None,
+                        "error": error,
+                    }
+                ),
+                400,
+            )
 
         return jsonify(
             {
@@ -309,13 +389,7 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/paths/<path_id>/complete", methods=["POST"])
     def complete_path(path_id):
-        """Mark a path as completed and release all resources.
-
-        Used when train reaches destination.
-
-        Returns:
-            Success message or error
-        """
+        """Mark a path as completed and release all resources."""
         with state.simulation_lock:
             path = state.path_dispatcher.get_path(path_id)
             if not path:
@@ -331,17 +405,14 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/dispatcher/paths", methods=["POST"])
     def find_dispatcher_paths():
-        """Find all possible paths between two blocks.
+        """Find all possible paths between two blocks (geometry only).
 
         Request body:
         {
             "start_block_id": "BLK_001",
             "end_block_id": "BLK_002",
-            "train_id": "TRAIN_001"  // Optional
+            "train_id": "TRAIN_001"
         }
-
-        Returns:
-            List of possible paths sorted by distance
         """
         data = request.json or {}
         start_block_id = data.get("start_block_id")
@@ -358,9 +429,22 @@ def register(app, state: AppState) -> None:
                 start_block_id, end_block_id, train_id
             )
 
+        # PathSegment to_dict — derive from fields directly since this is a
+        # simple value type without a to_dict method.
         return jsonify(
             {
-                "paths": [p.to_dict() for p in paths],
+                "paths": [
+                    {
+                        "blocks": p.blocks,
+                        "tiles": [list(t) for t in p.tiles],
+                        "distance_cm": p.distance_cm,
+                        "required_switches": [
+                            {"position": list(pos), "state": int(state)}
+                            for pos, state in p.required_switches.items()
+                        ],
+                    }
+                    for p in paths
+                ],
                 "count": len(paths),
                 "start_block_id": start_block_id,
                 "end_block_id": end_block_id,
@@ -369,16 +453,7 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/dispatcher/reachable/<block_id>", methods=["GET"])
     def get_reachable_endpoints(block_id):
-        """Get all blocks reachable from a starting block.
-
-        Used by UI to populate destination dropdown.
-
-        Query params:
-            include_stations: If "true", include station IDs (default: true)
-
-        Returns:
-            List of reachable block IDs (and optionally station IDs)
-        """
+        """Get all blocks reachable from a starting block."""
         include_stations = (
             request.args.get("include_stations", "true").lower() != "false"
         )

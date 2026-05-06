@@ -11,6 +11,7 @@ TODO List:
 """
 
 from network import RailwayNetwork
+from notification_center import NotificationCenter
 from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
@@ -73,7 +74,16 @@ def bootstrap_runtime(
     if demo and setup_train:
         setup_demo_train(network, path_dispatcher)
 
-    sim_controller = SimulationController(network, path_dispatcher)
+    # Construct a single NotificationCenter and hand it to the simulation
+    # controller. SimulationController also creates one by default; passing
+    # an explicit instance here is cheap and lets future bootstrap paths
+    # share the same center across runtime objects if needed.
+    notification_center = NotificationCenter()
+    sim_controller = SimulationController(
+        network,
+        path_dispatcher,
+        notification_center=notification_center,
+    )
     if sim_controller.power_controller:
         sim_controller.power_controller._sim_controller = sim_controller
     persistence_manager = PersistenceManager()

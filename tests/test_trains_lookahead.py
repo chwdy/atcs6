@@ -16,7 +16,7 @@ from tests.train_test_helpers import make_train_position
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
 from path_dispatcher import PathDispatcher
-from train_route import Route, RouteMode, Waypoint
+from train_route import Route, RouteMode
 from switch import Switch
 
 
@@ -725,7 +725,9 @@ class TestFallbackLookaheadMultiTileBlock:
         network = RailwayNetwork()
 
         # Create a 3-tile block (simulates terminal station)
-        block = Block(block_id="TERMINAL", length_cm=150.0, state=BlockState.OCCUPIED)
+        # v1: state is a computed @property; set primitive occupied_by instead.
+        block = Block(block_id="TERMINAL", length_cm=150.0)
+        block.occupied_by = "TRAIN_FALLBACK"
         network.blocks["TERMINAL"] = block
 
         for x in range(3):

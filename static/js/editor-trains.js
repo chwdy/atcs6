@@ -400,18 +400,21 @@ class TrainEditorHandler {
                 if (path) {
                     pathName = path.path_id || assignedPathId;
                     // Get destination: prefer station name, fallback to block name
+                    const destinationBlockId =
+                        path.authority_end_block_id
+                        || path.requested_destination_block_id;
                     if (path.end_platform_id || path.end_station_id) {
                         const destinationPlatformId = path.end_platform_id || path.end_station_id;
                         const platform = await this.api.getPlatform(destinationPlatformId);
                         destinationName = platform?.name || destinationPlatformId;
-                    } else if (path.end_block_id) {
-                        const block = await this.api.getBlock(path.end_block_id);
+                    } else if (destinationBlockId) {
+                        const block = await this.api.getBlock(destinationBlockId);
                         // Check if block belongs to a station, show station name if so
                         if (block?.station_id) {
                             const station = await this.api.getStation(block.station_id);
-                            destinationName = station?.name || block?.name || path.end_block_id;
+                            destinationName = station?.name || block?.name || destinationBlockId;
                         } else {
-                            destinationName = block?.name || path.end_block_id;
+                            destinationName = block?.name || destinationBlockId;
                         }
                     }
                 }

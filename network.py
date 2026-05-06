@@ -3102,13 +3102,14 @@ class RailwayNetwork:
             )
 
             # Create child block with inherited properties
+            # v1: Block.state is a derived @property; do not pass it to the
+            # constructor. occupied_by defaults to None which yields FREE.
             child_block = Block(
                 block_id=child_id,
                 name=child_name,
                 length_cm=child_length_cm,  # Calculated based on tile count
                 min_radius_cm=parent_block.min_radius_cm,
                 max_speed_kmh=parent_block.max_speed_kmh,
-                state=BlockState.FREE,  # Reset state
                 occupied_by=None,
             )
 

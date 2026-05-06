@@ -23,7 +23,7 @@ module imports it under TYPE_CHECKING to avoid runtime circular imports.
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, List, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
 
 if TYPE_CHECKING:
     # TrainSpan and its component schemas (SpanEndLocator, SpanTile,
@@ -31,6 +31,15 @@ if TYPE_CHECKING:
     # are formally defined elsewhere, we type-check against `Any` and let
     # producers/consumers carry whichever concrete shape they currently use.
     pass
+
+
+# =============================================================================
+# Shared default constants previously in path.py
+# =============================================================================
+
+DEFAULT_PATH_PRIORITY = 5
+MIN_PRIORITY = 1
+MAX_PRIORITY = 10
 
 
 # =============================================================================
@@ -201,3 +210,263 @@ class PathCompletionResult:
     path_id: Optional[str] = None
     new_status: Any = None  # PathStatus from path.py; left as Any to avoid circular import
     reason: Optional[str] = None
+
+
+# =============================================================================
+# Wave 2: PathDispatcher acquisition contract
+# =============================================================================
+
+
+class AcquisitionMode(Enum):
+    """How aggressively dispatcher reserves resources for a path.
+
+    ALL_OR_NOTHING: reserve every resource end-to-end or fail.
+    BEST_EFFORT: reserve as far as possible; truncate at first conflict.
+    """
+
+    ALL_OR_NOTHING = "all_or_nothing"
+    BEST_EFFORT = "best_effort"
+
+
+class PathAcquisitionResultKind(Enum):
+    """Outcome flavour for create_path / extend_path success cases."""
+
+    CREATED = "created"
+    TRUNCATED_GREW = "truncated_grew"
+    BLOCKED_NO_GROWTH = "blocked_no_growth"
+    EXTENDED = "extended"
+
+
+class PathAcquisitionFailureKind(Enum):
+    """Failure kinds returned by create_path / extend_path."""
+
+    NO_PATH_GEOMETRY = "no_path_geometry"
+    RESOURCE_HELD = "resource_held"
+    INVALID_DESTINATION = "invalid_destination"
+    INVALID_DIRECTION = "invalid_direction"
+    NO_TRAIN = "no_train"
+    ALREADY_HAS_PATH = "already_has_path"
+
+
+@dataclass
+class PathAcquisitionResult:
+    """8-field structured result for create_path / extend_path.
+
+    `granted_resource_sequence` carries `ResourceSequenceEntry` objects (typed
+    as `Any` here to avoid the path.py forward import).
+    """
+
+    success: bool
+    result_kind: Optional[PathAcquisitionResultKind] = None
+    failure_kind: Optional[PathAcquisitionFailureKind] = None
+    path_id: Optional[str] = None
+    authority_end_block_id: Optional[str] = None
+    granted_resource_sequence: List[Any] = field(default_factory=list)
+    reason: str = ""
+    failed_resource_id: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "success": self.success,
+            "result_kind": self.result_kind.value if self.result_kind else None,
+            "failure_kind": self.failure_kind.value if self.failure_kind else None,
+            "path_id": self.path_id,
+            "authority_end_block_id": self.authority_end_block_id,
+            "granted_resource_sequence": [
+                e.to_dict() if hasattr(e, "to_dict") else e
+                for e in self.granted_resource_sequence
+            ],
+            "reason": self.reason,
+            "failed_resource_id": self.failed_resource_id,
+        }
+
+
+@dataclass
+class CancellationResult:
+    """Structured result for PathDispatcher.cancel_path(...).
+
+    Per design_new.md "Path cancellation flow"."""
+
+    success: bool
+    path_id: str = ""
+    cancellation_kind: Optional[PathCancellationKind] = None
+    reason: str = ""
+    released_block_ids: List[str] = field(default_factory=list)
+    released_switch_ids: List[str] = field(default_factory=list)
+    train_id: Optional[str] = None
+    notes: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "success": self.success,
+            "path_id": self.path_id,
+            "cancellation_kind": (
+                self.cancellation_kind.value if self.cancellation_kind else None
+            ),
+            "reason": self.reason,
+            "released_block_ids": list(self.released_block_ids),
+            "released_switch_ids": list(self.released_switch_ids),
+            "train_id": self.train_id,
+            "notes": self.notes,
+        }
+
+
+@dataclass
+class Command:
+    """Operator command queued on TrainController.command_inbox.
+
+    `kind` is one of the canonical command kind strings (power_on, set_cab,
+    set_mode, set_manual_mode_type, set_handle, set_manual_power_percent,
+    activate_eb, release_eb, power_off, ato_go, ato_stop). `payload` carries
+    kind-specific args.
+    """
+
+    kind: str
+    payload: Dict[str, Any] = field(default_factory=dict)
+    command_id: str = ""
+    accepted_at: float = 0.0
+
+
+# =============================================================================
+# Fatal conflict diagnostic schemas
+# =============================================================================
+
+
+class FatalConflictKind(Enum):
+    """Diagnostic categories for fatal conflicts surfaced by the runtime."""
+
+    PHYSICAL_ENTRY = "physical_entry"
+    DEADLOCK = "deadlock"
+    OVERSHOOT = "overshoot"
+
+
+@dataclass
+class FatalPhysicalEntryConflict:
+    """Fatal conflict report when a train enters a block held against it."""
+
+    train_id: str
+    block_id: str
+    conflicting_train_id: Optional[str]
+    reason: str
+
+
+# =============================================================================
+# Resolved-target schema (moved from route_executor.py)
+# =============================================================================
+
+
+@dataclass
+class ResolvedRouteTarget:
+    """Route-owned dispatcher request contract for one task attempt.
+
+    Per design_new.md, carries exactly the route-owned target contract:
+    `requested_destination_block_id` plus block-relative
+    `requested_destination_direction` ("forward" / "reverse"). Dispatcher
+    derives terminal frame from this block plus its own resource_sequence;
+    the route never passes a centimeter target.
+    """
+
+    requested_destination_block_id: str
+    requested_destination_direction: str  # "forward" | "reverse"
+
+
+# =============================================================================
+# Path planning result types (kept here so legacy helpers in path_dispatcher.py
+# still compile; v1 public API uses PathAcquisitionResult / CancellationResult)
+# =============================================================================
+
+
+class ValidationErrorType(Enum):
+    """Classification for path validation failures (legacy diagnostic only)."""
+
+    UNBLOCKED_TILE = "unblocked_tile"
+    BLOCK_OCCUPIED = "block_occupied"
+    BLOCK_RESERVED = "block_reserved"
+    BLOCK_DISABLED = "block_disabled"
+    SWITCH_LOCKED = "switch_locked"
+    FLANK_SWITCH_CONFLICT = "flank_switch_conflict"
+
+
+@dataclass
+class ValidationError:
+    """Single validation failure record (legacy diagnostic)."""
+
+    type: ValidationErrorType
+    message: str = ""
+    tile: Optional[Tuple[int, int]] = None
+    block_id: Optional[str] = None
+    position: Optional[Tuple[int, int]] = None
+    occupied_by: Optional[str] = None
+    locked_by_path: Optional[str] = None
+
+
+@dataclass
+class PathSegment:
+    """Geometry-only path candidate produced by `find_paths(...)`.
+
+    Carries the explored tile sequence, the included block IDs in traversal
+    order, and the per-switch required state map. v1 builds the dispatcher's
+    canonical `Path.resource_sequence` from one of these segments.
+    """
+
+    tiles: List[Tuple[int, int]] = field(default_factory=list)
+    distance_cm: float = 0.0
+    required_switches: Dict[Tuple[int, int], int] = field(default_factory=dict)
+    blocks: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ValidationResult:
+    """Result of path geometry validation."""
+
+    valid: bool
+    errors: List[ValidationError] = field(default_factory=list)
+    path: Optional[PathSegment] = None
+
+
+@dataclass
+class PathResult:
+    """Legacy result used by the in-tree `find_paths` flow."""
+
+    success: bool
+    path: Any = None  # path.Path; left as Any to avoid circular import
+    error: str = ""
+    attempted_paths: List[Any] = field(default_factory=list)
+    conflict_tiles: List[Tuple[int, int]] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "success": self.success,
+            "error": self.error,
+            "path": self.path.to_dict() if self.path is not None else None,
+            "conflict_tiles": [list(t) for t in self.conflict_tiles],
+        }
+
+
+@dataclass
+class ExtensionResult:
+    """Legacy result used by the in-tree `extend_path` flow."""
+
+    success: bool
+    extended_blocks: List[str] = field(default_factory=list)
+    error: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "success": self.success,
+            "extended_blocks": list(self.extended_blocks),
+            "error": self.error,
+        }
+
+
+# Conflict-resolution legacy types (returned by helpers that may still run)
+class ConflictResolutionType(Enum):
+    PROCEED = "proceed"
+    BLOCK = "block"
+    REROUTE = "reroute"
+
+
+@dataclass
+class ConflictResolution:
+    type: ConflictResolutionType
+    description: str = ""

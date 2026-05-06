@@ -132,6 +132,11 @@ class BlockPowerController:
     min_voltage: float = -MAX_TRACK_VOLTAGE  # Allow negative for opposite polarity
     default_lighting_voltage: float = DEFAULT_LIGHTING_VOLTAGE
 
+    # SimulationController back-reference, set by bootstrap so this controller
+    # can fetch the live TrainController for a train and read controller-owned
+    # state (control_mode, target_speed, manual_target_speed).
+    _sim_controller: Optional[Any] = None
+
     def set_network(self, network: "RailwayNetwork") -> None:
         """Set the network reference."""
         self.network = network
@@ -216,20 +221,28 @@ class BlockPowerController:
         ):
             return lighting_voltage
 
-        # RUNNING_MOVING: use target speed
-        if train.state == TrainState.RUNNING_MOVING:
+        # Fetch the live controller so we read controller-owned state
+        # (control_mode, target_speed, manual_target_speed) per design_new.md.
+        controller = None
+        if self._sim_controller is not None:
+            controller = self._sim_controller.get_or_create_controller(train.train_id)
+
+        # Manual mode: use manual target speed (controller-owned)
+        if controller is not None and controller.control_mode == "manual":
+            manual_speed = controller.manual_target_speed
             if speed_profile:
-                return speed_profile.speed_to_voltage(train.target_speed)
+                return speed_profile.speed_to_voltage(manual_speed)
+            else:
+                return self._linear_speed_to_voltage(manual_speed)
+
+        # RUNNING_MOVING: use target speed (live read from controller lookahead)
+        if train.state == TrainState.RUNNING_MOVING:
+            target_speed = controller.target_speed if controller is not None else 0.0
+            if speed_profile:
+                return speed_profile.speed_to_voltage(target_speed)
             else:
                 # No profile - linear approximation (12V = 120 km/h)
-                return self._linear_speed_to_voltage(train.target_speed)
-
-        # MANUAL: use manual target speed
-        if train.state == TrainState.MANUAL:
-            if speed_profile:
-                return speed_profile.speed_to_voltage(train.manual_target_speed)
-            else:
-                return self._linear_speed_to_voltage(train.manual_target_speed)
+                return self._linear_speed_to_voltage(target_speed)
 
         # Default fallback
         return 0.0

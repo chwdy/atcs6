@@ -9,7 +9,7 @@ This module tests:
 
 import pytest
 from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
-from train_route import Route, Waypoint, TimingMode, RouteMode
+from train_route import Route, RouteTask, TimingMode, RouteMode
 from train import Train, TrainCar, TrainPosition
 from enums import Direction, TrainState, BlockState, HandlePosition
 from network import RailwayNetwork
@@ -141,82 +141,69 @@ class TestSpeedProfile:
 
 
 # =============================================================================
-# Waypoint Tests
+# RouteTask Tests (v1; was TestWaypoint)
 # =============================================================================
 
 
-class TestWaypoint:
-    """Tests for Waypoint class."""
+class TestRouteTask:
+    """Tests for the RouteTask class (v1 replacement for Waypoint)."""
 
-    def test_waypoint_initialization(self):
-        """Test waypoint default values."""
-        wp = Waypoint(platform_id="STN_001")
-        assert wp.platform_id == "STN_001"
-        assert wp.dwell_time_sec == 30.0
-        assert wp.timing_mode == TimingMode.NONE
-        assert wp.target_time is None
+    def test_task_initialization(self):
+        """Test task default values."""
+        task = RouteTask(task_kind="dwell", task_location="STN_001", dwell_time_sec=30.0)
+        assert task.task_location == "STN_001"
+        assert task.task_kind == "dwell"
+        assert task.dwell_time_sec == 30.0
+        assert task.timing_mode == TimingMode.NONE
+        assert task.target_time is None
 
     def test_should_depart_none_mode(self):
         """Test departure with no timing constraint."""
-        wp = Waypoint(platform_id="STN_001", dwell_time_sec=30.0)
+        task = RouteTask(task_kind="dwell", task_location="STN_001", dwell_time_sec=30.0)
 
-        # Not enough time yet
-        assert wp.should_depart(25.0, 0.0, 100.0) is False
+        # Not enough time yet (dwell started at 0, now 25 = 25s elapsed < 30s)
+        assert task.should_depart(now=25.0, dwell_started_at=0.0) is False
 
-        # Enough time
-        assert wp.should_depart(30.0, 0.0, 100.0) is True
-        assert wp.should_depart(35.0, 0.0, 100.0) is True
-
-    def test_should_depart_relative_mode(self):
-        """Test departure with relative timing."""
-        wp = Waypoint(
-            platform_id="STN_001",
-            timing_mode=TimingMode.RELATIVE,
-            target_time=60.0,  # 60 seconds after route start
-        )
-
-        # Route started at t=100, current time = 150 (50s elapsed)
-        assert wp.should_depart(30.0, 100.0, 150.0) is False
-
-        # 60s elapsed
-        assert wp.should_depart(30.0, 100.0, 160.0) is True
-
-        # 70s elapsed
-        assert wp.should_depart(30.0, 100.0, 170.0) is True
+        # Enough time elapsed
+        assert task.should_depart(now=30.0, dwell_started_at=0.0) is True
+        assert task.should_depart(now=35.0, dwell_started_at=0.0) is True
 
     def test_should_depart_absolute_mode(self):
-        """Test departure with absolute timing."""
-        wp = Waypoint(
-            platform_id="STN_001",
+        """Test departure with absolute timing (target_time)."""
+        task = RouteTask(
+            task_kind="dwell",
+            task_location="STN_001",
             timing_mode=TimingMode.ABSOLUTE,
             target_time=500.0,  # Leave at simulation time 500
         )
 
         # Before target time
-        assert wp.should_depart(60.0, 100.0, 450.0) is False
+        assert task.should_depart(now=450.0, dwell_started_at=400.0) is False
 
         # At target time
-        assert wp.should_depart(60.0, 100.0, 500.0) is True
+        assert task.should_depart(now=500.0, dwell_started_at=400.0) is True
 
         # After target time
-        assert wp.should_depart(60.0, 100.0, 550.0) is True
+        assert task.should_depart(now=550.0, dwell_started_at=400.0) is True
 
     def test_to_dict_from_dict_roundtrip(self):
-        """Test waypoint serialization."""
-        wp = Waypoint(
-            platform_id="STN_002",
+        """Test task serialization."""
+        task = RouteTask(
+            task_kind="dwell",
+            task_location="STN_002",
             dwell_time_sec=45.0,
             timing_mode=TimingMode.RELATIVE,
             target_time=120.0,
         )
 
-        data = wp.to_dict()
-        restored = Waypoint.from_dict(data)
+        data = task.to_dict()
+        restored = RouteTask.from_dict(data)
 
-        assert restored.platform_id == wp.platform_id
-        assert restored.dwell_time_sec == wp.dwell_time_sec
-        assert restored.timing_mode == wp.timing_mode
-        assert restored.target_time == wp.target_time
+        assert restored.task_location == task.task_location
+        assert restored.task_kind == task.task_kind
+        assert restored.dwell_time_sec == task.dwell_time_sec
+        assert restored.timing_mode == task.timing_mode
+        assert restored.target_time == task.target_time
 
 
 # =============================================================================
@@ -225,18 +212,18 @@ class TestWaypoint:
 
 
 class TestRoute:
-    """Tests for Route class."""
+    """Tests for Route class (v1: tasks instead of waypoints)."""
 
     @pytest.fixture
     def simple_route(self) -> Route:
-        """Create a simple 3-waypoint route."""
+        """Create a simple 3-task route."""
         return Route(
             route_id="ROUTE_001",
             name="Test Route",
-            waypoints=[
-                Waypoint(platform_id="A"),
-                Waypoint(platform_id="B"),
-                Waypoint(platform_id="C"),
+            tasks=[
+                RouteTask(task_kind="dwell", task_location="A"),
+                RouteTask(task_kind="dwell", task_location="B"),
+                RouteTask(task_kind="dwell", task_location="C"),
             ],
             mode=RouteMode.ONE_OFF,
         )
@@ -245,99 +232,99 @@ class TestRoute:
         """Test route default values."""
         assert simple_route.route_id == "ROUTE_001"
         assert simple_route.name == "Test Route"
-        assert len(simple_route.waypoints) == 3
+        assert len(simple_route.tasks) == 3
         assert simple_route.mode == RouteMode.ONE_OFF
-        assert simple_route.current_waypoint_index == 0
+        assert simple_route.current_task_index == 0
         assert simple_route.direction == 1
         assert simple_route.is_active is False
 
-    def test_get_current_waypoint(self, simple_route: Route):
-        """Test getting current waypoint."""
-        wp = simple_route.get_current_waypoint()
-        assert wp is not None
-        assert wp.platform_id == "A"
+    def test_get_current_task(self, simple_route: Route):
+        """Test getting current task."""
+        task = simple_route.get_current_task()
+        assert task is not None
+        assert task.task_location == "A"
 
     def test_advance_one_way(self, simple_route: Route):
         """Test ONE_OFF route advancement."""
-        wp = simple_route.get_current_waypoint()
-        assert wp.platform_id == "A"
+        task = simple_route.get_current_task()
+        assert task.task_location == "A"
 
-        wp = simple_route.advance_to_next_waypoint()
-        assert wp is not None
-        assert wp.platform_id == "B"
+        task = simple_route.advance_to_next_task()
+        assert task is not None
+        assert task.task_location == "B"
 
-        wp = simple_route.advance_to_next_waypoint()
-        assert wp is not None
-        assert wp.platform_id == "C"
+        task = simple_route.advance_to_next_task()
+        assert task is not None
+        assert task.task_location == "C"
 
         # Should complete after C
-        wp = simple_route.advance_to_next_waypoint()
-        assert wp is None
-        assert simple_route.current_waypoint_index >= len(simple_route.waypoints)
+        task = simple_route.advance_to_next_task()
+        assert task is None
+        assert simple_route.current_task_index >= len(simple_route.tasks)
 
     def test_advance_loop(self):
         """Test CIRCULAR route advancement."""
         route = Route(
             route_id="LOOP_001",
-            waypoints=[
-                Waypoint(platform_id="A"),
-                Waypoint(platform_id="B"),
-                Waypoint(platform_id="C"),
+            tasks=[
+                RouteTask(task_kind="dwell", task_location="A"),
+                RouteTask(task_kind="dwell", task_location="B"),
+                RouteTask(task_kind="dwell", task_location="C"),
             ],
             mode=RouteMode.CIRCULAR,
         )
 
         # Go through A -> B -> C -> A (wrap)
-        wp = route.get_current_waypoint()
-        assert wp.platform_id == "A"
-        route.advance_to_next_waypoint()
-        wp = route.get_current_waypoint()
-        assert wp.platform_id == "B"
-        route.advance_to_next_waypoint()
-        wp = route.get_current_waypoint()
-        assert wp.platform_id == "C"
-        route.advance_to_next_waypoint()
-        wp = route.get_current_waypoint()
-        assert wp.platform_id == "A"  # Wrapped!
+        task = route.get_current_task()
+        assert task.task_location == "A"
+        route.advance_to_next_task()
+        task = route.get_current_task()
+        assert task.task_location == "B"
+        route.advance_to_next_task()
+        task = route.get_current_task()
+        assert task.task_location == "C"
+        route.advance_to_next_task()
+        task = route.get_current_task()
+        assert task.task_location == "A"  # Wrapped!
 
     def test_advance_round_trip(self):
         """Test ROUND_TRIP route advancement."""
         route = Route(
             route_id="RT_001",
-            waypoints=[
-                Waypoint(platform_id="A"),
-                Waypoint(platform_id="B"),
-                Waypoint(platform_id="C"),
+            tasks=[
+                RouteTask(task_kind="dwell", task_location="A"),
+                RouteTask(task_kind="dwell", task_location="B"),
+                RouteTask(task_kind="dwell", task_location="C"),
             ],
             mode=RouteMode.ROUND_TRIP,
         )
 
         # A -> B -> C -> B -> A -> B -> ...
-        wp = route.get_current_waypoint()
-        assert wp.platform_id == "A"
+        task = route.get_current_task()
+        assert task.task_location == "A"
 
-        route.advance_to_next_waypoint()
-        wp = route.get_current_waypoint()
-        assert wp.platform_id == "B"
+        route.advance_to_next_task()
+        task = route.get_current_task()
+        assert task.task_location == "B"
 
-        route.advance_to_next_waypoint()
-        wp = route.get_current_waypoint()
-        assert wp.platform_id == "C"
+        route.advance_to_next_task()
+        task = route.get_current_task()
+        assert task.task_location == "C"
 
         # Now reverse direction
-        route.advance_to_next_waypoint()
-        wp = route.get_current_waypoint()
-        assert wp.platform_id == "B"
+        route.advance_to_next_task()
+        task = route.get_current_task()
+        assert task.task_location == "B"
         assert route.direction == -1
 
-        route.advance_to_next_waypoint()
-        wp = route.get_current_waypoint()
-        assert wp.platform_id == "A"
+        route.advance_to_next_task()
+        task = route.get_current_task()
+        assert task.task_location == "A"
 
         # Reverse again
-        route.advance_to_next_waypoint()
-        wp = route.get_current_waypoint()
-        assert wp.platform_id == "B"
+        route.advance_to_next_task()
+        task = route.get_current_task()
+        assert task.task_location == "B"
         assert route.direction == 1
 
     def test_activate_deactivate(self, simple_route: Route):
@@ -345,7 +332,7 @@ class TestRoute:
         simple_route.activate(100.0)
         assert simple_route.is_active is True
         assert simple_route.started_at == 100.0
-        assert simple_route.current_waypoint_index == 0
+        assert simple_route.current_task_index == 0
 
         simple_route.deactivate()
         assert simple_route.is_active is False
@@ -363,16 +350,16 @@ class TestRoute:
     def test_to_dict_from_dict_roundtrip(self, simple_route: Route):
         """Test route serialization."""
         simple_route.activate(100.0)
-        simple_route.advance_to_next_waypoint()
+        simple_route.advance_to_next_task()
 
         data = simple_route.to_dict()
         restored = Route.from_dict(data)
 
         assert restored.route_id == simple_route.route_id
         assert restored.name == simple_route.name
-        assert len(restored.waypoints) == len(simple_route.waypoints)
+        assert len(restored.tasks) == len(simple_route.tasks)
         assert restored.mode == simple_route.mode
-        # current_waypoint_index is runtime-only, not serialized
+        # current_task_index is runtime-only, not serialized
         assert restored.is_active == simple_route.is_active
         assert restored.started_at == simple_route.started_at
 

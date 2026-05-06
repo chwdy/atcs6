@@ -753,19 +753,31 @@ class API {
     // === Path Dispatcher API ===
 
     /**
-     * Create a path between two blocks.
-     * @param {string} startBlockId - Starting block ID
-     * @param {string} endBlockId - Destination block ID
-     * @param {object} options - Optional: { train_id, priority, dispatcher_id }
-     * @returns {Promise<object>} PathResult with success flag and path or error
+     * Create a path for a train.
+     *
+     * The starting block is implicit (the train's current head block); the
+     * server only needs the destination and direction.
+     *
+     * @param {object} args
+     * @param {string} args.train_id - Train ID requesting the path.
+     * @param {string} args.requested_destination_block_id - Destination block ID.
+     * @param {string} [args.requested_destination_direction] - "forward" or "reverse".
+     * @param {string} [args.acquisition_mode] - "all_or_nothing" or "best_effort".
+     * @returns {Promise<object>} PathAcquisitionResult.
      */
-    async createPath(startBlockId, endBlockId, options = {}) {
+    async createPath({
+        train_id,
+        requested_destination_block_id,
+        requested_destination_direction = 'forward',
+        acquisition_mode = 'all_or_nothing'
+    } = {}) {
         return this._request('/paths', {
             method: 'POST',
             body: {
-                start_block_id: startBlockId,
-                end_block_id: endBlockId,
-                ...options
+                train_id,
+                requested_destination_block_id,
+                requested_destination_direction,
+                acquisition_mode
             }
         }, 'createPath');
     }
@@ -797,27 +809,40 @@ class API {
 
     /**
      * Cancel a path and release its resources.
-     * @param {string} pathId - Path ID to cancel
-     * @param {boolean} force - If true, force cancellation even with approach locking
-     * @returns {Promise<object>} CancellationResult
+     *
+     * @param {string} pathId - Path ID to cancel.
+     * @returns {Promise<object>} CancellationResult with fields: success, path_id,
+     *     cancellation_kind, reason, released_block_ids, released_switch_ids,
+     *     train_id, notes.
      */
-    async cancelPath(pathId, force = false) {
-        const query = force ? '?force=true' : '';
-        return this._request(`/paths/${encodeURIComponent(pathId)}${query}`, {
+    async cancelPath(pathId) {
+        return this._request(`/paths/${encodeURIComponent(pathId)}`, {
             method: 'DELETE'
         }, 'cancelPath');
     }
 
     /**
      * Extend an existing path to a new destination.
-     * @param {string} pathId - Path ID to extend
-     * @param {string} newEndBlockId - New destination block ID
-     * @returns {Promise<object>} ExtensionResult
+     *
+     * @param {string} pathId - Path ID to extend.
+     * @param {object} args
+     * @param {string} args.requested_destination_block_id - New destination block ID.
+     * @param {string} [args.requested_destination_direction] - "forward" or "reverse".
+     * @param {string} [args.acquisition_mode] - "all_or_nothing" or "best_effort".
+     * @returns {Promise<object>} PathAcquisitionResult (result_kind=EXTENDED on success).
      */
-    async extendPath(pathId, newEndBlockId) {
+    async extendPath(pathId, {
+        requested_destination_block_id,
+        requested_destination_direction = 'forward',
+        acquisition_mode = 'all_or_nothing'
+    } = {}) {
         return this._request(`/paths/${encodeURIComponent(pathId)}/extend`, {
             method: 'PUT',
-            body: { new_end_block_id: newEndBlockId }
+            body: {
+                requested_destination_block_id,
+                requested_destination_direction,
+                acquisition_mode
+            }
         }, 'extendPath');
     }
 
@@ -826,7 +851,7 @@ class API {
      * Get all blocks reachable from a starting block.
      * @param {string} blockId - Starting block ID
      * @param {boolean} includeStations - Include station IDs (default: true)
-     * @returns {Promise<object>} { start_block_id, reachable_endpoints: [], count }
+     * @returns {Promise<object>} { reachable_endpoints: [], count }
      */
     async getReachableEndpoints(blockId, includeStations = true) {
         return this._request(
