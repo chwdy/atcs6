@@ -117,38 +117,11 @@ ATO_OVERSHOOT_WEIGHT = 10.0  # Penalty weight for exceeding speed curve in evalu
 # =============================================================================
 
 
-@dataclass
-class LookaheadPoint:
-    """
-    A point in the lookahead representing block information ahead of the train.
-
-    Used by both ATC (for safety speed calculation) and ATO (for navigation).
-    Signal state is included for display purposes but does not affect ATC speed
-    calculation (this is a CBTC-like block-based system).
-    """
-
-    distance_cm: float  # Distance from train head to start of this block
-    speed_limit_kmh: float  # Block speed limit (or 0 if path end)
-    block_id: str  # Block ID
-    signal_state: Optional[SignalState] = None  # Signal for display (not ATC calc)
-    station_id: Optional[str] = None  # Station ID if block has station
-    is_path_end: bool = False  # True if this is the last block in path
-
-
-@dataclass
-class ATOInfo:
-    """
-    ATO navigation information derived from the train's assigned path.
-
-    Contains path/destination details and determines which cab should be active
-    based on path direction.
-    """
-
-    path_id: Optional[str] = None
-    destination_block_id: Optional[str] = None
-    destination_station_name: Optional[str] = None
-    path_heading: str = "a"  # "a" or "b" - which end the path heads toward
-    required_cab: str = "A"  # "A" or "B" based on path_heading
+# `LookaheadPoint` and `ATOInfo` live in `train_controller_types` so the
+# helper modules (`lookahead_builder`, `atc_calculator`, `ato_navigator`)
+# can import them without a circular dep on this file. Re-exported here for
+# backwards compatibility with existing callers.
+from train_controller_types import ATOInfo, LookaheadPoint  # noqa: E402,F401
 
 
 # =============================================================================
@@ -243,39 +216,14 @@ def _rate_limit_handle(
     target: HandlePosition,
     allow_fast: bool = False,
 ) -> HandlePosition:
+    """Module-level forward to `ato_navigator.rate_limit_handle(...)`.
+
+    Kept under the original name so `tests/test_trains_ato.py` and any other
+    callers that already import it from `train_controller` keep working.
     """
-    Rate-limit handle changes to prevent jitter.
+    from ato_navigator import rate_limit_handle
 
-    Limits handle movement to ±1 notch per call (±2 if allow_fast=True).
-    Emergency brake (EB) always bypasses rate limiting for safety.
-
-    Args:
-        current: Current handle position
-        target: Desired handle position
-        allow_fast: Allow 2-step changes (for stopping zone)
-
-    Returns:
-        Rate-limited handle position
-    """
-    # EB must never be rate-limited — safety critical
-    if target == HandlePosition.EB:
-        return HandlePosition.EB
-
-    current_idx = HANDLE_POSITION_INDEX.get(current, 5)  # N = index 5
-    target_idx = HANDLE_POSITION_INDEX.get(target, 5)
-
-    max_step = 2 if allow_fast else 1
-
-    if target_idx > current_idx:
-        # Moving toward brake
-        new_idx = min(current_idx + max_step, target_idx)
-    elif target_idx < current_idx:
-        # Moving toward power
-        new_idx = max(current_idx - max_step, target_idx)
-    else:
-        new_idx = current_idx
-
-    return INDEX_TO_HANDLE_POSITION.get(new_idx, HandlePosition.N)
+    return rate_limit_handle(current, target, allow_fast)
 
 
 @dataclass
@@ -417,6 +365,38 @@ class TrainController:
     # -------------------------------------------------------------------------
     current_span: Optional[Any] = None
     current_speed_kmh: float = 0.0
+
+    # -------------------------------------------------------------------------
+    # Helper modules (lookahead / ATC / ATO computation)
+    # -------------------------------------------------------------------------
+    #
+    # These hold a back-reference to `self` and own the actual logic that the
+    # controller used to inline. Lazy-initialised so the dataclass doesn't
+    # need a custom `__post_init__`.
+    _lookahead_builder: Any = field(default=None, repr=False, compare=False)
+    _atc_calculator: Any = field(default=None, repr=False, compare=False)
+    _ato_navigator: Any = field(default=None, repr=False, compare=False)
+
+    def _get_lookahead_builder(self):
+        if self._lookahead_builder is None:
+            from lookahead_builder import LookaheadBuilder
+
+            self._lookahead_builder = LookaheadBuilder(self)
+        return self._lookahead_builder
+
+    def _get_atc_calculator(self):
+        if self._atc_calculator is None:
+            from atc_calculator import ATCCalculator
+
+            self._atc_calculator = ATCCalculator(self)
+        return self._atc_calculator
+
+    def _get_ato_navigator(self):
+        if self._ato_navigator is None:
+            from ato_navigator import ATONavigator
+
+            self._ato_navigator = ATONavigator(self)
+        return self._ato_navigator
 
     # -------------------------------------------------------------------------
     # Internal Helpers
@@ -851,62 +831,8 @@ class TrainController:
     # -------------------------------------------------------------------------
 
     def _calculate_clearance_ahead(self) -> float:
-        """
-        Calculate available clearance in cm.
-
-        Follows the train's current path forward, summing block lengths
-        until hitting an obstruction:
-        - Block occupied by another train
-        - Block not reserved for this train's path
-        - Red signal
-        - End of path
-
-        When reserved_blocks is empty but ato_destination_id is set (path
-        completed but still approaching station), calculates distance to
-        the station stopping point using current_path.
-
-        Returns:
-            Distance in cm until next obstruction
-        """
-        train = self._get_train()
-        if not train or not self.network:
-            return ATC_NO_BLOCK_FALLBACK_CM
-
-        clearance = 0.0
-
-        # Get train's current block
-        current_block_id = self._get_current_block_id()
-        if not current_block_id:
-            return ATC_NO_BLOCK_FALLBACK_CM
-
-        # Add remaining distance in current block
-        clearance += self._get_remaining_distance_in_current_block()
-
-        # Get blocks ahead in path
-        blocks_ahead = self._get_blocks_ahead()
-
-        for block_id in blocks_ahead:
-            block = self.network.blocks.get(block_id)
-            if not block:
-                break
-
-            # Check if block is obstructed
-            if self._is_block_obstructed(block, block_id):
-                break
-
-            # Check signals for this block
-            if self._is_signal_red_for_block(block_id):
-                break
-
-            # Add block length to clearance
-            clearance += block.length_cm
-
-        # If no blocks ahead but ato_destination_block_id is set, use path-based
-        # clearance calculation to find distance to destination block end
-        if not blocks_ahead and self.ato_destination_block_id:
-            clearance = self._calculate_clearance_to_destination(clearance)
-
-        return clearance
+        """Forward to `ATCCalculator.clearance_ahead()`."""
+        return self._get_atc_calculator().clearance_ahead()
 
     def _calculate_clearance_to_destination(self, base_clearance: float) -> float:
         """
@@ -1179,115 +1105,18 @@ class TrainController:
         return positions
 
     def _calculate_atc_speed_limit(self) -> Tuple[float, Optional[str]]:
-        """
-        Calculate maximum safe speed based on clearance ahead.
-
-        Uses physics: v^2 = 2 * a * d
-
-        Returns:
-            Tuple of (speed_limit_kmh, reason_string)
-        """
-        profile = self._get_speed_profile()
-        decel_rate = profile.deceleration_rate
-
-        clearance = self.clearance_ahead_cm
-
-        # Determine safety margin based on destination type
-        safety_margin = self._get_effective_safety_margin()
-
-        safe_speed = calculate_max_safe_speed(clearance, decel_rate, safety_margin)
-
-        limiting_speed = safe_speed
-        limiting_reason = None
-
-        if clearance < float("inf"):
-            if clearance < 1000:
-                limiting_reason = f"Braking: {clearance / 100:.0f}m ahead"
-            else:
-                limiting_reason = f"Clearance: {clearance / 100:.0f}m"
-
-        # Block CAUTION cap: when the next forward block is in CAUTION state,
-        # apply the canonical CAUTION_SPEED_LIMIT_KMH (per design_new.md
-        # "`CAUTION` vs reservation independence").
-        if self._is_caution_ahead():
-            if CAUTION_SPEED_LIMIT_KMH < limiting_speed:
-                limiting_speed = CAUTION_SPEED_LIMIT_KMH
-                limiting_reason = "CAUTION block ahead"
-            elif limiting_reason:
-                limiting_reason = f"{limiting_reason}; CAUTION block"
-
-        # Yellow signal (signal-state) cap is a separate concern from block
-        # CAUTION; both can apply.
-        if self._is_approaching_yellow_signal():
-            if YELLOW_SIGNAL_SPEED_KMH < limiting_speed:
-                limiting_speed = YELLOW_SIGNAL_SPEED_KMH
-                limiting_reason = "Yellow signal ahead"
-            elif limiting_reason:
-                limiting_reason = f"{limiting_reason}; Yellow signal"
-
-        # Check block speed limit
-        block_limit = self._get_current_block_speed_limit()
-        if block_limit < float("inf"):
-            train = self._get_train()
-            if block_limit < limiting_speed:
-                limiting_speed = block_limit
-                limiting_reason = f"Block limit: {block_limit:.0f} km/h"
-            elif limiting_reason and train and block_limit < train.max_speed:
-                limiting_reason = f"{limiting_reason}; Block: {block_limit:.0f}"
-
-        return limiting_speed, limiting_reason
+        """Forward to `ATCCalculator.speed_limit()`."""
+        return self._get_atc_calculator().speed_limit()
 
     def _calculate_atc_speed_limit_with_code(
         self,
     ) -> Tuple[float, Optional[str], Optional[AtcLimitReasonCode]]:
-        """Calculate ATC limit + the canonical structured reason code.
-
-        Layers a structured `AtcLimitReasonCode` on top of the existing
-        `_calculate_atc_speed_limit()` result so consumers (and the
-        canonical lookahead payload) can key on the enum rather than a
-        free-form string. Tests monkeypatching `_calculate_atc_speed_limit`
-        still work because this helper invokes it.
-        """
-        limiting_speed, limiting_reason = self._calculate_atc_speed_limit()
-        clearance = self.clearance_ahead_cm
-        limiting_code: Optional[AtcLimitReasonCode] = None
-
-        if clearance < float("inf"):
-            if limiting_speed <= STOPPED_SPEED_THRESHOLD_KMH:
-                limiting_code = AtcLimitReasonCode.AUTHORITY_STOP
-            else:
-                limiting_code = AtcLimitReasonCode.OBSTRUCTION
-
-        # CAUTION takes priority over generic obstruction.
-        if self._is_caution_ahead():
-            limiting_code = AtcLimitReasonCode.CAUTION
-
-        # Without active authority, the reason is `no_authority`.
-        if self.received_path_plan is None and limiting_code in (
-            None,
-            AtcLimitReasonCode.AUTHORITY_STOP,
-            AtcLimitReasonCode.OBSTRUCTION,
-        ):
-            limiting_code = AtcLimitReasonCode.NO_AUTHORITY
-
-        return limiting_speed, limiting_reason, limiting_code
+        """Forward to `ATCCalculator.speed_limit_with_code()`."""
+        return self._get_atc_calculator().speed_limit_with_code()
 
     def _is_caution_ahead(self) -> bool:
-        """Return True if the train's next forward block is in CAUTION state.
-
-        Used by the ATC reason-code selector. Reads only the canonical
-        `Block.state` enum.
-        """
-        if not self.network:
-            return False
-        for block_id in self._get_blocks_ahead():
-            block = self.network.blocks.get(block_id)
-            if block is None:
-                continue
-            if block.state == BlockState.CAUTION:
-                return True
-            return False
-        return False
+        """Forward to `ATCCalculator.is_caution_ahead()`."""
+        return self._get_atc_calculator().is_caution_ahead()
 
     def _is_cab_wrong_direction(self) -> bool:
         """Return True when the active cab points away from active authority.
@@ -1307,30 +1136,8 @@ class TrainController:
         return required != self.active_cab
 
     def _get_effective_safety_margin(self) -> float:
-        """
-        Get the effective safety margin based on destination type.
-
-        The safety margin is constant and determined by the destination type:
-        - 5cm if destination (ato_destination_id) is a station
-        - 25cm otherwise
-
-        This does NOT change as the train moves - it's fixed when the path
-        is assigned based on where the train is going.
-
-        Returns:
-            5cm if destination is a station/platform, 25cm otherwise
-        """
-        train = self._get_train()
-        if not train or not self.network:
-            return self.safety_margin_cm
-
-        # Check if destination block contains a station - use platform margin
-        if self.ato_destination_block_id:
-            station_id = self._get_station_in_block(self.ato_destination_block_id)
-            if station_id:
-                return PLATFORM_SAFETY_MARGIN_CM
-
-        return self.safety_margin_cm
+        """Forward to `ATCCalculator.effective_safety_margin()`."""
+        return self._get_atc_calculator().effective_safety_margin()
 
     def _get_current_block_id(self) -> Optional[str]:
         """Get the block ID where the train's head is located."""
@@ -1764,72 +1571,8 @@ class TrainController:
         return remaining_in_current_tile + remaining_in_later_tiles
 
     def _get_blocks_ahead(self) -> List[str]:
-        """
-        Get list of block IDs ahead of the train.
-
-        Uses the train's current_path when available to determine which
-        blocks lie ahead in the actual travel direction. This avoids
-        mismatches when the path index is not aligned with the reserved
-        block order (e.g., return paths starting mid-block).
-
-        When no current_path is available, falls back to reserved_blocks.
-        """
-        train = self._get_train()
-        if not train:
-            return []
-
-        path_tiles = self.get_path_tiles()
-        blocks: List[str] = []
-
-        current_block_id = self._get_current_block_id()
-
-        if path_tiles:
-            head_tile = self._get_head_tile()
-            if head_tile:
-                head_index = self._get_head_path_index(train, head_tile)
-                if head_index >= 0:
-                    scan_step = self._get_path_scan_step(train, head_index)
-                    loop_start = head_index + scan_step
-                    loop_end = len(path_tiles) if scan_step == 1 else -1
-
-                    for i in range(loop_start, loop_end, scan_step):
-                        path_entry = path_tiles[i]
-                        track = self.network.get_track(path_entry[0], path_entry[1])
-                        block_id = track.block_section_id if track else None
-                        if not block_id or block_id == current_block_id:
-                            continue
-                        if block_id not in blocks:
-                            blocks.append(block_id)
-
-                    if blocks:
-                        return blocks
-
-        # Per design_new.md ~line 1292, `Train.reserved_blocks` is forbidden;
-        # the dispatcher's active path is the source of truth for reserved
-        # blocks ahead of the train.
-        active_path = (
-            self.path_dispatcher.get_active_path(self.train_id)
-            if self.path_dispatcher is not None
-            else None
-        )
-        if active_path is not None:
-            path_blocks = active_path.get_all_blocks()
-            if current_block_id and current_block_id in path_blocks:
-                idx = path_blocks.index(current_block_id)
-                scan_step = 1
-                head_tile = self._get_head_tile()
-                if head_tile and path_tiles:
-                    head_index = self._get_head_path_index(train, head_tile)
-                    if head_index >= 0:
-                        scan_step = self._get_path_scan_step(train, head_index)
-                if scan_step == -1:
-                    blocks = list(reversed(path_blocks[:idx]))
-                else:
-                    blocks = path_blocks[idx + 1 :]
-            elif path_blocks:
-                blocks = list(path_blocks)
-
-        return blocks
+        """Forward to `LookaheadBuilder.blocks_ahead()`."""
+        return self._get_lookahead_builder().blocks_ahead()
 
     def _is_block_obstructed(self, block: Any, block_id: str) -> bool:
         """
@@ -1904,65 +1647,12 @@ class TrainController:
         return False
 
     def _is_approaching_yellow_signal(self) -> bool:
-        """
-        Check if train is approaching a yellow signal in its direction of travel.
-
-        Only considers signals whose detection_direction matches the train's
-        facing direction, preventing opposite-direction yellow signals from
-        triggering unnecessary speed reductions.
-        """
-        if not self.network:
-            return False
-
-        # Get the train's travel direction as an edge string ("N"/"E"/"S"/"W")
-        train = self._get_train()
-        travel_edge = None
-        if train and train.facing_direction:
-            travel_edge = self._direction_to_edge(train.facing_direction)
-
-        blocks_checked = 0
-        blocks_ahead = self._get_blocks_ahead()
-
-        for block_id in blocks_ahead:
-            if blocks_checked >= self.signal_lookahead_blocks:
-                break
-
-            for signal_id, signal in self.network.signals.items():
-                if (
-                    hasattr(signal, "monitored_block_id")
-                    and signal.monitored_block_id == block_id
-                ):
-                    # Only consider signals matching the train's travel direction
-                    if travel_edge and hasattr(signal, "detection_direction"):
-                        if signal.detection_direction != travel_edge:
-                            continue
-                    if signal.state in (SignalState.YELLOW, SignalState.DOUBLE_YELLOW):
-                        return True
-
-            blocks_checked += 1
-
-        return False
+        """Forward to `ATCCalculator.is_approaching_yellow_signal()`."""
+        return self._get_atc_calculator().is_approaching_yellow_signal()
 
     def _get_current_block_speed_limit(self) -> float:
-        """
-        Get speed limit for current block.
-        """
-        head_tile = self._get_head_tile()
-        if not head_tile or not self.network:
-            return float("inf")
-
-        track = self.network.tracks.get(head_tile)
-        if not track:
-            return float("inf")
-
-        if not track.block_section_id:
-            return float("inf")
-
-        block = self.network.blocks.get(track.block_section_id)
-        if block and block.speed_limit_kmh:
-            return block.speed_limit_kmh
-
-        return float("inf")
+        """Forward to `LookaheadBuilder.current_block_speed_limit()`."""
+        return self._get_lookahead_builder().current_block_speed_limit()
 
     def is_safe_to_move(self) -> bool:
         """
@@ -2143,188 +1833,29 @@ class TrainController:
     # -------------------------------------------------------------------------
 
     def _calculate_lookahead(self) -> List[LookaheadPoint]:
+        """Build the lookahead point list ahead of the train.
+
+        Forwards to `LookaheadBuilder.build()`. Kept as an instance method so
+        existing callers and `monkeypatch.setattr(controller, ...)` test
+        fixtures continue to work.
         """
-        Calculate lookahead points from the train's current path.
-
-        Generates a list of LookaheadPoint objects representing blocks ahead,
-        with distance, speed limit, signal state, and station info.
-
-        This is the shared lookahead used by both ATC (for safety speed calculation)
-        and ATO (for navigation).
-
-        Returns:
-            List of LookaheadPoint objects ordered by distance from train head
-        """
-        train = self._get_train()
-        if not train or not self.network:
-            return []
-
-        lookahead_points: List[LookaheadPoint] = []
-        current_distance = 0.0
-
-        # Get current block and remaining distance
-        current_block_id = self._get_current_block_id()
-        if current_block_id:
-            remaining_in_current = self._get_remaining_distance_in_current_block()
-            current_block = self.network.blocks.get(current_block_id)
-            if current_block:
-                # Get signal for this block (for display only)
-                signal_state = self._get_signal_state_for_block(current_block_id)
-                # Get station if present
-                station_id = self._get_station_in_block(current_block_id)
-
-                lookahead_points.append(
-                    LookaheadPoint(
-                        distance_cm=0.0,  # Current position
-                        speed_limit_kmh=current_block.speed_limit_kmh or float("inf"),
-                        block_id=current_block_id,
-                        signal_state=signal_state,
-                        station_id=station_id,
-                        is_path_end=False,
-                    )
-                )
-                current_distance = remaining_in_current
-
-        # Get blocks ahead in path
-        blocks_ahead = self._get_blocks_ahead()
-
-        if not blocks_ahead:
-            # No path ahead - add end point
-            if current_block_id:
-                lookahead_points.append(
-                    LookaheadPoint(
-                        distance_cm=current_distance,
-                        speed_limit_kmh=0.0,  # Must stop at path end
-                        block_id=current_block_id,
-                        signal_state=None,
-                        station_id=None,
-                        is_path_end=True,
-                    )
-                )
-            return lookahead_points
-
-        for i, block_id in enumerate(blocks_ahead):
-            block = self.network.blocks.get(block_id)
-            if not block:
-                continue
-
-            # Get signal for this block (for display only)
-            signal_state = self._get_signal_state_for_block(block_id)
-            # Get station if present
-            station_id = self._get_station_in_block(block_id)
-            # Check if this is the last block
-            is_last = i == len(blocks_ahead) - 1
-
-            lookahead_points.append(
-                LookaheadPoint(
-                    distance_cm=current_distance,
-                    speed_limit_kmh=block.speed_limit_kmh or float("inf"),
-                    block_id=block_id,
-                    signal_state=signal_state,
-                    station_id=station_id,
-                    is_path_end=is_last,
-                )
-            )
-
-            current_distance += block.length_cm
-
-        return lookahead_points
+        return self._get_lookahead_builder().build()
 
     def _get_signal_state_for_block(self, block_id: str) -> Optional[SignalState]:
-        """Get the signal state for a block (for display purposes only)."""
-        if not self.network:
-            return None
-
-        for signal_id, signal in self.network.signals.items():
-            if (
-                hasattr(signal, "monitored_block_id")
-                and signal.monitored_block_id == block_id
-            ):
-                return signal.state
-
-        return None
+        """Forward to `LookaheadBuilder.signal_state_for_block(block_id)`."""
+        return self._get_lookahead_builder().signal_state_for_block(block_id)
 
     def _get_station_in_block(self, block_id: str) -> Optional[str]:
-        """Check if a block contains a station and return station ID."""
-        if not self.network:
-            return None
-
-        # Get block's tracks and check for stations
-        for track in self.network.tracks.values():
-            if track.block_section_id == block_id and track.station_id:
-                return track.station_id
-
-        return None
+        """Forward to `LookaheadBuilder.station_in_block(block_id)`."""
+        return self._get_lookahead_builder().station_in_block(block_id)
 
     # -------------------------------------------------------------------------
     # ATO Info Calculation
     # -------------------------------------------------------------------------
 
     def _calculate_ato_info(self) -> Optional[ATOInfo]:
-        """
-        Calculate ATO navigation information from the train's assigned path.
-
-        Returns:
-            ATOInfo with path/destination details, or None if no path assigned
-        """
-        train = self._get_train()
-        if not train or not self.network:
-            return None
-
-        path_tiles = self.get_path_tiles()
-
-        # Path ID is helpful for display, but destination should remain available
-        # even when the active path has already been cleared.
-        path_id = self.assigned_path_id or self.ato_path_id
-
-        destination_block_id = self.ato_destination_block_id
-
-        if not path_id and not destination_block_id:
-            return None
-
-        # Get path from network
-        path = None
-        if hasattr(self.network, "paths"):
-            path = self.network.paths.get(path_id)
-
-        if path_id and not path and not destination_block_id:
-            return ATOInfo(path_id=path_id)
-
-        # Determine path heading and required cab using track connectivity.
-        # This checks which edge of the train's tile leads to the path's
-        # next tile, which is reliable even on zigzag / diagonal staircase
-        # tracks where per-tile cardinal directions are misleading.
-        path_heading = "a"  # Default
-        required_cab = self.active_cab or "A"  # Default to current cab
-
-        connectivity_cab = self._required_cab_for_path()
-        if connectivity_cab is not None:
-            required_cab = connectivity_cab
-
-        # Get destination info - simple logic:
-        # 1. Use ato_destination_block_id if set (controller/train)
-        # 2. Fallback: use current block in heading direction (no destination case)
-        destination_station_name = None
-
-        # If no destination block set, fallback to current block
-        if not destination_block_id:
-            destination_block_id = self._get_current_block_id()
-
-        # Derive station name from destination block
-        if destination_block_id:
-            station_id = self._get_station_in_block(destination_block_id)
-            if station_id:
-                station = self.network.platforms.get(station_id)
-                if station:
-                    destination_station_name = station.name
-
-        return ATOInfo(
-            path_id=path_id,
-            destination_block_id=destination_block_id,
-            destination_station_name=destination_station_name,
-            path_heading=path_heading,
-            required_cab=required_cab,
-        )
+        """Forward to `ATONavigator.compute_ato_info()`."""
+        return self._get_ato_navigator().compute_ato_info()
 
     # -------------------------------------------------------------------------
     # Path Direction Detection
@@ -2726,36 +2257,10 @@ class TrainController:
     def _sample_curve_at(
         self, curve: List[Dict], distance_cm: float, key: str = "operational_limit"
     ) -> float:
-        """
-        Sample a speed curve at a specific distance with linear interpolation.
+        """Forward to `ATONavigator.sample_curve_at(curve, distance_cm, key)`."""
+        from ato_navigator import ATONavigator
 
-        Args:
-            curve: List of curve points [{distance_cm, atc_limit, operational_limit}, ...]
-            distance_cm: Distance to sample at
-            key: Which limit to sample ('atc_limit' or 'operational_limit')
-
-        Returns:
-            Interpolated speed limit at the given distance
-        """
-        if not curve:
-            return 0.0
-
-        if distance_cm <= 0:
-            return curve[0].get(key, 0.0)
-
-        if distance_cm >= curve[-1].get("distance_cm", 0):
-            return curve[-1].get(key, 0.0)
-
-        for i in range(len(curve) - 1):
-            d1 = curve[i].get("distance_cm", 0)
-            d2 = curve[i + 1].get("distance_cm", 0)
-            if d1 <= distance_cm <= d2:
-                v1 = curve[i].get(key, 0.0)
-                v2 = curve[i + 1].get(key, 0.0)
-                t = (distance_cm - d1) / (d2 - d1) if d2 != d1 else 0
-                return v1 + t * (v2 - v1)
-
-        return curve[-1].get(key, 0.0)
+        return ATONavigator.sample_curve_at(curve, distance_cm, key)
 
     def _simulate_forward(
         self,
@@ -2764,71 +2269,10 @@ class TrainController:
         distance_cm: float,
         dt: float = 0.02,
     ) -> float:
-        """
-        Simulate train forward in time and return predicted speed at given distance.
-
-        Uses a simplified physics model based on TrainPhysics: converts handle
-        position to acceleration rate via POWER_MULTIPLIERS/BRAKE_MULTIPLIERS,
-        then integrates forward in small time steps until the target distance
-        is reached.
-
-        Note: Air resistance is not modeled. This makes predictions slightly
-        optimistic at high speeds under power. For ATO control purposes this
-        is acceptable since the evaluator compares handles relative to each
-        other, and all candidates experience the same omission.
-
-        Args:
-            current_speed_kmh: Train's current speed in km/h
-            handle: Handle position to simulate
-            distance_cm: Distance ahead to predict speed at
-            dt: Simulation time step in seconds (default 20ms for accuracy)
-
-        Returns:
-            Predicted speed in km/h at the given distance
-        """
-        if distance_cm <= 0:
-            return current_speed_kmh
-
-        profile = self._get_speed_profile()
-
-        # Calculate acceleration for this handle (same as TrainPhysics)
-        if handle in POWER_MULTIPLIERS:
-            accel_kmh_s = profile.acceleration_rate * POWER_MULTIPLIERS[handle]
-        elif handle in BRAKE_MULTIPLIERS:
-            accel_kmh_s = -profile.deceleration_rate * BRAKE_MULTIPLIERS[handle]
-        elif handle == HandlePosition.EB:
-            accel_kmh_s = -profile.emergency_brake_rate
-        else:
-            accel_kmh_s = 0.0  # Neutral or unknown
-
-        km_h_to_cm_s = get_speed_conversion_factor()
-        speed_cm_s = current_speed_kmh * km_h_to_cm_s
-        distance_remaining = distance_cm
-
-        while distance_remaining > 0 and speed_cm_s >= 0:
-            # Apply acceleration
-            speed_cm_s += accel_kmh_s * km_h_to_cm_s * dt
-
-            # Apply friction when coasting (neutral or unknown handle)
-            if handle == HandlePosition.N and speed_cm_s > 0:
-                speed_cm_s -= profile.friction_rate * km_h_to_cm_s * dt
-
-            # Snap to zero when braking below stopped threshold (matches TrainPhysics)
-            speed_kmh = speed_cm_s / km_h_to_cm_s
-            if speed_kmh <= STOPPED_SPEED_THRESHOLD_KMH and accel_kmh_s <= 0:
-                speed_cm_s = 0.0
-                break
-
-            # Clamp to non-negative
-            if speed_cm_s <= 0:
-                speed_cm_s = 0.0
-                break
-
-            # Advance distance
-            step_dist = speed_cm_s * dt
-            distance_remaining -= step_dist
-
-        return speed_cm_s / km_h_to_cm_s
+        """Forward to `ATONavigator.simulate_forward(...)`."""
+        return self._get_ato_navigator().simulate_forward(
+            current_speed_kmh, handle, distance_cm, dt
+        )
 
     def _evaluate_handles_against_curve(
         self,
@@ -2837,329 +2281,38 @@ class TrainController:
         horizon_cm: float = 30.0,
         sample_count: int = 5,
     ) -> HandlePosition:
-        """
-        Evaluate candidate handle positions against speed curve and return best.
-
-        Evaluates a pruned set of handles (current ±3 notches plus extremes
-        P5, N, B8) by simulating the train forward and sampling the predicted
-        speed at multiple distances. The rate limiter constrains changes to ±1
-        per tick anyway, so global optimality across all 14 handles is not
-        required — the controller converges over multiple ticks.
-
-        Scoring:
-        - Penalty for being ABOVE the curve (overshoot) - weighted heavily
-        - Penalty for being too far BELOW the curve (inefficient)
-        - Best handle minimizes total penalty
-
-        Args:
-            current_speed_kmh: Train's current speed in km/h
-            curve: Speed curve points [{distance_cm, operational_limit, ...}, ...]
-            horizon_cm: How far ahead to evaluate (default 30cm)
-            sample_count: Number of sample points within horizon
-
-        Returns:
-            Best handle position from candidate set
-        """
-        if not curve:
-            return HandlePosition.N
-
-        # Clamp horizon to curve extent
-        max_curve_dist = curve[-1].get("distance_cm", 0)
-        horizon_cm = min(horizon_cm, max_curve_dist)
-        if horizon_cm <= 0:
-            # At end of curve - just brake
-            return self._calculate_braking_notch(current_speed_kmh)
-
-        # Smart candidate selection: current handle ±3 plus extremes
-        current_idx = HANDLE_POSITION_INDEX.get(self.handle_position, 5)
-        candidate_indices = set()
-
-        # Always include extremes and neutral
-        candidate_indices.add(HANDLE_POSITION_INDEX[HandlePosition.P5])  # 0
-        candidate_indices.add(HANDLE_POSITION_INDEX[HandlePosition.N])  # 5
-        candidate_indices.add(HANDLE_POSITION_INDEX[HandlePosition.B8])  # 13
-
-        # Include ±3 notches from current
-        for offset in range(-3, 4):
-            idx = current_idx + offset
-            if 0 <= idx <= 13:
-                candidate_indices.add(idx)
-
-        candidates = [
-            INDEX_TO_HANDLE_POSITION[i]
-            for i in sorted(candidate_indices)
-            if i in INDEX_TO_HANDLE_POSITION
-        ]
-
-        sample_distances = [0.0] + [
-            horizon_cm * (i + 1) / sample_count for i in range(sample_count)
-        ]
-
-        # Pre-sample curve at all distances once
-        curve_limits = [
-            self._sample_curve_at(curve, dist, "operational_limit")
-            for dist in sample_distances
-        ]
-
-        best_handle = HandlePosition.N
-        best_score = float("inf")
-
-        for handle in candidates:
-            score = 0.0
-            skip = False
-
-            for j, dist in enumerate(sample_distances):
-                predicted_speed = self._simulate_forward(
-                    current_speed_kmh, handle, dist
-                )
-
-                if predicted_speed > curve_limits[j]:
-                    # Above curve - heavy penalty
-                    overshoot = predicted_speed - curve_limits[j]
-                    score += overshoot * ATO_OVERSHOOT_WEIGHT
-                else:
-                    # Below curve - mild penalty (want to be close to curve)
-                    gap = curve_limits[j] - predicted_speed
-                    score += gap
-
-            if skip:
-                continue
-
-            if score < best_score:
-                best_score = score
-                best_handle = handle
-
-        return best_handle
+        """Forward to `ATONavigator.evaluate_handles_against_curve(...)`."""
+        return self._get_ato_navigator().evaluate_handles_against_curve(
+            current_speed_kmh, curve, horizon_cm, sample_count
+        )
 
     def _ato_calculate_handle(self) -> HandlePosition:
-        """
-        ATO handle calculation using future-aware curve-tracking approach.
-
-        Instead of sampling the speed curve at a fixed lookahead distance,
-        evaluates all candidate handle positions by simulating the train
-        forward and checking which handle best tracks the operational
-        speed curve without overshooting.
-
-        Special cases:
-        1. Stopping zone: When curve says stop (operational_limit <= 0.5),
-           use direct braking notch calculation (no prediction needed).
-        2. ATC safety cap: After handle selection, if predicted speed would
-           exceed ATC limit, override with braking.
-
-        Also sets self.handle_reason with diagnostic info.
-        """
-        train = self._get_train()
-        if not train:
-            self.handle_reason = "No train"
-            return HandlePosition.N
-
-        current_speed = self.current_speed_kmh
-
-        # =================================================================
-        # Get speed curve
-        # =================================================================
-        lookahead = self.get_lookahead()
-        curves = lookahead.get("lookahead", {}).get("speed_curves", [])
-
-        if not curves:
-            self.handle_reason = "No curves"
-            self._previous_speed = current_speed
-            return HandlePosition.N
-
-        # =================================================================
-        # ZONE 1: STOPPING (curve at position 0 says stop)
-        # =================================================================
-        curve_at_zero = self._sample_curve_at(curves, 0.0, "operational_limit")
-
-        # Also cap at real-time ATC constraints
-        effective_limit_at_zero = min(
-            curve_at_zero,
-            train.max_speed,
-            self.atc_speed_limit,
-            self.current_block_speed_limit,
-        )
-
-        if effective_limit_at_zero <= STOPPED_SPEED_THRESHOLD_KMH:
-            # Zone 1 intentionally bypasses rate limiting — when the curve
-            # says stop, immediate full braking is required for safety.
-            if current_speed > 0:
-                result_handle = self._calculate_braking_notch(current_speed)
-                reason = f"Stopping: curve@0={curve_at_zero:.1f}, braking at {current_speed:.1f}"
-            else:
-                result_handle = HandlePosition.N
-                reason = "Stopped"
-            self._previous_speed = current_speed
-            self.handle_reason = reason
-            return result_handle
-
-        if current_speed > effective_limit_at_zero + ATO_SPEED_TOLERANCE:
-            result_handle = self._calculate_braking_notch_for_speed(
-                current_speed, effective_limit_at_zero
-            )
-            result_handle = _rate_limit_handle(
-                current=self.handle_position,
-                target=result_handle,
-                allow_fast=True,
-            )
-            self._previous_speed = current_speed
-            self.handle_reason = (
-                f"Curve overspeed: speed={current_speed:.1f} "
-                f"> curve@0={effective_limit_at_zero:.1f}"
-            )
-            return result_handle
-
-        # =================================================================
-        # FUTURE-AWARE CONTROL: Evaluate handles against curve
-        # =================================================================
-        # Determine evaluation horizon based on current speed
-        # At higher speeds, look further ahead; at low speeds, shorter horizon
-        km_h_to_cm_s = get_speed_conversion_factor()
-        speed_cm_s = current_speed * km_h_to_cm_s
-
-        # Horizon is long enough to see upcoming speed restrictions, but the
-        # evaluator still tracks the whole curve instead of clamping to the
-        # lowest future point.
-        profile = self._get_speed_profile()
-        operational_decel = max(
-            0.1, profile.deceleration_rate * profile.operational_decel_ratio
-        )
-        restriction_window_cm = min(
-            ATO_RESTRICTION_LOOKAHEAD_CM,
-            curves[-1].get("distance_cm", ATO_RESTRICTION_LOOKAHEAD_CM),
-        )
-        lower_curve_limits = [
-            point.get("operational_limit", effective_limit_at_zero)
-            for point in curves
-            if 0.0 < point.get("distance_cm", 0.0) <= restriction_window_cm
-            and (
-                point.get("operational_limit", effective_limit_at_zero)
-                > STOPPED_SPEED_THRESHOLD_KMH
-                or point.get("distance_cm", 0.0) <= NEAR_STOP_DETECTION_CM
-            )
-            and point.get("operational_limit", effective_limit_at_zero)
-            < current_speed - ATO_SPEED_TOLERANCE
-        ]
-        braking_horizon_cm = 0.0
-        if lower_curve_limits:
-            future_target_speed = min(lower_curve_limits)
-            decel_cm_s2 = operational_decel * km_h_to_cm_s
-            current_cm_s = current_speed * km_h_to_cm_s
-            target_cm_s = future_target_speed * km_h_to_cm_s
-            braking_horizon_cm = max(
-                0.0,
-                (current_cm_s * current_cm_s - target_cm_s * target_cm_s)
-                / (2 * decel_cm_s2),
-            )
-
-        horizon_cm = max(5.0, min(restriction_window_cm, speed_cm_s * 3.0))
-        if braking_horizon_cm > 0.0:
-            horizon_cm = max(horizon_cm, min(restriction_window_cm, braking_horizon_cm))
-
-        result_handle = self._evaluate_handles_against_curve(
-            current_speed_kmh=current_speed,
-            curve=curves,
-            horizon_cm=horizon_cm,
-        )
-
-        # Safety cap: if result would exceed ATC limits, override
-        predicted = self._simulate_forward(current_speed, result_handle, 5.0)
-        if predicted > self.atc_speed_limit + ATO_SPEED_TOLERANCE:
-            result_handle = self._calculate_braking_notch(current_speed)
-            reason = (
-                f"ATC cap: predicted {predicted:.1f} > limit {self.atc_speed_limit:.1f}"
-            )
-        else:
-            curve_target = self._sample_curve_at(
-                curves, horizon_cm / 2, "operational_limit"
-            )
-            reason = (
-                f"FutureAware: handle={result_handle.value} "
-                f"speed={current_speed:.1f} curve@{horizon_cm / 2:.0f}cm={curve_target:.1f} "
-                f"horizon={horizon_cm:.0f}cm"
-            )
-
-        # Rate-limit handle changes to prevent jitter
-        # Allow fast changes only when in stopping zone
-        is_near_stop = False
-        for point in curves:
-            if (
-                point.get("operational_limit", 999) <= STOPPED_SPEED_THRESHOLD_KMH
-                and point.get("distance_cm", 999) < NEAR_STOP_DETECTION_CM
-            ):
-                is_near_stop = True
-                break
-
-        result_handle = _rate_limit_handle(
-            current=self.handle_position,
-            target=result_handle,
-            allow_fast=is_near_stop,
-        )
-
-        self._previous_speed = current_speed
-        self.handle_reason = reason
-        return result_handle
+        """Forward to `ATONavigator.compute_handle()`."""
+        return self._get_ato_navigator().compute_handle()
 
     def _calculate_power_notch(
         self, current_speed: float, target_speed: float
     ) -> HandlePosition:
-        """Calculate appropriate power notch for acceleration.
+        """Forward to `ATONavigator.calculate_power_notch(...)`."""
+        from ato_navigator import ATONavigator
 
-        Uses full power (P5) when far from target for quick acceleration.
-        Only uses graduated power notches when within 5 km/h of target
-        for fine control to avoid overshooting.
-        """
-        speed_diff = target_speed - current_speed
-
-        # When far from target (> 5 km/h gap), use full power for quick acceleration
-        if speed_diff > 5:
-            return HandlePosition.P5
-        # Fine control zone: within 5 km/h of target
-        elif speed_diff > 3:
-            return HandlePosition.P2
-        else:
-            return HandlePosition.P1
+        return ATONavigator.calculate_power_notch(current_speed, target_speed)
 
     def _calculate_braking_notch(self, current_speed: float) -> HandlePosition:
-        """Calculate appropriate braking notch to stop."""
-        if current_speed > 30:
-            return HandlePosition.B8
-        elif current_speed > 25:
-            return HandlePosition.B7
-        elif current_speed > 20:
-            return HandlePosition.B6
-        elif current_speed > 14:
-            return HandlePosition.B5
-        elif current_speed > 10:
-            return HandlePosition.B4
-        elif current_speed > 5:
-            return HandlePosition.B3
-        elif current_speed > 2:
-            return HandlePosition.B2
-        else:
-            return HandlePosition.B1
+        """Forward to `ATONavigator.calculate_braking_notch(current_speed)`."""
+        from ato_navigator import ATONavigator
+
+        return ATONavigator.calculate_braking_notch(current_speed)
 
     def _calculate_braking_notch_for_speed(
         self, current_speed: float, target_speed: float
     ) -> HandlePosition:
-        """Calculate braking notch to reduce to target speed."""
-        speed_diff = current_speed - target_speed
+        """Forward to `ATONavigator.calculate_braking_notch_for_speed(...)`."""
+        from ato_navigator import ATONavigator
 
-        if speed_diff > 30:
-            return HandlePosition.B8
-        elif speed_diff > 25:
-            return HandlePosition.B7
-        elif speed_diff > 20:
-            return HandlePosition.B6
-        elif speed_diff > 14:
-            return HandlePosition.B5
-        elif speed_diff > 10:
-            return HandlePosition.B4
-        elif speed_diff > 5:
-            return HandlePosition.B3
-        elif speed_diff > 2:
-            return HandlePosition.B2
-        else:
-            return HandlePosition.B1
+        return ATONavigator.calculate_braking_notch_for_speed(
+            current_speed, target_speed
+        )
 
     def calculate_speed_curves(
         self,
