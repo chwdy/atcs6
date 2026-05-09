@@ -75,6 +75,7 @@ class RailwayNetwork:
         # geometry mutation). Lazy-initialised on first access to keep
         # `__init__` cheap.
         self._signal_calculator = None
+        self._block_geometry_manager = None
 
     def _ensure_block_manager(self):
         if self.block_manager is None:
@@ -89,6 +90,16 @@ class RailwayNetwork:
 
             self._signal_calculator = SignalCalculator(self)
         return self._signal_calculator
+
+    def _get_block_geometry_manager(self):
+        """Lazy-init `BlockGeometryManager`. Block geometry / topology
+        mutation lives in `block_geometry_manager.py`; this network
+        keeps doc-canonical method names as forwarders."""
+        if self._block_geometry_manager is None:
+            from block_geometry_manager import BlockGeometryManager
+
+            self._block_geometry_manager = BlockGeometryManager(self)
+        return self._block_geometry_manager
 
     def _ensure_resource_managers(self):
         """Construct BlockManager, SwitchManager, and ResourceCoordinator if not
@@ -312,310 +323,20 @@ class RailwayNetwork:
     # === Centralized Block Management ===
 
     def create_block(self, block_id: str, name: str = "") -> Block:
-        """
-        Create a new empty block.
+        """Forward to `BlockGeometryManager.create_block(block_id, name)`."""
+        return self._get_block_geometry_manager().create_block(block_id, name)
 
-        Args:
-            block_id: Unique identifier for the block
-            name: Optional human-readable name
+    def create_block_with_tracks(self, *args, **kwargs):
+        """Forward to `BlockGeometryManager.create_block_with_tracks(...)`."""
+        return self._get_block_geometry_manager().create_block_with_tracks(*args, **kwargs)
 
-        Returns:
-            Created Block instance
-
-        Raises:
-            ValueError: If block_id already exists
-        """
-        if block_id in self.blocks:
-            raise ValueError(f"Block {block_id} already exists")
-        block = Block(block_id=block_id, name=name)
-        self.blocks[block_id] = block
-        self._ensure_resource_managers()
-        return block
-
-    def create_block_with_tracks(
-        self,
-        block_id: str,
-        positions: List[Tuple[int, int]],
-        name: str = "",
-        length_cm: float = 0.0,
-        speed_limit_kmh: Optional[float] = None,
-        validate: bool = True,
-    ) -> Block:
-        """
-        Create a new block and assign tracks to it with full validation.
-
-        This is the RECOMMENDED way to create blocks. Validates:
-        - Block ID uniqueness
-        - Block properties are valid
-        - All positions have valid tracks
-        - No tracks are switches, signals, or stations
-        - No tracks are already in other blocks
-        - All tracks form a continuous path
-
-        Args:
-            block_id: Unique block identifier
-            positions: List of (x, y) track positions
-            name: Human-readable block name
-            length_cm: Physical track length
-            speed_limit_kmh: Optional speed limit
-            validate: If True, perform full validation (recommended)
-
-        Returns:
-            Created Block instance
-
-        Raises:
-            ValueError: If validation fails
-
-        Example:
-            # Create a block with validated tracks
-            block = network.create_block_with_tracks(
-                block_id="BLOCK_MAIN_1",
-                positions=[(0,0), (1,0), (2,0)],
-                name="Main Line Section 1",
-                length_cm=150.0,
-                speed_limit_kmh=80.0
-            )
-        """
-        from block_validation import (
-            validate_block_properties,
-            validate_track_for_block,
-            validate_block_assignment_continuity,
-            validate_station_boundary,
-        )
-
-        # Validate block properties
-        if validate:
-            is_valid, errors = validate_block_properties(
-                block_id, name, length_cm, speed_limit_kmh
-            )
-            if not is_valid:
-                raise ValueError(f"Invalid block properties: {', '.join(errors)}")
-
-            # Validate station boundaries - blocks cannot cross station boundaries
-            valid, error = validate_station_boundary(positions, self)
-            if not valid:
-                raise ValueError(f"Station boundary violation: {error}")
-
-        # Check block doesn't already exist
-        if block_id in self.blocks:
-            raise ValueError(f"Block {block_id} already exists")
-
-        # Validate all tracks
-        if validate:
-            for x, y in positions:
-                track = self.get_track(x, y)
-                is_valid, error = validate_track_for_block(track, self)
-                if not is_valid:
-                    raise ValueError(f"Track at ({x}, {y}): {error}")
-
-                # Check not already in another block
-                if track.block_section_id:
-                    raise ValueError(
-                        f"Track at ({x}, {y}) already in block {track.block_section_id}"
-                    )
-
-            # Validate continuity
-            is_continuous, errors = validate_block_assignment_continuity(
-                [], positions, self
-            )
-            if not is_continuous:
-                raise ValueError(f"Block tracks not continuous: {', '.join(errors)}")
-
-        # Create block
-        block = self.create_block(block_id, name)
-        block.length_cm = length_cm
-        if speed_limit_kmh:
-            block.speed_limit_kmh = speed_limit_kmh
-
-        # Assign tracks
-        for x, y in positions:
-            track = self.get_track(x, y)
-            if track:
-                track.block_section_id = block_id
-
-        return block
-
-    def extend_block(
-        self,
-        block_id: str,
-        new_positions: List[Tuple[int, int]],
-        force: bool = False,
-        force_overwrite: bool = False,
-    ) -> Block:
-        """
-        Extend an existing block with new track positions.
-
-        Validates:
-        - Block exists
-        - All new tracks are valid for blocks (unless force=True for signals)
-        - New tracks are adjacent to existing block
-        - Extended block remains continuous
-
-        Args:
-            block_id: ID of block to extend
-            new_positions: List of (x, y) positions to add
-            force: If True, removes signals from tiles to allow block extension.
-                   This allows extending a block past a signal boundary.
-            force_overwrite: If True, allows overwriting tracks that belong to
-                   other blocks (reassigns them to this block).
-
-        Returns:
-            Updated Block instance
-
-        Raises:
-            ValueError: If validation fails
-        """
-        from block_validation import (
-            validate_track_for_block,
-            validate_block_assignment_continuity,
-            get_adjacent_positions,
-            is_crossing,
-        )
-
-        if block_id not in self.blocks:
-            raise ValueError(f"Block {block_id} not found")
-
-        block = self.blocks[block_id]
-        existing_positions = self.get_block_positions(block_id)
-
-        # Track signals that need to be removed when force=True
-        signals_to_remove = []
-        # Track blocks that will be affected by force_overwrite
-        overwritten_blocks = set()
-
-        # Validate each new position
-        for x, y in new_positions:
-            track = self.get_track(x, y)
-            if not track:
-                raise ValueError(f"No track at position ({x}, {y})")
-
-            # Check for crossings (never allowed, even with force)
-            if is_crossing(track.track_bits):
-                raise ValueError(
-                    f"Track at ({x}, {y}): Cannot add crossing to block - crossings isolate paths"
-                )
-
-            # Check for switches (never allowed, even with force)
-            if track.is_switch:
-                raise ValueError(
-                    f"Track at ({x}, {y}): Cannot add switch to block - switches are block boundaries"
-                )
-
-            # Check for signals - can be overridden with force
-            # When force=True, we clear the signal's monitored block (shows warning triangle)
-            # but we do NOT remove the signal itself
-            # Only invalidate signals that monitor the block being extended (block_id)
-            if track.signal_ids:
-                if force:
-                    # Collect signals to invalidate (clear monitored block)
-                    # Only invalidate if the signal monitors the block we're extending
-                    for signal_id in track.signal_ids:
-                        signal = self.signals.get(signal_id)
-                        if signal and signal.monitored_block_id == block_id:
-                            signals_to_remove.append((signal_id, x, y))
-                else:
-                    raise ValueError(
-                        f"Track at ({x}, {y}): Has signal(s) - use force=true to extend past signal"
-                    )
-
-            if track.block_section_id and track.block_section_id != block_id:
-                if force_overwrite:
-                    # Track the block that will lose this track
-                    overwritten_blocks.add(track.block_section_id)
-                else:
-                    raise ValueError(
-                        f"Track at ({x}, {y}) already in block {track.block_section_id}"
-                    )
-
-        # Check adjacency
-        is_adjacent = False
-        for new_x, new_y in new_positions:
-            for old_x, old_y in existing_positions:
-                if abs(new_x - old_x) + abs(new_y - old_y) == 1:
-                    is_adjacent = True
-                    break
-            if is_adjacent:
-                break
-
-        if not is_adjacent and len(existing_positions) > 0:
-            raise ValueError("New positions must be adjacent to existing block")
-
-        # Validate station boundaries - block cannot cross station boundaries
-        from block_validation import validate_station_boundary
-
-        all_positions = existing_positions + new_positions
-        valid, error = validate_station_boundary(all_positions, self)
-        if not valid:
-            raise ValueError(f"Station boundary violation: {error}")
-
-        # Invalidate signals in force mode - clear their monitored block
-        # This causes them to show an orange warning triangle (signal needs reconfiguration)
-        invalidated_signals = []
-        for signal_id, x, y in signals_to_remove:
-            if signal_id in self.signals:
-                signal = self.signals[signal_id]
-                # detection_direction can be either a string or an enum, handle both
-                detection_direction = signal.detection_direction
-                if hasattr(detection_direction, "name"):
-                    detection_direction = detection_direction.name
-                invalidated_signals.append(
-                    {
-                        "signal_id": signal_id,
-                        "position": [x, y],
-                        "detection_direction": detection_direction,
-                        "approach_direction": signal.approach_direction,
-                        "previous_block": signal.monitored_block_id,
-                    }
-                )
-                # Clear the monitored block - signal will show warning triangle
-                signal.monitored_block_id = None
-                # Set signal to RED since it's no longer monitoring a block
-                signal.state = SignalState.RED
-
-        # Validate continuity
-        is_continuous, errors = validate_block_assignment_continuity(
-            existing_positions, new_positions, self
-        )
-        if not is_continuous:
-            raise ValueError(f"Extension would break continuity: {', '.join(errors)}")
-
-        # Assign new tracks
-        for x, y in new_positions:
-            track = self.get_track(x, y)
-            if track:
-                track.block_section_id = block_id
-
-        # Store invalidated signals info on block for API response
-        block._invalidated_signals = invalidated_signals
-
-        return block
+    def extend_block(self, *args, **kwargs):
+        """Forward to `BlockGeometryManager.extend_block(...)`."""
+        return self._get_block_geometry_manager().extend_block(*args, **kwargs)
 
     def delete_block(self, block_id: str) -> bool:
-        """
-        Delete block and clear references from all tracks.
-        Also disconnects signals monitoring this block.
-
-        Args:
-            block_id: ID of block to delete
-
-        Returns:
-            True if deleted, False if not found
-        """
-        if block_id not in self.blocks:
-            return False
-
-        # Clear block_section_id from all tracks in this block
-        for track in self.tracks.values():
-            if track.block_section_id == block_id:
-                track.block_section_id = None
-
-        # Disconnect signals monitoring this block (don't delete them)
-        for signal in self.signals.values():
-            if signal.monitored_block_id == block_id:
-                signal.monitored_block_id = None
-
-        del self.blocks[block_id]
-        return True
+        """Forward to `BlockGeometryManager.delete_block(block_id)`."""
+        return self._get_block_geometry_manager().delete_block(block_id)
 
     def set_block_state(self, block_id: str, state: BlockState) -> bool:
         """
@@ -696,109 +417,13 @@ class RailwayNetwork:
         """Get grid positions of all tracks in block"""
         return [(t.x, t.y) for t in self.get_block_tracks(block_id)]
 
-    def assign_track_to_block(
-        self, x: int, y: int, block_id: Optional[str], validate_continuity: bool = True
-    ) -> None:
-        """
-        Assign a track to a block, validating block membership and continuity.
-
-        Args:
-            x, y: Track position
-            block_id: Block ID to assign (None to unassign)
-            validate_continuity: If True, check that assignment maintains continuity
-
-        Raises:
-            ValueError: If validation fails with detailed error message
-        """
-        from block_validation import (
-            validate_track_for_block,
-            validate_block_assignment_continuity,
-        )
-
-        track = self.get_track(x, y)
-        if not track:
-            raise ValueError(f"No track at position ({x}, {y})")
-
-        # If assigning to a block
-        if block_id:
-            # Check block exists
-            if block_id not in self.blocks:
-                raise ValueError(f"Block {block_id} does not exist")
-
-            # Validate track can be in a block
-            is_valid, error = validate_track_for_block(track, self)
-            if not is_valid:
-                raise ValueError(f"Cannot assign track at ({x}, {y}) to block: {error}")
-
-            # Check if already assigned to a different block
-            if track.block_section_id and track.block_section_id != block_id:
-                raise ValueError(
-                    f"Track at ({x}, {y}) already assigned to block {track.block_section_id}. "
-                    f"Unassign first or use reassign method."
-                )
-
-            # Validate continuity if requested
-            if validate_continuity:
-                existing_positions = self.get_block_positions(block_id)
-                if len(existing_positions) > 0:
-                    is_continuous, errors = validate_block_assignment_continuity(
-                        existing_positions, [(x, y)], self
-                    )
-                    if not is_continuous:
-                        raise ValueError(
-                            f"Adding track at ({x}, {y}) would create discontinuous block: "
-                            f"{', '.join(errors)}"
-                        )
-
-        # Assignment is valid - update
-        track.block_section_id = block_id
+    def assign_track_to_block(self, *args, **kwargs):
+        """Forward to `BlockGeometryManager.assign_track_to_block(...)`."""
+        return self._get_block_geometry_manager().assign_track_to_block(*args, **kwargs)
 
     def validate_block_continuity(self, block_id: str) -> Tuple[bool, List[str]]:
-        """
-        Check if block tracks form a connected graph.
-
-        Uses BFS to verify all tracks in the block are reachable from
-        any starting track via edge connections.
-
-        Args:
-            block_id: Block ID to validate
-
-        Returns:
-            Tuple of (is_valid, list of error messages)
-        """
-        tracks = self.get_block_tracks(block_id)
-        if len(tracks) <= 1:
-            return True, []
-
-        positions = set((t.x, t.y) for t in tracks)
-        visited = set()
-        errors = []
-
-        # BFS from first track
-        start = tracks[0]
-        to_visit = [(start.x, start.y)]
-
-        while to_visit:
-            pos = to_visit.pop()
-            if pos in visited:
-                continue
-            visited.add(pos)
-
-            track = self.get_track(*pos)
-            if not track:
-                continue
-
-            # Get connected neighbors via edges
-            for neighbor_pos in self._get_block_connected_neighbors(track):
-                if neighbor_pos in positions and neighbor_pos not in visited:
-                    to_visit.append(neighbor_pos)
-
-        if len(visited) != len(positions):
-            unvisited = positions - visited
-            errors.append(f"Disconnected tracks at: {list(unvisited)}")
-            return False, errors
-
-        return True, []
+        """Forward to `BlockGeometryManager.validate_block_continuity(block_id)`."""
+        return self._get_block_geometry_manager().validate_block_continuity(block_id)
 
     def _get_block_connected_neighbors(
         self, track: TrackSegment
@@ -2199,333 +1824,36 @@ class RailwayNetwork:
         return True, []
 
     def _disconnect_signals_for_block(self, block_id: str) -> None:
-        """
-        Disconnect all signals monitoring the specified block.
-
-        Sets monitored_block_id = None for all signals monitoring this block.
-
-        Args:
-            block_id: Block ID to disconnect signals from
-        """
-        for signal in self.signals.values():
-            if signal.monitored_block_id == block_id:
-                signal.monitored_block_id = None
-
-    # === Unified Block Lifecycle Management ===
+        """Forward to `BlockGeometryManager._disconnect_signals_for_block(block_id)`."""
+        return self._get_block_geometry_manager()._disconnect_signals_for_block(block_id)
 
     def remove_tile_from_block(self, x: int, y: int) -> List[str]:
-        """
-        Remove a tile from its block and handle connectivity check.
-
-        This is the core lifecycle method for block management. When a tile
-        is removed from a block (due to station/signal placement, or track deletion),
-        this method:
-        1. Clears the tile's block_section_id
-        2. Checks if remaining block tiles are still connected
-        3. If disconnected, splits into new child blocks
-
-        Args:
-            x, y: Tile position to remove from its block
-
-        Returns:
-            List of affected block IDs (original + any new child blocks created)
-        """
-        track = self.get_track(x, y)
-        if not track or not track.block_section_id:
-            return []
-
-        block_id = track.block_section_id
-        track.block_section_id = None
-
-        # Check and potentially split the block
-        return self._check_block_connectivity(block_id)
+        """Forward to `BlockGeometryManager.remove_tile_from_block(x, y)`."""
+        return self._get_block_geometry_manager().remove_tile_from_block(x, y)
 
     def remove_tiles_from_block(self, positions: List[Tuple[int, int]]) -> List[str]:
-        """
-        Remove multiple tiles from their block(s) and handle connectivity.
-
-        This is a batch version of remove_tile_from_block for efficiency.
-        All tiles should belong to the same block for proper splitting.
-
-        Args:
-            positions: List of (x, y) positions to remove
-
-        Returns:
-            List of affected block IDs
-        """
-        if not positions:
-            return []
-
-        # Group positions by block
-        blocks_affected = {}
-        for x, y in positions:
-            track = self.get_track(x, y)
-            if track and track.block_section_id:
-                block_id = track.block_section_id
-                if block_id not in blocks_affected:
-                    blocks_affected[block_id] = []
-                blocks_affected[block_id].append((x, y))
-                track.block_section_id = None
-
-        # Check connectivity for each affected block
-        all_affected = []
-        for block_id in blocks_affected:
-            affected = self._check_block_connectivity(block_id)
-            all_affected.extend(affected)
-
-        return all_affected
+        """Forward to `BlockGeometryManager.remove_tiles_from_block(positions)`."""
+        return self._get_block_geometry_manager().remove_tiles_from_block(positions)
 
     def _check_block_connectivity(self, block_id: str) -> List[str]:
-        """
-        Check block connectivity and split if disconnected.
+        """Forward to `BlockGeometryManager._check_block_connectivity(block_id)`."""
+        return self._get_block_geometry_manager()._check_block_connectivity(block_id)
 
-        After tiles are removed from a block, this method:
-        1. Gets remaining tile positions
-        2. Finds connected components
-        3. If multiple components, deletes original and creates child blocks
-        4. Remaps orphaned signals to nearest reachable child block
+    def _find_connected_components(self, *args, **kwargs):
+        """Forward to `BlockGeometryManager._find_connected_components(...)`."""
+        return self._get_block_geometry_manager()._find_connected_components(*args, **kwargs)
 
-        Args:
-            block_id: Block ID to check
+    def _get_track_connected_neighbors(self, *args, **kwargs):
+        """Forward to `BlockGeometryManager._get_track_connected_neighbors(...)`."""
+        return self._get_block_geometry_manager()._get_track_connected_neighbors(*args, **kwargs)
 
-        Returns:
-            List of affected block IDs (may include new child block IDs)
-        """
-        block = self.blocks.get(block_id)
-        if not block:
-            return []
+    def _create_child_blocks(self, *args, **kwargs):
+        """Forward to `BlockGeometryManager._create_child_blocks(...)`."""
+        return self._get_block_geometry_manager()._create_child_blocks(*args, **kwargs)
 
-        remaining_positions = self.get_block_positions(block_id)
-
-        # Case 1: Block is now empty
-        if not remaining_positions:
-            self._disconnect_signals_for_block(block_id)
-            self.delete_block(block_id)
-            return [block_id]
-
-        # Find connected components
-        components = self._find_connected_components(remaining_positions)
-
-        # Case 2: Single component - block is still connected
-        if len(components) == 1:
-            return [block_id]
-
-        # Case 3: Multiple components - split into child blocks
-        # Get signals monitoring this block before deletion
-        orphaned_signals = [
-            signal
-            for signal in self.signals.values()
-            if signal.monitored_block_id == block_id
-        ]
-
-        # Create child blocks
-        new_block_ids = self._create_child_blocks(block, components)
-
-        # Delete original block (but don't disconnect signals yet - we'll remap them)
-        if block_id in self.blocks:
-            del self.blocks[block_id]
-
-        # Remap orphaned signals to nearest reachable child block
-        self._remap_orphaned_signals(orphaned_signals, new_block_ids)
-
-        return [block_id] + new_block_ids
-
-    def _find_connected_components(
-        self, positions: List[Tuple[int, int]]
-    ) -> List[List[Tuple[int, int]]]:
-        """
-        Find connected components among tile positions using track connectivity.
-
-        Two tiles are connected if:
-        1. They are adjacent (Manhattan distance = 1)
-        2. Their track_bits allow connection (one has edge pointing to other)
-
-        Uses BFS to group tiles into connected components.
-
-        Args:
-            positions: List of (x, y) tile positions
-
-        Returns:
-            List of components, where each component is a list of positions
-        """
-        if not positions:
-            return []
-
-        position_set = set(positions)
-        visited = set()
-        components = []
-
-        for start_pos in positions:
-            if start_pos in visited:
-                continue
-
-            # BFS to find all connected tiles from this starting point
-            component = []
-            queue = [start_pos]
-            visited.add(start_pos)
-
-            while queue:
-                current = queue.pop(0)
-                component.append(current)
-
-                # Find connected neighbors within the position set
-                for neighbor in self._get_track_connected_neighbors(current):
-                    if neighbor in position_set and neighbor not in visited:
-                        visited.add(neighbor)
-                        queue.append(neighbor)
-
-            components.append(component)
-
-        return components
-
-    def _get_track_connected_neighbors(
-        self, pos: Tuple[int, int]
-    ) -> List[Tuple[int, int]]:
-        """
-        Get positions of tracks connected via edges (track_bits connectivity).
-
-        A neighbor is connected if:
-        1. This track has an edge pointing toward the neighbor
-        2. The neighbor has an edge pointing back
-
-        Args:
-            pos: Position to check neighbors for
-
-        Returns:
-            List of connected neighbor positions
-        """
-        track = self.get_track(*pos)
-        if not track:
-            return []
-
-        neighbors = []
-        edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
-        opposite_edge = {"N": "S", "S": "N", "E": "W", "W": "E"}
-
-        for edge in track.edges:
-            if edge not in edge_offsets:
-                continue
-            dx, dy = edge_offsets[edge]
-            neighbor_pos = (pos[0] + dx, pos[1] + dy)
-            neighbor = self.get_track(*neighbor_pos)
-            if neighbor:
-                opp = opposite_edge[edge]
-                if opp in neighbor.edges:
-                    neighbors.append(neighbor_pos)
-
-        return neighbors
-
-    def _create_child_blocks(
-        self, parent_block: Block, components: List[List[Tuple[int, int]]]
-    ) -> List[str]:
-        """
-        Create child blocks from connected components, inheriting parent properties.
-
-        Child blocks inherit:
-        - name: "{parent.name}_1", "{parent.name}_2", etc.
-        - length_cm: Calculated based on tile count × length_per_tile_cm from parent
-        - min_radius_cm, speed_limit_kmh (copied as-is)
-        - state: Reset to FREE (original occupancy doesn't transfer cleanly)
-
-        Args:
-            parent_block: Original block being split
-            components: List of connected components (each is list of positions)
-
-        Returns:
-            List of new block IDs
-        """
-        new_block_ids = []
-        base_name = parent_block.name if parent_block.name else parent_block.block_id
-
-        # Calculate length per tile from parent block
-        # Check if parent has stored length_per_tile_cm (from station split)
-        length_per_tile_cm = getattr(parent_block, "_length_per_tile_cm", None)
-
-        if length_per_tile_cm is None:
-            if (
-                not hasattr(parent_block, "length_cm")
-                or parent_block.length_cm is None
-                or parent_block.length_cm <= 0
-            ):
-                parent_block.length_cm = 0.0
-            parent_positions = self.get_block_positions(parent_block.block_id)
-            if parent_positions and parent_block.length_cm > 0:
-                length_per_tile_cm = parent_block.length_cm / len(parent_positions)
-            else:
-                total_tiles = sum(len(comp) for comp in components)
-                if total_tiles > 0 and parent_block.length_cm > 0:
-                    length_per_tile_cm = parent_block.length_cm / total_tiles
-                else:
-                    length_per_tile_cm = 0.0
-
-        for i, component_positions in enumerate(components, start=1):
-            # Generate child block ID and name
-            child_id = f"{parent_block.block_id}_{i}"
-            child_name = f"{base_name}_{i}"
-
-            # Calculate child block length based on tile count
-            child_length_cm = (
-                len(component_positions) * length_per_tile_cm
-                if length_per_tile_cm > 0
-                else 0.0
-            )
-
-            # Create child block with inherited properties
-            # v1: Block.state is a derived @property; do not pass it to the
-            # constructor. occupied_by defaults to None which yields FREE.
-            child_block = Block(
-                block_id=child_id,
-                name=child_name,
-                length_cm=child_length_cm,  # Calculated based on tile count
-                min_radius_cm=parent_block.min_radius_cm,
-                speed_limit_kmh=parent_block.speed_limit_kmh,
-                occupied_by=None,
-            )
-
-            self.blocks[child_id] = child_block
-            self._ensure_resource_managers()
-
-            for x, y in component_positions:
-                track = self.get_track(x, y)
-                if track:
-                    track.block_section_id = child_id
-
-            new_block_ids.append(child_id)
-
-        return new_block_ids
-
-    def _remap_orphaned_signals(
-        self, orphaned_signals: List[Signal], new_block_ids: List[str]
-    ) -> None:
-        """
-        Remap signals that monitored a deleted block to nearest reachable child block.
-
-        For each orphaned signal, uses _can_reach_block to find which new block
-        is reachable, and updates monitored_block_id accordingly.
-
-        Args:
-            orphaned_signals: List of signals that need remapping
-            new_block_ids: List of child block IDs to consider
-        """
-        for signal in orphaned_signals:
-            # Try to find a reachable block among the new child blocks
-            found_block = None
-            for block_id in new_block_ids:
-                if self._can_reach_block(signal, block_id):
-                    found_block = block_id
-                    break
-
-            # Update signal
-            signal.monitored_block_id = found_block
-
-            # Recalculate signal state based on new monitored block
-            if signal.signal_type == SignalType.BLOCK:
-                if signal.monitored_block_id:
-                    signal.state = self._calculate_signal_state(signal)
-                else:
-                    signal.state = SignalState.RED
-
-    # === Centralized Switch Management ===
+    def _remap_orphaned_signals(self, *args, **kwargs):
+        """Forward to `BlockGeometryManager._remap_orphaned_signals(...)`."""
+        return self._get_block_geometry_manager()._remap_orphaned_signals(*args, **kwargs)
 
     def add_switch(self, switch: "Switch") -> None:
         """
