@@ -212,6 +212,27 @@ class RouteExecutor:
         # Per-route run-instance counter (1-based). diagnostic only.
         self._run_count_for_route: Dict[str, int] = {}
 
+        # Helper modules — lazy-init on first access. The actual logic lives
+        # in `route_target_resolver.RouteTargetResolver` and
+        # `train_at_target_predicates.TrainAtTargetPredicates`; this class
+        # keeps thin forwarders so the doc-canonical names continue to work.
+        self._target_resolver = None
+        self._at_target_predicates = None
+
+    def _get_route_target_resolver(self):
+        if self._target_resolver is None:
+            from route_target_resolver import RouteTargetResolver
+
+            self._target_resolver = RouteTargetResolver(self)
+        return self._target_resolver
+
+    def _get_at_target_predicates(self):
+        if self._at_target_predicates is None:
+            from train_at_target_predicates import TrainAtTargetPredicates
+
+            self._at_target_predicates = TrainAtTargetPredicates(self)
+        return self._at_target_predicates
+
     # ----------------------------------------------------- route registry API
     def register_route(self, route: "Route") -> None:
         """Register a Route in the canonical registry."""
@@ -1111,137 +1132,14 @@ class RouteExecutor:
         train_id: str,
         exclude: Optional[Iterable[ResolvedRouteTarget]] = None,
     ) -> Optional[ResolvedNextTaskProjection]:
-        """Read-only projection of the next non-finished task.
-
-        Per design_new.md "Canonical Next-Target Selection":
-          * Returns `None` when no next task on the directed walk exists.
-          * Helper itself stores no per-tick state.
-          * Helper does NOT write `task_runs[i].resolved_target`. The only
-            writer is Phase 1's authority-acquisition step.
-
-        v1 behavior: dispatches on `task_kind` from Route.tasks[i]:
-          - "waypoint" / "stop": resolve a concrete target block + direction.
-          - "dwell": no dispatcher target; resolved_target is None.
-        """
-        train = (
-            self.network.trains.get(train_id)
-            if hasattr(self.network, "trains")
-            else None
-        )
-        if train is None:
-            return None
-        route_id = self.assigned_route_id_for(train_id)
-        if not route_id:
-            return None
-        route = self.route_registry.get(route_id)
-        if route is None:
-            return None
-        exec_state = self.execution_states.get(train_id)
-        if exec_state is None:
-            return None
-        task_count = route.get_task_count() if hasattr(route, "get_task_count") else 0
-        if task_count == 0:
-            return None
-
-        # Reconcile route_version_seen if Route.route_version has advanced.
-        current_version = int(getattr(route, "route_version", 1))
-        if current_version != exec_state.route_version_seen:
-            # Wave 1: simple update; Wave 2 may apply reconciliation_policy
-            # logic to relocate cursors.
-            exec_state.route_version_seen = current_version
-
-        next_index = self._compute_next_task_index(route, exec_state, task_count)
-        if next_index is None:
-            return None
-
-        task = route.get_task_at(next_index)
-        if task is None:
-            return None
-
-        direction_str = "forward" if exec_state.direction >= 0 else "reverse"
-
-        # Dispatch on task_kind. This is the v1 fix that unblocks dwell-entry.
-        if task.task_kind == "dwell":
-            # Dwell tasks carry no dispatcher target.
-            return ResolvedNextTaskProjection(
-                task_index=next_index,
-                task_kind="dwell",
-                direction=direction_str,
-                resolved_target=None,
-            )
-
-        # waypoint or stop: resolve a concrete block + direction.
-        target_block = self._resolve_task_target_block(task)
-        if target_block is None:
-            return ResolvedNextTaskProjection(
-                task_index=next_index,
-                task_kind=task.task_kind,
-                direction=direction_str,
-                resolved_target=None,
-            )
-
-        resolved_dir = self._resolve_task_direction(
-            train, target_block, task.task_direction, exec_state.direction
-        )
-
-        resolved = ResolvedRouteTarget(
-            requested_destination_block_id=target_block,
-            requested_destination_direction=resolved_dir,
-        )
-
-        # Honor caller-provided `exclude` set.
-        if exclude:
-            for ex in exclude:
-                if (
-                    ex.requested_destination_block_id
-                    == resolved.requested_destination_block_id
-                    and ex.requested_destination_direction
-                    == resolved.requested_destination_direction
-                ):
-                    return None
-
-        return ResolvedNextTaskProjection(
-            task_index=next_index,
-            task_kind=task.task_kind,
-            direction=direction_str,
-            resolved_target=resolved,
+        """Forward to `RouteTargetResolver.find_next_task_target(...)`."""
+        return self._get_route_target_resolver().find_next_task_target(
+            train_id, exclude=exclude
         )
 
     def _resolve_task_target_block(self, task: RouteTask) -> Optional[str]:
-        """Resolve a RouteTask.task_location to a concrete block_id.
-
-        v1 supports three location kinds:
-          * direct block_id
-          * platform_id (lookup via network.platforms)
-          * station_id (lookup via network.station_groups, then pick a platform)
-        task_location is stored as a single string; we probe block, platform,
-        station in that order.
-        """
-        location = getattr(task, "task_location", "")
-        if not location:
-            return None
-
-        # Try block direct.
-        blocks = getattr(self.network, "blocks", {}) or {}
-        if location in blocks:
-            return location
-
-        # Try platform.
-        block_id = self._get_platform_block_id(location)
-        if block_id:
-            return block_id
-
-        # Try station.
-        station_groups = getattr(self.network, "station_groups", {}) or {}
-        station = station_groups.get(location)
-        if station is not None:
-            platform_ids = getattr(station, "platform_ids", []) or []
-            for pid in platform_ids:
-                bid = self._get_platform_block_id(pid)
-                if bid:
-                    return bid
-
-        return None
+        """Forward to `RouteTargetResolver.resolve_task_target_block(task)`."""
+        return self._get_route_target_resolver().resolve_task_target_block(task)
 
     def _resolve_task_direction(
         self,
@@ -1250,19 +1148,12 @@ class RouteExecutor:
         task_direction: str,
         signed_direction: int,
     ) -> str:
-        """Resolve a RouteTask.task_direction to "forward" / "reverse".
+        """Forward to `RouteTargetResolver.resolve_task_direction(...)`."""
+        from route_target_resolver import RouteTargetResolver
 
-        v1: dispatcher never receives "either"; route resolution must always
-        eliminate it before calling create_path/extend_path.
-        """
-        if task_direction in ("forward", "reverse"):
-            return task_direction
-
-        # "either" — derive from train direction or default to forward.
-        # Wave 2 will use Block.ordered_tiles to make this exact; for Wave 1
-        # we surface a deterministic fallback that the dispatcher can then
-        # reconcile against block geometry.
-        return "forward" if signed_direction >= 0 else "reverse"
+        return RouteTargetResolver.resolve_task_direction(
+            train, block_id, task_direction, signed_direction
+        )
 
     def _compute_next_task_index(
         self,
@@ -1270,31 +1161,12 @@ class RouteExecutor:
         exec_state: RouteExecutionState,
         task_count: int,
     ) -> Optional[int]:
-        """Compute the next task index without mutating exec_state."""
-        if task_count == 0:
-            return None
+        """Forward to `RouteTargetResolver.compute_next_task_index(...)`."""
+        from route_target_resolver import RouteTargetResolver
 
-        idx = exec_state.current_waypoint_index
-        if 0 <= idx < task_count:
-            return idx
-
-        if route.mode == RouteMode.ONE_OFF:
-            if idx >= task_count:
-                return None
-            return idx
-
-        if route.mode == RouteMode.CIRCULAR:
-            return idx % task_count
-
-        if route.mode == RouteMode.ROUND_TRIP:
-            if idx >= task_count:
-                return task_count - 2 if task_count > 1 else 0
-            if idx < 0:
-                return 1 if task_count > 1 else 0
-            return idx
-        return None
-
-    # ------------------------------------------------------------------ helpers
+        return RouteTargetResolver.compute_next_task_index(
+            route, exec_state, task_count
+        )
     def _get_active_route_train_pairs(self) -> List[Tuple["Train", "Route"]]:
         """Collect active (train, route) pairs."""
         pairs: List[Tuple["Train", "Route"]] = []
@@ -1355,119 +1227,56 @@ class RouteExecutor:
 
     # ------------------------------------------------------------------ network helpers
     def _is_train_at_block(self, train: "Train", block_id: str) -> bool:
-        """Return True when the train head sits in the named block."""
-        if not train.position:
-            return False
-        track = self.network.get_track(*train.position.head_tile)
-        if not track:
-            return False
-        return track.block_section_id == block_id
+        """Forward to `TrainAtTargetPredicates.is_train_at_block(...)`."""
+        return self._get_at_target_predicates().is_train_at_block(train, block_id)
 
     def _is_train_at_platform_for_task(
         self, train: "Train", task: RouteTask
     ) -> bool:
-        """Return True when the train head sits at a platform tile that
-        satisfies the task's location."""
-        if not train.position:
-            return False
-        platform = self._get_platform(task.task_location)
-        if not platform:
-            return False
-        target_tile = self._get_target_platform_tile(train, platform)
-        if not target_tile:
-            return False
-        return train.position.head_tile == target_tile
+        """Forward to `TrainAtTargetPredicates.is_train_at_platform_for_task(...)`."""
+        return self._get_at_target_predicates().is_train_at_platform_for_task(
+            train, task
+        )
 
     def _is_train_at_platform(self, train: "Train", platform_id: str) -> bool:
-        """Return True when the train head sits at the named platform's tile."""
-        if not train.position:
-            return False
-        platform = self._get_platform(platform_id)
-        if not platform:
-            return False
-        target_tile = self._get_target_platform_tile(train, platform)
-        if not target_tile:
-            return False
-        return train.position.head_tile == target_tile
+        """Forward to `TrainAtTargetPredicates.is_train_at_platform(...)`."""
+        return self._get_at_target_predicates().is_train_at_platform(
+            train, platform_id
+        )
 
     def _get_target_platform_tile(
         self, train: "Train", platform: object
     ) -> Optional[Tuple[int, int]]:
-        """Pick stopping tile for platform based on travel direction."""
-        positions = list(getattr(platform, "positions", []))
-        if not positions:
-            return None
-        if len(positions) == 1:
-            return positions[0]
+        """Forward to `TrainAtTargetPredicates.get_target_platform_tile(...)`."""
+        from train_at_target_predicates import TrainAtTargetPredicates
 
-        # Per design_new.md ~line 1292, direction derives from cab via the
-        # controller. Use the train's geometric facing direction (which is
-        # itself a read-only projection of `position.leading_end`) as the
-        # canonical input here; the controller's `travel_direction` is the
-        # same projection in compass-edge form.
-        direction = train.facing_direction
-        if not direction:
-            return positions[0]
-
-        def sort_key(pos: Tuple[int, int]) -> float:
-            x, y = pos
-            if direction.name == "NORTH":
-                return -y
-            if direction.name == "SOUTH":
-                return y
-            if direction.name == "EAST":
-                return -x
-            if direction.name == "WEST":
-                return x
-            return 0
-
-        return sorted(positions, key=sort_key)[0]
+        return TrainAtTargetPredicates.get_target_platform_tile(train, platform)
 
     def _get_target_station_tile(
         self, train: "Train", station: object
     ) -> Optional[Tuple[int, int]]:
-        """Compatibility helper for station-oriented tests/callers."""
-        return self._get_target_platform_tile(train, station)
+        """Forward to `TrainAtTargetPredicates.get_target_station_tile(...)`."""
+        from train_at_target_predicates import TrainAtTargetPredicates
+
+        return TrainAtTargetPredicates.get_target_station_tile(train, station)
 
     def _is_train_at_station(self, train: "Train", station_id: str) -> bool:
-        """Compatibility helper for station-oriented tests/callers."""
-        return self._is_train_at_platform(train, station_id)
+        """Forward to `TrainAtTargetPredicates.is_train_at_station(...)`."""
+        return self._get_at_target_predicates().is_train_at_station(
+            train, station_id
+        )
 
     def _get_platform(self, platform_id: str) -> Optional[object]:
-        platforms = getattr(self.network, "platforms", None)
-        if isinstance(platforms, dict) and platform_id in platforms:
-            return platforms[platform_id]
-        return None
+        """Forward to `RouteTargetResolver.get_platform(platform_id)`."""
+        return self._get_route_target_resolver().get_platform(platform_id)
 
     def _get_platform_block_id(self, platform_id: str) -> Optional[str]:
-        """Get primary block for a platform.
-
-        Uses the canonical `Platform.ordered_blocks` (per design_new.md
-        "Platform and station model"); falls back to tile-by-tile lookup for
-        platforms whose block assignments have not been populated yet.
-        """
-        platform = self._get_platform(platform_id)
-        if not platform:
-            return None
-
-        ordered_blocks = getattr(platform, "ordered_blocks", None)
-        if ordered_blocks:
-            return ordered_blocks[0]
-
-        for x, y in getattr(platform, "positions", []):
-            track = self.network.get_track(x, y)
-            if track and track.block_section_id:
-                return track.block_section_id
-        return None
+        """Forward to `RouteTargetResolver.platform_block_id(platform_id)`."""
+        return self._get_route_target_resolver().platform_block_id(platform_id)
 
     def _get_current_block_id(self, train: "Train") -> Optional[str]:
-        """Get train's current block based on head tile."""
-        if not train.position:
-            return None
-        track = self.network.get_track(*train.position.head_tile)
-        if not track:
-            return None
-        return track.block_section_id
+        """Forward to `TrainAtTargetPredicates.current_block_id(train)`."""
+        return self._get_at_target_predicates().current_block_id(train)
 
     def _convert_path_to_train_path(
         self, path: object
