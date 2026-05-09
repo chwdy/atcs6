@@ -348,7 +348,6 @@ class TestExtendPathBug:
             occupied_tiles=[(2, 0), (3, 0)],
             occupied_blocks=["BLOCK_B"],
         )
-        demo_train.path_index = 3  # Approximate position in path
 
         # Update block occupancy to match
         simple_network.block_manager.clear_block("BLOCK_A")
@@ -380,11 +379,16 @@ class TestExtendPathBug:
             f"  After: {len(tiles_after)} tiles"
         )
 
-        # path_index should still be valid
-        assert len(tiles_after) > demo_train.path_index, (
-            f"Path index should still be valid after extension.\n"
-            f"  Path index: {demo_train.path_index}\n"
-            f"  Path length: {len(tiles_after)}"
+        # Head tile (3, 0) is the 4th tile of the original path; extension
+        # must keep the path long enough to still cover it.
+        head_index = next(
+            (i for i, (x, y, _) in enumerate(tiles_after) if (x, y) == (3, 0)),
+            -1,
+        )
+        assert head_index >= 0 and len(tiles_after) > head_index, (
+            f"Extended path should still cover the train head tile (3, 0).\n"
+            f"  Path length: {len(tiles_after)}\n"
+            f"  Head index in extended path: {head_index}"
         )
 
 
@@ -473,7 +477,6 @@ class TestExtendPathAtoSync:
         )
         if not success:
             train_on_network.current_path = raw_path
-            train_on_network.path_index = 0
         train_on_network.assigned_path_id = path.path_id
         train_on_network.ato_destination_block_id = path.authority_end_block_id
 

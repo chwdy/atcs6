@@ -10,7 +10,7 @@
    TRAIN MONITOR BAR - Bottom of screen lookahead display
    ============================================================================ */
 .train-monitor-bar {
-    height: 240px;
+    height: 220px;
     background: var(--bg-panel);
     border-top: 1px solid var(--border-color);
     display: flex;
@@ -171,10 +171,10 @@
 
 .train-debug-info {
     color: var(--text-secondary);
-    font-size: 9px;
+    font-size: 11px;
     font-family: var(--font-mono);
     padding: 2px 4px;
-    background: rgba(0, 0, 0, 0.3);
+    background: var(--bg-dark);
     border-radius: 3px;
     display: flex;
     align-items: center;
@@ -267,7 +267,7 @@
     display: flex;
     flex-direction: column;
     gap: 3px;
-    font-size: 10px;
+    font-size: 11px;
 }
 
 .upcoming-item {
@@ -302,7 +302,7 @@
 .upcoming-len {
     font-family: var(--font-mono);
     color: var(--text-muted);
-    font-size: 9px;
+    font-size: 10px;
     flex-shrink: 0;
 }
 

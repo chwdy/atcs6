@@ -142,7 +142,7 @@ class LookaheadBuilder:
         if path_tiles:
             head_tile = c._get_head_tile()
             if head_tile:
-                head_index = c._get_head_path_index(train, head_tile)
+                head_index = c._get_head_path_index(head_tile)
                 if head_index >= 0:
                     scan_step = c._get_path_scan_step(train, head_index)
                     loop_start = head_index + scan_step
@@ -172,7 +172,7 @@ class LookaheadBuilder:
                 scan_step = 1
                 head_tile = c._get_head_tile()
                 if head_tile and path_tiles:
-                    head_index = c._get_head_path_index(train, head_tile)
+                    head_index = c._get_head_path_index(head_tile)
                     if head_index >= 0:
                         scan_step = c._get_path_scan_step(train, head_index)
                 if scan_step == -1:

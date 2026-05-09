@@ -235,22 +235,32 @@ def register(app, state: AppState) -> None:
         """List all trains in the canonical sibling-payload shape.
 
         Per design_new.md "Data Flow To UI": expose `trains`,
-        `controllers_by_train_id`, and `dispatcher_progress_by_train_id` as
-        sibling collections.
+        `controllers_by_train_id`, `dispatcher_progress_by_train_id`, and
+        `assigned_routes_by_train_id` as sibling collections.
         """
         trains_list = []
         controllers_by_train_id: Dict[str, object] = {}
         dispatcher_by_train_id: Dict[str, object] = {}
+        assigned_routes_by_train_id: Dict[str, object] = {}
+        route_executor = (
+            state.sim_controller.route_executor if state.sim_controller else None
+        )
         for train in state.network.trains.values():
             payload = _train_to_dict(train, state.network)
             trains_list.append(payload["train"])
             controllers_by_train_id[train.train_id] = payload["controller"]
             dispatcher_by_train_id[train.train_id] = payload["dispatcher_progress"]
+            assigned_routes_by_train_id[train.train_id] = (
+                route_executor.assigned_route_id_for(train.train_id)
+                if route_executor
+                else None
+            )
         return jsonify(
             {
                 "trains": trains_list,
                 "controllers_by_train_id": controllers_by_train_id,
                 "dispatcher_progress_by_train_id": dispatcher_by_train_id,
+                "assigned_routes_by_train_id": assigned_routes_by_train_id,
             }
         )
 
@@ -522,26 +532,6 @@ def register(app, state: AppState) -> None:
             }
         ), 400
 
-    @app.route("/api/trains/<train_id>/manual-speed", methods=["POST"])
-    def train_set_manual_speed(train_id):
-        """Set manual target speed (only in MANUAL mode)."""
-        train = state.network.trains.get(train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
-
-        data = request.json or {}
-        speed = data.get("speed", 0)
-        if not isinstance(speed, (int, float)):
-            return jsonify({"error": "Invalid speed value"}), 400
-
-        if train.set_manual_speed(float(speed)):
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
-        return jsonify(
-            {"error": "Cannot set manual speed (train not in MANUAL mode)"}
-        ), 400
-
     @app.route("/api/trains/<train_id>/travel-direction", methods=["POST"])
     def train_set_travel_direction(train_id):
         """Set travel direction for MANUAL mode ('forward' or 'reverse')."""
@@ -672,7 +662,9 @@ def register(app, state: AppState) -> None:
         controller = _get_train_controller(train)
         result = controller.set_handle(position)
         if result.success:
-            return jsonify({"status": "success", "onboard": controller.to_dict()})
+            return jsonify(
+                {"status": "success", **_train_to_dict(train, state.network)}
+            )
         return jsonify({"error": result.message}), 400
 
     @app.route("/api/trains/<train_id>/mode", methods=["POST"])
@@ -692,7 +684,9 @@ def register(app, state: AppState) -> None:
         controller = _get_train_controller(train)
         result = controller.set_mode(mode)
         if result.success:
-            return jsonify({"status": "success", "onboard": controller.to_dict()})
+            return jsonify(
+                {"status": "success", **_train_to_dict(train, state.network)}
+            )
         return jsonify({"error": result.message}), 400
 
     # ============================================================================
@@ -709,7 +703,9 @@ def register(app, state: AppState) -> None:
         controller = _get_train_controller(train)
         result = controller.ato_go()
         if result.success:
-            return jsonify({"status": "success", "onboard": controller.to_dict()})
+            return jsonify(
+                {"status": "success", **_train_to_dict(train, state.network)}
+            )
         return jsonify({"error": result.message}), 400
 
     @app.route("/api/trains/<train_id>/ato-stop", methods=["POST"])
@@ -722,7 +718,9 @@ def register(app, state: AppState) -> None:
         controller = _get_train_controller(train)
         result = controller.ato_stop()
         if result.success:
-            return jsonify({"status": "success", "onboard": controller.to_dict()})
+            return jsonify(
+                {"status": "success", **_train_to_dict(train, state.network)}
+            )
         return jsonify({"error": result.message}), 400
 
     # ============================================================================

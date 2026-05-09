@@ -1442,7 +1442,6 @@ class TestManualPathAssignmentAfterArrival:
 
         raw_path = convert_tiles_to_train_path(path_result.path.path_tiles)
         train.current_path = raw_path
-        train.path_index = 0
         train.assigned_path_id = path_result.path.path_id
 
         # Set destination
@@ -1518,7 +1517,6 @@ class TestManualPathAssignmentAfterArrival:
 
         raw_path = convert_tiles_to_train_path(path_result.path.path_tiles)
         train.current_path = raw_path
-        train.path_index = 0
 
         # Check if turn is needed (should NOT turn)
         if train.position and train.current_path and len(train.current_path) >= 2:
@@ -1618,7 +1616,6 @@ class TestManualPathAssignmentAfterArrival:
 
         raw_path = convert_tiles_to_train_path(path_result.path.path_tiles)
         train.current_path = raw_path
-        train.path_index = 0
         train.assigned_path_id = path_result.path.path_id
         train.ato_destination_block_id = "STA_A_BLOCK"
 

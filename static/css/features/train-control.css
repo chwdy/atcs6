@@ -1,0 +1,385 @@
+/* ============================================================================
+   TRAIN CONTROL PANEL (sidebar)
+   Spacing scale: 4 / 8 / 12 / 16
+   Font scale:    11 / 13 / 15 / 22
+   ============================================================================ */
+
+.tc-panel {
+    container-type: inline-size;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px;
+    padding-bottom: 16px;
+}
+
+/* ---- Sections ---- */
+.tc-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.tc-section-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 0 0 4px 0;
+}
+
+/* ---- Status card (merged Train State + OBC) ---- */
+.tc-status {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--border-color);
+    border-radius: 6px;
+}
+
+.tc-status.obc-power-on { border-left-color: var(--success-color); }
+.tc-status.obc-power-off { border-left-color: var(--text-secondary); }
+.tc-status.obc-power-emergency {
+    border-left-color: var(--danger-color);
+    background: linear-gradient(90deg, rgba(232, 63, 91, 0.08), var(--bg-dark) 60%);
+}
+
+.tc-status-headline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.tc-status-headline .train-id {
+    font-size: 13px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+}
+
+.tc-status-headline .tc-status-state {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-family: var(--font-mono);
+}
+
+.tc-status-headline .tc-status-block {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+}
+
+.tc-status-headline .tc-status-emergency {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--danger-color);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    animation: pulse-danger 0.5s infinite;
+}
+
+/* ---- Status grid ---- */
+.tc-status-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px 12px;
+}
+
+.tc-status-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.tc-status-cell-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.tc-status-cell-value {
+    font-size: 13px;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@container (max-width: 260px) {
+    .tc-status-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+/* ---- Monitor link (compact in-status button) ---- */
+.tc-monitor-link {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 11px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.tc-monitor-link:hover {
+    border-color: var(--accent-color);
+    background: var(--bg-hover);
+}
+
+/* ---- Rows (label + control) ---- */
+.tc-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 30px;
+}
+
+.tc-row-label {
+    flex: 0 0 84px;
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.tc-row-value {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ---- Button group (segmented switch container) ---- */
+.tc-button-group {
+    flex: 1;
+    display: flex;
+    gap: 6px;
+    min-width: 0;
+}
+
+.tc-button-group > * {
+    flex: 1;
+    min-width: 0;
+}
+
+/* ---- Primary destructive action (Emergency Stop) ---- */
+.tc-primary-action {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+}
+
+.tc-primary-action .btn-danger {
+    flex: 1;
+    min-height: 44px;
+    font-size: 15px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+}
+
+.tc-primary-action .tc-eb-reset {
+    flex: 0 0 auto;
+    padding: 0 14px;
+    min-height: 44px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+/* ---- Secondary actions (ATO Go/Stop, Save) ---- */
+.tc-secondary-action {
+    min-height: 32px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+/* ---- Branch wrapper (ATO / Manual sections) ---- */
+.tc-branch {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* ---- Manual handle ---- */
+.tc-handle {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 4px 4px;
+}
+
+.tc-handle-track {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+}
+
+.tc-handle-readout {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    margin-top: 4px;
+}
+
+.tc-handle-readout .handle-position-display {
+    font-size: 15px;
+    font-family: var(--font-mono);
+    font-weight: 700;
+}
+
+.tc-handle-readout .handle-description {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.tc-handle-readout .train-handle-reason {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-style: italic;
+    min-height: 14px;
+    text-align: center;
+}
+
+/* ---- ATO route summary (Path / Destination rows) ---- */
+.tc-ato-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+}
+
+.tc-ato-summary .tc-row {
+    min-height: 0;
+    gap: 8px;
+}
+
+.tc-ato-summary .tc-row-label {
+    flex: 0 0 80px;
+}
+
+.tc-ato-summary .train-ato-path-display {
+    color: var(--info-color);
+}
+
+.tc-ato-summary .train-ato-destination-display {
+    color: var(--text-primary);
+}
+
+/* ---- Disclosure (Properties, Debug) ---- */
+.tc-disclosure {
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-dark);
+    overflow: hidden;
+}
+
+.tc-disclosure > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    user-select: none;
+}
+
+.tc-disclosure > summary::-webkit-details-marker { display: none; }
+
+.tc-disclosure > summary::before {
+    content: "▸";
+    font-size: 10px;
+    color: var(--text-muted);
+    transition: transform 0.15s ease;
+}
+
+.tc-disclosure[open] > summary::before {
+    transform: rotate(90deg);
+}
+
+.tc-disclosure-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 0 12px 12px;
+}
+
+/* Inputs inside disclosure use compact tc-row layout */
+.tc-disclosure-body .tc-row input[type="text"],
+.tc-disclosure-body .tc-row input[type="number"] {
+    flex: 1;
+    min-width: 0;
+    min-height: 28px;
+    padding: 4px 8px;
+    box-sizing: border-box;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: var(--font-mono);
+}
+
+.tc-disclosure-body .tc-row input:focus {
+    outline: none;
+    border-color: var(--accent-color);
+}
+
+/* ---- Demoted destructive action (Delete train) ---- */
+.tc-text-action {
+    align-self: flex-start;
+    background: none;
+    border: none;
+    padding: 4px 0;
+    font-size: 11px;
+    color: var(--danger-color);
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-color: rgba(232, 63, 91, 0.4);
+}
+
+.tc-text-action:hover {
+    text-decoration-color: var(--danger-color);
+}
+
+.tc-footer {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 4px;
+}

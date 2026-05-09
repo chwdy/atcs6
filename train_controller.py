@@ -44,7 +44,7 @@ Design Principles:
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, FrozenSet, List, Optional, Tuple
 
 from constants import STOPPED_SPEED_THRESHOLD_KMH
 from enums import (
@@ -55,6 +55,7 @@ from enums import (
     AtcLimitReasonCode,
     BlockState,
     CommandResult,
+    ControllerCondition,
     Direction,
     HandlePosition,
     LeadingEnd,
@@ -65,7 +66,6 @@ from model_scale import get_speed_conversion_factor
 from runtime_payloads import (
     Command,
     ControllerProgressReport,
-    PathCancellationKind,
     PhaseLatches,
     PhysicsSpanUpdate,
     ResourceEvent,
@@ -883,7 +883,7 @@ class TrainController:
         if not head_tile:
             return base_clearance
 
-        head_index = self._get_head_path_index(train, head_tile)
+        head_index = self._get_head_path_index(head_tile)
         if head_index < 0:
             return base_clearance
 
@@ -1195,9 +1195,6 @@ class TrainController:
         from the PathDispatcher (source of truth). Returns None if the
         train has no active path.
 
-        This replaces reading from train.current_path / train.path_index
-        which can be stale after path extension or cancellation.
-
         Returns:
             Dict with 'path_tiles' (List[Tuple[int, int, Direction]]) and
             'path_index' (int), or None if no active path.
@@ -1213,7 +1210,7 @@ class TrainController:
         # Derive head path index from train's physical position
         head_tile = self._get_head_tile()
         if head_tile:
-            path_index = self._get_head_path_index(train, head_tile)
+            path_index = self._get_head_path_index(head_tile)
         else:
             path_index = -1
 
@@ -1222,28 +1219,19 @@ class TrainController:
             "path_index": path_index,
         }
 
-    def _get_head_path_index(self, train: "Train", head_tile: Tuple[int, int]) -> int:
-        """Get the path index for the train head tile."""
+    def _get_head_path_index(self, head_tile: Tuple[int, int]) -> int:
+        """Get the path index for the train head tile.
+
+        v1 path geometry forbids tile re-visits in a single direction of
+        travel, so the first match is always the correct one.
+        """
         path_tiles = self.get_path_tiles()
         if not path_tiles:
             return -1
-
-        # Prefer cached index if it matches the head tile (handles paths that
-        # visit the same tile twice in a loop / reversal).
-        cached = getattr(train, "path_index", -1)
-        if 0 <= cached < len(path_tiles):
-            cand = path_tiles[cached]
-            if (cand[0], cand[1]) == head_tile:
-                return cached
-
-        matches = [i for i, (x, y, _) in enumerate(path_tiles) if (x, y) == head_tile]
-        if not matches:
-            return -1
-
-        if cached >= 0:
-            return min(matches, key=lambda i: abs(i - cached))
-
-        return matches[0]
+        for i, (x, y, _) in enumerate(path_tiles):
+            if (x, y) == head_tile:
+                return i
+        return -1
 
     def _direction_between_tiles(
         self, from_tile: Tuple[int, int], to_tile: Tuple[int, int]
@@ -1500,7 +1488,7 @@ class TrainController:
 
         path_tiles = self.get_path_tiles()
         if train.position and path_tiles:
-            head_index = self._get_head_path_index(train, head_tile)
+            head_index = self._get_head_path_index(head_tile)
             if head_index < 0:
                 return block.length_cm
 
@@ -1691,6 +1679,31 @@ class TrainController:
         return speed_kmh <= STOPPED_SPEED_THRESHOLD_KMH
 
     @property
+    def active_conditions(self) -> FrozenSet[ControllerCondition]:
+        """Canonical projection of recovery-relevant controller flags.
+
+        Per design_new.md "Controller condition set" canonical home: derived
+        each read from controller-stored fields. Predicates such as
+        is_recovery_clean and RouteExecutor.is_clean_for_create read subsets
+        of this set; readers must not duplicate the underlying field checks.
+        """
+        conditions: set[ControllerCondition] = set()
+        if self.received_path_plan is not None:
+            conditions.add(ControllerCondition.HAS_AUTHORITY)
+        if self.eb_active:
+            conditions.add(ControllerCondition.EB_LATCHED)
+        latches = self.phase_latches
+        if latches.power_off:
+            conditions.add(ControllerCondition.POWER_OFF_PENDING)
+        if latches.path_cancel_request is not None:
+            conditions.add(ControllerCondition.PATH_CANCEL_PENDING)
+        if latches.route_abort:
+            conditions.add(ControllerCondition.ROUTE_ABORT_PENDING)
+        if latches.route_deactivate:
+            conditions.add(ControllerCondition.ROUTE_DEACTIVATE_PENDING)
+        return frozenset(conditions)
+
+    @property
     def is_recovery_clean(self) -> bool:
         """Canonical "controller has reached the stopped recovery state" predicate.
 
@@ -1703,16 +1716,14 @@ class TrainController:
         """
         if self.state != TrainState.READY:
             return False
-        if self.received_path_plan is not None:
-            # HAS_AUTHORITY ∈ active_conditions
-            return False
-        if self.eb_active:
-            # EB_LATCHED ∈ active_conditions
-            return False
-        if self.phase_latches.power_off:
-            # POWER_OFF_PENDING ∈ active_conditions
-            return False
-        return True
+        return not (
+            self.active_conditions
+            & {
+                ControllerCondition.HAS_AUTHORITY,
+                ControllerCondition.EB_LATCHED,
+                ControllerCondition.POWER_OFF_PENDING,
+            }
+        )
 
     def is_stopped_at_authority_end(self) -> bool:
         """True when the train is stopped at the usable end of active authority.
@@ -4016,7 +4027,7 @@ class TrainController:
             )
 
         path_tiles = self.get_path_tiles()
-        head_path_index = self._get_head_path_index(train, head_tile)
+        head_path_index = self._get_head_path_index(head_tile)
         if head_path_index < 0 and path_tiles:
             # Head tile is not in the path.  This commonly happens right after
             # a return-path assignment + cab switch: the cab switch moves the

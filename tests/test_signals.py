@@ -379,7 +379,6 @@ class TestControllerSignalDirectionFiltering:
             (1, 0, "E", "W"),
             (0, 0, "E", "W"),
         ]
-        train.path_index = 0
 
         # The eastbound yellow signal should NOT affect westbound train
         assert controller._is_approaching_yellow_signal() is False

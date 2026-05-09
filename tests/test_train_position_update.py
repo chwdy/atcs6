@@ -62,7 +62,6 @@ class TestTrainPositionUpdates:
             (3, 0, Direction.EAST),
             (4, 0, Direction.EAST),
         ]
-        train.path_index = 0
 
         simple_network.add_train(train)
         return train

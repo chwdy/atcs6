@@ -584,7 +584,6 @@ class TestAtoDestinationStoppingAfterPathCompletes:
             (3, 0, Direction.EAST),
             (4, 0, Direction.EAST),
         ]
-        train.path_index = 0
         train.reserved_blocks = []  # <-- Path completed, blocks cleared
         train.assigned_path_id = None  # Path no longer assigned
 
@@ -648,7 +647,6 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         # Direction set via position (refactored): train.set_cab("A")  # was: Direction.WEST
 
         train.current_path = [(3, 0, Direction.EAST), (4, 0, Direction.EAST)]
-        train.path_index = 1  # At end of path (tile 4,0)
         train.reserved_blocks = []
 
         controller = TrainController(train_id=train.train_id, network=network)
@@ -949,7 +947,6 @@ class TestSpeedCurveCalculation:
         network.place_train(train, 0, 0, Direction.EAST)
 
         train.current_path = [(x, 0, Direction.EAST) for x in range(20)]
-        train.path_index = 0
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True

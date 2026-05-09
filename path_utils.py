@@ -6,13 +6,12 @@ This module provides utility functions for train-to-path assignment, including:
 - Prepending tiles from train position to path start
 - Appending tiles to complete destination block to far edge
 - Validating train and path are in same block
-- Syncing path_index when train is ahead of path[0]
 
 Key Concepts:
 - When a path is assigned to a train, the path should start from the train's position
 - Train and path[0] must be in the same block (blocks don't contain switches)
-- If train is before path[0], prepend tiles; if train is past path[0], advance path_index
 - Path should extend through all tiles of destination block to the far edge
+- The dispatcher's `Path` is the source of truth; these helpers only validate.
 """
 
 from typing import List, Literal, Optional, Tuple, Dict, Any, Union
@@ -392,8 +391,8 @@ def assign_path_to_train_with_prepend(
     """
     Validate and prepare a path for a train.
 
-    Per design_new.md ~line 1292, `Train.current_path` and `Train.path_index`
-    are forbidden — the dispatcher's `Path` is the source of truth for path
+    `Train.current_path` and `Train.path_index` are not part of v1 — the
+    dispatcher's `Path` is the source of truth for path
     geometry. This helper now only runs the validation logic and returns
     its outcome; UI consumers read the active path tiles from
     `PathDispatcher.get_active_path_progress(train_id)`.
@@ -568,8 +567,8 @@ def assign_complete_path_to_train(
     """
     Validate and prepare a complete path (prepend + append) for a train.
 
-    Per design_new.md ~line 1292, `Train.current_path` and `Train.path_index`
-    are forbidden — the dispatcher's `Path` is the source of truth. This
+    `Train.current_path` and `Train.path_index` are not part of v1 — the
+    dispatcher's `Path` is the source of truth. This
     helper now only validates the path and returns its outcome.
 
     Args:

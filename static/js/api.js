@@ -245,17 +245,6 @@ class API {
     }
 
     /**
-     * Cycle block state (debug/testing).
-     * @param {string} blockId - Block ID
-     * @returns {Promise<object>} Updated block
-     */
-    async cycleBlockState(blockId) {
-        return this._request(`/blocks/${encodeURIComponent(blockId)}/cycle-state`, {
-            method: 'POST'
-        }, 'cycleBlockState');
-    }
-
-    /**
      * Add tracks to a block.
      * @param {string} blockId - Block ID
      * @param {Array} positions - Array of {x, y} or [x, y]
@@ -546,10 +535,11 @@ class API {
      * Turn train power off.
      *
      * In v1 power-off is latched: ``power_off_cmd()`` writes
-     * ``pending_power_off`` (and a ``pending_path_cancel_request`` when there
-     * is a live path), and Phase 3 commits the OFF transition on a later
-     * tick. The response indicates the request was accepted; callers must
-     * observe ``train.onboard.power_on === false`` on a subsequent fetch
+     * ``phase_latches.power_off`` (and ``phase_latches.path_cancel_request``
+     * when there is a live path), and Phase 3 commits the OFF transition on
+     * a later tick. The response indicates the request was accepted; callers
+     * must observe the controller sibling's ``power_on === false`` (e.g. via
+     * ``stateManager.getController(trainId).power_on``) on a subsequent fetch
      * before treating the train as actually OFF.
      *
      * @param {string} trainId - Train ID
@@ -574,19 +564,6 @@ class API {
         }, 'trainSetCab');
     }
 
-
-    /**
-     * Set manual speed.
-     * @param {string} trainId - Train ID
-     * @param {number} speed - Speed
-     * @returns {Promise<object>} Result
-     */
-    async trainSetManualSpeed(trainId, speed) {
-        return this._request(`/trains/${encodeURIComponent(trainId)}/manual-speed`, {
-            method: 'POST',
-            body: { speed }
-        }, 'trainSetManualSpeed');
-    }
 
     /**
      * Set travel direction.
