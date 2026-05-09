@@ -328,73 +328,12 @@ class RailwayNetwork:
         """Forward to `BlockGeometryManager.delete_block(block_id)`."""
         return self._get_block_geometry_manager().delete_block(block_id)
 
-    def set_block_state(self, block_id: str, state: BlockState) -> bool:
-        """
-        Set the occupancy state of a block.
-
-        This is the recommended way to change block state as it:
-        - Validates the block exists
-        - Updates the block's state property
-        - Triggers signal recalculation for all signals monitoring this block
-        - Updates track display colors (via signal updates)
-
-        Args:
-            block_id: Block identifier
-            state: New state (FREE, RESERVED, OCCUPIED, CAUTION)
-
-        Returns:
-            True if successful, False if block not found
-
-        Side Effects:
-            - Updates block.state
-            - Triggers signal recalculation for all signals monitoring this block
-        """
-        block = self.blocks.get(block_id)
-        if not block:
-            return False
-
-        block.state = state
-
-        # Trigger signal recalculation for affected signals
-        self.update_signals_from_blocks()
-
-        return True
-
-    def cycle_block_state(self, block_id: str) -> Optional[BlockState]:
-        """
-        Cycle block state: FREE -> RESERVED -> OCCUPIED -> CAUTION -> FREE
-
-        Used by UI right-click to manually cycle through states.
-
-        Args:
-            block_id: Block identifier
-
-        Returns:
-            New state after cycling, or None if block not found
-        """
-        block = self.blocks.get(block_id)
-        if not block:
-            return None
-
-        # Define state cycle order
-        state_cycle = [
-            BlockState.FREE,
-            BlockState.RESERVED,
-            BlockState.OCCUPIED,
-            BlockState.CAUTION,
-        ]
-
-        # Find current state index and advance
-        try:
-            current_index = state_cycle.index(block.state)
-            next_index = (current_index + 1) % len(state_cycle)
-        except ValueError:
-            next_index = 0  # Default to FREE if unknown state
-
-        new_state = state_cycle[next_index]
-        self.set_block_state(block_id, new_state)
-
-        return new_state
+    # `set_block_state` and `cycle_block_state` were admin shims from the
+    # pre-`BlockManager`-as-sole-writer era. They tried to assign `block.state`,
+    # which is now a read-only `@property` derived from `occupied_by` /
+    # `_is_caution` / `reservation`, so calling them raised at runtime. v1's
+    # design owns block state through `BlockManager` / `ResourceCoordinator`;
+    # there is no admin-side direct-mutation surface. Removed in PR 6.
 
     def get_block(self, block_id: str) -> Optional[Block]:
         return self.blocks.get(block_id)

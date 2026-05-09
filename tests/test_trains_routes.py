@@ -158,12 +158,14 @@ class TestBlockTileSyncValidation:
 
 @pytest.mark.skip(
     reason=(
-        "v1 integration: depends on route executor + dispatcher acquiring "
-        "multi-block paths. PathDispatcher._compute_block_traversals omits "
-        "the destination block, so create_path returns missing_direction. "
-        "Until that source bug is fixed, these end-to-end loops cannot run. "
-        "Per-component tests cover the route definition / executor / "
-        "dispatcher in isolation."
+        "Stale skip (PR 6 audit): the skip cites a "
+        "`PathDispatcher._compute_block_traversals` bug that no longer "
+        "reproduces — multi-block path acquisition works in current code. "
+        "The actual blocker for these tests is API drift in the test code "
+        "itself (e.g. `Waypoint(platform_id=..., dwell_time_sec=...)` uses "
+        "the pre-v1 Waypoint shape; v1 uses `RouteTask(...)`). Re-enabling "
+        "these tests requires porting the test fixtures to the v1 RouteTask "
+        "/ RouteRun API; the dispatcher itself is not the blocker."
     )
 )
 class TestRouteExecutorThreeStationLoopSimulation:
@@ -737,10 +739,13 @@ class TestMultiTilePlatformStopping:
 
 @pytest.mark.skip(
     reason=(
-        "v1 integration: depends on PathDispatcher.create_path acquiring a "
-        "destination-traversal direction. _compute_block_traversals does not "
-        "populate the last block, so all manual-path assignment tests fail "
-        "with missing_direction at create_path."
+        "Stale skip (PR 6 audit): the skip cites a "
+        "`PathDispatcher._compute_block_traversals` bug that no longer "
+        "reproduces — `create_path` returns success for multi-block "
+        "destinations in current code. The actual blocker for these tests "
+        "is pre-v1 API usage in the fixtures (e.g. `Waypoint(...)`); the "
+        "dispatcher itself is not the blocker. Re-enabling requires "
+        "porting fixtures to the v1 RouteTask shape."
     )
 )
 class TestManualPathAssignmentAfterArrival:
@@ -1676,10 +1681,13 @@ class TestManualPathAssignmentAfterArrival:
 
 @pytest.mark.skip(
     reason=(
-        "v1 integration: route assignment loop exercises dispatcher "
-        "create_path which currently fails with missing_direction for the "
-        "destination block. End-to-end auto-reversal flow can be re-enabled "
-        "after PathDispatcher._compute_block_traversals is fixed."
+        "Stale skip (PR 6 audit): the skip cites a "
+        "`PathDispatcher._compute_block_traversals` bug that no longer "
+        "reproduces — `create_path` succeeds for the destination blocks "
+        "these tests target. The actual blocker is pre-v1 API usage in the "
+        "fixtures; re-enabling requires porting them to the v1 RouteTask "
+        "shape and the new auto-reversal contract on `Route.mode == "
+        "ROUND_TRIP`."
     )
 )
 class TestAutoReversalOnNewRouteAssignment:

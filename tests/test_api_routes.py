@@ -206,14 +206,21 @@ class TestBlockRoutes:
         data = response.get_json()
         assert data["status"] == "success"
 
-    def test_cycle_block_state(self, client, app_state):
-        """POST /api/blocks/<block_id>/cycle-state should cycle state."""
-        pytest.skip(
-            "v1: Block.state is a read-only @property; the network.set_block_state "
-            "helper still tries to assign block.state = state. The cycle endpoint "
-            "exercises that legacy path and raises AttributeError until the "
-            "endpoint is rewritten to mutate primitives."
-        )
+    def test_cycle_block_state_endpoint_is_gone(self, client, app_state):
+        """The cycle-state admin shim was removed in PR 6.
+
+        Block state is owned by BlockManager / ResourceCoordinator in v1
+        and computed as a read-only @property from `occupied_by` /
+        `_is_caution` / `reservation`; there is no admin-side
+        direct-mutation surface. The endpoint that used to expose this
+        path is removed; calling it now returns 404.
+        """
+        app_state.network.create_block("BLK_001", "Test")
+        response = client.post("/api/blocks/BLK_001/cycle-state")
+        # 404 if Flask doesn't know the route at all; 405 if Flask
+        # matches the URL prefix but rejects the method. Either way the
+        # admin shim is no longer reachable.
+        assert response.status_code in (404, 405)
 
     def test_create_block_with_tracks(self, client, network_with_tracks):
         """POST /api/blocks/create-with-tracks should create block with tracks."""
