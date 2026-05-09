@@ -324,11 +324,11 @@ class Route:
         """Deactivate the route.
 
         Per design_new.md inclusive-latch rule: when a ``simulation_controller``
-        is supplied, walk every assigned train and call its
-        ``TrainController._set_pending_route_deactivate(...)`` helper, which
-        writes the deactivate latch and (when an active path exists) fans out to
-        ``_set_pending_path_cancel_request(initiator="revoked")``. Phase 3 then
-        commits the cancel and the route-run teardown.
+        is supplied, walk every assigned train and call
+        ``controller.phase_latches.set_route_deactivate(...)``, which writes
+        the deactivate latch and (when an active path exists) fans out to
+        ``set_path_cancel_request(initiator="revoked")``. Phase 3 then commits
+        the cancel and the route-run teardown.
 
         ``simulation_controller`` is optional so direct-pause callers (tests,
         internal route definition tooling) can flip the flag without needing
@@ -344,7 +344,10 @@ class Route:
             controller = simulation_controller.get_controller(train_id)
             if controller is None:
                 continue
-            controller._set_pending_route_deactivate(diagnostic)
+            controller.phase_latches.set_route_deactivate(
+                reason=diagnostic,
+                has_active_path=controller.received_path_plan is not None,
+            )
 
     # ── Assignment Methods ─────────────────────────────────────────
 

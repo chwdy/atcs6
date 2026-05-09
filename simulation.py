@@ -131,11 +131,6 @@ class SimulationController:
             self.switch_manager.simulation_controller = self
             self.switch_manager.network = self.network
 
-        # Wire every Switch in the network.
-        if self.network is not None and getattr(self.network, "switches", None):
-            for sw in self.network.switches.values():
-                sw.simulation_controller = self
-
     # =========================================================================
     # Top-level update loop (per design_new.md "Core Runtime Loop")
     # =========================================================================
@@ -258,7 +253,8 @@ class SimulationController:
     def _consume_pending_path_cancel_request(
         self, controller: TrainController, train: Train
     ) -> None:
-        """Consume pending_path_cancel_request when the train is stopped.
+        """Consume `phase_latches.path_cancel_request` when the train is
+        stopped.
 
         While the train is rolling the latch survives across ticks; releasing
         block reservations and switch locks ahead of a moving train is unsafe.
@@ -266,18 +262,18 @@ class SimulationController:
         PathDispatcher.cancel_path(...). If no active path exists the latch
         is still cleared on this pass with a single diagnostic.
         """
-        if controller.pending_path_cancel_request is None:
+        if controller.phase_latches.path_cancel_request is None:
             return
 
         if not controller.is_stopped():
             # Latch survives: reconsider next tick once the train has stopped.
             return
 
-        payload = controller.pending_path_cancel_request
-
         if self.path_dispatcher is None:
-            controller.pending_path_cancel_request = None
+            controller.phase_latches.consume_path_cancel_request()
             return
+
+        payload = controller.phase_latches.consume_path_cancel_request()
 
         active_path_id = self.path_dispatcher.active_path_id_by_train(train.train_id)
         if active_path_id is not None:
@@ -293,42 +289,43 @@ class SimulationController:
                 payload.initiator,
             )
 
-        controller.pending_path_cancel_request = None
-
     def _consume_pending_route_abort(
         self, controller: TrainController, train: Train
     ) -> None:
-        """Consume pending_route_abort once the inclusive cancel has committed.
+        """Consume `phase_latches.route_abort` once the inclusive cancel has
+        committed.
 
         Per design_new.md Latch Table: gated by
-        ``pending_path_cancel_request is None`` (the inclusive cancel has been
-        consumed earlier in the same pass, or was never armed because no live
-        path existed). Does NOT branch on active-path-emptiness — that
-        decision was already owned by the inclusive-cancel consumer.
+        ``phase_latches.path_cancel_request is None`` (the inclusive cancel
+        has been consumed earlier in the same pass, or was never armed
+        because no live path existed). Does NOT branch on
+        active-path-emptiness — that decision was already owned by the
+        inclusive-cancel consumer.
         """
-        if not controller.pending_route_abort:
+        if not controller.phase_latches.route_abort:
             return
 
-        if controller.pending_path_cancel_request is not None:
+        if controller.phase_latches.path_cancel_request is not None:
             # Latch survives until the inclusive cancel has been consumed.
             return
 
         self.route_executor.remove_train_route_run(train.train_id)
-        controller.pending_route_abort = False
+        controller.phase_latches.consume_route_abort()
 
     def _consume_pending_power_off(
         self, controller: TrainController, train: Train
     ) -> None:
-        """Consume pending_power_off after the inclusive cancel has committed.
+        """Consume `phase_latches.power_off` after the inclusive cancel has
+        committed.
 
-        Per design_new.md: the inclusive `pending_path_cancel_request` was
-        armed by `_set_pending_power_off()` and committed earlier in the same
-        Phase-3 pass (or correctly skipped when no active path existed). This
-        consumer performs only its own teardown — route-run removal plus
+        Per design_new.md: the inclusive `phase_latches.path_cancel_request`
+        was armed by `_apply_power_off_request()` and committed earlier in the
+        same Phase-3 pass (or correctly skipped when no active path existed).
+        This consumer performs only its own teardown — route-run removal plus
         controller-local OFF cleanup. It does NOT call
         `PathDispatcher.cancel_path(...)`.
         """
-        if not controller.pending_power_off:
+        if not controller.phase_latches.power_off:
             return
 
         # If an active path somehow still exists, the inclusive cancel hasn't
@@ -349,27 +346,27 @@ class SimulationController:
         controller.eb_active = False
         controller.ato_running = False
         controller.power_on = False
-        controller.pending_power_off = False
+        controller.phase_latches.consume_power_off()
 
     def _consume_pending_route_deactivate(
         self, controller: TrainController, train: Train
     ) -> None:
-        """Consume pending_route_deactivate once the inclusive cancel has
-        committed.
+        """Consume `phase_latches.route_deactivate` once the inclusive cancel
+        has committed.
 
         Per design_new.md Latch Table: gated by
-        ``pending_path_cancel_request is None``. Does NOT branch on
+        ``phase_latches.path_cancel_request is None``. Does NOT branch on
         active-path-emptiness — that decision was already owned by the
         inclusive-cancel consumer.
         """
-        if not controller.pending_route_deactivate:
+        if not controller.phase_latches.route_deactivate:
             return
 
-        if controller.pending_path_cancel_request is not None:
+        if controller.phase_latches.path_cancel_request is not None:
             return
 
         self.route_executor.remove_train_route_run(train.train_id)
-        controller.pending_route_deactivate = False
+        controller.phase_latches.consume_route_deactivate()
 
     # =========================================================================
     # Persistent state sync (Train <- TrainController)

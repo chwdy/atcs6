@@ -14,8 +14,9 @@ RouteExecutor owns:
   * Removal of route runs for the abort/power-off paths.
 
 RouteExecutor never calls `PathDispatcher.cancel_path(...)` directly. Phase 1
-that wants to cancel an active path latches `pending_path_cancel_request` on
-the controller mailbox and waits for the Phase 3 cancel→callback→cleanup flow.
+that wants to cancel an active path latches `phase_latches.path_cancel_request`
+on the controller mailbox and waits for the Phase 3 cancel→callback→cleanup
+flow.
 """
 
 from dataclasses import dataclass, field
@@ -237,6 +238,33 @@ class RouteExecutor:
             return state
         return None
 
+    def assigned_route_id_for(self, train_id: str) -> Optional[str]:
+        """Return the `route_id` of the train's currently-assigned route, or
+        ``None``.
+
+        Per design_new.md the canonical store for "which route is a train on?"
+        is `Route.assigned_train_ids` on the registry-side, which
+        `Route.assign_train(train_id)` writes. Callers that previously read
+        `Train.assigned_route_id` go through this accessor; `Train` no longer
+        carries the field.
+
+        Resolution order:
+          1. Prefer the live RouteRun in `execution_states[train_id]` (covers
+             PLANNING and RUNNING; terminal runs are archived out of the slot
+             by `_archive_run` so they correctly read as ``None``).
+          2. Otherwise scan `route_registry` for the first route whose
+             `assigned_train_ids` contains the train. This covers the
+             between-tick window where `Route.assign_train(train_id)` has
+             been called but Phase 1 has not yet allocated an exec_state.
+        """
+        state = self.execution_states.get(train_id)
+        if state is not None:
+            return state.route_id
+        for route_id, route in self.route_registry.items():
+            if train_id in getattr(route, "assigned_train_ids", []):
+                return route_id
+        return None
+
     def history_for_train(self, train_id: str) -> List[RouteExecutionState]:
         """Return every `RouteRun` for `train_id`, sorted by `run_number`.
 
@@ -299,18 +327,7 @@ class RouteExecutor:
         ordered = list(candidate_train_ids)
 
         def effective_priority(train_id: str) -> int:
-            train = (
-                self.network.trains.get(train_id)
-                if hasattr(self.network, "trains")
-                else None
-            )
-            route_id = None
-            if train is not None:
-                route_id = getattr(train, "assigned_route_id", None)
-            if route_id is None:
-                exec_state = self.execution_states.get(train_id)
-                if exec_state is not None:
-                    route_id = exec_state.route_id
+            route_id = self.assigned_route_id_for(train_id)
             if route_id is None:
                 return 5
             route = routes.get(route_id)
@@ -383,7 +400,7 @@ class RouteExecutor:
         )
         if train is None:
             return None, None, None
-        route_id = getattr(train, "assigned_route_id", None)
+        route_id = self.assigned_route_id_for(train_id)
         route = None
         if route_id:
             route = self.route_registry.get(route_id)
@@ -414,7 +431,7 @@ class RouteExecutor:
         if controller.state == TrainState.OFF:
             return
 
-        route_id = getattr(train, "assigned_route_id", None)
+        route_id = self.assigned_route_id_for(train_id)
         route = None
         if route_id:
             route = self.route_registry.get(route_id)
@@ -514,12 +531,14 @@ class RouteExecutor:
             return True
         if controller.state != TrainState.READY:
             return False
-        if getattr(controller, "pending_path_cancel_request", None) is not None:
-            return False
-        if getattr(controller, "pending_route_abort", False):
-            return False
-        if getattr(controller, "pending_power_off", False):
-            return False
+        latches = getattr(controller, "phase_latches", None)
+        if latches is not None:
+            if latches.path_cancel_request is not None:
+                return False
+            if latches.route_abort:
+                return False
+            if latches.power_off:
+                return False
         if getattr(controller, "eb_active", False):
             return False
         if exec_state.path_cancelled:
@@ -797,17 +816,11 @@ class RouteExecutor:
           * sets ``RouteRun.current_route_status = FINISHED``
           * sets ``target_waypoint_index = current_waypoint_index``
           * calls ``route.unassign_train(train_id)``
-          * clears ``train.assigned_route_id`` if it matches
           * archives the run as a historical FINISHED row (``execution_states``
             slot frees up so a later route assignment can populate a fresh run)
           * for ``RouteMode.ONE_OFF`` routes with no remaining assigned trains,
             also calls ``route.deactivate()``
         """
-        train = (
-            self.network.trains.get(train_id)
-            if hasattr(self.network, "trains")
-            else None
-        )
         exec_state = self.execution_state_for(train_id)
         if exec_state is None:
             return
@@ -821,9 +834,6 @@ class RouteExecutor:
 
         if route is not None:
             route.unassign_train(train_id)
-
-        if train is not None and getattr(train, "assigned_route_id", None) == route_id:
-            train.assigned_route_id = None
 
         # Move the now-FINISHED run to the historical archive so the live slot
         # is free for a later assignment of the same train.
@@ -1120,7 +1130,7 @@ class RouteExecutor:
         )
         if train is None:
             return None
-        route_id = getattr(train, "assigned_route_id", None)
+        route_id = self.assigned_route_id_for(train_id)
         if not route_id:
             return None
         route = self.route_registry.get(route_id)
@@ -1297,17 +1307,6 @@ class RouteExecutor:
             for train_id in route.assigned_train_ids:
                 train = self.network.trains.get(train_id)
                 if train:
-                    pair_key = (train.train_id, route.route_id)
-                    if pair_key not in seen_pairs:
-                        seen_pairs.add(pair_key)
-                        pairs.append((train, route))
-
-        for train in self.network.trains.values():
-            if train.assigned_route_id:
-                route = routes.get(train.assigned_route_id)
-                if route and route.is_active:
-                    if train.train_id not in route.assigned_train_ids:
-                        route.assign_train(train.train_id)
                     pair_key = (train.train_id, route.route_id)
                     if pair_key not in seen_pairs:
                         seen_pairs.add(pair_key)
@@ -1500,10 +1499,14 @@ class RouteExecutor:
     def set_train_waypoint_index(self, train_id: str, waypoint_index: int) -> bool:
         """Override current task cursor for an assigned train."""
         train = self.network.trains.get(train_id)
-        if not train or not train.assigned_route_id:
+        if not train:
             return False
 
-        route = self.route_registry.get(train.assigned_route_id)
+        route_id = self.assigned_route_id_for(train_id)
+        if route_id is None:
+            return False
+
+        route = self.route_registry.get(route_id)
         if not route:
             return False
         if waypoint_index < 0 or waypoint_index >= route.get_task_count():

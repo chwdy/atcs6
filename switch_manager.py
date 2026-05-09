@@ -11,10 +11,12 @@ release, and physical-entry handling. It mirrors `BlockManager`'s contract:
 - Physical-entry handling owns the flank-lock-to-train-protection conversion
   and the fatal-conflict reporting path that earlier lived inline on
   `PathDispatcher`.
-
-`Switch.position` writes still flow through `Switch.request_position_change(...)`
-per design_new.md "Switch entity" canonical mutation workflow; this manager
-calls into that helper, never bypasses it.
+- Position-change requests route through `SwitchManager.request_position_change(...)`,
+  which calls `Switch.apply_position_change(...)` for the data update and
+  then notifies `BlockManager.on_switch_position_changed(...)`. Callers must
+  not invoke `Switch.apply_position_change(...)` directly; the manager is
+  the single entry point so the cross-resource notification is never
+  skipped.
 """
 
 from dataclasses import dataclass, field
@@ -70,9 +72,11 @@ class SwitchManager:
     """Centralized switch lock manager.
 
     Owns the dispatcher-facing API for path-level switch lock acquire/release,
-    tail-vacate, and clean physical entry. Mirrors `BlockManager`. The
-    underlying `Switch` entity stays the canonical owner of `position` writes
-    via `Switch.request_position_change(...)`.
+    tail-vacate, clean physical entry, and switch-position-change requests.
+    Mirrors `BlockManager`. The underlying `Switch` entity stays the canonical
+    owner of `position` writes via its data-only helper
+    `Switch.apply_position_change(...)`; the manager is the single caller that
+    pairs that write with the cross-resource notification to `BlockManager`.
     """
 
     def __init__(
@@ -191,7 +195,46 @@ class SwitchManager:
         switch = self._switch_registry.get(switch_id)
         if switch is None:
             return
-        switch.on_train_tail_vacated(train_id)
+        switch.on_train_tail_vacated(train_id, network=self.network)
+
+    # ------------------------------------------------------------------
+    # Switch position change request (admin / API / UI)
+    # ------------------------------------------------------------------
+
+    def request_position_change(
+        self, switch_id: str, new_position: int
+    ) -> tuple[bool, str]:
+        """Request a position change on `switch_id`.
+
+        Validates and applies the change via `Switch.apply_position_change(...)`,
+        then notifies `BlockManager.on_switch_position_changed(switch_id)` so
+        the block reachability graph stays in sync. Returns the
+        `(success, message)` tuple from the data-layer helper.
+        """
+        switch = self._switch_registry.get(switch_id)
+        if switch is None:
+            return (False, f"Unknown switch {switch_id}")
+
+        success, message = switch.apply_position_change(new_position)
+        if not success:
+            return (False, message)
+
+        block_manager = self._resolve_block_manager()
+        if block_manager is not None:
+            block_manager.on_switch_position_changed(switch_id)
+        return (True, message)
+
+    def _resolve_block_manager(self):
+        """Locate the BlockManager — preferred via SimulationController, with
+        a network fallback for editor/test setups that wired the manager
+        only on the network object."""
+        if self.simulation_controller is not None:
+            bm = getattr(self.simulation_controller, "block_manager", None)
+            if bm is not None:
+                return bm
+        if self.network is not None:
+            return getattr(self.network, "block_manager", None)
+        return None
 
     # ------------------------------------------------------------------
     # Clean physical entry + flank conversion + fatal-conflict reporting

@@ -95,14 +95,6 @@ class Switch(TrackResource):
     """
 
     # ========================================================================
-    # RUNTIME BACK-REFERENCE (NOT SERIALIZED)
-    # ========================================================================
-    simulation_controller: Optional[Any] = None
-    """Back-reference to the owning SimulationController (Any to avoid circular
-    import). Optional in editor mode; required for runtime mutations that must
-    notify BlockManager."""
-
-    # ========================================================================
     # TrackResource identity
     # ========================================================================
 
@@ -198,15 +190,7 @@ class Switch(TrackResource):
 
         Returns:
             True if recorded (or already present idempotently); False on conflict.
-
-        Raises:
-            RuntimeError: If `simulation_controller` is not wired.
         """
-        if self.simulation_controller is None:
-            raise RuntimeError(
-                "Switch runtime operations require a SimulationController"
-            )
-
         # Disabled switches cannot be locked.
         if self.disabled:
             return False
@@ -274,7 +258,9 @@ class Switch(TrackResource):
             if not (claim[0] == train_id and claim[1] == source_switch_id)
         ]
 
-    def on_train_tail_vacated(self, train_id: str) -> None:
+    def on_train_tail_vacated(
+        self, train_id: str, network: Optional["RailwayNetwork"] = None
+    ) -> None:
         """Handle a tail-vacate event for `train_id` on this switch.
 
         If `self.occupied_by` matches the releasing `train_id`, clear it and
@@ -282,6 +268,10 @@ class Switch(TrackResource):
         source, releasing the train-owned protection sourced from this switch.
         If `self.occupied_by` is set to a different train, leave state unchanged
         and emit a diagnostic.
+
+        `network` is required to walk neighbours; production callers
+        (`SwitchManager.on_switch_tail_vacated`) inject it. In editor / unit
+        contexts where no neighbour walk is needed it may be omitted.
         """
         if self.occupied_by != train_id:
             other = self.occupied_by
@@ -294,11 +284,8 @@ class Switch(TrackResource):
         self.occupied_by = None
 
         # Walk neighbour switches and release train-owned protection sourced
-        # from this switch. Without a wired simulation_controller we cannot
-        # discover neighbours; the dispatcher hook always runs with one.
-        if self.simulation_controller is None:
-            return
-        network = getattr(self.simulation_controller, "network", None)
+        # from this switch. Without a network reference we cannot discover
+        # neighbours.
         if network is None:
             return
         switches = getattr(network, "switches", None)
@@ -314,31 +301,20 @@ class Switch(TrackResource):
                     )
                     break
 
-    def request_position_change(
-        self, new_position: int, network: "RailwayNetwork"
-    ) -> Tuple[bool, str]:
-        """Request to change switch position.
+    def apply_position_change(self, new_position: int) -> Tuple[bool, str]:
+        """Validate and apply a position change to `self.position`.
 
-        Fails if the switch is disabled, physically occupied, or if any future
-        lock or train-owned protection requires a different position. On
-        success, mutates `self.position` and notifies `BlockManager` via the
-        wired `simulation_controller`.
+        Pure data operation: checks disabled / occupied / lock conflicts /
+        train-protection conflicts, and on success mutates `self.position`.
+        Does NOT notify any external entity. The cross-resource notification
+        to `BlockManager` is owned by `SwitchManager.request_position_change`.
 
         Args:
             new_position: Desired switch position (0=MAIN, 1=DIVERGE).
-            network: Railway network (retained for signature compatibility).
 
         Returns:
             (success, message) tuple.
-
-        Raises:
-            RuntimeError: If `simulation_controller` is not wired.
         """
-        if self.simulation_controller is None:
-            raise RuntimeError(
-                "Switch runtime operations require a SimulationController"
-            )
-
         # Disabled switches cannot be targeted by manual/API position-change commands.
         if self.disabled:
             return (False, f"Switch {self.switch_id} is disabled")
@@ -364,11 +340,8 @@ class Switch(TrackResource):
                     f"Switch protected by train {claim_train_id} (source {claim_source_id})",
                 )
 
-        # Mutate authoritative position and notify BlockManager.
+        # Mutate authoritative position.
         self.position = SwitchState(new_position)
-        self.simulation_controller.block_manager.on_switch_position_changed(
-            self.switch_id
-        )
 
         position_name = "MAIN" if new_position == 0 else "DIVERGE"
         return (True, f"Switch position changed to {position_name}")

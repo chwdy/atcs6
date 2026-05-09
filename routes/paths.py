@@ -19,7 +19,6 @@ from path_utils import assign_complete_path_to_train, convert_tiles_to_train_pat
 from runtime_payloads import (
     AcquisitionMode,
     PathCancellationKind,
-    PendingPathCancelRequest,
 )
 
 
@@ -177,7 +176,7 @@ def register(app, state: AppState) -> None:
         """Request cancellation of a path.
 
         v1 semantics: cancellation is latched. The handler writes
-        `controller.pending_path_cancel_request` and returns immediately with
+        `controller.phase_latches.path_cancel_request` and returns immediately with
         ``status: "queued"``. Phase 3 of the simulation tick consumes the
         latch and calls ``PathDispatcher.cancel_path(...)`` once the train is
         fully stopped. Block reservations and switch locks are released by
@@ -202,12 +201,9 @@ def register(app, state: AppState) -> None:
                 if train:
                     controller = state.sim_controller._get_or_create_controller(train)
                     if controller is not None:
-                        controller.pending_path_cancel_request = (
-                            PendingPathCancelRequest(
-                                cancellation_kind=PathCancellationKind.OPERATOR_CANCELLED,
-                                reason="api cancel",
-                                expected_path_id=path_id,
-                            )
+                        controller.phase_latches.set_path_cancel_request(
+                            initiator="operator_cancelled",
+                            reason="api cancel",
                         )
                         return jsonify(
                             {

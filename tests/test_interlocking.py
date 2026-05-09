@@ -20,14 +20,22 @@ from path_utils import (
 )
 
 
-def _stub_controller(network=None):
-    """Minimal SimulationController stub for Switch runtime operations.
+def _stub_switch_manager(network=None):
+    """Minimal stand-in for SwitchManager.request_position_change(...).
 
-    Provides the .block_manager.on_switch_position_changed call site and a
-    .network attribute so Switch.on_train_tail_vacated can walk neighbours.
+    Provides the BlockManager notification side-effect that the production
+    `SwitchManager` performs after `Switch.apply_position_change(...)` succeeds.
     """
+    from switch_manager import SwitchManager
+
     block_manager = SimpleNamespace(on_switch_position_changed=lambda switch_id: None)
-    return SimpleNamespace(block_manager=block_manager, network=network)
+    sim = SimpleNamespace(block_manager=block_manager, network=network)
+    switches = network.switches if network is not None else {}
+    return SwitchManager(
+        switches=switches,
+        simulation_controller=sim,
+        network=network,
+    )
 
 
 @pytest.fixture
@@ -42,7 +50,6 @@ class TestSwitchLocking:
         from switch import Switch
 
         switch = Switch(switch_id="SW_1", x=0, y=0)
-        switch.simulation_controller = _stub_controller()
         assert (
             switch.acquire_lock("PATH_1", "primary", "TRAIN_A", 0, source_switch_id=None)
             is True
@@ -60,7 +67,6 @@ class TestSwitchLocking:
         from switch import Switch
 
         switch = Switch(switch_id="SW_1", x=0, y=0)
-        switch.simulation_controller = _stub_controller()
         # Same-state locks may co-exist; different-state locks conflict.
         assert (
             switch.acquire_lock("PATH_1", "primary", "TRAIN_A", 0)
@@ -77,10 +83,10 @@ class TestSwitchLocking:
         network = RailwayNetwork()
         network.add_track(TrackSegment(0, 0, track_bits=TRACK_EW | TRACK_NE))
         switch = Switch(switch_id="SW_1", x=0, y=0)
-        switch.simulation_controller = _stub_controller(network)
         network.add_switch(switch)
+        switch_manager = _stub_switch_manager(network)
         switch.acquire_lock("PATH_1", "primary", "TRAIN_A", 0)
-        success, msg = switch.request_position_change(1, network)
+        success, msg = switch_manager.request_position_change("SW_1", 1)
         assert success is False
         assert "locked" in msg.lower()
 
@@ -90,9 +96,9 @@ class TestSwitchLocking:
         network = RailwayNetwork()
         network.add_track(TrackSegment(0, 0, track_bits=TRACK_EW | TRACK_NE))
         switch = Switch(switch_id="SW_1", x=0, y=0)
-        switch.simulation_controller = _stub_controller(network)
         network.add_switch(switch)
-        success, msg = switch.request_position_change(1, network)
+        switch_manager = _stub_switch_manager(network)
+        success, msg = switch_manager.request_position_change("SW_1", 1)
         assert success is True
         # v1: position is authoritative on the Switch entity (not the TrackSegment).
         assert int(switch.position) == 1
@@ -101,7 +107,6 @@ class TestSwitchLocking:
         from switch import Switch
 
         switch = Switch(switch_id="SW_1", x=0, y=0)
-        switch.simulation_controller = _stub_controller()
         switch.acquire_lock("PATH_1", "primary", "TRAIN_A", 1)
         data = switch.to_dict()
         # v1: locks is a list of dicts.

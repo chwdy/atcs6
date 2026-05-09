@@ -365,9 +365,11 @@ class Train:
     - travel_direction: 'forward' or 'reverse' (only for MANUAL mode)
     - state: TrainState for DC analog control
     - speed_profile_id: SpeedProfile for this train
-    - assigned_route_id: Route (travel plan) assigned to train
 
-    Note: target_speed and speed_limit_reason are derived from
+    Note: the live "which route is this train on?" read is derived from
+    `RouteExecutor.assigned_route_id_for(train_id)`; it is not stored on
+    `Train` (per design_new.md "Train persistent-only contract").
+    target_speed and speed_limit_reason are derived from
     TrainController.lookahead[0] per design_new.md and are not stored on
     Train. UI/API consumers must read them from the controller directly.
     """
@@ -417,50 +419,11 @@ class Train:
     # them from the controller, not from `Train`.
     speed_profile_id: Optional[str] = None  # SpeedProfile for this train
 
-    # `assigned_route_id` is derived from the train's currently-RUNNING
-    # `RouteRun` per design_new.md. The stored slot below is a fallback
-    # used when no network back-reference has been wired (e.g. unit tests
-    # that construct a bare `Train` and assign a route by writing the field
-    # directly). Production callers should go through
-    # `Route.assign_train` / `Route.unassign_train`.
-    _assigned_route_id_override: Optional[str] = None
-
-    # Optional back-reference to the owning `RailwayNetwork`, set by
-    # `network.add_train(train)`. Used by the derived `assigned_route_id`
-    # reader to scan the route registry for the active `RouteRun`.
-    _network_ref: Optional[Any] = None
-
-    @property
-    def assigned_route_id(self) -> Optional[str]:
-        """Route id of this train's currently-RUNNING `RouteRun`, or `None`.
-
-        Per design_new.md: a derived read; the canonical store is the active
-        `RouteRun.route_id`. The property scans the network's route registry
-        for the route whose `assigned_train_ids` contains this train; this
-        is functionally equivalent to scanning `RouteExecutor` runs because
-        `Route.assigned_train_ids` is always in sync with the live run.
-
-        When no network back-reference is wired, falls back to the stored
-        override slot (test fixtures, deserialized snapshots).
-        """
-        net = self._network_ref
-        if net is not None:
-            routes = getattr(net, "routes", None) or {}
-            for route_id, route in routes.items():
-                if self.train_id in getattr(route, "assigned_train_ids", []):
-                    return route_id
-        return self._assigned_route_id_override
-
-    @assigned_route_id.setter
-    def assigned_route_id(self, value: Optional[str]) -> None:
-        """Writer for the stored fallback slot.
-
-        Production code routes through `Route.assign_train(train_id)` (the
-        canonical writer of `Route.assigned_train_ids`); this setter exists
-        so test fixtures and deserialization paths can populate the
-        fallback override directly.
-        """
-        self._assigned_route_id_override = value
+    # `assigned_route_id` is no longer carried on `Train`. The canonical store
+    # is `RouteExecutor.execution_states[train_id].route_id` (with
+    # `Route.assigned_train_ids` as the registry-side mirror). Callers ask
+    # `RouteExecutor.assigned_route_id_for(train_id)` rather than reading off
+    # `Train`. See design_new.md "Train persistent-only contract".
 
     @property
     def length(self) -> float:
@@ -611,7 +574,6 @@ class Train:
             if self.facing_direction
             else None,
             "speed_profile_id": self.speed_profile_id,
-            "assigned_route_id": self.assigned_route_id,
         }
 
         if self.schedule:
@@ -662,6 +624,5 @@ class Train:
         train.min_radius_cm = float(data.get("min_radius_cm", 30.0))
 
         train.speed_profile_id = data.get("speed_profile_id")
-        train.assigned_route_id = data.get("assigned_route_id")
 
         return train

@@ -66,7 +66,7 @@ from runtime_payloads import (
     Command,
     ControllerProgressReport,
     PathCancellationKind,
-    PendingPathCancelRequest,
+    PhaseLatches,
     PhysicsSpanUpdate,
     ResourceEvent,
     TileTraversal,
@@ -373,10 +373,11 @@ class TrainController:
     # Phase 3 Mailbox (per design_new.md)
     # -------------------------------------------------------------------------
     queued_progress_reports: List[ControllerProgressReport] = field(default_factory=list)
-    pending_path_cancel_request: Optional[PendingPathCancelRequest] = None
-    pending_route_abort: bool = False
-    pending_power_off: bool = False
-    pending_route_deactivate: bool = False
+    # The four Phase-3 latches (`path_cancel_request`, `route_abort`,
+    # `power_off`, `route_deactivate`) are bundled into `PhaseLatches`. Writers
+    # go through the `set_*` helpers; consumers (`simulation.py`) call the
+    # matching `consume_*()` methods. See runtime_payloads.PhaseLatches.
+    phase_latches: PhaseLatches = field(default_factory=PhaseLatches)
 
     # -------------------------------------------------------------------------
     # Operator Command Inbox (per design_new.md "Command queue + drain")
@@ -731,7 +732,7 @@ class TrainController:
             self.handle_position = HandlePosition.EB
             self.ato_running = False
             if self.received_path_plan is not None:
-                self._set_pending_path_cancel_request(
+                self.phase_latches.set_path_cancel_request(
                     "eb", "ATC overspeed escalation"
                 )
             self.pending_notifications.append(
@@ -2018,7 +2019,7 @@ class TrainController:
         if self.eb_active:
             # EB_LATCHED ∈ active_conditions
             return False
-        if self.pending_power_off:
+        if self.phase_latches.power_off:
             # POWER_OFF_PENDING ∈ active_conditions
             return False
         return True
@@ -2666,14 +2667,16 @@ class TrainController:
         if not station_id:
             return False
 
-        # Check if this station is a scheduled stop on the train's route
-        if train.assigned_route_id and self.route_executor is not None:
-            route = self.route_executor.route_registry.get(train.assigned_route_id)
-            if route:
-                # Check if platform is in the route's waypoints
-                for waypoint in route.waypoints:
-                    if waypoint.platform_id == station_id:
-                        return True
+        # Check if this station is a scheduled stop on the train's route.
+        if self.route_executor is not None:
+            route_id = self.route_executor.assigned_route_id_for(self.train_id)
+            if route_id is not None:
+                route = self.route_executor.route_registry.get(route_id)
+                if route:
+                    # Check if platform is in the route's waypoints
+                    for waypoint in route.waypoints:
+                        if waypoint.platform_id == station_id:
+                            return True
 
         # If ato_destination_block_id is set (manual path), only stop at the
         # destination block. This prevents stopping at the departure station
@@ -3654,7 +3657,7 @@ class TrainController:
             return CommandResult(False, "Train not found")
         if not self.is_stopped():
             return CommandResult(False, "Cannot power off while moving")
-        self._set_pending_power_off()
+        self._apply_power_off_request()
         return CommandResult(True, "Power off accepted")
 
     def _execute_activate_emergency_cmd(self, payload, event_time) -> CommandResult:
@@ -3668,7 +3671,7 @@ class TrainController:
             self.state != TrainState.RUNNING_AT_STATION
             and self.received_path_plan is not None
         ):
-            self._set_pending_path_cancel_request("eb", "operator EB")
+            self.phase_latches.set_path_cancel_request("eb", "operator EB")
         return CommandResult(True, "Emergency stop activated")
 
     def _execute_release_emergency_cmd(self, payload, event_time) -> CommandResult:
@@ -3681,7 +3684,7 @@ class TrainController:
             return CommandResult(False, "Emergency brake not active")
         if not self.is_stopped():
             return CommandResult(False, "Cannot release emergency while moving")
-        if self.pending_path_cancel_request is not None:
+        if self.phase_latches.path_cancel_request is not None:
             return CommandResult(False, "EB cancellation has not committed yet")
         if self.received_path_plan is not None:
             return CommandResult(False, "Pre-EB path authority has not cleared yet")
@@ -3755,7 +3758,7 @@ class TrainController:
         if not self.is_stopped():
             return CommandResult(False, "Cannot power off while moving")
 
-        self._set_pending_power_off()
+        self._apply_power_off_request()
 
         return CommandResult(True, "Power off accepted; shutdown deferred to Phase 3")
 
@@ -3786,7 +3789,7 @@ class TrainController:
             self.state != TrainState.RUNNING_AT_STATION
             and self.received_path_plan is not None
         ):
-            self._set_pending_path_cancel_request("eb", "operator EB")
+            self.phase_latches.set_path_cancel_request("eb", "operator EB")
 
         return CommandResult(True, "Emergency stop activated")
 
@@ -3819,7 +3822,7 @@ class TrainController:
             return CommandResult(False, "Emergency brake not active")
         if not self.is_stopped():
             return CommandResult(False, "Cannot release emergency while moving")
-        if self.pending_path_cancel_request is not None:
+        if self.phase_latches.path_cancel_request is not None:
             return CommandResult(
                 False, "EB cancellation has not committed yet"
             )
@@ -3838,70 +3841,28 @@ class TrainController:
         return CommandResult(True, "Emergency stop released")
 
     # -------------------------------------------------------------------------
-    # Canonical Phase-3 latch writer helpers (per design_new.md "Latch Table")
+    # Power-off request side effects
     # -------------------------------------------------------------------------
     #
-    # `_set_pending_path_cancel_request` is the leaf — the only writer of the
-    # `pending_path_cancel_request` field. The other three helpers
-    # (`_set_pending_route_abort`, `_set_pending_power_off`,
-    # `_set_pending_route_deactivate`) own their own bool/payload field and
-    # fan out to the leaf when an active path exists, per the inclusive-latch
-    # rule. Outside callers route through these helpers; direct field writes
-    # on the latch slots are not permitted.
+    # The four Phase-3 latches themselves live on `self.phase_latches`
+    # (see `runtime_payloads.PhaseLatches`). Setting `power_off` also has the
+    # cross-field side effect of clearing `ato_running`; that side effect is
+    # owned by the controller and bundled into `_apply_power_off_request(...)`
+    # so every power-off code path stays consistent.
 
-    def _set_pending_path_cancel_request(
-        self, initiator: str, reason: Optional[str] = None
-    ) -> None:
-        """Canonical writer for `pending_path_cancel_request`.
+    def _apply_power_off_request(self, reason: str = "power off") -> None:
+        """Set the `power_off` latch and disengage any active ATO run.
 
-        Per design_new.md, when multiple same-tick writers race the most-recent
-        payload wins. This method always overwrites; callers do not need to
-        check whether the slot is already populated.
+        Wraps `phase_latches.set_power_off(...)` together with the
+        controller-local side effect of clearing `ato_running`. The inclusive
+        `path_cancel_request` fan-out is applied automatically when a live
+        path exists, per design_new.md "Latch Table".
         """
-        self.pending_path_cancel_request = PendingPathCancelRequest(
-            initiator=initiator, reason=reason
-        )
-
-    def _set_pending_route_abort(self, reason: str = "operator abort") -> None:
-        """Canonical writer for `pending_route_abort`.
-
-        Sets the bool latch and, when an active path exists, fans out to
-        `_set_pending_path_cancel_request(initiator="operator_cancelled")`.
-        Per design_new.md, the diagnostic `reason` is recorded only on the
-        path_cancellation / command_result notifications via the inclusive
-        cancel's payload — it is NOT stored on this latch (which is bool).
-
-        This underscore-named helper is the canonical public entry point per
-        the doc's Writer-helper rule; there is no separate wrapper method.
-        """
-        self.pending_route_abort = True
-        if self.received_path_plan is not None:
-            self._set_pending_path_cancel_request("operator_cancelled", reason)
-
-    def _set_pending_power_off(self, reason: str = "power off") -> None:
-        """Canonical writer for `pending_power_off`.
-
-        Sets the bool latch, immediately clears `ato_running` per the doc's
-        command-drain side effects, and fans out to
-        `_set_pending_path_cancel_request(initiator="power_off")` when an
-        active path exists.
-        """
-        self.pending_power_off = True
         self.ato_running = False
-        if self.received_path_plan is not None:
-            self._set_pending_path_cancel_request("power_off", reason)
-
-    def _set_pending_route_deactivate(self, reason: str = "route deactivated") -> None:
-        """Canonical writer for `pending_route_deactivate`.
-
-        Sets the bool latch and, when an active path exists, fans out to
-        `_set_pending_path_cancel_request(initiator="revoked")`. Per
-        design_new.md the diagnostic `reason` is recorded only on the
-        cancellation notification via the inclusive cancel's payload.
-        """
-        self.pending_route_deactivate = True
-        if self.received_path_plan is not None:
-            self._set_pending_path_cancel_request("revoked", reason)
+        self.phase_latches.set_power_off(
+            reason=reason,
+            has_active_path=self.received_path_plan is not None,
+        )
 
     # -------------------------------------------------------------------------
     # Handle Commands

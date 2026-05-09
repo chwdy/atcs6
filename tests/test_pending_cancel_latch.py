@@ -69,7 +69,7 @@ def test_activate_emergency_with_path_sets_pending_cancel():
     assert controller.received_path_plan is not None
 
     # Pre-condition: no latch.
-    assert controller.pending_path_cancel_request is None
+    assert controller.phase_latches.path_cancel_request is None
     controller.eb_active = False
 
     # Activate emergency.
@@ -78,7 +78,7 @@ def test_activate_emergency_with_path_sets_pending_cancel():
     assert controller.eb_active is True
 
     # Latch is written with initiator == "eb".
-    latch = controller.pending_path_cancel_request
+    latch = controller.phase_latches.path_cancel_request
     assert latch is not None
     assert isinstance(latch, PendingPathCancelRequest)
     assert latch.initiator == "eb"
@@ -102,7 +102,7 @@ def test_activate_emergency_without_path_does_not_set_latch():
     assert cmd_result.success is True
     assert controller.eb_active is True
     # No live authority -> no cancel latch.
-    assert controller.pending_path_cancel_request is None
+    assert controller.phase_latches.path_cancel_request is None
 
 
 def test_pending_cancel_latch_survives_while_moving():
@@ -140,17 +140,17 @@ def test_pending_cancel_latch_survives_while_moving():
     controller.current_speed_kmh = 30.0
     controller.current_speed_kmh = 30.0
     controller.activate_emergency_cmd()
-    assert controller.pending_path_cancel_request is not None
+    assert controller.phase_latches.path_cancel_request is not None
 
     # Reading the latch repeatedly does not clear it.
-    latch_first = controller.pending_path_cancel_request
-    latch_second = controller.pending_path_cancel_request
+    latch_first = controller.phase_latches.path_cancel_request
+    latch_second = controller.phase_latches.path_cancel_request
     assert latch_first is latch_second is not None
 
     # Even after some no-op reads while still moving, the latch stays set.
     _ = controller.received_path_plan
     _ = controller.travel_direction
-    assert controller.pending_path_cancel_request is not None
+    assert controller.phase_latches.path_cancel_request is not None
 
 
 def test_activate_emergency_idempotent_rejects_duplicate():
@@ -183,16 +183,19 @@ def test_set_pending_route_abort_sets_abort_latch_without_path():
 
     controller = create_controller_for_train(train.train_id, network)
     assert controller.received_path_plan is None
-    assert controller.pending_route_abort is False
+    assert controller.phase_latches.route_abort is False
 
-    controller._set_pending_route_abort("operator stop")
+    controller.phase_latches.set_route_abort(
+        "operator stop",
+        has_active_path=controller.received_path_plan is not None,
+    )
 
     # Per design_new.md the abort latch is bool; the diagnostic reason flows
     # only via the inclusive path_cancellation notification, not via a stored
     # field on this latch.
-    assert controller.pending_route_abort is True
+    assert controller.phase_latches.route_abort is True
     # No live path -> no inclusive cancel latch.
-    assert controller.pending_path_cancel_request is None
+    assert controller.phase_latches.path_cancel_request is None
 
 
 class _FakePath:
@@ -233,10 +236,13 @@ def test_set_pending_route_abort_inclusive_cancel_when_path_exists():
     assert controller.received_path_plan is fake_path
     assert controller.assigned_path_id == "PATH_ABORT_001"
 
-    controller._set_pending_route_abort("operator stop")
-    assert controller.pending_route_abort is True
+    controller.phase_latches.set_route_abort(
+        "operator stop",
+        has_active_path=controller.received_path_plan is not None,
+    )
+    assert controller.phase_latches.route_abort is True
 
-    cancel = controller.pending_path_cancel_request
+    cancel = controller.phase_latches.path_cancel_request
     assert cancel is not None
     assert cancel.initiator == "operator_cancelled"
 
@@ -304,16 +310,16 @@ def test_route_deactivate_writes_latches_per_assigned_train():
 
     assert route.is_active is False
 
-    # Both controllers receive pending_route_deactivate (bool latch).
-    assert controller1.pending_route_deactivate is True
-    assert controller2.pending_route_deactivate is True
+    # Both controllers receive route_deactivate (bool latch).
+    assert controller1.phase_latches.route_deactivate is True
+    assert controller2.phase_latches.route_deactivate is True
 
     # Only controller1 (live path) gets the inclusive cancel latch.
-    cancel1 = controller1.pending_path_cancel_request
+    cancel1 = controller1.phase_latches.path_cancel_request
     assert cancel1 is not None
     assert cancel1.initiator == "revoked"
 
-    assert controller2.pending_path_cancel_request is None
+    assert controller2.phase_latches.path_cancel_request is None
 
 
 def test_route_deactivate_without_simulation_controller_just_pauses():

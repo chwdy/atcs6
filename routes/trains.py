@@ -837,19 +837,21 @@ def register(app, state: AppState) -> None:
         auto_park = bool(data.get("auto_park", True))
         next_waypoint_index = data.get("next_waypoint_index")
 
-        current_route_id = train.assigned_route_id
-
         route_executor = (
             state.sim_controller.route_executor if state.sim_controller else None
         )
         route_registry = route_executor.route_registry if route_executor else {}
+        current_route_id = (
+            route_executor.assigned_route_id_for(train_id)
+            if route_executor
+            else None
+        )
 
         if route_id is None:
             if current_route_id:
                 current_route = route_registry.get(current_route_id)
                 if current_route:
                     current_route.unassign_train(train_id)
-            train.assigned_route_id = None
 
             # Stop ATO and clear destination when canceling route. The
             # controller's ato_destination_block_id and ato_path_id are
@@ -893,7 +895,6 @@ def register(app, state: AppState) -> None:
                     temp_route.activate(simulation_time)
                     if route_executor:
                         route_executor.register_route(temp_route)
-                    train.assigned_route_id = temp_route_id
 
                     if route_executor:
                         from route_executor import RouteExecutionState
@@ -937,7 +938,6 @@ def register(app, state: AppState) -> None:
                 previous_route.unassign_train(train_id)
 
         route.assign_train(train_id)
-        train.assigned_route_id = route_id
 
         if route_executor:
             exec_state = route_executor.execution_states.get(train_id)
@@ -981,14 +981,19 @@ def register(app, state: AppState) -> None:
         if not train:
             return jsonify({"error": "Train not found"}), 404
 
-        if not train.assigned_route_id:
-            return jsonify({"error": "Train has no assigned route"}), 400
-
         route_executor = (
             state.sim_controller.route_executor if state.sim_controller else None
         )
+        current_route_id = (
+            route_executor.assigned_route_id_for(train_id)
+            if route_executor
+            else None
+        )
+        if not current_route_id:
+            return jsonify({"error": "Train has no assigned route"}), 400
+
         route = (
-            route_executor.route_registry.get(train.assigned_route_id)
+            route_executor.route_registry.get(current_route_id)
             if route_executor
             else None
         )

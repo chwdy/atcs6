@@ -612,7 +612,6 @@ def setup_demo_train(
     )
     sim_controller.route_executor.register_route(demo_route)
     demo_route.assign_train(demo_train.train_id)
-    demo_train.assigned_route_id = demo_route.route_id
 
     # 5. Queue the power_on operator command. Phase 2's drain executes it on
     #    the first tick; from tick 2 onward Phase 1 sees a powered-on

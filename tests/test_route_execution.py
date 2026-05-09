@@ -221,14 +221,17 @@ class TestRouteExecutor:
 
 class TestRouteExecutorCompatibilityBugFixes:
     """
-    Regression tests for route assignment compatibility fixes.
+    Regression tests for route assignment behaviour.
 
-    BUG 1: _get_active_route_train_pairs() returned early when it found any
-    route.assigned_train_ids pair, which skipped legacy train.assigned_route_id
-    assignments in mixed deployments.
+    BUG 1 (historical): `_get_active_route_train_pairs()` returned early when
+    it found any `route.assigned_train_ids` pair, which skipped the legacy
+    `train.assigned_route_id` fallback in mixed deployments. After the
+    `Train` persistent-only migration there is only one canonical store
+    (`Route.assigned_train_ids`); this test verifies that every assigned
+    train still surfaces.
 
-    BUG 2: deactivate_route() deleted owned controllers and then called
-    _get_controller(), which recreated a controller entry immediately.
+    BUG 2: `deactivate_route()` deleted owned controllers and then called
+    `_get_controller()`, which recreated a controller entry immediately.
     """
 
     @pytest.fixture
@@ -243,36 +246,35 @@ class TestRouteExecutorCompatibilityBugFixes:
         )
         return network
 
-    def test_get_active_pairs_merges_new_and_legacy_assignments(self, simple_network):
-        """Mixed assignment styles should both contribute active train/route pairs."""
+    def test_get_active_pairs_lists_every_assigned_train(self, simple_network):
+        """Every train assigned to an active route surfaces as a (train, route) pair."""
         executor = RouteExecutor(simple_network)
 
-        route_new = Route(
-            route_id="ROUTE_NEW",
-            name="New-style",
+        route_a = Route(
+            route_id="ROUTE_A",
+            name="Route A",
             tasks=[RouteTask(task_kind="dwell", task_location="STA_A")],
         )
-        route_legacy = Route(
-            route_id="ROUTE_LEGACY",
-            name="Legacy-style",
+        route_b = Route(
+            route_id="ROUTE_B",
+            name="Route B",
             tasks=[RouteTask(task_kind="dwell", task_location="STA_B")],
         )
-        route_new.activate(0.0)
-        route_legacy.activate(0.0)
-        route_new.assign_train("T_NEW")
+        route_a.activate(0.0)
+        route_b.activate(0.0)
+        route_a.assign_train("T_A")
+        route_b.assign_train("T_B")
 
-        train_new = Train(train_id="T_NEW")
-        train_legacy = Train(train_id="T_OLD")
-        train_legacy.assigned_route_id = route_legacy.route_id
+        train_a = Train(train_id="T_A")
+        train_b = Train(train_id="T_B")
 
-        executor.register_route(route_new)
-        executor.register_route(route_legacy)
-        simple_network.trains[train_new.train_id] = train_new
-        simple_network.trains[train_legacy.train_id] = train_legacy
+        executor.register_route(route_a)
+        executor.register_route(route_b)
+        simple_network.trains[train_a.train_id] = train_a
+        simple_network.trains[train_b.train_id] = train_b
 
         pairs = executor._get_active_route_train_pairs()
         pair_ids = {(train.train_id, route.route_id) for train, route in pairs}
 
-        assert ("T_NEW", "ROUTE_NEW") in pair_ids
-        assert ("T_OLD", "ROUTE_LEGACY") in pair_ids
-        assert "T_OLD" in route_legacy.assigned_train_ids
+        assert ("T_A", "ROUTE_A") in pair_ids
+        assert ("T_B", "ROUTE_B") in pair_ids

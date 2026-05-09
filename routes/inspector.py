@@ -78,6 +78,10 @@ _CONTROLLER_DERIVED_FIELDS: List[str] = [
     "speed_limit_reason",
 ]
 
+# Direct controller fields (queued_progress_reports / pending_notifications)
+# remain attached to TrainController. The four Phase-3 latches live nested
+# under `controller.phase_latches`; their resolver path is set in
+# `_LATCH_META`'s `path` key.
 _CONTROLLER_LATCH_FIELDS: List[str] = [
     "queued_progress_reports",
     "pending_path_cancel_request",
@@ -169,18 +173,22 @@ _LATCH_META: Dict[str, Dict[str, str]] = {
         "consumer": "Phase 3 — PathDispatcher.on_controller_progress (drains list)",
     },
     "pending_path_cancel_request": {
+        "path": "phase_latches.path_cancel_request",
         "writer": "Phase 1 reconcile / Phase 2 cmd-drain or ATC / API handler",
         "consumer": "Phase 3 cancel step (gated by is_stopped() == True)",
     },
     "pending_route_abort": {
+        "path": "phase_latches.route_abort",
         "writer": "API / route executor",
         "consumer": "Phase 3 — RouteExecutor.on_train_progress (route abort step)",
     },
     "pending_power_off": {
+        "path": "phase_latches.power_off",
         "writer": "Phase 2 — operator command drain",
         "consumer": "Phase 3 — power-off step (gated by is_stopped())",
     },
     "pending_route_deactivate": {
+        "path": "phase_latches.route_deactivate",
         "writer": "API / route executor",
         "consumer": "Phase 3 — route-deactivate step",
     },
@@ -189,6 +197,21 @@ _LATCH_META: Dict[str, Dict[str, str]] = {
         "consumer": "Phase 3 — SimulationController collects + clears",
     },
 }
+
+
+def _resolve_latch(controller: Any, name: str, meta: Dict[str, Any]) -> Any:
+    """Resolve a latch value, walking the dotted `path` from meta when set.
+
+    Latches that live directly on TrainController (e.g. `pending_notifications`)
+    have no `path` and are read by attribute name. Latches that live nested
+    under `controller.phase_latches` carry a `path` like
+    `phase_latches.path_cancel_request`.
+    """
+    path = meta.get("path", name)
+    obj: Any = controller
+    for part in path.split("."):
+        obj = getattr(obj, part)
+    return obj
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +426,7 @@ def _build_controller_latches_group(controller: Any) -> Dict[str, Any]:
     for name in _CONTROLLER_LATCH_FIELDS:
         meta = _LATCH_META.get(name, {})
         try:
-            raw = getattr(controller, name)
+            raw = _resolve_latch(controller, name, meta)
             items.append(
                 _build_item(
                     name,

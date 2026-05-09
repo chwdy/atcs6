@@ -296,7 +296,9 @@ class TestTrainPhase1:
         assert basic_train.min_radius_cm == 40.0
         assert basic_train.facing_direction == Direction.EAST
         assert basic_train.speed_profile_id is None
-        assert basic_train.assigned_route_id is None
+        # `Train.assigned_route_id` is no longer a field; the canonical store is
+        # `RouteExecutor.assigned_route_id_for(train_id)`.
+        assert not hasattr(basic_train, "assigned_route_id")
 
     def test_position_reverse(self, basic_train: Train):
         """Test TrainPosition.reverse() flips leading_end and updates facing_direction."""
@@ -349,7 +351,7 @@ class TestTrainPhase1:
         # Power off — acceptance is immediate, OFF transition deferred.
         result = controller.power_off_cmd()
         assert result.success is True
-        assert controller.pending_power_off is True
+        assert controller.phase_latches.power_off is True
 
     def test_power_off_while_moving_fails(self):
         """Test power_off_cmd fails when train is moving."""
@@ -385,7 +387,6 @@ class TestTrainPhase1:
             "travel_direction": "forward",
             "state": "ready",
             "speed_profile_id": "profile_002",
-            "assigned_route_id": "route_002",
         }
 
         train = Train.from_dict(data)
@@ -396,7 +397,8 @@ class TestTrainPhase1:
         # facing_direction is computed from position; no stored field.
         assert train.facing_direction is None
         assert train.speed_profile_id == "profile_002"
-        assert train.assigned_route_id == "route_002"
+        # `assigned_route_id` is no longer carried on `Train`; the canonical
+        # store is `RouteExecutor.assigned_route_id_for(train_id)`.
         # Per design_new.md ~line 1292, Train no longer mirrors live
         # state/travel_direction/current_speed; those load on the
         # controller via add_train(...) / explicit controller commands.
@@ -763,7 +765,7 @@ class TestTrainStateTransitions:
         )
         result = controller.power_off_cmd()
         assert result.success is True
-        assert controller.pending_power_off is True
+        assert controller.phase_latches.power_off is True
 
     def test_power_off_fails_when_moving(self):
         """Test power_off_cmd() fails when moving."""
@@ -862,15 +864,19 @@ class TestTrainStateTransitions:
         assert controller.state == TrainState.RUNNING_AT_STATION
 
     def test_depart_from_station_with_more_waypoints(self):
-        """Test depart_from_station() transitions to STANDBY when more waypoints."""
+        """Test depart_from_station() transitions to STANDBY when more waypoints.
+
+        v1: route assignment lives on `RouteExecutor.execution_states[train_id]`,
+        not on `Train`. `depart_from_station` only flips controller state; it
+        doesn't touch route assignment, so this test only asserts the state
+        transition.
+        """
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_AT_STATION
         )
-        train.assigned_route_id = "route1"
         result = controller.depart_from_station(has_more_waypoints=True)
         assert result is True
         assert controller.state == TrainState.READY
-        assert train.assigned_route_id == "route1"  # Route still assigned
 
     def test_depart_from_station_route_complete(self):
         """Test depart_from_station() transitions to READY when route complete.
@@ -882,7 +888,6 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_AT_STATION
         )
-        train.assigned_route_id = "route1"
         result = controller.depart_from_station(has_more_waypoints=False)
         assert result is True
         assert controller.state == TrainState.READY
@@ -1064,11 +1069,15 @@ class TestCompleteStateFlows:
         assert controller.state == TrainState.RUNNING_MOVING
 
     def test_running_to_station_to_complete_flow(self):
-        """Test complete flow through station arrival and route completion."""
+        """Test complete flow through station arrival and route completion.
+
+        v1: route assignment lives on `RouteExecutor.execution_states[train_id]`,
+        not on `Train`. This test only exercises controller state transitions;
+        route preservation is covered by `RouteExecutor` integration tests.
+        """
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING
         )
-        train.assigned_route_id = "route1"
 
         # Arrive at station
         assert controller.arrive_at_station() is True
@@ -1078,7 +1087,6 @@ class TestCompleteStateFlows:
         # Depart with more waypoints
         assert controller.depart_from_station(has_more_waypoints=True) is True
         assert controller.state == TrainState.READY
-        assert train.assigned_route_id == "route1"
 
         # Simulate moving and arriving at final station
         # Need to set controller state too for proper flow
@@ -1143,7 +1151,7 @@ class TestCompleteStateFlows:
         # Now can power off — acceptance is immediate, OFF deferred to Phase 3.
         result = controller.power_off_cmd()
         assert result.success is True
-        assert controller.pending_power_off is True
+        assert controller.phase_latches.power_off is True
 
 
 class TestEmergencyResetButtonBugFix:

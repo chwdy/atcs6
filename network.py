@@ -1913,9 +1913,6 @@ class RailwayNetwork:
     def add_train(self, train: Train):
         """Add a train to the network"""
         self.trains[train.train_id] = train
-        # Wire the back-reference so `Train.assigned_route_id` can derive
-        # from the route registry per design_new.md.
-        train._network_ref = self
 
     def place_train(
         self,
@@ -3441,4 +3438,3 @@ class RailwayNetwork:
         for train_data in data.get("trains", []):
             train = Train.from_dict(train_data)
             self.trains[train.train_id] = train
-            train._network_ref = self

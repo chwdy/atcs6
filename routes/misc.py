@@ -307,7 +307,6 @@ def register(app, state: AppState) -> None:
         for train_id in assigned_train_ids:
             if train_id in state.network.trains:
                 route.assign_train(train_id)
-                state.network.trains[train_id].assigned_route_id = route.route_id
 
         state.sim_controller.route_executor.register_route(route)
 
@@ -420,16 +419,10 @@ def register(app, state: AppState) -> None:
 
                 for train_id in current_train_ids - requested_train_ids:
                     route.unassign_train(train_id)
-                    train = state.network.trains.get(train_id)
-                    if train and train.assigned_route_id == route.route_id:
-                        train.assigned_route_id = None
 
                 for train_id in requested_train_ids - current_train_ids:
                     if train_id in state.network.trains:
                         route.assign_train(train_id)
-                        state.network.trains[
-                            train_id
-                        ].assigned_route_id = route.route_id
 
         return jsonify(route.to_dict())
 
@@ -440,12 +433,12 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Route not found"}), 404
 
         route = registry[route_id]
-        for train in state.network.trains.values():
-            if train.assigned_route_id == route_id:
-                train.assigned_route_id = None
+        previously_assigned = list(route.assigned_train_ids)
+        for train_id in previously_assigned:
+            route.unassign_train(train_id)
 
         if state.sim_controller and state.sim_controller.route_executor:
-            for train_id in list(route.assigned_train_ids):
+            for train_id in previously_assigned:
                 state.sim_controller.route_executor.execution_states.pop(train_id, None)
 
         state.sim_controller.route_executor.unregister_route(route_id)
@@ -1228,8 +1221,20 @@ def register(app, state: AppState) -> None:
             if not switch:
                 return jsonify({"error": f"Switch {switch_id} not found"}), 404
 
-            # Use request_position_change which checks lock status
-            success, message = switch.request_position_change(new_state, state.network)
+            switch_manager = state.network.switch_manager
+            if switch_manager is None:
+                return (
+                    jsonify(
+                        {"error": "SwitchManager not available — runtime not initialised"}
+                    ),
+                    503,
+                )
+
+            # Route through SwitchManager so the BlockManager notification is
+            # paired with the position write.
+            success, message = switch_manager.request_position_change(
+                switch_id, new_state
+            )
 
             if success:
                 return jsonify(

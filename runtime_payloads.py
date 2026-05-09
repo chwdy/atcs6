@@ -204,6 +204,115 @@ class PendingPathCancelRequest:
 # latches themselves.
 
 
+@dataclass
+class PhaseLatches:
+    """Aggregate of the four Phase-3 latches owned by `TrainController`.
+
+    Per design_new.md (Latch Table) the four latches share the same lifecycle
+    rule: a writer sets them in Phase 2 (or in command handling) and Phase 3
+    consumes-and-clears them on the same tick once the consumer's gate passes.
+    Bundling the four fields plus their canonical writers / consumers into one
+    data class keeps the latch discipline in a single place.
+
+    The leaf writer is `set_path_cancel_request(...)`; the three composite
+    setters (`set_route_abort`, `set_power_off`, `set_route_deactivate`) own
+    their respective bool field and, when an active path exists, fan out to
+    `set_path_cancel_request(...)` with the design-canonical `initiator`
+    value (`"operator_cancelled"`, `"power_off"`, `"revoked"`).
+
+    The cross-field side effect of `power_off` (clearing
+    `TrainController.ato_running`) does NOT live here — that is a controller
+    concern and the caller wires it together with `set_power_off(...)`.
+    """
+
+    path_cancel_request: Optional[PendingPathCancelRequest] = None
+    route_abort: bool = False
+    power_off: bool = False
+    route_deactivate: bool = False
+
+    # ------------------------------------------------------------------
+    # Writers (canonical setters)
+    # ------------------------------------------------------------------
+
+    def set_path_cancel_request(
+        self, initiator: str, reason: Optional[str] = None
+    ) -> None:
+        """Leaf writer for `path_cancel_request`."""
+        self.path_cancel_request = PendingPathCancelRequest(
+            initiator=initiator, reason=reason
+        )
+
+    def set_route_abort(
+        self,
+        reason: str = "operator abort",
+        has_active_path: bool = False,
+    ) -> None:
+        """Set `route_abort`; when a live path exists, also set the inclusive
+        `path_cancel_request` with `initiator="operator_cancelled"`."""
+        self.route_abort = True
+        if has_active_path:
+            self.set_path_cancel_request("operator_cancelled", reason)
+
+    def set_power_off(
+        self,
+        reason: str = "power off",
+        has_active_path: bool = False,
+    ) -> None:
+        """Set `power_off`; when a live path exists, also set the inclusive
+        `path_cancel_request` with `initiator="power_off"`."""
+        self.power_off = True
+        if has_active_path:
+            self.set_path_cancel_request("power_off", reason)
+
+    def set_route_deactivate(
+        self,
+        reason: str = "route deactivated",
+        has_active_path: bool = False,
+    ) -> None:
+        """Set `route_deactivate`; when a live path exists, also set the
+        inclusive `path_cancel_request` with `initiator="revoked"`."""
+        self.route_deactivate = True
+        if has_active_path:
+            self.set_path_cancel_request("revoked", reason)
+
+    # ------------------------------------------------------------------
+    # Read predicates
+    # ------------------------------------------------------------------
+
+    def is_any_pending(self) -> bool:
+        """True if any of the four latches is currently set."""
+        return (
+            self.path_cancel_request is not None
+            or self.route_abort
+            or self.power_off
+            or self.route_deactivate
+        )
+
+    # ------------------------------------------------------------------
+    # Consumers (read-and-clear)
+    # ------------------------------------------------------------------
+
+    def consume_path_cancel_request(self) -> Optional[PendingPathCancelRequest]:
+        v = self.path_cancel_request
+        self.path_cancel_request = None
+        return v
+
+    def consume_route_abort(self) -> bool:
+        v = self.route_abort
+        self.route_abort = False
+        return v
+
+    def consume_power_off(self) -> bool:
+        v = self.power_off
+        self.power_off = False
+        return v
+
+    def consume_route_deactivate(self) -> bool:
+        v = self.route_deactivate
+        self.route_deactivate = False
+        return v
+
+
 # =============================================================================
 # Path completion result
 # =============================================================================
