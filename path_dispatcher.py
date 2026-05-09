@@ -1514,7 +1514,7 @@ class PathDispatcher:
                 path_id,
                 event.resource_type,
                 event.resource_id,
-                event.direction,
+                event.exit_edge,
             )
         except TypeError:
             # Legacy 4-arg signature fallback.
@@ -1533,7 +1533,7 @@ class PathDispatcher:
             resource_type=event.resource_type,
             resource_id=event.resource_id,
             train_id=train_id,
-            direction=event.direction,
+            direction=event.exit_edge,
         )
 
     def _map_deviation_kind_to_cancellation(

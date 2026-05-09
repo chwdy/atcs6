@@ -27,7 +27,7 @@ def _build_two_tile_network() -> RailwayNetwork:
 
 
 def _make_train(network: RailwayNetwork) -> Train:
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_CAB", consist=[car], max_speed=60.0)
     network.add_train(train)
     network.place_train(train, 0, 0, direction=Direction.EAST)
@@ -64,7 +64,7 @@ def test_travel_direction_flips_when_facing_flips():
     The point of this test is to verify the property is *derived*, not stored.
     """
     network = _build_two_tile_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_FLIP", consist=[car], max_speed=60.0)
     network.add_train(train)
 

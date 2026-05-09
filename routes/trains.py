@@ -215,7 +215,7 @@ def register(app, state: AppState) -> None:
         car = TrainCar(
             car_id=f"{train_id}_loco",
             car_type="LOCOMOTIVE",
-            length=length_meters,
+            length_cm=length_meters,
             max_speed=max_speed_kmh,
         )
         train = Train(
@@ -293,7 +293,7 @@ def register(app, state: AppState) -> None:
                         car = TrainCar(
                             car_id=f"{train_id}_loco",
                             car_type="LOCOMOTIVE",
-                            length=new_length,
+                            length_cm=new_length,
                             max_speed=train.max_speed,
                         )
                         train.consist.append(car)

@@ -1789,7 +1789,7 @@ class TrainController:
                     sequence_index=None,
                     resource_type=res_type,
                     resource_id=res_id,
-                    direction=None,
+                    exit_edge=None,
                     block_id=tile.block_id,
                 )
             )
@@ -1805,13 +1805,13 @@ class TrainController:
             if key in seen_vacated:
                 continue
             seen_vacated.add(key)
-            direction = tile.exit_edge if res_type == "block" else None
+            exit_edge = tile.exit_edge if res_type == "block" else None
             tail_vacated_resources.append(
                 ResourceEvent(
                     sequence_index=None,
                     resource_type=res_type,
                     resource_id=res_id,
-                    direction=direction,
+                    exit_edge=exit_edge,
                     block_id=tile.block_id,
                 )
             )

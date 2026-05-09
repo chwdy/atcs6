@@ -275,7 +275,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
         dispatcher = PathDispatcher(network)
         simulation = SimulationController(network, dispatcher)
 
-        car = TrainCar(car_id=f"CAR_{train_id}", car_type="LOCOMOTIVE", length=45.0)
+        car = TrainCar(car_id=f"CAR_{train_id}", car_type="LOCOMOTIVE", length_cm=45.0)
         train = Train(train_id=train_id, consist=[car], max_speed=60.0)
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -296,7 +296,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
         dispatcher = PathDispatcher(network)
         simulation = SimulationController(network, dispatcher)
 
-        car = TrainCar(car_id="CAR_45CM", car_type="LOCOMOTIVE", length=45.0)
+        car = TrainCar(car_id="CAR_45CM", car_type="LOCOMOTIVE", length_cm=45.0)
         train = Train(train_id="T_LOOP", consist=[car], max_speed=60.0)
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -645,7 +645,7 @@ class TestMultiTilePlatformStopping:
         network = multi_tile_station_network
 
         # Create train at first station tile (9,3), traveling NORTH
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=30.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=30.0)
         train = Train(train_id="CLEARANCE_TEST", consist=[car])
         network.add_train(train)
 
@@ -700,7 +700,7 @@ class TestMultiTilePlatformStopping:
         network = multi_tile_station_network
 
         # Create train already in the station block at first tile (9,3)
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=30.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=30.0)
         train = Train(train_id="CLEARANCE_TEST", consist=[car])
         network.add_train(train)
         network.place_train(train, 9, 3, Direction.NORTH)
@@ -937,7 +937,7 @@ class TestManualPathAssignmentAfterArrival:
         simulation = SimulationController(network, dispatcher)
 
         # Create train at A
-        car = TrainCar(car_id="CAR_BUG_TEST", car_type="LOCOMOTIVE", length=45.0)
+        car = TrainCar(car_id="CAR_BUG_TEST", car_type="LOCOMOTIVE", length_cm=45.0)
         train = Train(train_id="BUG_TEST_TRAIN", consist=[car], max_speed=60.0)
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -1081,7 +1081,7 @@ class TestManualPathAssignmentAfterArrival:
         simulation = SimulationController(network, dispatcher)
 
         # Create train already at B (simulating arrival at terminal)
-        car = TrainCar(car_id="CAR_AT_B", car_type="LOCOMOTIVE", length=45.0)
+        car = TrainCar(car_id="CAR_AT_B", car_type="LOCOMOTIVE", length_cm=45.0)
         train = Train(train_id="TRAIN_AT_B", consist=[car], max_speed=60.0)
         network.add_train(train)
 
@@ -1156,7 +1156,7 @@ class TestManualPathAssignmentAfterArrival:
         simulation = SimulationController(network, dispatcher)
 
         # Create train at B (now at 3,0)
-        car = TrainCar(car_id="CAR_LOOKAHEAD", car_type="LOCOMOTIVE", length=45.0)
+        car = TrainCar(car_id="CAR_LOOKAHEAD", car_type="LOCOMOTIVE", length_cm=45.0)
         train = Train(train_id="LOOKAHEAD_TEST", consist=[car], max_speed=60.0)
         network.add_train(train)
         train.position = make_train_position((3, 0), Direction.EAST)
@@ -1242,7 +1242,7 @@ class TestManualPathAssignmentAfterArrival:
 
         # Create train at A (short train to fit on track)
         car = TrainCar(
-            car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0, max_speed=80.0
+            car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=40.0, max_speed=80.0
         )
         train = Train(train_id="TRAIN_1", consist=[car], max_speed=80.0)
         network.add_train(train)
@@ -1324,7 +1324,7 @@ class TestManualPathAssignmentAfterArrival:
         simulation = SimulationController(network, dispatcher)
 
         car = TrainCar(
-            car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0, max_speed=80.0
+            car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=40.0, max_speed=80.0
         )
         train = Train(train_id="TRAIN_1", consist=[car], max_speed=80.0)
         network.add_train(train)
@@ -1360,7 +1360,7 @@ class TestManualPathAssignmentAfterArrival:
         simulation = SimulationController(network, dispatcher)
 
         car = TrainCar(
-            car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0, max_speed=80.0
+            car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=40.0, max_speed=80.0
         )
         train = Train(train_id="TRAIN_1", consist=[car], max_speed=80.0)
         network.add_train(train)
@@ -1406,7 +1406,7 @@ class TestManualPathAssignmentAfterArrival:
         # But we need to place it so there's track ahead, so place at (5,0) facing EAST
         # This puts the train approaching/at station C
         car = TrainCar(
-            car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0, max_speed=80.0
+            car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=40.0, max_speed=80.0
         )
         train = Train(train_id="TRAIN_1", consist=[car], max_speed=80.0)
         network.add_train(train)
@@ -1493,7 +1493,7 @@ class TestManualPathAssignmentAfterArrival:
 
         # Train at A facing EAST (correct for A->C path)
         car = TrainCar(
-            car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0, max_speed=80.0
+            car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=40.0, max_speed=80.0
         )
         train = Train(train_id="TRAIN_1", consist=[car], max_speed=80.0)
         network.add_train(train)
@@ -1558,7 +1558,7 @@ class TestManualPathAssignmentAfterArrival:
 
         # 1. Train starts at A with route to C
         car = TrainCar(
-            car_id="CAR_1", car_type="LOCOMOTIVE", length=40.0, max_speed=80.0
+            car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=40.0, max_speed=80.0
         )
         train = Train(train_id="TRAIN_1", consist=[car], max_speed=80.0)
         network.add_train(train)
@@ -1780,7 +1780,7 @@ class TestAutoReversalOnNewRouteAssignment:
         simulation = SimulationController(network, dispatcher)
 
         # Place train at C(8,0) facing WEST (place_train needs valid neighbor)
-        car = TrainCar(car_id="CAR_REV", car_type="LOCOMOTIVE", length=45.0)
+        car = TrainCar(car_id="CAR_REV", car_type="LOCOMOTIVE", length_cm=45.0)
         train = Train(train_id="T_REV", consist=[car], max_speed=60.0)
         network.add_train(train)
         network.place_train(train, 7, 0, Direction.EAST)
@@ -1839,7 +1839,7 @@ class TestAutoReversalOnNewRouteAssignment:
         dispatcher = PathDispatcher(network)
         simulation = SimulationController(network, dispatcher)
 
-        car = TrainCar(car_id="CAR_FWD", car_type="LOCOMOTIVE", length=45.0)
+        car = TrainCar(car_id="CAR_FWD", car_type="LOCOMOTIVE", length_cm=45.0)
         train = Train(train_id="T_FWD", consist=[car], max_speed=60.0)
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -1895,7 +1895,7 @@ class TestAutoReversalOnNewRouteAssignment:
         simulation = SimulationController(network, dispatcher)
 
         # Place at (7,0) facing WEST so there's a track to connect
-        car = TrainCar(car_id="CAR_NF", car_type="LOCOMOTIVE", length=45.0)
+        car = TrainCar(car_id="CAR_NF", car_type="LOCOMOTIVE", length_cm=45.0)
         train = Train(train_id="T_NF", consist=[car], max_speed=60.0)
         network.add_train(train)
         network.place_train(train, 7, 0, Direction.WEST)

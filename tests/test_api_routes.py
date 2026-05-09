@@ -531,7 +531,7 @@ class TestTrainRoutes:
 
     def test_get_train(self, client, app_state):
         """GET /api/trains/<train_id> should return train details."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=1000.0, max_speed=100.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=1000.0, max_speed=100.0)
         train = Train("TRAIN_001", consist=[car])
         app_state.network.add_train(train)
         response = client.get("/api/trains/TRAIN_001")
@@ -539,7 +539,7 @@ class TestTrainRoutes:
 
     def test_delete_train(self, client, app_state):
         """DELETE /api/trains/<train_id> should delete train."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=1000.0, max_speed=100.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=1000.0, max_speed=100.0)
         train = Train("TRAIN_001", consist=[car])
         app_state.network.add_train(train)
         response = client.delete("/api/trains/TRAIN_001")
@@ -547,7 +547,7 @@ class TestTrainRoutes:
 
     def test_train_power_on(self, client, app_state, network_with_tracks):
         """POST /api/trains/<train_id>/power-on should power on train."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0, max_speed=100.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
         train = Train("TRAIN_001", consist=[car])
         app_state.network.add_train(train)
         app_state.network.place_train(train, 0, 0, Direction.EAST)
@@ -556,7 +556,7 @@ class TestTrainRoutes:
 
     def test_train_power_off(self, client, app_state, network_with_tracks):
         """POST /api/trains/<train_id>/power-off should power off train."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0, max_speed=100.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
         train = Train("TRAIN_001", consist=[car])
         app_state.network.add_train(train)
         app_state.network.place_train(train, 0, 0, Direction.EAST)
@@ -565,7 +565,7 @@ class TestTrainRoutes:
 
     def test_train_set_direction(self, client, app_state, network_with_tracks):
         """POST /api/trains/<train_id>/set-direction should set direction."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0, max_speed=100.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
         train = Train("TRAIN_001", consist=[car])
         app_state.network.add_train(train)
         app_state.network.place_train(train, 0, 0, Direction.EAST)
@@ -606,7 +606,7 @@ class TestPathRoutes:
         app_state.network.create_block_with_tracks("BLK_002", [(2, 0), (3, 0)])
         app_state.network.create_block_with_tracks("BLK_003", [(4, 0)])
 
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0, max_speed=100.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
         train = Train("TRAIN_001", consist=[car])
         app_state.network.add_train(train)
         app_state.network.place_train(train, 0, 0, Direction.EAST)
@@ -740,7 +740,7 @@ class TestRouteRedesignApis:
     """Coverage for newly added route-panel redesign APIs."""
 
     def _create_train(self, app_state, train_id: str = "TRAIN_A"):
-        car = TrainCar(car_id=f"{train_id}_CAR", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id=f"{train_id}_CAR", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id=train_id, consist=[car], max_speed=80.0)
         app_state.network.add_train(train)
 

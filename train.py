@@ -342,7 +342,7 @@ class TrainCar:
 
     car_id: str
     car_type: str  # "LOCOMOTIVE", "PASSENGER", "FREIGHT"
-    length: float  # Length in cm
+    length_cm: float  # Car length in centimetres
     max_speed: float = 120.0  # Max speed for this car
 
 
@@ -426,16 +426,22 @@ class Train:
     # `Train`. See design_new.md "Train persistent-only contract".
 
     @property
-    def length(self) -> float:
-        """Total length of train in meters (approx track units for now)"""
+    def length_m(self) -> float:
+        """Total length of train in metres (approx track units for now).
+
+        Renamed from `length` to disambiguate from the centimetre-form
+        `length_cm` below; both return the same physical length in
+        different units, and the `_m` / `_cm` suffix makes the unit
+        explicit at every call site.
+        """
         # Assuming 1 track unit = 100m
-        total_meters = sum(car.length for car in self.consist)
+        total_meters = sum(car.length_cm for car in self.consist)
         return total_meters / 100.0 if self.consist else 1.0
 
     @property
     def length_cm(self) -> float:
-        """Total length of train in centimeters."""
-        return sum(car.length for car in self.consist) if self.consist else 50.0
+        """Total length of train in centimetres."""
+        return sum(car.length_cm for car in self.consist) if self.consist else 50.0
 
     # Note: Mass-based calculations removed - using simplified physics model
 
@@ -563,7 +569,7 @@ class Train:
         del network  # reserved for future schema-aware exports
         data = {
             "id": self.train_id,
-            "length": self.length,
+            "length_m": self.length_m,
             "length_cm": self.length_cm,
             "max_speed": self.max_speed,
             "num_cars": self.num_cars,

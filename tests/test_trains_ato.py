@@ -51,7 +51,7 @@ class TestAtoStopButtonBugFix:
         network.add_track(next_track)
         network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
-        car = TrainCar("ATO_STOP_TEST", "LOCOMOTIVE", length=40.0)
+        car = TrainCar("ATO_STOP_TEST", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="ATO_STOP_TEST", consist=[car])
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -134,7 +134,7 @@ class TestAtoAutoCabSelectionBugFix:
         network.add_track(next_track)
         network.create_block_with_tracks("B1", [(0, 0)], length_cm=100.0)
 
-        car = TrainCar(car_id="CAR_02", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_02", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_NO_CAB_TICK", consist=[car], max_speed=60.0)
         # Direction set via position (refactored): train.set_cab("A")  # was: Direction.EAST
         train.assigned_path_id = "PATH_1"
@@ -180,7 +180,7 @@ class TestAtoDepartCallsAtoGo:
         network.add_track(next_track)
         network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
-        car = TrainCar("ATO_DEPART_TEST", "LOCOMOTIVE", length=40.0)
+        car = TrainCar("ATO_DEPART_TEST", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="ATO_DEPART_TEST", consist=[car])
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -207,7 +207,7 @@ class TestAtoDepartCallsAtoGo:
         network.add_track(next_track)
         network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
-        car = TrainCar("DEPART_ATO", "LOCOMOTIVE", length=40.0)
+        car = TrainCar("DEPART_ATO", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="DEPART_ATO", consist=[car])
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -276,7 +276,7 @@ class TestAtoDepartCallsAtoGo:
         network.add_track(next_track)
         network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
-        car = TrainCar("ATO_GO_TEST", "LOCOMOTIVE", length=40.0)
+        car = TrainCar("ATO_GO_TEST", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="ATO_GO_TEST", consist=[car])
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -318,7 +318,7 @@ class TestAtoDistanceAwareControl:
         network.add_track(next_track)
         network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
-        car = TrainCar("ATO_DIST_TEST", "LOCOMOTIVE", length=40.0)
+        car = TrainCar("ATO_DIST_TEST", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="ATO_DIST_TEST", consist=[car])
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -403,7 +403,7 @@ class TestAtoDistanceAwareControl:
             "LONG_BLOCK", [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)], length_cm=100.0
         )
 
-        car = TrainCar("ATO_BRAKE_TEST", "LOCOMOTIVE", length=10.0)
+        car = TrainCar("ATO_BRAKE_TEST", "LOCOMOTIVE", length_cm=10.0)
         train = Train(train_id="ATO_BRAKE_TEST", consist=[car])
         network.add_train(train)
         # Place at middle of block so we have clearance ahead
@@ -574,7 +574,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         self._setup_station_track(network)
 
         # Create and place train
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=30.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=30.0)
         train = Train(train_id="TRAIN_STOP_TEST", consist=[car])
         network.add_train(train)
         network.place_train(train, 3, 0, Direction.EAST)
@@ -629,7 +629,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
 
         # Create train and manually place at end of station (tile 4,0, facing WEST)
         # For multi-tile platforms, train must be at last tile to be "at station"
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=30.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=30.0)
         train = Train(train_id="TRAIN_CLEAR_TEST", consist=[car])
         network.add_train(train)
 
@@ -725,7 +725,7 @@ class TestTrendAwareATOControl:
 
     @pytest.fixture
     def train_and_controller(self, network, straight_track):
-        car = TrainCar(car_id="CAR_TEST", car_type="LOCOMOTIVE", length=30.0)
+        car = TrainCar(car_id="CAR_TEST", car_type="LOCOMOTIVE", length_cm=30.0)
         train = Train(train_id="TRAIN_ATO_TEST", consist=[car], max_speed=80.0)
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -943,7 +943,7 @@ class TestSpeedCurveCalculation:
 
     @pytest.fixture
     def train_and_controller(self, network, straight_track):
-        car = TrainCar(car_id="CAR_CURVE", car_type="LOCOMOTIVE", length=30.0)
+        car = TrainCar(car_id="CAR_CURVE", car_type="LOCOMOTIVE", length_cm=30.0)
         train = Train(train_id="TRAIN_CURVE_TEST", consist=[car], max_speed=80.0)
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)

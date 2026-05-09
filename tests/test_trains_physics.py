@@ -48,7 +48,7 @@ class TestTrainPhysicsOccupiedTilesOrderBugFix:
         for x in range(3):
             network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
 
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=80.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=80.0)
         train = Train(train_id="OCCUPIED_TILE_ORDER", consist=[car])
         network.add_train(train)
         network.place_train(train, 1, 0, Direction.EAST)
@@ -88,7 +88,7 @@ class TestTrainPhysicsTailPositionBugFix:
         network.create_block_with_tracks(
             "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
         )
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -118,7 +118,7 @@ class TestZeroLengthSwitchTraversal:
         network.add_switch(switch)
         switch_track.switch_id = switch.switch_id
 
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -182,7 +182,7 @@ class TestTrainPhysicsTransitions:
         network.create_block("B1", "Block 1")
         network.create_block("B2", "Block 2")
 
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_1", consist=[car], max_speed=60.0)
         train.position = TrainPosition(
             end_a_tile=(1, 0),
@@ -236,7 +236,7 @@ class TestTrainPhysicsDebugLogging:
         plus the speed profile.
         """
         network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_PHYS_LOG", consist=[car], max_speed=60.0)
         network.add_train(train)
 
@@ -270,7 +270,7 @@ class TestTrainPhysicsManualPowerPercent:
         network = RailwayNetwork()
         for x in range(5):
             network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
-        car = TrainCar(car_id="CAR_PCT", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_PCT", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_PCT", consist=[car], max_speed=120.0)
         train.position = make_train_position((1, 0), Direction.EAST)
         network.add_train(train)

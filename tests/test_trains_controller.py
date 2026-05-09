@@ -37,7 +37,7 @@ class TestTrainManualControlBugFixes:
 
     def test_clear_direction_from_standby(self):
         network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.state = TrainState.READY
         train.travel_direction = "reverse"
@@ -57,7 +57,7 @@ class TestTrainManualControlBugFixes:
 
     def test_clear_direction_rejects_moving(self):
         network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_02", consist=[car], max_speed=60.0)
         train.state = TrainState.READY
         # Direction set via position (refactored): train.set_cab("A")  # was: Direction.NORTH
@@ -111,7 +111,7 @@ class TestRaceConditionFix:
         (proving controller is the authority).
         """
         network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_STATE_TEST", consist=[car], max_speed=60.0)
         train.state = TrainState.READY
         network.add_train(train)
@@ -156,7 +156,7 @@ class TestRaceConditionFix:
         block.length_cm = 1000.0
         block.speed_limit_kmh = 30.0  # 30 km/h limit
 
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_OVERSPEED_TEST", consist=[car], max_speed=100.0)
         train.state = TrainState.RUNNING_MOVING
         train.position = make_train_position(
@@ -200,7 +200,7 @@ class TestRaceConditionFix:
         block.length_cm = 1000.0
         block.speed_limit_kmh = 30.0  # 30 km/h limit
 
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_EB_TEST", consist=[car], max_speed=100.0)
         train.state = TrainState.RUNNING_MOVING
         train.position = make_train_position(
@@ -238,7 +238,7 @@ class TestRaceConditionFix:
         """
         network = RailwayNetwork()
 
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_NO_CAB_TEST", consist=[car], max_speed=60.0)
         train.state = TrainState.RUNNING_MOVING
         network.add_train(train)
@@ -357,7 +357,7 @@ class TestTrainControllerBrakingNotches:
         (single source of truth).
         """
         network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=100.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=100.0)
         train = Train(train_id="TRAIN_SINGLETON_TEST", consist=[car], max_speed=60.0)
         network.add_train(train)
 
@@ -383,7 +383,7 @@ class TestTrainDebugLogging:
     def test_train_controller_logs_power_off_state(self, caplog):
         """TrainController.tick should log when power is off."""
         network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_LOG_1", consist=[car], max_speed=60.0)
         network.add_train(train)
 
@@ -424,7 +424,7 @@ class TestTrainClearancePrecisionBugFix:
         block = network.create_block("B1", "Block 1")
         block.length_cm = 40.0
 
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=10.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=10.0)
         train = Train(train_id="TRAIN_CLEARANCE", consist=[car], max_speed=60.0)
         train.current_path = [(0, 0, Direction.EAST), (1, 0, Direction.EAST)]
 

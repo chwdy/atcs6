@@ -1309,7 +1309,7 @@ class RailwayNetwork:
     def _get_train_length_cm(self, train: Train) -> float:
         """Get train length in cm."""
         if train.consist:
-            total_length = sum(car.length for car in train.consist)
+            total_length = sum(car.length_cm for car in train.consist)
             return total_length
         return DEFAULT_TRAIN_LENGTH_CM
 

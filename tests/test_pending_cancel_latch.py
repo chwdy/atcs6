@@ -42,7 +42,7 @@ def _build_three_block_network() -> RailwayNetwork:
 def test_activate_emergency_with_path_sets_pending_cancel():
     """Emergency activation while a path is active writes the EB latch."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_EB", consist=[car], max_speed=60.0)
     network.add_train(train)
     network.place_train(train, 0, 0, direction=Direction.EAST)
@@ -87,7 +87,7 @@ def test_activate_emergency_with_path_sets_pending_cancel():
 def test_activate_emergency_without_path_does_not_set_latch():
     """Emergency activation with no live path: no pending_path_cancel_request."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_EB_NOPATH", consist=[car], max_speed=60.0)
     network.add_train(train)
     network.place_train(train, 0, 0, direction=Direction.EAST)
@@ -114,7 +114,7 @@ def test_pending_cancel_latch_survives_while_moving():
     is durable across reads and not cleared by any incidental call.
     """
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_MOV", consist=[car], max_speed=60.0)
     network.add_train(train)
     network.place_train(train, 0, 0, direction=Direction.EAST)
@@ -156,7 +156,7 @@ def test_pending_cancel_latch_survives_while_moving():
 def test_activate_emergency_idempotent_rejects_duplicate():
     """When eb_active is already True, activate_emergency_cmd() is rejected."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_DUP", consist=[car], max_speed=60.0)
     network.add_train(train)
     network.place_train(train, 0, 0, direction=Direction.EAST)
@@ -176,7 +176,7 @@ def test_activate_emergency_idempotent_rejects_duplicate():
 def test_set_pending_route_abort_sets_abort_latch_without_path():
     """_set_pending_route_abort writes pending_route_abort = True even with no live path."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_ABORT", consist=[car], max_speed=60.0)
     network.add_train(train)
     network.place_train(train, 0, 0, direction=Direction.EAST)
@@ -222,7 +222,7 @@ def test_set_pending_route_abort_inclusive_cancel_when_path_exists():
     pending_path_cancel_request(initiator="operator_cancelled") when a live
     path exists."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_ABORT_PATH", consist=[car], max_speed=60.0)
     network.add_train(train)
     network.place_train(train, 0, 0, direction=Direction.EAST)
@@ -270,12 +270,12 @@ def test_route_deactivate_writes_latches_per_assigned_train():
     network = _build_three_block_network()
 
     # Train 1 has a live path (via fake dispatcher); train 2 does not.
-    car1 = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car1 = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train1 = Train(train_id="T_DEAC_PATH", consist=[car1], max_speed=60.0)
     network.add_train(train1)
     network.place_train(train1, 0, 0, direction=Direction.EAST)
 
-    car2 = TrainCar(car_id="C2", car_type="LOCOMOTIVE", length=20.0)
+    car2 = TrainCar(car_id="C2", car_type="LOCOMOTIVE", length_cm=20.0)
     train2 = Train(train_id="T_DEAC_NOPATH", consist=[car2], max_speed=60.0)
     network.add_train(train2)
     network.place_train(train2, 5, 0, direction=Direction.WEST)

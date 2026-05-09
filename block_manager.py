@@ -3,7 +3,7 @@ Block State Manager - single source of truth for block occupancy.
 
 `BlockManager` is the database-style lock manager for block resources and the
 single serialization point for atomic block acquisition. It is the sole mutator
-for `Block` physical state (`occupied_by`, `_is_caution`, `caution_direction`)
+for `Block` physical state (`occupied_by`, `_is_caution`, `caution_exit_edge`)
 and for path-reservation primitives (`reserved_by_path`, `reserved_direction`,
 `reserved_for_train`).
 
@@ -207,7 +207,7 @@ class BlockManager:
                 return False
             block.occupied_by = train_id
             block._is_caution = False
-            block.caution_direction = None
+            block.caution_exit_edge = None
             # Same-train reservation is consumed by clean entry.
             block.reservation = None
             self._record_history(
@@ -218,7 +218,7 @@ class BlockManager:
         # FREE or CAUTION -> OCCUPIED. Clean entry clears stale caution.
         block.occupied_by = train_id
         block._is_caution = False
-        block.caution_direction = None
+        block.caution_exit_edge = None
         self._record_history(
             block_id, "occupy", prior_state, BlockState.OCCUPIED, train_id
         )
@@ -298,7 +298,7 @@ class BlockManager:
 
         block.occupied_by = None
         block._is_caution = False
-        block.caution_direction = None
+        block.caution_exit_edge = None
         block.reservation = None
 
         self._record_history(
@@ -496,7 +496,7 @@ class BlockManager:
 
         - `completed=True` means the path completed with the train fully
           stopped at the terminal; this method may additionally force-clear
-          `_is_caution` and `caution_direction` on still-CAUTION matching
+          `_is_caution` and `caution_exit_edge` on still-CAUTION matching
           owned blocks because the train is no longer moving.
         - `completed=False` means cancellation mid-flight; physical CAUTION
           state is left untouched so the safety margin survives until the
@@ -520,7 +520,7 @@ class BlockManager:
             block.release_path_reservation()
             if completed and block._is_caution:
                 block._is_caution = False
-                block.caution_direction = None
+                block.caution_exit_edge = None
             self._record_history(
                 block_id,
                 "release_reservation",
@@ -545,7 +545,7 @@ class BlockManager:
         - If `block.occupied_by != train_id`, leave the block unchanged and
           emit a one-shot diagnostic.
         - Otherwise: clear `occupied_by`, set `_is_caution = True`, set
-          `caution_direction = direction`, then call
+          `caution_exit_edge = direction`, then call
           `_reevaluate_caution_blocks()` to cascade any ready-to-FREE blocks.
         """
         block = self._block_registry.get(block_id)
@@ -563,7 +563,7 @@ class BlockManager:
         prior_state = block.state
         block.occupied_by = None
         block._is_caution = True
-        block.caution_direction = direction
+        block.caution_exit_edge = direction
         self._record_history(
             block_id,
             "tail_vacated",
@@ -595,12 +595,12 @@ class BlockManager:
         Per design_new.md "`on_block_tail_vacated()` behaviour (directional
         CAUTION evaluation)": for each block currently in CAUTION, follow
         live tile connectivity from the block's exit tile in
-        ``caution_direction`` through any intervening switch (using the
+        ``caution_exit_edge`` through any intervening switch (using the
         current ``Switch.position``) until the next reachable block resource is
         found. If that next reachable block is OCCUPIED, keep caution. If it
         is FREE/RESERVED/CAUTION, or if no reachable block exists at all,
         clear caution by writing ``_is_caution = False`` and
-        ``caution_direction = None``.
+        ``caution_exit_edge = None``.
 
         When the manager has no network back-reference (early bootstrap or
         unit tests), the only safe behaviour is to clear caution entries that
@@ -612,7 +612,7 @@ class BlockManager:
             if not block._is_caution:
                 continue
             # Direction never recorded: nothing to protect.
-            if block.caution_direction is None:
+            if block.caution_exit_edge is None:
                 block._is_caution = False
                 cleared.append(block.block_id)
                 continue
@@ -620,16 +620,16 @@ class BlockManager:
             if self.network is None:
                 continue
             next_block = self._next_block_along_direction(
-                block, block.caution_direction
+                block, block.caution_exit_edge
             )
             if next_block is None:
                 block._is_caution = False
-                block.caution_direction = None
+                block.caution_exit_edge = None
                 cleared.append(block.block_id)
                 continue
             if next_block.state != BlockState.OCCUPIED:
                 block._is_caution = False
-                block.caution_direction = None
+                block.caution_exit_edge = None
                 cleared.append(block.block_id)
 
         for block_id in cleared:

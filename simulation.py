@@ -535,7 +535,7 @@ class SimulationController:
         car = TrainCar(
             car_id=f"{train_id}_loco",
             car_type=(train_type or "LOCOMOTIVE"),
-            length=float(length_cm),
+            length_cm=float(length_cm),
             max_speed=float(max_speed_kmh),
         )
 

@@ -102,8 +102,10 @@ class RouteExecutionState:
     # Planning cursor: index of the task currently armed for create/extend.
     target_waypoint_index: int = 0
     # Effective traversal direction for the current directed walk.
-    # `1` means forward, `-1` means reverse.
-    direction: int = 1
+    # `1` means forward, `-1` means reverse. Named `signed_direction` to keep
+    # it distinct from the `"forward"`/`"reverse"` string-form direction
+    # carried by `ResolvedNextTaskProjection.direction` and `RouteTask.task_direction`.
+    signed_direction: int = 1
     # Latest route_version successfully reconciled into this run.
     route_version_seen: int = 1
     # Per-run task table, parallel to Route.tasks. Allocated when the run is
@@ -119,10 +121,9 @@ class RouteExecutionState:
     resolved_platform_id: Optional[str] = None
     # v1 latch consumed by Phase-1 route-deviation cleanup.
     path_cancelled: bool = False
-    # Per-run diagnostic status. The string `route_state` mirrors the
-    # `current_route_status.state` field for callers that read it as a string,
-    # and `last_cancellation_kind` is stored alongside.
-    route_state: str = "RUNNING"
+    # Per-run diagnostic status. Consumers that need a string read the
+    # `current_route_status.value` enum value directly; there is no parallel
+    # mirror field.
     current_route_status: RouteRunStatus = RouteRunStatus.RUNNING
     last_cancellation_kind: Optional[PathCancellationKind] = None
     # Per-run error tracking. Per design_new.md "Canonical ownership split"
@@ -147,7 +148,7 @@ class RouteExecutionState:
         - ``ROUND_TRIP``: forward past the last task reflects to
           ``task_count - 2`` (second-to-last); reverse past the first task
           reflects to index ``1`` (second). The appended entry carries no
-          ``direction`` field; ``RouteRun.direction`` is updated by
+          ``direction`` field; ``RouteRun.signed_direction`` is updated by
           ``_find_next_task_target(...)``.
 
         ``route`` may be ``None`` if the caller cannot resolve the shared
@@ -168,7 +169,7 @@ class RouteExecutionState:
         if route.mode == RouteMode.CIRCULAR:
             next_index = (last_index + 1) % task_count
         elif route.mode == RouteMode.ROUND_TRIP:
-            if self.direction >= 0:
+            if self.signed_direction >= 0:
                 if last_index >= task_count - 1:
                     next_index = max(0, task_count - 2)
                 else:
@@ -481,7 +482,6 @@ class RouteExecutor:
             exec_state.path_cancelled = False
             if exec_state.current_route_status == RouteRunStatus.DEVIATED:
                 exec_state.current_route_status = RouteRunStatus.RUNNING
-            exec_state.route_state = "RUNNING"
 
         # ---------- Step 2: dwell-complete timer check -----------------------
         if controller.state == TrainState.RUNNING_AT_STATION:
@@ -803,13 +803,12 @@ class RouteExecutor:
 
         # Update direction if projection says so.
         if projection.direction == "forward":
-            exec_state.direction = 1
+            exec_state.signed_direction = 1
         elif projection.direction == "reverse":
-            exec_state.direction = -1
+            exec_state.signed_direction = -1
 
         # Status update: always overwrite stale DEVIATED.
         exec_state.current_route_status = RouteRunStatus.RUNNING
-        exec_state.route_state = "RUNNING"
         exec_state.waiting_for_path = False
 
         # Effective departure mode.
@@ -850,7 +849,6 @@ class RouteExecutor:
         route = self.route_registry.get(route_id)
 
         exec_state.current_route_status = RouteRunStatus.FINISHED
-        exec_state.route_state = "FINISHED"
         exec_state.target_waypoint_index = exec_state.current_waypoint_index
 
         if route is not None:
@@ -959,7 +957,6 @@ class RouteExecutor:
             return
         exec_state.path_cancelled = True
         exec_state.current_route_status = RouteRunStatus.DEVIATED
-        exec_state.route_state = "DEVIATED"
         if initiator is not None:
             kind = _initiator_to_cancellation_kind(initiator)
             if kind is not None:
@@ -1123,7 +1120,6 @@ class RouteExecutor:
 
         # Mark DEACTIVATED and move to the historical archive.
         exec_state.current_route_status = RouteRunStatus.DEACTIVATED
-        exec_state.route_state = "DEACTIVATED"
         self._archive_run(exec_state)
 
     # ------------------------------------------------------------------ helper
@@ -1191,7 +1187,8 @@ class RouteExecutor:
     ) -> bool:
         """Advance per-train task index based on route mode.
 
-        Mutates `exec_state.current_waypoint_index` and `exec_state.direction`.
+        Mutates `exec_state.current_waypoint_index` and
+        `exec_state.signed_direction`.
         """
         task_count = route.get_task_count()
         if task_count == 0:
@@ -1210,14 +1207,14 @@ class RouteExecutor:
             return True
 
         # ROUND_TRIP
-        exec_state.current_waypoint_index += exec_state.direction
+        exec_state.current_waypoint_index += exec_state.signed_direction
         if exec_state.current_waypoint_index >= task_count:
-            exec_state.direction = -1
+            exec_state.signed_direction = -1
             exec_state.current_waypoint_index = task_count - 2
             if exec_state.current_waypoint_index < 0:
                 exec_state.current_waypoint_index = 0
         elif exec_state.current_waypoint_index < 0:
-            exec_state.direction = 1
+            exec_state.signed_direction = 1
             exec_state.current_waypoint_index = 1
             if exec_state.current_waypoint_index >= task_count:
                 exec_state.current_waypoint_index = 0

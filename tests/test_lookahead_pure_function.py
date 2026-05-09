@@ -36,7 +36,7 @@ def _build_three_block_network() -> RailwayNetwork:
 def test_received_path_plan_reads_live_from_dispatcher():
     """create_path -> controller.received_path_plan returns the new path on next read."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T1", consist=[car], max_speed=60.0)
     network.add_train(train)
     from enums import Direction
@@ -71,7 +71,7 @@ def test_received_path_plan_reads_live_from_dispatcher():
 def test_lookahead_reflects_new_path_immediately():
     """create_path -> controller.lookahead recomputes and reflects new authority."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_LA", consist=[car], max_speed=60.0)
     network.add_train(train)
     from enums import Direction
@@ -116,7 +116,7 @@ def test_received_path_plan_returns_none_after_path_status_changes():
     controller's received_path_plan returns None on the next read with no
     setter call."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_END", consist=[car], max_speed=60.0)
     network.add_train(train)
     from enums import Direction

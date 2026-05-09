@@ -108,7 +108,7 @@ class TestExtendPathBug:
     @pytest.fixture
     def demo_train(self, simple_network):
         """Create and place a demo train."""
-        car = TrainCar(car_id="DEMO_CAR_01", car_type="LOCOMOTIVE", length=40.0)
+        car = TrainCar(car_id="DEMO_CAR_01", car_type="LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="DEMO_TRAIN", consist=[car], max_speed=60.0)
         simple_network.add_train(train)
         simple_network.place_train(train, 0, 0, Direction.EAST)
@@ -449,7 +449,7 @@ class TestExtendPathAtoSync:
     @pytest.fixture
     def train_on_network(self, three_block_network):
         """Place a train on block A and occupy it."""
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=40.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="TRAIN_SYNC", consist=[car], max_speed=60.0)
         three_block_network.add_train(train)
         three_block_network.place_train(train, 0, 0, Direction.EAST)

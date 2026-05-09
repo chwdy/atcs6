@@ -495,7 +495,7 @@ def register(app, state: AppState) -> None:
                 exec_state = route_executor.execution_states.get(train_id)
                 if exec_state and exec_state.route_id == route.route_id:
                     status["current_waypoint_index"] = exec_state.current_waypoint_index
-                    status["direction"] = exec_state.direction
+                    status["direction"] = exec_state.signed_direction
                     status["resolved_platform_id"] = exec_state.resolved_platform_id
                     status["at_platform"] = (
                         exec_state.arrived_at_platform_time is not None

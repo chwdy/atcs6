@@ -135,15 +135,15 @@ class PhysicsSpanUpdate:
 class ResourceEvent:
     """A single entered or tail-vacated resource observation.
 
-    `direction` is required for block tail-vacate events (the vacated block's
-    forward `exit_edge` for the traversal by which the train left the block)
+    `exit_edge` is required for block tail-vacate events (the vacated block's
+    forward exit edge for the traversal by which the train left the block)
     and is `None` for switch tail-vacate events and for entered-resource events.
     """
 
     sequence_index: Optional[int]
     resource_type: Literal["block", "switch"]
     resource_id: str
-    direction: Optional[str] = None  # "N" / "E" / "S" / "W"
+    exit_edge: Optional[str] = None  # "N" / "E" / "S" / "W"
     block_id: Optional[str] = None
 
 

@@ -93,7 +93,7 @@ class RouteTargetResolver:
         if task is None:
             return None
 
-        direction_str = "forward" if exec_state.direction >= 0 else "reverse"
+        direction_str = "forward" if exec_state.signed_direction >= 0 else "reverse"
 
         if task.task_kind == "dwell":
             return ResolvedNextTaskProjection(
@@ -113,7 +113,7 @@ class RouteTargetResolver:
             )
 
         resolved_dir = self.resolve_task_direction(
-            train, target_block, task.task_direction, exec_state.direction
+            train, target_block, task.task_direction, exec_state.signed_direction
         )
 
         resolved = ResolvedRouteTarget(

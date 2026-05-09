@@ -44,7 +44,7 @@ class TestTrainPlacementOccupancy:
         network.blocks["BLK_001"] = block
         block.tiles = [(0, 0)]
         track.block_section_id = "BLK_001"
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         assert block.state == BlockState.FREE
         network.add_train(train)
@@ -60,7 +60,7 @@ class TestTrainPlacementOccupancy:
         block = Block(block_id="BLK_001", name="Long Block")
         network.blocks["BLK_001"] = block
         block.tiles = [(0, 0), (1, 0), (2, 0)]
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_03", consist=[car], max_speed=60.0)
         network.add_train(train)
         network.place_train(train, 1, 0, Direction.EAST)
@@ -77,7 +77,7 @@ class TestTrainPlacementValidation:
         network.create_block_with_tracks(
             "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
         )
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
         network.place_train(train, 1, 0, Direction.EAST)
@@ -90,7 +90,7 @@ class TestTrainPlacementValidation:
         network.create_block_with_tracks(
             "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
         )
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=80.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=80.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
         network.place_train(train, 1, 0, Direction.EAST)
@@ -102,7 +102,7 @@ class TestTrainPlacementValidation:
         for x in range(2):
             network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
         network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=100.0)
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=120.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=120.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
         with pytest.raises(ValueError, match="no track at"):
@@ -118,7 +118,7 @@ class TestTrainOccupiedTilesRich:
         network.create_block_with_tracks(
             "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
         )
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
         network.place_train(train, 1, 0, Direction.EAST)

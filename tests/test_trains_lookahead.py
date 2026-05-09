@@ -233,7 +233,7 @@ class TestTrainControlPanelDataBugFix:
         from simulation import build_network_payload
 
         network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.assigned_path_id = "PATH_1"
         network.add_train(train)
@@ -271,7 +271,7 @@ class TestEmergencyResetButtonDataBugFix:
         from simulation import build_network_payload
 
         network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         network.add_train(train)
 
@@ -303,7 +303,7 @@ class TestTrainAssignedPathSerializationBugFix:
         controller.current_speed_kmh, not controller.current_speed_kmh.
         """
         network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_LOG_2", consist=[car], max_speed=60.0)
         network.add_train(train)
 

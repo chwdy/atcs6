@@ -186,7 +186,7 @@ class TestPathPrepending:
             track.block_section_id = "BLK_1"
             network.add_track(track)
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         train.position = make_train_position((0, 0), Direction.EAST)
         path_tiles = [
@@ -206,7 +206,7 @@ class TestPathPrepending:
             track.block_section_id = "BLK_1"
             network.add_track(track)
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         train.position = make_train_position((0, 0), Direction.EAST)
         path_tiles = [
@@ -230,7 +230,7 @@ class TestPathPrepending:
             network.add_track(track)
         network.blocks["BLK_A"] = Block(block_id="BLK_A")
         network.blocks["BLK_B"] = Block(block_id="BLK_B")
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         train.position = make_train_position((0, 0), Direction.EAST)
         path_tiles = [
@@ -248,7 +248,7 @@ class TestPathPrepending:
         track.block_section_id = "BLK_1"
         network.add_track(track)
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         train.position = make_train_position((0, 0), Direction.EAST)
         result = prepare_path_for_train(network, train, [])

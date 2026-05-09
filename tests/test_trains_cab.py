@@ -50,7 +50,7 @@ class TestCabSwitchEndPositionsBugFix:
         for x in range(3):
             network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
 
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=80.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=80.0)
         train = Train(train_id="CAB_SWAP_TEST", consist=[car])
         network.add_train(train)
         network.place_train(train, 1, 0, Direction.EAST)
@@ -152,7 +152,7 @@ class TestCabSwitchEntryEdgeFlipBugFix:
         for x in range(-2, 4):
             network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
 
-        car = TrainCar("CAB_EDGE_TEST", "LOCOMOTIVE", length=length_cm)
+        car = TrainCar("CAB_EDGE_TEST", "LOCOMOTIVE", length_cm=length_cm)
         train = Train(train_id="CAB_EDGE_TEST", consist=[car])
         network.add_train(train)
         network.place_train(train, head_x, 0, Direction.EAST)
@@ -251,7 +251,7 @@ class TestSetCabDoubleFlipBugFix:
         for x in range(5):
             network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
 
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=80.0, max_speed=80.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=80.0, max_speed=80.0)
         train = Train(train_id="FLIP_TEST", consist=[car], max_speed=80.0)
         network.add_train(train)
         network.place_train(train, 1, 0, Direction.EAST)
@@ -273,7 +273,7 @@ class TestSetCabDoubleFlipBugFix:
         for x in range(3):
             network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
 
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=20.0, max_speed=80.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=20.0, max_speed=80.0)
         train = Train(train_id="FLIP_TEST_1T", consist=[car], max_speed=80.0)
         network.add_train(train)
         network.place_train(train, 1, 0, Direction.EAST)
@@ -405,7 +405,7 @@ class TestSetCabDoubleFlipBugFix:
         for x in range(5):
             network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
 
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=80.0, max_speed=80.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=80.0, max_speed=80.0)
         train = Train(train_id="FIRST_CAB", consist=[car], max_speed=80.0)
         network.add_train(train)
         network.place_train(train, 1, 0, Direction.EAST)

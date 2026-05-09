@@ -210,8 +210,8 @@ def train():
         priority=5,
     )
     train.consist = [
-        TrainCar(car_id="CAR1", car_type="LOCOMOTIVE", length=20.0),
-        TrainCar(car_id="CAR2", car_type="PASSENGER", length=25.0),
+        TrainCar(car_id="CAR1", car_type="LOCOMOTIVE", length_cm=20.0),
+        TrainCar(car_id="CAR2", car_type="PASSENGER", length_cm=25.0),
     ]
     return train
 
@@ -849,7 +849,7 @@ class TestATODirectionDetection:
 
     def _create_stopped_train(self, network, tile, facing, block_id):
         """Create a stopped train at the given tile with facing direction."""
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TEST_TRAIN", consist=[car], max_speed=80.0)
         train.position = make_train_position(
             tile, facing_direction=facing, occupied_blocks=[block_id]

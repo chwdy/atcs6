@@ -18,7 +18,7 @@ Key concepts:
 v1 model:
 - `state` is computed from underlying primitive fields. Priority order:
   OCCUPIED > CAUTION > RESERVED > FREE.
-- Underlying primitives: `occupied_by`, `_is_caution`, `caution_direction`,
+- Underlying primitives: `occupied_by`, `_is_caution`, `caution_exit_edge`,
   `reserved_by_path`, `reserved_direction`, `reserved_for_train`, `disabled`.
 - `Block` is a data container; `BlockManager` is the sole mutator for physical
   and CAUTION transitions.
@@ -105,7 +105,7 @@ class Block(TrackResource):
     # derived from these (see below).
     occupied_by: Optional[str] = None  # Train ID currently physically present
     _is_caution: bool = False  # Physical safety-margin flag
-    caution_direction: Optional[str] = None  # Direction of departing train (N/E/S/W)
+    caution_exit_edge: Optional[str] = None  # Direction of departing train (N/E/S/W)
     # Single Optional reservation record. The reserved_by_path,
     # reserved_for_train, reserved_direction reads are derived @properties below.
     reservation: Optional[BlockReservation] = None
@@ -193,7 +193,7 @@ class Block(TrackResource):
             "state": self.state.value,
             "occupied_by": self.occupied_by,
             "_is_caution": self._is_caution,
-            "caution_direction": self.caution_direction,
+            "caution_exit_edge": self.caution_exit_edge,
             "reservation": (
                 self.reservation.to_dict() if self.reservation is not None else None
             ),
@@ -260,7 +260,7 @@ class Block(TrackResource):
             speed_limit_kmh=data.get("speed_limit_kmh", data.get("max_speed_kmh")),
             occupied_by=data.get("occupied_by"),
             _is_caution=bool(data.get("_is_caution", False)),
-            caution_direction=data.get("caution_direction"),
+            caution_exit_edge=data.get("caution_exit_edge"),
             reservation=reservation,
             disabled=bool(data.get("disabled", False)),
             current_voltage=float(data.get("current_voltage", 0.0)),
@@ -343,7 +343,7 @@ class Block(TrackResource):
         self.occupied_by = train_id
         # Clean physical entry overrides any prior caution metadata.
         self._is_caution = False
-        self.caution_direction = None
+        self.caution_exit_edge = None
         return True
 
     def release(self) -> None:
@@ -354,7 +354,7 @@ class Block(TrackResource):
         """
         self.occupied_by = None
 
-    def set_to_caution(self, caution_direction: Optional[str] = None) -> None:
+    def set_to_caution(self, caution_exit_edge: Optional[str] = None) -> None:
         """Mark this block as in CAUTION with an optional direction stamp.
 
         The state machine treats CAUTION as an independent safety state, so
@@ -362,8 +362,8 @@ class Block(TrackResource):
         state field.
         """
         self._is_caution = True
-        if caution_direction is not None:
-            self.caution_direction = caution_direction
+        if caution_exit_edge is not None:
+            self.caution_exit_edge = caution_exit_edge
 
     def clear(self) -> None:
         """Clear the CAUTION flag and its direction.
@@ -372,7 +372,7 @@ class Block(TrackResource):
         independent concerns owned by separate manager calls.
         """
         self._is_caution = False
-        self.caution_direction = None
+        self.caution_exit_edge = None
 
     # ========================================================================
     # Path Reservation Helpers (Internal)
@@ -410,7 +410,7 @@ class Block(TrackResource):
 
         Called only by `BlockManager.release_path_block_reservations(...)`.
         Clears `block.reservation` with no state guard. MUST NOT touch
-        `caution_direction` or `_is_caution` (those are physical-lifecycle
+        `caution_exit_edge` or `_is_caution` (those are physical-lifecycle
         fields owned by `BlockManager`).
         """
         self.reservation = None
