@@ -99,7 +99,6 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/blocks", methods=["POST"])
     def create_block():
-        """Create a new block"""
         data = request.json or {}
         block_id = data.get("block_id") or f"BLK_{uuid.uuid4().hex[:8].upper()}"
         name = data.get("name", "")
@@ -110,8 +109,10 @@ def register(app, state: AppState) -> None:
                 block.length_cm = float(data["length_cm"])
             if "min_radius_cm" in data:
                 block.min_radius_cm = data["min_radius_cm"]
-            if "max_speed_kmh" in data:
-                block.max_speed_kmh = data["max_speed_kmh"]
+            if "speed_limit_kmh" in data:
+                block.speed_limit_kmh = data["speed_limit_kmh"]
+            elif "max_speed_kmh" in data:
+                block.speed_limit_kmh = data["max_speed_kmh"]
             return jsonify(block.to_dict())
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -171,8 +172,10 @@ def register(app, state: AppState) -> None:
             block.length_cm = float(data["length_cm"])
         if "min_radius_cm" in data:
             block.min_radius_cm = data["min_radius_cm"]
-        if "max_speed_kmh" in data:
-            block.max_speed_kmh = data["max_speed_kmh"]
+        if "speed_limit_kmh" in data:
+            block.speed_limit_kmh = data["speed_limit_kmh"]
+        elif "max_speed_kmh" in data:
+            block.speed_limit_kmh = data["max_speed_kmh"]
         if "state" in data:
             # Convert string to BlockState enum and use set_block_state for proper signal updates
             state_str = data["state"].lower()
@@ -244,7 +247,7 @@ def register(app, state: AppState) -> None:
             "positions": [[0,0], [1,0], [2,0]],
             "name": "Main Line",
             "length_cm": 150.0,
-            "max_speed_kmh": 80.0
+            "speed_limit_kmh": 80.0
         }
         """
         data = request.json
@@ -265,7 +268,9 @@ def register(app, state: AppState) -> None:
                 positions=positions,
                 name=data.get("name", ""),
                 length_cm=data.get("length_cm", 0.0),
-                max_speed_kmh=data.get("max_speed_kmh"),
+                speed_limit_kmh=data.get(
+                    "speed_limit_kmh", data.get("max_speed_kmh")
+                ),
             )
             return jsonify(block.to_dict())
         except ValueError as e:

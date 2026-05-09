@@ -839,9 +839,14 @@ def register(app, state: AppState) -> None:
 
         current_route_id = train.assigned_route_id
 
+        route_executor = (
+            state.sim_controller.route_executor if state.sim_controller else None
+        )
+        route_registry = route_executor.route_registry if route_executor else {}
+
         if route_id is None:
             if current_route_id:
-                current_route = state.network.routes.get(current_route_id)
+                current_route = route_registry.get(current_route_id)
                 if current_route:
                     current_route.unassign_train(train_id)
             train.assigned_route_id = None
@@ -854,9 +859,6 @@ def register(app, state: AppState) -> None:
             if controller.ato_running:
                 controller.ato_stop()
 
-            route_executor = (
-                state.sim_controller.route_executor if state.sim_controller else None
-            )
             if route_executor:
                 route_executor.execution_states.pop(train_id, None)
 
@@ -871,7 +873,7 @@ def register(app, state: AppState) -> None:
                         else 0.0
                     )
                     temp_route_id = f"TEMP_{train_id}_{int(simulation_time)}"
-                    while temp_route_id in state.network.routes:
+                    while temp_route_id in route_registry:
                         temp_route_id = f"{temp_route_id}_X"
 
                     temp_route = Route(
@@ -889,7 +891,8 @@ def register(app, state: AppState) -> None:
                     )
                     temp_route.assign_train(train_id)
                     temp_route.activate(simulation_time)
-                    state.network.routes[temp_route_id] = temp_route
+                    if route_executor:
+                        route_executor.register_route(temp_route)
                     train.assigned_route_id = temp_route_id
 
                     if route_executor:
@@ -914,7 +917,7 @@ def register(app, state: AppState) -> None:
                 {"status": "success", **_train_to_dict(train, state.network)}
             )
 
-        route = state.network.routes.get(route_id)
+        route = route_registry.get(route_id)
         if not route:
             return jsonify({"error": "Route not found"}), 404
 
@@ -929,16 +932,13 @@ def register(app, state: AppState) -> None:
             )
 
         if current_route_id and current_route_id != route_id:
-            previous_route = state.network.routes.get(current_route_id)
+            previous_route = route_registry.get(current_route_id)
             if previous_route:
                 previous_route.unassign_train(train_id)
 
         route.assign_train(train_id)
         train.assigned_route_id = route_id
 
-        route_executor = (
-            state.sim_controller.route_executor if state.sim_controller else None
-        )
         if route_executor:
             exec_state = route_executor.execution_states.get(train_id)
             if not exec_state or exec_state.route_id != route_id:
@@ -984,7 +984,14 @@ def register(app, state: AppState) -> None:
         if not train.assigned_route_id:
             return jsonify({"error": "Train has no assigned route"}), 400
 
-        route = state.network.routes.get(train.assigned_route_id)
+        route_executor = (
+            state.sim_controller.route_executor if state.sim_controller else None
+        )
+        route = (
+            route_executor.route_registry.get(train.assigned_route_id)
+            if route_executor
+            else None
+        )
         if not route:
             return jsonify({"error": "Assigned route not found"}), 404
 

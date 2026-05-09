@@ -492,8 +492,8 @@ class TestSetCabDoubleFlipBugFix:
         train, controller = self._setup_multi_tile_train(network)
 
         # Simulate: train was running, ATO stopped, route cancelled -> IDLE
-        controller.state = TrainState.IDLE
-        train.state = TrainState.IDLE
+        controller.state = TrainState.READY
+        train.state = TrainState.READY
         controller.ato_running = False
         controller.current_speed_kmh = 0.0
 

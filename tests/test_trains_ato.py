@@ -96,8 +96,8 @@ class TestAtoStopButtonBugFix:
 
         controller.tick(0.1)
 
-        assert controller.state == TrainState.STANDBY
-        assert controller.state == TrainState.STANDBY
+        assert controller.state == TrainState.READY
+        assert controller.state == TrainState.READY
         assert controller.handle_position == HandlePosition.N
 
 
@@ -151,7 +151,7 @@ class TestAtoAutoCabSelectionBugFix:
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.state = TrainState.STANDBY
+        controller.state = TrainState.READY
         controller.active_cab = None
 
         controller.tick(0.1)
@@ -216,7 +216,7 @@ class TestAtoDepartCallsAtoGo:
         controller.power_on = True
         controller.control_mode = "ato"
         controller.active_cab = "A"
-        controller.state = TrainState.STANDBY
+        controller.state = TrainState.READY
         controller.ato_running = False
 
 
@@ -264,7 +264,7 @@ class TestAtoDepartCallsAtoGo:
         controller.tick(0.1)
 
         # Now should transition to STANDBY
-        assert controller.state == TrainState.STANDBY
+        assert controller.state == TrainState.READY
 
     def test_ato_go_starts_ato(self, network):
         """
@@ -285,7 +285,7 @@ class TestAtoDepartCallsAtoGo:
         controller.power_on = True
         controller.control_mode = "ato"
         controller.active_cab = "A"
-        controller.state = TrainState.STANDBY
+        controller.state = TrainState.READY
         controller.ato_running = False
 
 
@@ -673,32 +673,6 @@ class TestAtoDestinationStoppingAfterPathCompletes:
             f"Train stopped at destination should stop ATO or be AT_STATION. "
             f"ato_running={controller.ato_running}, state={controller.state}"
         )
-
-
-
-
-class TestAtoInfoPersistenceWithoutActivePath:
-    """
-    Comprehensive tests for onboard ATO info persistence fixed in 2026-02-08.
-
-    BUG:
-    `TrainController._calculate_ato_info()` returned None when `assigned_path_id`
-    was cleared, even if destination intent (`ato_destination_block_id`) still
-    existed. This caused panels to show "No path"/missing destination while the
-    onboard controller should still expose destination context.
-
-    FIX:
-    Build `ato_info` from destination block even without active path ID.
-    """
-
-
-    def test_simulation_controller_inherits_destination_from_train_field(self, network):
-        """v1: ato_destination_block_id is a derived property from the
-        dispatcher's active path; Train.ato_destination_block_id only
-        seeds inheritance, but simulation.py inherit-write currently
-        targets the now-read-only controller property (regression).
-        """
-        pytest.skip("v1: simulation.py still writes to read-only controller.ato_destination_block_id (Bucket C regression)")
 
 
 

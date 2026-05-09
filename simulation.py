@@ -1,13 +1,13 @@
 """
-Simulation Controller - Train Movement and Control Orchestration
+Simulation Controller - Train Movement and Control
 
 Definition:
-This module provides the SimulationController class which orchestrates train
+This module provides the SimulationController class which runs the train
 simulation using the TrainController + TrainPhysics architecture, following
 the per-train three-phase transaction model defined in design_new.md.
 
 Architecture:
-    SimulationController (Orchestrator)
+    SimulationController
             |
             v
     +-----------------+     +---------------+
@@ -104,14 +104,32 @@ class SimulationController:
 
         # Wire BlockManager so it can report fatal physical-entry conflicts
         # via enter_failed_runtime(...) and read network topology directly.
-        # Per design line 222, expose `block_manager` on SimulationController
-        # as the canonical access point for external callers.
+        # Per design_new.md, expose `block_manager`, `switch_manager`, and
+        # `resource_coordinator` on SimulationController as the canonical
+        # access points for external callers.
+        if self.network is not None:
+            ensure_managers = getattr(
+                self.network, "_ensure_resource_managers", None
+            )
+            if callable(ensure_managers):
+                ensure_managers()
         self.block_manager = (
             getattr(self.network, "block_manager", None) if self.network is not None else None
+        )
+        self.switch_manager = (
+            getattr(self.network, "switch_manager", None) if self.network is not None else None
+        )
+        self.resource_coordinator = (
+            getattr(self.network, "resource_coordinator", None)
+            if self.network is not None
+            else None
         )
         if self.block_manager is not None:
             self.block_manager.simulation_controller = self
             self.block_manager.network = self.network
+        if self.switch_manager is not None:
+            self.switch_manager.simulation_controller = self
+            self.switch_manager.network = self.network
 
         # Wire every Switch in the network.
         if self.network is not None and getattr(self.network, "switches", None):
@@ -265,14 +283,14 @@ class SimulationController:
         if active_path_id is not None:
             self.path_dispatcher.cancel_path(
                 active_path_id,
-                cancellation_kind=payload.cancellation_kind,
+                initiator=payload.initiator,
                 reason=payload.reason,
             )
         else:
             logger.debug(
-                "latched cancel for %s kind=%s skipped: no active path",
+                "latched cancel for %s initiator=%s skipped: no active path",
                 train.train_id,
-                payload.cancellation_kind,
+                payload.initiator,
             )
 
         controller.pending_path_cancel_request = None
@@ -280,48 +298,50 @@ class SimulationController:
     def _consume_pending_route_abort(
         self, controller: TrainController, train: Train
     ) -> None:
-        """Consume pending_route_abort once any active path has been cleared.
+        """Consume pending_route_abort once the inclusive cancel has committed.
 
-        The inclusive pending_path_cancel_request has already committed (or
-        no path ever existed). If a live path still exists the abort is
-        deferred to a later tick.
+        Per design_new.md Latch Table: gated by
+        ``pending_path_cancel_request is None`` (the inclusive cancel has been
+        consumed earlier in the same pass, or was never armed because no live
+        path existed). Does NOT branch on active-path-emptiness — that
+        decision was already owned by the inclusive-cancel consumer.
         """
-        if controller.pending_route_abort is None:
+        if not controller.pending_route_abort:
             return
 
+        if controller.pending_path_cancel_request is not None:
+            # Latch survives until the inclusive cancel has been consumed.
+            return
+
+        self.route_executor.remove_train_route_run(train.train_id)
+        controller.pending_route_abort = False
+
+    def _consume_pending_power_off(
+        self, controller: TrainController, train: Train
+    ) -> None:
+        """Consume pending_power_off after the inclusive cancel has committed.
+
+        Per design_new.md: the inclusive `pending_path_cancel_request` was
+        armed by `_set_pending_power_off()` and committed earlier in the same
+        Phase-3 pass (or correctly skipped when no active path existed). This
+        consumer performs only its own teardown — route-run removal plus
+        controller-local OFF cleanup. It does NOT call
+        `PathDispatcher.cancel_path(...)`.
+        """
+        if not controller.pending_power_off:
+            return
+
+        # If an active path somehow still exists, the inclusive cancel hasn't
+        # committed yet (e.g. the train wasn't stopped on the previous pass).
+        # Defer to a later tick.
         if self.path_dispatcher is not None:
             if (
                 self.path_dispatcher.active_path_id_by_train(train.train_id)
                 is not None
             ):
-                # Latch survives until the inclusive cancel has committed.
                 return
 
-        payload = controller.pending_route_abort
-        self.route_executor.remove_train_route_run(train.train_id, payload.reason)
-        controller.pending_route_abort = None
-
-    def _consume_pending_power_off(
-        self, controller: TrainController, train: Train
-    ) -> None:
-        """Consume pending_power_off: cancel any active path, remove the
-        route run, then perform controller-local OFF cleanup.
-        """
-        if not controller.pending_power_off:
-            return
-
-        if self.path_dispatcher is not None:
-            active_path_id = self.path_dispatcher.active_path_id_by_train(
-                train.train_id
-            )
-            if active_path_id is not None:
-                self.path_dispatcher.cancel_path(
-                    active_path_id,
-                    cancellation_kind=PathCancellationKind.POWER_OFF,
-                    reason="power off",
-                )
-
-        self.route_executor.remove_train_route_run(train.train_id, "power_off")
+        self.route_executor.remove_train_route_run(train.train_id)
 
         # Controller-local OFF cleanup.
         controller.state = TrainState.OFF
@@ -334,22 +354,22 @@ class SimulationController:
     def _consume_pending_route_deactivate(
         self, controller: TrainController, train: Train
     ) -> None:
-        """Consume pending_route_deactivate once any active path has been
-        cleared. If a live path remains the latch is deferred.
+        """Consume pending_route_deactivate once the inclusive cancel has
+        committed.
+
+        Per design_new.md Latch Table: gated by
+        ``pending_path_cancel_request is None``. Does NOT branch on
+        active-path-emptiness — that decision was already owned by the
+        inclusive-cancel consumer.
         """
-        if controller.pending_route_deactivate is None:
+        if not controller.pending_route_deactivate:
             return
 
-        if self.path_dispatcher is not None:
-            if (
-                self.path_dispatcher.active_path_id_by_train(train.train_id)
-                is not None
-            ):
-                return
+        if controller.pending_path_cancel_request is not None:
+            return
 
-        payload = controller.pending_route_deactivate
-        self.route_executor.remove_train_route_run(train.train_id, payload.reason)
-        controller.pending_route_deactivate = None
+        self.route_executor.remove_train_route_run(train.train_id)
+        controller.pending_route_deactivate = False
 
     # =========================================================================
     # Persistent state sync (Train <- TrainController)
@@ -386,6 +406,7 @@ class SimulationController:
                 train_id=train.train_id,
                 network=self.network,
                 path_dispatcher=self.path_dispatcher,
+                route_executor=self.route_executor,
             )
             # Wire the back-reference so the controller can reach the
             # NotificationCenter and other simulation services.
@@ -759,17 +780,21 @@ class SimulationController:
         self,
         train_id: str,
         path_id: str,
-        kind: PathCancellationKind,
+        initiator: str,
         reason: str,
         event_time: float,
     ) -> None:
-        """Forward a path-cancellation event to the RouteExecutor and emit a
-        notification.
+        """Forward a path-cancellation event to the RouteExecutor and emit the
+        canonical `path_cancellation` notification.
+
+        Per design_new.md, the `initiator` field is the writer-supplied
+        free-form string (``"eb"``, ``"operator_cancelled"``, ``"power_off"``,
+        ``"deviation"``, ``"revoked"``, …); routing/planning layers must not
+        branch on it.
         """
         self.route_executor.handle_path_cancellation(
-            train_id, path_id, kind, reason
+            train_id, path_id, initiator, reason
         )
-        kind_str = kind.value if hasattr(kind, "value") else str(kind)
         self.notification_center.emit(
             source="SimulationController",
             kind="path_cancellation",
@@ -777,7 +802,7 @@ class SimulationController:
             event_time=event_time,
             train_id=train_id,
             path_id=path_id,
-            payload={"cancellation_kind": kind_str, "reason": reason},
+            payload={"initiator": initiator, "reason": reason},
         )
 
 
@@ -809,11 +834,11 @@ def build_network_payload(
         controller = sim_controller._get_or_create_controller(train)
         train_data["onboard"] = controller.to_dict()
 
-        # Inject live path data into the legacy `train_data` payload for
-        # backwards-compatible UI consumers. Per design_new.md ~line 1292,
-        # the dispatcher's `Path` is the source of truth, so the path id
-        # comes from `controller.assigned_path_id` (a derived property over
-        # the active dispatcher path), not from a Train-side mirror.
+        # Inject active-path data into the `train_data` payload for UI
+        # consumers. Per design_new.md ~line 1292, the dispatcher's `Path`
+        # is the source of truth, so the path id comes from
+        # `controller.assigned_path_id` (a derived property over the active
+        # dispatcher path), not from a Train-side mirror.
         if controller.assigned_path_id:
             try:
                 live_path = controller.get_live_path_data()

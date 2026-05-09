@@ -113,7 +113,7 @@ class BlockPowerController:
     The controller determines the appropriate voltage for each block
     based on:
     - Which trains occupy the block
-    - Train state (OFF, IDLE, RUNNING, etc.)
+    - Train state (OFF, READY, RUNNING_*, etc.)
     - Train speed profile and target speed
 
     Attributes:
@@ -149,8 +149,9 @@ class BlockPowerController:
 
         Determines voltage based on train state:
         - OFF: 0V
-        - IDLE/STANDBY/RUNNING_AT_STATION: lighting_voltage
-          (IDLE with ≥2 blocks may use opposite polarity for red lights both ends)
+        - READY/RUNNING_AT_STATION: lighting_voltage
+          (READY + no cab selected with ≥2 blocks may use opposite polarity
+           for red lights both ends)
         - RUNNING_MOVING: voltage based on target speed
 
         Args:
@@ -163,16 +164,22 @@ class BlockPowerController:
         if not occupied_blocks:
             return
 
-        # Per design_new.md ~line 1292, operational state lives on the
-        # controller; resolve it through the wired SimulationController.
+        # Per design_new.md, operational state lives on the controller;
+        # resolve it through the wired SimulationController.
         controller_state = None
+        controller_cab = None
         if self._sim_controller is not None:
             ctrl = self._sim_controller.get_or_create_controller(train.train_id)
-            controller_state = getattr(ctrl, "state", None) if ctrl else None
+            if ctrl is not None:
+                controller_state = getattr(ctrl, "state", None)
+                controller_cab = getattr(ctrl, "active_cab", None)
 
-        # Check if we should use opposite polarity for IDLE state
+        # Use opposite polarity (red lights both ends) when the train is
+        # READY with no cab selected — the doc's "no cab" flavor of READY
+        # replaces the old IDLE state.
         if (
-            controller_state == TrainState.IDLE
+            controller_state == TrainState.READY
+            and controller_cab is None
             and len(occupied_blocks) >= 2
             and train.is_opposite_polarity_safe(self.network)
         ):
@@ -235,10 +242,9 @@ class BlockPowerController:
         if speed_profile:
             lighting_voltage = speed_profile.lighting_voltage
 
-        # States that use lighting voltage
+        # States that use lighting voltage (powered, not moving)
         if operational_state in (
-            TrainState.IDLE,
-            TrainState.STANDBY,
+            TrainState.READY,
             TrainState.RUNNING_AT_STATION,
         ):
             return lighting_voltage

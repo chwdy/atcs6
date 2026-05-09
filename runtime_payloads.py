@@ -12,7 +12,7 @@ Schemas defined here:
 - TileTraversal: per-tile traversal entry inside a PhysicsSpanUpdate (added/removed_tiles)
 - ResourceEvent: a single entered/tail-vacated resource observation
 - ControllerProgressReport: produced by TrainController, consumed by PathDispatcher.on_controller_progress
-- PendingPathCancelRequest / PendingRouteAbortRequest / PendingRouteDeactivateRequest:
+- PendingPathCancelRequest:
   the per-train Phase-3 mailbox payloads
 - PathCancellationKind: the canonical cancellation enum
 
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 
 # =============================================================================
-# Shared default constants previously in path.py
+# Path priority constants
 # =============================================================================
 
 DEFAULT_PATH_PRIORITY = 5
@@ -48,7 +48,7 @@ MAX_PRIORITY = 10
 
 
 class PathCancellationKind(Enum):
-    """Canonical reason kinds for PathDispatcher.cancel_path(...).
+    """Reason kinds for PathDispatcher.cancel_path(...).
 
     Diagnostic only; routing/planning layers must not branch on this value.
     """
@@ -70,12 +70,8 @@ class PathCancellationKind(Enum):
 class ErrorRecord:
     """Paired error message + timestamp.
 
-    The canonical shape used by `RouteRun.last_error` and
-    `RouteTaskRun.last_error` per design_new.md so the message and its
-    timestamp are always either both present or both absent. Replaces the
-    legacy two-field `last_error: Optional[str]` + `error_time: Optional[float]`
-    pair so callers cannot ever observe a mismatched state where one is set
-    and the other is not.
+    Used by `RouteRun.last_error` and `RouteTaskRun.last_error` so the
+    message and its timestamp are always either both present or both absent.
     """
 
     text: str
@@ -116,7 +112,7 @@ class TileTraversal:
 
 @dataclass
 class PhysicsSpanUpdate:
-    """Canonical payload from TrainPhysics.tick(...) into
+    """Payload from TrainPhysics.tick(...) into
     TrainController.on_physics_updated(event_time, span_update).
 
     Per design_new.md, TrainPhysics emits one update per crossed resource
@@ -153,7 +149,7 @@ class ResourceEvent:
 
 @dataclass
 class ControllerProgressReport:
-    """Canonical Phase-3 progress report produced by
+    """Phase-3 progress report produced by
     TrainController.on_physics_updated(...) and consumed by
     PathDispatcher.on_controller_progress(...).
 
@@ -181,39 +177,31 @@ class ControllerProgressReport:
 class PendingPathCancelRequest:
     """Phase-3 latched cancellation payload written to TrainController.
 
+    Per design_new.md (Latch Table) the canonical fields are:
+      * `initiator: str` — free-form label populated by the writer for the
+        `path_cancellation` notification. Common values: ``"eb"``,
+        ``"operator_cancelled"``, ``"power_off"``, ``"deviation"``,
+        ``"revoked"``. Functional behavior is identical regardless of value;
+        consumers must not branch on it.
+      * `reason: Optional[str]` — optional plain-text diagnostic.
+
     Consumed by Phase 3 only when the train is fully stopped. While the train
     is still rolling, the latch survives across ticks and is reconsidered on
-    the next eligible Phase 3 pass.
+    the next eligible Phase 3 pass. Because v1 allows at most one active path
+    per train, the payload does not need a `path_id` routing key.
     """
 
-    cancellation_kind: PathCancellationKind
+    initiator: str
     reason: Optional[str] = None
-    expected_path_id: Optional[str] = None
 
 
-@dataclass
-class PendingRouteAbortRequest:
-    """Phase-3 latched route-abort payload written to TrainController.
-
-    Consumed by Phase 3 only after the inclusive pending_path_cancel_request
-    has committed and the active path is gone.
-    """
-
-    reason: str
-    expected_path_id: Optional[str] = None
-
-
-@dataclass
-class PendingRouteDeactivateRequest:
-    """Phase-3 latched route-deactivate payload written per assigned train when
-    route.deactivate() runs.
-
-    Consumed by Phase 3 only after the inclusive pending_path_cancel_request
-    has committed and any active path is gone.
-    """
-
-    reason: str
-    expected_path_id: Optional[str] = None
+# Note: per design_new.md (Latch Table), `pending_route_abort` and
+# `pending_route_deactivate` are bare-bool latches on `TrainController`. The
+# diagnostic `reason` for the originating action is recorded only on the
+# `path_cancellation` and `command_result` notifications (the inclusive
+# `pending_path_cancel_request.reason` carries it through to the cancellation
+# event), not on any field on `RouteRun` or on the route-abort / deactivate
+# latches themselves.
 
 
 # =============================================================================
@@ -278,6 +266,7 @@ class PathAcquisitionFailureKind(Enum):
     INVALID_REQUEST = "invalid_request"
     HEAD_ON_SWITCH_NO_BLOCK_AUTHORITY = "head_on_switch_no_block_authority"
     MISSING_OR_INACTIVE_PATH = "missing_or_inactive_path"
+    TRAIN_ALREADY_HAS_ACTIVE_PATH = "train_already_has_active_path"
 
 
 @dataclass

@@ -79,7 +79,7 @@ class TestSpeedProfile:
                 (60.0, 8.0),
                 (120.0, 12.0),
             ],
-            min_start_voltage=2.0,
+            startup_voltage=2.0,
             lighting_voltage=2.5,
             acceleration_rate=10.0,
             deceleration_rate=15.0,
@@ -339,8 +339,8 @@ class TestTrainPhase1:
         # Power on
         result = controller.power_on_cmd()
         assert result.success is True
-        assert controller.state == TrainState.IDLE
-        assert controller.state == TrainState.IDLE
+        assert controller.state == TrainState.READY
+        assert controller.state == TrainState.READY
 
         # Can't power on again
         result = controller.power_on_cmd()
@@ -383,7 +383,7 @@ class TestTrainPhase1:
             "min_radius_cm": 50.0,
             "facing_direction": "WEST",
             "travel_direction": "forward",
-            "state": "standby",
+            "state": "ready",
             "speed_profile_id": "profile_002",
             "assigned_route_id": "route_002",
         }
@@ -520,7 +520,7 @@ class TestBlockPowerController:
     def train_idle(self) -> Train:
         """Create a train in IDLE state."""
         train = Train(train_id="TRAIN_002")
-        train.state = TrainState.IDLE
+        train.state = TrainState.READY
         return train
 
     @pytest.fixture
@@ -740,17 +740,17 @@ class TestTrainStateTransitions:
         )
         result = controller.power_on_cmd()
         assert result.success is True
-        assert controller.state == TrainState.IDLE
-        assert controller.state == TrainState.IDLE
+        assert controller.state == TrainState.READY
+        assert controller.state == TrainState.READY
 
     def test_power_on_fails_when_already_on(self):
         """Test power_on_cmd() fails when already powered."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.IDLE
+            state=TrainState.READY
         )
         result = controller.power_on_cmd()
         assert result.success is False
-        assert controller.state == TrainState.IDLE
+        assert controller.state == TrainState.READY
 
     def test_power_off_when_stopped(self):
         """Test power_off_cmd() works when stopped.
@@ -759,7 +759,7 @@ class TestTrainStateTransitions:
         transition happens in Phase 3. Acceptance is immediate.
         """
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.IDLE
+            state=TrainState.READY
         )
         result = controller.power_off_cmd()
         assert result.success is True
@@ -777,12 +777,12 @@ class TestTrainStateTransitions:
     def test_set_standby_transition(self):
         """Test set_direction_and_standby() transitions IDLE -> STANDBY."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.IDLE
+            state=TrainState.READY
         )
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
         result = controller.set_direction_and_standby(Direction.NORTH)
         assert result is True
-        assert controller.state == TrainState.STANDBY
+        assert controller.state == TrainState.READY
 
     def test_set_standby_fails_from_wrong_state(self):
         """Test set_direction_and_standby() fails from non-IDLE state."""
@@ -794,13 +794,15 @@ class TestTrainStateTransitions:
         assert controller.state == TrainState.OFF
 
     def test_depart_transition(self):
-        """Test depart() transitions STANDBY -> RUNNING_MOVING."""
+        """Test depart() transitions READY -> RUNNING_MOVING (manual mode)."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.STANDBY
+            state=TrainState.READY
         )
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
-        # Use manual mode to test depart transition (not ATO auto-cab logic)
+        # Use manual mode to test depart transition (not ATO auto-cab logic).
+        # Manual depart now requires a cab to be selected explicitly.
         controller.control_mode = "manual"
+        controller.active_cab = "A"
         result = controller.depart()
         assert result is True
         assert controller.state == TrainState.RUNNING_MOVING
@@ -821,14 +823,14 @@ class TestTrainStateTransitions:
 
         controller.tick(0.1)
 
-        assert controller.state == TrainState.STANDBY
-        assert controller.state == TrainState.STANDBY
+        assert controller.state == TrainState.READY
+        assert controller.state == TrainState.READY
         assert controller.path_backed_run_active is False
 
     def test_depart_fails_without_direction(self):
         """Test depart() fails without facing direction."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.STANDBY
+            state=TrainState.READY
         )
         train.position = None
         result = controller.depart()
@@ -837,7 +839,7 @@ class TestTrainStateTransitions:
     def test_depart_fails_from_wrong_state(self):
         """Test depart() fails from non-STANDBY state."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.IDLE
+            state=TrainState.READY
         )
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
         result = controller.depart()
@@ -867,13 +869,15 @@ class TestTrainStateTransitions:
         train.assigned_route_id = "route1"
         result = controller.depart_from_station(has_more_waypoints=True)
         assert result is True
-        assert controller.state == TrainState.STANDBY
+        assert controller.state == TrainState.READY
         assert train.assigned_route_id == "route1"  # Route still assigned
 
     def test_depart_from_station_route_complete(self):
-        """Test depart_from_station() transitions to IDLE when route complete.
+        """Test depart_from_station() transitions to READY when route complete.
 
-        v1: Train.target_speed was deleted; assertion removed.
+        v1: Train.target_speed was deleted; route teardown moved to
+        RouteExecutor (depart_from_station only handles the controller-side
+        state transition).
         """
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_AT_STATION
@@ -881,8 +885,7 @@ class TestTrainStateTransitions:
         train.assigned_route_id = "route1"
         result = controller.depart_from_station(has_more_waypoints=False)
         assert result is True
-        assert controller.state == TrainState.IDLE
-        assert train.assigned_route_id is None  # Route cleared
+        assert controller.state == TrainState.READY
 
     def test_emergency_stop_cmd_from_running(self):
         """Test emergency_stop_cmd() from RUNNING_MOVING."""
@@ -901,7 +904,7 @@ class TestTrainStateTransitions:
     def test_emergency_stop_cmd_always_allowed(self):
         """Test emergency_stop_cmd() works from any state."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.IDLE
+            state=TrainState.READY
         )
         result = controller.emergency_stop_cmd()
         assert result.success is True
@@ -911,7 +914,7 @@ class TestTrainStateTransitions:
     def test_enable_manual_fails_when_moving(self):
         """Test enable_manual() fails when moving."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.STANDBY, current_speed=30.0
+            state=TrainState.READY, current_speed=30.0
         )
         result = controller.enable_manual()
         assert result is False
@@ -931,12 +934,12 @@ class TestTrainStateTransitions:
     def test_set_direction_and_standby(self):
         """Test set_direction_and_standby() convenience method."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.IDLE
+            state=TrainState.READY
         )
         train.position = make_train_position((0, 0), facing_direction=Direction.SOUTH)
         result = controller.set_direction_and_standby(Direction.SOUTH)
         assert result is True
-        assert controller.state == TrainState.STANDBY
+        assert controller.state == TrainState.READY
 
 
 
@@ -964,7 +967,7 @@ class TestStateBasedVoltageOutput:
         from train import Train
 
         train = Train(train_id="T001")
-        train.state = TrainState.IDLE
+        train.state = TrainState.READY
 
         controller = BlockPowerController()
         controller.default_lighting_voltage = 2.5
@@ -977,7 +980,7 @@ class TestStateBasedVoltageOutput:
         from train import Train
 
         train = Train(train_id="T001")
-        train.state = TrainState.STANDBY
+        train.state = TrainState.READY
 
         controller = BlockPowerController()
         controller.default_lighting_voltage = 2.5
@@ -1049,11 +1052,11 @@ class TestCompleteStateFlows:
         # Power on
         result = controller.power_on_cmd()
         assert result.success is True
-        assert controller.state == TrainState.IDLE
+        assert controller.state == TrainState.READY
 
         # Set direction and standby
         assert controller.set_direction_and_standby(Direction.NORTH) is True
-        assert controller.state == TrainState.STANDBY
+        assert controller.state == TrainState.READY
 
         # Depart (manual mode to bypass ATO auto-cab selection)
         controller.control_mode = "manual"
@@ -1074,24 +1077,26 @@ class TestCompleteStateFlows:
 
         # Depart with more waypoints
         assert controller.depart_from_station(has_more_waypoints=True) is True
-        assert controller.state == TrainState.STANDBY
+        assert controller.state == TrainState.READY
         assert train.assigned_route_id == "route1"
 
         # Simulate moving and arriving at final station
         # Need to set controller state too for proper flow
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
-        # Use manual mode to test depart (not ATO auto-cab logic)
+        # Use manual mode to test depart (not ATO auto-cab logic). Manual
+        # depart now requires a cab to be selected explicitly.
         controller.control_mode = "manual"
+        controller.active_cab = "A"
         controller.depart()
         assert controller.state == TrainState.RUNNING_MOVING
 
         assert controller.arrive_at_station() is True
         assert controller.state == TrainState.RUNNING_AT_STATION
 
-        # Route complete
+        # Route complete (controller-side state transition only; route
+        # teardown is owned by RouteExecutor in v1).
         assert controller.depart_from_station(has_more_waypoints=False) is True
-        assert controller.state == TrainState.IDLE
-        assert train.assigned_route_id is None
+        assert controller.state == TrainState.READY
 
 
     def test_emergency_stop_flow(self):
@@ -1132,8 +1137,8 @@ class TestCompleteStateFlows:
 
         # Stop first - simulate stopping
         controller.current_speed_kmh = 0.0
-        controller.state = TrainState.IDLE
-        train.state = TrainState.IDLE
+        controller.state = TrainState.READY
+        train.state = TrainState.READY
 
         # Now can power off — acceptance is immediate, OFF deferred to Phase 3.
         result = controller.power_off_cmd()

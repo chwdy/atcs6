@@ -461,9 +461,11 @@ class TestSimulationSignalUpdates:
         network.update_signals_from_blocks()
         assert sig.state == SignalState.GREEN
 
-        # Manually occupy BLOCK_B
+        # Manually occupy BLOCK_B. Block.state is a derived `@property` in v1
+        # (computed from `occupied_by` / `_is_caution` / `reservation`), so
+        # assigning `state` directly is forbidden — we set the underlying
+        # primitive instead.
         block_b = network.get_block("BLOCK_B")
-        block_b.state = BlockState.OCCUPIED
         block_b.occupied_by = "SOME_TRAIN"
 
         # Before simulation tick, signal is still GREEN (stale)
@@ -499,15 +501,14 @@ class TestSimulationSignalUpdates:
         # Block B free -> signal GREEN
         assert sig.state == SignalState.GREEN
 
-        # Block B occupied -> signal RED
+        # Block B occupied -> signal RED. Block.state is derived from
+        # primitives in v1; setting `occupied_by` is sufficient.
         block_b = network.get_block("BLOCK_B")
-        block_b.state = BlockState.OCCUPIED
         block_b.occupied_by = "TRAIN_1"
         sim.update(0.05)
         assert sig.state == SignalState.RED
 
-        # Block B free again -> signal GREEN
-        block_b.state = BlockState.FREE
+        # Block B free again -> signal GREEN.
         block_b.occupied_by = None
         sim.update(0.05)
         assert sig.state == SignalState.GREEN

@@ -635,7 +635,9 @@ class TestPathRoutes:
         first_path_id = first_data.get("path_id") or first_data.get("path", {}).get(
             "path_id"
         )
-        assert train.assigned_path_id == first_path_id
+        # Per design_new.md, the dispatcher owns active-path lookup; Train no
+        # longer carries `assigned_path_id`.
+        assert app_state.path_dispatcher.active_path_id_by_train("TRAIN_001") == first_path_id
 
         second_response = client.post(
             "/api/paths",
@@ -653,7 +655,7 @@ class TestPathRoutes:
         second_data = second_response.get_json()
         assert second_data["success"] is False
         # Train should still hold the original path.
-        assert train.assigned_path_id == first_path_id
+        assert app_state.path_dispatcher.active_path_id_by_train("TRAIN_001") == first_path_id
 
     def test_list_paths(self, client):
         """GET /api/paths should list all paths."""

@@ -573,10 +573,10 @@ class BlockManager:
         )
         self._reevaluate_caution_blocks()
 
-    def on_switch_state_changed(self, switch_id: str) -> None:
+    def on_switch_position_changed(self, switch_id: str) -> None:
         """Switch-side notification that connectivity may have changed.
 
-        Called by `Switch` whenever its state mutates. Triggers a directional
+        Called by `Switch` whenever its position mutates. Triggers a directional
         CAUTION reevaluation across all blocks. Safe to call before any
         blocks/switches have been registered (empty registry => no-op).
         """
@@ -596,7 +596,7 @@ class BlockManager:
         CAUTION evaluation)": for each block currently in CAUTION, follow
         live tile connectivity from the block's exit tile in
         ``caution_direction`` through any intervening switch (using the
-        current ``Switch.state``) until the next reachable block resource is
+        current ``Switch.position``) until the next reachable block resource is
         found. If that next reachable block is OCCUPIED, keep caution. If it
         is FREE/RESERVED/CAUTION, or if no reachable block exists at all,
         clear caution by writing ``_is_caution = False`` and
@@ -660,7 +660,7 @@ class BlockManager:
         through its ``direction`` exit edge.
 
         Walks tile connectivity through any intervening switch tiles using
-        the current ``Switch.state``. Returns None if the walk runs off the
+        the current ``Switch.position``. Returns None if the walk runs off the
         network, hits a dead end, or loops back into the same block.
         """
         if self.network is None:
@@ -703,7 +703,7 @@ class BlockManager:
                 # reaching that block.
                 return self._block_registry.get(tile.block_section_id)
             # Bare switch tile (boundary between blocks). Cross via the live
-            # active exit determined by the current Switch.state.
+            # active exit determined by the current Switch.position.
             if tile.is_switch:
                 exits = tile.get_exits(entry_edge, use_switch_state=True)
                 if not exits:

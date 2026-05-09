@@ -139,13 +139,13 @@ class TestBlock:
 
     def test_serialization(self):
         block = Block(
-            block_id="BLK_TEST", name="Test Block", length_cm=1000, max_speed_kmh=80
+            block_id="BLK_TEST", name="Test Block", length_cm=1000, speed_limit_kmh=80
         )
         block_dict = block.to_dict()
         assert block_dict["block_id"] == "BLK_TEST"
         assert block_dict["name"] == "Test Block"
         assert block_dict["length_cm"] == 1000
-        assert block_dict["max_speed_kmh"] == 80
+        assert block_dict["speed_limit_kmh"] == 80
         restored = Block.from_dict(block_dict)
         assert restored.block_id == block.block_id
         assert restored.name == block.name

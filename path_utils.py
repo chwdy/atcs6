@@ -395,7 +395,7 @@ def assign_path_to_train_with_prepend(
     Per design_new.md ~line 1292, `Train.current_path` and `Train.path_index`
     are forbidden — the dispatcher's `Path` is the source of truth for path
     geometry. This helper now only runs the validation logic and returns
-    its outcome; UI consumers read the live path tiles from
+    its outcome; UI consumers read the active path tiles from
     `PathDispatcher.get_active_path_progress(train_id)`.
 
     Args:
@@ -587,12 +587,13 @@ def assign_complete_path_to_train(
 
 
 def convert_tiles_to_train_path(
-    tiles: List[Tuple[int, int]], default_direction: Direction = Direction.EAST
+    tiles, default_direction: Direction = Direction.EAST
 ) -> List[Tuple[int, int, Direction]]:
     """Convert tile positions to train path format with directions.
 
     Args:
-        tiles: List of (x, y) tile positions
+        tiles: Iterable of `(x, y)` tuples OR `PathTileEntry` instances. The
+            function reads `(x, y)` from either shape.
         default_direction: Direction for single-tile paths (default: EAST)
 
     Returns:
@@ -601,12 +602,19 @@ def convert_tiles_to_train_path(
     if not tiles:
         return []
 
+    def _xy(item):
+        if hasattr(item, "x") and hasattr(item, "y"):
+            return (item.x, item.y)
+        return (item[0], item[1])
+
+    coords = [_xy(t) for t in tiles]
+
     result = []
     last_direction = default_direction
 
-    for i, tile in enumerate(tiles):
-        if i + 1 < len(tiles):
-            next_tile = tiles[i + 1]
+    for i, tile in enumerate(coords):
+        if i + 1 < len(coords):
+            next_tile = coords[i + 1]
             dx = next_tile[0] - tile[0]
             dy = next_tile[1] - tile[1]
 

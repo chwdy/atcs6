@@ -2,8 +2,8 @@
 Railway System Demo
 
 This is the main demonstration script for the railway management system.
-It imports all components from separate modules and creates a comprehensive
-demo showing train dispatching, scheduling, and safety systems in action.
+It imports all components from separate modules and creates a demo
+showing train dispatching, scheduling, and safety systems in action.
 
 Track Building using 6-bit track_bits system:
 - TrackSegment(x, y, track_bits=TRACK_EW): East-West straight track
@@ -17,7 +17,6 @@ Track Building using 6-bit track_bits system:
 """
 
 from datetime import datetime, timedelta
-from enums import Direction, SignalState as EnumSignalState, SwitchPosition
 from network import RailwayNetwork
 from track import (
     TrackSegment,
@@ -29,12 +28,9 @@ from track import (
     TRACK_SW,
     FORBIDDEN_TRACK_BITS,
 )
-from train import Train, TrainCar, TrainSchedule, ScheduleStop
 from path_dispatcher import PathDispatcher
-from route_executor import RouteExecutor
 from railway_signal import SignalType
 from switch import Switch
-from path_utils import assign_path_to_train_with_prepend, assign_complete_path_to_train
 
 # ============= Demo Functions =============
 
@@ -194,7 +190,7 @@ def test_block_validation():
 
 
 def create_comprehensive_demo():
-    """Create comprehensive demo railway network with proper Block objects.
+    """Create the demo railway network with proper Block objects.
 
     Block Structure:
     - BLOCK_MAIN_WEST: Tracks (0,0) to (2,0) - "Main Line West"
@@ -222,7 +218,7 @@ def create_comprehensive_demo():
         positions=[(x, 0) for x in range(0, 3)],
         name="Main Line West",
         length_cm=150.0,  # 3 tiles * 50cm each
-        max_speed_kmh=60.0,
+        speed_limit_kmh=60.0,
     )
 
     # Switch at (3,0) - BOUNDARY, NO block assignment
@@ -247,7 +243,7 @@ def create_comprehensive_demo():
         positions=[(x, 0) for x in range(4, 11)],
         name="Main Line East",
         length_cm=350.0,  # 7 tiles * 50cm each
-        max_speed_kmh=80.0,
+        speed_limit_kmh=80.0,
     )
 
     # Station at (7,0) - will split BLOCK_MAIN_EAST into before/station/after
@@ -276,7 +272,7 @@ def create_comprehensive_demo():
         positions=[(3, y) for y in range(1, 4)],
         name="North Branch",
         length_cm=150.0,  # 3 tiles * 50cm each
-        max_speed_kmh=40.0,
+        speed_limit_kmh=40.0,
     )
 
     print(f"  Created {len(network.blocks)} blocks with validated track assignments")
@@ -326,7 +322,7 @@ def create_comprehensive_demo():
         positions=[(9, y) for y in range(1, 6)] + [(9, 6)],
         name="East Vertical Branch",
         length_cm=260.0,
-        max_speed_kmh=50.0,
+        speed_limit_kmh=50.0,
     )
 
     network.create_block_with_tracks(
@@ -334,7 +330,7 @@ def create_comprehensive_demo():
         positions=[(11, 8), (12, 8)],
         name="East Diagonal Approach",
         length_cm=80.0,
-        max_speed_kmh=30.0,
+        speed_limit_kmh=30.0,
     )
 
     east_branch_station = network.add_station(
@@ -544,43 +540,43 @@ def create_comprehensive_demo():
 def setup_demo_train(
     network: RailwayNetwork,
     path_dispatcher: PathDispatcher,
-    sim_controller=None,
+    sim_controller,
 ):
-    """Set up the demo train with a path.
+    """Set up the demo train with a Route to East Terminal.
 
-    Per design_new.md ~line 1292, live operational state lives on the
-    `TrainController`. The demo bootstrap therefore configures power-on /
-    cab / depart through `sim_controller.get_or_create_controller(...)`
-    when a `SimulationController` is provided; the older
-    `create_controller_for_train` path is only used as a last-resort
-    fallback for callers that have not yet wired the simulation controller.
+    Per design_new.md "Design Direction" (~line 157), initial live placement
+    must come through `SimulationController.add_train(...)`, which writes the
+    initial `TrainController.current_span` before the first simulation tick.
+    Per the "Route And RouteExecutor" section, paths are created on demand by
+    Phase 1 once a Route is assigned; bootstrap registers the Route and lets
+    Phase 1 do the path acquisition. Per the "Command queue + drain" section,
+    operator commands enter through the controller's command inbox and are
+    drained at the top of the next `TrainController.tick(...)`.
     """
-    from route_executor import RouteExecutor
-    from train import TrainCar, Train
-    from enums import Direction
+    from train_route import Route, RouteMode, RouteTask
     from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
 
-    executor = RouteExecutor(network, path_dispatcher)
-
+    # 1. Resolve the start block at the demo origin tile (0, 0).
     start_track = network.get_track(0, 0)
-    east_terminal = next(
-        station
-        for station in network.stations.values()
-        if station.name == "East Terminal"
-    )
-    target_block_id = executor._get_platform_block_id(east_terminal.platform_id)
+    starting_block_id = start_track.block_section_id
 
-    car = TrainCar(
-        car_id="DEMO_CAR_01",
-        car_type="LOCOMOTIVE",
-        length=40.0,  # 40 cm in model scale (N scale 1:160)
+    # 2. Canonical placement: writes current_span before the first tick.
+    demo_train = sim_controller.add_train(
+        train_id="DEMO_TRAIN",
+        starting_block_id=starting_block_id,
+        initial_direction="EAST",
+        max_speed_kmh=60.0,
+        length_cm=40.0,
+        train_type="LOCOMOTIVE",
+        initial_cab="A",
     )
-    demo_train = Train(train_id="DEMO_TRAIN", consist=[car], max_speed=60.0)
+
+    # 3. Register the demo SpeedProfile (definition state, not controller state).
     demo_profile = SpeedProfile(
         profile_id="demo_profile",
         name="Demo Profile",
         speed_voltage_curve=list(DEFAULT_SPEED_PROFILE.speed_voltage_curve),
-        min_start_voltage=DEFAULT_SPEED_PROFILE.min_start_voltage,
+        startup_voltage=DEFAULT_SPEED_PROFILE.startup_voltage,
         lighting_voltage=DEFAULT_SPEED_PROFILE.lighting_voltage,
         acceleration_rate=3.0,
         deceleration_rate=4.2,
@@ -593,52 +589,38 @@ def setup_demo_train(
     )
     network.speed_profiles[demo_profile.profile_id] = demo_profile
     demo_train.speed_profile_id = demo_profile.profile_id
-    network.add_train(demo_train)
-    network.place_train(demo_train, 0, 0, Direction.EAST)
-    if start_track and start_track.block_section_id and network.block_manager:
-        network.block_manager.occupy_block(
-            start_track.block_section_id, demo_train.train_id
-        )
-    network.update_signals_from_blocks()
 
-    # Create path to destination (v1 PathDispatcher API)
-    path_result = None
-    if start_track and start_track.block_section_id and target_block_id:
-        from runtime_payloads import AcquisitionMode
-        path_result = path_dispatcher.create_path(
-            train_id=demo_train.train_id,
-            requested_destination_block_id=target_block_id,
-            requested_destination_direction="forward",
-            acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
+    # 4. Register a Route to East Terminal; Phase 1 will acquire its Path on
+    #    the first tick.
+    east_terminal = next(
+        station
+        for station in network.stations.values()
+        if station.name == "East Terminal"
+    )
+    demo_route = Route(
+        route_id="DEMO_ROUTE",
+        name="Demo: Origin to East Terminal",
+        mode=RouteMode.ONE_OFF,
+        is_active=True,
+    )
+    demo_route.add_task(
+        RouteTask(
+            task_kind="stop",
+            task_location=east_terminal.platform_id,
+            task_direction="forward",
         )
-        if path_result.success and path_result.path_id:
-            new_path = path_dispatcher.get_path(path_result.path_id)
-            if new_path is not None:
-                # Use assign_complete_path_to_train so the train's `position`
-                # is brought up to a path-consistent layout. The dispatcher
-                # owns `assigned_path_id` (resolved live via
-                # `path_dispatcher.active_path_id_by_train(train_id)`), so we
-                # do not also mirror the path id back onto the Train entity.
-                raw_path = executor._convert_path_to_train_path(new_path)
-                assign_complete_path_to_train(network, demo_train, raw_path)
+    )
+    sim_controller.route_executor.register_route(demo_route)
+    demo_route.assign_train(demo_train.train_id)
+    demo_train.assigned_route_id = demo_route.route_id
 
-    # Configure operational state on the canonical controller. When a
-    # SimulationController is supplied (the normal bootstrap path), use its
-    # controller registry so the configuration takes effect on the same
-    # controller the simulation tick will use.
-    if sim_controller is not None:
-        controller = sim_controller.get_or_create_controller(demo_train.train_id)
-    else:
-        from train_controller import create_controller_for_train
-        controller = create_controller_for_train(
-            train_id=demo_train.train_id,
-            network=network,
-            path_dispatcher=path_dispatcher,
-        )
-
-    controller.power_on_cmd()
-    controller.set_direction_and_standby(Direction.EAST)
-    controller.depart()
+    # 5. Queue the power_on operator command. Phase 2's drain executes it on
+    #    the first tick; from tick 2 onward Phase 1 sees a powered-on
+    #    controller, acquires the path for DEMO_ROUTE, and auto-departs
+    #    (Route.default_departure_mode defaults to "auto", which makes Phase 1
+    #    call `controller.depart()` itself once authority is granted).
+    controller = sim_controller.get_or_create_controller(demo_train.train_id)
+    controller.enqueue_command("power_on")
 
 
 def create_track_showcase(network: RailwayNetwork):
@@ -756,7 +738,7 @@ def create_diagonal_siding(network: RailwayNetwork):
 
 
 def run_comprehensive_demo():
-    """Run comprehensive demonstration of isometric railway network"""
+    """Run a demonstration of the railway network."""
 
     # Run validation tests first
     test_block_validation()
@@ -883,5 +865,5 @@ if __name__ == "__main__":
 
         sys.exit(1)
 
-    # If tests pass, run the comprehensive demo
+    # If tests pass, run the demo
     run_comprehensive_demo()

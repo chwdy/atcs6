@@ -39,34 +39,36 @@ class TestTrainManualControlBugFixes:
         network = RailwayNetwork()
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
-        train.state = TrainState.STANDBY
+        train.state = TrainState.READY
         train.travel_direction = "reverse"
         train.manual_target_speed = 20.0
         network.add_train(train)
         controller = create_controller_for_train("TRAIN_01", network)
         controller.power_on = True
-        controller.state = TrainState.STANDBY
+        controller.state = TrainState.READY
+        controller.active_cab = "A"  # READY+cab matches the old "STANDBY" shape
 
         assert controller.clear_direction() is True
-        assert controller.state == TrainState.IDLE
+        assert controller.state == TrainState.READY
+        assert controller.active_cab is None
         assert train.facing_direction is None
-        # v1: clear_direction only resets state and clears active_cab. It does
-        # not touch travel_direction or manual_target_speed.
+        # v1: clear_direction only clears active_cab; state stays READY
+        # (cab is orthogonal to state in the new state machine).
 
     def test_clear_direction_rejects_moving(self):
         network = RailwayNetwork()
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_02", consist=[car], max_speed=60.0)
-        train.state = TrainState.STANDBY
+        train.state = TrainState.READY
         # Direction set via position (refactored): train.set_cab("A")  # was: Direction.NORTH
         network.add_train(train)
         controller = create_controller_for_train("TRAIN_02", network)
         controller.power_on = True
-        controller.state = TrainState.STANDBY
+        controller.state = TrainState.READY
         controller.current_speed_kmh = 5.0
 
         assert controller.clear_direction() is False
-        assert controller.state == TrainState.STANDBY
+        assert controller.state == TrainState.READY
 
 
 
@@ -111,7 +113,7 @@ class TestRaceConditionFix:
         network = RailwayNetwork()
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_STATE_TEST", consist=[car], max_speed=60.0)
-        train.state = TrainState.IDLE
+        train.state = TrainState.READY
         network.add_train(train)
 
         sim = SimulationController(network)
@@ -123,8 +125,8 @@ class TestRaceConditionFix:
 
         # Now manually set controller to different state than train
         # (simulating what would happen if controller.tick() changes state)
-        train.state = TrainState.IDLE
-        controller.state = TrainState.STANDBY
+        train.state = TrainState.READY
+        controller.state = TrainState.READY
 
         # After another update, train should reflect controller's state
         sim.update(0.1)
@@ -152,7 +154,7 @@ class TestRaceConditionFix:
 
         block = network.create_block("B1", "Block 1")
         block.length_cm = 1000.0
-        block.max_speed_kmh = 30.0  # 30 km/h limit
+        block.speed_limit_kmh = 30.0  # 30 km/h limit
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_OVERSPEED_TEST", consist=[car], max_speed=100.0)
@@ -196,7 +198,7 @@ class TestRaceConditionFix:
 
         block = network.create_block("B1", "Block 1")
         block.length_cm = 1000.0
-        block.max_speed_kmh = 30.0  # 30 km/h limit
+        block.speed_limit_kmh = 30.0  # 30 km/h limit
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
         train = Train(train_id="TRAIN_EB_TEST", consist=[car], max_speed=100.0)

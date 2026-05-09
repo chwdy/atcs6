@@ -68,7 +68,7 @@ state: AppState | None = None
 
 
 def run_startup_tests():
-    """Run comprehensive tests before starting the server.
+    """Run startup tests before starting the server.
 
     This ensures no regressions have been introduced.
     Tests run:

@@ -271,7 +271,7 @@ def register(app, state: AppState) -> None:
     @app.route("/api/train-routes", methods=["GET"])
     def list_train_routes():
         routes = []
-        for route in state.network.routes.values():
+        for route in state.sim_controller.route_executor.route_registry.values():
             routes.append(route.to_dict())
         return jsonify({"routes": routes})
 
@@ -309,13 +309,13 @@ def register(app, state: AppState) -> None:
                 route.assign_train(train_id)
                 state.network.trains[train_id].assigned_route_id = route.route_id
 
-        state.network.routes[route_id] = route
+        state.sim_controller.route_executor.register_route(route)
 
         return jsonify({"status": "success", "route": route.to_dict()})
 
     @app.route("/api/train-routes/<route_id>", methods=["GET"])
     def get_train_route(route_id):
-        route = state.network.routes.get(route_id)
+        route = state.sim_controller.route_executor.route_registry.get(route_id)
         if not route:
             return jsonify({"error": "Route not found"}), 404
         return jsonify(route.to_dict())
@@ -354,7 +354,7 @@ def register(app, state: AppState) -> None:
         from train_route import RouteMode
 
         with state.simulation_lock:
-            route = state.network.routes.get(route_id)
+            route = state.sim_controller.route_executor.route_registry.get(route_id)
             if not route:
                 return jsonify({"error": f"Route '{route_id}' not found"}), 404
 
@@ -435,10 +435,11 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/train-routes/<route_id>", methods=["DELETE"])
     def delete_train_route(route_id):
-        if route_id not in state.network.routes:
+        registry = state.sim_controller.route_executor.route_registry
+        if route_id not in registry:
             return jsonify({"error": "Route not found"}), 404
 
-        route = state.network.routes[route_id]
+        route = registry[route_id]
         for train in state.network.trains.values():
             if train.assigned_route_id == route_id:
                 train.assigned_route_id = None
@@ -447,12 +448,12 @@ def register(app, state: AppState) -> None:
             for train_id in list(route.assigned_train_ids):
                 state.sim_controller.route_executor.execution_states.pop(train_id, None)
 
-        del state.network.routes[route_id]
+        state.sim_controller.route_executor.unregister_route(route_id)
         return jsonify({"status": "success", "message": f"Route {route_id} deleted"})
 
     @app.route("/api/train-routes/<route_id>/activate", methods=["POST"])
     def activate_train_route(route_id):
-        route = state.network.routes.get(route_id)
+        route = state.sim_controller.route_executor.route_registry.get(route_id)
         if not route:
             return jsonify({"error": "Route not found"}), 404
 
@@ -461,7 +462,7 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/train-routes/<route_id>/deactivate", methods=["POST"])
     def deactivate_train_route(route_id):
-        route = state.network.routes.get(route_id)
+        route = state.sim_controller.route_executor.route_registry.get(route_id)
         if not route:
             return jsonify({"error": "Route not found"}), 404
 
@@ -471,7 +472,7 @@ def register(app, state: AppState) -> None:
     @app.route("/api/train-routes/<route_id>/status", methods=["GET"])
     def get_train_route_status(route_id):
         """Get per-train execution status for a route."""
-        route = state.network.routes.get(route_id)
+        route = state.sim_controller.route_executor.route_registry.get(route_id)
         if not route:
             return jsonify({"error": "Route not found"}), 404
 
@@ -810,7 +811,6 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/schedules/<schedule_id>", methods=["DELETE"])
     def delete_schedule(schedule_id):
-        """Delete a schedule."""
         if schedule_id not in state.network.schedules:
             return jsonify({"error": "Schedule not found"}), 404
 
@@ -1228,8 +1228,8 @@ def register(app, state: AppState) -> None:
             if not switch:
                 return jsonify({"error": f"Switch {switch_id} not found"}), 404
 
-            # Use request_state_change which checks lock status
-            success, message = switch.request_state_change(new_state, state.network)
+            # Use request_position_change which checks lock status
+            success, message = switch.request_position_change(new_state, state.network)
 
             if success:
                 return jsonify(

@@ -67,8 +67,6 @@ from runtime_payloads import (
     ControllerProgressReport,
     PathCancellationKind,
     PendingPathCancelRequest,
-    PendingRouteAbortRequest,
-    PendingRouteDeactivateRequest,
     PhysicsSpanUpdate,
     ResourceEvent,
     TileTraversal,
@@ -78,6 +76,7 @@ if TYPE_CHECKING:
     from network import RailwayNetwork
     from path import Path
     from path_dispatcher import PathDispatcher
+    from route_executor import RouteExecutor
     from speed_profile import SpeedProfile
     from train import Train
 
@@ -304,6 +303,7 @@ class TrainController:
     train_id: str
     network: Optional["RailwayNetwork"] = None
     path_dispatcher: Optional["PathDispatcher"] = None
+    route_executor: Optional["RouteExecutor"] = None
 
     # -------------------------------------------------------------------------
     # Power & Safety State
@@ -374,9 +374,9 @@ class TrainController:
     # -------------------------------------------------------------------------
     queued_progress_reports: List[ControllerProgressReport] = field(default_factory=list)
     pending_path_cancel_request: Optional[PendingPathCancelRequest] = None
-    pending_route_abort: Optional[PendingRouteAbortRequest] = None
+    pending_route_abort: bool = False
     pending_power_off: bool = False
-    pending_route_deactivate: Optional[PendingRouteDeactivateRequest] = None
+    pending_route_deactivate: bool = False
 
     # -------------------------------------------------------------------------
     # Operator Command Inbox (per design_new.md "Command queue + drain")
@@ -654,19 +654,24 @@ class TrainController:
         # ===== 1.5 REACTIVE SPEED-BASED STATE EVALUATION (per design_new.md) =====
         # Observe speed written by the previous tick's on_physics_updated and
         # adjust state-machine transitions accordingly.
-        if self.state == TrainState.STANDBY and self.current_speed_kmh > STOPPED_SPEED_THRESHOLD_KMH:
+        if self.state == TrainState.READY and self.current_speed_kmh > STOPPED_SPEED_THRESHOLD_KMH:
             # Manual driver pre-rolled before depart was issued, or another
-            # rare edge case. Move into RUNNING_MOVING.
+            # rare edge case. Move into RUNNING_MOVING. Per design_new.md
+            # "ato_running meaning and lifecycle", arm ato_running when this
+            # transition happens under ATO with an active authority.
             self.state = TrainState.RUNNING_MOVING
+            if self.control_mode == "ato" and self.received_path_plan is not None:
+                self.ato_running = True
+                self.path_backed_run_active = True
         elif (
             self.state == TrainState.RUNNING_MOVING
             and self.current_speed_kmh <= STOPPED_SPEED_THRESHOLD_KMH
             and self.received_path_plan is None
         ):
             # No-authority braking completion: zero speed reached without live
-            # authority. Transition to the state-machine-derived stopped ready
-            # state.
-            self.transition_to_standby() if self.active_cab in ("A", "B") else self.transition_to_idle()
+            # authority. Route through transition_to_ready() so path-run and
+            # ato_running side-effects are cleared in lockstep.
+            self.transition_to_ready()
 
         # ===== 2. LOOKAHEAD (computed live; no caching) =====
         # Per design_new.md, lookahead is a pure derived value. We trigger one
@@ -688,7 +693,7 @@ class TrainController:
             self._last_speed_limit_reason = "Cab points away from authority"
             self._last_atc_limit_reason_code = AtcLimitReasonCode.WRONG_DIRECTION_CAB
             logger.debug(
-                "[TrainController %s] ATC blocked: cab opposite live authority",
+                "[TrainController %s] ATC blocked: cab opposite active authority",
                 self.train_id,
             )
         else:
@@ -717,8 +722,8 @@ class TrainController:
 
         if overspeed > 10:
             # Emergency brake - overspeed > 10 km/h. Per design_new.md the
-            # canonical EB controller-local effects are: set eb_active = True,
-            # force handle to EB, clear ato_running, and (when a live path
+            # EB controller-local effects are: set eb_active = True,
+            # force handle to EB, clear ato_running, and (when an active path
             # exists) write pending_path_cancel_request(EB).
             self.eb_active = True
             self._last_speed_limit_reason = "Emergency brake: overspeed"
@@ -726,10 +731,8 @@ class TrainController:
             self.handle_position = HandlePosition.EB
             self.ato_running = False
             if self.received_path_plan is not None:
-                self.pending_path_cancel_request = PendingPathCancelRequest(
-                    cancellation_kind=PathCancellationKind.EB,
-                    reason="ATC overspeed escalation",
-                    expected_path_id=self.assigned_path_id,
+                self._set_pending_path_cancel_request(
+                    "eb", "ATC overspeed escalation"
                 )
             self.pending_notifications.append(
                 "ATC triggered emergency brake: overspeed"
@@ -789,7 +792,7 @@ class TrainController:
                     self.current_speed_kmh, 0.0
                 )
                 if self.current_speed_kmh <= STOPPED_SPEED_THRESHOLD_KMH:
-                    self.transition_to_standby()
+                    self.transition_to_ready()
                     self.handle_position = HandlePosition.N
         else:
             # Manual mode - ATC still enforces braking if overspeed
@@ -829,9 +832,9 @@ class TrainController:
                 )
 
             elif self._is_standalone_path_complete(train):
-                self.transition_to_standby()
+                self.transition_to_ready()
                 logger.debug(
-                    "[TrainController %s] standalone path complete -> STANDBY",
+                    "[TrainController %s] standalone path complete -> READY",
                     self.train_id,
                 )
 
@@ -840,7 +843,7 @@ class TrainController:
             # The reactive speed-based evaluation at the top of tick() handles
             # the no-authority no-speed case. There is nothing to do here.
 
-        # Other states (IDLE, STANDBY, AT_STATION, OFF) handled by commands
+        # Other states (READY, RUNNING_AT_STATION, OFF) handled by commands
 
     # -------------------------------------------------------------------------
     # ATC (Automatic Train Control) Logic
@@ -1258,7 +1261,7 @@ class TrainController:
         if self._is_caution_ahead():
             limiting_code = AtcLimitReasonCode.CAUTION
 
-        # Without live authority, the canonical reason is `no_authority`.
+        # Without active authority, the reason is `no_authority`.
         if self.received_path_plan is None and limiting_code in (
             None,
             AtcLimitReasonCode.AUTHORITY_STOP,
@@ -1286,10 +1289,10 @@ class TrainController:
         return False
 
     def _is_cab_wrong_direction(self) -> bool:
-        """Return True when the active cab points away from live authority.
+        """Return True when the active cab points away from active authority.
 
-        v1 only flags wrong-direction cab when there is live path authority
-        (no live authority falls under the `no_authority` reason instead).
+        v1 only flags wrong-direction cab when there is active path authority
+        (no active authority falls under the `no_authority` reason instead).
         Compares the current cab's required-cab projection from the active
         path with the active cab and returns True on mismatch.
         """
@@ -1955,8 +1958,8 @@ class TrainController:
             return float("inf")
 
         block = self.network.blocks.get(track.block_section_id)
-        if block and hasattr(block, "max_speed_kmh") and block.max_speed_kmh:
-            return block.max_speed_kmh
+        if block and block.speed_limit_kmh:
+            return block.speed_limit_kmh
 
         return float("inf")
 
@@ -1975,7 +1978,7 @@ class TrainController:
     def power_on(self, value: bool) -> None:
         """Convenience setter that maps to the canonical `state` field.
 
-        ``True`` selects STANDBY when a cab is already chosen, otherwise IDLE.
+        ``True`` selects READY (cab selection is orthogonal per design_new.md).
         ``False`` forces OFF. Production code should write `self.state`
         directly (or call `power_on_cmd()` / `power_off_cmd()`); this setter
         exists so test fixtures and external snapshots can still write the
@@ -1983,11 +1986,7 @@ class TrainController:
         """
         if value:
             if self.state == TrainState.OFF:
-                self.state = (
-                    TrainState.STANDBY
-                    if self.active_cab in ("A", "B")
-                    else TrainState.IDLE
-                )
+                self.state = TrainState.READY
         else:
             self.state = TrainState.OFF
 
@@ -2000,13 +1999,37 @@ class TrainController:
         speed_kmh = getattr(self, "current_speed_kmh", 0.0) or 0.0
         return speed_kmh <= STOPPED_SPEED_THRESHOLD_KMH
 
+    @property
+    def is_recovery_clean(self) -> bool:
+        """Canonical "controller has reached the stopped recovery state" predicate.
+
+        Per design_new.md (Controller state machine subsection): true when
+        ``state == READY`` and none of the active conditions
+        ``{HAS_AUTHORITY, EB_LATCHED, POWER_OFF_PENDING}`` are set. Phase-1
+        route-deviation cleanup and Phase-1 dwell-entry both gate on this
+        predicate; other call sites cross-reference it by name and must not
+        restate the conjuncts.
+        """
+        if self.state != TrainState.READY:
+            return False
+        if self.received_path_plan is not None:
+            # HAS_AUTHORITY ∈ active_conditions
+            return False
+        if self.eb_active:
+            # EB_LATCHED ∈ active_conditions
+            return False
+        if self.pending_power_off:
+            # POWER_OFF_PENDING ∈ active_conditions
+            return False
+        return True
+
     def is_stopped_at_authority_end(self) -> bool:
-        """True when the train is stopped at the usable end of live authority.
+        """True when the train is stopped at the usable end of active authority.
 
         Per design_new.md, this is the post-physics usable-authority stop
         check used by Phase 3 path completion. The full predicate requires
-        depart-acceptance (state == RUNNING_MOVING), live authority, and a
-        distance-0 ATC limit of 0 whose canonical reason code is
+        depart-acceptance (state == RUNNING_MOVING), active authority, and a
+        distance-0 ATC limit of 0 whose reason code is
         `AtcLimitReasonCode.AUTHORITY_STOP`. v1 keys this predicate on the
         enum value (not on free-form reason strings).
         """
@@ -2152,7 +2175,7 @@ class TrainController:
                 lookahead_points.append(
                     LookaheadPoint(
                         distance_cm=0.0,  # Current position
-                        speed_limit_kmh=current_block.max_speed_kmh or float("inf"),
+                        speed_limit_kmh=current_block.speed_limit_kmh or float("inf"),
                         block_id=current_block_id,
                         signal_state=signal_state,
                         station_id=station_id,
@@ -2194,7 +2217,7 @@ class TrainController:
             lookahead_points.append(
                 LookaheadPoint(
                     distance_cm=current_distance,
-                    speed_limit_kmh=block.max_speed_kmh or float("inf"),
+                    speed_limit_kmh=block.speed_limit_kmh or float("inf"),
                     block_id=block_id,
                     signal_state=signal_state,
                     station_id=station_id,
@@ -2307,10 +2330,10 @@ class TrainController:
     # -------------------------------------------------------------------------
 
     def _get_effective_path_tiles(self):
-        """Get live path tiles for control decisions.
+        """Get active path tiles for control decisions.
 
         Per design_new.md ~line 1292, the dispatcher's `Path` is the single
-        source of truth for live path geometry. This delegates to
+        source of truth for active path geometry. This delegates to
         `get_path_tiles()` which reads `Path.path_tiles` from the active
         dispatcher path.
         """
@@ -2644,8 +2667,8 @@ class TrainController:
             return False
 
         # Check if this station is a scheduled stop on the train's route
-        if train.assigned_route_id and hasattr(self.network, "routes"):
-            route = self.network.routes.get(train.assigned_route_id)
+        if train.assigned_route_id and self.route_executor is not None:
+            route = self.route_executor.route_registry.get(train.assigned_route_id)
             if route:
                 # Check if platform is in the route's waypoints
                 for waypoint in route.waypoints:
@@ -3226,7 +3249,7 @@ class TrainController:
         path_end_safety_margin = self._get_effective_safety_margin()
         # The path end stop is the safety-margin-adjusted authority boundary.
         # `path_end_reason_code` lets callers override the reason — the
-        # fallback (no live path) builder uses `NO_AUTHORITY` here, while
+        # fallback (no active path) builder uses `NO_AUTHORITY` here, while
         # the path-based builder uses `AUTHORITY_STOP`.
         path_end_code = path_end_reason_code or AtcLimitReasonCode.AUTHORITY_STOP
         restrictions.append(
@@ -3255,7 +3278,7 @@ class TrainController:
 
         # Signal restrictions are intentionally NOT used for ATC/ATO speed calculation.
         # This is a CBTC block-based system where:
-        # - Speed control comes from BLOCKS (clearance distance, max_speed_kmh)
+        # - Speed control comes from BLOCKS (clearance distance, speed_limit_kmh)
         # - Signals are visual indicators of block state only (for display in UI)
         # - Train stopping is enforced by block reservation, not signal aspects
         # See docs/ARCHITECTURE.md "CBTC Block-Based Signaling System" for details.
@@ -3271,7 +3294,7 @@ class TrainController:
 
         # NOTE: Station speed limits are NOT added as restrictions here.
         # ATC/ATO only cares about BLOCKS, not platforms. Station speed limits
-        # are applied through the block's max_speed_kmh property, not the station's
+        # are applied through the block's speed_limit_kmh property, not the station's
         # top_speed_kmh which is for visualization/informational purposes only.
 
         curves = []
@@ -3408,9 +3431,8 @@ class TrainController:
             sample_distance += step
 
         # Add explicit curve points for cleaner visualization. Both anchor
-        # points carry the canonical path-end reason code so consumers can
-        # key on it (`AUTHORITY_STOP` with a live path, `NO_AUTHORITY`
-        # without).
+        # points carry the path-end reason code so consumers can key on it
+        # (`AUTHORITY_STOP` with an active path, `NO_AUTHORITY` without).
         anchor_code = path_end_reason_code or AtcLimitReasonCode.AUTHORITY_STOP
 
         # 1. Target stop point (where train actually stops)
@@ -3496,6 +3518,10 @@ class TrainController:
         )
         self.command_inbox.append(cmd)
         return cmd
+
+    def enqueue_command(self, kind: str, payload: Optional[Dict[str, Any]] = None) -> Command:
+        """Public alias for `_enqueue_command` (used by bootstrap and external callers)."""
+        return self._enqueue_command(kind, payload)
 
     def _drain_command_inbox(self, event_time: float) -> None:
         """Drain the command inbox in canonical kind order, FIFO within each.
@@ -3590,9 +3616,9 @@ class TrainController:
                     train_id=self.train_id,
                     payload={
                         "command_id": cmd.command_id,
-                        "kind": kind,
+                        "command_name": kind,
                         "success": result.success,
-                        "message": result.message,
+                        "reason": result.message,
                     },
                 )
             except Exception:
@@ -3618,10 +3644,7 @@ class TrainController:
             return CommandResult(False, "Train not found")
         if self.state != TrainState.OFF:
             return CommandResult(False, "Power already on")
-        if self.active_cab in ("A", "B"):
-            self.state = TrainState.STANDBY
-        else:
-            self.state = TrainState.IDLE
+        self.state = TrainState.READY
         self.handle_position = HandlePosition.N
         return CommandResult(True, "Power on")
 
@@ -3631,14 +3654,7 @@ class TrainController:
             return CommandResult(False, "Train not found")
         if not self.is_stopped():
             return CommandResult(False, "Cannot power off while moving")
-        self.ato_running = False
-        self.pending_power_off = True
-        if self.received_path_plan is not None:
-            self.pending_path_cancel_request = PendingPathCancelRequest(
-                cancellation_kind=PathCancellationKind.POWER_OFF,
-                reason="power off",
-                expected_path_id=self.assigned_path_id,
-            )
+        self._set_pending_power_off()
         return CommandResult(True, "Power off accepted")
 
     def _execute_activate_emergency_cmd(self, payload, event_time) -> CommandResult:
@@ -3652,11 +3668,7 @@ class TrainController:
             self.state != TrainState.RUNNING_AT_STATION
             and self.received_path_plan is not None
         ):
-            self.pending_path_cancel_request = PendingPathCancelRequest(
-                cancellation_kind=PathCancellationKind.EB,
-                reason="operator EB",
-                expected_path_id=self.assigned_path_id,
-            )
+            self._set_pending_path_cancel_request("eb", "operator EB")
         return CommandResult(True, "Emergency stop activated")
 
     def _execute_release_emergency_cmd(self, payload, event_time) -> CommandResult:
@@ -3676,10 +3688,7 @@ class TrainController:
         self.eb_active = False
         self.handle_position = HandlePosition.N
         if self.state != TrainState.RUNNING_AT_STATION:
-            if self.active_cab in ("A", "B"):
-                self.state = TrainState.STANDBY
-            else:
-                self.state = TrainState.IDLE
+            self.state = TrainState.READY
         return CommandResult(True, "Emergency stop released")
 
     def _execute_set_cab(self, payload, event_time) -> CommandResult:
@@ -3711,8 +3720,9 @@ class TrainController:
         """
         Turn on train power.
 
-        Per design_new.md line 1377: valid only when state == OFF. On accept,
-        transitions to STANDBY when a cab is already selected, otherwise IDLE.
+        Per design_new.md: valid only when state == OFF. On accept, transitions
+        to READY regardless of cab selection (cab is orthogonal in the v1 state
+        machine).
         """
         train = self._get_train()
         if train is None:
@@ -3721,10 +3731,7 @@ class TrainController:
         if self.state != TrainState.OFF:
             return CommandResult(False, "Power already on")
 
-        if self.active_cab in ("A", "B"):
-            self.state = TrainState.STANDBY
-        else:
-            self.state = TrainState.IDLE
+        self.state = TrainState.READY
         self.handle_position = HandlePosition.N
 
         return CommandResult(True, "Power on")
@@ -3735,11 +3742,11 @@ class TrainController:
 
         Per design_new.md: stopped-only at acceptance, valid even when
         eb_active == True. On acceptance, immediately disengages any active
-        ATO run, sets pending_power_off = True, and (when a live path exists)
-        also writes pending_path_cancel_request with cancellation_kind =
-        PathCancellationKind.POWER_OFF (inclusive-latch rule). The actual
-        dispatcher cancellation, route teardown, and OFF transition happen in
-        the later eligible Phase 3 cleanup.
+        ATO run, sets pending_power_off = True, and (when an active path
+        exists) also writes pending_path_cancel_request with initiator =
+        "power_off" (inclusive-latch rule). The actual dispatcher cancellation,
+        route teardown, and OFF transition happen in the later eligible
+        Phase 3 cleanup.
         """
         train = self._get_train()
         if train is None:
@@ -3748,14 +3755,7 @@ class TrainController:
         if not self.is_stopped():
             return CommandResult(False, "Cannot power off while moving")
 
-        self.ato_running = False
-        self.pending_power_off = True
-        if self.received_path_plan is not None:
-            self.pending_path_cancel_request = PendingPathCancelRequest(
-                cancellation_kind=PathCancellationKind.POWER_OFF,
-                reason="power off",
-                expected_path_id=self.assigned_path_id,
-            )
+        self._set_pending_power_off()
 
         return CommandResult(True, "Power off accepted; shutdown deferred to Phase 3")
 
@@ -3766,11 +3766,11 @@ class TrainController:
         Per design_new.md: only acceptance gate is `eb_active == False`
         (idempotent rejection of a duplicate activation). Valid in any motion
         state, any operational state including OFF, with or without a cab,
-        with or without a live path. On acceptance: set eb_active = True,
-        force handle to EB, clear ato_running, and (when a live path exists)
-        write pending_path_cancel_request(EB). Exception while
+        with or without an active path. On acceptance: set eb_active = True,
+        force handle to EB, clear ato_running, and (when an active path
+        exists) write pending_path_cancel_request(EB). Exception while
         state == RUNNING_AT_STATION: the controller is dwelling and has no
-        live path, so no pending_path_cancel_request is written; state and
+        active path, so no pending_path_cancel_request is written; state and
         dwell timer are preserved.
         """
         if self.eb_active:
@@ -3786,11 +3786,7 @@ class TrainController:
             self.state != TrainState.RUNNING_AT_STATION
             and self.received_path_plan is not None
         ):
-            self.pending_path_cancel_request = PendingPathCancelRequest(
-                cancellation_kind=PathCancellationKind.EB,
-                reason="operator EB",
-                expected_path_id=self.assigned_path_id,
-            )
+            self._set_pending_path_cancel_request("eb", "operator EB")
 
         return CommandResult(True, "Emergency stop activated")
 
@@ -3810,8 +3806,8 @@ class TrainController:
         Otherwise return success=False with controller state unchanged.
         On acceptance from RUNNING_AT_STATION (dwell EB cycle), state stays
         RUNNING_AT_STATION and only eb_active is cleared; dwell timing is
-        unaffected. Otherwise lands in the state-machine-derived stopped
-        ready state (IDLE / STANDBY).
+        unaffected. Otherwise lands in the READY state (powered, stopped, not
+        dwelling — cab selection is preserved as an orthogonal field).
         """
         train = self._get_train()
         if train is None:
@@ -3835,44 +3831,77 @@ class TrainController:
         self.eb_active = False
         self.handle_position = HandlePosition.N
 
-        # Land in the state-machine-derived stopped ready state, except
-        # during dwell (RUNNING_AT_STATION) where the dwell is preserved.
+        # Land in READY (powered, stopped, not dwelling), except during dwell
+        # (RUNNING_AT_STATION) where the dwell is preserved.
         if self.state != TrainState.RUNNING_AT_STATION:
-            if self.active_cab in ("A", "B"):
-                self.state = TrainState.STANDBY
-            else:
-                self.state = TrainState.IDLE
+            self.state = TrainState.READY
         return CommandResult(True, "Emergency stop released")
 
     # -------------------------------------------------------------------------
-    # Multi-flag latch writers (per design_new.md inclusive-latch rule, line 199)
+    # Canonical Phase-3 latch writer helpers (per design_new.md "Latch Table")
     # -------------------------------------------------------------------------
+    #
+    # `_set_pending_path_cancel_request` is the leaf — the only writer of the
+    # `pending_path_cancel_request` field. The other three helpers
+    # (`_set_pending_route_abort`, `_set_pending_power_off`,
+    # `_set_pending_route_deactivate`) own their own bool/payload field and
+    # fan out to the leaf when an active path exists, per the inclusive-latch
+    # rule. Outside callers route through these helpers; direct field writes
+    # on the latch slots are not permitted.
 
-    def request_route_abort(self, reason: str) -> CommandResult:
+    def _set_pending_path_cancel_request(
+        self, initiator: str, reason: Optional[str] = None
+    ) -> None:
+        """Canonical writer for `pending_path_cancel_request`.
+
+        Per design_new.md, when multiple same-tick writers race the most-recent
+        payload wins. This method always overwrites; callers do not need to
+        check whether the slot is already populated.
         """
-        Operator/admin request to abort the entire route run.
-
-        Per design_new.md line 199 (inclusive-latch rule): writes
-        `pending_route_abort` and, when a live path exists, also writes
-        `pending_path_cancel_request` with
-        `cancellation_kind=PathCancellationKind.OPERATOR_CANCELLED`.
-
-        The actual route teardown happens later in Phase 3 once the inclusive
-        cancel has committed.
-        """
-        diagnostic = reason or "operator abort"
-        path_id = self.assigned_path_id
-        self.pending_route_abort = PendingRouteAbortRequest(
-            reason=diagnostic,
-            expected_path_id=path_id,
+        self.pending_path_cancel_request = PendingPathCancelRequest(
+            initiator=initiator, reason=reason
         )
+
+    def _set_pending_route_abort(self, reason: str = "operator abort") -> None:
+        """Canonical writer for `pending_route_abort`.
+
+        Sets the bool latch and, when an active path exists, fans out to
+        `_set_pending_path_cancel_request(initiator="operator_cancelled")`.
+        Per design_new.md, the diagnostic `reason` is recorded only on the
+        path_cancellation / command_result notifications via the inclusive
+        cancel's payload — it is NOT stored on this latch (which is bool).
+
+        This underscore-named helper is the canonical public entry point per
+        the doc's Writer-helper rule; there is no separate wrapper method.
+        """
+        self.pending_route_abort = True
         if self.received_path_plan is not None:
-            self.pending_path_cancel_request = PendingPathCancelRequest(
-                cancellation_kind=PathCancellationKind.OPERATOR_CANCELLED,
-                reason=diagnostic,
-                expected_path_id=path_id,
-            )
-        return CommandResult(True, "Route abort latched")
+            self._set_pending_path_cancel_request("operator_cancelled", reason)
+
+    def _set_pending_power_off(self, reason: str = "power off") -> None:
+        """Canonical writer for `pending_power_off`.
+
+        Sets the bool latch, immediately clears `ato_running` per the doc's
+        command-drain side effects, and fans out to
+        `_set_pending_path_cancel_request(initiator="power_off")` when an
+        active path exists.
+        """
+        self.pending_power_off = True
+        self.ato_running = False
+        if self.received_path_plan is not None:
+            self._set_pending_path_cancel_request("power_off", reason)
+
+    def _set_pending_route_deactivate(self, reason: str = "route deactivated") -> None:
+        """Canonical writer for `pending_route_deactivate`.
+
+        Sets the bool latch and, when an active path exists, fans out to
+        `_set_pending_path_cancel_request(initiator="revoked")`. Per
+        design_new.md the diagnostic `reason` is recorded only on the
+        cancellation notification via the inclusive cancel's payload.
+        """
+        self.pending_route_deactivate = True
+        if self.received_path_plan is not None:
+            self._set_pending_path_cancel_request("revoked", reason)
 
     # -------------------------------------------------------------------------
     # Handle Commands
@@ -3954,11 +3983,11 @@ class TrainController:
         prev_state = self.state
         if cab is None:
             if prev_state != TrainState.RUNNING_AT_STATION:
-                self.state = TrainState.IDLE
+                self.state = TrainState.READY
             train.update_position_for_cab(None)
         else:
             if prev_state != TrainState.RUNNING_AT_STATION:
-                self.state = TrainState.STANDBY
+                self.state = TrainState.READY
             train.update_position_for_cab(cab)
 
             # When switching cabs (A <-> B), the physical train doesn't move.
@@ -4059,13 +4088,9 @@ class TrainController:
         # Per design_new.md, set_mode disengages any active ATO run.
         self.ato_running = False
 
-        # Preserve dwell state if currently dwelling; otherwise land in the
-        # state-machine-derived stopped ready state.
+        # Preserve dwell state if currently dwelling; otherwise land in READY.
         if self.state != TrainState.RUNNING_AT_STATION:
-            if self.active_cab:
-                self.state = TrainState.STANDBY
-            else:
-                self.state = TrainState.IDLE
+            self.state = TrainState.READY
         return CommandResult(True, f"Mode set to {mode}")
 
     def set_manual_mode_type(self, mode_type: str) -> CommandResult:
@@ -4141,10 +4166,9 @@ class TrainController:
         - Train state must be IDLE or STANDBY
 
         ATO Automation:
-        - Automatically selects cab from path direction when cab is OFF (None)
+        - Automatically selects cab from path direction when no cab is set
         - Automatically corrects cab direction to match path when already set
-        - Uses set_cab() for proper state updates (facing_direction, entry edges,
-          state transitions IDLE -> STANDBY, etc.)
+        - Uses set_cab() for proper state updates (facing_direction, entry edges)
         """
         train = self._get_train()
         if train is None:
@@ -4156,10 +4180,10 @@ class TrainController:
         if not self.power_on:
             return CommandResult(False, "Power is off")
 
-        # Allow IDLE (no cab) or STANDBY (cab set) - auto-selection handles IDLE
-        if self.state not in (TrainState.IDLE, TrainState.STANDBY):
+        # Allow READY only - auto-selection picks/corrects the cab as needed.
+        if self.state != TrainState.READY:
             return CommandResult(
-                False, f"Train not in IDLE or STANDBY (is {self.state.value})"
+                False, f"Train not in READY (is {self.state.value})"
             )
 
         # Recalculate ATO info fresh to ensure cab direction matches
@@ -4168,7 +4192,7 @@ class TrainController:
 
         # ATO Auto-selection/correction: determine the required cab from path
         # direction and select or switch if needed. This handles both:
-        #   1. cab=None (OFF): auto-select cab from path (IDLE -> STANDBY)
+        #   1. cab=None: auto-select cab from path
         #   2. cab=A/B but wrong: auto-correct cab to match path direction
         if self.ato_info and self.ato_info.required_cab:
             required_cab = self.ato_info.required_cab
@@ -4200,10 +4224,12 @@ class TrainController:
                 "No cab selected and no path available to auto-select direction",
             )
 
-        # After auto-selection, verify we're in the right state
-        # set_cab() transitions IDLE -> STANDBY, so this should pass
-        if self.state != TrainState.STANDBY:
-            return CommandResult(False, f"Train not in STANDBY (is {self.state.value})")
+        # After auto-selection, verify we're still in READY (set_cab keeps
+        # state == READY for non-dwelling controllers).
+        if self.state != TrainState.READY:
+            return CommandResult(False, f"Train not in READY (is {self.state.value})")
+        if self.active_cab not in ("A", "B"):
+            return CommandResult(False, "ATO requires a cab to be selected")
 
         self.state = TrainState.RUNNING_MOVING
         self.ato_running = True
@@ -4215,7 +4241,7 @@ class TrainController:
         Stop ATO movement (service stop, not emergency).
 
         Sets ato_running=False. The tick() will handle braking and
-        transitioning to STANDBY when stopped.
+        transitioning to READY when stopped.
         """
         train = self._get_train()
         if train is None:
@@ -4241,24 +4267,17 @@ class TrainController:
         """Transition to RUNNING_AT_STATION state."""
         self.state = TrainState.RUNNING_AT_STATION
 
-    def transition_to_standby(self) -> None:
-        """Transition to STANDBY state."""
-        self.state = TrainState.STANDBY
-        self.ato_running = False
-        self.path_backed_run_active = False
+    def transition_to_ready(self) -> None:
+        """Transition to the READY state (powered, stopped, not dwelling).
 
-    def transition_to_idle(self) -> None:
-        """Transition to IDLE state (route complete, no direction)."""
-        train = self._get_train()
-        self.state = TrainState.IDLE
+        Per design_new.md, READY is the unified powered-stopped state
+        regardless of cab selection. Cab selection and route assignment are
+        orthogonal fields and are not cleared here; their lifecycle is owned
+        by `set_cab(...)` and `RouteExecutor` respectively.
+        """
+        self.state = TrainState.READY
         self.ato_running = False
         self.path_backed_run_active = False
-        self.active_cab = None
-        if train:
-            # Clear leading_end to None (no direction)
-            if train.position:
-                train.position.leading_end = None
-            train.assigned_route_id = None
 
     # -------------------------------------------------------------------------
     # Route Executor Commands (for RouteExecutor integration)
@@ -4283,16 +4302,18 @@ class TrainController:
         if train is None:
             return False
 
-        # ATO mode: delegate to ato_go() which accepts IDLE and STANDBY,
-        # auto-selects cab from path direction, and transitions to RUNNING_MOVING.
+        # ATO mode: delegate to ato_go() which accepts READY, auto-selects cab
+        # from path direction, and transitions to RUNNING_MOVING.
         if self.control_mode == "ato":
-            if self.state not in (TrainState.IDLE, TrainState.STANDBY):
+            if self.state != TrainState.READY:
                 return False
             result = self.ato_go()
             return result.success
 
-        # Manual mode: requires STANDBY with a facing direction
-        if self.state != TrainState.STANDBY:
+        # Manual mode: requires READY with a cab and facing direction
+        if self.state != TrainState.READY:
+            return False
+        if self.active_cab not in ("A", "B"):
             return False
         if train.facing_direction is None:
             return False
@@ -4335,41 +4356,33 @@ class TrainController:
     def finish_dwell(self) -> None:
         """Dwell-end transition called by Phase 1 dwell-complete step.
 
-        Per design_new.md: lands in the state-machine-derived stopped ready
-        state (IDLE with no cab, STANDBY with a cab). Does not clear
+        Per design_new.md: lands in READY (powered, stopped, not dwelling —
+        cab selection is preserved as an orthogonal field). Does not clear
         received_path_plan and does not start movement.
         """
-        if self.active_cab in ("A", "B"):
-            self.state = TrainState.STANDBY
-        else:
-            self.state = TrainState.IDLE
+        self.state = TrainState.READY
 
     def on_path_complete(self) -> None:
         """Called by PathDispatcher.try_complete_active_path on accepted completion.
 
-        Per design_new.md: transition to the state-machine-derived stopped
-        ready state. Does not clear received_path_plan (the dispatcher has
-        already transitioned Path.status), does not enter dwell itself.
+        Per design_new.md: transition to READY. Does not clear
+        received_path_plan (the dispatcher has already transitioned
+        Path.status), does not enter dwell itself.
         """
-        train = self._get_train()
         self.ato_running = False
         self.path_backed_run_active = False
-        if self.active_cab in ("A", "B"):
-            self.state = TrainState.STANDBY
-        else:
-            self.state = TrainState.IDLE
+        self.state = TrainState.READY
 
     def depart_from_station(self, has_more_waypoints: bool = True) -> bool:
         """
         Depart from station after dwell time.
 
-        Used by RouteExecutor after dwell time completes.
-
-        If has_more_waypoints is True, transitions to STANDBY.
-        If False (route complete), transitions to IDLE and clears route assignment.
+        Used by RouteExecutor after dwell time completes. Transitions to READY.
 
         Args:
-            has_more_waypoints: Whether route has more waypoints
+            has_more_waypoints: Reserved for callers that signal route end;
+                v1 ignores the value because route-run teardown is owned by
+                RouteExecutor (not the controller).
 
         Returns:
             True if successful, False if not in correct state
@@ -4381,14 +4394,9 @@ class TrainController:
         if self.state != TrainState.RUNNING_AT_STATION:
             return False
 
-        if has_more_waypoints:
-            self.state = TrainState.STANDBY
-        else:
-            # Route complete - unassign route and go to IDLE
-            self.state = TrainState.IDLE
+        self.state = TrainState.READY
+        if not has_more_waypoints:
             self.ato_running = False
-            if train:
-                train.assigned_route_id = None
 
         return True
 
@@ -4431,39 +4439,33 @@ class TrainController:
 
     def set_direction_and_standby(self, direction: Direction) -> bool:
         """
-        Set direction and transition to STANDBY (IDLE -> STANDBY).
+        Select cab A and stay in READY.
 
-        Used by RouteExecutor when activating a route for a train.
-
-        Args:
-            direction: Facing direction to set
+        Used by RouteExecutor when activating a route for a train. Per
+        design_new.md the v1 state machine has a single READY state that
+        covers powered-stopped regardless of cab; cab selection is its own
+        orthogonal field.
 
         Returns:
-            True if successful, False if not in IDLE state
+            True if successful, False if not in READY without a cab.
         """
         train = self._get_train()
         if train is None:
             return False
 
-        if self.state != TrainState.IDLE:
+        if self.state != TrainState.READY or self.active_cab is not None:
             return False
 
-        # Set leading end to A (Cab A is front)
         if train.position:
             train.position.leading_end = LeadingEnd.A
-        self.active_cab = "A"  # Setting direction implies Cab A is leading
-
-        self.state = TrainState.STANDBY
+        self.active_cab = "A"
         return True
 
     def clear_direction(self) -> bool:
         """
-        Clear facing direction and return to IDLE state (STANDBY -> IDLE).
+        Clear cab selection and stay in READY.
 
-        Allowed only when stopped and in STANDBY.
-
-        Returns:
-            True if successful, False if not allowed
+        Allowed only when stopped and in READY with a cab selected.
         """
         train = self._get_train()
         if train is None:
@@ -4472,15 +4474,12 @@ class TrainController:
         if not self.is_stopped():
             return False
 
-        if self.state != TrainState.STANDBY:
+        if self.state != TrainState.READY or self.active_cab is None:
             return False
 
-        # Clear leading_end (no direction)
         if train.position:
             train.position.leading_end = None
         self.active_cab = None
-
-        self.state = TrainState.IDLE
         return True
 
     def enable_manual(self) -> bool:
@@ -4488,10 +4487,8 @@ class TrainController:
         Enable manual control mode. Must be stopped.
 
         Per design_new.md, manual is a control mode, not a separate
-        operational state. The state stays at STANDBY/IDLE based on cab.
-
-        Returns:
-            True if successful, False if moving or OFF
+        operational state. The state stays at READY (or RUNNING_AT_STATION
+        if dwelling).
         """
         train = self._get_train()
         if train is None:
@@ -4505,7 +4502,7 @@ class TrainController:
 
         self.control_mode = "manual"
         self.ato_running = False
-        # State stays where it is (STANDBY / IDLE / RUNNING_AT_STATION).
+        # State stays where it is (READY / RUNNING_AT_STATION).
 
         return True
 
@@ -4539,8 +4536,8 @@ class TrainController:
     def to_dict(self) -> Dict[str, Any]:
         """Convert controller state to dictionary for JSON serialization.
 
-        This payload is the canonical home for live runtime state per
-        design_new.md. Persistent/configuration data lives on `Train.to_dict()`.
+        Live runtime state for JSON output (per design_new.md).
+        Persistent/configuration data lives on `Train.to_dict()`.
         """
         # Helper to convert infinity to None for JSON serialization
         def safe_float(value: float) -> Optional[float]:
@@ -4577,7 +4574,7 @@ class TrainController:
             "atc_speed_limit": safe_float(self.atc_speed_limit),
             "current_block_speed_limit": safe_float(self.current_block_speed_limit),
             "speed_limit_reason": self.speed_limit_reason,
-            # Live span (canonical live physical position)
+            # Current physical span
             "span": span_dict,
             # Include lookahead for display (live computed here)
             "lookahead": [
@@ -4739,8 +4736,8 @@ class TrainController:
             if block:
                 if block.state:
                     block_state = block.state.value
-                if block.max_speed_kmh and block.max_speed_kmh < float("inf"):
-                    block_speed_limit = block.max_speed_kmh
+                if block.speed_limit_kmh and block.speed_limit_kmh < float("inf"):
+                    block_speed_limit = block.speed_limit_kmh
 
             blocks.append(
                 {
@@ -4792,7 +4789,7 @@ class TrainController:
         # Calculate safety margin
         effective_safety_margin = self._get_effective_safety_margin()
         target_stop_cm = max(0.0, clearance_cm - effective_safety_margin)
-        # Without a live path, the canonical authority boundary delta is the
+        # Without an active path, the authority boundary delta is the
         # distance from the head to the safety-margin-adjusted end of the
         # current occupied block. The forward axis matches `speed_curves`.
         authority_boundary_delta_cm = target_stop_cm
@@ -4850,8 +4847,8 @@ class TrainController:
           `clearance_cm`, `safety_margin_cm`, `authority_boundary_delta_cm`,
           `speed_curves`
 
-        See the canonical schema described in the design doc for each
-        nested entry's keys.
+        See the schema described in the design doc for each nested
+        entry's keys.
         """
         return self._compute_canonical_lookahead()
 
@@ -4877,8 +4874,8 @@ class TrainController:
                 speed_limit_reason=self._last_speed_limit_reason
             )
             # Stamp the no_cab reason code on a single anchor curve point so
-            # consumers sampling the canonical payload see the structured
-            # reason even with no path/cab.
+            # consumers sampling the payload see the structured reason even
+            # with no path/cab.
             payload["lookahead"]["speed_curves"] = [
                 {
                     "distance_cm": 0.0,
@@ -5056,8 +5053,8 @@ class TrainController:
                 if block:
                     if block.state:
                         block_state = block.state.value
-                    if block.max_speed_kmh and block.max_speed_kmh < float("inf"):
-                        block_speed_limit = block.max_speed_kmh
+                    if block.speed_limit_kmh and block.speed_limit_kmh < float("inf"):
+                        block_speed_limit = block.speed_limit_kmh
 
                 blocks.append(
                     {
@@ -5202,10 +5199,10 @@ class TrainController:
 
         # Calculate effective safety margin (5cm for platform, 25cm otherwise)
         effective_safety_margin = self._get_effective_safety_margin()
-        # Target stop point is clearance minus safety margin. The canonical
+        # Target stop point is clearance minus safety margin.
         # `authority_boundary_delta_cm` is the signed forward distance from
-        # the head to the safety-margin-adjusted authority boundary; with a
-        # live path, that is the same axis as the speed_curves samples.
+        # the head to the safety-margin-adjusted authority boundary; with an
+        # active path, that is the same axis as the speed_curves samples.
         target_stop_cm = max(0.0, clearance_cm - effective_safety_margin)
         authority_boundary_delta_cm = target_stop_cm
 
@@ -5303,6 +5300,7 @@ def create_controller_for_train(
     train_id: str,
     network: "RailwayNetwork",
     path_dispatcher: Optional["PathDispatcher"] = None,
+    route_executor: Optional["RouteExecutor"] = None,
 ) -> TrainController:
     """
     Create a TrainController instance for a train.
@@ -5311,10 +5309,14 @@ def create_controller_for_train(
         train_id: ID of the train to control
         network: Railway network
         path_dispatcher: PathDispatcher for reading path data (single source of truth)
+        route_executor: RouteExecutor that owns the canonical route_registry
 
     Returns:
         TrainController instance
     """
     return TrainController(
-        train_id=train_id, network=network, path_dispatcher=path_dispatcher
+        train_id=train_id,
+        network=network,
+        path_dispatcher=path_dispatcher,
+        route_executor=route_executor,
     )

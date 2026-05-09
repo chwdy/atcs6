@@ -1064,8 +1064,8 @@ class TrainPhysics:
         # State source: controller state (canonical owner per design_new.md).
         operational_state = getattr(controller, "state", TrainState.OFF)
 
-        # Voltage selection by operational state. v1 states are OFF, IDLE,
-        # STANDBY, RUNNING_MOVING, RUNNING_AT_STATION.
+        # Voltage selection by operational state. v1 states are OFF, READY,
+        # RUNNING_MOVING, RUNNING_AT_STATION.
         if operational_state == TrainState.OFF:
             voltage = 0.0
         elif operational_state == TrainState.RUNNING_MOVING:
@@ -1083,7 +1083,7 @@ class TrainPhysics:
             else:
                 voltage = profile.speed_to_voltage(controller.target_speed)
         else:
-            # IDLE / STANDBY / RUNNING_AT_STATION: powered but not moving.
+            # READY / RUNNING_AT_STATION: powered but not moving.
             voltage = profile.lighting_voltage
 
         # Emergency stop override

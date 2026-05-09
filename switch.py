@@ -6,11 +6,11 @@ This module defines the Switch entity which represents a railway turnout (switch
 with configurable physical properties for each branch (MAIN and DIVERGE paths).
 
 Design Notes:
-- Each switch has separate length and radius for MAIN (state 0) and DIVERGE (state 1) paths
-- Switch state is authoritative on the Switch entity (not on TrackSegment) in v1
+- Each switch has separate length and radius for MAIN (position 0) and DIVERGE (position 1) paths
+- Switch position is authoritative on the Switch entity (not on TrackSegment) in v1
 - Switches are auto-created when switch tracks are placed
 - Default length is 0.0 cm (unconfigured) which triggers warnings but allows operation
-- Multi-owner future-authority locks: same-state path locks may co-exist; physical
+- Multi-owner future-authority locks: same-position path locks may co-exist; physical
   occupancy (`occupied_by`) is single-owner
 """
 
@@ -18,24 +18,25 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 
 from enums import SwitchState
+from track_resource import TrackResource
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
 
 
 @dataclass
-class Switch:
+class Switch(TrackResource):
     """
     Railway switch (turnout) configuration and runtime state.
 
     A switch is placed at a specific track tile and defines the physical
     characteristics of each path through the turnout mechanism, plus the
-    authoritative runtime state (state, occupied_by, locks, protection).
+    authoritative runtime state (position, occupied_by, locks, protection).
 
     Locking model (v1):
     - `locks` is a multi-owner future-authority lock collection keyed by
       `(path_id, claim_role, source_switch_id)` mapped to `(train_id, locked_state)`.
-      Compatible same-state lock claims may co-exist.
+      Compatible same-position lock claims may co-exist.
     - `train_protection_claims` is the train-owned physical protection set used
       after the train head has entered a switch and consumed the path lock.
     - Physical occupancy (`occupied_by`) is single-owner.
@@ -61,7 +62,7 @@ class Switch:
     # ========================================================================
     # AUTHORITATIVE RUNTIME STATE (v1)
     # ========================================================================
-    state: SwitchState = SwitchState.MAIN
+    position: SwitchState = SwitchState.MAIN
     """Authoritative physical alignment of the switch (MAIN=0, DIVERGE=1)."""
 
     occupied_by: Optional[str] = None
@@ -102,6 +103,18 @@ class Switch:
     notify BlockManager."""
 
     # ========================================================================
+    # TrackResource identity
+    # ========================================================================
+
+    @property
+    def resource_id(self) -> str:
+        return self.switch_id
+
+    @property
+    def resource_type(self) -> str:
+        return "switch"
+
+    # ========================================================================
     # PHYSICAL HELPERS
     # ========================================================================
 
@@ -126,13 +139,13 @@ class Switch:
         else:
             return self.diverge_length_cm > 0
 
-    def get_current_state(self, network: "RailwayNetwork") -> int:
-        """Get current switch state.
+    def get_current_position(self, network: "RailwayNetwork") -> int:
+        """Get current switch position.
 
-        v1: state is authoritative on the Switch entity. The `network` argument
-        is retained for signature compatibility with legacy callers.
+        v1: position is authoritative on the Switch entity. The `network`
+        argument is retained for signature compatibility with legacy callers.
         """
-        return int(self.state)
+        return int(self.position)
 
     # ========================================================================
     # MULTI-OWNER LOCK METHODS (v1)
@@ -223,7 +236,7 @@ class Switch:
         # If the requested state differs from the current physical state, a
         # switch throw is required; that is forbidden while the switch is
         # physically occupied (even by the same train).
-        if int(self.state) != locked_state and self.occupied_by is not None:
+        if int(self.position) != locked_state and self.occupied_by is not None:
             return False
 
         self.locks[key] = (train_id, locked_state)
@@ -301,18 +314,18 @@ class Switch:
                     )
                     break
 
-    def request_state_change(
-        self, new_state: int, network: "RailwayNetwork"
+    def request_position_change(
+        self, new_position: int, network: "RailwayNetwork"
     ) -> Tuple[bool, str]:
-        """Request to change switch state.
+        """Request to change switch position.
 
         Fails if the switch is disabled, physically occupied, or if any future
-        lock or train-owned protection requires a different state. On success,
-        mutates `self.state` and notifies `BlockManager` via the wired
-        `simulation_controller`.
+        lock or train-owned protection requires a different position. On
+        success, mutates `self.position` and notifies `BlockManager` via the
+        wired `simulation_controller`.
 
         Args:
-            new_state: Desired switch state (0=MAIN, 1=DIVERGE).
+            new_position: Desired switch position (0=MAIN, 1=DIVERGE).
             network: Railway network (retained for signature compatibility).
 
         Returns:
@@ -326,39 +339,39 @@ class Switch:
                 "Switch runtime operations require a SimulationController"
             )
 
-        # Disabled switches cannot be targeted by manual/API state-change commands.
+        # Disabled switches cannot be targeted by manual/API position-change commands.
         if self.disabled:
             return (False, f"Switch {self.switch_id} is disabled")
 
-        # Physical occupancy blocks any state mutation.
+        # Physical occupancy blocks any position mutation.
         if self.occupied_by is not None:
             return (
                 False,
                 f"Switch occupied by train {self.occupied_by}",
             )
 
-        # Block any future lock that requires a different state.
+        # Block any future lock that requires a different position.
         for key, (_train_id, locked_state) in self.locks.items():
-            if locked_state != new_state:
+            if locked_state != new_position:
                 path_id = key[0]
                 return (False, f"Switch locked by path {path_id}")
 
-        # Block any train-owned protection that requires a different state.
+        # Block any train-owned protection that requires a different position.
         for claim_train_id, claim_source_id, claim_state in self.train_protection_claims:
-            if claim_state != new_state:
+            if claim_state != new_position:
                 return (
                     False,
                     f"Switch protected by train {claim_train_id} (source {claim_source_id})",
                 )
 
-        # Mutate authoritative state and notify BlockManager.
-        self.state = SwitchState(new_state)
-        self.simulation_controller.block_manager.on_switch_state_changed(
+        # Mutate authoritative position and notify BlockManager.
+        self.position = SwitchState(new_position)
+        self.simulation_controller.block_manager.on_switch_position_changed(
             self.switch_id
         )
 
-        state_name = "MAIN" if new_state == 0 else "DIVERGE"
-        return (True, f"Switch state changed to {state_name}")
+        position_name = "MAIN" if new_position == 0 else "DIVERGE"
+        return (True, f"Switch position changed to {position_name}")
 
     # ========================================================================
     # SERIALIZATION
@@ -380,7 +393,7 @@ class Switch:
             "switch_type": self.switch_type,
             "name": self.name,
             "notes": self.notes,
-            "state": int(self.state),
+            "position": int(self.position),
             "occupied_by": self.occupied_by,
             "disabled": self.disabled,
             "flank_protection": [
@@ -422,7 +435,7 @@ class Switch:
             name=data.get("name", ""),
             notes=data.get("notes", ""),
         )
-        switch.state = SwitchState(int(data.get("state", 0)))
+        switch.position = SwitchState(int(data.get("position", 0)))
         switch.occupied_by = data.get("occupied_by")
         switch.disabled = bool(data.get("disabled", False))
         switch.flank_protection = [
@@ -454,6 +467,6 @@ class Switch:
         occ = f", occupied_by={self.occupied_by}" if self.occupied_by else ""
         return (
             f"Switch({self.switch_id} at ({self.x},{self.y}): "
-            f"state={self.state.name}, MAIN={self.main_length_cm}cm, "
+            f"position={self.position.name}, MAIN={self.main_length_cm}cm, "
             f"DIVERGE={self.diverge_length_cm}cm{lock_info}{occ})"
         )

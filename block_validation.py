@@ -314,7 +314,7 @@ def _get_edges_from_track_bits(track_bits: int) -> Set[str]:
 
 
 def validate_block_properties(
-    block_id: str, name: str, length_cm: float, max_speed_kmh: Optional[float]
+    block_id: str, name: str, length_cm: float, speed_limit_kmh: Optional[float]
 ) -> Tuple[bool, List[str]]:
     """
     Validate block properties are reasonable.
@@ -323,16 +323,7 @@ def validate_block_properties(
     1. block_id must be non-empty and valid format
     2. name should be non-empty (warning only)
     3. length_cm must be >= 0
-    4. max_speed_kmh must be > 0 if provided
-
-    Args:
-        block_id: Block identifier
-        name: Block name
-        length_cm: Physical track length
-        max_speed_kmh: Optional speed limit
-
-    Returns:
-        Tuple of (is_valid, error_messages)
+    4. speed_limit_kmh must be > 0 if provided
     """
     errors = []
 
@@ -342,8 +333,8 @@ def validate_block_properties(
     if length_cm < 0:
         errors.append(f"length_cm cannot be negative: {length_cm}")
 
-    if max_speed_kmh is not None and max_speed_kmh <= 0:
-        errors.append(f"max_speed_kmh must be positive: {max_speed_kmh}")
+    if speed_limit_kmh is not None and speed_limit_kmh <= 0:
+        errors.append(f"speed_limit_kmh must be positive: {speed_limit_kmh}")
 
     return len(errors) == 0, errors
 

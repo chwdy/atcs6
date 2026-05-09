@@ -27,6 +27,7 @@ v1 model:
 from dataclasses import dataclass, field
 from typing import List, NamedTuple, Tuple, Optional, Dict, Any, Set
 from enums import BlockState
+from track_resource import TrackResource
 
 
 # Block-relative directions used in the static block-level travel policy.
@@ -83,7 +84,7 @@ class BlockReservation:
 
 
 @dataclass
-class Block:
+class Block(TrackResource):
     """
     Centralized block entity for track section management.
 
@@ -98,15 +99,15 @@ class Block:
     # Physical properties (set on BLOCK, not tiles)
     length_cm: float = 0.0  # Total track length in cm
     min_radius_cm: Optional[float] = None  # Tightest curve radius
-    max_speed_kmh: Optional[float] = None  # Speed limit for block
+    speed_limit_kmh: Optional[float] = None  # Speed limit for block
 
     # Underlying primitive state fields. `state` is a computed @property
     # derived from these (see below).
     occupied_by: Optional[str] = None  # Train ID currently physically present
     _is_caution: bool = False  # Physical safety-margin flag
     caution_direction: Optional[str] = None  # Direction of departing train (N/E/S/W)
-    # Single Optional reservation record. The legacy reserved_by_path,
-    # reserved_for_train, reserved_direction reads are derived properties below.
+    # Single Optional reservation record. The reserved_by_path,
+    # reserved_for_train, reserved_direction reads are derived @properties below.
     reservation: Optional[BlockReservation] = None
     disabled: bool = False  # Static availability flag
 
@@ -122,6 +123,18 @@ class Block:
     # (x, y, entry_edge); `ordered_tiles[0].entry_edge` is the forward-entry
     # anchor for the block.
     ordered_tiles: List[BlockTileEntry] = field(default_factory=list)
+
+    # ========================================================================
+    # TrackResource identity
+    # ========================================================================
+
+    @property
+    def resource_id(self) -> str:
+        return self.block_id
+
+    @property
+    def resource_type(self) -> str:
+        return "block"
 
     # ========================================================================
     # Derived reservation reads
@@ -176,7 +189,7 @@ class Block:
             "name": self.name,
             "length_cm": self.length_cm,
             "min_radius_cm": self.min_radius_cm,
-            "max_speed_kmh": self.max_speed_kmh,
+            "speed_limit_kmh": self.speed_limit_kmh,
             "state": self.state.value,
             "occupied_by": self.occupied_by,
             "_is_caution": self._is_caution,
@@ -244,7 +257,7 @@ class Block:
             name=data.get("name", ""),
             length_cm=data.get("length_cm", 0.0),
             min_radius_cm=data.get("min_radius_cm"),
-            max_speed_kmh=data.get("max_speed_kmh"),
+            speed_limit_kmh=data.get("speed_limit_kmh", data.get("max_speed_kmh")),
             occupied_by=data.get("occupied_by"),
             _is_caution=bool(data.get("_is_caution", False)),
             caution_direction=data.get("caution_direction"),

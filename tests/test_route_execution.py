@@ -265,8 +265,8 @@ class TestRouteExecutorCompatibilityBugFixes:
         train_legacy = Train(train_id="T_OLD")
         train_legacy.assigned_route_id = route_legacy.route_id
 
-        simple_network.routes[route_new.route_id] = route_new
-        simple_network.routes[route_legacy.route_id] = route_legacy
+        executor.register_route(route_new)
+        executor.register_route(route_legacy)
         simple_network.trains[train_new.train_id] = train_new
         simple_network.trains[train_legacy.train_id] = train_legacy
 

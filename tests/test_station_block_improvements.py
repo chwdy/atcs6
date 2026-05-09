@@ -447,12 +447,12 @@ class TestStationBlockSpeedLimitInheritance:
     """
     Tests for station block speed limit inheritance from platform.
 
-    BUG FIX: Station blocks should inherit max_speed_kmh from platform's top_speed_kmh.
-    ATC/ATO uses block's max_speed_kmh (not station's top_speed_kmh) for speed enforcement.
+    BUG FIX: Station blocks should inherit speed_limit_kmh from platform's top_speed_kmh.
+    ATC/ATO uses block's speed_limit_kmh (not station's top_speed_kmh) for speed enforcement.
     """
 
     def test_station_block_inherits_speed_limit(self):
-        """Station block should inherit max_speed_kmh from platform's top_speed_kmh"""
+        """Station block should inherit speed_limit_kmh from platform's top_speed_kmh"""
         network = RailwayNetwork()
         network.add_track(TrackSegment(0, 0, TRACK_NS))
 
@@ -469,9 +469,9 @@ class TestStationBlockSpeedLimitInheritance:
         station_block_id = f"{station.platform_id}_BLOCK"
         station_block = network.blocks[station_block_id]
 
-        assert station_block.max_speed_kmh == 30.0, (
-            f"Station block should inherit max_speed_kmh=30 from platform, "
-            f"got {station_block.max_speed_kmh}"
+        assert station_block.speed_limit_kmh == 30.0, (
+            f"Station block should inherit speed_limit_kmh=30 from platform, "
+            f"got {station_block.speed_limit_kmh}"
         )
 
     def test_station_block_no_speed_limit_when_none(self):
@@ -492,9 +492,9 @@ class TestStationBlockSpeedLimitInheritance:
         station_block_id = f"{station.platform_id}_BLOCK"
         station_block = network.blocks[station_block_id]
 
-        assert station_block.max_speed_kmh is None, (
+        assert station_block.speed_limit_kmh is None, (
             f"Station block should have no speed limit when platform has none, "
-            f"got {station_block.max_speed_kmh}"
+            f"got {station_block.speed_limit_kmh}"
         )
 
     def test_extended_station_block_keeps_speed_limit(self):
@@ -522,7 +522,7 @@ class TestStationBlockSpeedLimitInheritance:
         station_block_id = f"{station.platform_id}_BLOCK"
         station_block = network.blocks[station_block_id]
 
-        assert station_block.max_speed_kmh == 25.0, (
-            f"Extended station block should maintain max_speed_kmh=25, "
-            f"got {station_block.max_speed_kmh}"
+        assert station_block.speed_limit_kmh == 25.0, (
+            f"Extended station block should maintain speed_limit_kmh=25, "
+            f"got {station_block.speed_limit_kmh}"
         )

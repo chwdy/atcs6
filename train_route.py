@@ -323,13 +323,12 @@ class Route:
     def deactivate(self, simulation_controller: Optional[Any] = None) -> None:
         """Deactivate the route.
 
-        Per design_new.md line 199 (inclusive-latch rule): when a
-        ``simulation_controller`` is supplied, walk every assigned train and
-        write ``pending_route_deactivate`` on its controller. If that train
-        has a live path, also write ``pending_path_cancel_request`` with
-        ``cancellation_kind = PathCancellationKind.REVOKED``. The Phase-3
-        consume pass for each train then performs the actual cancel and
-        route-run teardown.
+        Per design_new.md inclusive-latch rule: when a ``simulation_controller``
+        is supplied, walk every assigned train and call its
+        ``TrainController._set_pending_route_deactivate(...)`` helper, which
+        writes the deactivate latch and (when an active path exists) fans out to
+        ``_set_pending_path_cancel_request(initiator="revoked")``. Phase 3 then
+        commits the cancel and the route-run teardown.
 
         ``simulation_controller`` is optional so direct-pause callers (tests,
         internal route definition tooling) can flip the flag without needing
@@ -340,28 +339,12 @@ class Route:
         if simulation_controller is None:
             return
 
-        from runtime_payloads import (
-            PathCancellationKind,
-            PendingPathCancelRequest,
-            PendingRouteDeactivateRequest,
-        )
-
         diagnostic = f"route_deactivated:{self.route_id}"
         for train_id in list(self.assigned_train_ids):
             controller = simulation_controller.get_controller(train_id)
             if controller is None:
                 continue
-            path_id = controller.assigned_path_id
-            controller.pending_route_deactivate = PendingRouteDeactivateRequest(
-                reason=diagnostic,
-                expected_path_id=path_id,
-            )
-            if controller.received_path_plan is not None:
-                controller.pending_path_cancel_request = PendingPathCancelRequest(
-                    cancellation_kind=PathCancellationKind.REVOKED,
-                    reason=diagnostic,
-                    expected_path_id=path_id,
-                )
+            controller._set_pending_route_deactivate(diagnostic)
 
     # ── Assignment Methods ─────────────────────────────────────────
 

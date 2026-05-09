@@ -14,6 +14,8 @@ from track import TrackSegment
 from train import Train, TrainSchedule
 from block import Block
 from block_manager import BlockManager
+from switch_manager import SwitchManager
+from resource_coordinator import ResourceCoordinator
 from enums import (
     TrackType,
     Direction,
@@ -56,9 +58,10 @@ class RailwayNetwork:
         self.schedules: Dict[str, TrainSchedule] = {}
 
         self.speed_profiles: Dict[str, "SpeedProfile"] = {}
-        self.routes: Dict[str, "Route"] = {}
 
         self.block_manager: Optional[BlockManager] = None
+        self.switch_manager: Optional[SwitchManager] = None
+        self.resource_coordinator: Optional[ResourceCoordinator] = None
         self.power_controller: Optional["BlockPowerController"] = None
 
         # Reverse indices from tile -> owning block / platform.
@@ -71,6 +74,20 @@ class RailwayNetwork:
     def _ensure_block_manager(self):
         if self.block_manager is None:
             self.block_manager = BlockManager(self.blocks, network=self)
+
+    def _ensure_resource_managers(self):
+        """Construct BlockManager, SwitchManager, and ResourceCoordinator if not
+        yet wired. The coordinator is the dispatcher-facing facade per
+        design_new.md "ResourceCoordinator"; constructed last because it
+        composes the other two managers.
+        """
+        self._ensure_block_manager()
+        if self.switch_manager is None:
+            self.switch_manager = SwitchManager(self.switches, network=self)
+        if self.resource_coordinator is None:
+            self.resource_coordinator = ResourceCoordinator(
+                self.block_manager, self.switch_manager
+            )
 
     # === Tile -> owning entity reverse indices (v1) ===
 
@@ -297,7 +314,7 @@ class RailwayNetwork:
             raise ValueError(f"Block {block_id} already exists")
         block = Block(block_id=block_id, name=name)
         self.blocks[block_id] = block
-        self._ensure_block_manager()
+        self._ensure_resource_managers()
         return block
 
     def create_block_with_tracks(
@@ -306,7 +323,7 @@ class RailwayNetwork:
         positions: List[Tuple[int, int]],
         name: str = "",
         length_cm: float = 0.0,
-        max_speed_kmh: Optional[float] = None,
+        speed_limit_kmh: Optional[float] = None,
         validate: bool = True,
     ) -> Block:
         """
@@ -325,7 +342,7 @@ class RailwayNetwork:
             positions: List of (x, y) track positions
             name: Human-readable block name
             length_cm: Physical track length
-            max_speed_kmh: Optional speed limit
+            speed_limit_kmh: Optional speed limit
             validate: If True, perform full validation (recommended)
 
         Returns:
@@ -341,7 +358,7 @@ class RailwayNetwork:
                 positions=[(0,0), (1,0), (2,0)],
                 name="Main Line Section 1",
                 length_cm=150.0,
-                max_speed_kmh=80.0
+                speed_limit_kmh=80.0
             )
         """
         from block_validation import (
@@ -354,7 +371,7 @@ class RailwayNetwork:
         # Validate block properties
         if validate:
             is_valid, errors = validate_block_properties(
-                block_id, name, length_cm, max_speed_kmh
+                block_id, name, length_cm, speed_limit_kmh
             )
             if not is_valid:
                 raise ValueError(f"Invalid block properties: {', '.join(errors)}")
@@ -392,8 +409,8 @@ class RailwayNetwork:
         # Create block
         block = self.create_block(block_id, name)
         block.length_cm = length_cm
-        if max_speed_kmh:
-            block.max_speed_kmh = max_speed_kmh
+        if speed_limit_kmh:
+            block.speed_limit_kmh = speed_limit_kmh
 
         # Assign tracks
         for x, y in positions:
@@ -654,7 +671,6 @@ class RailwayNetwork:
         return new_state
 
     def get_block(self, block_id: str) -> Optional[Block]:
-        """Get block by ID"""
         return self.blocks.get(block_id)
 
     def get_block_tracks(self, block_id: str) -> List[TrackSegment]:
@@ -669,7 +685,7 @@ class RailwayNetwork:
         self, x: int, y: int, block_id: Optional[str], validate_continuity: bool = True
     ) -> None:
         """
-        Assign a track to a block with comprehensive validation.
+        Assign a track to a block, validating block membership and continuity.
 
         Args:
             x, y: Track position
@@ -911,7 +927,6 @@ class RailwayNetwork:
         return signal
 
     def get_signal(self, signal_id: str) -> Optional[Signal]:
-        """Get signal by ID."""
         return self.signals.get(signal_id)
 
     def get_signal_at(self, x: int, y: int) -> Optional[Signal]:
@@ -1507,7 +1522,7 @@ class RailwayNetwork:
         """
         Calculate signal state based on block states and switch positions.
 
-        Implements the comprehensive specification from Reference_Signals_and_Blocks.md Section 10.
+        Implements the specification from Reference_Signals_and_Blocks.md Section 10.
 
         Signal Color Logic:
         - RED: No block assigned, block doesn't exist, switch blocks route,
@@ -1571,10 +1586,15 @@ class RailwayNetwork:
                                 SignalState.RED
                             )  # Block reserved for opposite direction path
 
-                    # Check if reserved for THIS signal's approaching train
+                    # Check if reserved for THIS signal's approaching train.
+                    # The block is RESERVED (not OCCUPIED), so the per-train
+                    # match must read `reserved_for_train`, not `occupied_by`.
+                    block_train = (
+                        first_block.reserved_for_train or first_block.occupied_by
+                    )
                     if (
                         signal.approaching_train_id
-                        and first_block.occupied_by == signal.approaching_train_id
+                        and block_train == signal.approaching_train_id
                     ):
                         # Block is reserved for our train in same direction
                         pass  # Continue to Block B evaluation
@@ -1588,9 +1608,14 @@ class RailwayNetwork:
                     if signal_dir != block_dir:
                         return SignalState.RED
 
+                # Per-train match against reserved_for_train (preferred) or
+                # occupied_by (fallback) — see comment above.
+                block_train = (
+                    first_block.reserved_for_train or first_block.occupied_by
+                )
                 if (
                     signal.approaching_train_id
-                    and first_block.occupied_by == signal.approaching_train_id
+                    and block_train == signal.approaching_train_id
                 ):
                     pass  # Continue to Block B evaluation
                 else:
@@ -1619,7 +1644,8 @@ class RailwayNetwork:
         elif (
             second_block.state == BlockState.RESERVED
             and signal.approaching_train_id
-            and second_block.occupied_by == signal.approaching_train_id
+            and (second_block.reserved_for_train or second_block.occupied_by)
+                == signal.approaching_train_id
         ):
             # Block B is also reserved for our train
             return SignalState.GREEN
@@ -1887,6 +1913,9 @@ class RailwayNetwork:
     def add_train(self, train: Train):
         """Add a train to the network"""
         self.trains[train.train_id] = train
+        # Wire the back-reference so `Train.assigned_route_id` can derive
+        # from the route registry per design_new.md.
+        train._network_ref = self
 
     def place_train(
         self,
@@ -2344,7 +2373,6 @@ class RailwayNetwork:
         return True
 
     def get_train(self, train_id: str) -> Optional[Train]:
-        """Get train by ID"""
         return self.trains.get(train_id)
 
     def add_schedule(self, schedule: TrainSchedule):
@@ -2524,9 +2552,9 @@ class RailwayNetwork:
         station_block.length_cm = station_block_length_cm
 
         # Inherit speed limit from platform to station block
-        # ATC/ATO uses block's max_speed_kmh, not station's top_speed_kmh
+        # ATC/ATO uses block's speed_limit_kmh, not station's top_speed_kmh
         if top_speed_kmh is not None:
-            station_block.max_speed_kmh = top_speed_kmh
+            station_block.speed_limit_kmh = top_speed_kmh
 
         # Assign station tile to station block
         track.block_section_id = station_block_id
@@ -3131,7 +3159,7 @@ class RailwayNetwork:
         Child blocks inherit:
         - name: "{parent.name}_1", "{parent.name}_2", etc.
         - length_cm: Calculated based on tile count × length_per_tile_cm from parent
-        - min_radius_cm, max_speed_kmh (copied as-is)
+        - min_radius_cm, speed_limit_kmh (copied as-is)
         - state: Reset to FREE (original occupancy doesn't transfer cleanly)
 
         Args:
@@ -3185,12 +3213,12 @@ class RailwayNetwork:
                 name=child_name,
                 length_cm=child_length_cm,  # Calculated based on tile count
                 min_radius_cm=parent_block.min_radius_cm,
-                max_speed_kmh=parent_block.max_speed_kmh,
+                speed_limit_kmh=parent_block.speed_limit_kmh,
                 occupied_by=None,
             )
 
             self.blocks[child_id] = child_block
-            self._ensure_block_manager()
+            self._ensure_resource_managers()
 
             for x, y in component_positions:
                 track = self.get_track(x, y)
@@ -3375,7 +3403,7 @@ class RailwayNetwork:
         for block_id, block_data in data.get("blocks", {}).items():
             self.blocks[block_id] = Block.from_dict(block_data)
 
-        self._ensure_block_manager()
+        self._ensure_resource_managers()
 
         for t_data in data.get("tracks", []):
             track = TrackSegment.from_dict(t_data)
@@ -3413,3 +3441,4 @@ class RailwayNetwork:
         for train_data in data.get("trains", []):
             train = Train.from_dict(train_data)
             self.trains[train.train_id] = train
+            train._network_ref = self

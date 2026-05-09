@@ -23,10 +23,10 @@ from path_utils import (
 def _stub_controller(network=None):
     """Minimal SimulationController stub for Switch runtime operations.
 
-    Provides the .block_manager.on_switch_state_changed call site and a
+    Provides the .block_manager.on_switch_position_changed call site and a
     .network attribute so Switch.on_train_tail_vacated can walk neighbours.
     """
-    block_manager = SimpleNamespace(on_switch_state_changed=lambda switch_id: None)
+    block_manager = SimpleNamespace(on_switch_position_changed=lambda switch_id: None)
     return SimpleNamespace(block_manager=block_manager, network=network)
 
 
@@ -71,7 +71,7 @@ class TestSwitchLocking:
             is False
         )
 
-    def test_switch_state_change_blocked_when_locked(self):
+    def test_switch_position_change_blocked_when_locked(self):
         from switch import Switch
 
         network = RailwayNetwork()
@@ -80,11 +80,11 @@ class TestSwitchLocking:
         switch.simulation_controller = _stub_controller(network)
         network.add_switch(switch)
         switch.acquire_lock("PATH_1", "primary", "TRAIN_A", 0)
-        success, msg = switch.request_state_change(1, network)
+        success, msg = switch.request_position_change(1, network)
         assert success is False
         assert "locked" in msg.lower()
 
-    def test_switch_state_change_allowed_when_unlocked(self):
+    def test_switch_position_change_allowed_when_unlocked(self):
         from switch import Switch
 
         network = RailwayNetwork()
@@ -92,10 +92,10 @@ class TestSwitchLocking:
         switch = Switch(switch_id="SW_1", x=0, y=0)
         switch.simulation_controller = _stub_controller(network)
         network.add_switch(switch)
-        success, msg = switch.request_state_change(1, network)
+        success, msg = switch.request_position_change(1, network)
         assert success is True
-        # v1: state is authoritative on the Switch entity (not the TrackSegment).
-        assert int(switch.state) == 1
+        # v1: position is authoritative on the Switch entity (not the TrackSegment).
+        assert int(switch.position) == 1
 
     def test_switch_serialization_includes_lock_state(self):
         from switch import Switch

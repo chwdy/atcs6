@@ -1087,7 +1087,7 @@ class TestATODirectionDetection:
         controller.set_direction_and_standby(Direction.EAST)
 
         assert controller.active_cab == "A"
-        assert controller.state == TrainState.STANDBY
+        assert controller.state == TrainState.READY
 
         # Assign a path going WEST (opposite)
         self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)], end_block_id="BLK_WEST")

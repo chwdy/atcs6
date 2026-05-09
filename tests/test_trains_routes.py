@@ -215,7 +215,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
         )
 
         for block in network.blocks.values():
-            block.max_speed_kmh = 60.0
+            block.speed_limit_kmh = 60.0
 
         return network
 
@@ -267,7 +267,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
         assert exec_state is not None
         simulation.route_executor._check_waypoint_arrival(train, route, exec_state)
         assert exec_state.last_waypoint_platform_id == platform_id
-        assert train.state in (TrainState.RUNNING_AT_STATION, TrainState.STANDBY)
+        assert train.state in (TrainState.RUNNING_AT_STATION, TrainState.READY)
 
     def _create_sim_and_train(self, train_id: str) -> tuple:
         """Create baseline 3-station simulation with one 45cm train at A."""
@@ -280,11 +280,11 @@ class TestRouteExecutorThreeStationLoopSimulation:
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
 
-        train.state = TrainState.IDLE
+        train.state = TrainState.READY
         controller = simulation._get_or_create_controller(train)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.state = TrainState.IDLE
+        controller.state = TrainState.READY
         assert controller.set_direction_and_standby(Direction.EAST) is True
         assert controller.active_cab == "A"
 
@@ -301,11 +301,11 @@ class TestRouteExecutorThreeStationLoopSimulation:
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
 
-        train.state = TrainState.IDLE
+        train.state = TrainState.READY
         controller = simulation._get_or_create_controller(train)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.state = TrainState.IDLE
+        controller.state = TrainState.READY
         assert controller.set_direction_and_standby(Direction.EAST) is True
         assert controller.active_cab == "A"
 
@@ -317,7 +317,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
         route.add_waypoint(Waypoint(platform_id="STA_A", dwell_time_sec=0.8))
         route.assign_train(train.train_id)
         route.activate(simulation.simulation_time)
-        network.routes[route.route_id] = route
+        simulation.route_executor.register_route(route)
         train.assigned_route_id = route.route_id
 
         assert simulation.route_executor._is_train_at_platform(train, "STA_A") is True
@@ -392,7 +392,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
         route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.6))
         route.assign_train(train.train_id)
         route.activate(simulation.simulation_time)
-        network.routes[route.route_id] = route
+        simulation.route_executor.register_route(route)
         train.assigned_route_id = route.route_id
 
         self._run_until(
@@ -426,8 +426,8 @@ class TestRouteExecutorThreeStationLoopSimulation:
             max_steps=3000,
         )
         assert train.state in (
-            TrainState.IDLE,
-            TrainState.STANDBY,
+            TrainState.READY,
+            TrainState.READY,
             TrainState.RUNNING_AT_STATION,
         )
 
@@ -447,7 +447,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
         route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.4))
         route.assign_train(train.train_id)
         route.activate(simulation.simulation_time)
-        network.routes[route.route_id] = route
+        simulation.route_executor.register_route(route)
         train.assigned_route_id = route.route_id
 
         visited = []
@@ -485,7 +485,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
         route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.6))
         route.assign_train(train.train_id)
         route.activate(simulation.simulation_time)
-        network.routes[route.route_id] = route
+        simulation.route_executor.register_route(route)
         train.assigned_route_id = route.route_id
 
         self._run_until(
@@ -536,11 +536,11 @@ class TestRouteExecutorThreeStationLoopSimulation:
         auto_park_route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.4))
         auto_park_route.assign_train(train.train_id)
         auto_park_route.activate(simulation.simulation_time)
-        network.routes[auto_park_route.route_id] = auto_park_route
+        simulation.route_executor.register_route(auto_park_route)
         train.assigned_route_id = auto_park_route.route_id
         train.current_speed = 0.0
-        train.state = TrainState.STANDBY
-        controller.state = TrainState.STANDBY
+        train.state = TrainState.READY
+        controller.state = TrainState.READY
 
         self._run_until(
             simulation,
@@ -840,7 +840,7 @@ class TestManualPathAssignmentAfterArrival:
         )
 
         for block in network.blocks.values():
-            block.max_speed_kmh = 60.0
+            block.speed_limit_kmh = 60.0
 
         return network
 
@@ -907,7 +907,7 @@ class TestManualPathAssignmentAfterArrival:
         )
 
         for block in network.blocks.values():
-            block.max_speed_kmh = 80.0
+            block.speed_limit_kmh = 80.0
 
     def _run_until(
         self,
@@ -943,11 +943,11 @@ class TestManualPathAssignmentAfterArrival:
         network.place_train(train, 0, 0, Direction.EAST)
 
         # Setup controller
-        train.state = TrainState.IDLE
+        train.state = TrainState.READY
         controller = simulation._get_or_create_controller(train)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.state = TrainState.IDLE
+        controller.state = TrainState.READY
         assert controller.set_direction_and_standby(Direction.EAST) is True
 
         # Step 1: Assign ONE_OFF route from A to B
@@ -955,7 +955,7 @@ class TestManualPathAssignmentAfterArrival:
         route.add_waypoint(Waypoint(platform_id="STA_B", dwell_time_sec=1.0))
         route.assign_train(train.train_id)
         route.activate(simulation.simulation_time)
-        network.routes[route.route_id] = route
+        simulation.route_executor.register_route(route)
         train.assigned_route_id = route.route_id
 
         # Wait for train to get path to B
@@ -974,8 +974,8 @@ class TestManualPathAssignmentAfterArrival:
         # Place train at B station (now at 3,0)
         train.position = make_train_position((3, 0), Direction.EAST)
         train.current_speed = 0.0
-        train.state = TrainState.STANDBY
-        controller.state = TrainState.STANDBY
+        train.state = TrainState.READY
+        controller.state = TrainState.READY
         controller.ato_running = False
 
         # Cancel the path from A to B
@@ -992,12 +992,12 @@ class TestManualPathAssignmentAfterArrival:
 
         # Verify train is at B
         assert simulation.route_executor._is_train_at_platform(train, "STA_B") is True
-        assert train.state == TrainState.STANDBY
+        assert train.state == TrainState.READY
         assert train.current_speed == 0.0
 
         # Step 3: Clear the A->B route and manually assign a new path from B to C
         # This simulates the user action in the UI
-        old_route = network.routes.get("ROUTE_A_TO_B")
+        old_route = simulation.route_executor.route_registry.get("ROUTE_A_TO_B")
         if old_route:
             old_route.unassign_train(train.train_id)
         train.assigned_route_id = None
@@ -1011,7 +1011,7 @@ class TestManualPathAssignmentAfterArrival:
         new_route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=1.0))
         new_route.assign_train(train.train_id)
         new_route.activate(simulation.simulation_time)
-        network.routes[new_route.route_id] = new_route
+        simulation.route_executor.register_route(new_route)
         train.assigned_route_id = new_route.route_id
 
         # IMPORTANT: This is where the bug manifests
@@ -1041,7 +1041,7 @@ class TestManualPathAssignmentAfterArrival:
         # The train may be RUNNING_AT_STATION (just arrived) or transitioning
         assert train.state in [
             TrainState.RUNNING_MOVING,
-            TrainState.STANDBY,
+            TrainState.READY,
             TrainState.RUNNING_AT_STATION,
         ], (
             f"BUG: Train state is {train.state}, expected valid state after path assignment. "
@@ -1052,7 +1052,7 @@ class TestManualPathAssignmentAfterArrival:
         # Note: ATO may not be running yet if train is still in station state
         assert controller.state in [
             TrainState.RUNNING_MOVING,
-            TrainState.STANDBY,
+            TrainState.READY,
             TrainState.RUNNING_AT_STATION,
         ], (
             "BUG: Controller in unexpected state after path assignment. "
@@ -1088,13 +1088,13 @@ class TestManualPathAssignmentAfterArrival:
         # Place train at B station (3,0), facing east
         network.place_train(train, 3, 0, Direction.EAST)
         train.current_speed = 0.0
-        train.state = TrainState.IDLE
+        train.state = TrainState.READY
 
         # Setup controller
         controller = simulation._get_or_create_controller(train)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.state = TrainState.IDLE
+        controller.state = TrainState.READY
         assert controller.set_direction_and_standby(Direction.EAST) is True
 
         # Assign B->C route (simulating UI action)
@@ -1104,7 +1104,7 @@ class TestManualPathAssignmentAfterArrival:
         route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=1.0))
         route.assign_train(train.train_id)
         route.activate(simulation.simulation_time)
-        network.routes[route.route_id] = route
+        simulation.route_executor.register_route(route)
         train.assigned_route_id = route.route_id
 
         # Run simulation - route executor should:
@@ -1161,13 +1161,13 @@ class TestManualPathAssignmentAfterArrival:
         network.add_train(train)
         train.position = make_train_position((3, 0), Direction.EAST)
         train.current_speed = 0.0
-        train.state = TrainState.STANDBY
+        train.state = TrainState.READY
 
         # Setup controller
         controller = simulation._get_or_create_controller(train)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.state = TrainState.STANDBY
+        controller.state = TrainState.READY
 
         # Manually assign B->C route
         route = Route(
@@ -1176,7 +1176,7 @@ class TestManualPathAssignmentAfterArrival:
         route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=1.0))
         route.assign_train(train.train_id)
         route.activate(simulation.simulation_time)
-        network.routes[route.route_id] = route
+        simulation.route_executor.register_route(route)
         train.assigned_route_id = route.route_id
 
         # Run a few updates to let route executor process
@@ -1257,7 +1257,7 @@ class TestManualPathAssignmentAfterArrival:
         route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.5))
         route.assign_train(train.train_id)
         route.activate(simulation.simulation_time)
-        network.routes[route.route_id] = route
+        simulation.route_executor.register_route(route)
         train.assigned_route_id = route.route_id
 
         # Run until train is moving
@@ -1274,7 +1274,7 @@ class TestManualPathAssignmentAfterArrival:
         # Cancel route (simulate cancel button)
         # This mimics the API call: PUT /api/trains/<train_id>/assign-route with route_id=None
         if train.assigned_route_id:
-            old_route = network.routes.get(train.assigned_route_id)
+            old_route = simulation.route_executor.route_registry.get(train.assigned_route_id)
             if old_route:
                 old_route.unassign_train(train.train_id)
         train.assigned_route_id = None
@@ -1308,10 +1308,10 @@ class TestManualPathAssignmentAfterArrival:
         # Train should eventually transition to STANDBY after stopping
         for _ in range(100):
             simulation.update(0.1)
-            if train.state == TrainState.STANDBY:
+            if train.state == TrainState.READY:
                 break
 
-        assert train.state in (TrainState.STANDBY, TrainState.RUNNING_WAITING), (
+        assert train.state in (TrainState.READY, TrainState.RUNNING_WAITING), (
             f"Train should stop after ATO cancel, got {train.state}"
         )
 
@@ -1339,7 +1339,7 @@ class TestManualPathAssignmentAfterArrival:
         route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.5))
         route.assign_train(train.train_id)
         route.activate(simulation.simulation_time)
-        network.routes[route.route_id] = route
+        simulation.route_executor.register_route(route)
         train.assigned_route_id = route.route_id
 
         # Train is at station A, cancel immediately
@@ -1572,7 +1572,7 @@ class TestManualPathAssignmentAfterArrival:
         route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.5))
         route.assign_train(train.train_id)
         route.activate(simulation.simulation_time)
-        network.routes[route.route_id] = route
+        simulation.route_executor.register_route(route)
         train.assigned_route_id = route.route_id
 
         # 2. Run until train reaches C
@@ -1750,7 +1750,7 @@ class TestAutoReversalOnNewRouteAssignment:
         )
 
         for block in network.blocks.values():
-            block.max_speed_kmh = 60.0
+            block.speed_limit_kmh = 60.0
         return network
 
     def _run_until(
@@ -1795,12 +1795,12 @@ class TestAutoReversalOnNewRouteAssignment:
         # retains its cab and facing direction.
         controller.active_cab = "A"
         train.active_cab = "A"
-        train.state = TrainState.IDLE
-        controller.state = TrainState.IDLE
+        train.state = TrainState.READY
+        controller.state = TrainState.READY
 
         # Verify preconditions
         assert train.facing_direction == Direction.EAST
-        assert train.state == TrainState.IDLE
+        assert train.state == TrainState.READY
         assert controller.active_cab == "A"
 
         # Assign new backward route to A
@@ -1808,7 +1808,7 @@ class TestAutoReversalOnNewRouteAssignment:
         route.add_waypoint(Waypoint(platform_id="STA_A", dwell_time_sec=0.5))
         route.assign_train(train.train_id)
         route.activate(simulation.simulation_time)
-        network.routes[route.route_id] = route
+        simulation.route_executor.register_route(route)
         train.assigned_route_id = route.route_id
 
         # System should: IDLE->STANDBY, create path, auto-reverse cab, depart
@@ -1849,22 +1849,22 @@ class TestAutoReversalOnNewRouteAssignment:
         controller.control_mode = "ato"
 
         # Simulate transition_to_idle(): clears cab and leading_end
-        train.state = TrainState.IDLE
-        controller.state = TrainState.IDLE
+        train.state = TrainState.READY
+        controller.state = TrainState.READY
         controller.active_cab = None
         train.active_cab = None
         if train.position:
             train.position.leading_end = None
 
         assert train.facing_direction is None
-        assert train.state == TrainState.IDLE
+        assert train.state == TrainState.READY
 
         # Assign forward route A->C
         route = Route(route_id="ROUTE_AC", name="A to C", mode=RouteMode.ONE_OFF)
         route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.5))
         route.assign_train(train.train_id)
         route.activate(simulation.simulation_time)
-        network.routes[route.route_id] = route
+        simulation.route_executor.register_route(route)
         train.assigned_route_id = route.route_id
 
         # System should auto-select cab from path direction and depart
@@ -1905,22 +1905,22 @@ class TestAutoReversalOnNewRouteAssignment:
         controller.control_mode = "ato"
 
         # Simulate transition_to_idle(): clears everything
-        train.state = TrainState.IDLE
-        controller.state = TrainState.IDLE
+        train.state = TrainState.READY
+        controller.state = TrainState.READY
         controller.active_cab = None
         train.active_cab = None
         if train.position:
             train.position.leading_end = None
 
         assert train.facing_direction is None
-        assert train.state == TrainState.IDLE
+        assert train.state == TrainState.READY
 
         # Assign route to A (westbound)
         route = Route(route_id="ROUTE_CA", name="C to A", mode=RouteMode.ONE_OFF)
         route.add_waypoint(Waypoint(platform_id="STA_A", dwell_time_sec=0.5))
         route.assign_train(train.train_id)
         route.activate(simulation.simulation_time)
-        network.routes[route.route_id] = route
+        simulation.route_executor.register_route(route)
         train.assigned_route_id = route.route_id
 
         # System should auto-determine direction from path and depart
