@@ -56,7 +56,7 @@ from track import (
 )
 from train import Train, TrainSchedule, ScheduleStop, TrainCar
 from train_controller import TrainController
-from train_route import Route, TimingMode, RouteMode
+from train_route import Route, RouteMode
 
 # Global state
 network = RailwayNetwork()

@@ -35,7 +35,7 @@ def straight_ew_track(network):
 class TestTrainManualControlBugFixes:
     """Tests for train manual control and ATC fallback fixes via TrainController."""
 
-    def test_clear_direction_from_standby(self):
+    def test_set_cab_none_from_standby(self):
         network = RailwayNetwork()
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
@@ -46,28 +46,26 @@ class TestTrainManualControlBugFixes:
         controller = create_controller_for_train("TRAIN_01", network)
         controller.power_on = True
         controller.state = TrainState.READY
-        controller.active_cab = "A"  # READY+cab matches the old "STANDBY" shape
+        controller.cab = "A"
 
-        assert controller.clear_direction() is True
+        assert controller.set_cab(None).success is True
         assert controller.state == TrainState.READY
-        assert controller.active_cab is None
+        assert controller.cab is None
         assert train.facing_direction is None
-        # v1: clear_direction only clears active_cab; state stays READY
-        # (cab is orthogonal to state in the new state machine).
 
-    def test_clear_direction_rejects_moving(self):
+    def test_set_cab_rejects_moving(self):
         network = RailwayNetwork()
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_02", consist=[car], max_speed=60.0)
         train.state = TrainState.READY
-        # Direction set via position (refactored): train.set_cab("A")  # was: Direction.NORTH
         network.add_train(train)
         controller = create_controller_for_train("TRAIN_02", network)
         controller.power_on = True
         controller.state = TrainState.READY
+        controller.cab = "A"
         controller.current_speed_kmh = 5.0
 
-        assert controller.clear_direction() is False
+        assert controller.set_cab(None).success is False
         assert controller.state == TrainState.READY
 
 
@@ -137,51 +135,6 @@ class TestRaceConditionFix:
 
 
 
-    def test_atc_triggers_warning_on_5kmh_overspeed(self):
-        """
-        Test that ATC triggers warning when overspeed by 5-10 km/h.
-
-        Per new tick() workflow:
-        - current_speed > atc_speed + 5 → atc_warning_active = True
-        - current_speed > atc_speed + 10 → eb_active = True
-        """
-        network = RailwayNetwork()
-
-        # Create track and block with speed limit
-        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
-        track.block_section_id = "B1"
-        network.add_track(track)
-
-        block = network.create_block("B1", "Block 1")
-        block.length_cm = 1000.0
-        block.speed_limit_kmh = 30.0  # 30 km/h limit
-
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
-        train = Train(train_id="TRAIN_OVERSPEED_TEST", consist=[car], max_speed=100.0)
-        train.state = TrainState.RUNNING_MOVING
-        train.position = make_train_position(
-            (0, 0), Direction.EAST, occupied_blocks=["B1"]
-        )
-        network.add_train(train)
-
-        sim = SimulationController(network)
-        controller = sim._get_or_create_controller(train)
-        controller.power_on = True
-        controller.state = TrainState.RUNNING_MOVING
-        controller.active_cab = "A"
-        controller.current_speed_kmh = 37.0  # 7 km/h over limit (warning zone)
-
-        # Tick controller
-        sim.update(0.1)
-
-        # Should have warning but not EB
-        assert controller.atc_warning_active == True, (
-            "Warning should be active at 7 km/h overspeed"
-        )
-        assert controller.eb_active == False, (
-            "EB should not trigger at 7 km/h overspeed"
-        )
-
     def test_atc_triggers_eb_on_10kmh_overspeed(self):
         """
         Test that ATC triggers emergency brake when overspeed by > 10 km/h.
@@ -212,7 +165,7 @@ class TestRaceConditionFix:
         controller = sim._get_or_create_controller(train)
         controller.power_on = True
         controller.state = TrainState.RUNNING_MOVING
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.current_speed_kmh = 42.0  # 12 km/h over limit (EB zone)
 
         # Tick controller
@@ -247,7 +200,7 @@ class TestRaceConditionFix:
         controller = sim._get_or_create_controller(train)
         controller.power_on = True
         controller.state = TrainState.RUNNING_MOVING
-        controller.active_cab = None  # No cab selected
+        controller.cab = None  # No cab selected
         controller.current_speed_kmh = 0.0
 
         # Tick controller
@@ -318,7 +271,7 @@ class TestTrainControllerBrakingNotches:
         controller = TrainController(train_id=train.train_id, network=network)
         controller.control_mode = "manual"
         controller.power_on = True
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.current_speed_kmh = 16.0
 
         monkeypatch.setattr(controller, "_calculate_clearance_ahead", lambda: 200.0)

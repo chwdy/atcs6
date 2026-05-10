@@ -261,7 +261,7 @@ class TestSetCabDoubleFlipBugFix:
         controller.set_cab("A")
 
         assert train.facing_direction == Direction.EAST
-        assert controller.active_cab == "A"
+        assert controller.cab == "A"
         assert train.position.end_a_tile != train.position.end_b_tile, (
             "Setup must produce a multi-tile train"
         )
@@ -283,7 +283,7 @@ class TestSetCabDoubleFlipBugFix:
         controller.set_cab("A")
 
         assert train.facing_direction == Direction.EAST
-        assert controller.active_cab == "A"
+        assert controller.cab == "A"
         assert train.position.end_a_tile == train.position.end_b_tile, (
             "Setup must produce a single-tile train"
         )
@@ -348,23 +348,23 @@ class TestSetCabDoubleFlipBugFix:
         controller.set_cab("B")
         assert train.facing_direction == Direction.WEST
 
-    def test_multi_tile_turn_around_flips_direction(self, network):
-        """turn_around() delegates to set_cab() and correctly flips direction."""
+    def test_multi_tile_set_cab_opposite_flips_direction(self, network):
+        """Switching to the opposite cab via set_cab flips facing direction."""
         train, controller = self._setup_multi_tile_train(network)
 
-        result = controller.turn_around()
-        assert result is True, "turn_around() should succeed"
+        result = controller.set_cab("B")
+        assert result.success is True
         assert train.facing_direction == Direction.WEST
-        assert controller.active_cab == "B"
+        assert controller.cab == "B"
 
-    def test_multi_tile_turn_around_twice_returns_original(self, network):
-        """Two turn_around() calls return to original direction."""
+    def test_multi_tile_set_cab_opposite_twice_returns_original(self, network):
+        """Two opposite-cab switches return to original direction."""
         train, controller = self._setup_multi_tile_train(network)
 
-        controller.turn_around()
+        controller.set_cab("B")
         assert train.facing_direction == Direction.WEST
 
-        controller.turn_around()
+        controller.set_cab("A")
         assert train.facing_direction == Direction.EAST
 
     # ---- Single-tile tests ----
@@ -389,14 +389,14 @@ class TestSetCabDoubleFlipBugFix:
         controller.set_cab("A")
         assert train.facing_direction == Direction.EAST
 
-    def test_single_tile_turn_around(self, network):
-        """Single-tile: turn_around() works correctly."""
+    def test_single_tile_set_cab_opposite(self, network):
+        """Single-tile: switching cab via set_cab flips direction."""
         train, controller = self._setup_single_tile_train(network)
 
-        result = controller.turn_around()
-        assert result is True
+        result = controller.set_cab("B")
+        assert result.success is True
         assert train.facing_direction == Direction.WEST
-        assert controller.active_cab == "B"
+        assert controller.cab == "B"
 
     # ---- Edge cases ----
 
@@ -414,7 +414,7 @@ class TestSetCabDoubleFlipBugFix:
         controller.power_on = True
 
         # active_cab is None initially
-        assert controller.active_cab is None
+        assert controller.cab is None
 
         # First cab selection should sync from computed, not flip
         controller.set_cab("A")
@@ -431,27 +431,40 @@ class TestSetCabDoubleFlipBugFix:
             "Re-selecting same cab should NOT flip direction"
         )
 
-    def test_turn_around_fails_while_moving(self, network):
-        """turn_around() should fail if train is moving."""
+    def test_set_cab_fails_while_moving(self, network):
+        """set_cab is rejected if train is moving."""
         train, controller = self._setup_multi_tile_train(network)
 
         controller.current_speed_kmh = 10.0  # Moving
 
-        result = controller.turn_around()
-        assert result is False
+        result = controller.set_cab("B")
+        assert result.success is False
         assert train.facing_direction == Direction.EAST, (
-            "Direction should not change on failed turn_around"
+            "Direction should not change on failed set_cab"
         )
 
-    def test_turn_around_fails_while_ato_running(self, network):
-        """turn_around() should fail if ATO is actively running."""
+    def test_set_cab_none_rejected_in_running_at_station(self, network):
+        """`set_cab(None)` from RUNNING_AT_STATION must reject.
+
+        Per design_new.md line 1630 + Allowed (state, cab) pairs table,
+        `(RUNNING_AT_STATION, None)` is not a legal pair. Deselecting cab
+        while dwelling must return success=False with an explanatory
+        diagnostic and leave both `cab` and `state` unchanged.
+        """
         train, controller = self._setup_multi_tile_train(network)
 
-        controller.ato_running = True
+        # Place the train in RUNNING_AT_STATION (dwell). is_stopped() is
+        # true because current_speed_kmh defaults to 0.0.
+        controller.state = TrainState.RUNNING_AT_STATION
 
-        result = controller.turn_around()
-        assert result is False
-        assert train.facing_direction == Direction.EAST
+        result = controller.set_cab(None)
+
+        assert result.success is False
+        assert "dwell" in (result.message or "").lower()
+        assert controller.cab == "A", "cab must be preserved on rejection"
+        assert controller.state == TrainState.RUNNING_AT_STATION, (
+            "state must be preserved on rejection"
+        )
 
     def test_entry_edges_flip_with_direction(self, network):
         """Entry edges and distances also flip correctly alongside direction."""
@@ -480,33 +493,30 @@ class TestSetCabDoubleFlipBugFix:
 
     # ---- Real-world scenario: the actual bug trigger ----
 
-    def test_turn_around_after_ato_stops_in_idle_state(self, network):
+    def test_set_cab_after_ato_stops_in_ready_state(self, network):
         """
         Real-world scenario: train arrives at terminal via ATO, route is
-        cancelled (train goes to IDLE), then turn_around() is called.
-
-        This was the actual bug trigger: after ATO stops and route is
-        cancelled, the train is in IDLE state with a cab still selected.
-        turn_around() -> set_cab() must work in this state.
+        cancelled, train sits in READY with a cab still selected. Switching
+        to the opposite cab must succeed in this state.
         """
         train, controller = self._setup_multi_tile_train(network)
 
-        # Simulate: train was running, ATO stopped, route cancelled -> IDLE
+        # Simulate: train was running, ATO stopped, route cancelled -> READY
         controller.state = TrainState.READY
         train.state = TrainState.READY
         controller.ato_running = False
         controller.current_speed_kmh = 0.0
 
         # Active cab is still A (route cancellation doesn't clear cab)
-        assert controller.active_cab == "A"
+        assert controller.cab == "A"
 
-        result = controller.turn_around()
-        assert result is True, (
-            f"turn_around() should work from IDLE state with cab selected, "
+        result = controller.set_cab("B")
+        assert result.success is True, (
+            f"set_cab(\"B\") should work from READY state with cab selected, "
             f"train.state={train.state}"
         )
         assert train.facing_direction == Direction.WEST
-        assert controller.active_cab == "B"
+        assert controller.cab == "B"
 
 
 

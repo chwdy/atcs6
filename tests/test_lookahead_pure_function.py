@@ -82,7 +82,7 @@ def test_lookahead_reflects_new_path_immediately():
         train_id=train.train_id, network=network, path_dispatcher=dispatcher
     )
     controller.power_on = True
-    controller.active_cab = "A"
+    controller.cab = "A"
 
     # Snapshot initial lookahead (no path).
     initial = controller.lookahead

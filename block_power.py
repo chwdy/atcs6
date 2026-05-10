@@ -172,7 +172,7 @@ class BlockPowerController:
             ctrl = self._sim_controller.get_or_create_controller(train.train_id)
             if ctrl is not None:
                 controller_state = getattr(ctrl, "state", None)
-                controller_cab = getattr(ctrl, "active_cab", None)
+                controller_cab = getattr(ctrl, "cab", None)
 
         # Use opposite polarity (red lights both ends) when the train is
         # READY with no cab selected — the doc's "no cab" flavor of READY

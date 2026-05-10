@@ -20,7 +20,6 @@ flow.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
 import logging
 import time
 from typing import Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
@@ -38,6 +37,7 @@ from runtime_payloads import (
     ErrorRecord,
     PendingPathCancelRequest,
     ResolvedRouteTarget,
+    ResourceEvent,
 )
 
 if TYPE_CHECKING:
@@ -72,11 +72,15 @@ class ResolvedNextTaskProjection:
     """Projection returned by `_find_next_task_target(train_id)`.
 
     Read-only result. Phase 1's authority-acquisition step is the only writer
-    of `task_runs[i].resolved_target`; this helper itself never writes that
-    field.
+    of `task_runs[walk_position].resolved_target`; this helper itself never
+    writes that field.
+
+    Per design_new.md line 1089, `walk_position` is the walk-position index
+    in `RouteRun.task_runs`. The underlying `RouteTask` is
+    `Route.tasks[task_runs[walk_position].task_index]`.
     """
 
-    task_index: int
+    walk_position: int
     task_kind: str  # "waypoint" | "stop" | "dwell"
     direction: str  # "forward" | "reverse"
     resolved_target: Optional[ResolvedRouteTarget] = None
@@ -96,19 +100,11 @@ class RouteExecutionState:
 
     train_id: str
     route_id: str
-    # Physical-progress cursor: index in Route.tasks of the last task the train
-    # has actually finished. The "armed next task" is not stored as a separate
-    # planning cursor in v1 — Phase 1 recomputes it fresh via
-    # `_find_next_task_target(train_id)` each time it is needed (per
-    # design_new.md "Index-driven, live-recompute model").
-    current_waypoint_index: int = 0
     # Effective traversal direction for the current directed walk.
     # `1` means forward, `-1` means reverse. Named `signed_direction` to keep
     # it distinct from the `"forward"`/`"reverse"` string-form direction
     # carried by `ResolvedNextTaskProjection.direction` and `RouteTask.task_direction`.
     signed_direction: int = 1
-    # Latest route_version successfully reconciled into this run.
-    route_version_seen: int = 1
     # Per-run task table, parallel to Route.tasks. Allocated when the run is
     # created (or on first use) and grown lazily as Route.tasks gains entries.
     task_runs: List[RouteTaskRun] = field(default_factory=list)
@@ -116,10 +112,6 @@ class RouteExecutionState:
     started_at: Optional[float] = None
     # Composite run-instance number assigned by RouteExecutor (diagnostic only).
     run_number: int = 0
-    arrived_at_platform_time: Optional[float] = None
-    waiting_for_path: bool = False
-    last_waypoint_platform_id: Optional[str] = None
-    resolved_platform_id: Optional[str] = None
     # v1 latch consumed by Phase-1 route-deviation cleanup. Also drives the
     # derived `display_state` projection (DEVIATED while True).
     path_cancelled: bool = False
@@ -134,6 +126,21 @@ class RouteExecutionState:
     # message and timestamp are always either both present or both absent.
     last_error: Optional["ErrorRecord"] = None
 
+    def task_started_at(self, i: int) -> Optional[float]:
+        """Derived per design_new.md ``RouteTaskRun.started_at`` rule.
+
+        Returns ``RouteRun.started_at`` for index 0 and
+        ``task_runs[i-1].finished_at`` for i > 0. Returns ``None`` when the
+        predecessor has not yet recorded a ``finished_at`` (or when ``i`` is
+        out of range). The doc lists ``started_at`` as a derived read; this
+        helper is the only canonical reader.
+        """
+        if i < 0 or i >= len(self.task_runs):
+            return None
+        if i == 0:
+            return self.started_at
+        return self.task_runs[i - 1].finished_at
+
     @property
     def display_state(self) -> str:
         """UI-only diagnostic projection.
@@ -146,6 +153,33 @@ class RouteExecutionState:
         if self.path_cancelled:
             return "DEVIATED"
         return self.current_route_status.value
+
+    @property
+    def current_waypoint_index(self) -> int:
+        """Derived: index in ``Route.tasks`` of the next task on the walk.
+
+        Per design_new.md lines 296 and 1101 the cursor "advances with the
+        ``finished_at`` write" — there is no parallel stored field. The
+        derived rule:
+
+          * Walk ``task_runs`` in order; return the ``task_index`` of the
+            first entry whose ``finished_at is None`` (the next un-finished
+            walk position).
+          * If every entry is finished (terminal walk), return the last
+            entry's ``task_index``.
+          * If ``task_runs`` is empty (pre-allocation edge case), return 0.
+
+        For ``CIRCULAR`` / ``ROUND_TRIP`` routes the walk grows past
+        ``len(Route.tasks)`` via ``_append_next_walk_task``; each appended
+        ``RouteTaskRun`` carries its own underlying ``task_index``, so this
+        property naturally tracks the wrap/reflection.
+        """
+        if not self.task_runs:
+            return 0
+        for run in self.task_runs:
+            if run.finished_at is None:
+                return run.task_index
+        return self.task_runs[-1].task_index
 
     def _append_next_walk_task(self, route: "Route") -> None:
         """Grow `task_runs` for the next walk-position when applicable.
@@ -335,6 +369,20 @@ class RouteExecutor:
         """System-time Unix seconds; canonical timestamp source for v1."""
         return time.time()
 
+    def _compose_run_number(self, route_id: str, run_count: int) -> int:
+        """Compose the diagnostic ``RouteRun.run_number``.
+
+        Per design_new.md: ``route_registry_index * 1_000_000 + run_count``.
+        ``route_registry_index`` is the route's insertion order in
+        ``self.route_registry`` (stable in CPython 3.7+ dict ordering).
+        Falls back to 0 when the route is not yet registered.
+        """
+        try:
+            route_registry_index = list(self.route_registry.keys()).index(route_id)
+        except ValueError:
+            route_registry_index = 0
+        return route_registry_index * 1_000_000 + run_count
+
     def _get_active_path_id(self, train_id: str) -> Optional[str]:
         """Return the dispatcher's currently active path id for train_id."""
         if self.path_dispatcher is None:
@@ -399,8 +447,7 @@ class RouteExecutor:
                 train_id=train.train_id,
                 route_id=route.route_id,
                 started_at=now,
-                run_number=run_count,
-                route_version_seen=int(getattr(route, "route_version", 1)),
+                run_number=self._compose_run_number(route.route_id, run_count),
             )
             self.execution_states[train.train_id] = exec_state
         # Ensure task_runs is sized to the current Route.tasks list.
@@ -418,12 +465,7 @@ class RouteExecutor:
         tasks = getattr(route, "tasks", []) or []
         while len(exec_state.task_runs) < len(tasks):
             i = len(exec_state.task_runs)
-            row = RouteTaskRun(task_index=i)
-            # Per the canonical first-write rule, task_runs[0].started_at is
-            # initialized to RouteRun.started_at on creation.
-            if i == 0 and exec_state.started_at is not None:
-                row.started_at = exec_state.started_at
-            exec_state.task_runs.append(row)
+            exec_state.task_runs.append(RouteTaskRun(task_index=i))
 
     def _resolve_run_route(
         self, train_id: str
@@ -525,7 +567,7 @@ class RouteExecutor:
         # ---------- 3a37: dwell-entry transition -----------------------------
         if projection.task_kind == "dwell":
             self._dwell_entry_step(
-                train, route, exec_state, controller, projection.task_index
+                train, route, exec_state, controller, projection.walk_position
             )
             # Phase 1 returns for this tick once dwell-entry decides — no path
             # creation while dwell is pending or active.
@@ -615,10 +657,11 @@ class RouteExecutor:
 
         Per design_new.md, on completion this step writes
         `task_runs[task_index].finished_at = now`, advances
-        `current_waypoint_index`, calls `controller.finish_dwell()`. If a
-        next task on the directed walk exists, write
-        `task_runs[task_index+1].started_at = task_runs[task_index].finished_at`
-        only if that field is currently None.
+        `current_waypoint_index`, and calls `controller.finish_dwell()`.
+        The next task's `started_at` is derived (read via
+        `RouteExecutionState.task_started_at(i)`) — it just falls out of the
+        finished_at write per the canonical rule, so there is no separate
+        write step.
         """
         task_index = exec_state.current_waypoint_index
         task = route.get_task_at(task_index) if hasattr(route, "get_task_at") else None
@@ -630,7 +673,7 @@ class RouteExecutor:
         if task_index >= len(exec_state.task_runs):
             return
         row = exec_state.task_runs[task_index]
-        dwell_started_at = row.started_at
+        dwell_started_at = exec_state.task_started_at(task_index)
 
         if not task.should_depart(now, dwell_started_at):
             return
@@ -638,37 +681,11 @@ class RouteExecutor:
         # Mark the dwell row finished and advance.
         row.finished_at = now
         exec_state._append_next_walk_task(route)
-        # Write next task's started_at via the canonical first-write rule.
-        next_index = task_index + 1
-        if (
-            next_index < len(exec_state.task_runs)
-            and exec_state.task_runs[next_index].started_at is None
-        ):
-            exec_state.task_runs[next_index].started_at = now
 
         # Advance the per-run cursor based on the route mode.
-        has_more = self._advance_to_next_task(route, exec_state)
-        exec_state.arrived_at_platform_time = None
-        exec_state.waiting_for_path = False
+        self._advance_to_next_task(route, exec_state)
 
-        finish_dwell = getattr(controller, "finish_dwell", None)
-        if callable(finish_dwell):
-            try:
-                finish_dwell()
-            except Exception:
-                logger.warning(
-                    "finish_dwell() raised for train %s; trying legacy "
-                    "depart_from_station fallback",
-                    getattr(train, "train_id", "?"),
-                    exc_info=True,
-                )
-                fallback = getattr(controller, "depart_from_station", None)
-                if callable(fallback):
-                    fallback(has_more_waypoints=has_more)
-        else:
-            fallback = getattr(controller, "depart_from_station", None)
-            if callable(fallback):
-                fallback(has_more_waypoints=has_more)
+        controller.finish_dwell()
 
     def _covered_task_index_advance(
         self,
@@ -681,9 +698,11 @@ class RouteExecutor:
         """Phase 1 step 4: skip already-covered `waypoint` tasks.
 
         Walks forward through the route; for each next non-finished `waypoint`
-        whose resolved target block is already inside the current span,
-        advance the cursor and record `finished_at`. Stops at a `stop` or
-        `dwell` task or when no further task fits coverage.
+        whose resolved target block is already inside the current span, write
+        `finished_at` (which triggers `_append_next_walk_task` for
+        CIRCULAR/ROUND_TRIP and advances the derived
+        `current_waypoint_index`). Stops at a `stop` or `dwell` task, when
+        no further task fits coverage, or when the cursor stops advancing.
         """
         self._sync_task_runs(route, exec_state)
         task_count = route.get_task_count()
@@ -707,18 +726,19 @@ class RouteExecutor:
                 if not self._is_train_at_platform_for_task(train, task):
                     break
 
-            # Advance.
-            if idx < len(exec_state.task_runs):
-                row = exec_state.task_runs[idx]
-                if row.finished_at is None:
-                    row.finished_at = now
-                    exec_state._append_next_walk_task(route)
-                next_index = idx + 1
-                if (
-                    next_index < len(exec_state.task_runs)
-                    and exec_state.task_runs[next_index].started_at is None
-                ):
-                    exec_state.task_runs[next_index].started_at = now
+            # Write finished_at on the matching task_runs row. The derived
+            # `current_waypoint_index` then naturally advances on the next
+            # loop iteration; `_append_next_walk_task` appends the next
+            # walk-position entry for CIRCULAR/ROUND_TRIP routes.
+            if idx >= len(exec_state.task_runs):
+                break
+            row = exec_state.task_runs[idx]
+            if row.finished_at is not None:
+                # Already finished — cursor would not advance, so guard
+                # against an infinite loop by breaking explicitly.
+                break
+            row.finished_at = now
+            exec_state._append_next_walk_task(route)
             self._advance_to_next_task(route, exec_state)
 
     def _dwell_entry_step(
@@ -742,26 +762,7 @@ class RouteExecutor:
         if not getattr(controller, "is_recovery_clean", False):
             return
 
-        enter_station_dwell = getattr(controller, "enter_station_dwell", None)
-        if callable(enter_station_dwell):
-            try:
-                enter_station_dwell()
-            except Exception:
-                logger.warning(
-                    "enter_station_dwell() raised for train %s; trying legacy "
-                    "arrive_at_station fallback",
-                    getattr(train, "train_id", "?"),
-                    exc_info=True,
-                )
-                fallback = getattr(controller, "arrive_at_station", None)
-                if callable(fallback):
-                    fallback()
-        else:
-            fallback = getattr(controller, "arrive_at_station", None)
-            if callable(fallback):
-                fallback()
-        if exec_state.arrived_at_platform_time is None:
-            exec_state.arrived_at_platform_time = self._now()
+        controller.enter_station_dwell()
 
     def _authority_acquisition_step(
         self,
@@ -774,10 +775,11 @@ class RouteExecutor:
         """Phase 1 step 7: create or extend authority for the resolved target.
 
         On a successful create/extend, write
-        ``task_runs[projection.task_index].resolved_target`` (Phase-1-only
-        writer). When the effective_departure_mode is "auto", call
-        ``controller.depart()`` directly. There is no ``departure_requested``
-        latch in v1.
+        ``task_runs[projection.walk_position].resolved_target`` (Phase-1-only
+        writer) and call ``controller.depart()``. Per design_new.md
+        line 1078, departure is not a route-level policy in v1: Phase 1
+        always calls ``depart()`` after a successful create/extend.
+        There is no ``departure_requested`` latch.
         """
         if self.path_dispatcher is None:
             return
@@ -798,9 +800,9 @@ class RouteExecutor:
             try:
                 acquisition_mode = AcquisitionMode(route_mode_raw)
             except ValueError:
-                acquisition_mode = AcquisitionMode.ALL_OR_NOTHING
+                acquisition_mode = AcquisitionMode.BEST_EFFORT
         else:
-            acquisition_mode = AcquisitionMode.ALL_OR_NOTHING
+            acquisition_mode = AcquisitionMode.BEST_EFFORT
 
         success = False
         try:
@@ -829,8 +831,9 @@ class RouteExecutor:
         if not success:
             return
 
-        # Successful create/extend: write task_runs[target_index].resolved_target.
-        target_idx = projection.task_index
+        # Successful create/extend: write
+        # task_runs[walk_position].resolved_target.
+        target_idx = projection.walk_position
         self._sync_task_runs(route, exec_state)
         if 0 <= target_idx < len(exec_state.task_runs):
             exec_state.task_runs[target_idx].resolved_target = ResolvedRouteTarget(
@@ -844,25 +847,21 @@ class RouteExecutor:
         elif projection.direction == "reverse":
             exec_state.signed_direction = -1
 
-        exec_state.waiting_for_path = False
-
-        # Effective departure mode.
-        effective_mode = getattr(route, "default_departure_mode", "auto") or "auto"
-
-        if effective_mode == "auto":
-            depart = getattr(controller, "depart", None)
-            if callable(depart):
-                try:
-                    depart()
-                except Exception:
-                    # Phase 1 retries depart() on a later tick; logging the
-                    # raised reason keeps non-acceptance visible without
-                    # aborting the planning kernel.
-                    logger.warning(
-                        "depart() raised for train %s; will retry on a later tick",
-                        getattr(train, "train_id", "?"),
-                        exc_info=True,
-                    )
+        # Per design_new.md line 1078: Phase 1 always calls depart() after a
+        # successful create/extend.
+        depart = getattr(controller, "depart", None)
+        if callable(depart):
+            try:
+                depart()
+            except Exception:
+                # Phase 1 retries depart() on a later tick; logging the
+                # raised reason keeps non-acceptance visible without
+                # aborting the planning kernel.
+                logger.warning(
+                    "depart() raised for train %s; will retry on a later tick",
+                    getattr(train, "train_id", "?"),
+                    exc_info=True,
+                )
 
     def finish_route_run(self, train_id: str) -> None:
         """Phase 1 terminal-walk handler.
@@ -915,9 +914,7 @@ class RouteExecutor:
         self,
         train_id: str,
         path_id: str,
-        resource_type: str,
-        resource_id: str,
-        resource_traversal_direction: Optional[str] = None,
+        resource_event: ResourceEvent,
     ) -> None:
         """Phase-3 head-advance callback. Consumes at most one task per call.
 
@@ -928,7 +925,7 @@ class RouteExecutor:
           * The reported block must match the next non-finished task's
             resolved-target block AND direction.
         """
-        if resource_type != "block":
+        if resource_event.resource_type != "block":
             return
         train, route, exec_state = self._resolve_run_route(train_id)
         if train is None or route is None or exec_state is None:
@@ -941,33 +938,29 @@ class RouteExecutor:
             return
         if projection.resolved_target is None:
             return
-        if projection.resolved_target.requested_destination_block_id != resource_id:
+        if (
+            projection.resolved_target.requested_destination_block_id
+            != resource_event.resource_id
+        ):
             return
         if (
-            resource_traversal_direction is not None
+            resource_event.exit_edge is not None
             and projection.resolved_target.requested_destination_direction
-            != resource_traversal_direction
+            != resource_event.exit_edge
         ):
             return
 
         # Consume that one task: record finished_at and advance the cursor.
         now = self._now()
-        idx = projection.task_index
+        idx = projection.walk_position
         self._sync_task_runs(route, exec_state)
         if 0 <= idx < len(exec_state.task_runs):
             row = exec_state.task_runs[idx]
             if row.finished_at is None:
                 row.finished_at = now
                 exec_state._append_next_walk_task(route)
-            next_index = idx + 1
-            if (
-                next_index < len(exec_state.task_runs)
-                and exec_state.task_runs[next_index].started_at is None
-            ):
-                exec_state.task_runs[next_index].started_at = now
 
         self._advance_to_next_task(route, exec_state)
-        exec_state.arrived_at_platform_time = None
 
     def handle_path_cancellation(
         self,
@@ -992,7 +985,6 @@ class RouteExecutor:
         # plus the derived `display_state` projection. The stored
         # `current_route_status.state` does not transition to DEVIATED.
         exec_state.path_cancelled = True
-        exec_state.waiting_for_path = False
 
     def handle_path_completion(
         self,
@@ -1001,10 +993,6 @@ class RouteExecutor:
         authority_end_block_id: Optional[str] = None,
         requested_destination_direction: Optional[str] = None,
         event_time: Optional[float] = None,
-        # Legacy compatibility kwargs (older SimulationController polling
-        # code still passes _end_tile/_event_time).
-        _end_tile: Optional[Tuple[int, int]] = None,
-        _event_time: Optional[object] = None,
     ) -> bool:
         """Phase-3 completion callback.
 
@@ -1018,18 +1006,11 @@ class RouteExecutor:
           * clear route-owned active-path correlation
         """
         if event_time is None:
-            if isinstance(_event_time, (int, float)):
-                event_time = float(_event_time)
-            elif isinstance(_event_time, datetime):
-                event_time = _event_time.timestamp()
-            else:
-                event_time = self._now()
+            event_time = self._now()
 
         train, route, exec_state = self._resolve_run_route(train_id)
         if train is None or route is None or exec_state is None:
             return False
-
-        exec_state.waiting_for_path = False
 
         # Walk task_runs from current_waypoint_index + 1 looking for a stop.
         self._sync_task_runs(route, exec_state)
@@ -1077,24 +1058,18 @@ class RouteExecutor:
         if match_index is None:
             return False
 
-        # _enter_task_arrival semantics: advance cursor to match_index.
-        # Record finished_at on the matched stop row and write next started_at.
-        if 0 <= match_index < len(exec_state.task_runs):
-            row = exec_state.task_runs[match_index]
+        # Record finished_at on the matched stop row plus any intermediate
+        # task_runs rows so the derived `current_waypoint_index` advances past
+        # the matched stop. (Per design_new.md the cursor is derived; we move
+        # it by writing finished_at, never by direct assignment.)
+        cursor = exec_state.current_waypoint_index
+        for i in range(cursor, match_index + 1):
+            if not (0 <= i < len(exec_state.task_runs)):
+                continue
+            row = exec_state.task_runs[i]
             if row.finished_at is None:
                 row.finished_at = event_time
                 exec_state._append_next_walk_task(route)
-            next_index = match_index + 1
-            if (
-                next_index < len(exec_state.task_runs)
-                and exec_state.task_runs[next_index].started_at is None
-            ):
-                exec_state.task_runs[next_index].started_at = event_time
-
-        exec_state.current_waypoint_index = max(
-            exec_state.current_waypoint_index, match_index
-        )
-        exec_state.arrived_at_platform_time = event_time
         # Phase 3 must NOT call enter_station_dwell — that fires from the next
         # eligible Phase 1 dwell-entry step.
         return True
@@ -1213,41 +1188,40 @@ class RouteExecutor:
     def _advance_to_next_task(
         self, route: "Route", exec_state: RouteExecutionState
     ) -> bool:
-        """Advance per-train task index based on route mode.
+        """Maintain ``signed_direction`` for ROUND_TRIP route reflections.
 
-        Mutates `exec_state.current_waypoint_index` and
-        `exec_state.signed_direction`.
+        The cursor itself (``current_waypoint_index``) is now derived from
+        ``task_runs[*].finished_at`` (see ``RouteExecutionState`` property
+        docstring). Each ``finished_at`` write triggers
+        ``_append_next_walk_task(route)`` which appends the next
+        ``RouteTaskRun`` for ``CIRCULAR`` / ``ROUND_TRIP`` routes — that
+        append is what advances the derived cursor.
+
+        This helper retains a single responsibility: flip ``signed_direction``
+        at ROUND_TRIP boundaries so the next ``_append_next_walk_task`` call
+        appends the reflected walk-position. Returns ``True`` if the walk
+        can continue (more tasks ahead), ``False`` for a terminal ONE_OFF
+        walk.
         """
         task_count = route.get_task_count()
         if task_count == 0:
             return False
 
         if route.mode == RouteMode.ONE_OFF:
-            exec_state.current_waypoint_index += 1
-            exec_state.resolved_platform_id = None
             return exec_state.current_waypoint_index < task_count
 
         if route.mode == RouteMode.CIRCULAR:
-            exec_state.current_waypoint_index += 1
-            if exec_state.current_waypoint_index >= task_count:
-                exec_state.current_waypoint_index = 0
-            exec_state.resolved_platform_id = None
             return True
 
-        # ROUND_TRIP
-        exec_state.current_waypoint_index += exec_state.signed_direction
-        if exec_state.current_waypoint_index >= task_count:
+        # ROUND_TRIP — flip signed_direction at boundaries. The derived
+        # cursor jumps to the reflected position once `_append_next_walk_task`
+        # appends the next entry with the new direction.
+        cursor = exec_state.current_waypoint_index
+        if cursor >= task_count - 1 and exec_state.signed_direction > 0:
             exec_state.signed_direction = -1
-            exec_state.current_waypoint_index = task_count - 2
-            if exec_state.current_waypoint_index < 0:
-                exec_state.current_waypoint_index = 0
-        elif exec_state.current_waypoint_index < 0:
+        elif cursor <= 0 and exec_state.signed_direction < 0:
             exec_state.signed_direction = 1
-            exec_state.current_waypoint_index = 1
-            if exec_state.current_waypoint_index >= task_count:
-                exec_state.current_waypoint_index = 0
 
-        exec_state.resolved_platform_id = None
         return True
 
     # ------------------------------------------------------------------ network helpers
@@ -1329,39 +1303,3 @@ class RouteExecutor:
         if len(coords) == 1:
             raise ValueError("Cannot determine train direction for single-tile path")
         return convert_tiles_to_train_path(coords)
-
-    def set_train_waypoint_index(self, train_id: str, waypoint_index: int) -> bool:
-        """Override current task cursor for an assigned train."""
-        train = self.network.trains.get(train_id)
-        if not train:
-            return False
-
-        route_id = self.assigned_route_id_for(train_id)
-        if route_id is None:
-            return False
-
-        route = self.route_registry.get(route_id)
-        if not route:
-            return False
-        if waypoint_index < 0 or waypoint_index >= route.get_task_count():
-            return False
-
-        exec_state = self.execution_states.get(train_id)
-        if not exec_state or exec_state.route_id != route.route_id:
-            now = self._now()
-            run_count = self._run_count_for_route.get(route.route_id, 0) + 1
-            self._run_count_for_route[route.route_id] = run_count
-            exec_state = RouteExecutionState(
-                train_id=train_id,
-                route_id=route.route_id,
-                started_at=now,
-                run_number=run_count,
-                route_version_seen=int(getattr(route, "route_version", 1)),
-            )
-            self.execution_states[train_id] = exec_state
-
-        exec_state.current_waypoint_index = waypoint_index
-        exec_state.arrived_at_platform_time = None
-        exec_state.resolved_platform_id = None
-        exec_state.waiting_for_path = False
-        return True

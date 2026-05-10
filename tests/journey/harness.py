@@ -220,7 +220,7 @@ def _capture_snapshot(
         sim_time=sim.simulation_time,
         fixture=fixture,
         state=controller.state,
-        cab=controller.active_cab,
+        cab=controller.cab,
         speed_kmh=float(controller.current_speed_kmh),
         eb_active=bool(controller.eb_active),
         ato_running=bool(controller.ato_running),

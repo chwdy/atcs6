@@ -3,22 +3,23 @@ Train Route Management
 
 Per design_new.md "Route And RouteExecutor" section. A Route is the shared
 travel plan — an ordered list of RouteTask entries (waypoint / stop / dwell)
-plus route-level policy (mode, priority, acquisition mode, departure mode,
-reconciliation policy). Per-train mutable execution state lives separately
-in the route run (RouteExecutionState / RouteRun) owned by RouteExecutor.
+plus route-level policy (mode, priority, acquisition mode). Per-train
+mutable execution state lives separately in the route run
+(RouteExecutionState / RouteRun) owned by RouteExecutor.
 
 The module provides:
+- BlockTarget / PlatformTarget / StationTarget: tagged-union dataclasses
+  for `RouteTask.task_location`.
 - RouteTask: one task in a Route (kind, location, direction, timing).
 - RouteTaskRun: per-run task table entry parallel to Route.tasks.
 - RouteRunStatus: enum of run-level diagnostic states.
 - Route: shared travel plan (ordered tasks + route-level policy).
 - RouteMode: ONE_OFF, CIRCULAR, ROUND_TRIP.
-- TimingMode: NONE, RELATIVE, ABSOLUTE.
 """
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
 
 from runtime_payloads import AcquisitionMode, ErrorRecord
 
@@ -28,12 +29,94 @@ if TYPE_CHECKING:
     from route_executor import ResolvedRouteTarget
 
 
-class TimingMode(Enum):
-    """Timing mode for task departure."""
+# =============================================================================
+# Task location tagged union
+# =============================================================================
+#
+# Per design_new.md line 1125, `RouteTask.task_location` is a tagged union of
+# three concrete target dataclasses. The union enforces that exactly one
+# targeting mode is present — the type system replaces the legacy
+# probe-in-order pattern (block → platform → station) with structural
+# dispatch.
 
-    NONE = "none"
-    RELATIVE = "relative"
-    ABSOLUTE = "absolute"
+
+@dataclass(frozen=True)
+class BlockTarget:
+    """Direct block target."""
+
+    block_id: str
+
+
+@dataclass(frozen=True)
+class PlatformTarget:
+    """Concrete platform target."""
+
+    platform_id: str
+
+
+@dataclass(frozen=True)
+class StationTarget:
+    """Logical station-group target; resolved to a concrete platform at runtime."""
+
+    station_id: str
+
+
+TaskLocation = Union[BlockTarget, PlatformTarget, StationTarget]
+
+
+def _coerce_task_location(value: Any) -> TaskLocation:
+    """Coerce input into one of the three concrete `TaskLocation` variants.
+
+    Accepted shapes:
+      * an already-built `BlockTarget` / `PlatformTarget` / `StationTarget`.
+      * a structured dict carrying exactly one of the three id keys
+        (`{"block_id": ...}`, `{"platform_id": ...}`, `{"station_id": ...}`).
+      * a plain string — interpreted as a platform_id (the dominant v1
+        caller pattern). This is a transitional convenience for in-process
+        constructors; persisted JSON should always use the structured form.
+    """
+    if isinstance(value, (BlockTarget, PlatformTarget, StationTarget)):
+        return value
+    if isinstance(value, dict):
+        present = [
+            k for k in ("block_id", "platform_id", "station_id") if k in value
+        ]
+        if len(present) != 1:
+            raise ValueError(
+                f"task_location dict must carry exactly one of "
+                f"block_id/platform_id/station_id, got keys: {list(value.keys())}"
+            )
+        key = present[0]
+        ident = str(value[key])
+        if key == "block_id":
+            return BlockTarget(block_id=ident)
+        if key == "platform_id":
+            return PlatformTarget(platform_id=ident)
+        return StationTarget(station_id=ident)
+    if isinstance(value, str):
+        return PlatformTarget(platform_id=value)
+    raise TypeError(
+        f"task_location must be a BlockTarget / PlatformTarget / StationTarget "
+        f"or a coercible dict/str; got {type(value).__name__}"
+    )
+
+
+def task_location_id(loc: TaskLocation) -> str:
+    """Return the underlying id from a TaskLocation variant."""
+    if isinstance(loc, BlockTarget):
+        return loc.block_id
+    if isinstance(loc, PlatformTarget):
+        return loc.platform_id
+    return loc.station_id
+
+
+def task_location_to_dict(loc: TaskLocation) -> Dict[str, str]:
+    """Serialize a TaskLocation to its canonical wire shape."""
+    if isinstance(loc, BlockTarget):
+        return {"block_id": loc.block_id}
+    if isinstance(loc, PlatformTarget):
+        return {"platform_id": loc.platform_id}
+    return {"station_id": loc.station_id}
 
 
 class RouteMode(Enum):
@@ -64,15 +147,13 @@ class RouteTask:
     """One unified task entry in Route.tasks.
 
     Per design_new.md "RouteTask data". Every entry in Route.tasks is a
-    RouteTask. The kind discriminator (task_kind) plus the single populated
-    targeting field on task_location decides everything else.
+    RouteTask. The kind discriminator (`task_kind`) plus the variant of
+    `task_location` decides everything else.
 
     Attributes:
         task_kind: "waypoint" | "stop" | "dwell".
-        task_location: A block_id, platform_id, or station_id (depending on
-            kind). Validation enforces exactly one targeting concept; in v1
-            we store it as a single string and let the Network resolver
-            distinguish.
+        task_location: One of BlockTarget / PlatformTarget / StationTarget.
+            The tagged union enforces exactly one targeting mode is present.
         task_direction: Block-relative traversal preference. RouteExecutor
             resolves "either" to a concrete direction before any dispatcher
             call; the dispatcher never receives "either".
@@ -83,27 +164,25 @@ class RouteTask:
             classification).
         target_time: Optional absolute system-time Unix departure timestamp
             for `stop` tasks; granted immediately if the train arrives late.
-        timing_mode: Timing classification (NONE / RELATIVE / ABSOLUTE).
-        flexible_platform: For waypoint/stop on a platform_id task, allow
-            covered-task index advance to count any compatible platform in
-            the allowed set. No effect on station/block tasks.
-        departure_mode: Optional per-task override of
-            Route.default_departure_mode. Applies to stop tasks; ignored for
-            others. None means inherit the route default.
-        task_metadata: Optional kind-specific extension payload reserved for
-            future fields; must not contain `flexible_platform` or
-            `departure_mode` (those are top-level fields).
     """
 
     task_kind: Literal["waypoint", "stop", "dwell"]
-    task_location: str
+    task_location: TaskLocation
     task_direction: Literal["forward", "reverse", "either"] = "either"
     task_time: Optional[float] = None
     target_time: Optional[float] = None
-    timing_mode: TimingMode = TimingMode.NONE
-    flexible_platform: bool = False
-    departure_mode: Optional[Literal["auto", "manual"]] = None
-    task_metadata: Optional[Dict[str, Any]] = None
+
+    def __post_init__(self) -> None:
+        # Coerce convenience inputs (plain string, dict) into the canonical
+        # tagged-union form. Outside callers should pass a concrete variant.
+        if not isinstance(
+            self.task_location, (BlockTarget, PlatformTarget, StationTarget)
+        ):
+            object.__setattr__(
+                self,
+                "task_location",
+                _coerce_task_location(self.task_location),
+            )
 
     def should_depart(
         self,
@@ -157,28 +236,27 @@ class RouteTask:
         return max(0.0, self.task_time - (now - dwell_started_at))
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize to a JSON-compatible dict."""
+        """Serialize to a JSON-compatible dict.
+
+        `task_location` is emitted as the canonical structured shape
+        (`{"block_id"/"platform_id"/"station_id": "..."}`).
+        """
         return {
             "task_kind": self.task_kind,
-            "task_location": self.task_location,
+            "task_location": task_location_to_dict(self.task_location),
             "task_direction": self.task_direction,
             "task_time": self.task_time,
             "target_time": self.target_time,
-            "timing_mode": self.timing_mode.value,
-            "flexible_platform": self.flexible_platform,
-            "departure_mode": self.departure_mode,
-            "task_metadata": self.task_metadata,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RouteTask":
-        """Reconstruct from dict after deserialization."""
-        timing_mode_str = data.get("timing_mode", "none")
-        try:
-            timing_mode = TimingMode(timing_mode_str)
-        except ValueError:
-            timing_mode = TimingMode.NONE
+        """Reconstruct from dict after deserialization.
 
+        `task_location` accepts the canonical structured form
+        (`{"block_id"/"platform_id"/"station_id": "..."}`) or a plain
+        string (legacy: interpreted as a platform_id).
+        """
         kind = data.get("task_kind", "waypoint")
         if kind not in ("waypoint", "stop", "dwell"):
             kind = "waypoint"
@@ -197,24 +275,12 @@ class RouteTask:
         else:
             task_time = None
 
-        departure_mode = data.get("departure_mode")
-        if departure_mode not in ("auto", "manual", None):
-            departure_mode = None
-
-        task_metadata = data.get("task_metadata")
-        if task_metadata is not None and not isinstance(task_metadata, dict):
-            task_metadata = None
-
         return cls(
             task_kind=kind,  # type: ignore[arg-type]
-            task_location=str(data.get("task_location", "")),
+            task_location=_coerce_task_location(data.get("task_location", "")),
             task_direction=direction,  # type: ignore[arg-type]
             task_time=task_time,
             target_time=data.get("target_time"),
-            timing_mode=timing_mode,
-            flexible_platform=bool(data.get("flexible_platform", False)),
-            departure_mode=departure_mode,  # type: ignore[arg-type]
-            task_metadata=task_metadata,
         )
 
 
@@ -222,13 +288,15 @@ class RouteTask:
 class RouteTaskRun:
     """Per-run task-state entry; one per task index in Route.tasks.
 
-    Per design_new.md "RouteTaskRun schema". Owns per-task timing,
-    resolved dispatcher target, and per-task error context.
+    Per design_new.md "RouteTaskRun schema". Owns per-task `finished_at`,
+    resolved dispatcher target, delay classification, and error context.
+    The `started_at` field is derived: read it via
+    `RouteExecutionState.task_started_at(i)`, which returns
+    `RouteRun.started_at` for i==0 and `task_runs[i-1].finished_at` otherwise.
     """
 
     task_index: int
     resolved_target: Optional["ResolvedRouteTarget"] = None
-    started_at: Optional[float] = None
     finished_at: Optional[float] = None
     delay_class: Optional[Literal["early", "on_time", "late"]] = None
     last_error: Optional["ErrorRecord"] = None
@@ -252,12 +320,8 @@ class Route:
         started_at: System-time Unix seconds when route was activated.
         priority: Route-executor scheduling priority (0..9, default 5).
         acquisition_mode: Default route path-acquisition policy
-            ("all_or_nothing" or "best_effort").
-        default_departure_mode: Ordinary departure policy ("auto" / "manual").
-        route_version: Monotonic shared-route revision; incremented on any
-            route edit that changes task order or execution policy.
-        reconciliation_policy: How active runs reconcile against later
-            shared-route edits ("nearest_valid_target" / "restart_from_top").
+            ("all_or_nothing" or "best_effort"). Default is ``best_effort``
+            per design_new.md line 1052.
     """
 
     route_id: str
@@ -274,29 +338,22 @@ class Route:
 
     # Route-level policy (v1)
     priority: int = 5
-    acquisition_mode: AcquisitionMode = AcquisitionMode.ALL_OR_NOTHING
-    default_departure_mode: Literal["auto", "manual"] = "auto"
-    route_version: int = 1
-    reconciliation_policy: str = "nearest_valid_target"
+    acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT
 
     # ── Definition Methods ─────────────────────────────────────────
 
     def add_task(self, task: RouteTask) -> None:
-        """Append a RouteTask. Bumps route_version."""
+        """Append a RouteTask."""
         self.tasks.append(task)
-        self.route_version += 1
 
     def insert_task(self, index: int, task: RouteTask) -> None:
-        """Insert a RouteTask at a specific position. Bumps route_version."""
+        """Insert a RouteTask at a specific position."""
         self.tasks.insert(index, task)
-        self.route_version += 1
 
     def remove_task(self, index: int) -> Optional[RouteTask]:
-        """Remove the RouteTask at `index` and return it. Bumps route_version."""
+        """Remove the RouteTask at `index` and return it."""
         if 0 <= index < len(self.tasks):
-            removed = self.tasks.pop(index)
-            self.route_version += 1
-            return removed
+            return self.tasks.pop(index)
         return None
 
     def get_task_count(self) -> int:
@@ -391,9 +448,6 @@ class Route:
             "started_at": self.started_at,
             "priority": self.priority,
             "acquisition_mode": self.acquisition_mode.value,
-            "default_departure_mode": self.default_departure_mode,
-            "route_version": self.route_version,
-            "reconciliation_policy": self.reconciliation_policy,
         }
 
     @classmethod
@@ -407,18 +461,14 @@ class Route:
 
         tasks = [RouteTask.from_dict(td) for td in data.get("tasks", [])]
 
-        raw_acq = data.get("acquisition_mode", AcquisitionMode.ALL_OR_NOTHING)
+        raw_acq = data.get("acquisition_mode", AcquisitionMode.BEST_EFFORT)
         if isinstance(raw_acq, AcquisitionMode):
             acquisition_mode = raw_acq
         else:
             try:
                 acquisition_mode = AcquisitionMode(raw_acq)
             except ValueError:
-                acquisition_mode = AcquisitionMode.ALL_OR_NOTHING
-
-        default_departure_mode = data.get("default_departure_mode", "auto")
-        if default_departure_mode not in ("auto", "manual"):
-            default_departure_mode = "auto"
+                acquisition_mode = AcquisitionMode.BEST_EFFORT
 
         return cls(
             route_id=str(data.get("route_id", "")),
@@ -430,9 +480,4 @@ class Route:
             started_at=data.get("started_at"),
             priority=int(data.get("priority", 5)),
             acquisition_mode=acquisition_mode,  # type: ignore[arg-type]
-            default_departure_mode=default_departure_mode,  # type: ignore[arg-type]
-            route_version=int(data.get("route_version", 1)),
-            reconciliation_policy=str(
-                data.get("reconciliation_policy", "nearest_valid_target")
-            ),
         )

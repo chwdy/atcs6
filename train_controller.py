@@ -256,10 +256,7 @@ class TrainController:
     # -------------------------------------------------------------------------
     # `power_on` is derived from `state != OFF` per design_new.md. It is
     # exposed as a @property defined later in the class.
-    eb_active: bool = (
-        False  # Emergency brake active (renamed from emergency_stop_active)
-    )
-    atc_warning_active: bool = False  # True when overspeed by 5-10 km/h
+    eb_active: bool = False  # Emergency brake active
 
     # -------------------------------------------------------------------------
     # Notifications (for frontend toast messages via API)
@@ -269,7 +266,7 @@ class TrainController:
     # -------------------------------------------------------------------------
     # Cab & Mode State
     # -------------------------------------------------------------------------
-    active_cab: Optional[str] = None  # 'A', 'B', or None
+    cab: Optional[str] = None  # 'A', 'B', or None
     control_mode: str = "ato"  # 'ato' or 'manual'
     manual_mode_type: str = "simulation"  # 'simulation' or 'power_percent'
 
@@ -502,7 +499,7 @@ class TrainController:
         edges) so the property still returns a meaningful value. The contract
         ("derived, not stored, no writers") is preserved either way.
         """
-        if self.active_cab is None:
+        if self.cab is None:
             return None
         train = self._get_train()
         if not train or not getattr(train, "position", None):
@@ -669,7 +666,7 @@ class TrainController:
         live_lookahead = self._calculate_lookahead()
 
         # ===== 3. ATC INFO COLLECTION =====
-        if self.active_cab is None:
+        if self.cab is None:
             self.atc_speed_limit = 0.0
             self._last_speed_limit_reason = "No cab selected"
             self._last_atc_limit_reason_code = AtcLimitReasonCode.NO_CAB
@@ -733,15 +730,11 @@ class TrainController:
             )
             return
         elif overspeed > 5:
-            # Warning only
-            self.atc_warning_active = True
             logger.debug(
                 "[TrainController %s] ATC warning: overspeed=%.2f",
                 self.train_id,
                 overspeed,
             )
-        else:
-            self.atc_warning_active = False
 
         # ===== 5. ATO INFO =====
         self.ato_info = self._calculate_ato_info()
@@ -1139,14 +1132,14 @@ class TrainController:
         Compares the current cab's required-cab projection from the active
         path with the active cab and returns True on mismatch.
         """
-        if self.active_cab not in ("A", "B"):
+        if self.cab not in ("A", "B"):
             return False
         if self.received_path_plan is None:
             return False
         required = self._required_cab_for_path()
         if required is None:
             return False
-        return required != self.active_cab
+        return required != self.cab
 
     def _get_effective_safety_margin(self) -> float:
         """Forward to `ATCCalculator.effective_safety_margin()`."""
@@ -1376,7 +1369,7 @@ class TrainController:
             "head_tile": None,
             "head_distance_cm": head_distance_cm,
             "travel_direction": travel_direction,
-            "cab": self.active_cab,
+            "cab": self.cab,
             "speed_limit_reason": speed_limit_reason,
             "lookahead": {
                 "blocks": [],
@@ -1882,7 +1875,7 @@ class TrainController:
             return False
         if self._has_path_backed_run_context(train):
             return False
-        return self.active_cab in ("A", "B")
+        return self.cab in ("A", "B")
 
     def _align_cab_to_required_path_direction(self) -> bool:
         """Ensure the stopped train's active cab matches the required path direction."""
@@ -1891,13 +1884,13 @@ class TrainController:
             return False
 
         required_cab = self._required_cab_for_path()
-        if required_cab is None or self.active_cab == required_cab:
+        if required_cab is None or self.cab == required_cab:
             return True
 
         logger.info(
             "[TrainController %s] auto-correcting cab %s -> %s for path direction",
             self.train_id,
-            self.active_cab,
+            self.cab,
             required_cab,
         )
 
@@ -1979,7 +1972,7 @@ class TrainController:
         if not train or not train.position:
             return None
 
-        current_cab = self.active_cab or "A"
+        current_cab = self.cab or "A"
 
         # --- Approach 1: track connectivity (preferred) ---
         flip = self._path_needs_cab_flip()
@@ -2168,13 +2161,15 @@ class TrainController:
         # Check if this station is a scheduled stop on the train's route.
         # Per design_new.md "RouteTask data", v1 routes hold an ordered
         # `tasks` list whose `stop` and `dwell` entries imply a stop at
-        # `task_location` (a platform_id or station-group id); `waypoint`
-        # entries are pass-through and do not imply stopping.
+        # `task_location` (BlockTarget / PlatformTarget / StationTarget);
+        # `waypoint` entries are pass-through and do not imply stopping.
         if self.route_executor is not None:
             route_id = self.route_executor.assigned_route_id_for(self.train_id)
             if route_id is not None:
                 route = self.route_executor.route_registry.get(route_id)
                 if route:
+                    from train_route import PlatformTarget, StationTarget
+
                     station_group_id: Optional[str] = None
                     if hasattr(self.network, "get_station_for_platform"):
                         try:
@@ -2186,13 +2181,13 @@ class TrainController:
                     for task in route.tasks:
                         if task.task_kind not in ("stop", "dwell"):
                             continue
-                        if task.task_location == station_id:
-                            return True
-                        if (
-                            station_group_id
-                            and task.task_location == station_group_id
-                        ):
-                            return True
+                        loc = task.task_location
+                        if isinstance(loc, PlatformTarget):
+                            if loc.platform_id == station_id:
+                                return True
+                        elif isinstance(loc, StationTarget):
+                            if station_group_id and loc.station_id == station_group_id:
+                                return True
 
         # If ato_destination_block_id is set (manual path), only stop at the
         # destination block. This prevents stopping at the departure station
@@ -2913,10 +2908,6 @@ class TrainController:
 
         return CommandResult(True, "Emergency stop activated")
 
-    # Legacy alias retained as a thin shim so existing callers keep working.
-    def emergency_stop_cmd(self) -> CommandResult:
-        return self.activate_emergency_cmd()
-
     def release_emergency_cmd(self) -> CommandResult:
         """
         Release emergency stop.
@@ -3002,7 +2993,7 @@ class TrainController:
             return CommandResult(False, "Power is off")
 
         if position == HandlePosition.EB:
-            return self.emergency_stop_cmd()
+            return self.activate_emergency_cmd()
 
         if self.eb_active:
             brake_positions = [
@@ -3047,14 +3038,21 @@ class TrainController:
         if not self.is_stopped():
             return CommandResult(False, "Cannot switch cab while moving")
 
-        old_cab = self.active_cab
+        old_cab = self.cab
 
         # Per design_new.md: same-cab no-op success — does not change state,
         # does not disengage ato_running, no notification.
         if cab == old_cab:
             return CommandResult(True, f"Cab already {cab}")
 
-        self.active_cab = cab
+        # Per design_new.md line 1630 + Allowed (state, cab) pairs table
+        # (line 1589): `(RUNNING_AT_STATION, None)` is not a legal pair.
+        # Reject `set_cab(None)` from RUNNING_AT_STATION; the operator must
+        # finish dwell or pick a concrete cab letter instead.
+        if cab is None and self.state == TrainState.RUNNING_AT_STATION:
+            return CommandResult(False, "cannot deselect cab while dwelling")
+
+        self.cab = cab
 
         # Per design_new.md: changing cab is part of the depart-acceptance
         # contract; it disengages any active ATO run. set_cab from
@@ -3219,7 +3217,7 @@ class TrainController:
             return CommandResult(False, "Not in manual mode")
         if self.manual_mode_type != "power_percent":
             return CommandResult(False, "Manual mode type is not power_percent")
-        if self.active_cab not in ("A", "B"):
+        if self.cab not in ("A", "B"):
             return CommandResult(False, "No cab selected")
         if self.eb_active:
             return CommandResult(False, "Emergency brake latched")
@@ -3277,8 +3275,8 @@ class TrainController:
         #   2. cab=A/B but wrong: auto-correct cab to match path direction
         if self.ato_info and self.ato_info.required_cab:
             required_cab = self.ato_info.required_cab
-            if self.active_cab != required_cab:
-                old_cab = self.active_cab
+            if self.cab != required_cab:
+                old_cab = self.cab
                 logger.info(
                     "[TrainController %s] ATO auto-%s cab: %s -> %s",
                     self.train_id,
@@ -3298,7 +3296,7 @@ class TrainController:
                 self.pending_notifications.append(
                     f"ATO auto-{'selected' if old_cab is None else 'switched'} cab to {required_cab} for path direction"
                 )
-        elif self.active_cab is None:
+        elif self.cab is None:
             # No ATO info available and no cab - cannot determine direction
             return CommandResult(
                 False,
@@ -3309,7 +3307,7 @@ class TrainController:
         # state == READY for non-dwelling controllers).
         if self.state != TrainState.READY:
             return CommandResult(False, f"Train not in READY (is {self.state.value})")
-        if self.active_cab not in ("A", "B"):
+        if self.cab not in ("A", "B"):
             return CommandResult(False, "ATO requires a cab to be selected")
 
         self.state = TrainState.RUNNING_MOVING
@@ -3394,33 +3392,12 @@ class TrainController:
         # Manual mode: requires READY with a cab and facing direction
         if self.state != TrainState.READY:
             return False
-        if self.active_cab not in ("A", "B"):
+        if self.cab not in ("A", "B"):
             return False
         if train.facing_direction is None:
             return False
         self.path_backed_run_active = self._has_path_backed_run_context(train)
         self.state = TrainState.RUNNING_MOVING
-        return True
-
-    def arrive_at_station(self) -> bool:
-        """
-        Arrive at station (RUNNING_MOVING -> RUNNING_AT_STATION).
-
-        Used by RouteExecutor when train reaches a waypoint station.
-
-        Returns:
-            True if successful, False if not in correct state
-        """
-        train = self._get_train()
-        if train is None:
-            return False
-
-        if self.state != TrainState.RUNNING_MOVING:
-            return False
-
-        self.state = TrainState.RUNNING_AT_STATION
-        self.ato_running = False  # Stop ATO at station
-
         return True
 
     def enter_station_dwell(self) -> None:
@@ -3454,162 +3431,6 @@ class TrainController:
         self.path_backed_run_active = False
         self.state = TrainState.READY
 
-    def depart_from_station(self, has_more_waypoints: bool = True) -> bool:
-        """
-        Depart from station after dwell time.
-
-        Used by RouteExecutor after dwell time completes. Transitions to READY.
-
-        Args:
-            has_more_waypoints: Reserved for callers that signal route end;
-                v1 ignores the value because route-run teardown is owned by
-                RouteExecutor (not the controller).
-
-        Returns:
-            True if successful, False if not in correct state
-        """
-        train = self._get_train()
-        if train is None:
-            return False
-
-        if self.state != TrainState.RUNNING_AT_STATION:
-            return False
-
-        self.state = TrainState.READY
-        if not has_more_waypoints:
-            self.ato_running = False
-
-        return True
-
-    def turn_around(self) -> bool:
-        """
-        Flip facing direction by switching to the opposite cab.
-
-        Delegates to set_cab() which handles all the necessary state changes:
-        - Swaps active cab (A <-> B) and leading_end
-        - Flips entry edges for both ends
-        - Flips distances for both ends
-        - Updates path_index for new head position
-        - Syncs facing_direction from computed property
-
-        Returns:
-            True if successful, False if preconditions not met
-
-        Preconditions:
-        - Train must be stopped
-        - ATO must not be actively running (ato_running == False)
-        - Train must have an active cab (A or B)
-        """
-        train = self._get_train()
-        if train is None:
-            return False
-
-        if not self.is_stopped():
-            return False
-
-        if self.ato_running:
-            return False
-
-        if self.active_cab not in ("A", "B"):
-            return False
-
-        # Delegate to set_cab with the opposite cab
-        new_cab = "B" if self.active_cab == "A" else "A"
-        result = self.set_cab(new_cab)
-        return result.success
-
-    def set_direction_and_standby(self, direction: Direction) -> bool:
-        """
-        Select cab A and stay in READY.
-
-        Used by RouteExecutor when activating a route for a train. Per
-        design_new.md the v1 state machine has a single READY state that
-        covers powered-stopped regardless of cab; cab selection is its own
-        orthogonal field.
-
-        Returns:
-            True if successful, False if not in READY without a cab.
-        """
-        train = self._get_train()
-        if train is None:
-            return False
-
-        if self.state != TrainState.READY or self.active_cab is not None:
-            return False
-
-        if train.position:
-            train.position.leading_end = LeadingEnd.A
-        self.active_cab = "A"
-        return True
-
-    def clear_direction(self) -> bool:
-        """
-        Clear cab selection and stay in READY.
-
-        Allowed only when stopped and in READY with a cab selected.
-        """
-        train = self._get_train()
-        if train is None:
-            return False
-
-        if not self.is_stopped():
-            return False
-
-        if self.state != TrainState.READY or self.active_cab is None:
-            return False
-
-        if train.position:
-            train.position.leading_end = None
-        self.active_cab = None
-        return True
-
-    def enable_manual(self) -> bool:
-        """
-        Enable manual control mode. Must be stopped.
-
-        Per design_new.md, manual is a control mode, not a separate
-        operational state. The state stays at READY (or RUNNING_AT_STATION
-        if dwelling).
-        """
-        train = self._get_train()
-        if train is None:
-            return False
-
-        if not self.is_stopped():
-            return False
-
-        if self.state == TrainState.OFF:
-            return False
-
-        self.control_mode = "manual"
-        self.ato_running = False
-        # State stays where it is (READY / RUNNING_AT_STATION).
-
-        return True
-
-    def disable_manual(self) -> bool:
-        """
-        Disable manual control mode. Must be stopped.
-
-        Per design_new.md, manual is a control mode. Switching back to ATO
-        leaves the state at STANDBY/IDLE based on cab.
-
-        Returns:
-            True if successful, False if moving
-        """
-        train = self._get_train()
-        if train is None:
-            return False
-
-        if not self.is_stopped():
-            return False
-
-        self.control_mode = "ato"
-        self.ato_running = False
-        # State stays where it is (STANDBY / IDLE / RUNNING_AT_STATION).
-
-        return True
-
     # -------------------------------------------------------------------------
     # Serialization
     # -------------------------------------------------------------------------
@@ -3635,10 +3456,8 @@ class TrainController:
             "train_id": self.train_id,
             "power_on": self.power_on,
             "eb_active": self.eb_active,
-            "emergency_stop_active": self.eb_active,
-            "atc_warning_active": self.atc_warning_active,
             "pending_notifications": self.pending_notifications.copy(),
-            "active_cab": self.active_cab,
+            "cab": self.cab,
             "control_mode": self.control_mode,
             "manual_mode_type": self.manual_mode_type,
             "manual_power_percent": self.manual_power_percent,
@@ -3922,7 +3741,7 @@ class TrainController:
             "head_tile": [head_tile[0], head_tile[1]],
             "head_distance_cm": head_distance_cm,
             "travel_direction": travel_direction,
-            "cab": self.active_cab,
+            "cab": self.cab,
             "speed_limit_reason": self.speed_limit_reason,
             "lookahead": {
                 "blocks": blocks,
@@ -4037,7 +3856,7 @@ class TrainController:
                 speed_limit_reason=self.speed_limit_reason
             )
 
-        if self.active_cab not in ("A", "B"):
+        if self.cab not in ("A", "B"):
             self._last_speed_limit_reason = "No cab selected"
             self._last_atc_limit_reason_code = AtcLimitReasonCode.NO_CAB
             payload = self._build_empty_monitor_lookahead(
@@ -4477,7 +4296,7 @@ class TrainController:
             "head_tile": [head_tile[0], head_tile[1]],
             "head_distance_cm": head_distance_cm,
             "travel_direction": travel_direction,
-            "cab": self.active_cab,
+            "cab": self.cab,
             "speed_limit_reason": self.speed_limit_reason,
             "lookahead": {
                 "blocks": blocks,
@@ -4517,9 +4336,8 @@ class TrainController:
         return cls(
             train_id=data["train_id"],
             network=network,
-            eb_active=data.get("eb_active", data.get("emergency_stop_active", False)),
-            atc_warning_active=data.get("atc_warning_active", False),
-            active_cab=data.get("active_cab"),
+            eb_active=data.get("eb_active", False),
+            cab=data.get("cab"),
             control_mode=data.get("control_mode", "ato"),
             manual_mode_type=data.get("manual_mode_type", "simulation"),
             manual_power_percent=int(data.get("manual_power_percent", 0) or 0),

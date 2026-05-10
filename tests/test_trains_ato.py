@@ -59,7 +59,7 @@ class TestAtoStopButtonBugFix:
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
         controller.handle_position = HandlePosition.P2
@@ -152,12 +152,12 @@ class TestAtoAutoCabSelectionBugFix:
         controller.power_on = True
         controller.control_mode = "ato"
         controller.state = TrainState.READY
-        controller.active_cab = None
+        controller.cab = None
 
         controller.tick(0.1)
 
         # tick() should NOT auto-select cab - that's done in depart()
-        assert controller.active_cab is None
+        assert controller.cab is None
 
 
 
@@ -188,7 +188,7 @@ class TestAtoDepartCallsAtoGo:
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
         controller.handle_position = HandlePosition.P2
@@ -215,7 +215,7 @@ class TestAtoDepartCallsAtoGo:
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.READY
         controller.ato_running = False
 
@@ -284,7 +284,7 @@ class TestAtoDepartCallsAtoGo:
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.READY
         controller.ato_running = False
 
@@ -326,7 +326,7 @@ class TestAtoDistanceAwareControl:
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
         controller.clearance_ahead_cm = clearance_cm
@@ -412,7 +412,7 @@ class TestAtoDistanceAwareControl:
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
 
@@ -591,7 +591,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
 
@@ -652,7 +652,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
 
@@ -731,7 +731,7 @@ class TestTrendAwareATOControl:
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
         controller._previous_speed = 0.0

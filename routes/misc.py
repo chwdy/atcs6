@@ -10,6 +10,7 @@ from typing import Optional
 from flask import send_from_directory, jsonify, request
 
 from app_state import AppState
+from enums import TrainState
 from simulation import build_network_payload
 from train_route import Route, RouteTask
 
@@ -20,13 +21,15 @@ def _coerce_route_task(item: dict) -> RouteTask:
     Accepts both the v1 shape (``task_kind`` + ``task_location`` etc.) and the
     legacy shape (``platform_id`` + ``dwell_time_sec``-only). When
     ``task_kind`` is omitted, infer ``"dwell"`` if ``dwell_time_sec`` is
-    positive, otherwise ``"stop"``.
+    positive, otherwise ``"stop"``. ``task_location`` accepts the canonical
+    structured form ``{"block_id"|"platform_id"|"station_id": "..."}`` or a
+    plain string (legacy: interpreted as a platform_id by RouteTask.from_dict).
     """
     data = dict(item or {})
 
-    # Legacy alias: platform_id -> task_location.
+    # Legacy alias: platform_id -> task_location (structured form).
     if "task_location" not in data and "platform_id" in data:
-        data["task_location"] = data["platform_id"]
+        data["task_location"] = {"platform_id": data["platform_id"]}
 
     if "task_kind" not in data:
         try:
@@ -332,10 +335,10 @@ def register(app, state: AppState) -> None:
             "tasks": [
                 {
                     "task_kind": "waypoint"|"stop"|"dwell",
-                    "task_location": str,
+                    "task_location": {"block_id"|"platform_id"|"station_id": "..."}
+                                     | str (legacy: interpreted as platform_id),
                     "task_direction": "forward"|"reverse"|"either",
-                    "dwell_time_sec": float,
-                    "timing_mode": str ("none"|"relative"|"absolute"),
+                    "task_time": float (optional),
                     "target_time": float (optional)
                 },
                 ...
@@ -405,15 +408,14 @@ def register(app, state: AppState) -> None:
                 for task in new_tasks:
                     route.add_task(task)
 
-                if state.sim_controller and state.sim_controller.route_executor:
-                    for (
-                        exec_state
-                    ) in state.sim_controller.route_executor.execution_states.values():
-                        if exec_state.route_id == route_id:
-                            exec_state.current_waypoint_index = min(
-                                exec_state.current_waypoint_index,
-                                max(0, route.get_task_count() - 1),
-                            )
+                # Per design_new.md line 1074, structural route edits should
+                # tear down active `RouteRun`s and let Phase 1 allocate fresh
+                # runs. The legacy in-place cursor clamp here was an admin
+                # shortcut that is incompatible with the derived
+                # `current_waypoint_index`. Operator/admin tooling that
+                # actually needs to retarget mid-flight should call
+                # `controller.phase_latches.set_route_abort(...)` for each
+                # affected train (see `PUT /api/trains/<id>/assign-route`).
 
             if "assigned_train_ids" in data:
                 requested_train_ids = set(data.get("assigned_train_ids", []))
@@ -487,9 +489,7 @@ def register(app, state: AppState) -> None:
                 "direction": 1,
                 "current_task_kind": None,
                 "current_task_location": None,
-                "resolved_platform_id": None,
                 "at_platform": False,
-                "waiting_for_path": False,
                 "dwell_remaining_sec": None,
             }
 
@@ -498,23 +498,35 @@ def register(app, state: AppState) -> None:
                 if exec_state and exec_state.route_id == route.route_id:
                     status["current_waypoint_index"] = exec_state.current_waypoint_index
                     status["direction"] = exec_state.signed_direction
-                    status["resolved_platform_id"] = exec_state.resolved_platform_id
-                    status["at_platform"] = (
-                        exec_state.arrived_at_platform_time is not None
-                    )
-                    status["waiting_for_path"] = exec_state.waiting_for_path
+
+                    controller = route_executor.controllers.get(train_id)
+                    if controller is not None:
+                        status["at_platform"] = (
+                            controller.state == TrainState.RUNNING_AT_STATION
+                        )
 
                     task = route.get_task_at(exec_state.current_waypoint_index)
                     if task:
+                        from train_route import task_location_to_dict
+
                         status["current_task_kind"] = task.task_kind
-                        status["current_task_location"] = task.task_location
-                        if exec_state.arrived_at_platform_time is not None:
-                            status["dwell_remaining_sec"] = (
-                                task.get_remaining_dwell_time(
-                                    state.sim_controller.simulation_time,
-                                    exec_state.arrived_at_platform_time,
-                                )
+                        status["current_task_location"] = task_location_to_dict(
+                            task.task_location
+                        )
+                        if (
+                            task.task_kind == "dwell"
+                            and exec_state.current_waypoint_index < len(exec_state.task_runs)
+                        ):
+                            dwell_started_at = exec_state.task_started_at(
+                                exec_state.current_waypoint_index
                             )
+                            if dwell_started_at is not None:
+                                status["dwell_remaining_sec"] = (
+                                    task.get_remaining_dwell_time(
+                                        state.sim_controller.simulation_time,
+                                        dwell_started_at,
+                                    )
+                                )
 
             trains_status.append(status)
 

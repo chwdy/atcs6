@@ -3,13 +3,13 @@ Tests for Phase 1 - Train System Data Structures
 
 This module tests:
 - SpeedProfile: speed/voltage conversion, acceleration/deceleration
-- Route & Waypoint: route traversal, timing modes
+- Route & RouteTask: route traversal
 - Train modifications: new properties, turn_around, state management
 """
 
 import pytest
 from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
-from train_route import Route, RouteTask, TimingMode, RouteMode
+from train_route import PlatformTarget, Route, RouteTask, RouteMode
 from train import Train, TrainCar, TrainPosition
 from enums import Direction, TrainState, BlockState, HandlePosition
 from network import RailwayNetwork
@@ -154,16 +154,23 @@ class TestRouteTask:
 
     def test_task_initialization(self):
         """Test task default values."""
-        task = RouteTask(task_kind="dwell", task_location="STN_001", task_time=30.0)
-        assert task.task_location == "STN_001"
+        task = RouteTask(
+            task_kind="dwell",
+            task_location=PlatformTarget(platform_id="STN_001"),
+            task_time=30.0,
+        )
+        assert task.task_location == PlatformTarget(platform_id="STN_001")
         assert task.task_kind == "dwell"
         assert task.task_time == 30.0
-        assert task.timing_mode == TimingMode.NONE
         assert task.target_time is None
 
-    def test_should_depart_none_mode(self):
-        """Test departure with no timing constraint."""
-        task = RouteTask(task_kind="dwell", task_location="STN_001", task_time=30.0)
+    def test_should_depart_relative(self):
+        """Test departure with task_time only."""
+        task = RouteTask(
+            task_kind="dwell",
+            task_location=PlatformTarget(platform_id="STN_001"),
+            task_time=30.0,
+        )
 
         # Not enough time yet (dwell started at 0, now 25 = 25s elapsed < 30s)
         assert task.should_depart(now=25.0, dwell_started_at=0.0) is False
@@ -176,8 +183,7 @@ class TestRouteTask:
         """Test departure with absolute timing (target_time)."""
         task = RouteTask(
             task_kind="dwell",
-            task_location="STN_001",
-            timing_mode=TimingMode.ABSOLUTE,
+            task_location=PlatformTarget(platform_id="STN_001"),
             target_time=500.0,  # Leave at simulation time 500
         )
 
@@ -194,9 +200,8 @@ class TestRouteTask:
         """Test task serialization."""
         task = RouteTask(
             task_kind="dwell",
-            task_location="STN_002",
+            task_location=PlatformTarget(platform_id="STN_002"),
             task_time=45.0,
-            timing_mode=TimingMode.RELATIVE,
             target_time=120.0,
         )
 
@@ -206,7 +211,6 @@ class TestRouteTask:
         assert restored.task_location == task.task_location
         assert restored.task_kind == task.task_kind
         assert restored.task_time == task.task_time
-        assert restored.timing_mode == task.timing_mode
         assert restored.target_time == task.target_time
 
 
@@ -362,17 +366,6 @@ class TestTrainPhase1:
         result = controller.power_off_cmd()
         assert result.success is False
         assert controller.state == TrainState.RUNNING_MOVING
-
-
-    def test_enable_manual_off_fails(self):
-        """Test enable_manual fails when OFF."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.OFF
-        )
-        result = controller.enable_manual()
-        assert result is False
-
-
 
 
     def test_from_dict_restores_new_properties(self, basic_train: Train):
@@ -776,24 +769,16 @@ class TestTrainStateTransitions:
         assert result.success is False
         assert controller.state == TrainState.RUNNING_MOVING
 
-    def test_set_standby_transition(self):
-        """Test set_direction_and_standby() transitions IDLE -> STANDBY."""
+    def test_set_cab_transition(self):
+        """set_cab(\"A\") leaves the controller in READY with cab selected."""
         train, controller, network = create_test_train_with_controller(
             state=TrainState.READY
         )
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
-        result = controller.set_direction_and_standby(Direction.NORTH)
-        assert result is True
+        result = controller.set_cab("A")
+        assert result.success is True
         assert controller.state == TrainState.READY
-
-    def test_set_standby_fails_from_wrong_state(self):
-        """Test set_direction_and_standby() fails from non-IDLE state."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.OFF
-        )
-        result = controller.set_direction_and_standby(Direction.NORTH)
-        assert result is False
-        assert controller.state == TrainState.OFF
+        assert controller.cab == "A"
 
     def test_depart_transition(self):
         """Test depart() transitions READY -> RUNNING_MOVING (manual mode)."""
@@ -804,7 +789,7 @@ class TestTrainStateTransitions:
         # Use manual mode to test depart transition (not ATO auto-cab logic).
         # Manual depart now requires a cab to be selected explicitly.
         controller.control_mode = "manual"
-        controller.active_cab = "A"
+        controller.cab = "A"
         result = controller.depart()
         assert result is True
         assert controller.state == TrainState.RUNNING_MOVING
@@ -819,7 +804,7 @@ class TestTrainStateTransitions:
         train.state = TrainState.RUNNING_MOVING
         controller.state = TrainState.RUNNING_MOVING
         controller.control_mode = "manual"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.path_backed_run_active = True
         controller.ato_running = False
 
@@ -849,51 +834,24 @@ class TestTrainStateTransitions:
 
 
 
-    def test_arrive_at_station_transition(self):
-        """Test arrive_at_station() transitions RUNNING_MOVING -> RUNNING_AT_STATION.
-
-        v1: Train.target_speed was deleted; target speed lives on the
-        controller as a derived property. Assertion on it is no longer
-        meaningful.
-        """
+    def test_enter_station_dwell_transition(self):
+        """enter_station_dwell() transitions RUNNING_MOVING -> RUNNING_AT_STATION."""
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING
         )
-        result = controller.arrive_at_station()
-        assert result is True
+        controller.enter_station_dwell()
         assert controller.state == TrainState.RUNNING_AT_STATION
 
-    def test_depart_from_station_with_more_waypoints(self):
-        """Test depart_from_station() transitions to STANDBY when more waypoints.
-
-        v1: route assignment lives on `RouteExecutor.execution_states[train_id]`,
-        not on `Train`. `depart_from_station` only flips controller state; it
-        doesn't touch route assignment, so this test only asserts the state
-        transition.
-        """
+    def test_finish_dwell_transition(self):
+        """finish_dwell() transitions RUNNING_AT_STATION -> READY."""
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_AT_STATION
         )
-        result = controller.depart_from_station(has_more_waypoints=True)
-        assert result is True
-        assert controller.state == TrainState.READY
-
-    def test_depart_from_station_route_complete(self):
-        """Test depart_from_station() transitions to READY when route complete.
-
-        v1: Train.target_speed was deleted; route teardown moved to
-        RouteExecutor (depart_from_station only handles the controller-side
-        state transition).
-        """
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.RUNNING_AT_STATION
-        )
-        result = controller.depart_from_station(has_more_waypoints=False)
-        assert result is True
+        controller.finish_dwell()
         assert controller.state == TrainState.READY
 
     def test_emergency_stop_cmd_from_running(self):
-        """Test emergency_stop_cmd() from RUNNING_MOVING."""
+        """Test activate_emergency_cmd() from RUNNING_MOVING."""
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING
         )
@@ -902,51 +860,27 @@ class TestTrainStateTransitions:
         # against `eb_active` rather than a Train-side `emergency_brake`
         # mirror.
         controller.current_speed_kmh = 80.0
-        result = controller.emergency_stop_cmd()
+        result = controller.activate_emergency_cmd()
         assert result.success is True
         assert controller.eb_active is True
 
     def test_emergency_stop_cmd_always_allowed(self):
-        """Test emergency_stop_cmd() works from any state."""
+        """Test activate_emergency_cmd() works from any state."""
         train, controller, network = create_test_train_with_controller(
             state=TrainState.READY
         )
-        result = controller.emergency_stop_cmd()
+        result = controller.activate_emergency_cmd()
         assert result.success is True
         assert controller.eb_active is True
 
 
-    def test_enable_manual_fails_when_moving(self):
-        """Test enable_manual() fails when moving."""
+    def test_set_mode_manual_fails_when_moving(self):
+        """set_mode('manual') is rejected while moving."""
         train, controller, network = create_test_train_with_controller(
             state=TrainState.READY, current_speed=30.0
         )
-        result = controller.enable_manual()
-        assert result is False
-
-    def test_enable_manual_fails_from_off(self):
-        """Test enable_manual() fails from OFF."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.OFF
-        )
-        result = controller.enable_manual()
-        assert result is False
-
-
-
-
-
-    def test_set_direction_and_standby(self):
-        """Test set_direction_and_standby() convenience method."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY
-        )
-        train.position = make_train_position((0, 0), facing_direction=Direction.SOUTH)
-        result = controller.set_direction_and_standby(Direction.SOUTH)
-        assert result is True
-        assert controller.state == TrainState.READY
-
-
+        result = controller.set_mode("manual")
+        assert result.success is False
 
 
 
@@ -1059,8 +993,8 @@ class TestCompleteStateFlows:
         assert result.success is True
         assert controller.state == TrainState.READY
 
-        # Set direction and standby
-        assert controller.set_direction_and_standby(Direction.NORTH) is True
+        # Select cab; controller stays in READY.
+        assert controller.set_cab("A").success is True
         assert controller.state == TrainState.READY
 
         # Depart (manual mode to bypass ATO auto-cab selection)
@@ -1079,13 +1013,12 @@ class TestCompleteStateFlows:
             state=TrainState.RUNNING_MOVING
         )
 
-        # Arrive at station
-        assert controller.arrive_at_station() is True
+        # Phase-1 dwell entry transitions to RUNNING_AT_STATION.
+        controller.enter_station_dwell()
         assert controller.state == TrainState.RUNNING_AT_STATION
-        # v1: Train.target_speed was deleted.
 
-        # Depart with more waypoints
-        assert controller.depart_from_station(has_more_waypoints=True) is True
+        # Phase-1 dwell complete transitions back to READY.
+        controller.finish_dwell()
         assert controller.state == TrainState.READY
 
         # Simulate moving and arriving at final station
@@ -1094,16 +1027,16 @@ class TestCompleteStateFlows:
         # Use manual mode to test depart (not ATO auto-cab logic). Manual
         # depart now requires a cab to be selected explicitly.
         controller.control_mode = "manual"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.depart()
         assert controller.state == TrainState.RUNNING_MOVING
 
-        assert controller.arrive_at_station() is True
+        controller.enter_station_dwell()
         assert controller.state == TrainState.RUNNING_AT_STATION
 
         # Route complete (controller-side state transition only; route
         # teardown is owned by RouteExecutor in v1).
-        assert controller.depart_from_station(has_more_waypoints=False) is True
+        controller.finish_dwell()
         assert controller.state == TrainState.READY
 
 
@@ -1114,7 +1047,7 @@ class TestCompleteStateFlows:
         )
 
         # Emergency stop
-        result = controller.emergency_stop_cmd()
+        result = controller.activate_emergency_cmd()
         assert result.success is True
         assert controller.eb_active is True
         # Emergency stop sets handle to EB
@@ -1173,7 +1106,7 @@ class TestEmergencyResetButtonBugFix:
             state=TrainState.RUNNING_MOVING, current_speed=40.0
         )
 
-        result = controller.emergency_stop_cmd()
+        result = controller.activate_emergency_cmd()
         assert result.success is True
 
         controller.current_speed_kmh = 0.0
@@ -1188,7 +1121,7 @@ class TestEmergencyResetButtonBugFix:
             state=TrainState.RUNNING_MOVING, current_speed=30.0
         )
 
-        result = controller.emergency_stop_cmd()
+        result = controller.activate_emergency_cmd()
         assert result.success is True
 
         controller.current_speed_kmh = 0.0
@@ -1203,7 +1136,7 @@ class TestEmergencyResetButtonBugFix:
             state=TrainState.RUNNING_MOVING, current_speed=30.0
         )
 
-        result = controller.emergency_stop_cmd()
+        result = controller.activate_emergency_cmd()
         assert result.success is True
 
         result = controller.set_handle(HandlePosition.N)
@@ -1217,7 +1150,7 @@ class TestEmergencyResetButtonBugFix:
             state=TrainState.RUNNING_MOVING, current_speed=0.0
         )
 
-        result = controller.emergency_stop_cmd()
+        result = controller.activate_emergency_cmd()
         assert result.success is True
 
         result = controller.set_handle(HandlePosition.P1)

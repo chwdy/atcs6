@@ -334,12 +334,21 @@ class AcquisitionMode(Enum):
 
 
 class PathAcquisitionResultKind(Enum):
-    """Outcome flavour for create_path / extend_path success cases."""
+    """Outcome flavour for create_path / extend_path success cases.
 
-    CREATED = "created"
+    Per design_new.md "create_path() / extend_path() return contract":
+      * REACHED_REQUESTED_TARGET — live authority reaches the requested target
+      * TRUNCATED_GREW — best_effort acquired at least one new forward
+        resource but the live authority is still short of the requested target
+      * BLOCKED_NO_GROWTH — extend_path proved the existing path is still a
+        valid prefix toward the requested target but could not acquire the
+        next forward resource. Valid only for extend_path; create_path
+        never returns this kind.
+    """
+
+    REACHED_REQUESTED_TARGET = "reached_requested_target"
     TRUNCATED_GREW = "truncated_grew"
     BLOCKED_NO_GROWTH = "blocked_no_growth"
-    EXTENDED = "extended"
 
 
 class PathAcquisitionFailureKind(Enum):
@@ -362,12 +371,13 @@ class PathAcquisitionFailureKind(Enum):
 class PathAcquisitionResult:
     """Structured result for create_path / extend_path.
 
-    `granted_resource_sequence` carries `ResourceSequenceEntry` objects (typed
-    as `Any` here to avoid the path.py forward import). Per design_new.md
-    "create_path() / extend_path() return contract", successful returns echo
-    `requested_destination_block_id` / `requested_destination_direction` (the
-    caller-supplied target contract for that attempt) alongside the live
-    `authority_end_block_id`.
+    Per design_new.md "create_path() / extend_path() return contract", the
+    payload carries the success flag, the structured `result_kind` /
+    `failure_kind` discriminators, the live `path_id`, the live
+    `resource_sequence` (typed as `Any` to avoid the path.py forward
+    import), the caller-supplied target contract, and the live authority
+    boundary. Callers must branch on `success`/`result_kind`/`failure_kind`,
+    not on `reason` text.
     """
 
     success: bool
@@ -377,7 +387,7 @@ class PathAcquisitionResult:
     requested_destination_block_id: Optional[str] = None
     requested_destination_direction: Optional[str] = None
     authority_end_block_id: Optional[str] = None
-    granted_resource_sequence: List[Any] = field(default_factory=list)
+    resource_sequence: List[Any] = field(default_factory=list)
     reason: str = ""
     failed_resource_id: Optional[str] = None
 
@@ -390,9 +400,9 @@ class PathAcquisitionResult:
             "requested_destination_block_id": self.requested_destination_block_id,
             "requested_destination_direction": self.requested_destination_direction,
             "authority_end_block_id": self.authority_end_block_id,
-            "granted_resource_sequence": [
+            "resource_sequence": [
                 e.to_dict() if hasattr(e, "to_dict") else e
-                for e in self.granted_resource_sequence
+                for e in self.resource_sequence
             ],
             "reason": self.reason,
             "failed_resource_id": self.failed_resource_id,
@@ -403,25 +413,29 @@ class PathAcquisitionResult:
 class CancellationResult:
     """Structured result for PathDispatcher.cancel_path(...).
 
-    Per design_new.md "Path cancellation flow"."""
+    Per design_new.md "cancel_path() return contract" (lines 925-934):
+    on success, `success=True`, `path_id` is required, `new_status` is
+    `PathStatus.CANCELLED`. On failure, `success=False`, `path_id=None`,
+    `new_status=None`, and `reason` is required. Callers must not branch
+    on the exact `reason` text; the canonical strings are "path not found",
+    "already completed", "already cancelled".
+    """
 
     success: bool
-    path_id: str = ""
-    reason: str = ""
-    released_block_ids: List[str] = field(default_factory=list)
-    released_switch_ids: List[str] = field(default_factory=list)
-    train_id: Optional[str] = None
-    notes: str = ""
+    path_id: Optional[str] = None
+    new_status: Any = None  # PathStatus from path.py; Any to avoid circular import.
+    reason: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "success": self.success,
             "path_id": self.path_id,
+            "new_status": (
+                self.new_status.value
+                if self.new_status is not None and hasattr(self.new_status, "value")
+                else self.new_status
+            ),
             "reason": self.reason,
-            "released_block_ids": list(self.released_block_ids),
-            "released_switch_ids": list(self.released_switch_ids),
-            "train_id": self.train_id,
-            "notes": self.notes,
         }
 
 

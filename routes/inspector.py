@@ -46,11 +46,10 @@ _TRAIN_CONFIG_FIELDS: List[str] = [
 
 _CONTROLLER_STORED_FIELDS: List[str] = [
     "state",
-    "active_cab",
+    "cab",
     "current_span",
     "current_speed_kmh",
     "eb_active",
-    "atc_warning_active",
     "ato_running",
     "control_mode",
     "manual_mode_type",
@@ -127,7 +126,7 @@ _DERIVED_DOC: Dict[str, Dict[str, Any]] = {
         ),
     },
     "travel_direction": {
-        "computed_from": ["active_cab", "train.position.facing_direction", "current_span"],
+        "computed_from": ["cab", "train.position.facing_direction", "current_span"],
         "formula_doc": (
             "train_controller.py:462 / design_new.md ~L1311 — cab end = head; "
             "direction is from the opposite physical end through the cab end "
@@ -138,7 +137,7 @@ _DERIVED_DOC: Dict[str, Dict[str, Any]] = {
     "lookahead": {
         "computed_from": [
             "current_span",
-            "active_cab",
+            "cab",
             "received_path_plan",
             "network",
             "signals",

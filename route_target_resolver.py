@@ -18,7 +18,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Iterable, Optional
 
-from train_route import RouteMode
+from train_route import (
+    BlockTarget,
+    PlatformTarget,
+    RouteMode,
+    StationTarget,
+    task_location_id,
+)
 
 if TYPE_CHECKING:
     from route_executor import (
@@ -80,11 +86,6 @@ class RouteTargetResolver:
         if task_count == 0:
             return None
 
-        # Reconcile route_version_seen if Route.route_version has advanced.
-        current_version = int(getattr(route, "route_version", 1))
-        if current_version != exec_state.route_version_seen:
-            exec_state.route_version_seen = current_version
-
         next_index = self.compute_next_task_index(route, exec_state, task_count)
         if next_index is None:
             return None
@@ -97,7 +98,7 @@ class RouteTargetResolver:
 
         if task.task_kind == "dwell":
             return ResolvedNextTaskProjection(
-                task_index=next_index,
+                walk_position=next_index,
                 task_kind="dwell",
                 direction=direction_str,
                 resolved_target=None,
@@ -106,7 +107,7 @@ class RouteTargetResolver:
         target_block = self.resolve_task_target_block(task)
         if target_block is None:
             return ResolvedNextTaskProjection(
-                task_index=next_index,
+                walk_position=next_index,
                 task_kind=task.task_kind,
                 direction=direction_str,
                 resolved_target=None,
@@ -132,7 +133,7 @@ class RouteTargetResolver:
                     return None
 
         return ResolvedNextTaskProjection(
-            task_index=next_index,
+            walk_position=next_index,
             task_kind=task.task_kind,
             direction=direction_str,
             resolved_target=resolved,
@@ -145,33 +146,47 @@ class RouteTargetResolver:
     def resolve_task_target_block(self, task: "RouteTask") -> Optional[str]:
         """Resolve `task.task_location` to a concrete `block_id`.
 
-        v1 supports three location kinds: a direct `block_id`, a
-        `platform_id` (looked up via `network.platforms`), or a
-        `station_id` (looked up via `network.station_groups`). The single
-        `task_location` string is probed in that order.
+        Per design_new.md line 1125, `task_location` is a tagged union of
+        `BlockTarget | PlatformTarget | StationTarget`; this method
+        dispatches on the variant rather than probing in order.
         """
         e = self._e
-        location = getattr(task, "task_location", "")
-        if not location:
+        loc = getattr(task, "task_location", None)
+        if loc is None:
             return None
 
-        blocks = getattr(e.network, "blocks", {}) or {}
-        if location in blocks:
-            return location
+        if isinstance(loc, BlockTarget):
+            blocks = getattr(e.network, "blocks", {}) or {}
+            if loc.block_id in blocks:
+                return loc.block_id
+            return None
 
-        block_id = self.platform_block_id(location)
-        if block_id:
-            return block_id
+        if isinstance(loc, PlatformTarget):
+            return self.platform_block_id(loc.platform_id)
 
-        station_groups = getattr(e.network, "station_groups", {}) or {}
-        station = station_groups.get(location)
-        if station is not None:
+        if isinstance(loc, StationTarget):
+            station_groups = getattr(e.network, "station_groups", {}) or {}
+            station = station_groups.get(loc.station_id)
+            if station is None:
+                return None
             platform_ids = getattr(station, "platform_ids", []) or []
             for pid in platform_ids:
                 bid = self.platform_block_id(pid)
                 if bid:
                     return bid
+            return None
 
+        # Fallback: legacy string (only reachable if a caller bypassed
+        # `_coerce_task_location`).
+        legacy = task_location_id(loc) if loc else ""
+        if not legacy:
+            return None
+        blocks = getattr(e.network, "blocks", {}) or {}
+        if legacy in blocks:
+            return legacy
+        block_id = self.platform_block_id(legacy)
+        if block_id:
+            return block_id
         return None
 
     # ------------------------------------------------------------------

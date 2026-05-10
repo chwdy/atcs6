@@ -603,10 +603,12 @@ def setup_demo_train(
         mode=RouteMode.ONE_OFF,
         is_active=True,
     )
+    from train_route import PlatformTarget
+
     demo_route.add_task(
         RouteTask(
             task_kind="stop",
-            task_location=east_terminal.platform_id,
+            task_location=PlatformTarget(platform_id=east_terminal.platform_id),
             task_direction="forward",
         )
     )
@@ -616,8 +618,8 @@ def setup_demo_train(
     # 5. Queue the power_on operator command. Phase 2's drain executes it on
     #    the first tick; from tick 2 onward Phase 1 sees a powered-on
     #    controller, acquires the path for DEMO_ROUTE, and auto-departs
-    #    (Route.default_departure_mode defaults to "auto", which makes Phase 1
-    #    call `controller.depart()` itself once authority is granted).
+    #    (Phase 1 always calls `controller.depart()` after a successful
+    #    create/extend per design_new.md line 1078).
     controller = sim_controller.get_or_create_controller(demo_train.train_id)
     controller.enqueue_command("power_on")
 

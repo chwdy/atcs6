@@ -105,6 +105,12 @@ class PathDispatcher:
         get_and_clear_completion_events()
     """
 
+    # Per design_new.md "create_path() flow" (line 884), AcquisitionMode is
+    # documented as a `PathDispatcher`-owned enum. The implementation lives in
+    # `runtime_payloads.py` to avoid circular imports; this class attribute
+    # exposes the canonical `PathDispatcher.AcquisitionMode` name.
+    AcquisitionMode = AcquisitionMode
+
     def __init__(self, network: "RailwayNetwork"):
         self.network = network
         self.paths: Dict[str, Path] = {}
@@ -535,7 +541,7 @@ class PathDispatcher:
         train_id: str = "",
         requested_destination_block_id: str = "",
         requested_destination_direction: str = "forward",
-        acquisition_mode: AcquisitionMode = AcquisitionMode.ALL_OR_NOTHING,
+        acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
         # Legacy kwargs accepted for transitional compatibility from
         # demo/test code that hasn't migrated yet:
         start_block_id: Optional[str] = None,
@@ -695,7 +701,7 @@ class PathDispatcher:
                     requested_destination_block_id=requested_destination_block_id,
                     requested_destination_direction=requested_destination_direction,
                     authority_end_block_id=path.authority_end_block_id,
-                    granted_resource_sequence=list(path.resource_sequence),
+                    resource_sequence=list(path.resource_sequence),
                     reason="best_effort partial acquisition",
                 )
 
@@ -711,12 +717,12 @@ class PathDispatcher:
             self.paths[path_id] = path
             return PathAcquisitionResult(
                 success=True,
-                result_kind=PathAcquisitionResultKind.CREATED,
+                result_kind=PathAcquisitionResultKind.REACHED_REQUESTED_TARGET,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
                 authority_end_block_id=path.authority_end_block_id,
-                granted_resource_sequence=list(path.resource_sequence),
+                resource_sequence=list(path.resource_sequence),
                 reason="created",
             )
 
@@ -751,7 +757,7 @@ class PathDispatcher:
         path_id: str = "",
         requested_destination_block_id: str = "",
         requested_destination_direction: str = "forward",
-        acquisition_mode: AcquisitionMode = AcquisitionMode.ALL_OR_NOTHING,
+        acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
         # Legacy
         new_end_block_id: Optional[str] = None,
     ) -> PathAcquisitionResult:
@@ -890,15 +896,26 @@ class PathDispatcher:
             path.requested_destination_direction = requested_destination_direction
             path._set_status(PathStatus.ACTIVE, now)
 
+            # Per design_new.md: when the live authority reaches the
+            # requested target, return REACHED_REQUESTED_TARGET; otherwise
+            # the live authority grew but is still short of the target, so
+            # return TRUNCATED_GREW.
+            if path.authority_end_block_id == requested_destination_block_id:
+                grown_kind = PathAcquisitionResultKind.REACHED_REQUESTED_TARGET
+                grown_reason = "extended to requested target"
+            else:
+                grown_kind = PathAcquisitionResultKind.TRUNCATED_GREW
+                grown_reason = "extended (truncated short of requested target)"
+
             return PathAcquisitionResult(
                 success=True,
-                result_kind=PathAcquisitionResultKind.EXTENDED,
+                result_kind=grown_kind,
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
                 authority_end_block_id=path.authority_end_block_id,
-                granted_resource_sequence=list(path.resource_sequence),
-                reason="extended",
+                resource_sequence=list(path.resource_sequence),
+                reason=grown_reason,
             )
 
         return PathAcquisitionResult(
@@ -915,34 +932,40 @@ class PathDispatcher:
     def cancel_path(
         self,
         path_id: str,
-        initiator: str = "operator_cancelled",
+        initiator: Optional[str] = None,
         reason: Optional[str] = None,
-        force: bool = False,
     ) -> CancellationResult:
         """v1 cancel_path: release reservations, mark path CANCELLED.
 
-        Per design_new.md principle #7 (diagnostic-only distinctions belong on
-        events, not enums), the writer-supplied `initiator` is a free-form
-        string (e.g. ``"eb"``, ``"operator_cancelled"``, ``"power_off"``,
-        ``"revoked"``, ``"deviation"``); it is preserved verbatim on the
-        ``path_cancellation`` notification. No diagnostic enum is stored on
-        the cancelled ``Path`` record.
+        Per design_new.md "cancel_path() return contract" (lines 925-934):
+          * `initiator` is a free-form diagnostic string carried on the
+            ``path_cancellation`` notification (default ``None``); planning
+            logic must not branch on it.
+          * Failure reasons use the canonical strings ``"path not found"``,
+            ``"already completed"``, ``"already cancelled"``.
+          * On success the result carries ``new_status = PathStatus.CANCELLED``.
         """
         path = self.paths.get(path_id)
         if path is None:
             return CancellationResult(
                 success=False,
-                path_id=path_id,
-                reason=reason or "path_not_found",
-                notes="path_not_found",
+                path_id=None,
+                new_status=None,
+                reason="path not found",
             )
-        if path.status != PathStatus.ACTIVE:
+        if path.status == PathStatus.COMPLETED:
             return CancellationResult(
                 success=False,
-                path_id=path_id,
-                reason=reason or f"path_terminal_{path.status.value}",
-                train_id=path.train_id,
-                notes="terminal",
+                path_id=None,
+                new_status=None,
+                reason="already completed",
+            )
+        if path.status == PathStatus.CANCELLED:
+            return CancellationResult(
+                success=False,
+                path_id=None,
+                new_status=None,
+                reason="already cancelled",
             )
 
         now = self._now()
@@ -950,10 +973,8 @@ class PathDispatcher:
         # Release block reservations + switch locks via the ResourceCoordinator.
         all_blocks = path.get_all_blocks()
         coordinator = getattr(self.network, "resource_coordinator", None)
-        released_blocks: List[str] = []
-        released_switches: List[str] = []
         if coordinator is not None:
-            released_blocks, released_switches = coordinator.release_path_resources(
+            coordinator.release_path_resources(
                 path_id=path_id,
                 block_ids=all_blocks,
                 completed=False,
@@ -1010,11 +1031,8 @@ class PathDispatcher:
         return CancellationResult(
             success=True,
             path_id=path_id,
-            reason=reason or initiator,
-            released_block_ids=released_blocks,
-            released_switch_ids=released_switches,
-            train_id=train_id,
-            notes="ok",
+            new_status=PathStatus.CANCELLED,
+            reason=reason,
         )
 
     # ========================================================================
@@ -1486,17 +1504,7 @@ class PathDispatcher:
         handler = getattr(route_executor, "handle_train_advanced", None)
         if not callable(handler):
             return
-        try:
-            handler(
-                train_id,
-                path_id,
-                event.resource_type,
-                event.resource_id,
-                event.exit_edge,
-            )
-        except TypeError:
-            # Legacy 4-arg signature fallback.
-            handler(train_id, path_id, event.resource_type, event.resource_id)
+        handler(train_id, path_id, event)
 
     def _release_tail_vacated_resource(
         self, event: ResourceEvent, train_id: str

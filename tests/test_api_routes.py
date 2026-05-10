@@ -570,21 +570,6 @@ class TestTrainRoutes:
         response = client.post("/api/trains/TRAIN_001/power-off")
         assert response.status_code in [200, 400]
 
-    def test_train_set_direction(self, client, app_state, network_with_tracks):
-        """POST /api/trains/<train_id>/set-direction should set direction."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
-        train = Train("TRAIN_001", consist=[car])
-        app_state.network.add_train(train)
-        app_state.network.place_train(train, 0, 0, Direction.EAST)
-
-        client.post("/api/trains/TRAIN_001/power-on")
-
-        response = client.post(
-            "/api/trains/TRAIN_001/set-direction", json={"direction": "EAST"}
-        )
-        assert response.status_code in [200, 400]
-
-
 # ============================================================================
 # Path Routes Tests (9 routes)
 # ============================================================================
@@ -816,40 +801,6 @@ class TestRouteRedesignApis:
         assert len(data["results"]) == 1
         assert data["results"][0]["from"] == "PLT_A"
         assert data["results"][0]["to"] == "PLT_B"
-
-    def test_assign_route_with_next_waypoint_and_status(self, client, app_state):
-        self._setup_connected_platforms(app_state, client)
-        self._create_train(app_state, "TRAIN_A")
-
-        create_route_resp = client.post(
-            "/api/train-routes",
-            json={
-                "name": "Route A",
-                "mode": "one_off",
-                "waypoints": [
-                    {"platform_id": "PLT_A", "dwell_time_sec": 5},
-                    {"platform_id": "PLT_B", "dwell_time_sec": 5},
-                ],
-            },
-        )
-        assert create_route_resp.status_code == 200
-        route_id = create_route_resp.get_json()["route"]["route_id"]
-
-        assign_resp = client.put(
-            "/api/trains/TRAIN_A/assign-route",
-            json={"route_id": route_id, "next_waypoint_index": 1, "force": True},
-        )
-        assert assign_resp.status_code == 200
-
-        status_resp = client.get(f"/api/train-routes/{route_id}/status")
-        assert status_resp.status_code == 200
-        status_data = status_resp.get_json()
-        assert status_data["route_id"] == route_id
-        train_status = next(
-            t for t in status_data["trains"] if t["train_id"] == "TRAIN_A"
-        )
-        assert train_status["current_waypoint_index"] == 1
-
 
 # ============================================================================
 # Summary

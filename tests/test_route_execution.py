@@ -5,12 +5,18 @@ This module tests:
 - Route and RouteTask functionality (v1 schema)
 - RouteExecutor class
 - Route mode execution (ONE_OFF, CIRCULAR, ROUND_TRIP)
-- Dwell time logic with timing modes
+- Dwell time logic
 - Task arrival detection
 """
 
 import pytest
-from train_route import Route, RouteTask, TimingMode, RouteMode, RouteRunStatus
+from train_route import (
+    PlatformTarget,
+    Route,
+    RouteMode,
+    RouteRunStatus,
+    RouteTask,
+)
 from route_executor import RouteExecutor, RouteExecutionState
 from train import Train
 from tests.train_test_helpers import make_train_position
@@ -50,13 +56,12 @@ class TestRouteAndTask:
         assert simple_route.is_active is True
         assert simple_route.started_at == 100.0
 
-    def test_dwell_task_should_depart_none_mode(self):
-        """Test dwell task depart logic with NONE timing mode."""
+    def test_dwell_task_should_depart_relative(self):
+        """Test dwell task depart logic with task_time only."""
         task = RouteTask(
             task_kind="dwell",
             task_location="STA_A",
             task_time=30.0,
-            timing_mode=TimingMode.NONE,
         )
 
         # Started dwelling at t=0, now at t=10 (10 sec elapsed) - should not depart
@@ -73,7 +78,6 @@ class TestRouteAndTask:
             task_kind="dwell",
             task_location="STA_A",
             task_time=10.0,
-            timing_mode=TimingMode.ABSOLUTE,
             target_time=1000.0,
         )
 
@@ -115,37 +119,36 @@ class TestRouteAndTask:
         assert len(restored.tasks) == len(simple_route.tasks)
 
     def test_task_to_dict(self):
-        """Test RouteTask serialization."""
+        """Test RouteTask serialization. v1 emits task_location as the
+        canonical structured form (a dict with one of block_id/platform_id/
+        station_id)."""
         task = RouteTask(
             task_kind="dwell",
-            task_location="STA_A",
+            task_location=PlatformTarget(platform_id="STA_A"),
             task_time=45.0,
-            timing_mode=TimingMode.RELATIVE,
             target_time=120.0,
         )
 
         data = task.to_dict()
         assert data["task_kind"] == "dwell"
-        assert data["task_location"] == "STA_A"
+        assert data["task_location"] == {"platform_id": "STA_A"}
         assert data["task_time"] == 45.0
-        assert data["timing_mode"] == "relative"
         assert data["target_time"] == 120.0
 
     def test_task_from_dict(self):
-        """Test RouteTask deserialization."""
+        """Test RouteTask deserialization. Accepts the canonical
+        structured task_location and the legacy dwell_time_sec key."""
         data = {
             "task_kind": "dwell",
-            "task_location": "STA_B",
+            "task_location": {"platform_id": "STA_B"},
             "dwell_time_sec": 60.0,
-            "timing_mode": "absolute",
             "target_time": 500.0,
         }
 
         task = RouteTask.from_dict(data)
         assert task.task_kind == "dwell"
-        assert task.task_location == "STA_B"
+        assert task.task_location == PlatformTarget(platform_id="STA_B")
         assert task.task_time == 60.0
-        assert task.timing_mode == TimingMode.ABSOLUTE
         assert task.target_time == 500.0
 
 class TestRouteExecutor:
@@ -214,9 +217,9 @@ class TestRouteExecutor:
 
         assert state.train_id == "T001"
         assert state.route_id == "R001"
-        assert state.arrived_at_platform_time is None
-        assert state.waiting_for_path is False
-        assert state.last_waypoint_platform_id is None
+        assert state.current_waypoint_index == 0
+        assert state.path_cancelled is False
+        assert state.task_runs == []
 
 
 class TestRouteExecutorCompatibilityBugFixes:

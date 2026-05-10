@@ -327,21 +327,20 @@ class SimulationController:
         if not controller.phase_latches.power_off:
             return
 
-        # If an active path somehow still exists, the inclusive cancel hasn't
-        # committed yet (e.g. the train wasn't stopped on the previous pass).
-        # Defer to a later tick.
-        if self.path_dispatcher is not None:
-            if (
-                self.path_dispatcher.active_path_id_by_train(train.train_id)
-                is not None
-            ):
-                return
+        # Per design_new.md Latch Table: gated by
+        # `phase_latches.path_cancel_request is None`. The inclusive cancel
+        # was armed by `_apply_power_off_request()` and either committed
+        # earlier in this same Phase-3 pass or was never written (no live
+        # path existed). If the inclusive cancel is still pending the train
+        # was not stopped this tick — defer to a later one.
+        if controller.phase_latches.path_cancel_request is not None:
+            return
 
         self.route_executor.remove_train_route_run(train.train_id)
 
         # Controller-local OFF cleanup.
         controller.state = TrainState.OFF
-        controller.active_cab = None
+        controller.cab = None
         controller.eb_active = False
         controller.ato_running = False
         controller.power_on = False
@@ -584,7 +583,6 @@ class SimulationController:
         # before the first tick, so this bypasses the command queue by design.
         if initial_cab is not None:
             controller.cab = initial_cab
-            controller.active_cab = initial_cab
             if controller.current_span is not None:
                 controller.current_span.leading_end = (
                     LeadingEnd.A if initial_cab == "A" else LeadingEnd.B

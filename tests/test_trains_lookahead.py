@@ -280,7 +280,7 @@ class TestEmergencyResetButtonDataBugFix:
 
         payload = build_network_payload(network, sim_controller)
         controller_data = payload["controllers_by_train_id"]["TRAIN_01"]
-        assert controller_data["emergency_stop_active"] is True
+        assert controller_data["eb_active"] is True
 
 
 

@@ -46,10 +46,21 @@ class TrainAtTargetPredicates:
         self, train: "Train", task: "RouteTask"
     ) -> bool:
         """True when the train head sits at the platform tile that
-        satisfies `task.task_location`."""
+        satisfies `task.task_location`.
+
+        Resolves the platform id from the tagged-union task_location:
+        only `PlatformTarget` carries a direct platform id. For other
+        variants this predicate returns False (block / station targets
+        are not "at-platform" predicates by themselves).
+        """
         if not train.position:
             return False
-        platform = self._resolver().get_platform(task.task_location)
+        from train_route import PlatformTarget
+
+        loc = task.task_location
+        if not isinstance(loc, PlatformTarget):
+            return False
+        platform = self._resolver().get_platform(loc.platform_id)
         if not platform:
             return False
         target_tile = self.get_target_platform_tile(train, platform)

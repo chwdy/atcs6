@@ -161,7 +161,7 @@ def test_bootstrap_queues_power_on_for_first_tick_drain():
         f"Expected queued [power_on]; got {queued_kinds}"
     )
     assert controller.state == TrainState.OFF
-    assert controller.active_cab == "A"
+    assert controller.cab == "A"
 
     # One tick should drain the queue and power the train on.
     sim_controller.update(0.0)

@@ -245,7 +245,7 @@ class TestExtendPathBug:
         )
 
         controller.power_on_cmd()
-        controller.set_direction_and_standby(Direction.EAST)
+        controller.set_cab("A")
         controller.depart()
 
         # Sync train state
@@ -331,7 +331,7 @@ class TestExtendPathBug:
         )
 
         controller.power_on_cmd()
-        controller.set_direction_and_standby(Direction.EAST)
+        controller.set_cab("A")
         controller.depart()
 
         # Simulate train moving to BLOCK_B (middle of route)

@@ -2,12 +2,12 @@
 Train Management Routes - Train CRUD, control, and state management.
 """
 
-from typing import Dict, Optional
+from typing import Dict
 
 from flask import jsonify, request
 
 from app_state import AppState
-from enums import Direction, TrainState
+from enums import Direction
 from train import Train, TrainCar
 
 
@@ -76,65 +76,6 @@ def register(app, state: AppState) -> None:
             "controller": controller_dict,
             "dispatcher_progress": dispatcher_dict,
         }
-
-    def _get_platforms() -> Dict[str, object]:
-        """Get physical platforms map."""
-        platforms = getattr(state.network, "platforms", None)
-        if isinstance(platforms, dict):
-            return platforms
-        return {}
-
-    def _get_platform_block_id(platform_id: str) -> Optional[str]:
-        """Resolve a platform to one representative block ID."""
-        platform = _get_platforms().get(platform_id)
-        if not platform:
-            return None
-
-        get_all_assigned_blocks = getattr(platform, "get_all_assigned_blocks", None)
-        if callable(get_all_assigned_blocks):
-            block_ids = get_all_assigned_blocks()
-            if isinstance(block_ids, (set, list, tuple)) and block_ids:
-                return list(block_ids)[0]
-
-        for x, y in getattr(platform, "positions", []):
-            track = state.network.get_track(x, y)
-            if track and track.block_section_id:
-                return track.block_section_id
-        return None
-
-    def _find_auto_park_platform_id(train: Train) -> Optional[str]:
-        """Pick a platform destination for temporary auto-park route."""
-        platforms = _get_platforms()
-        if not platforms:
-            return None
-
-        if not train.position:
-            return next(iter(platforms.keys()))
-
-        head_x, head_y = train.position.head_tile
-        current_track = state.network.get_track(head_x, head_y)
-        current_block_id = current_track.block_section_id if current_track else None
-
-        # Prefer platform on current block.
-        for platform_id in platforms.keys():
-            if _get_platform_block_id(platform_id) == current_block_id:
-                return platform_id
-
-        # Fall back to nearest platform center by Manhattan distance.
-        best_id: Optional[str] = None
-        best_distance: Optional[float] = None
-        for platform_id, platform in platforms.items():
-            positions = getattr(platform, "positions", [])
-            if not positions:
-                continue
-            center_x = sum(pos[0] for pos in positions) / len(positions)
-            center_y = sum(pos[1] for pos in positions) / len(positions)
-            distance = abs(center_x - head_x) + abs(center_y - head_y)
-            if best_distance is None or distance < best_distance:
-                best_distance = distance
-                best_id = platform_id
-
-        return best_id
 
     # ============================================================================
     # Train CRUD and Basic Operations
@@ -336,7 +277,7 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/trains/<train_id>/power-on", methods=["POST"])
     def train_power_on(train_id):
-        """Power on a train (OFF -> IDLE)."""
+        """Power on a train (OFF -> READY)."""
         train = state.network.trains.get(train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
@@ -363,46 +304,6 @@ def register(app, state: AppState) -> None:
                 {"status": "success", **_train_to_dict(train, state.network)}
             )
         return jsonify({"error": result.message}), 400
-
-    @app.route("/api/trains/<train_id>/set-direction", methods=["POST"])
-    def train_set_direction(train_id):
-        """Set direction and transition to STANDBY (IDLE -> STANDBY)."""
-        train = state.network.trains.get(train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
-
-        data = request.json or {}
-        direction_str = data.get("direction")
-        if not direction_str:
-            return jsonify({"error": "Missing direction"}), 400
-
-        try:
-            direction = Direction[direction_str]
-        except KeyError:
-            return jsonify({"error": f"Invalid direction: {direction_str}"}), 400
-
-        controller = _get_train_controller(train)
-        if controller.set_direction_and_standby(direction):
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
-        return jsonify({"error": "Cannot set direction (train not in IDLE state)"}), 400
-
-    @app.route("/api/trains/<train_id>/clear-direction", methods=["POST"])
-    def train_clear_direction(train_id):
-        """Clear direction and transition back to IDLE (STANDBY -> IDLE)."""
-        train = state.network.trains.get(train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
-
-        controller = _get_train_controller(train)
-        if controller.clear_direction():
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
-        return jsonify(
-            {"error": "Cannot clear direction (train not in STANDBY state)"}
-        ), 400
 
     # ============================================================================
     # Train Cab and Movement Control
@@ -436,144 +337,29 @@ def register(app, state: AppState) -> None:
             )
         return jsonify({"error": result.message}), 400
 
-    @app.route("/api/trains/<train_id>/arrive", methods=["POST"])
-    def train_arrive(train_id):
-        """Arrive at station (RUNNING_MOVING -> RUNNING_AT_STATION)."""
-        train = state.network.trains.get(train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
-
-        controller = _get_train_controller(train)
-        if controller.arrive_at_station():
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
-        return jsonify(
-            {"error": "Cannot arrive (train not in RUNNING_MOVING state)"}
-        ), 400
-
     @app.route("/api/trains/<train_id>/depart", methods=["POST"])
     def train_depart(train_id):
-        """Depart from station or STANDBY.
+        """Depart-acceptance command for the controller.
 
-        - RUNNING_AT_STATION -> depart_from_station(has_more_waypoints=True)
-        - STANDBY            -> depart()
-        - other states       -> 400
+        Per design_new.md, dwell exit is route-driven via
+        ``RouteExecutor.tick_train_phase1(...) -> finish_dwell()``; the API
+        path only invokes the canonical ``TrainController.depart()`` for the
+        ``READY`` -> ``RUNNING_MOVING`` transition.
         """
         train = state.network.trains.get(train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
 
         controller = _get_train_controller(train)
-
-        if controller.state == TrainState.RUNNING_AT_STATION:
-            if controller.depart_from_station(has_more_waypoints=True):
-                return jsonify(
-                    {"status": "success", **_train_to_dict(train, state.network)}
-                )
-
         if controller.depart():
             return jsonify(
                 {"status": "success", **_train_to_dict(train, state.network)}
             )
-        return jsonify({"error": "Cannot depart (train not in STANDBY state)"}), 400
-
-    @app.route("/api/trains/<train_id>/turn-around", methods=["POST"])
-    def train_turn_around(train_id):
-        """Flip facing direction (cab switch). Only allowed when stopped."""
-        train = state.network.trains.get(train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
-
-        controller = _get_train_controller(train)
-        if controller.turn_around():
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
-        return jsonify(
-            {"error": "Cannot turn around (train is moving or no direction set)"}
-        ), 400
-
-    # ============================================================================
-    # Manual Control Mode
-    # ============================================================================
-
-    @app.route("/api/trains/<train_id>/enable-manual", methods=["POST"])
-    def train_enable_manual(train_id):
-        """Enable manual control mode. Train must be stopped."""
-        train = state.network.trains.get(train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
-
-        controller = _get_train_controller(train)
-        if controller.enable_manual():
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
-        return jsonify(
-            {"error": "Cannot enable manual mode (train must be stopped and not OFF)"}
-        ), 400
-
-    @app.route("/api/trains/<train_id>/disable-manual", methods=["POST"])
-    def train_disable_manual(train_id):
-        """Disable manual control mode. Train must be stopped."""
-        train = state.network.trains.get(train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
-
-        controller = _get_train_controller(train)
-        if controller.disable_manual():
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
-        return jsonify(
-            {
-                "error": "Cannot disable manual mode (train must be stopped and in MANUAL state)"
-            }
-        ), 400
-
-    @app.route("/api/trains/<train_id>/travel-direction", methods=["POST"])
-    def train_set_travel_direction(train_id):
-        """Set travel direction for MANUAL mode ('forward' or 'reverse')."""
-        train = state.network.trains.get(train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
-
-        data = request.json or {}
-        direction = data.get("direction")
-        if not direction or direction not in ("forward", "reverse"):
-            return jsonify(
-                {
-                    "error": "Missing or invalid direction (must be 'forward' or 'reverse')"
-                }
-            ), 400
-
-        if train.set_travel_direction(direction):
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
-        return jsonify(
-            {"error": "Cannot set travel direction (train not in MANUAL mode)"}
-        ), 400
+        return jsonify({"error": "Cannot depart"}), 400
 
     # ============================================================================
     # Emergency and Stop Control
     # ============================================================================
-
-    @app.route("/api/trains/<train_id>/emergency-stop", methods=["POST"])
-    def train_emergency_stop(train_id):
-        """Emergency stop from any operational state."""
-        train = state.network.trains.get(train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
-
-        controller = _get_train_controller(train)
-        result = controller.emergency_stop_cmd()
-        if result.success:
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
-        return jsonify({"error": result.message}), 400
 
     @app.route("/api/trains/<train_id>/stop", methods=["POST"])
     def train_stop(train_id):
@@ -865,7 +651,21 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/trains/<train_id>/assign-route", methods=["PUT"])
     def assign_route_to_train(train_id):
-        """Assign a route to a train."""
+        """Assign a route to a train.
+
+        Per `design_new.md` line 272 (Operator retargeting / route swap), the
+        handler atomically:
+          (a) writes `controller.phase_latches.set_route_abort(...)` so Phase 3
+              of the next eligible per-train transaction tears down the live
+              authority and the existing `RouteRun`, and
+          (b) calls `Route.unassign_train(old)` / `Route.assign_train(new)`.
+
+        It does NOT mutate `RouteExecutor.execution_states` directly and does
+        NOT call `PathDispatcher.cancel_path(...)` or `controller.ato_stop()`
+        inline — those flow through Phase 3 cleanup. Phase 1 of the next
+        eligible tick allocates a fresh `RouteRun` against the newly assigned
+        route (per `design_new.md` line 1068).
+        """
         train = state.network.trains.get(train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
@@ -873,8 +673,6 @@ def register(app, state: AppState) -> None:
         data = request.get_json() or {}
         route_id = data.get("route_id")
         force = bool(data.get("force", False))
-        auto_park = bool(data.get("auto_park", True))
-        next_waypoint_index = data.get("next_waypoint_index")
 
         route_executor = (
             state.sim_controller.route_executor if state.sim_controller else None
@@ -886,82 +684,44 @@ def register(app, state: AppState) -> None:
             else None
         )
 
+        controller = (
+            _get_train_controller(train) if state.sim_controller else None
+        )
+
+        def _has_active_path() -> bool:
+            return (
+                controller is not None
+                and controller.received_path_plan is not None
+            )
+
+        # ── Branch 1: unassign (route_id is None) ────────────────────────────
         if route_id is None:
             if current_route_id:
+                if controller is not None:
+                    controller.phase_latches.set_route_abort(
+                        reason="unassign",
+                        has_active_path=_has_active_path(),
+                    )
                 current_route = route_registry.get(current_route_id)
                 if current_route:
                     current_route.unassign_train(train_id)
-
-            # Stop ATO and clear destination when canceling route. The
-            # controller's ato_destination_block_id and ato_path_id are
-            # read-only properties derived from received_path_plan; the
-            # Train-side mirror is gone.
-            controller = _get_train_controller(train)
-            if controller.ato_running:
-                controller.ato_stop()
-
-            if route_executor:
-                route_executor.execution_states.pop(train_id, None)
-
-            if auto_park and current_route_id:
-                target_platform_id = _find_auto_park_platform_id(train)
-                if target_platform_id:
-                    from train_route import Route, RouteMode, RouteTask
-
-                    simulation_time = (
-                        state.sim_controller.simulation_time
-                        if state.sim_controller
-                        else 0.0
-                    )
-                    temp_route_id = f"TEMP_{train_id}_{int(simulation_time)}"
-                    while temp_route_id in route_registry:
-                        temp_route_id = f"{temp_route_id}_X"
-
-                    temp_route = Route(
-                        route_id=temp_route_id,
-                        name=f"AutoPark {train_id}",
-                        mode=RouteMode.ONE_OFF,
-                    )
-                    temp_route.add_task(
-                        RouteTask(
-                            task_kind="stop",
-                            task_location=target_platform_id,
-                            dwell_time_sec=0.0,
-                            flexible_platform=False,
-                        )
-                    )
-                    temp_route.assign_train(train_id)
-                    temp_route.activate(simulation_time)
-                    if route_executor:
-                        route_executor.register_route(temp_route)
-
-                    if route_executor:
-                        from route_executor import RouteExecutionState
-
-                        route_executor.execution_states[train_id] = RouteExecutionState(
-                            train_id=train_id,
-                            route_id=temp_route_id,
-                            started_at=simulation_time,
-                        )
-
-                    return jsonify(
-                        {
-                            "status": "success",
-                            **_train_to_dict(train, state.network),
-                            "temporary_route_id": temp_route_id,
-                            "target_platform_id": target_platform_id,
-                        }
-                    )
 
             return jsonify(
                 {"status": "success", **_train_to_dict(train, state.network)}
             )
 
+        # ── Branch 2: assign / retarget (route_id provided) ──────────────────
         route = route_registry.get(route_id)
         if not route:
             return jsonify({"error": "Route not found"}), 404
 
-        if current_route_id and current_route_id != route_id and not force:
+        # Same-route assign: idempotent no-op success.
+        if current_route_id == route_id:
+            return jsonify(
+                {"status": "success", **_train_to_dict(train, state.network)}
+            )
+
+        if current_route_id and not force:
             return (
                 jsonify(
                     {
@@ -971,99 +731,21 @@ def register(app, state: AppState) -> None:
                 409,
             )
 
-        if current_route_id and current_route_id != route_id:
+        if current_route_id:
+            # Retargeting: write the abort latch first so Phase 3 commits the
+            # cancellation through the canonical workflow.
+            if controller is not None:
+                controller.phase_latches.set_route_abort(
+                    reason="retarget",
+                    has_active_path=_has_active_path(),
+                )
             previous_route = route_registry.get(current_route_id)
             if previous_route:
                 previous_route.unassign_train(train_id)
 
         route.assign_train(train_id)
 
-        if route_executor:
-            exec_state = route_executor.execution_states.get(train_id)
-            if not exec_state or exec_state.route_id != route_id:
-                from route_executor import RouteExecutionState
-
-                exec_state = RouteExecutionState(
-                    train_id=train_id,
-                    route_id=route_id,
-                    started_at=state.sim_controller.simulation_time,
-                )
-                route_executor.execution_states[train_id] = exec_state
-
-            if next_waypoint_index is not None:
-                try:
-                    idx = int(next_waypoint_index)
-                except (TypeError, ValueError):
-                    return jsonify(
-                        {"error": "next_waypoint_index must be an integer"}
-                    ), 400
-
-                if idx < 0 or idx >= route.get_task_count():
-                    return (
-                        jsonify({"error": "next_waypoint_index out of range"}),
-                        400,
-                    )
-
-                exec_state.current_waypoint_index = idx
-                exec_state.arrived_at_platform_time = None
-                exec_state.waiting_for_path = False
-                exec_state.resolved_platform_id = None
-
         return jsonify(
             {"status": "success", **_train_to_dict(train, state.network)}
         )
 
-    @app.route("/api/trains/<train_id>/set-waypoint", methods=["POST"])
-    def set_train_waypoint(train_id: str):
-        """Override the current waypoint index for an assigned route."""
-        train = state.network.trains.get(train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
-
-        route_executor = (
-            state.sim_controller.route_executor if state.sim_controller else None
-        )
-        current_route_id = (
-            route_executor.assigned_route_id_for(train_id)
-            if route_executor
-            else None
-        )
-        if not current_route_id:
-            return jsonify({"error": "Train has no assigned route"}), 400
-
-        route = (
-            route_executor.route_registry.get(current_route_id)
-            if route_executor
-            else None
-        )
-        if not route:
-            return jsonify({"error": "Assigned route not found"}), 404
-
-        data = request.get_json() or {}
-        if "waypoint_index" not in data:
-            return jsonify({"error": "waypoint_index is required"}), 400
-
-        try:
-            waypoint_index = int(data["waypoint_index"])
-        except (TypeError, ValueError):
-            return jsonify({"error": "waypoint_index must be an integer"}), 400
-
-        if waypoint_index < 0 or waypoint_index >= route.get_task_count():
-            return jsonify({"error": "waypoint_index out of range"}), 400
-
-        route_executor = (
-            state.sim_controller.route_executor if state.sim_controller else None
-        )
-        if not route_executor:
-            return jsonify({"error": "Route executor unavailable"}), 500
-
-        if not route_executor.set_train_waypoint_index(train_id, waypoint_index):
-            return jsonify({"error": "Failed to set waypoint"}), 400
-
-        return jsonify(
-            {
-                "status": "success",
-                **_train_to_dict(train, state.network),
-                "waypoint_index": waypoint_index,
-            }
-        )

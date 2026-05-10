@@ -144,7 +144,7 @@ class ATONavigator:
             return ATOInfo(path_id=path_id)
 
         path_heading = "a"
-        required_cab = c.active_cab or "A"
+        required_cab = c.cab or "A"
 
         connectivity_cab = c._required_cab_for_path()
         if connectivity_cab is not None:
