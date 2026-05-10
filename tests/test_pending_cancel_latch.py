@@ -12,7 +12,6 @@ when the train is stopped; while the train is still rolling, it survives.
 
 import pytest
 from runtime_payloads import (
-    PathCancellationKind,
     PendingPathCancelRequest,
 )
 from network import RailwayNetwork

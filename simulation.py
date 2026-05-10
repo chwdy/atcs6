@@ -41,7 +41,6 @@ from train_span import TrainSpan
 from runtime_payloads import (
     FatalConflictKind,
     FatalPhysicalEntryConflict,
-    PathCancellationKind,
 )
 
 if TYPE_CHECKING:
@@ -807,50 +806,67 @@ def build_network_payload(
     network: RailwayNetwork,
     sim_controller: Optional["SimulationController"],
 ) -> Dict[str, Any]:
-    """Build network payload with onboard controller snapshots.
+    """Build network payload in the canonical sibling-payload shape.
 
-    Args:
-        network: Railway network instance.
-        sim_controller: Simulation controller for train controllers.
+    Per design_new.md "Data Flow To UI" (~line 2065), live runtime data
+    is exposed as three sibling maps alongside the persistent `trains`
+    list, never merged into Train.to_dict() output:
 
-    Returns:
-        Network dictionary with per-train onboard controller state.
+      - `controllers_by_train_id`: TrainController.to_dict() per train
+      - `dispatcher_progress_by_train_id`: PathDispatcher progress per train
+      - `assigned_routes_by_train_id`: RouteExecutor-derived route id per train
     """
     payload = network.to_dict()
 
     if not sim_controller:
+        payload["controllers_by_train_id"] = {}
+        payload["dispatcher_progress_by_train_id"] = {}
+        payload["assigned_routes_by_train_id"] = {}
         return payload
 
-    trains = payload.get("trains", [])
-    train_lookup = {train_data.get("id"): train_data for train_data in trains}
+    path_dispatcher = getattr(sim_controller, "path_dispatcher", None)
+    route_executor = getattr(sim_controller, "route_executor", None)
 
-    for train in network.trains.values():
-        train_data = train_lookup.get(train.train_id)
-        if not train_data:
-            continue
+    controllers_by_train_id: Dict[str, Any] = {}
+    dispatcher_progress_by_train_id: Dict[str, Any] = {}
+    assigned_routes_by_train_id: Dict[str, Any] = {}
+
+    for train_id, train in network.trains.items():
         controller = sim_controller._get_or_create_controller(train)
-        train_data["onboard"] = controller.to_dict()
+        controllers_by_train_id[train_id] = controller.to_dict()
 
-        # Inject active-path data into the `train_data` payload for UI
-        # consumers. Per design_new.md ~line 1292, the dispatcher's `Path`
-        # is the source of truth, so the path id comes from
-        # `controller.assigned_path_id` (a derived property over the active
-        # dispatcher path), not from a Train-side mirror.
-        if controller.assigned_path_id:
+        if path_dispatcher is not None:
             try:
-                live_path = controller.get_live_path_data()
-                if live_path:
-                    path_tiles = live_path["path_tiles"]
-                    path_index = live_path["path_index"]
-                    train_data["path_index"] = path_index
-                    train_data["path_length"] = len(path_tiles) if path_tiles else 0
-                    train_data["current_path"] = [
-                        {"x": x, "y": y, "dir": d.name if d else None}
-                        for x, y, d in (path_tiles or [])
-                    ]
+                dispatcher_progress_by_train_id[train_id] = (
+                    path_dispatcher.get_active_path_progress(train_id)
+                )
             except Exception as e:
                 logger.debug(
-                    "Failed to get live path for train %s: %s", train.train_id, e
+                    "Failed to read dispatcher progress for train %s: %s",
+                    train_id,
+                    e,
                 )
+                dispatcher_progress_by_train_id[train_id] = None
+        else:
+            dispatcher_progress_by_train_id[train_id] = None
+
+        if route_executor is not None:
+            try:
+                assigned_routes_by_train_id[train_id] = (
+                    route_executor.assigned_route_id_for(train_id)
+                )
+            except Exception as e:
+                logger.debug(
+                    "Failed to resolve assigned route for train %s: %s",
+                    train_id,
+                    e,
+                )
+                assigned_routes_by_train_id[train_id] = None
+        else:
+            assigned_routes_by_train_id[train_id] = None
+
+    payload["controllers_by_train_id"] = controllers_by_train_id
+    payload["dispatcher_progress_by_train_id"] = dispatcher_progress_by_train_id
+    payload["assigned_routes_by_train_id"] = assigned_routes_by_train_id
 
     return payload

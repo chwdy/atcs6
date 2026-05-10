@@ -1537,7 +1537,7 @@ The Phase-3 latches owned by `TrainController` live nested under `TrainControlle
 - Add `assigned_path_id: Optional[str]` only as a computed read-only property derived from `received_path_plan.path_id`. It replaces `train.assigned_path_id` as the controller-facing runtime read, but it should not be stored or written independently.
 - Add `received_path_plan` as the controller's read-only live movement-authority projection over the active dispatcher-owned path.
 - `received_path_plan` is not stored controller state and has no writer. `PathDispatcher` owns the underlying `Path`; `TrainController` reads the projection and must not mutate path ownership or lifecycle.
-- `TrainController` is also the canonical query and storage home for the train's current occupied span. The live span is produced by `TrainPhysics` and written into `TrainController.current_span`; block/switch resources still carry their own physical `occupied_by` ownership, but tile-level ends and ordered occupied tiles live on the controller span rather than on `Train`. `RouteExecutor` and `PathDispatcher` ask the controller for one cab-independent physical span read instead of deriving it independently from `Train`. That span read must expose the ordered occupied span in physical order (`occupied_resources`, `occupied_blocks`, and `occupied_tiles`) plus the two explicit physical end locators needed for later ordering comparisons. The occupancy list is the block/resource-level ownership view; the end locators are the tile-level precise geometry view. It does not depend on a currently selected cab.
+- `TrainController` is also the canonical query and storage home for the train's current occupied span. The live span is produced by `TrainPhysics` and written into `TrainController.current_span`; block/switch resources still carry their own physical `occupied_by` ownership, but tile-level ends and ordered occupied tiles live on the controller span rather than on `Train`. `RouteExecutor` and `PathDispatcher` ask the controller for one cab-independent physical span read instead of deriving it independently from `Train`. That span read must expose the ordered occupied span in physical order (`occupied_blocks` and `occupied_tiles`) plus the two explicit physical end locators needed for later ordering comparisons. The occupancy list is the block-level ownership view; the end locators are the tile-level precise geometry view. It does not depend on a currently selected cab.
 - Exception: same-tile synthetic movement without a selected cab remains unsupported in v1. `PathDispatcher.create_path(...)` should reject that request before an authority record is stored; `TrainController` does not infer or invent the cab direction for that case after the fact.
 
 **Controller retained field schema**
@@ -1805,7 +1805,7 @@ The Phase-3 latches owned by `TrainController` live nested under `TrainControlle
 **Read accessors**
 
 - Add `get_lookahead()` as the canonical accessor for UI and debug consumers. Any consumer asking for target speed or speed-limit reason should sample this payload at distance `0`.
-- Add `get_current_span()` as the canonical controller accessor for occupied-span queries. It reads `TrainController.current_span`, the v1 storage home for live physical occupancy and end locators. Keep the payload general and geometry-first: at minimum it must expose `occupied_resources`, `occupied_blocks`, and `occupied_tiles` in physical span order from one physical end of the train to the other, plus explicit end locators for both physical ends. The ordered occupancy is the block/resource-level ownership view; the end locators are the tile-level precise geometry view. Each end locator must carry the end's current `tile`, the current `block_id` when that end is inside a block, the current `resource_id` / `resource_type`, and optional precise in-tile position when available. Convenience reads such as `end_a_resource_id`, `end_b_resource_id`, `end_a_block_id`, `end_b_block_id`, `end_a_tile`, and `end_b_tile` may be exposed as derived fields from that span. `end_a` and `end_b` are the train's two **physical** ends and are cab-independent: they are stable geometric labels for the two ends of the consist and do NOT imply head/tail. The "head" end is whichever physical end corresponds to the currently selected cab in the controller's travel frame; without a selected cab, `current_span` still carries both physical ends but no head/tail labeling. `RouteExecutor` and `PathDispatcher` consumers that need head-side reasoning derive it from controller cab/travel state plus the span; they must not assume `end_a == head`. `TrainPhysics` is the only normal producer of movement `span_update` values, while `TrainController` is the only normal writer of `TrainController.current_span`; `RouteExecutor` / `PathDispatcher` must use `TrainController.get_current_span()` whenever they need the train's current span or physical ends.
+- Add `get_current_span()` as the canonical controller accessor for occupied-span queries. It reads `TrainController.current_span`, the v1 storage home for live physical occupancy and end locators. Keep the payload general and geometry-first: at minimum it must expose `occupied_blocks` and `occupied_tiles` in physical span order from one physical end of the train to the other, plus explicit end locators for both physical ends. The ordered occupancy is the block-level ownership view; the end locators are the tile-level precise geometry view. `end_a` and `end_b` are the train's two **physical** ends and are cab-independent: they are stable geometric labels for the two ends of the consist and do NOT imply head/tail. The "head" end is whichever physical end corresponds to the currently selected cab in the controller's travel frame; without a selected cab, `current_span` still carries both physical ends but no head/tail labeling. `RouteExecutor` and `PathDispatcher` consumers that need head-side reasoning derive it from controller cab/travel state plus the span; they must not assume `end_a == head`. `TrainPhysics` is the only normal producer of movement `span_update` values, while `TrainController` is the only normal writer of `TrainController.current_span`; `RouteExecutor` / `PathDispatcher` must use `TrainController.get_current_span()` whenever they need the train's current span or physical ends.
 
 **TrainSpan schema**
 
@@ -1815,48 +1815,32 @@ This is the canonical v1 shape of `TrainController.current_span` and the payload
 | --- | --- | --- |
 | `end_a` | `SpanEndLocator` | Stable physical end A of the consist. It is cab-independent and does not imply head/tail. |
 | `end_b` | `SpanEndLocator` | Stable physical end B of the consist. It is cab-independent and does not imply head/tail. |
-| `occupied_tiles` | `List[SpanTile]` | Tile-level coverage in physical order from `end_a` to `end_b`. |
-| `occupied_resources` | `List[SpanResourceInterval]` | Contiguous resource coverage intervals in the same `end_a` -> `end_b` physical order. Blocks and switches are both represented. |
-| `occupied_blocks` | `List[str]` | Unique block IDs currently covered by the train, in first-seen `end_a` -> `end_b` order. Switch resources are excluded. |
+| `occupied_tiles` | `List[Tuple[int, int]]` | Tile-level coverage in physical order from `end_a` to `end_b`. |
+| `occupied_blocks` | `List[str]` | Unique block IDs currently covered by the train, in first-seen `end_a` -> `end_b` order. |
 
 `SpanEndLocator` carries exactly:
 
-- `end_id` — `"A"` or `"B"`
 - `tile` — current tile coordinate for that physical end
-- `resource_type` — `"block"` or `"switch"` when the end is on a known resource, otherwise `None`
-- `resource_id` — block ID or switch ID for that resource, otherwise `None`
-- `block_id` — current block ID when the end is inside a block, otherwise `None`
-- `entry_edge` — edge used as the end's current in-tile distance frame, when known
-- `distance_cm_from_entry` — precise in-tile distance from `entry_edge`, in centimeters, when known
+- `entry_edge` — `"N"`/`"E"`/`"S"`/`"W"` edge used as the end's current in-tile distance frame
+- `distance_cm` — precise in-tile distance from `entry_edge`, in centimeters
 
-`SpanTile` carries exactly:
-
-- `tile`
-- `resource_type`
-- `resource_id`
-- `block_id`
-- `entry_edge`
-- `exit_edge`
-- optional `start_distance_cm_from_entry`
-- optional `end_distance_cm_from_entry`
-
-`SpanResourceInterval` carries exactly:
-
-- `resource_type`
-- `resource_id`
-- `block_id` for block resources, otherwise `None`
-- `start_tile_index` into `occupied_tiles`
-- `end_tile_index` into `occupied_tiles`, inclusive
-
-The `occupied_resources` list contains one entry per contiguous physical interval. If a resource ever appears in two disconnected intervals, that is represented as two intervals rather than silently merging them. Consumers that need the forward/head side derive it from selected cab/travel state plus `end_a` / `end_b`; `TrainSpan` itself never relabels `end_a` or `end_b` as head/tail.
+Consumers that need the forward/head side derive it from selected cab/travel state plus `end_a` / `end_b`; `TrainSpan` itself never relabels `end_a` or `end_b` as head/tail.
 
 `PhysicsSpanUpdate` is the canonical payload from `TrainPhysics.tick(...)` into `TrainController.on_physics_updated(span_update)`. It carries exactly:
 
 - `new_span: TrainSpan`
 - `current_speed_kmh: float`
-- `added_tiles: List[SpanTile]` in physical traversal order for tiles newly covered by the updated span
-- `removed_tiles: List[SpanTile]` in physical vacate order for tiles no longer covered by the updated span
-- traversal-frame metadata on each added/removed tile sufficient for `TrainController` to derive block tail-vacate `direction`, where that `direction` is the vacated block's forward `exit_edge` (`N`/`E`/`S`/`W`) for the traversal by which the train left that block
+- `added_tiles: List[TileTraversal]` in physical traversal order for tiles newly covered by the updated span
+- `removed_tiles: List[TileTraversal]` in physical vacate order for tiles no longer covered by the updated span
+
+`TileTraversal` carries exactly:
+
+- `tile_xy` — tile coordinate
+- `entry_edge` — `"N"`/`"E"`/`"S"`/`"W"` traversal-frame entry edge
+- `exit_edge` — `"N"`/`"E"`/`"S"`/`"W"` traversal-frame exit edge; for tail-vacated block tiles this is the vacated block's forward exit edge for the traversal by which the train left that block, which `TrainController` reads as the block tail-vacate `direction`
+- `resource_type` — `"block"` or `"switch"` when the tile belongs to a known resource, otherwise `None`
+- `resource_id` — block or switch ID for that resource, otherwise `None`
+- `block_id` — owning block ID when applicable, otherwise `None`
 
 `TrainPhysics` computes this delta by comparing the previous controller-owned span it read at the start of the movement step with the newly integrated span. `TrainController` is the only normal writer of the stored `current_span`: it applies `span_update.new_span`, derives resource entry/release observations from `added_tiles` / `removed_tiles`, packages them into one `ControllerProgressReport`, and returns that report for `SimulationController`'s same-transaction local progress buffer and later delivery to `PathDispatcher.on_controller_progress(report)`.
 

@@ -8,15 +8,30 @@ ATO mode by tracking the operational speed curve published in
 curve and current speed are known; the few pieces of state it does touch
 on the controller (`handle_reason`, `_previous_speed`) are diagnostic.
 
+Algorithm summary (kinematic, single pass):
+
+1. Determine the *ceiling at distance 0* — the most binding of the curve
+   sample at 0, train max speed, ATC limit, and current block limit. The
+   train must not exceed this.
+2. If the ceiling at 0 is below the stopped-threshold, brake (B8) until
+   stopped.
+3. Otherwise, sample the operational curve at evenly-spaced points within a
+   *planning horizon* (proportional to current speed × tick dt, capped at
+   `ATO_RESTRICTION_LOOKAHEAD_CM`). For each sample, compute the
+   deceleration we would need to be at-or-below the curve when we reach
+   that point. Take the maximum required.
+4. Map `required_decel / op_decel` to a brake notch via `BRAKE_MULTIPLIERS`
+   (the table is now defined as multipliers of op_decel — B6 = 1.00×).
+5. If no brake is needed, power up while below the ceiling, else coast.
+
 `TrainController` keeps the public entry points (`_calculate_ato_info`,
-`_ato_calculate_handle`, `_calculate_braking_notch`, etc.) as thin
-forwarders that delegate here. Existing call sites and `monkeypatch`
-fixtures continue to work without change.
+`_ato_calculate_handle`, `_calculate_braking_notch_for_speed`,
+`_calculate_power_notch`) as thin forwarders that delegate here.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from constants import STOPPED_SPEED_THRESHOLD_KMH
 from enums import (
@@ -33,13 +48,14 @@ if TYPE_CHECKING:
     from train_controller import TrainController
 
 
-# Tuning constants — sourced from `train_controller` module-level constants.
-# Re-declared here so this module is self-contained and the values can drift
-# independently if needed.
+# Tuning constants. ATO_RESTRICTION_LOOKAHEAD_CM caps how far ahead the
+# planner samples the curve; PLANNING_TICKS_AHEAD scales the actual horizon
+# with current speed and tick dt.
 ATO_SPEED_TOLERANCE = 2.0
 ATO_RESTRICTION_LOOKAHEAD_CM = 150.0
-ATO_OVERSHOOT_WEIGHT = 10.0
-NEAR_STOP_DETECTION_CM = 50.0
+PLANNING_TICKS_AHEAD = 100
+MIN_PLANNING_HORIZON_CM = 30.0
+PLANNING_SAMPLE_COUNT = 6
 
 
 # =============================================================================
@@ -78,6 +94,18 @@ def rate_limit_handle(
 # =============================================================================
 # ATONavigator
 # =============================================================================
+
+
+_BRAKE_HANDLES_ASCENDING = (
+    HandlePosition.B1,
+    HandlePosition.B2,
+    HandlePosition.B3,
+    HandlePosition.B4,
+    HandlePosition.B5,
+    HandlePosition.B6,
+    HandlePosition.B7,
+    HandlePosition.B8,
+)
 
 
 class ATONavigator:
@@ -184,20 +212,20 @@ class ATONavigator:
     ) -> float:
         """Predict the train's speed at `distance_cm` ahead under `handle`.
 
-        Uses a simplified physics model based on `TrainPhysics`: handle →
-        acceleration via `POWER_MULTIPLIERS` / `BRAKE_MULTIPLIERS`, then
-        time-stepped integration. Air resistance is intentionally omitted
-        because the evaluator compares handles relative to each other.
+        Brake notches apply `op_decel × BRAKE_MULTIPLIERS[handle]`, matching
+        `train_physics`. Air resistance is intentionally omitted because
+        callers compare handles relative to each other.
         """
         if distance_cm <= 0:
             return current_speed_kmh
 
         profile = self._c._get_speed_profile()
+        op_decel = profile.deceleration_rate * profile.operational_decel_ratio
 
         if handle in POWER_MULTIPLIERS:
             accel_kmh_s = profile.acceleration_rate * POWER_MULTIPLIERS[handle]
         elif handle in BRAKE_MULTIPLIERS:
-            accel_kmh_s = -profile.deceleration_rate * BRAKE_MULTIPLIERS[handle]
+            accel_kmh_s = -op_decel * BRAKE_MULTIPLIERS[handle]
         elif handle == HandlePosition.EB:
             accel_kmh_s = -profile.emergency_brake_rate
         else:
@@ -227,278 +255,299 @@ class ATONavigator:
 
         return speed_cm_s / km_h_to_cm_s
 
-    def evaluate_handles_against_curve(
-        self,
-        current_speed_kmh: float,
-        curve: List[Dict],
-        horizon_cm: float = 30.0,
-        sample_count: int = 5,
-    ) -> HandlePosition:
-        """Pick the best handle by simulating each candidate forward and
-        scoring against the operational speed curve."""
-        if not curve:
+    # ------------------------------------------------------------------
+    # Notch helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def pick_brake_notch_for_multiplier(multiplier: float) -> HandlePosition:
+        """Smallest brake notch whose `BRAKE_MULTIPLIERS` value ≥ `multiplier`.
+
+        Multipliers are relative to op_decel. Caps at B8 — if more decel is
+        required than B8 provides, ATC EB will catch the resulting overspeed.
+        """
+        if multiplier <= 0:
             return HandlePosition.N
-
-        max_curve_dist = curve[-1].get("distance_cm", 0)
-        horizon_cm = min(horizon_cm, max_curve_dist)
-        if horizon_cm <= 0:
-            return self.calculate_braking_notch(current_speed_kmh)
-
-        current_idx = HANDLE_POSITION_INDEX.get(self._c.handle_position, 5)
-        candidate_indices = set()
-
-        candidate_indices.add(HANDLE_POSITION_INDEX[HandlePosition.P5])  # 0
-        candidate_indices.add(HANDLE_POSITION_INDEX[HandlePosition.N])   # 5
-        candidate_indices.add(HANDLE_POSITION_INDEX[HandlePosition.B8])  # 13
-
-        for offset in range(-3, 4):
-            idx = current_idx + offset
-            if 0 <= idx <= 13:
-                candidate_indices.add(idx)
-
-        candidates = [
-            INDEX_TO_HANDLE_POSITION[i]
-            for i in sorted(candidate_indices)
-            if i in INDEX_TO_HANDLE_POSITION
-        ]
-
-        sample_distances = [0.0] + [
-            horizon_cm * (i + 1) / sample_count for i in range(sample_count)
-        ]
-
-        curve_limits = [
-            self.sample_curve_at(curve, dist, "operational_limit")
-            for dist in sample_distances
-        ]
-
-        best_handle = HandlePosition.N
-        best_score = float("inf")
-
-        for handle in candidates:
-            score = 0.0
-            for j, dist in enumerate(sample_distances):
-                predicted_speed = self.simulate_forward(
-                    current_speed_kmh, handle, dist
-                )
-
-                if predicted_speed > curve_limits[j]:
-                    overshoot = predicted_speed - curve_limits[j]
-                    score += overshoot * ATO_OVERSHOOT_WEIGHT
-                else:
-                    gap = curve_limits[j] - predicted_speed
-                    score += gap
-
-            if score < best_score:
-                best_score = score
-                best_handle = handle
-
-        return best_handle
-
-    # ------------------------------------------------------------------
-    # Braking-notch helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def calculate_braking_notch(current_speed: float) -> HandlePosition:
-        """Pick a braking notch to stop from `current_speed`."""
-        if current_speed > 30:
-            return HandlePosition.B8
-        elif current_speed > 25:
-            return HandlePosition.B7
-        elif current_speed > 20:
-            return HandlePosition.B6
-        elif current_speed > 14:
-            return HandlePosition.B5
-        elif current_speed > 10:
-            return HandlePosition.B4
-        elif current_speed > 5:
-            return HandlePosition.B3
-        elif current_speed > 2:
-            return HandlePosition.B2
-        else:
-            return HandlePosition.B1
-
-    @staticmethod
-    def calculate_braking_notch_for_speed(
-        current_speed: float, target_speed: float
-    ) -> HandlePosition:
-        """Pick a braking notch to reduce from `current_speed` toward `target_speed`."""
-        speed_diff = current_speed - target_speed
-
-        if speed_diff > 30:
-            return HandlePosition.B8
-        elif speed_diff > 25:
-            return HandlePosition.B7
-        elif speed_diff > 20:
-            return HandlePosition.B6
-        elif speed_diff > 14:
-            return HandlePosition.B5
-        elif speed_diff > 10:
-            return HandlePosition.B4
-        elif speed_diff > 5:
-            return HandlePosition.B3
-        elif speed_diff > 2:
-            return HandlePosition.B2
-        else:
-            return HandlePosition.B1
+        for handle in _BRAKE_HANDLES_ASCENDING:
+            if BRAKE_MULTIPLIERS[handle] >= multiplier:
+                return handle
+        return HandlePosition.B8
 
     @staticmethod
     def calculate_power_notch(
         current_speed: float, target_speed: float
     ) -> HandlePosition:
         """Pick a power notch to accelerate toward `target_speed`."""
-        speed_diff = target_speed - current_speed
-        if speed_diff > 5:
+        diff = target_speed - current_speed
+        if diff > 8:
             return HandlePosition.P5
-        elif speed_diff > 3:
+        if diff > 5:
+            return HandlePosition.P4
+        if diff > 3:
+            return HandlePosition.P3
+        if diff > 1.5:
             return HandlePosition.P2
-        else:
-            return HandlePosition.P1
+        return HandlePosition.P1
+
+    @staticmethod
+    def calculate_braking_notch_for_speed(
+        current_speed: float, target_speed: float
+    ) -> HandlePosition:
+        """Pick a brake notch from a raw speed gap (current → target).
+
+        Used by callers that need a notch independent of distance — e.g. the
+        ATO-not-running "brake to stop" branch in `TrainController.tick()`.
+        Picks more aggressively as the gap grows. Each notch's multiplier
+        is interpreted against op_decel (see `BRAKE_MULTIPLIERS`).
+        """
+        diff = current_speed - target_speed
+        if diff <= 0:
+            return HandlePosition.N
+        if diff > 25:
+            return HandlePosition.B8
+        if diff > 18:
+            return HandlePosition.B7
+        if diff > 12:
+            return HandlePosition.B6
+        if diff > 8:
+            return HandlePosition.B5
+        if diff > 5:
+            return HandlePosition.B4
+        if diff > 3:
+            return HandlePosition.B3
+        if diff > 1:
+            return HandlePosition.B2
+        return HandlePosition.B1
 
     # ------------------------------------------------------------------
     # Top-level handle calculator
     # ------------------------------------------------------------------
 
-    def compute_handle(self) -> HandlePosition:
-        """Pick the next handle in ATO mode using future-aware curve tracking.
+    def compute_handle(self, delta_seconds: float = 0.05) -> HandlePosition:
+        """Pick the next ATO handle by tracking the operational speed curve.
 
-        Mutates two diagnostic fields on the controller (`handle_reason` and
-        `_previous_speed`); does not touch any other controller state.
+        Mutates three diagnostic fields on the controller (`handle_reason`,
+        `_previous_speed`, `ato_debug`); does not touch any other controller
+        state. `ato_debug` is consumed by `routes/inspector.py` "ATO Debug"
+        group.
+
+        Args:
+            delta_seconds: tick duration in seconds. Used to scale the
+                planning horizon with the current motion rate.
         """
         c = self._c
+        debug: Dict[str, Any] = {
+            "delta_seconds": float(delta_seconds),
+            "current_speed_kmh": float(c.current_speed_kmh),
+        }
+
         train = c._get_train()
         if not train:
             c.handle_reason = "No train"
+            debug["mode"] = "no_train"
+            debug["final_handle"] = HandlePosition.N.value
+            c.ato_debug = debug
             return HandlePosition.N
 
-        current_speed = c.current_speed_kmh
+        speed_kmh = c.current_speed_kmh
+        c._previous_speed = speed_kmh
 
         lookahead = c.get_lookahead()
         curves = lookahead.get("lookahead", {}).get("speed_curves", [])
 
         if not curves:
             c.handle_reason = "No curves"
-            c._previous_speed = current_speed
+            debug["mode"] = "no_curves"
+            debug["final_handle"] = HandlePosition.N.value
+            c.ato_debug = debug
             return HandlePosition.N
 
-        # ---------- Zone 1: stopping (curve at 0 says stop) ---------------
-        curve_at_zero = self.sample_curve_at(curves, 0.0, "operational_limit")
+        profile = c._get_speed_profile()
+        op_decel = max(
+            0.1, profile.deceleration_rate * profile.operational_decel_ratio
+        )
+        km_h_to_cm_s = get_speed_conversion_factor()
+        speed_cm_s = speed_kmh * km_h_to_cm_s
 
-        effective_limit_at_zero = min(
+        # Effective ceiling at the train head: never exceed any of these.
+        curve_at_zero = self.sample_curve_at(curves, 0.0, "operational_limit")
+        ceiling_at_zero = min(
             curve_at_zero,
             train.max_speed,
             c.atc_speed_limit,
             c.current_block_speed_limit,
         )
 
-        if effective_limit_at_zero <= STOPPED_SPEED_THRESHOLD_KMH:
-            if current_speed > 0:
-                result_handle = self.calculate_braking_notch(current_speed)
-                reason = (
-                    f"Stopping: curve@0={curve_at_zero:.1f}, "
-                    f"braking at {current_speed:.1f}"
+        debug.update(
+            {
+                "op_decel_kmh_s": float(op_decel),
+                "decel_rate_kmh_s": float(profile.deceleration_rate),
+                "operational_decel_ratio": float(profile.operational_decel_ratio),
+                "curve_at_zero_kmh": float(curve_at_zero),
+                "max_speed_kmh": float(train.max_speed),
+                "atc_speed_limit_kmh": float(c.atc_speed_limit),
+                "block_speed_limit_kmh": (
+                    float(c.current_block_speed_limit)
+                    if c.current_block_speed_limit != float("inf")
+                    else None
+                ),
+                "ceiling_at_zero_kmh": float(ceiling_at_zero),
+            }
+        )
+
+        # Stopping zone: curve says stop right here.
+        if ceiling_at_zero <= STOPPED_SPEED_THRESHOLD_KMH:
+            if speed_kmh > STOPPED_SPEED_THRESHOLD_KMH:
+                c.handle_reason = (
+                    f"Stopping: ceiling@0={ceiling_at_zero:.2f} "
+                    f"speed={speed_kmh:.1f}"
                 )
-            else:
-                result_handle = HandlePosition.N
-                reason = "Stopped"
-            c._previous_speed = current_speed
-            c.handle_reason = reason
-            return result_handle
+                debug["mode"] = "stopping"
+                debug["final_handle"] = HandlePosition.B8.value
+                c.ato_debug = debug
+                return HandlePosition.B8
+            c.handle_reason = "Stopped"
+            debug["mode"] = "stopped"
+            debug["final_handle"] = HandlePosition.N.value
+            c.ato_debug = debug
+            return HandlePosition.N
 
-        if current_speed > effective_limit_at_zero + ATO_SPEED_TOLERANCE:
-            result_handle = self.calculate_braking_notch_for_speed(
-                current_speed, effective_limit_at_zero
-            )
-            result_handle = rate_limit_handle(
-                current=c.handle_position,
-                target=result_handle,
-                allow_fast=True,
-            )
-            c._previous_speed = current_speed
-            c.handle_reason = (
-                f"Curve overspeed: speed={current_speed:.1f} "
-                f"> curve@0={effective_limit_at_zero:.1f}"
-            )
-            return result_handle
-
-        # ---------- Future-aware control: evaluate handles vs curve --------
-        km_h_to_cm_s = get_speed_conversion_factor()
-        speed_cm_s = current_speed * km_h_to_cm_s
-
-        profile = c._get_speed_profile()
-        operational_decel = max(
-            0.1, profile.deceleration_rate * profile.operational_decel_ratio
-        )
-        restriction_window_cm = min(
+        # Planning horizon: scale with speed and tick dt, capped at
+        # ATO_RESTRICTION_LOOKAHEAD_CM and floored at MIN_PLANNING_HORIZON_CM.
+        planning_distance_cm = speed_cm_s * delta_seconds * PLANNING_TICKS_AHEAD
+        max_curve_dist = curves[-1].get("distance_cm", ATO_RESTRICTION_LOOKAHEAD_CM)
+        horizon_cm = min(
             ATO_RESTRICTION_LOOKAHEAD_CM,
-            curves[-1].get("distance_cm", ATO_RESTRICTION_LOOKAHEAD_CM),
-        )
-        lower_curve_limits = [
-            point.get("operational_limit", effective_limit_at_zero)
-            for point in curves
-            if 0.0 < point.get("distance_cm", 0.0) <= restriction_window_cm
-            and (
-                point.get("operational_limit", effective_limit_at_zero)
-                > STOPPED_SPEED_THRESHOLD_KMH
-                or point.get("distance_cm", 0.0) <= NEAR_STOP_DETECTION_CM
-            )
-            and point.get("operational_limit", effective_limit_at_zero)
-            < current_speed - ATO_SPEED_TOLERANCE
-        ]
-        braking_horizon_cm = 0.0
-        if lower_curve_limits:
-            future_target_speed = min(lower_curve_limits)
-            decel_cm_s2 = operational_decel * km_h_to_cm_s
-            current_cm_s = current_speed * km_h_to_cm_s
-            target_cm_s = future_target_speed * km_h_to_cm_s
-            braking_horizon_cm = max(
-                0.0,
-                (current_cm_s * current_cm_s - target_cm_s * target_cm_s)
-                / (2 * decel_cm_s2),
-            )
-
-        horizon_cm = max(5.0, min(restriction_window_cm, speed_cm_s * 3.0))
-        if braking_horizon_cm > 0.0:
-            horizon_cm = max(horizon_cm, min(restriction_window_cm, braking_horizon_cm))
-
-        result_handle = self.evaluate_handles_against_curve(
-            current_speed_kmh=current_speed,
-            curve=curves,
-            horizon_cm=horizon_cm,
+            max(MIN_PLANNING_HORIZON_CM, planning_distance_cm),
+            max_curve_dist,
         )
 
-        # Safety cap: if result would exceed ATC limits, override
-        predicted = self.simulate_forward(current_speed, result_handle, 5.0)
-        if predicted > c.atc_speed_limit + ATO_SPEED_TOLERANCE:
-            result_handle = self.calculate_braking_notch(current_speed)
-            reason = (
-                f"ATC cap: predicted {predicted:.1f} > limit {c.atc_speed_limit:.1f}"
-            )
-        else:
-            curve_target = self.sample_curve_at(
-                curves, horizon_cm / 2, "operational_limit"
-            )
-            reason = (
-                f"FutureAware: handle={result_handle.value} "
-                f"speed={current_speed:.1f} curve@{horizon_cm / 2:.0f}cm={curve_target:.1f} "
-                f"horizon={horizon_cm:.0f}cm"
-            )
+        debug.update(
+            {
+                "planning_distance_cm": float(planning_distance_cm),
+                "planning_horizon_cm": float(horizon_cm),
+                "planning_horizon_cap_cm": float(ATO_RESTRICTION_LOOKAHEAD_CM),
+                "max_curve_distance_cm": float(max_curve_dist),
+            }
+        )
 
-        is_near_stop = False
-        for point in curves:
-            if (
-                point.get("operational_limit", 999) <= STOPPED_SPEED_THRESHOLD_KMH
-                and point.get("distance_cm", 999) < NEAR_STOP_DETECTION_CM
-            ):
-                is_near_stop = True
-                break
+        # Sample the curve and find the largest required deceleration to be
+        # at-or-below the curve at each sample point.
+        required_decel_kmh_s = 0.0
+        binding_dist_cm = 0.0
+        binding_target_kmh = ceiling_at_zero
+        samples: List[Dict[str, Any]] = []
 
-        result_handle = rate_limit_handle(
+        for i in range(PLANNING_SAMPLE_COUNT + 1):
+            d_cm = horizon_cm * i / PLANNING_SAMPLE_COUNT
+            target_at_d = self.sample_curve_at(curves, d_cm, "operational_limit")
+            target_at_d = min(target_at_d, train.max_speed, c.atc_speed_limit)
+
+            sample: Dict[str, Any] = {
+                "distance_cm": round(d_cm, 2),
+                "target_kmh": round(target_at_d, 2),
+                "skipped": False,
+                "required_decel_kmh_s": 0.0,
+                "multiplier": 0.0,
+            }
+
+            if target_at_d >= speed_kmh - ATO_SPEED_TOLERANCE:
+                sample["skipped"] = True
+                sample["skip_reason"] = "target ≥ speed - tolerance"
+                samples.append(sample)
+                continue
+
+            if d_cm <= 0:
+                # Already over the curve at the train head — close the gap
+                # in roughly one second of catch-up over op_decel.
+                gap_kmh = speed_kmh - target_at_d
+                req = op_decel + gap_kmh
+                sample["formula"] = "op_decel + (speed - target)"
+            else:
+                u_cm_s = speed_cm_s
+                v_cm_s = target_at_d * km_h_to_cm_s
+                a_cm_s2 = (u_cm_s * u_cm_s - v_cm_s * v_cm_s) / (2.0 * d_cm)
+                req = a_cm_s2 / km_h_to_cm_s
+                sample["formula"] = "(u² - v²) / (2 d)"
+
+            sample["required_decel_kmh_s"] = round(req, 3)
+            sample["multiplier"] = round(req / op_decel, 3)
+            samples.append(sample)
+
+            if req > required_decel_kmh_s:
+                required_decel_kmh_s = req
+                binding_dist_cm = d_cm
+                binding_target_kmh = target_at_d
+
+        debug["samples"] = samples
+        debug["binding_distance_cm"] = round(binding_dist_cm, 2)
+        debug["binding_target_kmh"] = round(binding_target_kmh, 2)
+        debug["required_decel_kmh_s"] = round(required_decel_kmh_s, 3)
+
+        # No braking required — power up while below the ceiling, else coast.
+        if required_decel_kmh_s <= 0.0:
+            debug["multiplier_needed"] = 0.0
+            if speed_kmh < ceiling_at_zero - ATO_SPEED_TOLERANCE * 2:
+                target_handle = self.calculate_power_notch(
+                    speed_kmh, ceiling_at_zero
+                )
+                c.handle_reason = (
+                    f"Power up: speed={speed_kmh:.1f} "
+                    f"< ceiling={ceiling_at_zero:.1f}"
+                )
+                debug["mode"] = "power_up"
+            else:
+                target_handle = HandlePosition.N
+                c.handle_reason = (
+                    f"Coast: speed={speed_kmh:.1f} ceiling={ceiling_at_zero:.1f}"
+                )
+                debug["mode"] = "coast"
+            debug["target_handle"] = target_handle.value
+            final = rate_limit_handle(
+                current=c.handle_position,
+                target=target_handle,
+                allow_fast=False,
+            )
+            debug["rate_limited"] = final != target_handle
+            debug["final_handle"] = final.value
+            c.ato_debug = debug
+            return final
+
+        # Brake notch from required deceleration as a multiple of op_decel.
+        multiplier_needed = required_decel_kmh_s / op_decel
+        target_handle = self.pick_brake_notch_for_multiplier(multiplier_needed)
+        overspeed_at_zero = speed_kmh > ceiling_at_zero + ATO_SPEED_TOLERANCE
+
+        debug.update(
+            {
+                "mode": "brake",
+                "multiplier_needed": round(multiplier_needed, 3),
+                "target_handle": target_handle.value,
+                "overspeed_at_zero": overspeed_at_zero,
+            }
+        )
+
+        c.handle_reason = (
+            f"Brake {target_handle.value}: "
+            f"need={required_decel_kmh_s:.2f}km/h/s "
+            f"({multiplier_needed:.2f}× op_decel) "
+            f"target={binding_target_kmh:.1f}@{binding_dist_cm:.0f}cm"
+        )
+
+        if overspeed_at_zero:
+            # Already over the ceiling — bypass rate-limit so the chosen
+            # notch takes effect immediately.
+            debug["rate_limited"] = False
+            debug["final_handle"] = target_handle.value
+            c.ato_debug = debug
+            return target_handle
+
+        final = rate_limit_handle(
             current=c.handle_position,
-            target=result_handle,
-            allow_fast=is_near_stop,
+            target=target_handle,
+            allow_fast=True,
         )
-
-        c._previous_speed = current_speed
-        c.handle_reason = reason
-        return result_handle
+        debug["rate_limited"] = final != target_handle
+        debug["final_handle"] = final.value
+        c.ato_debug = debug
+        return final

@@ -10,7 +10,7 @@ The PathDispatcher is the dispatcher-owned authority registry. It owns:
 In v1 the canonical Path schema lives in path.py and uses:
   requested_destination_block_id, requested_destination_direction,
   authority_end_block_id, resource_sequence (List[ResourceSequenceEntry]),
-  current_resource_index, cancellation_kind, last_status_updated_time, status.
+  current_resource_index, last_status_updated_time, status.
 
 There is no v0 start_block_id / end_block_id / block_sequence /
 current_block_index / priority / dispatcher_id / switch_positions /
@@ -59,7 +59,6 @@ from runtime_payloads import (
     PathAcquisitionFailureKind,
     PathAcquisitionResult,
     PathAcquisitionResultKind,
-    PathCancellationKind,
     PathCompletionResult,
     PathResult,
     PathSegment,
@@ -81,19 +80,6 @@ if TYPE_CHECKING:
 
 # Edge offsets for navigation
 EDGE_OFFSETS = DIRECTION_OFFSETS
-
-
-def _initiator_to_kind(initiator: str) -> Optional[PathCancellationKind]:
-    """Best-effort map from a writer-supplied initiator string to the
-    diagnostic `PathCancellationKind` enum stored on the cancelled `Path`
-    record. Returns `None` for initiators that do not have an enum entry
-    (e.g. ``"deviation"``); the controller-side notification keeps the
-    initiator string verbatim regardless.
-    """
-    try:
-        return PathCancellationKind(initiator)
-    except ValueError:
-        return None
 
 
 class PathDispatcher:
@@ -935,21 +921,18 @@ class PathDispatcher:
     ) -> CancellationResult:
         """v1 cancel_path: release reservations, mark path CANCELLED.
 
-        Per design_new.md, the canonical writer-supplied `initiator` is a
-        free-form string (e.g. ``"eb"``, ``"operator_cancelled"``,
-        ``"power_off"``, ``"revoked"``, ``"deviation"``); it is preserved on
-        the ``path_cancellation`` notification verbatim. The dispatcher
-        additionally stores a best-effort `PathCancellationKind` enum on the
-        cancelled `Path` record for diagnostic readers; the enum is `None`
-        when the initiator does not map to an enum value.
+        Per design_new.md principle #7 (diagnostic-only distinctions belong on
+        events, not enums), the writer-supplied `initiator` is a free-form
+        string (e.g. ``"eb"``, ``"operator_cancelled"``, ``"power_off"``,
+        ``"revoked"``, ``"deviation"``); it is preserved verbatim on the
+        ``path_cancellation`` notification. No diagnostic enum is stored on
+        the cancelled ``Path`` record.
         """
         path = self.paths.get(path_id)
-        kind = _initiator_to_kind(initiator)
         if path is None:
             return CancellationResult(
                 success=False,
                 path_id=path_id,
-                cancellation_kind=kind,
                 reason=reason or "path_not_found",
                 notes="path_not_found",
             )
@@ -957,7 +940,6 @@ class PathDispatcher:
             return CancellationResult(
                 success=False,
                 path_id=path_id,
-                cancellation_kind=kind,
                 reason=reason or f"path_terminal_{path.status.value}",
                 train_id=path.train_id,
                 notes="terminal",
@@ -978,7 +960,6 @@ class PathDispatcher:
             )
 
         # Mark path CANCELLED.
-        path.cancellation_kind = kind
         path._set_status(PathStatus.CANCELLED, now)
 
         # Notify route executor with the writer-supplied initiator string;
@@ -1029,7 +1010,6 @@ class PathDispatcher:
         return CancellationResult(
             success=True,
             path_id=path_id,
-            cancellation_kind=kind,
             reason=reason or initiator,
             released_block_ids=released_blocks,
             released_switch_ids=released_switches,
@@ -1430,7 +1410,6 @@ class PathDispatcher:
             requested_destination_direction=requested_destination_direction,
             resource_sequence=sequence,
             current_resource_index=0,
-            cancellation_kind=None,
             last_status_updated_time=now,
         )
         return path
@@ -1535,13 +1514,6 @@ class PathDispatcher:
             train_id=train_id,
             direction=event.exit_edge,
         )
-
-    def _map_deviation_kind_to_cancellation(
-        self, deviation_kind: Optional[str]
-    ) -> PathCancellationKind:
-        if deviation_kind == "beyond_authorized_target":
-            return PathCancellationKind.AUTHORITY_OVERSHOOT
-        return PathCancellationKind.OUT_OF_SEQUENCE
 
     # ========================================================================
     # Completion handshake

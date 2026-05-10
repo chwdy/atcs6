@@ -84,6 +84,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 OPPOSITE_EDGES = {"N": "S", "S": "N", "E": "W", "W": "E"}
+EDGE_TO_DIRECTION_NAME = {"N": "NORTH", "E": "EAST", "S": "SOUTH", "W": "WEST"}
 
 
 TRACK_END_SAFETY_MARGIN_CM = 25.0
@@ -107,9 +108,6 @@ CURVE_SAMPLE_RESOLUTION_CM = (
     3.0  # 3cm resolution for speed curves (balance between precision and performance)
 )
 ATO_SPEED_MARGIN_KMH = 5.0  # ATO stays 5 km/h below ATC limit
-NEAR_STOP_DETECTION_CM = 50.0  # Distance to detect approaching stop for rate limiting
-ATO_RESTRICTION_LOOKAHEAD_CM = 150.0
-ATO_OVERSHOOT_WEIGHT = 10.0  # Penalty weight for exceeding speed curve in evaluator
 
 
 # =============================================================================
@@ -308,6 +306,16 @@ class TrainController:
 
     _previous_speed: float = 0.0
     handle_reason: str = ""  # Diagnostic: reason for current handle position
+    # Per-tick ATO debug snapshot populated by `ATONavigator.compute_handle`.
+    # Read by `routes/inspector.py` "ATO Debug" group. Reset/replaced each tick.
+    # Schema (all keys present after the first ATO tick):
+    #   mode: "stopping" | "stopped" | "no_curves" | "no_train" | "coast" |
+    #         "power_up" | "brake"
+    #   delta_seconds, op_decel, planning_horizon_cm, ceiling_at_zero,
+    #   curve_at_zero, current_speed_kmh, samples (list of dicts),
+    #   binding_distance_cm, binding_target_kmh, required_decel_kmh_s,
+    #   multiplier_needed, target_handle, final_handle.
+    ato_debug: Optional[Dict[str, Any]] = None
     # Internal cache for the controller's most recent speed_limit_reason as
     # produced by `_calculate_atc_speed_limit()`. Read through the
     # `speed_limit_reason` property below; not part of the public schema.
@@ -759,7 +767,7 @@ class TrainController:
             # Calculate handle position based on ato_running
             if self.ato_running:
                 # ATO is running - calculate handle to reach target speed
-                self.handle_position = self._ato_calculate_handle()
+                self.handle_position = self._ato_calculate_handle(delta)
                 logger.debug(
                     "[TrainController %s] ATO handle=%s target=%.2f",
                     self.train_id,
@@ -858,7 +866,10 @@ class TrainController:
         if not self.ato_destination_block_id:
             return base_clearance
 
-        path_tiles = self.get_path_tiles()
+        plan = self.received_path_plan
+        resource_sequence = (
+            getattr(plan, "resource_sequence", None) if plan else None
+        )
         dest_block_id = self.ato_destination_block_id
         current_block_id = self._get_current_block_id()
 
@@ -866,8 +877,9 @@ class TrainController:
         if current_block_id == dest_block_id:
             return self._calculate_clearance_to_end_of_current_block()
 
-        # Not in destination block yet - need current_path to trace forward
-        if not path_tiles:
+        # Not in destination block yet - need the live authority's
+        # resource_sequence to trace forward.
+        if not resource_sequence:
             return base_clearance
 
         # Check if destination block has a station (for precise stopping)
@@ -878,33 +890,42 @@ class TrainController:
             if station:
                 station_positions = set(station.positions)
 
-        # Get head tile and path index
         head_tile = self._get_head_tile()
         if not head_tile:
             return base_clearance
 
-        head_index = self._get_head_path_index(head_tile)
-        if head_index < 0:
+        head_resource_index = -1
+        head_tile_index = -1
+        for r_idx, resource in enumerate(resource_sequence):
+            for t_idx, tile_entry in enumerate(resource.path_tiles):
+                if (tile_entry.x, tile_entry.y) == head_tile:
+                    head_resource_index = r_idx
+                    head_tile_index = t_idx
+                    break
+            if head_resource_index >= 0:
+                break
+
+        if head_resource_index < 0:
             return base_clearance
 
-        # Sum distances from current position to end of destination block
+        # Flatten the tail→authority tile slice ahead of the head so the
+        # station-end check can peek forward without nested indexing.
+        ahead_entries: List[Tuple[int, int]] = []
+        for r_idx in range(head_resource_index, len(resource_sequence)):
+            resource = resource_sequence[r_idx]
+            tile_start = (
+                head_tile_index + 1 if r_idx == head_resource_index else 0
+            )
+            for t_idx in range(tile_start, len(resource.path_tiles)):
+                tile_entry = resource.path_tiles[t_idx]
+                ahead_entries.append((tile_entry.x, tile_entry.y))
+
         clearance = base_clearance
         in_dest_block = False
 
-        # Determine scan direction so we iterate toward the train's
-        # actual travel direction, not always forward in the array.
-        scan_step = self._get_path_scan_step(train, head_index)
-        if scan_step == -1:
-            ahead_entries = list(reversed(path_tiles[:head_index]))
-        else:
-            ahead_entries = list(path_tiles[head_index + 1 :])
-
-        # Start from next tile after head (in travel direction)
-        for entry_idx, path_entry in enumerate(ahead_entries):
-            tile_x, tile_y = path_entry[0], path_entry[1]
+        for entry_idx, (tile_x, tile_y) in enumerate(ahead_entries):
             tile_pos = (tile_x, tile_y)
 
-            # Get track at this tile
             track = self.network.get_track(tile_x, tile_y)
             if not track:
                 break
@@ -916,28 +937,20 @@ class TrainController:
                     break
                 current_block_id = track.block_section_id
 
-            # Track if we've entered the destination block
             if track.block_section_id == dest_block_id:
                 in_dest_block = True
 
-            # Add tile length
             tile_length = self.network._get_tile_length_cm(tile_x, tile_y)
             clearance += tile_length
 
-            # If destination has a station, stop at end of station tiles
             if station_positions and tile_pos in station_positions:
-                # Check if this is the last station tile in the remaining
-                # ahead entries (direction-aware).
                 remaining_ahead = ahead_entries[entry_idx + 1 :]
                 has_more_station_tiles = any(
-                    (p[0], p[1]) in station_positions for p in remaining_ahead
+                    p in station_positions for p in remaining_ahead
                 )
                 if not has_more_station_tiles:
-                    # This is the last station tile - stopping point reached
                     break
-            # If no station, stop at end of destination block
             elif in_dest_block and track.block_section_id != dest_block_id:
-                # We've exited the destination block
                 break
 
         return clearance
@@ -1344,93 +1357,6 @@ class TrainController:
 
         return True, to_entry_edge
 
-    def _get_path_scan_step(self, train: "Train", head_path_index: int) -> int:
-        """
-        Determine whether lookahead should scan path forward (+1) or backward (-1).
-
-        Lookahead direction follows the active cab's facing direction, not the stored
-        path order. This allows monitor lookahead to flip correctly when switching cab.
-        """
-        path_tiles = self.get_path_tiles()
-        if not path_tiles:
-            return 1
-
-        path_length = len(path_tiles)
-        if path_length <= 1:
-            return 1
-
-        facing_direction = (
-            train.position.facing_direction
-            if train.position and train.position.facing_direction
-            else None
-        )
-        if facing_direction is None:
-            if head_path_index >= path_length - 1 and head_path_index > 0:
-                return -1
-            return 1
-
-        head_entry = path_tiles[head_path_index]
-        head_tile = (head_entry[0], head_entry[1])
-
-        next_index = head_path_index + 1
-        if next_index < path_length:
-            next_entry = path_tiles[next_index]
-            next_direction = self._direction_between_tiles(
-                head_tile, (next_entry[0], next_entry[1])
-            )
-            if next_direction == facing_direction:
-                return 1
-
-        prev_index = head_path_index - 1
-        if prev_index >= 0:
-            prev_entry = path_tiles[prev_index]
-            prev_direction = self._direction_between_tiles(
-                head_tile, (prev_entry[0], prev_entry[1])
-            )
-            if prev_direction == facing_direction:
-                return -1
-
-        # facing_direction didn't match either neighbor (common on diagonal /
-        # curved tracks after a cab switch).  Fall back to destination-aware
-        # logic: find which end of the path contains the destination block.
-        dest_block_id = self.ato_destination_block_id
-        if dest_block_id and self.network:
-            # Find the first path tile belonging to the destination block,
-            # scanning from both ends toward the head.
-            dest_forward_idx: Optional[int] = None
-            dest_backward_idx: Optional[int] = None
-            for i in range(head_path_index + 1, path_length):
-                pt = path_tiles[i]
-                tk = self.network.get_track(pt[0], pt[1])
-                if tk and tk.block_section_id == dest_block_id:
-                    dest_forward_idx = i
-                    break
-            for i in range(head_path_index - 1, -1, -1):
-                pt = path_tiles[i]
-                tk = self.network.get_track(pt[0], pt[1])
-                if tk and tk.block_section_id == dest_block_id:
-                    dest_backward_idx = i
-                    break
-            if dest_forward_idx is not None and dest_backward_idx is None:
-                return 1
-            if dest_backward_idx is not None and dest_forward_idx is None:
-                return -1
-            # Both found — prefer the one further away (more of the path left)
-            if dest_forward_idx is not None and dest_backward_idx is not None:
-                if (
-                    dest_forward_idx - head_path_index
-                    >= head_path_index - dest_backward_idx
-                ):
-                    return 1
-                return -1
-
-        # No destination available — use path_index progression heuristic:
-        # if the head is in the first half of the path, it's likely moving
-        # forward (+1); in the second half, backward (-1).
-        if head_path_index <= path_length // 2:
-            return 1
-        return -1
-
     def _build_empty_monitor_lookahead(
         self,
         *,
@@ -1486,32 +1412,47 @@ class TrainController:
         if not head_tile:
             return block.length_cm
 
-        path_tiles = self.get_path_tiles()
-        if train.position and path_tiles:
-            head_index = self._get_head_path_index(head_tile)
-            if head_index < 0:
+        plan = self.received_path_plan
+        resource_sequence = (
+            getattr(plan, "resource_sequence", None) if plan else None
+        )
+        if train.position and resource_sequence:
+            head_resource_index = -1
+            head_tile_index = -1
+            for r_idx, resource in enumerate(resource_sequence):
+                for t_idx, tile_entry in enumerate(resource.path_tiles):
+                    if (tile_entry.x, tile_entry.y) == head_tile:
+                        head_resource_index = r_idx
+                        head_tile_index = t_idx
+                        break
+                if head_resource_index >= 0:
+                    break
+
+            if head_resource_index < 0:
                 return block.length_cm
 
             head_tile_length = self.network._get_tile_length_cm(*head_tile)
             remaining = max(0.0, head_tile_length - train.position.head_distance_cm)
 
-            # Determine scan direction: when the train travels in the
-            # reverse direction relative to the path array (scan_step=-1),
-            # tiles "ahead" are at *lower* indices.  Scanning forward
-            # (head_index+1:) in that case would count tiles *behind* the
-            # train, producing a wrong remaining distance.
-            scan_step = self._get_path_scan_step(train, head_index)
-            if scan_step == -1:
-                # Scan backward in path array (tiles ahead of the train)
-                ahead_tiles = reversed(path_tiles[:head_index])
-            else:
-                ahead_tiles = path_tiles[head_index + 1 :]
-
-            for x, y, *_ in ahead_tiles:
-                track = self.network.get_track(x, y)
-                if not track or track.block_section_id != current_block_id:
+            # Walk forward through resource_sequence (always tail→authority
+            # order per the schema) starting one tile past the head.
+            done = False
+            for r_idx in range(head_resource_index, len(resource_sequence)):
+                resource = resource_sequence[r_idx]
+                tile_start = (
+                    head_tile_index + 1 if r_idx == head_resource_index else 0
+                )
+                for t_idx in range(tile_start, len(resource.path_tiles)):
+                    tile_entry = resource.path_tiles[t_idx]
+                    track = self.network.get_track(tile_entry.x, tile_entry.y)
+                    if not track or track.block_section_id != current_block_id:
+                        done = True
+                        break
+                    remaining += self.network._get_tile_length_cm(
+                        tile_entry.x, tile_entry.y
+                    )
+                if done:
                     break
-                remaining += self.network._get_tile_length_cm(x, y)
 
             return remaining
 
@@ -1805,6 +1746,19 @@ class TrainController:
                 )
             )
 
+        # Compute the blocks still occupied by the train post-move so we
+        # only emit "tail vacated R" events when R is fully vacated. Without
+        # this guard, removing a single tile from a multi-tile block emits a
+        # spurious tail-vacate for the block (the train still occupies other
+        # tiles of the same block), which downstream causes BlockManager to
+        # release the block reservation while the train is still on it —
+        # which in turn flips the protecting signal to RED, truncates ATC
+        # clearance, and fires the spurious overspeed EB.
+        new_span = span_update.new_span
+        still_occupied_block_ids: set = set(
+            new_span.occupied_blocks if new_span and new_span.occupied_blocks else []
+        )
+
         tail_vacated_resources: List[ResourceEvent] = []
         seen_vacated: set = set()
         for tile in span_update.removed_tiles:
@@ -1814,6 +1768,8 @@ class TrainController:
                 continue
             key = (res_type, res_id)
             if key in seen_vacated:
+                continue
+            if res_type == "block" and res_id in still_occupied_block_ids:
                 continue
             seen_vacated.add(key)
             exit_edge = tile.exit_edge if res_type == "block" else None
@@ -2210,14 +2166,32 @@ class TrainController:
             return False
 
         # Check if this station is a scheduled stop on the train's route.
+        # Per design_new.md "RouteTask data", v1 routes hold an ordered
+        # `tasks` list whose `stop` and `dwell` entries imply a stop at
+        # `task_location` (a platform_id or station-group id); `waypoint`
+        # entries are pass-through and do not imply stopping.
         if self.route_executor is not None:
             route_id = self.route_executor.assigned_route_id_for(self.train_id)
             if route_id is not None:
                 route = self.route_executor.route_registry.get(route_id)
                 if route:
-                    # Check if platform is in the route's waypoints
-                    for waypoint in route.waypoints:
-                        if waypoint.platform_id == station_id:
+                    station_group_id: Optional[str] = None
+                    if hasattr(self.network, "get_station_for_platform"):
+                        try:
+                            station_group_id = self.network.get_station_for_platform(
+                                station_id
+                            )
+                        except Exception:
+                            station_group_id = None
+                    for task in route.tasks:
+                        if task.task_kind not in ("stop", "dwell"):
+                            continue
+                        if task.task_location == station_id:
+                            return True
+                        if (
+                            station_group_id
+                            and task.task_location == station_group_id
+                        ):
                             return True
 
         # If ato_destination_block_id is set (manual path), only stop at the
@@ -2285,21 +2259,9 @@ class TrainController:
             current_speed_kmh, handle, distance_cm, dt
         )
 
-    def _evaluate_handles_against_curve(
-        self,
-        current_speed_kmh: float,
-        curve: List[Dict],
-        horizon_cm: float = 30.0,
-        sample_count: int = 5,
-    ) -> HandlePosition:
-        """Forward to `ATONavigator.evaluate_handles_against_curve(...)`."""
-        return self._get_ato_navigator().evaluate_handles_against_curve(
-            current_speed_kmh, curve, horizon_cm, sample_count
-        )
-
-    def _ato_calculate_handle(self) -> HandlePosition:
-        """Forward to `ATONavigator.compute_handle()`."""
-        return self._get_ato_navigator().compute_handle()
+    def _ato_calculate_handle(self, delta_seconds: float = 0.05) -> HandlePosition:
+        """Forward to `ATONavigator.compute_handle(delta_seconds)`."""
+        return self._get_ato_navigator().compute_handle(delta_seconds)
 
     def _calculate_power_notch(
         self, current_speed: float, target_speed: float
@@ -2308,12 +2270,6 @@ class TrainController:
         from ato_navigator import ATONavigator
 
         return ATONavigator.calculate_power_notch(current_speed, target_speed)
-
-    def _calculate_braking_notch(self, current_speed: float) -> HandlePosition:
-        """Forward to `ATONavigator.calculate_braking_notch(current_speed)`."""
-        from ato_navigator import ATONavigator
-
-        return ATONavigator.calculate_braking_notch(current_speed)
 
     def _calculate_braking_notch_for_speed(
         self, current_speed: float, target_speed: float
@@ -3747,9 +3703,8 @@ class TrainController:
                 "distance_cm": span.end_b.distance_cm,
                 "entry_edge": span.end_b.entry_edge,
             },
-            "occupied_tiles": [list(t.tile) for t in span.occupied_tiles],
+            "occupied_tiles": [list(t) for t in span.occupied_tiles],
             "occupied_blocks": list(span.occupied_blocks),
-            "occupied_resources": list(span.occupied_resources),
             "leading_end": span.leading_end.value if span.leading_end else None,
         }
 
@@ -4026,44 +3981,31 @@ class TrainController:
                 speed_limit_reason=self.speed_limit_reason,
             )
 
-        path_tiles = self.get_path_tiles()
-        head_path_index = self._get_head_path_index(head_tile)
-        if head_path_index < 0 and path_tiles:
-            # Head tile is not in the path.  This commonly happens right after
-            # a return-path assignment + cab switch: the cab switch moves the
-            # head to the opposite end of the train which may be one tile past
-            # the path start.  If the head is in the same block as path[0] or
-            # path[-1], anchor the scan at that path endpoint so the full
-            # path-based lookahead is used instead of the fallback.
-            head_track_obj = self.network.get_track(head_tile[0], head_tile[1])
-            head_block = head_track_obj.block_section_id if head_track_obj else None
-            if head_block:
-                # Check first path tile
-                first_entry = path_tiles[0]
-                first_track = self.network.get_track(first_entry[0], first_entry[1])
-                first_block = first_track.block_section_id if first_track else None
-                # Check last path tile
-                last_entry = path_tiles[-1]
-                last_track = self.network.get_track(last_entry[0], last_entry[1])
-                last_block = last_track.block_section_id if last_track else None
+        plan = self.received_path_plan
+        resource_sequence = (
+            getattr(plan, "resource_sequence", None) if plan else None
+        )
+        if not plan or not resource_sequence:
+            return self._build_fallback_lookahead(
+                train, head_tile, head_distance_cm, travel_direction
+            )
 
-                if head_block == first_block:
-                    head_path_index = 0
-                    # Account for extra distance: head is behind path[0]
-                    extra_tiles_cm = 0.0
-                    # Scan from head to path[0] through the block
-                    # (simplified: just add the head tile's length)
-                    head_tile_length = self.network._get_tile_length_cm(
-                        head_tile[0], head_tile[1]
-                    )
-                    extra_tiles_cm = head_tile_length - head_distance_cm
-                    head_distance_cm = -extra_tiles_cm  # Negative = before path start
-                elif head_block == last_block:
-                    head_path_index = len(path_tiles) - 1
+        # Locate the head tile inside the resource_sequence (tail→authority
+        # order per the canonical resource_sequence schema). The head must
+        # live in some resource's path_tiles slice; if not, fall back to the
+        # no-path lookahead.
+        head_resource_index = -1
+        head_tile_index = -1
+        for r_idx, resource in enumerate(resource_sequence):
+            for t_idx, tile_entry in enumerate(resource.path_tiles):
+                if (tile_entry.x, tile_entry.y) == head_tile:
+                    head_resource_index = r_idx
+                    head_tile_index = t_idx
+                    break
+            if head_resource_index >= 0:
+                break
 
-        if head_path_index < 0 or not path_tiles:
-            # No path available - build lookahead from occupied blocks
-            # This handles: initial placement, path canceled, entering last tile
+        if head_resource_index < 0:
             return self._build_fallback_lookahead(
                 train, head_tile, head_distance_cm, travel_direction
             )
@@ -4074,29 +4016,49 @@ class TrainController:
         stations: List[Dict[str, Any]] = []
 
         cumulative_distance_cm = -head_distance_cm
-        path_scan_step = self._get_path_scan_step(train, head_path_index)
 
-        current_block_id = None
+        head_track = self.network.get_track(head_tile[0], head_tile[1])
+        current_block_id: Optional[str] = (
+            head_track.block_section_id if head_track else None
+        )
+
+        # Sum the tail length of the head's block — tiles that share the
+        # same block_id and lie before the head in tail→authority order. The
+        # walk extends backward through the head resource, then through any
+        # earlier resources that still belong to the same block.
         block_back_length_cm = 0.0
         block_back_tile_count = 0
-        head_track = self.network.get_track(head_tile[0], head_tile[1])
-        if head_track:
-            current_block_id = head_track.block_section_id
-
         if current_block_id:
-            behind_start = (
-                head_path_index - 1 if path_scan_step == 1 else head_path_index + 1
-            )
-            behind_end = -1 if path_scan_step == 1 else len(path_tiles)
-            for j in range(behind_start, behind_end, -path_scan_step):
-                prev_entry = path_tiles[j]
-                prev_x, prev_y = prev_entry[0], prev_entry[1]
-                prev_track = self.network.get_track(prev_x, prev_y)
+            stop = False
+            for prev_tile in reversed(
+                resource_sequence[head_resource_index].path_tiles[:head_tile_index]
+            ):
+                prev_track = self.network.get_track(prev_tile.x, prev_tile.y)
                 prev_block_id = prev_track.block_section_id if prev_track else None
                 if prev_block_id != current_block_id:
+                    stop = True
                     break
-                block_back_length_cm += self.network._get_tile_length_cm(prev_x, prev_y)
+                block_back_length_cm += self.network._get_tile_length_cm(
+                    prev_tile.x, prev_tile.y
+                )
                 block_back_tile_count += 1
+            if not stop:
+                for r_idx in range(head_resource_index - 1, -1, -1):
+                    earlier = resource_sequence[r_idx]
+                    for prev_tile in reversed(earlier.path_tiles):
+                        prev_track = self.network.get_track(prev_tile.x, prev_tile.y)
+                        prev_block_id = (
+                            prev_track.block_section_id if prev_track else None
+                        )
+                        if prev_block_id != current_block_id:
+                            stop = True
+                            break
+                        block_back_length_cm += self.network._get_tile_length_cm(
+                            prev_tile.x, prev_tile.y
+                        )
+                        block_back_tile_count += 1
+                    if stop:
+                        break
 
         current_block_start_cm = (
             cumulative_distance_cm - block_back_length_cm
@@ -4108,217 +4070,210 @@ class TrainController:
         seen_signals: set[str] = set()
         seen_switches: set[Tuple[int, int]] = set()
         seen_stations: set[str] = set()
-        current_entry_edge: Optional[str] = None
-        neighbor_index = head_path_index - path_scan_step
-        if 0 <= neighbor_index < len(path_tiles):
-            neighbor_entry = path_tiles[neighbor_index]
-            neighbor_tile = (neighbor_entry[0], neighbor_entry[1])
-            direction_into_head = self._direction_between_tiles(
-                neighbor_tile, head_tile
-            )
-            exit_edge = (
-                self._direction_to_edge(direction_into_head)
-                if direction_into_head
-                else None
-            )
-            if exit_edge:
-                current_entry_edge = OPPOSITE_EDGES.get(exit_edge)
-        if current_entry_edge is None and train.position:
-            current_entry_edge = train.position.head_entry_edge
 
-        loop_end = len(path_tiles) if path_scan_step == 1 else -1
-        for i in range(head_path_index, loop_end, path_scan_step):
-            path_entry = path_tiles[i]
-            x, y = path_entry[0], path_entry[1]
-            track = self.network.get_track(x, y)
-            tile_length = self.network._get_tile_length_cm(x, y) if track else 50.0
-            tile_block_id = track.block_section_id if track else None
-            tile_travel_direction = (
-                path_entry[2].name
-                if len(path_entry) > 2 and hasattr(path_entry[2], "name")
-                else None
-            )
-            if (
-                tile_travel_direction
-                and path_scan_step == -1
-                and hasattr(path_entry[2], "opposite")
-            ):
-                tile_travel_direction = path_entry[2].opposite().name
-            point_element_start = max(0.0, cumulative_distance_cm)
+        is_first_step = True
 
-            if tile_block_id and tile_block_id != current_block_id:
-                current_block_id = tile_block_id
-                current_block_start_cm = cumulative_distance_cm
+        for r_idx in range(head_resource_index, len(resource_sequence)):
+            resource = resource_sequence[r_idx]
+            tile_start = head_tile_index if r_idx == head_resource_index else 0
 
-            if tile_block_id and tile_block_id not in seen_blocks:
-                seen_blocks.add(tile_block_id)
-                block_length = 0.0
-                tile_count = 0
-                for j in range(i, loop_end, path_scan_step):
-                    next_entry = path_tiles[j]
-                    next_x, next_y = next_entry[0], next_entry[1]
-                    next_track = self.network.get_track(next_x, next_y)
-                    next_block_id = next_track.block_section_id if next_track else None
-                    if next_block_id != tile_block_id:
-                        break
-                    block_length += self.network._get_tile_length_cm(next_x, next_y)
-                    tile_count += 1
-
-                if (
-                    tile_block_id == current_block_id
-                    and i == head_path_index
-                    and block_back_length_cm > 0.0
-                ):
-                    block_length += block_back_length_cm
-                    tile_count += block_back_tile_count
-
-                block_state = None
-                block_speed_limit: Optional[float] = None  # None means no limit
-                block = self.network.blocks.get(tile_block_id)
-                if block:
-                    if block.state:
-                        block_state = block.state.value
-                    if block.speed_limit_kmh and block.speed_limit_kmh < float("inf"):
-                        block_speed_limit = block.speed_limit_kmh
-
-                blocks.append(
-                    {
-                        "id": tile_block_id,
-                        "name": tile_block_id,
-                        "state": block_state or BlockState.FREE.value,
-                        "start_cm": current_block_start_cm,
-                        "end_cm": current_block_start_cm + block_length,
-                        "length_cm": block_length,
-                        "tile_count": tile_count,
-                        "speed_limit_kmh": block_speed_limit,  # None if no limit
-                    }
+            for t_idx in range(tile_start, len(resource.path_tiles)):
+                tile_entry = resource.path_tiles[t_idx]
+                x, y = tile_entry.x, tile_entry.y
+                track = self.network.get_track(x, y)
+                tile_length = (
+                    self.network._get_tile_length_cm(x, y) if track else 50.0
+                )
+                tile_block_id = track.block_section_id if track else None
+                tile_travel_direction = EDGE_TO_DIRECTION_NAME.get(
+                    tile_entry.exit_edge
                 )
 
-            if track and track.signal_ids and tile_travel_direction:
-                train_dir = tile_travel_direction.upper()
-                for signal_id in track.signal_ids:
-                    if signal_id in seen_signals:
-                        continue
-                    signal = self.network.signals.get(signal_id)
-                    if not signal:
-                        continue
-                    sig_dir = (signal.detection_direction or "").upper()
-                    dir_matches = (
-                        sig_dir == train_dir
-                        or sig_dir == train_dir[:1]
-                        or sig_dir[:1] == train_dir[:1]
-                    )
-                    if not dir_matches:
-                        continue
-                    seen_signals.add(signal_id)
-                    # Calculate precise signal distance accounting for train position
-                    # When signal is on the same tile as train head (i == head_path_index),
-                    # we need to subtract head_distance_cm to get actual relative distance
-                    signal_distance = point_element_start
-                    if i == head_path_index:
-                        signal_distance = cumulative_distance_cm
-                    signals.append(
-                        {
-                            "id": signal_id,
-                            "name": signal.name or signal_id,
-                            "state": signal.state.value if signal.state else "unknown",
-                            "distance_cm": signal_distance,
-                        }
-                    )
+                point_element_start = max(0.0, cumulative_distance_cm)
 
-            if track and track.is_switch:
-                switch_key = (x, y)
-                if switch_key not in seen_switches:
-                    seen_switches.add(switch_key)
-                    switch_entity = (
-                        self.network.get_switch_at(x, y)
-                        if hasattr(self.network, "get_switch_at")
-                        else None
-                    )
-                    switches.append(
-                        {
-                            "x": x,
-                            "y": y,
-                            "name": switch_entity.name
-                            if switch_entity and switch_entity.name
-                            else f"Switch ({x},{y})",
-                            "position": "main"
-                            if track.switch_state == 0
-                            else "diverging",
-                            "distance_cm": point_element_start,
-                            "locked": track.is_locked_by_path()
-                            if hasattr(track, "is_locked_by_path")
-                            else False,
-                        }
-                    )
+                if tile_block_id and tile_block_id != current_block_id:
+                    current_block_id = tile_block_id
+                    current_block_start_cm = cumulative_distance_cm
 
-            if track and track.station_id:
-                platform_id = track.station_id
-                if platform_id not in seen_stations:
-                    seen_stations.add(platform_id)
-                    station = self.network.platforms.get(platform_id)
-                    station_length = station.length_cm if station else 0.0
-                    station_tile_count = 0
-                    if not station_length:
-                        for j in range(i, len(path_tiles)):
-                            next_entry = path_tiles[j]
-                            next_x, next_y = next_entry[0], next_entry[1]
-                            next_track = self.network.get_track(next_x, next_y)
-                            if not next_track or next_track.station_id != platform_id:
+                if tile_block_id and tile_block_id not in seen_blocks:
+                    seen_blocks.add(tile_block_id)
+                    block_length = 0.0
+                    tile_count = 0
+                    done = False
+                    for fr_idx in range(r_idx, len(resource_sequence)):
+                        forward_resource = resource_sequence[fr_idx]
+                        ft_start = t_idx if fr_idx == r_idx else 0
+                        for ft_idx in range(
+                            ft_start, len(forward_resource.path_tiles)
+                        ):
+                            ft_entry = forward_resource.path_tiles[ft_idx]
+                            ft_track = self.network.get_track(
+                                ft_entry.x, ft_entry.y
+                            )
+                            ft_block_id = (
+                                ft_track.block_section_id if ft_track else None
+                            )
+                            if ft_block_id != tile_block_id:
+                                done = True
                                 break
-                            station_length += self.network._get_tile_length_cm(
-                                next_x, next_y
+                            block_length += self.network._get_tile_length_cm(
+                                ft_entry.x, ft_entry.y
                             )
-                            station_tile_count += 1
-                    station_group_id: Optional[str] = None
-                    if hasattr(self.network, "get_station_for_platform"):
-                        try:
-                            station_group_id = self.network.get_station_for_platform(
-                                platform_id
-                            )
-                        except Exception:
-                            station_group_id = None
-                    stations.append(
+                            tile_count += 1
+                        if done:
+                            break
+
+                    if (
+                        tile_block_id == current_block_id
+                        and is_first_step
+                        and block_back_length_cm > 0.0
+                    ):
+                        block_length += block_back_length_cm
+                        tile_count += block_back_tile_count
+
+                    block_state = None
+                    block_speed_limit: Optional[float] = None
+                    block = self.network.blocks.get(tile_block_id)
+                    if block:
+                        if block.state:
+                            block_state = block.state.value
+                        if (
+                            block.speed_limit_kmh
+                            and block.speed_limit_kmh < float("inf")
+                        ):
+                            block_speed_limit = block.speed_limit_kmh
+
+                    blocks.append(
                         {
-                            "platform_id": platform_id,
-                            "station_id": station_group_id,
-                            "name": station.name if station else platform_id,
-                            "distance_cm": point_element_start,
-                            "length_cm": station_length,
-                            "tile_count": station_tile_count or 1,
-                            "top_speed_kmh": station.top_speed_kmh if station else None,
+                            "id": tile_block_id,
+                            "name": tile_block_id,
+                            "state": block_state or BlockState.FREE.value,
+                            "start_cm": current_block_start_cm,
+                            "end_cm": current_block_start_cm + block_length,
+                            "length_cm": block_length,
+                            "tile_count": tile_count,
+                            "speed_limit_kmh": block_speed_limit,
                         }
                     )
 
-            next_index = i + path_scan_step
-            if 0 <= next_index < len(path_tiles):
-                next_entry = path_tiles[next_index]
-                direction = self._direction_between_tiles(
-                    (x, y), (next_entry[0], next_entry[1])
-                )
-                exit_edge = self._direction_to_edge(direction) if direction else None
-                if exit_edge and track:
-                    if current_entry_edge is None or exit_edge not in track.get_exits(
-                        current_entry_edge, use_switch_state=True
-                    ):
-                        inferred_entry = track.get_entry_for_exit(
-                            exit_edge, use_switch_state=True
+                if track and track.signal_ids and tile_travel_direction:
+                    train_dir = tile_travel_direction.upper()
+                    for signal_id in track.signal_ids:
+                        if signal_id in seen_signals:
+                            continue
+                        signal = self.network.signals.get(signal_id)
+                        if not signal:
+                            continue
+                        sig_dir = (signal.detection_direction or "").upper()
+                        dir_matches = (
+                            sig_dir == train_dir
+                            or sig_dir == train_dir[:1]
+                            or sig_dir[:1] == train_dir[:1]
                         )
-                        if inferred_entry:
-                            current_entry_edge = inferred_entry
+                        if not dir_matches:
+                            continue
+                        seen_signals.add(signal_id)
+                        signal_distance = (
+                            cumulative_distance_cm
+                            if is_first_step
+                            else point_element_start
+                        )
+                        signals.append(
+                            {
+                                "id": signal_id,
+                                "name": signal.name or signal_id,
+                                "state": signal.state.value
+                                if signal.state
+                                else "unknown",
+                                "distance_cm": signal_distance,
+                            }
+                        )
 
-                can_traverse, next_entry_edge = self._can_traverse_path_step(
-                    train,
-                    (x, y),
-                    (next_entry[0], next_entry[1]),
-                    current_entry_edge,
-                )
+                if track and track.is_switch:
+                    switch_key = (x, y)
+                    if switch_key not in seen_switches:
+                        seen_switches.add(switch_key)
+                        switch_entity = (
+                            self.network.get_switch_at(x, y)
+                            if hasattr(self.network, "get_switch_at")
+                            else None
+                        )
+                        switches.append(
+                            {
+                                "x": x,
+                                "y": y,
+                                "name": switch_entity.name
+                                if switch_entity and switch_entity.name
+                                else f"Switch ({x},{y})",
+                                "position": "main"
+                                if track.switch_state == 0
+                                else "diverging",
+                                "distance_cm": point_element_start,
+                                "locked": track.is_locked_by_path()
+                                if hasattr(track, "is_locked_by_path")
+                                else False,
+                            }
+                        )
+
+                if track and track.station_id:
+                    platform_id = track.station_id
+                    if platform_id not in seen_stations:
+                        seen_stations.add(platform_id)
+                        station = self.network.platforms.get(platform_id)
+                        station_length = station.length_cm if station else 0.0
+                        station_tile_count = 0
+                        if not station_length:
+                            done = False
+                            for fr_idx in range(r_idx, len(resource_sequence)):
+                                forward_resource = resource_sequence[fr_idx]
+                                ft_start = t_idx if fr_idx == r_idx else 0
+                                for ft_idx in range(
+                                    ft_start, len(forward_resource.path_tiles)
+                                ):
+                                    ft_entry = forward_resource.path_tiles[ft_idx]
+                                    ft_track = self.network.get_track(
+                                        ft_entry.x, ft_entry.y
+                                    )
+                                    if (
+                                        not ft_track
+                                        or ft_track.station_id != platform_id
+                                    ):
+                                        done = True
+                                        break
+                                    station_length += (
+                                        self.network._get_tile_length_cm(
+                                            ft_entry.x, ft_entry.y
+                                        )
+                                    )
+                                    station_tile_count += 1
+                                if done:
+                                    break
+                        station_group_id: Optional[str] = None
+                        if hasattr(self.network, "get_station_for_platform"):
+                            try:
+                                station_group_id = (
+                                    self.network.get_station_for_platform(
+                                        platform_id
+                                    )
+                                )
+                            except Exception:
+                                station_group_id = None
+                        stations.append(
+                            {
+                                "platform_id": platform_id,
+                                "station_id": station_group_id,
+                                "name": station.name if station else platform_id,
+                                "distance_cm": point_element_start,
+                                "length_cm": station_length,
+                                "tile_count": station_tile_count or 1,
+                                "top_speed_kmh": station.top_speed_kmh
+                                if station
+                                else None,
+                            }
+                        )
+
                 cumulative_distance_cm += tile_length
-                if not can_traverse:
-                    break
-                current_entry_edge = next_entry_edge
-            else:
-                cumulative_distance_cm += tile_length
+                is_first_step = False
 
         clearance_cm = max(0.0, cumulative_distance_cm)
 

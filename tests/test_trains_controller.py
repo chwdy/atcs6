@@ -267,7 +267,11 @@ class TestTrainControllerBrakingNotches:
     """Tests for braking notch selection updates (2026-01-22)."""
 
     def test_braking_notch_for_speed_uses_b1_to_b8(self):
-        """Speed-based braking should map to B1-B8 notches."""
+        """Speed-based braking should map to B1-B8 notches.
+
+        Buckets (current - target): >25 B8, >18 B7, >12 B6, >8 B5, >5 B4,
+        >3 B3, >1 B2, else B1. Notches now multiply op_decel.
+        """
         network = RailwayNetwork()
         train = Train(train_id="TRAIN_BRAKE", max_speed=60.0)
         network.add_train(train)
@@ -279,23 +283,23 @@ class TestTrainControllerBrakingNotches:
             == HandlePosition.B8
         )
         assert (
-            controller._calculate_braking_notch_for_speed(40.0, 14.0)
+            controller._calculate_braking_notch_for_speed(40.0, 18.0)
             == HandlePosition.B7
         )
         assert (
-            controller._calculate_braking_notch_for_speed(30.0, 8.0)
+            controller._calculate_braking_notch_for_speed(30.0, 14.0)
             == HandlePosition.B6
         )
         assert (
-            controller._calculate_braking_notch_for_speed(22.0, 7.0)
+            controller._calculate_braking_notch_for_speed(22.0, 12.0)
             == HandlePosition.B5
         )
         assert (
-            controller._calculate_braking_notch_for_speed(18.0, 7.0)
+            controller._calculate_braking_notch_for_speed(18.0, 12.0)
             == HandlePosition.B4
         )
         assert (
-            controller._calculate_braking_notch_for_speed(12.0, 6.0)
+            controller._calculate_braking_notch_for_speed(12.0, 7.0)
             == HandlePosition.B3
         )
         assert (
@@ -304,23 +308,6 @@ class TestTrainControllerBrakingNotches:
         assert (
             controller._calculate_braking_notch_for_speed(7.0, 6.0) == HandlePosition.B1
         )
-
-    def test_stop_braking_notch_uses_b1_to_b8(self):
-        """Stop braking should map to B1-B8 based on speed."""
-        network = RailwayNetwork()
-        train = Train(train_id="TRAIN_STOP", max_speed=60.0)
-        network.add_train(train)
-
-        controller = TrainController(train_id=train.train_id, network=network)
-
-        assert controller._calculate_braking_notch(35.0) == HandlePosition.B8
-        assert controller._calculate_braking_notch(27.0) == HandlePosition.B7
-        assert controller._calculate_braking_notch(22.0) == HandlePosition.B6
-        assert controller._calculate_braking_notch(16.0) == HandlePosition.B5
-        assert controller._calculate_braking_notch(12.0) == HandlePosition.B4
-        assert controller._calculate_braking_notch(8.0) == HandlePosition.B3
-        assert controller._calculate_braking_notch(4.0) == HandlePosition.B2
-        assert controller._calculate_braking_notch(1.0) == HandlePosition.B1
 
     def test_manual_mode_uses_atc_speed_braking(self, monkeypatch):
         """Manual mode should brake toward ATC speed, not full stop."""
@@ -343,7 +330,8 @@ class TestTrainControllerBrakingNotches:
 
         controller.tick(0.1)
 
-        assert controller.handle_position == HandlePosition.B3
+        # current=16, target=10, diff=6 → bucket >5 → B4 (new buckets).
+        assert controller.handle_position == HandlePosition.B4
 
     def test_no_duplicate_controller_instances(self):
         """

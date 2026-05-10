@@ -52,28 +52,62 @@ def test_sample_curve_at_supports_atc_limit_key():
 
 
 # ---------------------------------------------------------------------------
-# Braking-notch tables
+# pick_brake_notch_for_multiplier
 # ---------------------------------------------------------------------------
 
 
-def test_calculate_braking_notch_buckets():
-    notch = ATONavigator.calculate_braking_notch
-    assert notch(40.0) == HandlePosition.B8
-    assert notch(28.0) == HandlePosition.B7
-    assert notch(22.0) == HandlePosition.B6
-    assert notch(15.0) == HandlePosition.B5
-    assert notch(11.0) == HandlePosition.B4
-    assert notch(7.0) == HandlePosition.B3
-    assert notch(3.0) == HandlePosition.B2
-    assert notch(1.0) == HandlePosition.B1
+def test_pick_brake_notch_zero_or_negative_returns_neutral():
+    fn = ATONavigator.pick_brake_notch_for_multiplier
+    assert fn(0.0) == HandlePosition.N
+    assert fn(-0.5) == HandlePosition.N
 
 
-def test_calculate_braking_notch_for_speed_uses_diff():
+def test_pick_brake_notch_picks_smallest_sufficient():
+    fn = ATONavigator.pick_brake_notch_for_multiplier
+    # Multipliers (op_decel-relative): B1=0.20, B2=0.40, B3=0.55, B4=0.70,
+    # B5=0.85, B6=1.00, B7=1.30, B8=1.70.
+    assert fn(0.10) == HandlePosition.B1
+    assert fn(0.20) == HandlePosition.B1
+    assert fn(0.21) == HandlePosition.B2
+    assert fn(0.55) == HandlePosition.B3
+    assert fn(0.99) == HandlePosition.B6
+    assert fn(1.00) == HandlePosition.B6
+    assert fn(1.05) == HandlePosition.B7
+    assert fn(1.30) == HandlePosition.B7
+    assert fn(1.40) == HandlePosition.B8
+    assert fn(1.70) == HandlePosition.B8
+
+
+def test_pick_brake_notch_caps_at_b8():
+    fn = ATONavigator.pick_brake_notch_for_multiplier
+    # If more decel than B8 provides is requested, cap at B8 (ATC EB will
+    # catch the resulting overspeed if it persists).
+    assert fn(2.0) == HandlePosition.B8
+    assert fn(99.0) == HandlePosition.B8
+
+
+# ---------------------------------------------------------------------------
+# calculate_braking_notch_for_speed (raw speed-gap helper for ATO-not-running)
+# ---------------------------------------------------------------------------
+
+
+def test_calculate_braking_notch_for_speed_no_gap_returns_neutral():
     fn = ATONavigator.calculate_braking_notch_for_speed
-    # 50 km/h current, 10 target → diff 40 → B8
-    assert fn(50.0, 10.0) == HandlePosition.B8
-    # 30 km/h current, 25 target → diff 5 (not > 5) → B2
-    assert fn(30.0, 25.0) == HandlePosition.B2
+    assert fn(20.0, 20.0) == HandlePosition.N
+    assert fn(15.0, 20.0) == HandlePosition.N
+
+
+def test_calculate_braking_notch_for_speed_buckets():
+    fn = ATONavigator.calculate_braking_notch_for_speed
+    # Thresholds: >25=B8, >18=B7, >12=B6, >8=B5, >5=B4, >3=B3, >1=B2, else B1.
+    assert fn(30.0, 0.0) == HandlePosition.B8
+    assert fn(20.0, 0.0) == HandlePosition.B7
+    assert fn(14.0, 0.0) == HandlePosition.B6
+    assert fn(10.0, 0.0) == HandlePosition.B5
+    assert fn(7.0, 0.0) == HandlePosition.B4
+    assert fn(4.0, 0.0) == HandlePosition.B3
+    assert fn(2.0, 0.0) == HandlePosition.B2
+    assert fn(0.5, 0.0) == HandlePosition.B1
 
 
 # ---------------------------------------------------------------------------
@@ -83,11 +117,12 @@ def test_calculate_braking_notch_for_speed_uses_diff():
 
 def test_calculate_power_notch_buckets():
     fn = ATONavigator.calculate_power_notch
-    # Far below target: full power
+    # Thresholds: >8=P5, >5=P4, >3=P3, >1.5=P2, else P1.
     assert fn(10.0, 60.0) == HandlePosition.P5
-    # Within fine-control zone: graduated
-    assert fn(56.0, 60.0) == HandlePosition.P2
-    assert fn(58.5, 60.0) == HandlePosition.P1
+    assert fn(54.0, 60.0) == HandlePosition.P4
+    assert fn(56.0, 60.0) == HandlePosition.P3
+    assert fn(58.0, 60.0) == HandlePosition.P2
+    assert fn(59.0, 60.0) == HandlePosition.P1
 
 
 # ---------------------------------------------------------------------------

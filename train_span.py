@@ -8,9 +8,8 @@ selection). It carries:
 
   - both physical end locators (`end_a`, `end_b`) — tile + distance_cm +
     entry_edge per the canonical SpanEndLocator schema below
-  - the ordered occupied span (`occupied_tiles`, `occupied_blocks`,
-    `occupied_resources`) — block/resource-level ownership view in physical
-    order from `end_a` to `end_b`
+  - the ordered occupied span (`occupied_tiles`, `occupied_blocks`) —
+    block-level ownership view in physical order from `end_a` to `end_b`
   - the optional active cab indicator (`leading_end`) so derived "head"
     helpers can return the cab-side end without needing the controller
 
@@ -47,26 +46,6 @@ class SpanEndLocator:
 
 
 @dataclass
-class SpanTile:
-    """One ordered tile entry inside `TrainSpan.occupied_tiles`.
-
-    Tiles are listed from `end_a` to `end_b` in physical order. Each entry
-    carries the tile coordinate plus optional resource resolution so callers
-    that need a tile→block / tile→resource mapping do not have to re-resolve
-    against `RailwayNetwork`. `block_id` and `resource_id` are populated by
-    the producer (TrainPhysics) when the tile resolves cleanly to one block
-    or one switch resource; they may be `None` for tiles that span no block
-    membership (rare in v1 — every tile owned by a block resolves
-    deterministically).
-    """
-
-    tile: Tuple[int, int]
-    block_id: Optional[str] = None
-    resource_id: Optional[str] = None
-    resource_type: Optional[str] = None  # "block" | "switch"
-
-
-@dataclass
 class TrainSpan:
     """Canonical live physical span owned by `TrainController.current_span`.
 
@@ -85,9 +64,8 @@ class TrainSpan:
 
     end_a: SpanEndLocator
     end_b: SpanEndLocator
-    occupied_tiles: List[SpanTile] = field(default_factory=list)
+    occupied_tiles: List[Tuple[int, int]] = field(default_factory=list)
     occupied_blocks: List[str] = field(default_factory=list)
-    occupied_resources: List[str] = field(default_factory=list)
     leading_end: Optional[LeadingEnd] = None
 
     @property
@@ -122,13 +100,8 @@ class TrainSpan:
           - `position.end_a_tile` + `end_a_distance_cm` + `end_a_entry_edge`
             → `SpanEndLocator` for `end_a`
           - `position.end_b_*` → `SpanEndLocator` for `end_b`
-          - `position.occupied_tiles` (List[Tuple[int, int]]) → list of
-            `SpanTile` with `block_id`/`resource_id` left None (callers that
-            need them resolve through `RailwayNetwork`)
+          - `position.occupied_tiles` (List[Tuple[int, int]]) → forwarded
           - `position.occupied_blocks` → forwarded
-          - `occupied_resources` is empty in this adapter; v1 callers that
-            need switch ownership read it from `Switch.occupied_by` directly
-            (the resource list is producer-built once Phase 2c lands)
           - `position.leading_end` → forwarded
         """
         end_a = SpanEndLocator(
@@ -141,13 +114,11 @@ class TrainSpan:
             distance_cm=position.end_b_distance_cm,
             entry_edge=position.end_b_entry_edge,
         )
-        tiles = [SpanTile(tile=t) for t in position.occupied_tiles]
         return cls(
             end_a=end_a,
             end_b=end_b,
-            occupied_tiles=tiles,
+            occupied_tiles=list(position.occupied_tiles),
             occupied_blocks=list(position.occupied_blocks),
-            occupied_resources=[],
             leading_end=position.leading_end,
         )
 

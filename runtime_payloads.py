@@ -14,7 +14,6 @@ Schemas defined here:
 - ControllerProgressReport: produced by TrainController, consumed by PathDispatcher.on_controller_progress
 - PendingPathCancelRequest:
   the per-train Phase-3 mailbox payloads
-- PathCancellationKind: the canonical cancellation enum
 
 `TrainSpan` itself is referenced as a forward type and not defined in this module
 because it is the canonical span schema owned by the train/controller side. This
@@ -26,10 +25,10 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
 
 if TYPE_CHECKING:
-    # TrainSpan and its component schemas (SpanEndLocator, SpanTile,
-    # SpanResourceInterval) are owned by the train/controller side. Until they
-    # are formally defined elsewhere, we type-check against `Any` and let
-    # producers/consumers carry whichever concrete shape they currently use.
+    # TrainSpan and its component schemas (SpanEndLocator) are owned by the
+    # train/controller side. Until they are formally defined elsewhere, we
+    # type-check against `Any` and let producers/consumers carry whichever
+    # concrete shape they currently use.
     pass
 
 
@@ -40,25 +39,6 @@ if TYPE_CHECKING:
 DEFAULT_PATH_PRIORITY = 5
 MIN_PRIORITY = 1
 MAX_PRIORITY = 10
-
-
-# =============================================================================
-# Cancellation diagnostic enum
-# =============================================================================
-
-
-class PathCancellationKind(Enum):
-    """Reason kinds for PathDispatcher.cancel_path(...).
-
-    Diagnostic only; routing/planning layers must not branch on this value.
-    """
-
-    EB = "eb"
-    OPERATOR_CANCELLED = "operator_cancelled"
-    POWER_OFF = "power_off"
-    REVOKED = "revoked"
-    OUT_OF_SEQUENCE = "out_of_sequence"
-    AUTHORITY_OVERSHOOT = "authority_overshoot"
 
 
 # =============================================================================
@@ -427,7 +407,6 @@ class CancellationResult:
 
     success: bool
     path_id: str = ""
-    cancellation_kind: Optional[PathCancellationKind] = None
     reason: str = ""
     released_block_ids: List[str] = field(default_factory=list)
     released_switch_ids: List[str] = field(default_factory=list)
@@ -438,9 +417,6 @@ class CancellationResult:
         return {
             "success": self.success,
             "path_id": self.path_id,
-            "cancellation_kind": (
-                self.cancellation_kind.value if self.cancellation_kind else None
-            ),
             "reason": self.reason,
             "released_block_ids": list(self.released_block_ids),
             "released_switch_ids": list(self.released_switch_ids),

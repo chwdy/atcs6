@@ -30,7 +30,6 @@ from runtime_payloads import (
     AcquisitionMode,
     PathAcquisitionResult,
     PathAcquisitionFailureKind,
-    PathCancellationKind,
 )
 from enums import PathStatus
 from path_dispatcher import PathDispatcher

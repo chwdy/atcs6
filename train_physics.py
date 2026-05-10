@@ -53,6 +53,7 @@ from enums import (
 )
 from model_scale import kmh_to_cm_per_sec
 from runtime_payloads import PhysicsSpanUpdate, TileTraversal
+from train_span import TrainSpan
 
 if TYPE_CHECKING:
     from block_manager import BlockManager
@@ -223,10 +224,13 @@ class TrainPhysics:
                 controller, profile, previous_speed, delta
             )
         else:
+            operational_decel = (
+                profile.deceleration_rate * profile.operational_decel_ratio
+            )
             acceleration = self._get_acceleration_for_handle(
                 controller.handle_position,
                 profile.acceleration_rate,
-                profile.deceleration_rate,
+                operational_decel,
                 profile.emergency_brake_rate,
             )
 
@@ -328,16 +332,22 @@ class TrainPhysics:
         self,
         handle: HandlePosition,
         acceleration_rate: float,
-        deceleration_rate: float,
+        operational_decel_rate: float,
         emergency_brake_rate: float,
     ) -> float:
         """
         Get acceleration/deceleration rate for current handle position.
 
+        Brake notches multiply `operational_decel_rate` (the rate ATO uses
+        for its planned slow-down curve). B6 = 1.00× exactly tracks that
+        curve; B7-B8 sit slightly above 1× for catch-up; B1-B5 sit below.
+        EB bypasses the table and applies `emergency_brake_rate`.
+
         Args:
             handle: Current handle position
             acceleration_rate: Maximum acceleration rate (km/h/s)
-            deceleration_rate: Maximum service deceleration rate (km/h/s)
+            operational_decel_rate: Operational deceleration rate (km/h/s) =
+                profile.deceleration_rate × profile.operational_decel_ratio
             emergency_brake_rate: Emergency braking rate (km/h/s)
 
         Returns:
@@ -353,9 +363,9 @@ class TrainPhysics:
         if handle == HandlePosition.N:
             return 0.0
 
-        # Brake notches (deceleration)
+        # Brake notches (deceleration relative to op_decel)
         if handle in BRAKE_MULTIPLIERS:
-            return -deceleration_rate * BRAKE_MULTIPLIERS[handle]
+            return -operational_decel_rate * BRAKE_MULTIPLIERS[handle]
 
         # Emergency brake
         if handle == HandlePosition.EB:
@@ -645,7 +655,11 @@ class TrainPhysics:
         ``train.position`` snapshot; the controller owns the canonical span
         storage and uses ``span_update.new_span`` to refresh it.
         """
-        new_span = train.position
+        new_span = (
+            TrainSpan.from_train_position(train.position)
+            if train.position is not None
+            else None
+        )
 
         added_groups = self._group_traversals_by_resource(added_traversals)
         removed_groups = self._group_traversals_by_resource(removed_traversals)
@@ -688,8 +702,13 @@ class TrainPhysics:
     ) -> None:
         """Emit the final no-boundary PhysicsSpanUpdate for ticks where no
         movement occurred (powered-off ticks)."""
+        new_span = (
+            TrainSpan.from_train_position(train.position)
+            if train.position is not None
+            else None
+        )
         update = PhysicsSpanUpdate(
-            new_span=train.position,
+            new_span=new_span,
             current_speed_kmh=current_speed_kmh,
             added_tiles=[],
             removed_tiles=[],
@@ -1021,8 +1040,7 @@ class TrainPhysics:
         Diagnostic-only sync check between tile-derived blocks and the local
         last-occupied-blocks tracker.
 
-        Per design_new.md the controller now owns occupied_resources via the
-        span_update; the tile-derived block set should match the local
+        The tile-derived block set should match the local
         _last_occupied_blocks set on every tick. We only log the discrepancy
         here — block-state corrections belong to the dispatcher progress flow.
         """

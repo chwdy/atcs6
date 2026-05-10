@@ -450,6 +450,76 @@ def _build_controller_latches_group(controller: Any) -> Dict[str, Any]:
     return {"name": "TrainController (mailbox & latches)", "items": items}
 
 
+# Field order + per-row docs for the ATO Debug group. Keys must match what
+# `ATONavigator.compute_handle` writes into `controller.ato_debug`.
+_ATO_DEBUG_FIELDS: List[Dict[str, Any]] = [
+    {"name": "mode", "doc": "branch taken: stopping / stopped / coast / power_up / brake / no_curves / no_train"},
+    {"name": "delta_seconds", "doc": "tick duration (s) used to scale the planning horizon"},
+    {"name": "current_speed_kmh", "doc": "controller.current_speed_kmh at compute time"},
+    {"name": "op_decel_kmh_s", "doc": "operational deceleration = decel_rate × operational_decel_ratio (B6 = 1.00× this rate)"},
+    {"name": "decel_rate_kmh_s", "doc": "raw service decel from speed_profile.deceleration_rate (ATC's curve uses this)"},
+    {"name": "operational_decel_ratio", "doc": "speed_profile.operational_decel_ratio — fraction of decel_rate ATO plans against"},
+    {"name": "curve_at_zero_kmh", "doc": "speed_curves[d=0].operational_limit"},
+    {"name": "max_speed_kmh", "doc": "train.max_speed cap"},
+    {"name": "atc_speed_limit_kmh", "doc": "controller.atc_speed_limit at compute time"},
+    {"name": "block_speed_limit_kmh", "doc": "controller.current_block_speed_limit (None if uncapped)"},
+    {"name": "ceiling_at_zero_kmh", "doc": "min(curve@0, max_speed, atc, block) — train must not exceed"},
+    {"name": "planning_distance_cm", "doc": "speed_cm_s × delta_seconds × PLANNING_TICKS_AHEAD (raw, before clamps)"},
+    {"name": "planning_horizon_cm", "doc": "min(ATO_RESTRICTION_LOOKAHEAD_CM, max(MIN_PLANNING_HORIZON_CM, planning_distance), max_curve_distance)"},
+    {"name": "planning_horizon_cap_cm", "doc": "ATO_RESTRICTION_LOOKAHEAD_CM constant (currently 150 cm)"},
+    {"name": "max_curve_distance_cm", "doc": "speed_curves[-1].distance_cm — how far the curve extends"},
+    {"name": "samples", "doc": "per-distance sample with target, formula, required_decel, multiplier; 'skipped' rows didn't bind"},
+    {"name": "binding_distance_cm", "doc": "distance of the sample that produced the highest required_decel"},
+    {"name": "binding_target_kmh", "doc": "target speed at the binding distance"},
+    {"name": "required_decel_kmh_s", "doc": "max required deceleration across all non-skipped samples"},
+    {"name": "multiplier_needed", "doc": "required_decel / op_decel — looked up against BRAKE_MULTIPLIERS"},
+    {"name": "target_handle", "doc": "notch picked by pick_brake_notch_for_multiplier (or power/coast in non-brake modes)"},
+    {"name": "overspeed_at_zero", "doc": "True when speed > ceiling + ATO_SPEED_TOLERANCE — bypasses rate-limit"},
+    {"name": "rate_limited", "doc": "True when rate_limit_handle clipped target_handle to one notch closer to current"},
+    {"name": "final_handle", "doc": "the handle actually returned by compute_handle this tick"},
+]
+
+
+def _build_ato_debug_group(controller: Any) -> Dict[str, Any]:
+    """Surface `controller.ato_debug` (populated by ATONavigator.compute_handle)
+    as a fixed-order group so the kinematic decel calc is inspectable per tick.
+    """
+    debug: Optional[Dict[str, Any]] = getattr(controller, "ato_debug", None)
+    items: List[Dict[str, Any]] = []
+    if not debug:
+        items.append(
+            _build_item(
+                "(empty)",
+                None,
+                "stored",
+                formula_doc=(
+                    "ato_debug is populated by ATONavigator.compute_handle; "
+                    "appears after the first ATO tick on this controller."
+                ),
+            )
+        )
+        return {"name": "ATO Debug (compute_handle)", "items": items}
+
+    for spec in _ATO_DEBUG_FIELDS:
+        name = spec["name"]
+        if name in debug:
+            items.append(
+                _build_item(
+                    name,
+                    debug[name],
+                    "stored",
+                    formula_doc=spec.get("doc"),
+                )
+            )
+    # Surface any extra keys the navigator wrote that we forgot to enumerate,
+    # so future debug additions show up automatically.
+    known = {spec["name"] for spec in _ATO_DEBUG_FIELDS}
+    for key, value in debug.items():
+        if key not in known:
+            items.append(_build_item(key, value, "stored"))
+    return {"name": "ATO Debug (compute_handle)", "items": items}
+
+
 # ---------------------------------------------------------------------------
 # Top-level snapshot assembly
 # ---------------------------------------------------------------------------
@@ -465,6 +535,7 @@ def _build_train_inspector(train: Any, controller: Any) -> Dict[str, Any]:
             _build_controller_live_group(controller),
             _build_controller_derived_group(controller),
             _build_controller_latches_group(controller),
+            _build_ato_debug_group(controller),
         ],
         "fetched_at": time.time(),
     }

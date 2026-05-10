@@ -18,7 +18,6 @@ from app_state import AppState
 from path_utils import assign_complete_path_to_train, convert_tiles_to_train_path
 from runtime_payloads import (
     AcquisitionMode,
-    PathCancellationKind,
 )
 
 
@@ -218,7 +217,7 @@ def register(app, state: AppState) -> None:
             # No train assigned (or controller unavailable): cancel synchronously.
             result = state.path_dispatcher.cancel_path(
                 path_id,
-                cancellation_kind=PathCancellationKind.OPERATOR_CANCELLED,
+                initiator="operator_cancelled",
                 reason="api cancel",
             )
             if result.success:

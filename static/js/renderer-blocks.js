@@ -333,7 +333,7 @@ class RendererBlockHandler {
             const line2 = `${blockState} ${trackCount} tiles`;
             const lengthStr = blockInfo.length_cm ? `${blockInfo.length_cm}cm` : '-';
             const radiusStr = blockInfo.min_radius_cm ? `R${blockInfo.min_radius_cm}` : '-';
-            const speedStr = blockInfo.max_speed_kmh ? `${blockInfo.max_speed_kmh}km/h` : '-';
+            const speedStr = blockInfo.speed_limit_kmh ? `${blockInfo.speed_limit_kmh}km/h` : '-';
             const line3 = `${lengthStr} ${radiusStr} ${speedStr}`;
 
             const maxWidth = Math.max(

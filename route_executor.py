@@ -25,7 +25,7 @@ import logging
 import time
 from typing import Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
-from enums import Direction, TrainState
+from enums import ControllerCondition, Direction, TrainState
 from train_controller import TrainController, create_controller_for_train
 from train_route import (
     RouteMode,
@@ -36,7 +36,6 @@ from train_route import (
 from runtime_payloads import (
     AcquisitionMode,
     ErrorRecord,
-    PathCancellationKind,
     PendingPathCancelRequest,
     ResolvedRouteTarget,
 )
@@ -48,6 +47,18 @@ if TYPE_CHECKING:
     from train_route import Route
 
 logger = logging.getLogger(__name__)
+
+
+# Pending admin/system cancellation latches that gate Phase-1 authority
+# acquisition per design_new.md (Planning Kernel section). Both create and
+# extend branches require this set to be empty in active_conditions.
+_PENDING_CANCEL_CONDITIONS = frozenset(
+    {
+        ControllerCondition.PATH_CANCEL_PENDING,
+        ControllerCondition.ROUTE_ABORT_PENDING,
+        ControllerCondition.ROUTE_DEACTIVATE_PENDING,
+    }
+)
 
 
 # =============================================================================
@@ -74,17 +85,6 @@ class ResolvedNextTaskProjection:
 # =============================================================================
 # RouteExecutionState (a.k.a. RouteRun in design_new.md)
 # =============================================================================
-
-
-def _initiator_to_cancellation_kind(initiator: str) -> Optional[PathCancellationKind]:
-    """Best-effort map from a writer-supplied initiator string to the
-    diagnostic `PathCancellationKind` enum stored on
-    `RouteExecutionState.last_cancellation_kind`. Returns ``None`` for
-    initiators that do not map (e.g. ``"deviation"``)."""
-    try:
-        return PathCancellationKind(initiator)
-    except ValueError:
-        return None
 
 
 @dataclass
@@ -125,7 +125,6 @@ class RouteExecutionState:
     # `current_route_status.value` enum value directly; there is no parallel
     # mirror field.
     current_route_status: RouteRunStatus = RouteRunStatus.RUNNING
-    last_cancellation_kind: Optional[PathCancellationKind] = None
     # Per-run error tracking. Per design_new.md "Canonical ownership split"
     # the active path is read live from `path_dispatcher.active_path_id_by_train`
     # / `received_path_plan.path_id`; route runs do not store a correlation
@@ -540,31 +539,52 @@ class RouteExecutor:
         """
         return bool(getattr(controller, "is_recovery_clean", False))
 
+    def is_clean_for_create(self, train_id: str) -> bool:
+        """Canonical Phase-1 create-branch gate per design_new.md.
+
+        Per the Planning Kernel section: true when the controller has reached
+        recovery (``is_recovery_clean``), no pending admin/system cancellation
+        latch is set (``PATH_CANCEL_PENDING``, ``ROUTE_ABORT_PENDING``,
+        ``ROUTE_DEACTIVATE_PENDING`` all clear), and the route-run's deviation
+        latch (``path_cancelled``) is clear. Phase 1 invokes ``create_path``
+        only when this predicate is true.
+        """
+        controller = self._controller_by_id(train_id)
+        if controller is None:
+            return False
+        if not controller.is_recovery_clean:
+            return False
+        if controller.active_conditions & _PENDING_CANCEL_CONDITIONS:
+            return False
+        exec_state = self.execution_state_for(train_id)
+        if exec_state is not None and exec_state.path_cancelled:
+            return False
+        return True
+
     def _eligible_for_authority_acquisition(
         self, controller: TrainController, exec_state: RouteExecutionState
     ) -> bool:
-        """Predicate for steps 6-7 of the Planning Kernel."""
+        """Phase-1 eligibility precondition for create_path / extend_path.
+
+        Per design_new.md (Planning Kernel section): the dispatch is
+        two-branch. Extend is allowed when an active path exists AND none of
+        the three pending admin/system cancellation latches are set (so
+        Phase 1 does not extend a path Phase 3 is about to cancel). Create
+        delegates to ``is_clean_for_create``.
+        """
+        if controller.active_conditions & _PENDING_CANCEL_CONDITIONS:
+            return False
         try:
-            plan = controller.received_path_plan
+            has_active_path = controller.received_path_plan is not None
         except Exception:
-            plan = None
-        if plan is not None:
+            has_active_path = False
+        if has_active_path:
             return True
-        if controller.state != TrainState.READY:
+        # Create branch — full clean-for-create predicate.
+        train_id = getattr(exec_state, "train_id", None)
+        if train_id is None:
             return False
-        latches = getattr(controller, "phase_latches", None)
-        if latches is not None:
-            if latches.path_cancel_request is not None:
-                return False
-            if latches.route_abort:
-                return False
-            if latches.power_off:
-                return False
-        if getattr(controller, "eb_active", False):
-            return False
-        if exec_state.path_cancelled:
-            return False
-        return True
+        return self.is_clean_for_create(train_id)
 
     def _dwell_complete_check(
         self,
@@ -957,10 +977,6 @@ class RouteExecutor:
             return
         exec_state.path_cancelled = True
         exec_state.current_route_status = RouteRunStatus.DEVIATED
-        if initiator is not None:
-            kind = _initiator_to_cancellation_kind(initiator)
-            if kind is not None:
-                exec_state.last_cancellation_kind = kind
         exec_state.waiting_for_path = False
         # Reset planning cursor to physical progress.
         exec_state.target_waypoint_index = exec_state.current_waypoint_index

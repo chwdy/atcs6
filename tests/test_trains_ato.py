@@ -856,10 +856,12 @@ class TestTrendAwareATOControl:
         controller._ato_calculate_handle()
 
         assert controller.handle_reason, "handle_reason should be set"
-        assert (
-            "FutureAware" in controller.handle_reason
-            or "Stopping" in controller.handle_reason
-            or "ATC cap" in controller.handle_reason
+        # Reason strings produced by the kinematic compute_handle:
+        # "Coast: ...", "Power up: ...", "Brake B?: ...", "Stopping: ...",
+        # "Stopped", "No curves", "No train".
+        assert any(
+            tag in controller.handle_reason
+            for tag in ("Coast", "Power up", "Brake", "Stopping", "Stopped", "No ")
         ), (
             f"handle_reason should indicate the control mode. Got: {controller.handle_reason}"
         )
@@ -905,6 +907,7 @@ class TestTrendAwareATOControl:
         )
 
     def test_priority_override_stopping_uses_full_brake(self, train_and_controller):
+        """When ATC limit forces a stop (ceiling@0=0), ATO commands B8."""
         train, controller = train_and_controller
         controller.atc_speed_limit = 0.0
 
@@ -914,9 +917,9 @@ class TestTrendAwareATOControl:
 
         handle = controller._ato_calculate_handle()
 
-        assert handle == HandlePosition.B5, (
-            f"Priority: stopping (effective_target=0) should use _calculate_braking_notch. "
-            f"For speed=15.0, expects B5 (speed > 14). Got {handle}"
+        assert handle == HandlePosition.B8, (
+            f"With ceiling@0=0 (forced stop), the stopping branch returns B8. "
+            f"Got {handle}"
         )
 
 
@@ -1128,320 +1131,6 @@ class TestForwardSimulation:
         )
         assert speed_b6 < speed_b2, "B6 should reduce speed more than B2"
 
-
-class TestHandleEvaluator:
-    """
-    Tests for handle evaluation against speed curve.
-
-    The evaluator scores each handle position by simulating forward and
-    comparing the predicted trajectory against the pre-computed speed curve.
-    """
-
-    @pytest.fixture
-    def controller_with_profile(self, network):
-        """Create a controller with a known speed profile."""
-        from train_controller import TrainController
-        from speed_profile import SpeedProfile
-
-        train = Train(train_id="eval_test")
-        train.max_speed = 60.0
-        network.trains["eval_test"] = train
-
-        profile = SpeedProfile(
-            profile_id="test_eval",
-            name="Test Eval",
-            speed_voltage_curve=[(0, 0), (60, 8), (120, 12)],
-            acceleration_rate=10.0,
-            deceleration_rate=15.0,
-            friction_rate=0.5,
-            operational_decel_ratio=0.6,
-            air_resistance_enabled=False,
-        )
-        network.speed_profiles["test_eval"] = profile
-        train.speed_profile_id = "test_eval"
-
-        controller = TrainController(train_id="eval_test", network=network)
-        controller.power_on = True
-        controller.atc_speed_limit = 60.0
-        controller.current_block_speed_limit = 60.0
-        return controller
-
-    def test_evaluate_selects_brake_when_above_curve(self, controller_with_profile):
-        """When speed is above curve, should select a brake handle."""
-        # Curve that drops to 0 at 10cm (approaching stop)
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 10.0, "atc_limit": 15.0},
-            {"distance_cm": 5.0, "operational_limit": 5.0, "atc_limit": 10.0},
-            {"distance_cm": 10.0, "operational_limit": 0.0, "atc_limit": 0.0},
-        ]
-        result = controller_with_profile._evaluate_handles_against_curve(
-            current_speed_kmh=15.0,
-            curve=curve,
-        )
-        _BRAKE_HANDLES = {
-            HandlePosition.B1,
-            HandlePosition.B2,
-            HandlePosition.B3,
-            HandlePosition.B4,
-            HandlePosition.B5,
-            HandlePosition.B6,
-            HandlePosition.B7,
-            HandlePosition.B8,
-        }
-        assert result in _BRAKE_HANDLES, (
-            f"Should brake when above curve, got {result.value}"
-        )
-
-    def test_evaluate_brakes_when_current_speed_exceeds_curve_at_train(
-        self, controller_with_profile
-    ):
-        """Evaluator must score the train's current curve point, not just future samples."""
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 40.0, "atc_limit": 45.0},
-            {"distance_cm": 50.0, "operational_limit": 40.0, "atc_limit": 45.0},
-            {"distance_cm": 100.0, "operational_limit": 40.0, "atc_limit": 45.0},
-        ]
-
-        result = controller_with_profile._evaluate_handles_against_curve(
-            current_speed_kmh=50.0,
-            curve=curve,
-            horizon_cm=30.0,
-        )
-
-        _BRAKE_HANDLES = {
-            HandlePosition.B1,
-            HandlePosition.B2,
-            HandlePosition.B3,
-            HandlePosition.B4,
-            HandlePosition.B5,
-            HandlePosition.B6,
-            HandlePosition.B7,
-            HandlePosition.B8,
-        }
-        assert result in _BRAKE_HANDLES, (
-            f"Should brake when current speed exceeds curve@0, got {result.value}"
-        )
-
-    def test_evaluate_selects_power_when_below_curve(self, controller_with_profile):
-        """When speed is well below curve, should select a power handle."""
-        # Flat curve at 40 km/h
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 40.0, "atc_limit": 45.0},
-            {"distance_cm": 50.0, "operational_limit": 40.0, "atc_limit": 45.0},
-            {"distance_cm": 100.0, "operational_limit": 40.0, "atc_limit": 45.0},
-        ]
-        result = controller_with_profile._evaluate_handles_against_curve(
-            current_speed_kmh=10.0,
-            curve=curve,
-        )
-        _POWER_HANDLES = {
-            HandlePosition.P1,
-            HandlePosition.P2,
-            HandlePosition.P3,
-            HandlePosition.P4,
-            HandlePosition.P5,
-        }
-        assert result in _POWER_HANDLES, (
-            f"Should accelerate when below curve, got {result.value}"
-        )
-
-    def test_evaluate_selects_neutral_when_matching_curve(
-        self, controller_with_profile
-    ):
-        """When speed matches curve, should maintain (N or low power)."""
-        # Flat curve at 20 km/h
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 20.0, "atc_limit": 25.0},
-            {"distance_cm": 50.0, "operational_limit": 20.0, "atc_limit": 25.0},
-            {"distance_cm": 100.0, "operational_limit": 20.0, "atc_limit": 25.0},
-        ]
-        result = controller_with_profile._evaluate_handles_against_curve(
-            current_speed_kmh=20.0,
-            curve=curve,
-        )
-        # Should be N or low power (P1/P2) to maintain speed against friction
-        assert result in (HandlePosition.N, HandlePosition.P1, HandlePosition.P2), (
-            f"Should maintain when matching curve, got {result.value}"
-        )
-
-
-class TestFutureAwareIntegration:
-    """
-    Integration tests for future-aware ATO handle evaluation.
-
-    These tests verify that the handle evaluator produces correct handle
-    selections in realistic speed curve scenarios (braking, cruising,
-    accelerating, speed reduction).
-    """
-
-    @pytest.fixture
-    def controller_with_profile(self, network):
-        """Create a controller with known profile and no air resistance."""
-        from train_controller import TrainController
-        from speed_profile import SpeedProfile
-
-        train = Train(train_id="integ_test")
-        train.max_speed = 60.0
-        network.trains["integ_test"] = train
-
-        profile = SpeedProfile(
-            profile_id="test_integ",
-            name="Test Integration",
-            speed_voltage_curve=[(0, 0), (60, 8), (120, 12)],
-            acceleration_rate=10.0,
-            deceleration_rate=15.0,
-            friction_rate=0.5,
-            operational_decel_ratio=0.6,
-            air_resistance_enabled=False,
-        )
-        network.speed_profiles["test_integ"] = profile
-        train.speed_profile_id = "test_integ"
-
-        controller = TrainController(train_id="integ_test", network=network)
-        controller.power_on = True
-        controller.atc_speed_limit = 60.0
-        controller.current_block_speed_limit = 60.0
-        return controller
-
-    def test_braking_curve_produces_brake_handle(self, controller_with_profile):
-        """When approaching a stop, the evaluator should select brake handles."""
-        controller = controller_with_profile
-
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 15.0, "atc_limit": 20.0},
-            {"distance_cm": 5.0, "operational_limit": 10.0, "atc_limit": 15.0},
-            {"distance_cm": 10.0, "operational_limit": 5.0, "atc_limit": 10.0},
-            {"distance_cm": 15.0, "operational_limit": 2.0, "atc_limit": 5.0},
-            {"distance_cm": 20.0, "operational_limit": 0.0, "atc_limit": 0.0},
-        ]
-
-        result = controller._evaluate_handles_against_curve(
-            current_speed_kmh=20.0,
-            curve=curve,
-            horizon_cm=20.0,
-        )
-        _BRAKE_HANDLES = {
-            HandlePosition.B1,
-            HandlePosition.B2,
-            HandlePosition.B3,
-            HandlePosition.B4,
-            HandlePosition.B5,
-            HandlePosition.B6,
-            HandlePosition.B7,
-            HandlePosition.B8,
-        }
-        assert result in _BRAKE_HANDLES, (
-            f"Should brake approaching stop, got {result.value}"
-        )
-
-    def test_flat_curve_maintains_speed(self, controller_with_profile):
-        """When curve is flat, should maintain current speed."""
-        controller = controller_with_profile
-
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 30.0, "atc_limit": 35.0},
-            {"distance_cm": 25.0, "operational_limit": 30.0, "atc_limit": 35.0},
-            {"distance_cm": 50.0, "operational_limit": 30.0, "atc_limit": 35.0},
-        ]
-
-        result = controller._evaluate_handles_against_curve(
-            current_speed_kmh=30.0,
-            curve=curve,
-            horizon_cm=30.0,
-        )
-        # Should be neutral or low power/brake to maintain against friction
-        assert result in (
-            HandlePosition.N,
-            HandlePosition.P1,
-            HandlePosition.P2,
-            HandlePosition.B1,
-        ), f"Should maintain speed on flat curve, got {result.value}"
-
-    def test_acceleration_zone_selects_power(self, controller_with_profile):
-        """When speed is well below curve, should select power handle."""
-        controller = controller_with_profile
-
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 50.0, "atc_limit": 55.0},
-            {"distance_cm": 25.0, "operational_limit": 50.0, "atc_limit": 55.0},
-            {"distance_cm": 50.0, "operational_limit": 50.0, "atc_limit": 55.0},
-        ]
-
-        result = controller._evaluate_handles_against_curve(
-            current_speed_kmh=5.0,
-            curve=curve,
-            horizon_cm=30.0,
-        )
-        _POWER_HANDLES = {
-            HandlePosition.P1,
-            HandlePosition.P2,
-            HandlePosition.P3,
-            HandlePosition.P4,
-            HandlePosition.P5,
-        }
-        assert result in _POWER_HANDLES, (
-            f"Should accelerate when well below curve, got {result.value}"
-        )
-
-    def test_speed_reduction_zone_selects_appropriate_brake(
-        self, controller_with_profile
-    ):
-        """When approaching speed limit reduction, should brake proportionally."""
-        controller = controller_with_profile
-
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 35.0, "atc_limit": 40.0},
-            {"distance_cm": 10.0, "operational_limit": 25.0, "atc_limit": 30.0},
-            {"distance_cm": 15.0, "operational_limit": 20.0, "atc_limit": 25.0},
-            {"distance_cm": 30.0, "operational_limit": 20.0, "atc_limit": 25.0},
-        ]
-
-        result = controller._evaluate_handles_against_curve(
-            current_speed_kmh=35.0,
-            curve=curve,
-            horizon_cm=30.0,
-        )
-        _BRAKE_HANDLES = {
-            HandlePosition.B1,
-            HandlePosition.B2,
-            HandlePosition.B3,
-            HandlePosition.B4,
-            HandlePosition.B5,
-            HandlePosition.B6,
-            HandlePosition.B7,
-            HandlePosition.B8,
-        }
-        assert result in _BRAKE_HANDLES, (
-            f"Should brake for speed reduction, got {result.value}"
-        )
-
-    def test_evaluator_performance(self, controller_with_profile):
-        """Evaluator should complete within 5ms for real-time use."""
-        import time
-
-        controller = controller_with_profile
-
-        curve = [
-            {
-                "distance_cm": i * 5.0,
-                "operational_limit": max(0, 30.0 - i * 1.5),
-                "atc_limit": max(0, 35.0 - i * 1.5),
-            }
-            for i in range(21)
-        ]
-
-        start = time.perf_counter()
-        for _ in range(100):
-            controller._evaluate_handles_against_curve(
-                current_speed_kmh=25.0,
-                curve=curve,
-                horizon_cm=30.0,
-            )
-        elapsed = (time.perf_counter() - start) / 100
-
-        assert elapsed < 0.005, (
-            f"Evaluator took {elapsed * 1000:.1f}ms, should be < 5ms"
-        )
 
 
 class TestHandleSmoothing:

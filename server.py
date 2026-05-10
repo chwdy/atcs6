@@ -56,7 +56,7 @@ from track import (
 )
 from train import Train, TrainSchedule, ScheduleStop, TrainCar
 from train_controller import TrainController
-from train_route import Route, Waypoint, TimingMode, RouteMode
+from train_route import Route, TimingMode, RouteMode
 
 # Global state
 network = RailwayNetwork()
@@ -260,9 +260,11 @@ def main() -> None:
         --skip-startup-tests: Skip running tests on startup
         --no-sim: Don't start simulation thread
         --no-autosave: Don't start autosave thread
+        --no-reload: Disable auto-reload on file changes (default: reload enabled)
         --port: Port to run on (default: 5001)
     """
     import argparse
+    import os
 
     parser = argparse.ArgumentParser(description="Railway Server")
     parser.add_argument(
@@ -277,12 +279,17 @@ def main() -> None:
     parser.add_argument(
         "--no-autosave", action="store_true", help="Don't start autosave thread"
     )
+    parser.add_argument(
+        "--no-reload", action="store_true", help="Disable auto-reload on file changes"
+    )
     parser.add_argument("--port", type=int, default=5001, help="Port to run on")
     args = parser.parse_args()
 
-    # For now, still use _build_state_and_app() which runs tests and creates demo
-    # Future: use bootstrap.py and runtime.py directly based on flags
-    if not args.skip_startup_tests:
+    # When the reloader is active, Werkzeug sets WERKZEUG_RUN_MAIN=true in the
+    # child (server) process. Startup tests run only in the parent/watcher so
+    # they execute once at startup, not on every file-change reload.
+    is_reloader_child = os.environ.get("WERKZEUG_RUN_MAIN") == "true"
+    if not args.skip_startup_tests and not is_reloader_child:
         run_startup_tests()
 
     global network, path_dispatcher, sim_controller, persistence_manager
@@ -327,9 +334,7 @@ def main() -> None:
         autosave=not args.no_autosave,
     )
 
-    # use_reloader=False prevents Flask from spawning a child process that
-    # would re-import this module and run startup tests again.
-    app.run(debug=True, use_reloader=False, port=args.port)
+    app.run(debug=True, use_reloader=not args.no_reload, port=args.port)
 
 
 if __name__ == "__main__":

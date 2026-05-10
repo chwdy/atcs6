@@ -124,63 +124,59 @@ class LookaheadBuilder:
     def blocks_ahead(self) -> List[str]:
         """Ordered block IDs ahead of the train.
 
-        Prefers walking the active path's tile sequence (so non-trivial
-        cab/path orientations resolve correctly) and falls back to the
-        active path's reserved-block list when no tile sequence is
-        available.
+        Walks the live `received_path_plan.resource_sequence` (tail→authority
+        order per the schema) starting at the head's anchor resource and
+        collects block resources in forward order. The current block is
+        skipped so callers see only blocks past the head.
         """
         c = self._c
         train = c._get_train()
         if not train:
             return []
 
-        path_tiles = c.get_path_tiles()
-        blocks: List[str] = []
+        plan = c.received_path_plan
+        resource_sequence = (
+            getattr(plan, "resource_sequence", None) if plan else None
+        )
+        if not resource_sequence:
+            return []
 
         current_block_id = c._get_current_block_id()
+        head_tile = c._get_head_tile()
 
-        if path_tiles:
-            head_tile = c._get_head_tile()
-            if head_tile:
-                head_index = c._get_head_path_index(head_tile)
-                if head_index >= 0:
-                    scan_step = c._get_path_scan_step(train, head_index)
-                    loop_start = head_index + scan_step
-                    loop_end = len(path_tiles) if scan_step == 1 else -1
+        head_resource_index = -1
+        if head_tile:
+            for r_idx, resource in enumerate(resource_sequence):
+                for tile_entry in resource.path_tiles:
+                    if (tile_entry.x, tile_entry.y) == head_tile:
+                        head_resource_index = r_idx
+                        break
+                if head_resource_index >= 0:
+                    break
 
-                    for i in range(loop_start, loop_end, scan_step):
-                        path_entry = path_tiles[i]
-                        track = c.network.get_track(path_entry[0], path_entry[1])
-                        block_id = track.block_section_id if track else None
-                        if not block_id or block_id == current_block_id:
-                            continue
-                        if block_id not in blocks:
-                            blocks.append(block_id)
+        if head_resource_index < 0:
+            # Head not located in resource_sequence — fall back to anchoring
+            # at the current_block resource if present, otherwise the start.
+            if current_block_id:
+                for r_idx, resource in enumerate(resource_sequence):
+                    if (
+                        resource.resource_type == "block"
+                        and resource.resource_id == current_block_id
+                    ):
+                        head_resource_index = r_idx
+                        break
+            if head_resource_index < 0:
+                head_resource_index = 0
 
-                    if blocks:
-                        return blocks
-
-        active_path = (
-            c.path_dispatcher.get_active_path(c.train_id)
-            if c.path_dispatcher is not None
-            else None
-        )
-        if active_path is not None:
-            path_blocks = active_path.get_all_blocks()
-            if current_block_id and current_block_id in path_blocks:
-                idx = path_blocks.index(current_block_id)
-                scan_step = 1
-                head_tile = c._get_head_tile()
-                if head_tile and path_tiles:
-                    head_index = c._get_head_path_index(head_tile)
-                    if head_index >= 0:
-                        scan_step = c._get_path_scan_step(train, head_index)
-                if scan_step == -1:
-                    blocks = list(reversed(path_blocks[:idx]))
-                else:
-                    blocks = path_blocks[idx + 1 :]
-            elif path_blocks:
-                blocks = list(path_blocks)
+        blocks: List[str] = []
+        for r_idx in range(head_resource_index, len(resource_sequence)):
+            resource = resource_sequence[r_idx]
+            if resource.resource_type != "block":
+                continue
+            if resource.resource_id == current_block_id:
+                continue
+            if resource.resource_id not in blocks:
+                blocks.append(resource.resource_id)
 
         return blocks
 

@@ -185,264 +185,6 @@ class TrainMonitor {
         }
     }
     
-    update(train) {
-        // Check for path-based data
-        if (!train) {
-            console.warn('[TrainMonitor] No train data');
-            this.lookaheadData = null;
-            this.render();
-            return;
-        }
-        
-        // ========================================================================
-        // LOOKAHEAD DATA SOURCE
-        // ========================================================================
-        // Primary: lookahead_tile_info (new format with precise distances)
-        //
-        // Data comes from Train.to_dict() which now builds lookahead from current_path
-        // starting at path_index (train head position)
-        const pathInfo = train.lookahead_tile_info || [];
-        const pathTiles = train.lookahead_tiles || [];
-        const hasPathData = pathInfo.length > 0;
-        
-        if (!hasPathData) {
-            console.warn('[TrainMonitor] Missing or empty lookahead data', {
-                trainId: train.id,
-                hasLookaheadTileInfo: !!train.lookahead_tile_info,
-                pathLength: train.path_length,
-                pathIndex: train.path_index
-            });
-            
-            // Build minimal lookahead data with just speed/state info.
-            // target_speed and speed_limit_reason live on the controller in v1
-            // and are exposed via train.onboard (merged in by the backend).
-            this.lookaheadData = {
-                current_speed_kmh: train.speed || 0,
-                target_speed_kmh: train.onboard?.target_speed ?? 0,
-                state: train.state,
-                wait_reason: train.wait_reason,
-                speed_limit_reason: train.onboard?.speed_limit_reason ?? null,
-                blocks: [],
-                signals: [],
-                switches: [],
-                stations: [],
-                distance_into_path_cm: 0,
-                clearance_cm: 0
-            };
-            
-            // Update UI elements with minimal data
-            this.currentSpeedEl.textContent = Math.round(this.lookaheadData.current_speed_kmh || 0);
-            // For minimal data, we don't have speed curves, so show target speed for both
-            const fallbackSpeed = Math.round(this.lookaheadData.target_speed_kmh || 0);
-            if (this.atcSpeedEl) this.atcSpeedEl.textContent = fallbackSpeed;
-            if (this.atoSpeedEl) this.atoSpeedEl.textContent = fallbackSpeed;
-            
-            if (this.speedCmsEl) {
-                const speedCms = ((this.lookaheadData.current_speed_kmh || 0) * 27.78 / this.currentScale).toFixed(1);
-                this.speedCmsEl.textContent = speedCms;
-            }
-            if (this.clearanceEl) {
-                this.clearanceEl.textContent = '0.0';
-            }
-            
-            // wait_reason is set by the train/controller whenever the train
-            // is stalled. running_waiting state was removed in v1; the wait
-            // reason field is now the single source of "waiting" UI.
-            if (this.waitReasonEl) {
-                if (this.lookaheadData.wait_reason) {
-                    this.waitReasonEl.textContent = this.lookaheadData.wait_reason;
-                    this.waitReasonEl.classList.remove('hidden');
-                } else {
-                    this.waitReasonEl.classList.add('hidden');
-                }
-            }
-
-            if (this.speedLimitReasonEl) {
-                const speedLimitReason = this.lookaheadData.speed_limit_reason;
-                if (speedLimitReason && !this.lookaheadData.wait_reason) {
-                    this.speedLimitReasonEl.textContent = speedLimitReason;
-                    this.speedLimitReasonEl.classList.remove('hidden');
-                } else {
-                    this.speedLimitReasonEl.classList.add('hidden');
-                }
-            }
-
-            this.updateUpcomingElements(this.lookaheadData);
-            this.render();
-            return;
-        }
-        
-        // ========================================================================
-        // BUILD LOOKAHEAD VISUALIZATION DATA
-        // ========================================================================
-        // Now lookahead_tile_info contains ALL tiles from head position to end of path
-        // Each tile has distance_to_tile_cm (distance from train head to tile start)
-        //
-        // We process this into blocks, signals, switches for display
-        const blocks = [];
-        const signals = [];
-        const switches = [];
-        const stations = [];
-        
-        const seenBlocks = new Set();
-        
-        // Process each tile in lookahead (already ordered from head forward)
-        for (let i = 0; i < pathInfo.length; i++) {
-            const info = pathInfo[i];
-            const tile = pathTiles[i];
-            if (!info) continue;
-            
-            // distance_to_tile_cm: distance from train head to START of this tile
-            // For first tile (head tile), this is negative (head already into tile)
-            // For subsequent tiles, this is positive
-            const distanceToTileStart = info.distance_to_tile_cm ?? 0;
-            
-            // Train's travel direction on this tile (N/E/S/W)
-            const travelDirection = info.travel_direction;
-            
-            // For blocks: use actual distance (can be negative for current block)
-            // This allows the current block to scroll left as train advances
-            const blockTileStart = info.distance_to_block_start_cm;
-            
-            // For signals/switches: use max(0, dist) since they are point elements
-            const pointElementStart = Math.max(0, distanceToTileStart);
-            
-            // Add block if not seen yet
-            if (info.block_id && !seenBlocks.has(info.block_id)) {
-                seenBlocks.add(info.block_id);
-                
-                // Find all consecutive tiles in this block to calculate total length
-                let blockLength = 0;
-                let tileCount = 0;
-                for (let j = i; j < pathInfo.length; j++) {
-                    if (pathInfo[j]?.block_id === info.block_id) {
-                        blockLength += pathInfo[j].length_cm 
-                        tileCount++;
-                    } else {
-                        break;
-                    }
-                }
-                
-                blocks.push({
-                    id: info.block_id,
-                    name: info.block_id,
-                    state: info.block_state || 'free',
-                    start_cm: blockTileStart,
-                    end_cm: blockTileStart + blockLength,
-                    length_cm: blockLength,
-                    tile_count: tileCount,
-                    sequence: blocks.length
-                });
-            }
-            
-            // Add signals on this tile - only if facing train's travel direction
-            if (info.signals && info.signals.length > 0 && travelDirection) {
-                info.signals.forEach(sig => {
-                    // Only include signals where detection_direction matches train's travel direction
-                    // Signal direction can be single letter (N/E/S/W) or full name (NORTH/EAST/etc)
-                    const sigDir = (sig.direction || '').toUpperCase();
-                    const trainDir = travelDirection.toUpperCase();
-                    const dirMatches = sigDir === trainDir || 
-                                       sigDir === trainDir[0] || 
-                                       sigDir[0] === trainDir[0];
-                    
-                    if (dirMatches) {
-                        signals.push({
-                            id: sig.id,
-                            name: sig.name || sig.id,
-                            state: sig.state,
-                            distance_cm: pointElementStart,
-                            sequence: signals.length
-                        });
-                    }
-                });
-            }
-            
-            // Add switch if present
-            if (info.is_switch && tile && tile.length >= 2) {
-                switches.push({
-                    x: tile[0],
-                    y: tile[1],
-                    name: info.switch_name || `Switch (${tile[0]},${tile[1]})`,
-                    position: info.switch_state === 0 ? 'main' : 'diverging',
-                    distance_cm: pointElementStart,
-                    locked: info.switch_locked || false,
-                    sequence: switches.length
-                });
-            }
-        }
-        
-        // Calculate total clearance (distance from head to end of path)
-        let totalClearance = 0;
-        if (pathInfo.length > 0) {
-            const lastTile = pathInfo[pathInfo.length - 1];
-            const lastTileStart = lastTile.distance_to_tile_cm ?? 0;
-            totalClearance = Math.max(0, lastTileStart) + (lastTile.length_cm || 50);
-        }
-        
-        // Build lookahead-compatible data structure.
-        // target_speed and speed_limit_reason now come from train.onboard
-        // (the controller snapshot merged into the train payload by the
-        // backend) rather than from train fields, which were removed in v1.
-        this.lookaheadData = {
-            current_speed_kmh: train.speed || 0,
-            target_speed_kmh: train.onboard?.target_speed ?? 0,
-            state: train.state,
-            wait_reason: train.wait_reason,
-            speed_limit_reason: train.onboard?.speed_limit_reason ?? null,
-            blocks: blocks,
-            signals: signals,
-            switches: switches,
-            stations: stations,
-            distance_into_path_cm: 0, // Head is always at 0 (we measure from head)
-            clearance_cm: totalClearance
-        };
-        
-        // Update UI elements
-        this.currentSpeedEl.textContent = Math.round(this.lookaheadData.current_speed_kmh || 0);
-        // For update() method, we don't have speed curves yet - use fallback
-        const fallbackSpeed2 = Math.round(this.lookaheadData.target_speed_kmh || 0);
-        if (this.atcSpeedEl) this.atcSpeedEl.textContent = fallbackSpeed2;
-        if (this.atoSpeedEl) this.atoSpeedEl.textContent = fallbackSpeed2;
-        
-        if (this.speedCmsEl) {
-            const speedCms = ((this.lookaheadData.current_speed_kmh || 0) * 27.78 / this.currentScale).toFixed(1);
-            this.speedCmsEl.textContent = speedCms;
-        }
-        if (this.clearanceEl) {
-            const clearanceM = ((this.lookaheadData.clearance_cm || 0) / 100).toFixed(1);
-            this.clearanceEl.textContent = clearanceM;
-        }
-        
-        if (this.waitReasonEl) {
-            if (this.lookaheadData.wait_reason) {
-                this.waitReasonEl.textContent = this.lookaheadData.wait_reason;
-                this.waitReasonEl.classList.remove('hidden');
-            } else {
-                this.waitReasonEl.classList.add('hidden');
-            }
-        }
-
-        if (this.speedLimitReasonEl) {
-            const speedLimitReason = this.lookaheadData.speed_limit_reason;
-            if (speedLimitReason && !this.lookaheadData.wait_reason) {
-                this.speedLimitReasonEl.textContent = speedLimitReason;
-                this.speedLimitReasonEl.classList.remove('hidden');
-            } else {
-                this.speedLimitReasonEl.classList.add('hidden');
-            }
-        }
-
-        // NEW: Check for configuration warnings
-        // User requirement: Show warnings but allow operation (non-blocking)
-        if (this.lookaheadData.warnings && this.lookaheadData.warnings.length > 0) {
-            this._displayConfigurationWarnings(this.lookaheadData.warnings, this.lookaheadData.train_id);
-        }
-        
-        this.updateUpcomingElements(this.lookaheadData);
-        this.render();
-    }
-
     updateFromController(train, payload) {
         if (!train) {
             console.warn('[TrainMonitor] No train data');
@@ -451,9 +193,14 @@ class TrainMonitor {
             return;
         }
 
+        // Live runtime fields (state, current_speed, target_speed,
+        // speed_limit_reason) live on the TrainController per design_new.md
+        // "Data Flow To UI". Resolve via the state-manager sibling cache.
+        const controller = window.stateManager?.getController(train.id);
+
         const lookahead = payload && payload.lookahead ? payload.lookahead : null;
         const speedLimitReason =
-            payload?.speed_limit_reason ?? train.onboard?.speed_limit_reason ?? null;
+            payload?.speed_limit_reason ?? controller?.speed_limit_reason ?? null;
 
         const safetyMarginCm = lookahead?.safety_margin_cm ?? 25;
         const clearanceCm = lookahead?.clearance_cm || 0;
@@ -461,10 +208,9 @@ class TrainMonitor {
         const targetStopCm = Math.max(0, rawTargetStopCm);
 
         this.lookaheadData = {
-            current_speed_kmh: train.speed || 0,
-            target_speed_kmh: train.onboard?.target_speed ?? 0,
-            state: train.state,
-            wait_reason: train.wait_reason,
+            current_speed_kmh: controller?.current_speed ?? 0,
+            target_speed_kmh: controller?.target_speed ?? 0,
+            state: controller?.state,
             speed_limit_reason: speedLimitReason,
             blocks: lookahead?.blocks || [],
             signals: lookahead?.signals || [],
@@ -510,18 +256,15 @@ class TrainMonitor {
             nextDestContainer.classList.add('hidden');
         }
 
+        // wait_reason was removed in v1; speed_limit_reason carries the
+        // diagnostic string that previously lived on a separate field.
         if (this.waitReasonEl) {
-            if (this.lookaheadData.wait_reason) {
-                this.waitReasonEl.textContent = this.lookaheadData.wait_reason;
-                this.waitReasonEl.classList.remove('hidden');
-            } else {
-                this.waitReasonEl.classList.add('hidden');
-            }
+            this.waitReasonEl.classList.add('hidden');
         }
 
         if (this.speedLimitReasonEl) {
             const speedLimitReason = this.lookaheadData.speed_limit_reason;
-            if (speedLimitReason && !this.lookaheadData.wait_reason) {
+            if (speedLimitReason) {
                 this.speedLimitReasonEl.textContent = speedLimitReason;
                 this.speedLimitReasonEl.classList.remove('hidden');
             } else {

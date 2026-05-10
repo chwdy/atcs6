@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from enums import PathStatus, direction_from_delta, OPPOSITE_DIRECTIONS
-from runtime_payloads import PathCancellationKind
 
 
 # ============================================================================
@@ -167,10 +166,6 @@ class Path:
     # sequence_index of the current path-progress anchor resource, not the
     # first matching raw resource ID.
     current_resource_index: int = 0
-
-    # Diagnostic-only cancellation kind. Set when status transitions to
-    # CANCELLED. Routing/planning logic must not branch on this value.
-    cancellation_kind: Optional[PathCancellationKind] = None
 
     # System-time Unix timestamp (seconds) of the most recent status
     # change. Set on creation and on every transition.
@@ -359,11 +354,6 @@ class Path:
             "resource_sequence": [e.to_dict() for e in self.resource_sequence],
             "path_tiles": [t.to_dict() for t in self.path_tiles],
             "current_resource_index": self.current_resource_index,
-            "cancellation_kind": (
-                self.cancellation_kind.value
-                if self.cancellation_kind is not None
-                else None
-            ),
             "last_status_updated_time": self.last_status_updated_time,
             # Convenience projections for UI consumers.
             "tile_directions": self.get_tile_directions(),
@@ -372,13 +362,6 @@ class Path:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Path":
-        cancellation_kind_raw = data.get("cancellation_kind")
-        cancellation_kind = (
-            PathCancellationKind(cancellation_kind_raw)
-            if cancellation_kind_raw is not None
-            else None
-        )
-
         return cls(
             path_id=str(data["path_id"]),
             status=PathStatus(data.get("status", PathStatus.ACTIVE.value)),
@@ -396,6 +379,5 @@ class Path:
                 for e in data.get("resource_sequence", [])
             ],
             current_resource_index=int(data.get("current_resource_index", 0)),
-            cancellation_kind=cancellation_kind,
             last_status_updated_time=float(data.get("last_status_updated_time", 0.0)),
         )

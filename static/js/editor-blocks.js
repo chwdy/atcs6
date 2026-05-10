@@ -124,14 +124,6 @@ class BlockEditorHandler {
                     </div>
                 </div>
                 
-                <!-- CONTROL BUTTONS -->
-                <div class="control-section mt-12">
-                    <h4 class="text-sm text-muted mb-8">Actions</h4>
-                    <div class="flex gap-8">
-                        <button id="cycle-block-state-btn" class="btn btn-secondary btn-sm flex-1">🔄 Cycle State</button>
-                    </div>
-                </div>
-                
                 <!-- TILES LIST (Scrollable with extend buttons) -->
                 <div class="control-section mt-12">
                     <h4 class="text-sm text-muted mb-8">Tiles</h4>
@@ -164,7 +156,7 @@ class BlockEditorHandler {
                     
                     <div class="input-small-row mb-8">
                         <label class="input-small-label input-small-label-inline" for="block-speed-input">Max Speed (km/h)</label>
-                        <input type="number" id="block-speed-input" class="input-small-field input-small-field-compact" value="${block.max_speed_kmh || ''}" min="0" step="1" placeholder="Not set">
+                        <input type="number" id="block-speed-input" class="input-small-field input-small-field-compact" value="${block.speed_limit_kmh || ''}" min="0" step="1" placeholder="Not set">
                     </div>
 
                     <div class="flex gap-8">
@@ -187,36 +179,10 @@ class BlockEditorHandler {
     async initEditorHandlers(blockId) {
         const saveBtn = document.getElementById('save-block-btn');
         const deleteBtn = document.getElementById('delete-block-btn');
-        const cycleBtn = document.getElementById('cycle-block-state-btn');
         const nameInput = document.getElementById('block-name-input');
         const lengthInput = document.getElementById('block-length-input');
         const radiusInput = document.getElementById('block-radius-input');
         const speedInput = document.getElementById('block-speed-input');
-
-        // Cycle state button
-        if (cycleBtn) {
-            cycleBtn.onclick = async () => {
-                try {
-                    const result = await this.api.cycleBlockState(blockId);
-                    await window.app.refreshNetwork();
-
-                    // Update the status light and text directly without re-rendering
-                    const newState = result.state || 'FREE';
-                    const panel = document.querySelector(`.block-editor-panel[data-block-id="${blockId}"]`);
-                    if (panel) {
-                        const stateDisplay = panel.querySelector('#block-state-display');
-                        if (stateDisplay) {
-                            stateDisplay.textContent = newState.toUpperCase();
-                            stateDisplay.classList.remove('block-state-free', 'block-state-reserved', 'block-state-occupied', 'block-state-caution', 'block-state-unknown');
-                            stateDisplay.classList.add(this.getBlockStateClass(newState));
-                        }
-                    }
-                } catch (err) {
-                    console.error('Failed to cycle block state:', err);
-                    window.showToast('Failed to cycle block state: ' + err.message, 'error', 5000);
-                }
-            };
-        }
 
         // Save button
         if (saveBtn) {
@@ -246,11 +212,11 @@ class BlockEditorHandler {
                 if (speedInput) {
                     const val = speedInput.value.trim();
                     if (val === '') {
-                        updates.max_speed_kmh = null;
+                        updates.speed_limit_kmh = null;
                     } else {
                         const numVal = parseFloat(val);
                         if (!isNaN(numVal) && numVal >= 0) {
-                            updates.max_speed_kmh = numVal;
+                            updates.speed_limit_kmh = numVal;
                         }
                     }
                 }
@@ -755,7 +721,7 @@ class BlockEditorHandler {
                 </div>
                 <div class="form-row-horizontal">
                     <label for="modal-block-speed">Max Speed (km/h)</label>
-                    <input type="number" id="modal-block-speed" value="${blockData.max_speed_kmh || ''}"
+                    <input type="number" id="modal-block-speed" value="${blockData.speed_limit_kmh || ''}"
                            min="0" step="1" placeholder="Optional">
                 </div>
 
@@ -781,14 +747,14 @@ class BlockEditorHandler {
             saveBtn.addEventListener('click', () => {
                 const name = nameInput.value.trim();
                 const lengthCm = parseFloat(lengthInput.value) || 0;
-                const maxSpeedKmh = speedInput.value.trim() ? parseFloat(speedInput.value) : null;
+                const speedLimitKmh = speedInput.value.trim() ? parseFloat(speedInput.value) : null;
 
                 if (lengthCm < 0) {
                     window.showToast('Length cannot be negative', 'error', 5000);
                     return;
                 }
 
-                if (maxSpeedKmh !== null && maxSpeedKmh <= 0) {
+                if (speedLimitKmh !== null && speedLimitKmh <= 0) {
                     window.showToast('Max speed must be positive', 'error', 5000);
                     return;
                 }
@@ -797,7 +763,7 @@ class BlockEditorHandler {
                 resolve({
                     name,
                     length_cm: lengthCm,
-                    max_speed_kmh: maxSpeedKmh
+                    speed_limit_kmh: speedLimitKmh
                 });
             });
 

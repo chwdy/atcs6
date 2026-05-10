@@ -77,13 +77,35 @@ class SignalCalculator:
 
         if first_block.state == BlockState.RESERVED:
             signal_track = n.get_track(*signal.position)
+            block_train = (
+                first_block.reserved_for_train or first_block.occupied_by
+            )
             if signal_track and signal_track.block_section_id:
                 signal_block = n.blocks.get(signal_track.block_section_id)
-                if (
+                # The signal allows the monitored (reserved) block to be entered
+                # only if it can establish continuity with the train approaching
+                # from this signal's side. Two ways to do that:
+                #   (a) signal_block is reserved_by the SAME path as first_block
+                #       — the path is still wholly RESERVED (train hasn't entered
+                #       any of it yet).
+                #   (b) signal_block is OCCUPIED by the SAME train that first_block
+                #       is reserved for — the train is rolling through the path
+                #       and has already entered the signal's block. Without this
+                #       branch, every reserved-block signal goes RED the instant
+                #       the train enters the path's first block, because state
+                #       transitions RESERVED → OCCUPIED clear `reserved_by_path`.
+                same_path_reservation = bool(
                     signal_block
                     and signal_block.reserved_by_path
                     and signal_block.reserved_by_path == first_block.reserved_by_path
-                ):
+                )
+                same_train_continuity = bool(
+                    signal_block
+                    and signal_block.occupied_by
+                    and block_train
+                    and signal_block.occupied_by == block_train
+                )
+                if same_path_reservation or same_train_continuity:
                     if signal_track.path_direction:
                         signal_dir = signal.detection_direction.upper()
                         path_dir = signal_track.path_direction.upper()
@@ -97,9 +119,6 @@ class SignalCalculator:
                         if signal_dir != block_dir:
                             return SignalState.RED
 
-                    block_train = (
-                        first_block.reserved_for_train or first_block.occupied_by
-                    )
                     if (
                         signal.approaching_train_id
                         and block_train == signal.approaching_train_id
@@ -114,9 +133,6 @@ class SignalCalculator:
                     if signal_dir != block_dir:
                         return SignalState.RED
 
-                block_train = (
-                    first_block.reserved_for_train or first_block.occupied_by
-                )
                 if (
                     signal.approaching_train_id
                     and block_train == signal.approaching_train_id
