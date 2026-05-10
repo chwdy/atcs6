@@ -385,10 +385,12 @@ class TestBlockManager:
     def test_clear_block_from_caution(self):
         from block_manager import BlockManager
 
+        from block import CautionState
+
         blocks = {"B1": Block("B1")}
         manager = BlockManager(blocks)
-        # v1: CAUTION is computed when _is_caution and not occupied.
-        blocks["B1"]._is_caution = True
+        # v1: CAUTION is computed when block.caution is set and not occupied.
+        blocks["B1"].caution = CautionState(exit_edge="E")
         result = manager.clear_block("B1")
         assert result == True
         assert blocks["B1"].state == BlockState.FREE
@@ -546,12 +548,13 @@ class TestDirectionalCaution:
         return network
 
     def test_forward_neighbor_occupied_keeps_caution(self):
+        from block import CautionState
+
         network = self._build_three_block_chain()
         manager = network.block_manager
-        # Setup: C is OCCUPIED. B becomes CAUTION with caution_exit_edge = "E".
+        # Setup: C is OCCUPIED. B becomes CAUTION with exit_edge = "E".
         network.blocks["C"].occupied_by = "TRAIN_FORWARD"
-        network.blocks["B"]._is_caution = True
-        network.blocks["B"].caution_exit_edge = "E"
+        network.blocks["B"].caution = CautionState(exit_edge="E")
 
         manager._reevaluate_caution_blocks()
 
@@ -563,11 +566,12 @@ class TestDirectionalCaution:
     def test_follower_behind_does_not_block_clear(self):
         """A follower behind B (entering A) must NOT keep B in CAUTION when
         the forward neighbor C is free."""
+        from block import CautionState
+
         network = self._build_three_block_chain()
         manager = network.block_manager
         # B in CAUTION pointing east. C is FREE. A is OCCUPIED by a follower.
-        network.blocks["B"]._is_caution = True
-        network.blocks["B"].caution_exit_edge = "E"
+        network.blocks["B"].caution = CautionState(exit_edge="E")
         network.blocks["A"].occupied_by = "FOLLOWER"
 
         manager._reevaluate_caution_blocks()
@@ -580,11 +584,12 @@ class TestDirectionalCaution:
     def test_no_reachable_forward_block_clears_caution(self):
         """If walking forward runs off the network, caution clears because
         nothing protectable lies ahead."""
+        from block import CautionState
+
         network = self._build_three_block_chain()
         manager = network.block_manager
-        # Vacate C with caution_exit_edge east — nothing is east of C.
-        network.blocks["C"]._is_caution = True
-        network.blocks["C"].caution_exit_edge = "E"
+        # Vacate C with exit_edge east — nothing is east of C.
+        network.blocks["C"].caution = CautionState(exit_edge="E")
 
         manager._reevaluate_caution_blocks()
 

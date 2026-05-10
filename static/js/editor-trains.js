@@ -202,6 +202,54 @@ class TrainEditorHandler {
         }
     }
 
+    /**
+     * Render the cab speed readout: "<big current>/<small max> km/h".
+     * Speed shows one decimal under 10 km/h (slow-moving precision matters),
+     * integer otherwise.
+     */
+    _formatSpeedReadout(currentSpeed, maxSpeed) {
+        const v = Number(currentSpeed) || 0;
+        const formatted = v < 10 ? v.toFixed(1) : Math.round(v).toString();
+        return `<span class="tc-speed-current">${formatted}</span><span class="tc-speed-max">/${maxSpeed}</span><span class="tc-speed-unit">km/h</span>`;
+    }
+
+    /**
+     * Format ATO ETA. Prefers controller.time_to_target_sec (a backend
+     * integration of the operational_limit speed curve to the stop point).
+     * Falls back to a coarse distance/speed estimate when the curve isn't
+     * published.
+     */
+    _formatATOEta(controller, clearanceCm, currentSpeed) {
+        const ato = controller?.time_to_target_sec;
+        let etaSec = null;
+        if (ato != null && Number.isFinite(ato) && ato > 0) {
+            etaSec = ato;
+        } else if (clearanceCm != null && Number.isFinite(clearanceCm) && currentSpeed > 0.5) {
+            etaSec = (clearanceCm / 100) * 3.6 / currentSpeed;
+        }
+        if (etaSec == null) return '—';
+        if (etaSec < 1) return '<1s';
+        if (etaSec < 60) return `${Math.round(etaSec)}s`;
+        const mins = Math.floor(etaSec / 60);
+        const secs = Math.round(etaSec % 60);
+        return `${mins}m ${secs}s`;
+    }
+
+    /**
+     * Middle-ellipsis truncation. "PATH_DEMO_TRAIN_TO_STATION_EAST" with
+     * max=22 → "PATH_DEMO_TR…ION_EAST" — keeps both ends visible so the
+     * driver can still recognize the prefix and the destination suffix.
+     */
+    _middleTruncate(str, max) {
+        if (!str) return '';
+        const s = String(str);
+        if (s.length <= max) return s;
+        const keep = max - 1;          // reserve 1 char for the ellipsis
+        const head = Math.ceil(keep / 2);
+        const tail = Math.floor(keep / 2);
+        return `${s.slice(0, head)}…${s.slice(-tail)}`;
+    }
+
     initTrainsPanelHandlers() {
         const refreshBtn = document.getElementById('refresh-trains-btn');
         if (refreshBtn) {
@@ -445,6 +493,10 @@ class TrainEditorHandler {
         const atoRunning = controller?.ato_running ?? false;
         const handleClass = this.getHandleVisualClass(handlePosition);
         const obcStateClass = this.getObcStateClass(powerOn, emergencyActive);
+        const manualModeType = controller?.manual_mode_type || 'simulation';
+        const isHandleMode = manualModeType === 'simulation';
+        const isPowerPercent = manualModeType === 'power_percent';
+        const manualPowerPercent = controller?.manual_power_percent ?? 0;
 
         // Handle position order for display
         const handleOrder = ['P5', 'P4', 'P3', 'P2', 'P1', 'N', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'EB'];
@@ -455,128 +507,244 @@ class TrainEditorHandler {
             : null;
         const posStr = headPos ? `(${headPos[0]}, ${headPos[1]})` : '—';
         const handleDescription =
-            handlePosition === 'N' ? 'Coast' :
-            handlePosition.startsWith('P') ? `Power ${handlePosition.slice(1)}` :
+            handlePosition === 'N' ? 'Coast (no power, no braking)' :
+            handlePosition.startsWith('P') ? `Power ${handlePosition.slice(1)} — Accelerating` :
             handlePosition === 'EB' ? 'Emergency Brake' :
-            `Brake ${handlePosition.slice(1)}`;
+            `Brake ${handlePosition.slice(1)} — Decelerating`;
+
+        // ATO speed metrics
+        const currentSpeed = (controller?.current_speed ?? 0);
+        const targetSpeed = controller?.target_speed ?? null;
+        const atcLimit = controller?.atc_speed_limit ?? null;
+        const blockLimit = controller?.current_block_speed_limit ?? null;
+        const maxSpeed = train.max_speed || 100;
+
+        // ATO destination metrics
+        const clearanceCm = controller?.clearance_ahead_cm ?? null;
+        const distanceM = clearanceCm != null && Number.isFinite(clearanceCm)
+            ? (clearanceCm / 100).toFixed(1)
+            : '—';
+        // Backend integrates the operational_limit speed curve to give us a
+        // proper ATO ETA. Fall back to a coarse distance/speed estimate only
+        // when the curve isn't published.
+        const etaText = this._formatATOEta(controller, clearanceCm, currentSpeed);
+
+        // Route metadata. The backend composes route_run_id as
+        // `${route_id}#${run_number}`. Plan ID is the route_id portion;
+        // Run ID is the suffix instance number — surface them separately.
+        const fullRunId = controller?.route_run_id || null;
+        const planId = fullRunId ? fullRunId.split('#')[0] : (train.assigned_route_id || null);
+        const runId = fullRunId ? `#${fullRunId.split('#')[1] || ''}` : null;
+        const requiredCab = controller?.ato_info?.required_cab || '—';
+        const pathHeading = controller?.ato_info?.path_heading || '—';
+        const truncatedPath = pathName ? this._middleTruncate(pathName, 22) : '—';
+
+        // Speed display — current value + max as a small "/N" suffix.
+        const speedHtml = this._formatSpeedReadout(currentSpeed, maxSpeed);
+
+        // Speed-limit reason banner content (also seen in train monitor footer)
+        const limitReason = controller?.speed_limit_reason || '';
 
         const content = `
             <div class="tc-panel train-control-panel" data-train-id="${trainId}">
 
-                <!-- STATUS CARD (merged train-state + onboard computer) -->
-                <div class="tc-status ${obcStateClass}">
+                <!-- STATUS HEADER -->
+                <header class="tc-status ${obcStateClass}">
                     <div class="tc-status-headline">
-                        <span class="train-id">${trainId}</span>
-                        <span class="tc-status-state train-state-display ${trainStateClass}">${trainState.toUpperCase().replace('_', ' ')}</span>
-                        ${train.block_section_id ? `<span class="tc-status-block">Block ${train.block_section_id}</span>` : ''}
-                        ${emergencyActive ? `<span class="tc-status-emergency">EB ACTIVE</span>` : ''}
-                        <span id="obc-ato-running-badge" class="${atoRunning ? 'badge badge-success text-xs' : 'hidden'}">${atoRunning ? '▶ ATO RUNNING' : ''}</span>
+                        <span class="tc-train-id train-id">${trainId}</span>
+                        <span class="tc-state-badge train-state-display ${trainStateClass}">${trainState.toUpperCase().replace('_', ' ')}</span>
+                        <span id="obc-ato-running-badge" class="tc-running-badge ${atoRunning ? '' : 'hidden'}">▶ ATO</span>
+                        ${emergencyActive ? `<span class="tc-eb-badge tc-status-emergency">EB ACTIVE</span>` : ''}
                     </div>
+                    <dl class="tc-status-fields">
+                        <div class="tc-field">
+                            <dt class="tc-field-label">Position</dt>
+                            <dd class="tc-field-value train-pos-display">${posStr}</dd>
+                        </div>
+                        <div class="tc-field">
+                            <dt class="tc-field-label">Block</dt>
+                            <dd class="tc-field-value">${train.block_section_id || '—'}</dd>
+                        </div>
+                        <div class="tc-field">
+                            <dt class="tc-field-label">Direction</dt>
+                            <dd class="tc-field-value train-dir-display">${train.facing_direction || '—'}</dd>
+                        </div>
+                        <div class="tc-field">
+                            <dt class="tc-field-label">Cab</dt>
+                            <dd class="tc-field-value">${controller?.active_cab || '—'}</dd>
+                        </div>
+                        <div class="tc-field">
+                            <dt class="tc-field-label">Power</dt>
+                            <dd class="tc-field-value obc-power-display ${powerOn ? 'tc-val-success power-on' : 'tc-val-muted power-off'}">${powerOn ? 'ON' : 'OFF'}</dd>
+                        </div>
+                        <div class="tc-field">
+                            <dt class="tc-field-label">Mode</dt>
+                            <dd class="tc-field-value obc-mode-display ${isManual ? 'tc-val-warn mode-manual' : 'tc-val-info mode-ato'}">${controlMode.toUpperCase()}</dd>
+                        </div>
+                    </dl>
+                </header>
 
-                    <div class="tc-status-grid">
-                        <div class="tc-status-cell">
-                            <span class="tc-status-cell-label">Position</span>
-                            <span class="tc-status-cell-value train-pos-display">${posStr}</span>
+                <!-- HERO SPEED BLOCK (always visible) -->
+                <div class="tc-speed-hero">
+                    <div class="tc-speed-main train-speed-display" id="train-speed-readout">${speedHtml}</div>
+                    <div class="tc-speed-stack">
+                        <div class="tc-speed-row">
+                            <span class="tc-speed-row-label">ATC</span>
+                            <span class="tc-speed-row-val tc-val-danger" id="train-atc-limit-val">${atcLimit != null ? Math.round(atcLimit) : '—'}</span>
                         </div>
-                        <div class="tc-status-cell">
-                            <span class="tc-status-cell-label">Direction</span>
-                            <span class="tc-status-cell-value train-dir-display">${train.facing_direction || '—'}</span>
-                        </div>
-                        <div class="tc-status-cell">
-                            <span class="tc-status-cell-label">Speed</span>
-                            <span class="tc-status-cell-value train-speed-display">${(controller?.current_speed ?? 0).toFixed(1)} <span class="text-muted">/ ${train.max_speed || 100} km/h</span></span>
-                        </div>
-                        <div class="tc-status-cell">
-                            <span class="tc-status-cell-label">Power</span>
-                            <span class="tc-status-cell-value obc-power-display ${powerOn ? 'power-on' : 'power-off'}">${powerOn ? 'ON' : 'OFF'}</span>
-                        </div>
-                        <div class="tc-status-cell">
-                            <span class="tc-status-cell-label">Mode</span>
-                            <span class="tc-status-cell-value obc-mode-display ${isManual ? 'mode-manual' : 'mode-ato'}">${controlMode.toUpperCase()}</span>
-                        </div>
-                        <div class="tc-status-cell">
-                            <span class="tc-status-cell-label">Handle</span>
-                            <span class="tc-status-cell-value obc-handle-display ${handleClass}">${handlePosition}</span>
+                        <div class="tc-speed-row">
+                            <span class="tc-speed-row-label">${isATO ? 'ATO' : 'TGT'}</span>
+                            <span class="tc-speed-row-val tc-val-success" id="train-target-speed-val">${targetSpeed != null ? Math.round(targetSpeed) : '—'}</span>
                         </div>
                     </div>
-
-                    <button id="train-monitor-btn" type="button" class="tc-monitor-link">📊 Open Train Monitor</button>
                 </div>
 
-                <!-- CONTROL SECTION -->
-                <div class="tc-section">
-                    <div class="tc-section-title">Control</div>
+                <!-- ATO MODE DISPLAY: route plan + next-stop card (JR-style) -->
+                <div id="ato-controls" class="tc-branch tc-ato-display ${isATO ? '' : 'hidden'}">
+                    <section class="tc-card">
+                        <header class="tc-card-header">
+                            <span class="tc-card-title">Route Plan</span>
+                            <span class="tc-card-pill ${atoRunning ? 'tc-pill-success' : 'tc-pill-muted'}">${atoRunning ? 'RUNNING' : 'STANDBY'}</span>
+                        </header>
+                        <dl class="tc-card-fields">
+                            <div class="tc-field">
+                                <dt class="tc-field-label">Plan ID</dt>
+                                <dd class="tc-field-value tc-val-info" id="train-plan-id-val" title="${planId || ''}">${planId || '—'}</dd>
+                            </div>
+                            <div class="tc-field">
+                                <dt class="tc-field-label">Run ID</dt>
+                                <dd class="tc-field-value" id="train-run-id-val" title="${runId || ''}">${runId ? this._middleTruncate(runId, 22) : '—'}</dd>
+                            </div>
+                            <div class="tc-field">
+                                <dt class="tc-field-label">Path</dt>
+                                <dd class="tc-field-value train-ato-path-display" id="train-path-id-val" title="${pathName || ''}">${truncatedPath}</dd>
+                            </div>
+                            <div class="tc-field">
+                                <dt class="tc-field-label">Cab</dt>
+                                <dd class="tc-field-value">${requiredCab} ${pathHeading !== '—' ? `<span class="tc-val-muted">· ${pathHeading}</span>` : ''}</dd>
+                            </div>
+                        </dl>
+                    </section>
 
-                    <div class="tc-primary-action">
-                        <button id="train-emergency-btn" class="btn btn-danger btn-size-lg">🚨 Emergency Stop</button>
-                        ${emergencyActive ? `<button id="train-emergency-reset-btn" class="btn btn-warning btn-size-lg tc-eb-reset">Reset</button>` : ''}
+                    <section class="tc-card tc-card-destination">
+                        <header class="tc-card-header tc-dest-header">
+                            <span class="tc-card-title">Next Stop</span>
+                            <span class="tc-dest-name train-ato-destination-display" title="${destinationName || ''}">${destinationName}</span>
+                        </header>
+                        <div class="tc-dest-metrics">
+                            <div class="tc-dest-metric">
+                                <span class="tc-dest-metric-label">Distance</span>
+                                <span class="tc-dest-metric-value" id="train-dest-distance-val">${distanceM}<span class="tc-dest-metric-unit">m</span></span>
+                            </div>
+                            <div class="tc-dest-metric">
+                                <span class="tc-dest-metric-label">ETA</span>
+                                <span class="tc-dest-metric-value" id="train-dest-eta-val">${etaText}</span>
+                            </div>
+                        </div>
+                    </section>
+
+                    <div class="tc-actions tc-ato-actions">
+                        <button id="train-ato-go-btn" class="tc-btn tc-btn-success tc-btn-hero" ${!powerOn || atoRunning ? 'disabled' : ''}>
+                            <span class="tc-btn-glyph">▶</span><span class="tc-btn-text">Go</span>
+                        </button>
+                        <button id="train-ato-stop-btn" class="tc-btn tc-btn-danger tc-btn-hero" ${!atoRunning ? 'disabled' : ''}>
+                            <span class="tc-btn-glyph">■</span><span class="tc-btn-text">Stop</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- MANUAL MODE DISPLAY: input-mode toggle + handle slider OR power slider -->
+                <div id="manual-controls" class="tc-branch tc-manual-display ${isManual ? '' : 'hidden'}">
+                    <div class="tc-row">
+                        <span class="tc-row-label">Input</span>
+                        <div class="tc-segment" role="group" aria-label="Manual input mode">
+                            <button type="button" id="train-manual-mode-handle-btn" class="tc-seg-btn ${isHandleMode ? 'active' : ''}" ${!isManual || !isStopped ? 'disabled' : ''}>Handle</button>
+                            <button type="button" id="train-manual-mode-power-btn" class="tc-seg-btn ${isPowerPercent ? 'active' : ''}" ${!isManual || !isStopped ? 'disabled' : ''}>Power %</button>
+                        </div>
                     </div>
 
+                    <div class="tc-row">
+                        <span class="tc-row-label">Travel</span>
+                        <div class="tc-segment" role="group" aria-label="Travel direction">
+                            <button type="button" id="train-travel-fwd-btn" class="tc-seg-btn ${controller?.travel_direction === 'forward' ? 'active' : ''}" ${!isManual || !isStopped ? 'disabled' : ''}>▶ Forward</button>
+                            <button type="button" id="train-travel-rev-btn" class="tc-seg-btn ${controller?.travel_direction === 'reverse' ? 'active' : ''}" ${!isManual || !isStopped ? 'disabled' : ''}>◀ Reverse</button>
+                        </div>
+                    </div>
+
+                    <!-- HANDLE MODE: notched master controller -->
+                    <div id="handle-mode-block" class="tc-handle-block ${isHandleMode ? '' : 'hidden'}">
+                        <div class="tc-handle-zones" aria-hidden="true">
+                            <span class="tc-handle-zone tc-zone-power">POWER</span>
+                            <span class="tc-handle-zone tc-zone-neutral">N</span>
+                            <span class="tc-handle-zone tc-zone-brake">BRAKE</span>
+                            <span class="tc-handle-zone tc-zone-eb">EB</span>
+                        </div>
+                        <div class="tc-handle-ticks" aria-hidden="true">
+                            ${handleOrder.map((p, i) => `<span class="tc-handle-tick ${i === handleIndex ? 'active' : ''}" data-handle="${p}">${p}</span>`).join('')}
+                        </div>
+                        <input type="range" id="train-handle-slider" class="tc-handle-slider"
+                            min="0" max="14" step="1" value="${handleIndex >= 0 ? handleIndex : 5}"
+                            ${!isManual || emergencyActive ? 'disabled' : ''}>
+                        <div class="tc-handle-readout">
+                            <span id="handle-position-label" class="tc-handle-pos handle-position-display ${handleClass}">${handlePosition}</span>
+                            <span id="handle-description" class="tc-handle-desc handle-description">${handleDescription}</span>
+                            <span id="handle-reason" class="tc-handle-reason train-handle-reason">${controller?.handle_reason || ''}</span>
+                        </div>
+                    </div>
+
+                    <!-- POWER % MODE: 0–100 slider -->
+                    <div id="power-percent-block" class="tc-power-block ${isPowerPercent ? '' : 'hidden'}">
+                        <div class="tc-power-readout">
+                            <span class="tc-power-value" id="train-power-percent-val">${manualPowerPercent}</span>
+                            <span class="tc-power-unit">%</span>
+                        </div>
+                        <input type="range" id="train-power-percent-slider" class="tc-power-slider"
+                            min="0" max="100" step="1" value="${manualPowerPercent}"
+                            ${!isManual || !isPowerPercent || emergencyActive ? 'disabled' : ''}>
+                        <div class="tc-power-bar">
+                            <div class="tc-power-fill" id="train-power-percent-fill" style="width: ${manualPowerPercent}%"></div>
+                        </div>
+                        <div class="tc-power-hint">Direct throttle command (0–100). Set Cab + Travel direction first.</div>
+                    </div>
+                </div>
+
+                <!-- SPEED-LIMIT REASON BANNER (when controller publishes one) -->
+                <div id="train-control-limit-banner" class="tc-banner tc-banner-warn ${limitReason ? '' : 'hidden'}">${limitReason}</div>
+
+                <!-- CONTROLS: Power / Cab / Mode -->
+                <section class="tc-section">
+                    <div class="tc-section-title">Controls</div>
                     <div class="tc-row">
                         <span class="tc-row-label">Power</span>
-                        <div class="tc-button-group switch-group">
-                            <button id="train-power-on-btn" class="switch-btn ${powerOn ? 'active' : ''}" ${powerOn ? 'disabled' : ''}>On</button>
-                            <button id="train-power-off-btn" class="switch-btn ${!powerOn ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>Off</button>
+                        <div class="tc-segment" role="group">
+                            <button type="button" id="train-power-on-btn" class="tc-seg-btn switch-btn ${powerOn ? 'active' : ''}" ${powerOn ? 'disabled' : ''}>On</button>
+                            <button type="button" id="train-power-off-btn" class="tc-seg-btn switch-btn ${!powerOn ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>Off</button>
                         </div>
                     </div>
-
                     <div class="tc-row">
                         <span class="tc-row-label">Cab</span>
-                        <div class="tc-button-group switch-group">
-                            <button id="train-cab-a-btn" class="switch-btn ${controller?.active_cab === 'A' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>A</button>
-                            <button id="train-cab-b-btn" class="switch-btn ${controller?.active_cab === 'B' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>B</button>
-                            <button id="train-cab-off-btn" class="switch-btn ${!controller?.active_cab ? 'active' : ''}" ${!powerOn || !isStopped || !controller?.active_cab ? 'disabled' : ''}>Off</button>
+                        <div class="tc-segment" role="group">
+                            <button type="button" id="train-cab-a-btn" class="tc-seg-btn switch-btn ${controller?.active_cab === 'A' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>A</button>
+                            <button type="button" id="train-cab-b-btn" class="tc-seg-btn switch-btn ${controller?.active_cab === 'B' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>B</button>
+                            <button type="button" id="train-cab-off-btn" class="tc-seg-btn switch-btn ${!controller?.active_cab ? 'active' : ''}" ${!powerOn || !isStopped || !controller?.active_cab ? 'disabled' : ''}>Off</button>
                         </div>
                     </div>
-
                     <div class="tc-row">
                         <span class="tc-row-label">Mode</span>
-                        <div class="tc-button-group switch-group">
-                            <button id="train-mode-ato-btn" class="switch-btn ${isATO ? 'active' : ''}" ${!canSwitchModes ? 'disabled' : ''}>ATO</button>
-                            <button id="train-mode-manual-btn" class="switch-btn ${isManual ? 'active' : ''}" ${!canSwitchModes ? 'disabled' : ''}>Manual</button>
+                        <div class="tc-segment" role="group">
+                            <button type="button" id="train-mode-ato-btn" class="tc-seg-btn switch-btn ${isATO ? 'active' : ''}" ${!canSwitchModes ? 'disabled' : ''}>ATO</button>
+                            <button type="button" id="train-mode-manual-btn" class="tc-seg-btn switch-btn ${isManual ? 'active' : ''}" ${!canSwitchModes ? 'disabled' : ''}>Manual</button>
                         </div>
                     </div>
+                </section>
 
-                    <div id="ato-controls" class="tc-branch ${isManual ? 'hidden' : ''}">
-                        <div class="tc-ato-summary">
-                            <div class="tc-row">
-                                <span class="tc-row-label">Path</span>
-                                <span class="tc-row-value train-ato-path-display">${pathName}</span>
-                            </div>
-                            <div class="tc-row">
-                                <span class="tc-row-label">Destination</span>
-                                <span class="tc-row-value train-ato-destination-display">${destinationName}</span>
-                            </div>
-                        </div>
-                        <div class="tc-button-group">
-                            <button id="train-ato-go-btn" class="btn btn-success tc-secondary-action" ${!controller?.power_on || atoRunning ? 'disabled' : ''}>▶ Go</button>
-                            <button id="train-ato-stop-btn" class="btn btn-danger tc-secondary-action" ${!atoRunning ? 'disabled' : ''}>⏹ Stop</button>
-                        </div>
-                    </div>
-
-                    <div id="manual-controls" class="tc-branch ${isATO ? 'hidden' : ''}">
-                        <div class="tc-row">
-                            <span class="tc-row-label">Travel</span>
-                            <div class="tc-button-group">
-                                <button id="train-travel-fwd-btn" class="btn btn-outline ${controller?.travel_direction === 'forward' ? 'btn-active' : ''}" ${!isManual || !isStopped ? 'disabled' : ''}>▶ Forward</button>
-                                <button id="train-travel-rev-btn" class="btn btn-outline ${controller?.travel_direction === 'reverse' ? 'btn-active' : ''}" ${!isManual || !isStopped ? 'disabled' : ''}>◀ Reverse</button>
-                            </div>
-                        </div>
-                        <div class="tc-handle">
-                            <div class="tc-handle-track">
-                                <span>P5</span><span>N</span><span>EB</span>
-                            </div>
-                            <input type="range" id="train-handle-slider" class="slider-full"
-                                min="0" max="14" step="1" value="${handleIndex >= 0 ? handleIndex : 5}"
-                                ${!isManual || emergencyActive ? 'disabled' : ''}>
-                            <div class="tc-handle-readout">
-                                <span id="handle-position-label" class="handle-position-display ${handleClass}">${handlePosition}</span>
-                                <span id="handle-description" class="handle-description">${handleDescription}</span>
-                                <span id="handle-reason" class="train-handle-reason">${controller?.handle_reason || ''}</span>
-                            </div>
-                        </div>
-                    </div>
+                <!-- EMERGENCY -->
+                <div class="tc-emergency-row">
+                    <button id="train-emergency-btn" class="tc-eb-btn" type="button">EMERGENCY STOP</button>
+                    ${emergencyActive ? `<button id="train-emergency-reset-btn" class="tc-eb-reset-btn" type="button">Reset</button>` : ''}
                 </div>
+
+                <button id="train-monitor-btn" type="button" class="tc-monitor-link">Open Train Monitor →</button>
 
                 <!-- DEBUG SECTION (controlled by debug-show-train-position checkbox; content injected by app.js) -->
                 <div id="train-control-debug-section" class="train-control-debug-section hidden"></div>
@@ -598,7 +766,7 @@ class TrainEditorHandler {
                             <input type="number" id="train-max-speed-input" value="${train.max_speed || 100}" min="1" max="500">
                         </div>
                         <div class="tc-footer">
-                            <button id="save-train-btn" class="btn btn-primary tc-secondary-action">Save</button>
+                            <button id="save-train-btn" class="tc-btn tc-btn-primary">Save</button>
                         </div>
                     </div>
                 </details>
@@ -814,13 +982,17 @@ class TrainEditorHandler {
                     if (position === 'N') {
                         handleDesc.textContent = 'Coast (no power, no braking)';
                     } else if (position.startsWith('P')) {
-                        handleDesc.textContent = `Power ${position.slice(1)} - Accelerating`;
+                        handleDesc.textContent = `Power ${position.slice(1)} — Accelerating`;
                     } else if (position === 'EB') {
                         handleDesc.textContent = 'Emergency Brake';
                     } else {
-                        handleDesc.textContent = `Brake ${position.slice(1)} - Decelerating`;
+                        handleDesc.textContent = `Brake ${position.slice(1)} — Decelerating`;
                     }
                 }
+                // Light up the matching tick label
+                document.querySelectorAll('.tc-handle-tick').forEach((el, idx) => {
+                    el.classList.toggle('active', idx === parseInt(handleSlider.value));
+                });
             };
 
             // Commit on release
@@ -837,6 +1009,44 @@ class TrainEditorHandler {
                 } catch (e) {
                     // Ignore errors here, next poll will update
                 }
+            };
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // MANUAL MODE-TYPE TOGGLE (Handle / Power %)
+        // ═══════════════════════════════════════════════════════════════════
+
+        const manualModeHandleBtn = document.getElementById('train-manual-mode-handle-btn');
+        const manualModePowerBtn = document.getElementById('train-manual-mode-power-btn');
+
+        if (manualModeHandleBtn) {
+            manualModeHandleBtn.onclick = () => executeAction('Set Input: Handle',
+                () => window.api.setManualModeType(trainId, 'simulation'));
+        }
+        if (manualModePowerBtn) {
+            manualModePowerBtn.onclick = () => executeAction('Set Input: Power %',
+                () => window.api.setManualModeType(trainId, 'power_percent'));
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // POWER-PERCENT SLIDER (manual_mode_type == 'power_percent')
+        // ═══════════════════════════════════════════════════════════════════
+
+        const powerSlider = document.getElementById('train-power-percent-slider');
+        const powerVal = document.getElementById('train-power-percent-val');
+        const powerFill = document.getElementById('train-power-percent-fill');
+
+        if (powerSlider) {
+            powerSlider.oninput = () => {
+                const pct = parseInt(powerSlider.value, 10);
+                if (powerVal) powerVal.textContent = pct;
+                if (powerFill) powerFill.style.width = `${pct}%`;
+            };
+            powerSlider.onchange = async () => {
+                const pct = parseInt(powerSlider.value, 10);
+                await executeAction(`Set Power ${pct}%`,
+                    () => window.api.setManualPowerPercent(trainId, pct),
+                    false);
             };
         }
 
@@ -1122,10 +1332,10 @@ class TrainEditorHandler {
             directionEl.textContent = train.facing_direction || 'Unknown';
         }
 
-        const speedEl = panel.querySelector('.train-speed-display');
+        const speedEl = panel.querySelector('#train-speed-readout');
         if (speedEl) {
             const currentSpeed = controller?.current_speed ?? 0;
-            speedEl.innerHTML = `${currentSpeed.toFixed(1)} <span class="text-muted">/ ${train.max_speed || 100} km/h</span>`;
+            speedEl.innerHTML = this._formatSpeedReadout(currentSpeed, train.max_speed || 100);
         }
 
         if (controller) {
@@ -1169,24 +1379,46 @@ class TrainEditorHandler {
             const obcBox = panel.querySelector('.tc-status');
             this._replaceVisualClass(obcBox, ['obc-power-off', 'obc-power-on', 'obc-power-emergency'], this.getObcStateClass(powerOn, controller.eb_active ?? false));
 
-            const pathDisplay = panel.querySelector('.train-ato-path-display');
+            const pathDisplay = panel.querySelector('#train-path-id-val');
             const destinationDisplay = panel.querySelector('.train-ato-destination-display');
             const resolvedPathId = controller.ato_info?.path_id || controller.assigned_path_id || null;
             if (pathDisplay) {
-                pathDisplay.textContent = resolvedPathId || 'No path';
+                pathDisplay.textContent = resolvedPathId
+                    ? this._middleTruncate(resolvedPathId, 22)
+                    : '—';
+                pathDisplay.title = resolvedPathId || '';
             }
             if (destinationDisplay) {
                 const onboardDestination = controller.ato_info?.destination_station_name || controller.ato_info?.destination_block_id || controller.ato_destination_block_id || null;
                 if (onboardDestination) {
                     destinationDisplay.textContent = onboardDestination;
+                    destinationDisplay.title = onboardDestination;
                 } else if (resolvedPathId) {
                     const previousDestination = (destinationDisplay.textContent || '').trim();
-                    destinationDisplay.textContent = previousDestination && previousDestination !== 'No path'
-                        ? previousDestination
-                        : 'Resolving...';
+                    if (!previousDestination || previousDestination === 'No path') {
+                        destinationDisplay.textContent = 'Resolving…';
+                    }
                 } else {
                     destinationDisplay.textContent = 'No path';
+                    destinationDisplay.title = '';
                 }
+            }
+
+            // Plan ID and Run ID — derived from controller.route_run_id
+            // (`${route_id}#${run_number}`); fall back to train.assigned_route_id
+            // for plan_id when the run hasn't started yet.
+            const fullRunId = controller.route_run_id || null;
+            const livePlanId = fullRunId ? fullRunId.split('#')[0] : (train.assigned_route_id || null);
+            const liveRunSuffix = fullRunId ? `#${fullRunId.split('#')[1] || ''}` : null;
+            const planEl = panel.querySelector('#train-plan-id-val');
+            if (planEl) {
+                planEl.textContent = livePlanId ? this._middleTruncate(livePlanId, 22) : '—';
+                planEl.title = livePlanId || '';
+            }
+            const runEl = panel.querySelector('#train-run-id-val');
+            if (runEl) {
+                runEl.textContent = liveRunSuffix || '—';
+                runEl.title = fullRunId || '';
             }
 
             const handleSlider = document.getElementById('train-handle-slider');
@@ -1220,6 +1452,81 @@ class TrainEditorHandler {
             const handleReason = document.getElementById('handle-reason');
             if (handleReason) {
                 handleReason.textContent = controller?.handle_reason || '';
+            }
+
+            // ── New redesign live-updates: ATC / target / distance / ETA / power-percent ──
+            const atcLimitEl = document.getElementById('train-atc-limit-val');
+            if (atcLimitEl) {
+                const atc = controller.atc_speed_limit;
+                atcLimitEl.textContent = atc != null && Number.isFinite(atc) ? Math.round(atc) : '—';
+            }
+            const targetSpeedEl = document.getElementById('train-target-speed-val');
+            if (targetSpeedEl) {
+                const tgt = controller.target_speed;
+                targetSpeedEl.textContent = tgt != null && Number.isFinite(tgt) ? Math.round(tgt) : '—';
+            }
+
+            const distEl = document.getElementById('train-dest-distance-val');
+            const etaEl = document.getElementById('train-dest-eta-val');
+            const clearance = controller.clearance_ahead_cm;
+            const liveSpeed = controller.current_speed ?? 0;
+            if (distEl) {
+                distEl.innerHTML = clearance != null && Number.isFinite(clearance)
+                    ? `${(clearance / 100).toFixed(1)}<span class="tc-dest-metric-unit">m</span>`
+                    : '—';
+            }
+            if (etaEl) {
+                etaEl.textContent = this._formatATOEta(controller, clearance, liveSpeed);
+            }
+
+            // Speed-limit reason banner
+            const limitBanner = document.getElementById('train-control-limit-banner');
+            if (limitBanner) {
+                const reason = controller.speed_limit_reason;
+                if (reason) {
+                    limitBanner.textContent = reason;
+                    limitBanner.classList.remove('hidden');
+                } else {
+                    limitBanner.classList.add('hidden');
+                }
+            }
+
+            // Manual mode-type toggle and slider visibility
+            const handleBlock = document.getElementById('handle-mode-block');
+            const powerBlock = document.getElementById('power-percent-block');
+            const manualModeType = controller.manual_mode_type || 'simulation';
+            if (handleBlock && powerBlock) {
+                handleBlock.classList.toggle('hidden', manualModeType !== 'simulation');
+                powerBlock.classList.toggle('hidden', manualModeType !== 'power_percent');
+            }
+            const handleToggleBtn = document.getElementById('train-manual-mode-handle-btn');
+            const powerToggleBtn = document.getElementById('train-manual-mode-power-btn');
+            if (handleToggleBtn) handleToggleBtn.classList.toggle('active', manualModeType === 'simulation');
+            if (powerToggleBtn) powerToggleBtn.classList.toggle('active', manualModeType === 'power_percent');
+
+            // Power-percent slider live value (only update when not dragging)
+            const powerSlider = document.getElementById('train-power-percent-slider');
+            const powerVal = document.getElementById('train-power-percent-val');
+            const powerFill = document.getElementById('train-power-percent-fill');
+            const pctValue = controller.manual_power_percent ?? 0;
+            if (powerSlider && document.activeElement !== powerSlider) {
+                powerSlider.value = pctValue;
+            }
+            if (powerVal) powerVal.textContent = pctValue;
+            if (powerFill) powerFill.style.width = `${pctValue}%`;
+
+            // ATO running badge restyle (drop legacy badge classes added by old code)
+            const atoBadgeEl = document.querySelector('#obc-ato-running-badge');
+            if (atoBadgeEl) {
+                if (atoRunning) {
+                    atoBadgeEl.textContent = '▶ ATO';
+                    atoBadgeEl.classList.remove('hidden', 'badge', 'badge-success', 'text-xs');
+                    atoBadgeEl.classList.add('tc-running-badge');
+                } else {
+                    atoBadgeEl.textContent = '';
+                    atoBadgeEl.classList.add('hidden');
+                    atoBadgeEl.classList.remove('badge', 'badge-success', 'text-xs');
+                }
             }
         }
 

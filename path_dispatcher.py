@@ -1061,7 +1061,6 @@ class PathDispatcher:
                 SwitchLockRequest(
                     switch_id=switch_entity.switch_id,
                     locked_state=int(locked_state),
-                    claim_role="primary",
                     source_switch_id=None,
                 )
             )

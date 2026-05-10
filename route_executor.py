@@ -97,10 +97,11 @@ class RouteExecutionState:
     train_id: str
     route_id: str
     # Physical-progress cursor: index in Route.tasks of the last task the train
-    # has actually finished.
+    # has actually finished. The "armed next task" is not stored as a separate
+    # planning cursor in v1 — Phase 1 recomputes it fresh via
+    # `_find_next_task_target(train_id)` each time it is needed (per
+    # design_new.md "Index-driven, live-recompute model").
     current_waypoint_index: int = 0
-    # Planning cursor: index of the task currently armed for create/extend.
-    target_waypoint_index: int = 0
     # Effective traversal direction for the current directed walk.
     # `1` means forward, `-1` means reverse. Named `signed_direction` to keep
     # it distinct from the `"forward"`/`"reverse"` string-form direction
@@ -119,11 +120,12 @@ class RouteExecutionState:
     waiting_for_path: bool = False
     last_waypoint_platform_id: Optional[str] = None
     resolved_platform_id: Optional[str] = None
-    # v1 latch consumed by Phase-1 route-deviation cleanup.
+    # v1 latch consumed by Phase-1 route-deviation cleanup. Also drives the
+    # derived `display_state` projection (DEVIATED while True).
     path_cancelled: bool = False
-    # Per-run diagnostic status. Consumers that need a string read the
-    # `current_route_status.value` enum value directly; there is no parallel
-    # mirror field.
+    # Per-run lifecycle state. Stored as the canonical `RouteRunStatus` enum
+    # (RUNNING / FINISHED / DEACTIVATED). Deviation is NOT a stored state;
+    # consumers that need the diagnostic read `display_state` instead.
     current_route_status: RouteRunStatus = RouteRunStatus.RUNNING
     # Per-run error tracking. Per design_new.md "Canonical ownership split"
     # the active path is read live from `path_dispatcher.active_path_id_by_train`
@@ -131,6 +133,19 @@ class RouteExecutionState:
     # field of their own. `last_error` is the canonical ErrorRecord shape so
     # message and timestamp are always either both present or both absent.
     last_error: Optional["ErrorRecord"] = None
+
+    @property
+    def display_state(self) -> str:
+        """UI-only diagnostic projection.
+
+        Per design_new.md ``current_route_status`` schema: returns
+        ``"DEVIATED"`` whenever ``path_cancelled`` is true; otherwise the
+        stored ``current_route_status.value``. Not a stored field; no
+        writers. Runtime branching never keys on this value.
+        """
+        if self.path_cancelled:
+            return "DEVIATED"
+        return self.current_route_status.value
 
     def _append_next_walk_task(self, route: "Route") -> None:
         """Grow `task_runs` for the next walk-position when applicable.
@@ -474,28 +489,30 @@ class RouteExecutor:
 
         now = self._now()
 
-        # ---------- Step 1: route-deviation cleanup ---------------------------
+        # Phase 1 kernel — step IDs trace back to design_new.md "Planning
+        # Kernel" section. The `9c4f` (RouteRun reallocation) step is
+        # performed earlier inside `_ensure_run_for(...)`; this method
+        # picks up at `5fc7`.
+        # ---------- 5fc7: route-deviation cleanup ----------------------------
         if exec_state.path_cancelled and self._deviation_cleanup_eligible(
             controller
         ):
             exec_state.path_cancelled = False
-            if exec_state.current_route_status == RouteRunStatus.DEVIATED:
-                exec_state.current_route_status = RouteRunStatus.RUNNING
 
-        # ---------- Step 2: dwell-complete timer check -----------------------
+        # ---------- 70c3: dwell-complete timer check -------------------------
         if controller.state == TrainState.RUNNING_AT_STATION:
             self._dwell_complete_check(train, route, exec_state, controller, now)
 
-        # ---------- Step 3: lookup next non-finished task --------------------
+        # ---------- c481: helper lookup via _find_next_task_target -----------
         projection = self._find_next_task_target(train_id)
         if projection is None:
             # Terminal walk for ONE_OFF; finalize the run directly.
             self.finish_route_run(train_id)
             return
 
-        # If next task is a dwell, skip directly to step 5.
+        # If next task is a dwell, skip directly to 3a37 (dwell-entry).
         if projection.task_kind != "dwell":
-            # ---------- Step 4: covered-task index advance ----------------
+            # ---------- a5c6: covered-task index advance ---------------------
             self._covered_task_index_advance(
                 train, route, exec_state, controller, now
             )
@@ -505,7 +522,7 @@ class RouteExecutor:
                 self.finish_route_run(train_id)
                 return
 
-        # ---------- Step 5: dwell-entry transition ---------------------------
+        # ---------- 3a37: dwell-entry transition -----------------------------
         if projection.task_kind == "dwell":
             self._dwell_entry_step(
                 train, route, exec_state, controller, projection.task_index
@@ -514,17 +531,17 @@ class RouteExecutor:
             # creation while dwell is pending or active.
             return
 
-        # ---------- Step 6: re-resolve next target (post cursor changes) ----
+        # ---------- 592a: re-resolve next target (post cursor changes) ------
         projection = self._find_next_task_target(train_id)
         if projection is None or projection.task_kind == "dwell":
             return
 
-        # ---------- Step 7: authority acquisition ---------------------------
+        # ---------- 66aa: authority acquisition (create_path / extend_path) -
         if not self._eligible_for_authority_acquisition(controller, exec_state):
             return
 
-        # Phase 1 step 7: dispatch via PathDispatcher.create_path or extend_path
-        # (v1 signature). Both methods take train_id +
+        # Phase 1 step `66aa`: dispatch via PathDispatcher.create_path or
+        # extend_path (v1 signature). Both methods take train_id +
         # requested_destination_block_id + requested_destination_direction +
         # acquisition_mode and return a PathAcquisitionResult.
         self._authority_acquisition_step(
@@ -757,9 +774,10 @@ class RouteExecutor:
         """Phase 1 step 7: create or extend authority for the resolved target.
 
         On a successful create/extend, write
-        `task_runs[target_waypoint_index].resolved_target` (Phase-1-only writer).
-        When the effective_departure_mode is "auto", call `controller.depart()`
-        directly. There is no `departure_requested` latch in v1.
+        ``task_runs[projection.task_index].resolved_target`` (Phase-1-only
+        writer). When the effective_departure_mode is "auto", call
+        ``controller.depart()`` directly. There is no ``departure_requested``
+        latch in v1.
         """
         if self.path_dispatcher is None:
             return
@@ -819,7 +837,6 @@ class RouteExecutor:
                 requested_destination_block_id=target_block,
                 requested_destination_direction=target_dir,
             )
-        exec_state.target_waypoint_index = target_idx
 
         # Update direction if projection says so.
         if projection.direction == "forward":
@@ -827,8 +844,6 @@ class RouteExecutor:
         elif projection.direction == "reverse":
             exec_state.signed_direction = -1
 
-        # Status update: always overwrite stale DEVIATED.
-        exec_state.current_route_status = RouteRunStatus.RUNNING
         exec_state.waiting_for_path = False
 
         # Effective departure mode.
@@ -854,7 +869,6 @@ class RouteExecutor:
 
         Per design_new.md ``current_route_status`` write contract:
           * sets ``RouteRun.current_route_status = FINISHED``
-          * sets ``target_waypoint_index = current_waypoint_index``
           * calls ``route.unassign_train(train_id)``
           * archives the run as a historical FINISHED row (``execution_states``
             slot frees up so a later route assignment can populate a fresh run)
@@ -869,7 +883,6 @@ class RouteExecutor:
         route = self.route_registry.get(route_id)
 
         exec_state.current_route_status = RouteRunStatus.FINISHED
-        exec_state.target_waypoint_index = exec_state.current_waypoint_index
 
         if route is not None:
             route.unassign_train(train_id)
@@ -975,11 +988,11 @@ class RouteExecutor:
         exec_state = self.execution_states.get(train_id)
         if exec_state is None:
             return
+        # Per design_new.md: deviation is purely the `path_cancelled` latch
+        # plus the derived `display_state` projection. The stored
+        # `current_route_status.state` does not transition to DEVIATED.
         exec_state.path_cancelled = True
-        exec_state.current_route_status = RouteRunStatus.DEVIATED
         exec_state.waiting_for_path = False
-        # Reset planning cursor to physical progress.
-        exec_state.target_waypoint_index = exec_state.current_waypoint_index
 
     def handle_path_completion(
         self,
@@ -1081,7 +1094,6 @@ class RouteExecutor:
         exec_state.current_waypoint_index = max(
             exec_state.current_waypoint_index, match_index
         )
-        exec_state.target_waypoint_index = exec_state.current_waypoint_index
         exec_state.arrived_at_platform_time = event_time
         # Phase 3 must NOT call enter_station_dwell — that fires from the next
         # eligible Phase 1 dwell-entry step.
@@ -1349,7 +1361,6 @@ class RouteExecutor:
             self.execution_states[train_id] = exec_state
 
         exec_state.current_waypoint_index = waypoint_index
-        exec_state.target_waypoint_index = waypoint_index
         exec_state.arrived_at_platform_time = None
         exec_state.resolved_platform_id = None
         exec_state.waiting_for_path = False

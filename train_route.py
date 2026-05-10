@@ -45,21 +45,18 @@ class RouteMode(Enum):
 
 
 class RouteRunStatus(Enum):
-    """Per-run diagnostic state.
+    """Per-run lifecycle state.
 
-    Per design_new.md `current_route_status.state` enum. All values are
-    diagnostic only; runtime branching keys on controller state, latches,
-    and current span coverage, not on this enum.
+    Per design_new.md `current_route_status.state` enum. v1 stores exactly
+    these three states; deviation is expressed via the `path_cancelled`
+    latch on `RouteRun` and surfaced through the derived `display_state`
+    projection. Runtime branching keys on controller state, latches, and
+    current span coverage, not on this enum.
     """
 
-    PLANNING = "PLANNING"  # Run created, no planning yet
     RUNNING = "RUNNING"  # Ordinary execution (incl. dwell, between-legs)
-    AT_TASK = "AT_TASK"  # At a task target (UI-only intermediate)
-    DEPARTING = "DEPARTING"  # Departure in progress (UI-only intermediate)
     FINISHED = "FINISHED"  # Terminal walk complete
     DEACTIVATED = "DEACTIVATED"  # Shared route deactivated mid-run
-    NO_PATH = "NO_PATH"  # Last Phase 1 exhausted same-tick targets w/o authority
-    DEVIATED = "DEVIATED"  # Cancellation-backed recovery pending
 
 
 @dataclass
@@ -235,7 +232,6 @@ class RouteTaskRun:
     finished_at: Optional[float] = None
     delay_class: Optional[Literal["early", "on_time", "late"]] = None
     last_error: Optional["ErrorRecord"] = None
-    current_route_status: RouteRunStatus = RouteRunStatus.PLANNING
 
 
 @dataclass

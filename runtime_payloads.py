@@ -489,6 +489,54 @@ class FatalPhysicalEntryConflict:
 
 
 # =============================================================================
+# Switch lock claim payload
+# =============================================================================
+
+
+@dataclass
+class OccupyResult:
+    """Result of `BlockManager.occupy_blocks(...)`.
+
+    Per design_new.md "BlockManager" — `outcome` is one of:
+      - ``"clean_entry"``: at least one block transitioned to OCCUPIED.
+      - ``"idempotent_noop"``: every requested block was already OCCUPIED
+        by the same train (no state change).
+      - ``"fatal_conflict"``: a fatal physical-entry conflict was detected;
+        ``BlockManager`` already invoked
+        ``SimulationController.enter_failed_runtime(...)``.
+
+    On ``"fatal_conflict"`` the caller must stop processing the current
+    physical-entry batch.
+    """
+
+    outcome: str
+    reason: Optional[str] = None
+
+    def __bool__(self) -> bool:
+        """Truthy iff the call did not produce a fatal conflict.
+
+        Existing callers that do `if not occupy_blocks(...)` keep working.
+        """
+        return self.outcome != "fatal_conflict"
+
+
+@dataclass(frozen=True)
+class SwitchLockClaim:
+    """Structured payload for `Switch.acquire_lock(claim)`.
+
+    Per design_new.md "Switch entity" — the canonical claim shape carries
+    `path_id`, `train_id`, `locked_state`, and an optional
+    `source_switch_id`. The role (main/primary vs flank) is derived from
+    `source_switch_id is None`; it is not a separate stored field.
+    """
+
+    path_id: str
+    train_id: str
+    locked_state: int  # 0 = MAIN, 1 = DIVERGE
+    source_switch_id: Optional[str] = None
+
+
+# =============================================================================
 # Resolved-target schema (moved from route_executor.py)
 # =============================================================================
 

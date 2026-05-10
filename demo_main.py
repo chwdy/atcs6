@@ -803,10 +803,17 @@ def run_regression_tests():
     try:
         # Try to run pytest
         result = subprocess.run(
-            ["python3", "-m", "pytest", "tests/test_backend.py", "-v"],
+            [
+                "python3",
+                "-m",
+                "pytest",
+                "tests/test_backend.py",
+                "tests/test_demo_train_journey.py",
+                "-v",
+            ],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=120,
         )
 
         if result.returncode != 0:

@@ -689,6 +689,47 @@ def register(app, state: AppState) -> None:
             )
         return jsonify({"error": result.message}), 400
 
+    @app.route("/api/trains/<train_id>/manual-mode-type", methods=["POST"])
+    def set_manual_mode_type(train_id):
+        """Set manual-mode submode ('simulation' = handle, or 'power_percent')."""
+        train = state.network.trains.get(train_id)
+        if not train:
+            return jsonify({"error": "Train not found"}), 404
+
+        data = request.json or {}
+        mode_type = data.get("mode_type")
+        if mode_type not in ("simulation", "power_percent"):
+            return jsonify(
+                {"error": f"Invalid mode_type: {mode_type}. Must be 'simulation' or 'power_percent'"}
+            ), 400
+
+        controller = _get_train_controller(train)
+        result = controller.set_manual_mode_type(mode_type)
+        if result.success:
+            return jsonify(
+                {"status": "success", **_train_to_dict(train, state.network)}
+            )
+        return jsonify({"error": result.message}), 400
+
+    @app.route("/api/trains/<train_id>/manual-power-percent", methods=["POST"])
+    def set_manual_power_percent(train_id):
+        """Set manual power-percent command (0..100) when manual_mode_type == power_percent."""
+        train = state.network.trains.get(train_id)
+        if not train:
+            return jsonify({"error": "Train not found"}), 404
+
+        data = request.json or {}
+        if "percent" not in data:
+            return jsonify({"error": "Missing 'percent' field"}), 400
+
+        controller = _get_train_controller(train)
+        result = controller.set_manual_power_percent(data.get("percent"))
+        if result.success:
+            return jsonify(
+                {"status": "success", **_train_to_dict(train, state.network)}
+            )
+        return jsonify({"error": result.message}), 400
+
     # ============================================================================
     # ATO Control
     # ============================================================================

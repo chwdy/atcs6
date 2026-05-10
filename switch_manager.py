@@ -22,7 +22,11 @@ release, and physical-entry handling. It mirrors `BlockManager`'s contract:
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, TYPE_CHECKING
 
-from runtime_payloads import FatalPhysicalEntryConflict, FatalConflictKind
+from runtime_payloads import (
+    FatalPhysicalEntryConflict,
+    FatalConflictKind,
+    SwitchLockClaim,
+)
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -38,13 +42,13 @@ if TYPE_CHECKING:
 class SwitchLockRequest:
     """Canonical value type for one requested switch lock.
 
-    `claim_role` is one of "primary" / "flank" / "overlap". `source_switch_id`
-    is None for primary claims and the originating switch_id for flank claims.
+    Per design_new.md "SwitchManager" — `source_switch_id` is None for
+    primary (main) claims and the originating switch_id for flank claims.
+    The role is derived from this field, not stored separately.
     """
 
     switch_id: str
     locked_state: int
-    claim_role: str = "primary"
     source_switch_id: Optional[str] = None
 
 
@@ -133,13 +137,13 @@ class SwitchManager:
                     failed_switch_id=req.switch_id,
                     reason="unknown_switch",
                 )
-            ok = switch.acquire_lock(
+            claim = SwitchLockClaim(
                 path_id=path_id,
-                claim_role=req.claim_role,
                 train_id=train_id,
                 locked_state=req.locked_state,
                 source_switch_id=req.source_switch_id,
             )
+            ok = switch.acquire_lock(claim)
             if not ok:
                 self._rollback(recorded, path_id)
                 return LockAcquireResult(
@@ -160,7 +164,6 @@ class SwitchManager:
                     # this segment so the request is fully atomic.
                     switch.release_lock(
                         path_id=path_id,
-                        claim_role=req.claim_role,
                         source_switch_id=req.source_switch_id,
                     )
                     self._rollback(recorded, path_id)
@@ -193,7 +196,7 @@ class SwitchManager:
             switch = self._switch_registry.get(req.switch_id)
             if switch is None:
                 continue
-            switch.release_lock(path_id, req.claim_role, req.source_switch_id)
+            switch.release_lock(path_id, req.source_switch_id)
             self._sync_track_from_switch(switch)
 
     # ------------------------------------------------------------------
@@ -207,8 +210,8 @@ class SwitchManager:
             keys = [k for k in list(switch.locks.keys()) if k[0] == path_id]
             if not keys:
                 continue
-            for (_pid, claim_role, source_id) in keys:
-                switch.release_lock(path_id, claim_role, source_id)
+            for (_pid, source_id) in keys:
+                switch.release_lock(path_id, source_id)
             self._sync_track_from_switch(switch)
             released.append(switch.switch_id)
         return released
@@ -225,8 +228,8 @@ class SwitchManager:
             keys = [k for k in list(switch.locks.keys()) if k[0] == path_id]
             if not keys:
                 continue
-            for (_pid, claim_role, source_id) in keys:
-                switch.release_lock(path_id, claim_role, source_id)
+            for (_pid, source_id) in keys:
+                switch.release_lock(path_id, source_id)
             self._sync_track_from_switch(switch)
             released.append(sid)
         return released
@@ -320,10 +323,10 @@ class SwitchManager:
         chosen_state = None
         if switch.locks:
             if path_id is not None:
-                for (pid, _claim_role, _src) in switch.locks.keys():
+                for (pid, _src) in switch.locks.keys():
                     if pid == path_id:
                         chosen_path = pid
-                        chosen_state = switch.locks[(pid, _claim_role, _src)][1]
+                        chosen_state = switch.locks[(pid, _src)][1]
                         break
             if chosen_path is None:
                 # First lock entry wins.
@@ -386,17 +389,17 @@ class SwitchManager:
     ) -> None:
         """Consume the path-owned primary lock for this switch and convert
         each required flank-protection claim on neighbours into a train-owned
-        `train_protection_claim`. The neighbour-side flank lock acquired
-        during `create_path(...)` was keyed by
-        `(path_id, "flank", entered_switch_id)`; after the train physically
-        occupies this switch, that future-authority lock is replaced by a
-        `(train_id, this_switch_id, locked_state)` entry in the neighbour's
-        `train_protection_claims`, which is later cleared on tail-vacate via
+        `train_protection_claim`. Per design_new.md, the lock key is
+        `(path_id, source_switch_id)` where `source_switch_id is None` for
+        primary claims and the originating switch_id for flank claims.
+        After the train physically occupies this switch, the neighbour's
+        flank lock is replaced by a `(train_id, this_switch_id, locked_state)`
+        entry in `train_protection_claims`, later cleared on tail-vacate via
         `Switch.release_train_protection_from(...)`.
         """
-        primary_key = (path_id, "primary", None)
+        primary_key = (path_id, None)
         if primary_key in switch_entity.locks:
-            switch_entity.release_lock(path_id, "primary", None)
+            switch_entity.release_lock(path_id, None)
 
         for neighbour_switch_id, _blocking_state in list(
             getattr(switch_entity, "flank_protection", []) or []
@@ -404,11 +407,11 @@ class SwitchManager:
             neighbour = self._switch_registry.get(neighbour_switch_id)
             if neighbour is None:
                 continue
-            flank_key = (path_id, "flank", switch_entity.switch_id)
+            flank_key = (path_id, switch_entity.switch_id)
             if flank_key not in neighbour.locks:
                 continue
             _claim_train_id, locked_state = neighbour.locks[flank_key]
-            neighbour.release_lock(path_id, "flank", switch_entity.switch_id)
+            neighbour.release_lock(path_id, switch_entity.switch_id)
             claim = (train_id, switch_entity.switch_id, int(locked_state))
             if claim not in neighbour.train_protection_claims:
                 neighbour.train_protection_claims.append(claim)

@@ -1011,21 +1011,22 @@ class TestSpeedCurveCalculation:
                 f"Operational limit ({point['operational_limit']}) should be <= train max speed"
             )
 
-    def test_ato_limit_5kmh_below_atc(self, train_and_controller):
-        """ATO limit should be at least 5 km/h below ATC (per ATO_SPEED_MARGIN_KMH)."""
+    def test_ato_limit_below_atc_by_margin(self, train_and_controller):
+        """ATO limit should be at least ATO_SPEED_MARGIN_KMH below ATC."""
+        from train_controller import ATO_SPEED_MARGIN_KMH
+
         train, controller = train_and_controller
         train.max_speed = 100.0
 
         curves = controller.calculate_speed_curves(max_distance_cm=2000)
 
-        # Check points where both limits are > 0 (not at very end)
         for point in curves:
             atc = point["atc_limit"]
             ato = point["operational_limit"]
-            if atc > 5.0:  # Only check where ATC > 5 km/h
-                assert ato <= atc - 5.0, (
-                    f"ATO ({ato}) should be at least 5 km/h below ATC ({atc}) "
-                    f"at distance {point['distance_cm']}cm"
+            if atc > ATO_SPEED_MARGIN_KMH:
+                assert ato <= atc - ATO_SPEED_MARGIN_KMH, (
+                    f"ATO ({ato}) should be at least {ATO_SPEED_MARGIN_KMH} km/h "
+                    f"below ATC ({atc}) at distance {point['distance_cm']}cm"
                 )
 
 

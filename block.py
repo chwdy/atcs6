@@ -18,8 +18,10 @@ Key concepts:
 v1 model:
 - `state` is computed from underlying primitive fields. Priority order:
   OCCUPIED > CAUTION > RESERVED > FREE.
-- Underlying primitives: `occupied_by`, `_is_caution`, `caution_exit_edge`,
-  `reserved_by_path`, `reserved_direction`, `reserved_for_train`, `disabled`.
+- Underlying primitives: `occupied_by`, `caution: Optional[CautionState]`,
+  `reservation: Optional[BlockReservation]`, `disabled`. Convenience reads
+  `_is_caution`, `caution_exit_edge`, `reserved_by_path`, `reserved_direction`,
+  `reserved_for_train` are all derived `@property` reads.
 - `Block` is a data container; `BlockManager` is the sole mutator for physical
   and CAUTION transitions.
 """
@@ -49,6 +51,23 @@ class BlockTileEntry(NamedTuple):
     x: int
     y: int
     entry_edge: str
+
+
+class CautionState(NamedTuple):
+    """Block caution state — physical safety-margin record.
+
+    Per design_new.md "Block model" — `block.caution` is a single Optional
+    record so the all-or-nothing rule (the flag and the direction stamp are
+    written together by `BlockManager.on_block_tail_vacated()` and cleared
+    together by `_reevaluate_caution_blocks()` / `release_path_block_reservations(completed=True)`)
+    is structural rather than enforced by prose.
+
+    Convenience reads `_is_caution` (= `caution is not None`) and
+    `caution_exit_edge` (= `caution.exit_edge` or `None`) are exposed as
+    `@property` reads on `Block`.
+    """
+
+    exit_edge: str  # "N" | "E" | "S" | "W"
 
 
 @dataclass
@@ -104,8 +123,9 @@ class Block(TrackResource):
     # Underlying primitive state fields. `state` is a computed @property
     # derived from these (see below).
     occupied_by: Optional[str] = None  # Train ID currently physically present
-    _is_caution: bool = False  # Physical safety-margin flag
-    caution_exit_edge: Optional[str] = None  # Direction of departing train (N/E/S/W)
+    # Single Optional caution record. The `_is_caution` and `caution_exit_edge`
+    # reads are derived @properties below.
+    caution: Optional[CautionState] = None
     # Single Optional reservation record. The reserved_by_path,
     # reserved_for_train, reserved_direction reads are derived @properties below.
     reservation: Optional[BlockReservation] = None
@@ -156,6 +176,20 @@ class Block(TrackResource):
         return self.reservation.exit_edge if self.reservation is not None else None
 
     # ========================================================================
+    # Derived caution reads
+    # ========================================================================
+
+    @property
+    def _is_caution(self) -> bool:
+        """True iff this block is currently in physical CAUTION."""
+        return self.caution is not None
+
+    @property
+    def caution_exit_edge(self) -> Optional[str]:
+        """Departing train's exit edge ('N'|'E'|'S'|'W') while in CAUTION, else None."""
+        return self.caution.exit_edge if self.caution is not None else None
+
+    # ========================================================================
     # Computed state property
     # ========================================================================
 
@@ -167,7 +201,7 @@ class Block(TrackResource):
         """
         if self.occupied_by is not None:
             return BlockState.OCCUPIED
-        if self._is_caution:
+        if self.caution is not None:
             return BlockState.CAUTION
         if self.reservation is not None:
             return BlockState.RESERVED
@@ -192,6 +226,12 @@ class Block(TrackResource):
             "speed_limit_kmh": self.speed_limit_kmh,
             "state": self.state.value,
             "occupied_by": self.occupied_by,
+            "caution": (
+                {"exit_edge": self.caution.exit_edge}
+                if self.caution is not None
+                else None
+            ),
+            # Convenience reads (derived from caution).
             "_is_caution": self._is_caution,
             "caution_exit_edge": self.caution_exit_edge,
             "reservation": (
@@ -235,22 +275,21 @@ class Block(TrackResource):
                 edge = str(entry[2])
             ordered_tiles.append(BlockTileEntry(x=x, y=y, entry_edge=edge))
 
-        # Reconstruct reservation. Prefer the new "reservation" record; fall
-        # back to the legacy three-field shape so older saved data still loads.
+        # Reconstruct reservation.
         reservation: Optional[BlockReservation] = None
         raw_reservation = data.get("reservation")
         if raw_reservation:
             reservation = BlockReservation.from_dict(raw_reservation)
-        else:
-            legacy_path = data.get("reserved_by_path")
-            legacy_train = data.get("reserved_for_train")
-            legacy_dir = data.get("reserved_direction")
-            if legacy_path and legacy_train and legacy_dir:
-                reservation = BlockReservation(
-                    path_id=str(legacy_path),
-                    train_id=str(legacy_train),
-                    exit_edge=str(legacy_dir),
-                )
+
+        # Reconstruct caution. The canonical key is `"caution"` (an object
+        # with `exit_edge`); reads of legacy `"_is_caution"` / `"caution_exit_edge"`
+        # are kept here so saves written before the composite record still load.
+        caution: Optional[CautionState] = None
+        raw_caution = data.get("caution")
+        if isinstance(raw_caution, dict) and raw_caution.get("exit_edge"):
+            caution = CautionState(exit_edge=str(raw_caution["exit_edge"]))
+        elif data.get("_is_caution") and data.get("caution_exit_edge"):
+            caution = CautionState(exit_edge=str(data["caution_exit_edge"]))
 
         return cls(
             block_id=data["block_id"],
@@ -259,8 +298,7 @@ class Block(TrackResource):
             min_radius_cm=data.get("min_radius_cm"),
             speed_limit_kmh=data.get("speed_limit_kmh", data.get("max_speed_kmh")),
             occupied_by=data.get("occupied_by"),
-            _is_caution=bool(data.get("_is_caution", False)),
-            caution_exit_edge=data.get("caution_exit_edge"),
+            caution=caution,
             reservation=reservation,
             disabled=bool(data.get("disabled", False)),
             current_voltage=float(data.get("current_voltage", 0.0)),
@@ -342,8 +380,7 @@ class Block(TrackResource):
             return False
         self.occupied_by = train_id
         # Clean physical entry overrides any prior caution metadata.
-        self._is_caution = False
-        self.caution_exit_edge = None
+        self.caution = None
         return True
 
     def release(self) -> None:
@@ -355,24 +392,31 @@ class Block(TrackResource):
         self.occupied_by = None
 
     def set_to_caution(self, caution_exit_edge: Optional[str] = None) -> None:
-        """Mark this block as in CAUTION with an optional direction stamp.
+        """Mark this block as in CAUTION with the departing-train exit edge.
 
-        The state machine treats CAUTION as an independent safety state, so
-        this writes the underlying flag directly instead of going through a
-        state field.
+        Per design_new.md "Block model" — caution is a single Optional record
+        carrying exactly `exit_edge`. The state machine treats CAUTION as an
+        independent safety state. When `caution_exit_edge` is None and no
+        prior caution record exists, an empty-edge placeholder is written;
+        `_reevaluate_caution_blocks()` clears any direction-less placeholder
+        on the next pass.
         """
-        self._is_caution = True
         if caution_exit_edge is not None:
-            self.caution_exit_edge = caution_exit_edge
+            self.caution = CautionState(exit_edge=caution_exit_edge)
+        elif self.caution is None:
+            # No prior record and no direction supplied. Direction-less
+            # CAUTION is a legacy admin/test path; the placeholder empty
+            # edge keeps the composite record well-formed and is cleared
+            # by the next caution reevaluation.
+            self.caution = CautionState(exit_edge="")
 
     def clear(self) -> None:
-        """Clear the CAUTION flag and its direction.
+        """Clear the CAUTION record.
 
         Does not touch `reserved_by_path` or `occupied_by` - those are
         independent concerns owned by separate manager calls.
         """
-        self._is_caution = False
-        self.caution_exit_edge = None
+        self.caution = None
 
     # ========================================================================
     # Path Reservation Helpers (Internal)

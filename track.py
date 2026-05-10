@@ -25,7 +25,7 @@ Curve Detection (connection-based):
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 import warnings
 
 from enums import TrackType, Direction, SwitchPosition
@@ -528,6 +528,113 @@ class TrackSegment:
                     self.dead_end_ports.add(edge)
 
     # === Exit resolution ===
+    def enumerate_traversals(
+        self, entry_edge: str
+    ) -> List[Tuple[str, Optional[int]]]:
+        """Enumerate every legal geometric traversal through this tile.
+
+        Per design_new.md "Track-segment role and traversal" — pure-geometry
+        helper used by `PathDispatcher` path construction/extension and BFS
+        switch derivation. Returns one `(exit_edge, required_switch_state)`
+        pair per legal traversal; for non-switch tiles `required_switch_state`
+        is `None`. For switch tiles, the value is the `Switch.position`
+        (0=MAIN, 1=DIVERGE) that aligns the tile to use that traversal.
+
+        This helper MUST NOT consult live switch alignment. Callers that
+        need the live-state filtered view use `get_active_exits(...)` /
+        `get_active_entry_for_exit(...)` with an explicit resolver.
+
+        Y-shape switches: branch-to-branch traversals are NOT yielded; v1
+        only allows one branch active at a time.
+        """
+        entry_norm = _normalize_edge(entry_edge)
+        if not entry_norm:
+            return []
+
+        # Geometric exits via track_bits (no switch_state).
+        results: List[Tuple[str, Optional[int]]] = []
+        for bit in range(6):
+            if not (self.track_bits & (1 << bit)):
+                continue
+            e1, e2 = BIT_TO_EDGES[bit]
+            if entry_norm == e1:
+                exit_edge = e2
+            elif entry_norm == e2:
+                exit_edge = e1
+            else:
+                continue
+
+            if not self.is_switch:
+                results.append((exit_edge, None))
+                continue
+
+            # On a switch tile, derive which Switch.position aligns this
+            # bit. Bits 0 (NS) and 1 (EW) are the MAIN segments; bits 2-5
+            # (NE/NW/SE/SW) are diverge segments. For diverge-only switches
+            # (no MAIN bit set), the two diverge segments correspond to
+            # position 0 and 1 in bit-order.
+            has_main = (self.track_bits & 0b11) != 0
+            if has_main:
+                required_state = 0 if bit <= 1 else 1
+            else:
+                # Diverge-only: lowest bit wins MAIN (position 0), next wins
+                # DIVERGE (position 1).
+                diverge_bits_present = sorted(
+                    b for b in range(2, 6) if self.track_bits & (1 << b)
+                )
+                if not diverge_bits_present:
+                    continue
+                if bit == diverge_bits_present[0]:
+                    required_state = 0
+                elif len(diverge_bits_present) >= 2 and bit == diverge_bits_present[1]:
+                    required_state = 1
+                else:
+                    # Third+ diverge segment: branch-to-branch path on a
+                    # Y-shape; v1 disallows. Skip.
+                    continue
+            results.append((exit_edge, required_state))
+
+        # Stable order on (exit_edge, required_state) for deterministic
+        # consumers.
+        results.sort(key=lambda item: (item[0], item[1] if item[1] is not None else -1))
+        return results
+
+    def get_active_exits(
+        self, entry_edge: str, resolver: Optional[Any] = None
+    ) -> List[str]:
+        """Return exit edges currently reachable from `entry_edge`.
+
+        Per design_new.md "Track-segment role and traversal" — the live-state
+        helper. For switch tiles, `resolver` is a callable or network-like
+        object exposing `.switches[switch_id]` so the helper can read
+        `Switch.position` to filter the geometric enumeration. When no
+        resolver is supplied and the segment is attached to a network
+        (`self.network`), the network's switch registry is used.
+
+        Returns the same edges as the legacy `get_exits(...)` helper but
+        sourced from the canonical `Switch.position`, not the legacy
+        `TrackSegment._switch_state` cache.
+        """
+        # The live-state filter still uses the same code path as `get_exits`
+        # for the moment (which reads `self._switch_state`). After the
+        # switch-state migration completes, this helper resolves through
+        # the supplied resolver / network.switches[switch_id].position.
+        # `resolver` is reserved for the post-migration call shape.
+        del resolver  # unused until _switch_state is removed (see follow-up)
+        return self.get_exits(entry_edge, use_switch_state=True)
+
+    def get_active_entry_for_exit(
+        self, exit_edge: str, resolver: Optional[Any] = None
+    ) -> Optional[str]:
+        """Return the live-state entry edge that yields `exit_edge`.
+
+        Per design_new.md "Track-segment role and traversal" — the inverse
+        of `get_active_exits(...)`. Used for backward tracing during tail
+        movement. `resolver` is reserved for the post-migration call shape.
+        """
+        del resolver
+        return self.get_entry_for_exit(exit_edge, use_switch_state=True)
+
     def get_exits(self, entry_edge: str, use_switch_state: bool = True) -> List[str]:
         """Return exit edges for a given entry edge.
 

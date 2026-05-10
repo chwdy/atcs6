@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 
 from enums import SwitchState
+from runtime_payloads import SwitchLockClaim
 from track_resource import TrackResource
 
 if TYPE_CHECKING:
@@ -35,8 +36,10 @@ class Switch(TrackResource):
 
     Locking model (v1):
     - `locks` is a multi-owner future-authority lock collection keyed by
-      `(path_id, claim_role, source_switch_id)` mapped to `(train_id, locked_state)`.
-      Compatible same-position lock claims may co-exist.
+      `(path_id, source_switch_id)` mapped to `(train_id, locked_state)`.
+      Compatible same-position lock claims may co-exist. The claim role
+      ("primary" vs "flank") is derived from `source_switch_id is None`,
+      not stored as a separate key field.
     - `train_protection_claims` is the train-owned physical protection set used
       after the train head has entered a switch and consumed the path lock.
     - Physical occupancy (`occupied_by`) is single-owner.
@@ -83,14 +86,15 @@ class Switch(TrackResource):
     # ========================================================================
     # MULTI-OWNER FUTURE-AUTHORITY LOCKS
     # ========================================================================
-    locks: Dict[Tuple[str, str, Optional[str]], Tuple[str, int]] = field(
+    locks: Dict[Tuple[str, Optional[str]], Tuple[str, int]] = field(
         default_factory=dict
     )
     """Composite-key lock collection.
 
-    Key: (path_id, claim_role, source_switch_id)
-      - claim_role is one of "primary" / "flank" / "overlap".
-      - source_switch_id is None for "primary"; the source switch_id for "flank".
+    Key: (path_id, source_switch_id)
+      - source_switch_id is None for primary (main) claims; the source
+        switch_id for flank-protection claims. Role ("primary" vs "flank")
+        is derived from this field, not stored separately.
     Value: (train_id, locked_state)
     """
 
@@ -166,27 +170,17 @@ class Switch(TrackResource):
                 return False
         return True
 
-    def acquire_lock(
-        self,
-        path_id: str,
-        claim_role: str,
-        train_id: str,
-        locked_state: int,
-        source_switch_id: Optional[str] = None,
-    ) -> bool:
+    def acquire_lock(self, claim: "SwitchLockClaim") -> bool:
         """Acquire a future-authority lock claim on the switch.
 
-        Compatible same-state locks may co-exist. The acquisition succeeds when
-        every existing lock has the same `locked_state` as the requested one,
-        no train-owned protection requires a different state, and physical
-        occupancy does not block a switch throw.
-
-        Args:
-            path_id: Path that owns this future claim.
-            claim_role: "primary", "flank", or "overlap".
-            train_id: Train associated with this claim.
-            locked_state: Required physical state (0=MAIN, 1=DIVERGE).
-            source_switch_id: Source main switch_id for "flank" claims; None for "primary".
+        Per design_new.md "Switch entity" — `claim` is the structured payload
+        carrying `path_id`, `train_id`, `locked_state`, and optional
+        `source_switch_id`. The role (primary vs flank) is derived from
+        `source_switch_id is None`. Compatible same-state locks may co-exist.
+        The acquisition succeeds when every existing lock has the same
+        `locked_state` as the requested one, no train-owned protection
+        requires a different state, and physical occupancy does not block a
+        switch throw.
 
         Returns:
             True if recorded (or already present idempotently); False on conflict.
@@ -195,7 +189,12 @@ class Switch(TrackResource):
         if self.disabled:
             return False
 
-        key = (path_id, claim_role, source_switch_id)
+        path_id = claim.path_id
+        train_id = claim.train_id
+        locked_state = claim.locked_state
+        source_switch_id = claim.source_switch_id
+
+        key = (path_id, source_switch_id)
         # Idempotent re-acquire of the same canonical claim with the same state.
         if key in self.locks:
             _existing_train_id, existing_state = self.locks[key]
@@ -229,15 +228,16 @@ class Switch(TrackResource):
     def release_lock(
         self,
         path_id: str,
-        claim_role: str,
         source_switch_id: Optional[str] = None,
     ) -> bool:
         """Release a single future-authority lock entry by composite key.
 
+        Per design_new.md "Switch entity" — keyed by `(path_id, source_switch_id)`.
+
         Returns:
             True if a matching entry was removed; False if none found.
         """
-        key = (path_id, claim_role, source_switch_id)
+        key = (path_id, source_switch_id)
         if key in self.locks:
             del self.locks[key]
             return True
@@ -245,18 +245,22 @@ class Switch(TrackResource):
 
     def release_train_protection_from(
         self, source_switch_id: str, train_id: str
-    ) -> None:
+    ) -> bool:
         """Remove all train_protection_claims with the given (source, train) combo.
 
-        Called on tail-vacate cleanup. Does not inspect or mutate `occupied_by`;
-        the caller is responsible for the `train_id == self.occupied_by` ordering
-        check before invoking this helper.
+        Per design_new.md "Switch entity" — returns ``True`` if at least one
+        matching claim was removed; ``False`` if none. Idempotent. Does not
+        inspect or mutate ``occupied_by``; the caller is responsible for the
+        ``train_id == self.occupied_by`` ordering check before invoking this
+        helper.
         """
+        before = len(self.train_protection_claims)
         self.train_protection_claims = [
             claim
             for claim in self.train_protection_claims
             if not (claim[0] == train_id and claim[1] == source_switch_id)
         ]
+        return len(self.train_protection_claims) < before
 
     def on_train_tail_vacated(
         self, train_id: str, network: Optional["RailwayNetwork"] = None
@@ -378,16 +382,19 @@ class Switch(TrackResource):
                 for (train_id, source_id, locked_state) in self.train_protection_claims
             ],
             # Locks: dict keys are non-JSON tuples, so serialize as a list of records.
+            # Per design_new.md "Switch entity" — key is `(path_id, source_switch_id)`;
+            # the role is derived from `source_switch_id is None`.
             "locks": [
                 {
                     "path_id": path_id,
-                    "claim_role": claim_role,
                     "source_switch_id": source_switch_id,
                     "train_id": train_id,
                     "locked_state": locked_state,
+                    # Derived role for diagnostic readers.
+                    "claim_role": "primary" if source_switch_id is None else "flank",
                 }
                 for (
-                    (path_id, claim_role, source_switch_id),
+                    (path_id, source_switch_id),
                     (train_id, locked_state),
                 ) in self.locks.items()
             ],
@@ -423,9 +430,11 @@ class Switch(TrackResource):
         ]
         switch.locks = {}
         for entry in data.get("locks", []):
+            # The 2-tuple key is canonical; the legacy `claim_role` field is
+            # ignored here (it round-trips as a derived diagnostic in to_dict
+            # but is not part of the storage key).
             key = (
                 entry["path_id"],
-                entry["claim_role"],
                 entry.get("source_switch_id"),
             )
             switch.locks[key] = (

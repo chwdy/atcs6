@@ -1,244 +1,522 @@
 /* ============================================================================
    TRAIN CONTROL PANEL (sidebar)
-   Spacing scale: 4 / 8 / 12 / 16
-   Font scale:    11 / 13 / 15 / 22
+   Visual language matches the inspector / train-monitor — see DESIGN_LANGUAGE.md.
+   - dark `--bg-panel` shell with `--bg-hover` status header
+   - 10px UPPERCASE field labels, mono values
+   - ghost buttons: `--bg-dark` bg + `--border-color` border, accent on hover
+   - 3px left-border status accents, banner footers in --bg-dark
    ============================================================================ */
 
 .tc-panel {
     container-type: inline-size;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 12px;
+    gap: 10px;
+    padding: 10px;
     padding-bottom: 16px;
+    font-family: var(--font-main);
+    font-size: 12px;
+    color: var(--text-primary);
 }
 
 /* ---- Sections ---- */
 .tc-section {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-color);
 }
 
 .tc-section-title {
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 600;
     color: var(--text-secondary);
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin: 0 0 4px 0;
+    letter-spacing: 0.06em;
+    margin: 0 0 2px 0;
 }
 
-/* ---- Status card (merged Train State + OBC) ---- */
+/* ============================================================================
+   STATUS HEADER (train ID + state badge + 6-field grid)
+   ============================================================================ */
+
 .tc-status {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 12px;
-    background: var(--bg-dark);
+    padding: 10px 12px;
+    background-color: var(--bg-hover);
     border: 1px solid var(--border-color);
     border-left: 3px solid var(--border-color);
-    border-radius: 6px;
+    border-radius: var(--control-radius-sm);
 }
 
-.tc-status.obc-power-on { border-left-color: var(--success-color); }
-.tc-status.obc-power-off { border-left-color: var(--text-secondary); }
+.tc-status.obc-power-on    { border-left-color: var(--success-color); }
+.tc-status.obc-power-off   { border-left-color: var(--text-secondary); }
 .tc-status.obc-power-emergency {
     border-left-color: var(--danger-color);
-    background: linear-gradient(90deg, rgba(232, 63, 91, 0.08), var(--bg-dark) 60%);
+    background: linear-gradient(90deg, rgba(232, 63, 91, 0.10), var(--bg-hover) 60%);
 }
 
 .tc-status-headline {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px 8px;
     flex-wrap: wrap;
+    row-gap: 4px;
 }
 
-.tc-status-headline .train-id {
+.tc-train-id {
     font-size: 13px;
     font-weight: 700;
     font-family: var(--font-mono);
     color: var(--text-primary);
+    letter-spacing: 0.02em;
 }
 
-.tc-status-headline .tc-status-state {
-    font-size: 13px;
+.tc-state-badge {
+    font-size: 10px;
     font-weight: 700;
+    font-family: var(--font-mono);
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    font-family: var(--font-mono);
-}
-
-.tc-status-headline .tc-status-block {
-    margin-left: auto;
-    font-size: 11px;
+    letter-spacing: 0.06em;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background-color: var(--bg-dark);
     color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+}
+.tc-state-badge.train-state-off    { color: var(--text-secondary); }
+.tc-state-badge.train-state-idle,
+.tc-state-badge.train-state-standby { color: var(--text-secondary); border-color: var(--border-color); }
+.tc-state-badge.train-state-running { color: var(--success-color); border-color: var(--success-color); }
+.tc-state-badge.train-state-station,
+.tc-state-badge.train-state-waiting { color: var(--info-color); border-color: var(--info-color); }
+.tc-state-badge.train-state-manual  { color: var(--warning-color); border-color: var(--warning-color); }
+
+.tc-running-badge {
+    font-size: 10px;
+    font-weight: 700;
     font-family: var(--font-mono);
+    color: var(--success-color);
+    background-color: rgba(4, 211, 97, 0.15);
+    border: 1px solid var(--success-color);
+    padding: 2px 8px;
+    border-radius: 999px;
+    letter-spacing: 0.06em;
 }
 
-.tc-status-headline .tc-status-emergency {
-    margin-left: auto;
-    font-size: 11px;
+.tc-eb-badge {
+    font-size: 10px;
     font-weight: 700;
     color: var(--danger-color);
+    background-color: rgba(232, 63, 91, 0.15);
+    border: 1px solid var(--danger-color);
+    padding: 2px 8px;
+    border-radius: 3px;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    animation: pulse-danger 0.5s infinite;
+    letter-spacing: 0.08em;
+    animation: tc-pulse-danger 0.8s infinite;
 }
 
-/* ---- Status grid ---- */
-.tc-status-grid {
+@keyframes tc-pulse-danger {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+}
+
+.tc-status-fields {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 8px 12px;
+    gap: 6px 10px;
+    margin: 0;
 }
 
-.tc-status-cell {
+/* ============================================================================
+   FIELD ROWS — shared label/value pattern
+   ============================================================================ */
+
+.tc-field {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    margin: 0;
+}
+
+.tc-field-label {
+    font-size: 10px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    margin: 0;
+    line-height: 1;
+}
+
+.tc-field-value {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin: 0;
+    line-height: 1.3;
+}
+
+.tc-val-success { color: var(--success-color); }
+.tc-val-danger  { color: var(--danger-color); }
+.tc-val-warn    { color: var(--warning-color); }
+.tc-val-info    { color: var(--info-color); }
+.tc-val-muted   { color: var(--text-secondary); }
+
+/* ============================================================================
+   HERO SPEED BLOCK (always visible — large current speed + ATC/target/max stack)
+   ============================================================================ */
+
+.tc-speed-hero {
+    display: flex;
+    align-items: stretch;
+    gap: 14px;
+    padding: 10px 12px;
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+}
+
+.tc-speed-main {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-wrap: nowrap;
+}
+
+.tc-speed-current {
+    font-family: var(--font-mono);
+    font-size: 36px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    color: var(--success-color);
+    font-variant-numeric: tabular-nums;
+}
+
+.tc-speed-max {
+    font-family: var(--font-mono);
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+}
+
+.tc-speed-unit {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-left: 4px;
+}
+
+.tc-speed-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--border-color);
+    padding-left: 12px;
+    min-width: 78px;
+}
+
+.tc-speed-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.25;
+}
+
+.tc-speed-row-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-secondary);
+    font-family: var(--font-main);
+    font-weight: 600;
+}
+
+.tc-speed-row-val {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================================
+   ATO DISPLAY — Route Plan card + Next Stop card
+   ============================================================================ */
+
+.tc-ato-display {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.tc-ato-display.hidden { display: none; }
+
+.tc-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+}
+
+.tc-card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.tc-card-title {
+    flex: 1 1 auto;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.tc-card-pill {
+    font-size: 9.5px;
+    font-family: var(--font-mono);
+    font-weight: 700;
+    padding: 1px 8px;
+    border-radius: 999px;
+    letter-spacing: 0.06em;
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-panel);
+}
+.tc-pill-success { color: var(--success-color); border-color: var(--success-color); background-color: rgba(4, 211, 97, 0.10); }
+.tc-pill-muted   { color: var(--text-secondary); }
+
+.tc-card-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 0;
+}
+
+.tc-card-fields .tc-field {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+    padding: 2px 0;
+    border-bottom: 1px dotted var(--border-color);
+}
+.tc-card-fields .tc-field:last-child { border-bottom: none; }
+.tc-card-fields .tc-field-label { flex: 0 0 84px; }
+.tc-card-fields .tc-field-value {
+    flex: 1 1 auto;
+    text-align: right;
+    font-weight: 600;
+}
+
+/* Destination card — info-color accent (highlighted as JR-style "next station") */
+.tc-card-destination {
+    border-left: 3px solid var(--info-color);
+    background: linear-gradient(180deg, rgba(0, 212, 255, 0.04), var(--bg-dark) 70%);
+}
+
+/* Next Stop header puts label LEFT and destination name RIGHT on one line */
+.tc-dest-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.tc-dest-header .tc-card-title {
+    flex: 0 0 auto;
+}
+
+.tc-dest-name {
+    flex: 1 1 auto;
+    text-align: right;
+    font-family: var(--font-main);
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--info-color);
+    letter-spacing: 0.01em;
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.tc-dest-metrics {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    padding-top: 6px;
+}
+
+.tc-dest-metric {
     display: flex;
     flex-direction: column;
     gap: 2px;
     min-width: 0;
 }
 
-.tc-status-cell-label {
-    font-size: 11px;
-    color: var(--text-muted);
+.tc-dest-metric-label {
+    font-size: 9px;
     text-transform: uppercase;
-    letter-spacing: 0.3px;
-}
-
-.tc-status-cell-value {
-    font-size: 13px;
-    font-family: var(--font-mono);
-    color: var(--text-primary);
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
     font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
 }
 
-@container (max-width: 260px) {
-    .tc-status-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
+.tc-dest-metric-value {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-primary);
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
 }
 
-/* ---- Monitor link (compact in-status button) ---- */
-.tc-monitor-link {
+.tc-dest-metric-unit {
+    font-family: var(--font-main);
+    font-size: 9px;
+    font-weight: 400;
+    color: var(--text-secondary);
+    margin-left: 2px;
+}
+
+/* ============================================================================
+   MANUAL DISPLAY — input-mode toggle + handle slider OR power-% slider
+   ============================================================================ */
+
+.tc-manual-display {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    padding: 6px 10px;
-    background: var(--bg-input);
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px;
+    background-color: var(--bg-dark);
     border: 1px solid var(--border-color);
+    border-left: 3px solid var(--warning-color);
+    border-radius: var(--control-radius-sm);
+}
+.tc-manual-display.hidden { display: none; }
+
+/* ---- Handle block (notched master controller) ---- */
+
+.tc-handle-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 4px 0;
+}
+.tc-handle-block.hidden { display: none; }
+
+.tc-handle-zones {
+    display: grid;
+    grid-template-columns: 5fr 1fr 8fr 1fr;  /* Power 5 / N 1 / Brake 8 / EB 1 */
+    gap: 1px;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.tc-handle-zone {
+    text-align: center;
+    padding: 2px 0;
+    color: var(--bg-dark);
+    font-family: var(--font-main);
+}
+.tc-zone-power   { background-color: rgba(4, 211, 97, 0.55); color: var(--bg-dark); }
+.tc-zone-neutral { background-color: rgba(168, 168, 179, 0.45); color: var(--bg-dark); }
+.tc-zone-brake   { background-color: rgba(255, 205, 30, 0.50); color: var(--bg-dark); }
+.tc-zone-eb      { background-color: rgba(232, 63, 91, 0.65); color: var(--bg-panel); }
+
+.tc-handle-ticks {
+    display: grid;
+    grid-template-columns: repeat(15, 1fr);
+    gap: 1px;
+    font-family: var(--font-mono);
+    font-size: 8.5px;
+    color: var(--text-secondary);
+    text-align: center;
+    line-height: 1.2;
+}
+
+.tc-handle-tick {
+    padding: 1px 0;
+}
+.tc-handle-tick.active {
+    color: var(--accent-hover);
+    font-weight: 700;
+    background-color: rgba(130, 87, 229, 0.20);
+    border-radius: 2px;
+}
+
+/* Custom-styled range slider for the handle */
+.tc-handle-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 8px;
     border-radius: 4px;
-    color: var(--text-primary);
-    font-size: 11px;
+    background: linear-gradient(to right,
+        var(--success-color) 0%,
+        var(--success-color) 33%,
+        var(--text-secondary) 33%,
+        var(--text-secondary) 40%,
+        var(--warning-color) 40%,
+        var(--warning-color) 93%,
+        var(--danger-color) 93%,
+        var(--danger-color) 100%);
+    outline: none;
+    margin: 4px 0;
     cursor: pointer;
-    transition: border-color 0.15s ease, background 0.15s ease;
 }
 
-.tc-monitor-link:hover {
-    border-color: var(--accent-color);
-    background: var(--bg-hover);
+.tc-handle-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 22px;
+    border-radius: 3px;
+    background-color: var(--text-primary);
+    border: 2px solid var(--bg-dark);
+    box-shadow: 0 0 0 1px var(--accent-color);
+    cursor: grab;
+    margin-top: 0;
+}
+.tc-handle-slider::-webkit-slider-thumb:active { cursor: grabbing; }
+
+.tc-handle-slider::-moz-range-thumb {
+    width: 14px;
+    height: 22px;
+    border-radius: 3px;
+    background-color: var(--text-primary);
+    border: 2px solid var(--bg-dark);
+    box-shadow: 0 0 0 1px var(--accent-color);
+    cursor: grab;
 }
 
-/* ---- Rows (label + control) ---- */
-.tc-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-height: 30px;
-}
-
-.tc-row-label {
-    flex: 0 0 84px;
-    font-size: 11px;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-}
-
-.tc-row-value {
-    flex: 1;
-    min-width: 0;
-    font-size: 13px;
-    font-family: var(--font-mono);
-    color: var(--text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-/* ---- Button group (segmented switch container) ---- */
-.tc-button-group {
-    flex: 1;
-    display: flex;
-    gap: 6px;
-    min-width: 0;
-}
-
-.tc-button-group > * {
-    flex: 1;
-    min-width: 0;
-}
-
-/* ---- Primary destructive action (Emergency Stop) ---- */
-.tc-primary-action {
-    display: flex;
-    align-items: stretch;
-    gap: 8px;
-}
-
-.tc-primary-action .btn-danger {
-    flex: 1;
-    min-height: 44px;
-    font-size: 15px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-}
-
-.tc-primary-action .tc-eb-reset {
-    flex: 0 0 auto;
-    padding: 0 14px;
-    min-height: 44px;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-}
-
-/* ---- Secondary actions (ATO Go/Stop, Save) ---- */
-.tc-secondary-action {
-    min-height: 32px;
-    font-size: 13px;
-    font-weight: 600;
-}
-
-/* ---- Branch wrapper (ATO / Manual sections) ---- */
-.tc-branch {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-/* ---- Manual handle ---- */
-.tc-handle {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 8px 4px 4px;
-}
-
-.tc-handle-track {
-    display: flex;
-    justify-content: space-between;
-    font-size: 11px;
-    color: var(--text-muted);
-    font-family: var(--font-mono);
+.tc-handle-slider:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 .tc-handle-readout {
@@ -246,140 +524,584 @@
     flex-direction: column;
     align-items: center;
     gap: 2px;
-    margin-top: 4px;
+    margin-top: 2px;
 }
 
-.tc-handle-readout .handle-position-display {
-    font-size: 15px;
+.tc-handle-pos {
     font-family: var(--font-mono);
+    font-size: 22px;
     font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0.02em;
+}
+.tc-handle-pos.handle-power   { color: var(--success-color); }
+.tc-handle-pos.handle-brake   { color: var(--warning-color); }
+.tc-handle-pos.handle-neutral { color: var(--text-primary); }
+/* EB-emphasis applied via inline check elsewhere; fall back: */
+.tc-handle-pos[class*="handle-brake"]:where(:not(.tc-handle-pos)) { /* placeholder */ }
+
+.tc-handle-desc {
+    font-size: 11px;
+    color: var(--text-secondary);
 }
 
-.tc-handle-readout .handle-description {
-    font-size: 11px;
-    color: var(--text-muted);
-}
-
-.tc-handle-readout .train-handle-reason {
-    font-size: 11px;
-    color: var(--text-muted);
+.tc-handle-reason {
+    font-size: 10px;
+    color: var(--text-secondary);
     font-style: italic;
-    min-height: 14px;
+    min-height: 12px;
     text-align: center;
 }
 
-/* ---- ATO route summary (Path / Destination rows) ---- */
-.tc-ato-summary {
+/* ---- Power-% block ---- */
+
+.tc-power-block {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 8px 10px;
-    background: var(--bg-input);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
+    gap: 8px;
+    padding: 8px 4px 4px;
+}
+.tc-power-block.hidden { display: none; }
+
+.tc-power-readout {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 4px;
+    padding: 4px 0;
 }
 
-.tc-ato-summary .tc-row {
-    min-height: 0;
+.tc-power-value {
+    font-family: var(--font-mono);
+    font-size: 32px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--success-color);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+}
+
+.tc-power-unit {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.tc-power-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background-color: var(--border-color);
+    outline: none;
+    cursor: pointer;
+}
+
+.tc-power-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background-color: var(--success-color);
+    border: 2px solid var(--bg-dark);
+    box-shadow: 0 0 0 1px var(--success-color);
+    cursor: grab;
+}
+.tc-power-slider::-webkit-slider-thumb:active { cursor: grabbing; }
+
+.tc-power-slider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background-color: var(--success-color);
+    border: 2px solid var(--bg-dark);
+    box-shadow: 0 0 0 1px var(--success-color);
+    cursor: grab;
+}
+
+.tc-power-slider:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.tc-power-bar {
+    width: 100%;
+    height: 4px;
+    background-color: var(--border-color);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.tc-power-fill {
+    height: 100%;
+    background: linear-gradient(to right, var(--success-color), var(--accent-hover));
+    transition: width 0.12s ease-out;
+}
+
+.tc-power-hint {
+    font-size: 10px;
+    color: var(--text-secondary);
+    font-style: italic;
+    text-align: center;
+}
+
+/* ============================================================================
+   ROW + SEGMENTED CONTROL (used everywhere — Power/Cab/Mode/Travel/Input)
+   ============================================================================ */
+
+.tc-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 28px;
+}
+
+.tc-row-label {
+    flex: 0 0 70px;
+    font-size: 10px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+}
+
+.tc-row-value {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Segmented control — same vocabulary as the train-monitor view-distance group */
+.tc-segment {
+    flex: 1;
+    display: inline-flex;
+    align-items: stretch;
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    overflow: hidden;
+    height: var(--control-height-xs);
+    min-width: 0;
+}
+
+.tc-seg-btn {
+    flex: 1;
+    height: 100%;
+    padding: 0 8px;
+    background: transparent;
+    border: none;
+    border-right: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-family: var(--font-main);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    line-height: 1;
+    transition: color 0.15s, background-color 0.15s;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.tc-seg-btn:last-child { border-right: none; }
+.tc-seg-btn:hover:not(:disabled) {
+    color: var(--accent-hover);
+    background-color: var(--bg-hover);
+}
+.tc-seg-btn.active {
+    color: var(--accent-hover);
+    background-color: rgba(130, 87, 229, 0.18);
+}
+.tc-seg-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* ============================================================================
+   ACTION BUTTONS (ATO Go/Stop, Save, Emergency)
+   ============================================================================ */
+
+.tc-actions {
+    display: flex;
     gap: 8px;
 }
 
-.tc-ato-summary .tc-row-label {
-    flex: 0 0 80px;
+/* ATO mode promotes Go/Stop to the panel's primary CTA — driver-facing in
+   ATO. Tall, generously padded, with separated glyph + label. */
+.tc-ato-actions {
+    margin-top: 4px;
 }
 
-.tc-ato-summary .train-ato-path-display {
-    color: var(--info-color);
+.tc-ato-actions .tc-btn-hero {
+    height: 52px;
+    padding: 0 16px;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    border-width: 1px;
+    gap: 10px;
+    border-radius: 8px;
 }
 
-.tc-ato-summary .train-ato-destination-display {
+.tc-btn-hero .tc-btn-glyph {
+    font-size: 18px;
+    line-height: 1;
+}
+.tc-btn-hero .tc-btn-text {
+    line-height: 1;
+}
+
+.tc-btn {
+    flex: 1;
+    height: var(--control-height-xs);
+    padding: 0 12px;
+    background-color: var(--bg-dark);
     color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    cursor: pointer;
+    font-family: var(--font-main);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: color 0.15s, border-color 0.15s, background-color 0.15s;
+}
+.tc-btn:hover:not(:disabled) {
+    border-color: var(--accent-color);
+    color: var(--accent-hover);
+}
+.tc-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
 }
 
-/* ---- Disclosure (Properties, Debug) ---- */
+.tc-btn-success {
+    color: var(--success-color);
+    border-color: rgba(4, 211, 97, 0.4);
+}
+.tc-btn-success:hover:not(:disabled) {
+    color: var(--success-color);
+    border-color: var(--success-color);
+    background-color: rgba(4, 211, 97, 0.10);
+}
+
+.tc-btn-danger {
+    color: var(--danger-color);
+    border-color: rgba(232, 63, 91, 0.4);
+}
+.tc-btn-danger:hover:not(:disabled) {
+    color: var(--danger-color);
+    border-color: var(--danger-color);
+    background-color: rgba(232, 63, 91, 0.10);
+}
+
+.tc-btn-primary {
+    color: var(--accent-hover);
+    border-color: rgba(130, 87, 229, 0.5);
+}
+.tc-btn-primary:hover:not(:disabled) {
+    color: var(--accent-hover);
+    border-color: var(--accent-color);
+    background-color: rgba(130, 87, 229, 0.18);
+}
+
+/* ---- Emergency row (full-width red CTA) ---- */
+.tc-emergency-row {
+    display: flex;
+    gap: 8px;
+}
+
+.tc-eb-btn {
+    flex: 1;
+    height: 40px;
+    background-color: rgba(232, 63, 91, 0.10);
+    color: var(--danger-color);
+    border: 1px solid var(--danger-color);
+    border-radius: var(--control-radius-sm);
+    font-family: var(--font-main);
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s;
+}
+.tc-eb-btn:hover {
+    background-color: var(--danger-color);
+    color: var(--bg-dark);
+}
+
+.tc-eb-reset-btn {
+    flex: 0 0 auto;
+    padding: 0 14px;
+    height: 40px;
+    background-color: var(--bg-dark);
+    color: var(--warning-color);
+    border: 1px solid var(--warning-color);
+    border-radius: var(--control-radius-sm);
+    font-family: var(--font-main);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s;
+}
+.tc-eb-reset-btn:hover {
+    background-color: var(--warning-color);
+    color: var(--bg-dark);
+}
+
+/* ============================================================================
+   BANNER (speed-limit reason)
+   ============================================================================ */
+
+.tc-banner {
+    font-size: 11px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    border-left: 3px solid transparent;
+    line-height: 1.35;
+    overflow: hidden;
+    word-break: break-word;
+}
+.tc-banner.hidden { display: none; }
+
+.tc-banner-warn {
+    color: var(--warning-color);
+    background-color: rgba(255, 205, 30, 0.10);
+    border-left-color: var(--warning-color);
+}
+
+/* ============================================================================
+   MONITOR LINK + DISCLOSURE + DELETE TEXT-ACTION
+   ============================================================================ */
+
+.tc-monitor-link {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: var(--control-height-xs);
+    padding: 0 12px;
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    color: var(--text-primary);
+    font-size: 11px;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s, background-color 0.15s;
+}
+.tc-monitor-link:hover {
+    border-color: var(--accent-color);
+    color: var(--accent-hover);
+    background-color: var(--bg-hover);
+}
+
 .tc-disclosure {
     border: 1px solid var(--border-color);
-    border-radius: 6px;
-    background: var(--bg-dark);
+    border-radius: var(--control-radius-sm);
+    background-color: var(--bg-dark);
     overflow: hidden;
 }
 
 .tc-disclosure > summary {
     list-style: none;
     cursor: pointer;
-    padding: 8px 12px;
-    font-size: 11px;
+    padding: 6px 10px;
+    font-size: 10px;
     font-weight: 600;
     color: var(--text-secondary);
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.06em;
     display: flex;
     align-items: center;
     gap: 6px;
     user-select: none;
 }
-
 .tc-disclosure > summary::-webkit-details-marker { display: none; }
-
 .tc-disclosure > summary::before {
     content: "▸";
     font-size: 10px;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     transition: transform 0.15s ease;
 }
-
-.tc-disclosure[open] > summary::before {
-    transform: rotate(90deg);
-}
+.tc-disclosure[open] > summary::before { transform: rotate(90deg); }
 
 .tc-disclosure-body {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 0 12px 12px;
+    gap: 6px;
+    padding: 0 10px 10px;
 }
 
-/* Inputs inside disclosure use compact tc-row layout */
 .tc-disclosure-body .tc-row input[type="text"],
 .tc-disclosure-body .tc-row input[type="number"] {
     flex: 1;
     min-width: 0;
-    min-height: 28px;
-    padding: 4px 8px;
+    height: var(--control-height-xs);
+    padding: 0 8px;
     box-sizing: border-box;
     border: 1px solid var(--border-color);
     border-radius: 4px;
-    background: var(--bg-input);
+    background-color: var(--bg-panel);
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: 12px;
     font-family: var(--font-mono);
 }
-
 .tc-disclosure-body .tc-row input:focus {
     outline: none;
     border-color: var(--accent-color);
-}
-
-/* ---- Demoted destructive action (Delete train) ---- */
-.tc-text-action {
-    align-self: flex-start;
-    background: none;
-    border: none;
-    padding: 4px 0;
-    font-size: 11px;
-    color: var(--danger-color);
-    cursor: pointer;
-    text-decoration: underline;
-    text-underline-offset: 2px;
-    text-decoration-color: rgba(232, 63, 91, 0.4);
-}
-
-.tc-text-action:hover {
-    text-decoration-color: var(--danger-color);
 }
 
 .tc-footer {
     display: flex;
     justify-content: flex-end;
     margin-top: 4px;
+}
+
+.tc-text-action {
+    align-self: flex-start;
+    background: none;
+    border: none;
+    padding: 4px 0;
+    font-size: 10px;
+    color: var(--danger-color);
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-color: rgba(232, 63, 91, 0.4);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.tc-text-action:hover { text-decoration-color: var(--danger-color); }
+
+/* ============================================================================
+   ADAPTIVE LAYOUT — container queries on .tc-panel (which sets
+   container-type: inline-size). The host sidebar ranges roughly 240–500px
+   wide; these breakpoints reshape the layout so the panel reads cleanly
+   across that span. Placed at the END of the file so they override the
+   base styles above (same specificity, so source order wins).
+   ============================================================================ */
+
+/* ---- Narrow (≤ 300px) — tighten typography and spacing ---- */
+@container (max-width: 300px) {
+    .tc-panel { padding: 8px; gap: 8px; }
+
+    /* Status block */
+    .tc-status { padding: 8px 10px; }
+    .tc-status-fields { grid-template-columns: repeat(2, 1fr); gap: 6px 8px; }
+    .tc-train-id { font-size: 12px; }
+    .tc-state-badge { padding: 2px 4px; font-size: 9px; }
+    .tc-running-badge { padding: 1px 6px; font-size: 9px; }
+    .tc-eb-badge { padding: 1px 6px; font-size: 9px; }
+
+    /* Hero speed */
+    .tc-speed-hero { gap: 10px; padding: 8px 10px; }
+    .tc-speed-current { font-size: 30px; }
+    .tc-speed-max { font-size: 14px; }
+    .tc-speed-stack { min-width: 64px; padding-left: 8px; }
+
+    /* Cards */
+    .tc-card { padding: 6px 8px; }
+    .tc-card-fields .tc-field-label { flex: 0 0 64px; font-size: 9px; }
+    .tc-card-fields .tc-field-value { font-size: 11px; }
+    .tc-dest-name { font-size: 13px; }
+    .tc-dest-metric-value { font-size: 12px; }
+
+    /* Hero ATO buttons */
+    .tc-ato-actions .tc-btn-hero {
+        height: 46px; font-size: 13px; padding: 0 10px; gap: 8px;
+    }
+    .tc-btn-hero .tc-btn-glyph { font-size: 16px; }
+
+    /* Generic rows / segments */
+    .tc-row-label { flex: 0 0 56px; font-size: 9px; }
+    .tc-seg-btn { padding: 0 6px; font-size: 10px; }
+
+    /* Manual handle: tighter, hide every other tick label */
+    .tc-handle-block { padding: 6px 2px 0; }
+    .tc-handle-tick { font-size: 8px; }
+    .tc-handle-tick:nth-child(2n) { color: transparent; }
+    .tc-handle-tick:nth-child(2n).active { color: var(--accent-hover); }
+    .tc-handle-pos { font-size: 18px; }
+
+    /* Power %: smaller readout */
+    .tc-power-value { font-size: 26px; }
+}
+
+/* ---- Very narrow (≤ 240px) — stack the inline pairs vertically ---- */
+@container (max-width: 240px) {
+    /* Status fields: single column */
+    .tc-status-fields { grid-template-columns: 1fr; }
+
+    /* Hero speed: speed on top, ATC/ATO below as a row */
+    .tc-speed-hero { flex-direction: column; align-items: stretch; gap: 6px; }
+    .tc-speed-stack {
+        border-left: none;
+        padding-left: 0;
+        border-top: 1px solid var(--border-color);
+        padding-top: 6px;
+        flex-direction: row;
+        justify-content: space-between;
+        gap: 12px;
+        min-width: 0;
+        width: 100%;
+    }
+
+    /* Card fields: label stacks above value */
+    .tc-card-fields .tc-field {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 1px;
+    }
+    .tc-card-fields .tc-field-label { flex: 0 0 auto; }
+    .tc-card-fields .tc-field-value { text-align: left; }
+
+    /* Next Stop: stack header */
+    .tc-dest-header { flex-direction: column; align-items: stretch; gap: 2px; }
+    .tc-dest-name { text-align: left; }
+
+    /* Distance/ETA: stack vertically */
+    .tc-dest-metrics { grid-template-columns: 1fr; gap: 6px; }
+}
+
+/* ---- Wide (≥ 400px) — use the extra space ---- */
+@container (min-width: 400px) {
+    .tc-panel { padding: 12px; gap: 12px; }
+
+    /* Status: roomier */
+    .tc-status { padding: 12px 14px; }
+    .tc-status-fields { gap: 8px 16px; }
+
+    /* Hero speed: bigger numerals, wider side stack */
+    .tc-speed-hero { padding: 14px 16px; gap: 18px; }
+    .tc-speed-current { font-size: 42px; }
+    .tc-speed-max { font-size: 18px; }
+    .tc-speed-stack { min-width: 100px; padding-left: 16px; }
+    .tc-speed-row-val { font-size: 13px; }
+
+    /* Cards: more breathing room */
+    .tc-card { padding: 10px 12px; }
+    .tc-card-fields .tc-field-label { flex: 0 0 110px; font-size: 11px; }
+    .tc-card-fields .tc-field-value { font-size: 13px; }
+
+    /* Destination: larger name + metrics */
+    .tc-dest-name { font-size: 16px; }
+    .tc-dest-metric-value { font-size: 16px; }
+    .tc-dest-metric-label { font-size: 10px; }
+
+    /* Hero ATO buttons: even bigger */
+    .tc-ato-actions .tc-btn-hero { height: 56px; font-size: 16px; }
+    .tc-btn-hero .tc-btn-glyph { font-size: 20px; }
 }

@@ -485,9 +485,12 @@ class ATONavigator:
         debug["required_decel_kmh_s"] = round(required_decel_kmh_s, 3)
 
         # No braking required — power up while below the ceiling, else coast.
+        # Power-up deadband is ATO_SPEED_TOLERANCE (~2 km/h) so the train
+        # actually reaches and holds near the operational ceiling instead of
+        # bleeding speed below it after coasting in.
         if required_decel_kmh_s <= 0.0:
             debug["multiplier_needed"] = 0.0
-            if speed_kmh < ceiling_at_zero - ATO_SPEED_TOLERANCE * 2:
+            if speed_kmh < ceiling_at_zero - ATO_SPEED_TOLERANCE:
                 target_handle = self.calculate_power_notch(
                     speed_kmh, ceiling_at_zero
                 )
@@ -503,10 +506,13 @@ class ATONavigator:
                 )
                 debug["mode"] = "coast"
             debug["target_handle"] = target_handle.value
+            # Power-up uses the same fast rate (±2 notches/tick) as braking,
+            # so re-accelerating after a slow zone matches the snap of a
+            # fresh start instead of crawling up one notch per tick.
             final = rate_limit_handle(
                 current=c.handle_position,
                 target=target_handle,
-                allow_fast=False,
+                allow_fast=True,
             )
             debug["rate_limited"] = final != target_handle
             debug["final_handle"] = final.value

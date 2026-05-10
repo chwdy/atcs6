@@ -618,6 +618,30 @@ class API {
     }
 
     /**
+     * Set manual-mode submode for a train.
+     * @param {string} trainId - Train ID
+     * @param {string} modeType - 'simulation' (handle) or 'power_percent'
+     */
+    async setManualModeType(trainId, modeType) {
+        return this._request(`/trains/${encodeURIComponent(trainId)}/manual-mode-type`, {
+            method: 'POST',
+            body: { mode_type: modeType }
+        }, 'setManualModeType');
+    }
+
+    /**
+     * Set manual power-percent command (0..100) when manual_mode_type == power_percent.
+     * @param {string} trainId - Train ID
+     * @param {number} percent - Integer 0..100
+     */
+    async setManualPowerPercent(trainId, percent) {
+        return this._request(`/trains/${encodeURIComponent(trainId)}/manual-power-percent`, {
+            method: 'POST',
+            body: { percent }
+        }, 'setManualPowerPercent');
+    }
+
+    /**
      * Start ATO movement via OnboardComputer.
      * @param {string} trainId - Train ID
      * @returns {Promise<object>} { status, onboard }

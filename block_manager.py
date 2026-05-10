@@ -3,9 +3,10 @@ Block State Manager - single source of truth for block occupancy.
 
 `BlockManager` is the database-style lock manager for block resources and the
 single serialization point for atomic block acquisition. It is the sole mutator
-for `Block` physical state (`occupied_by`, `_is_caution`, `caution_exit_edge`)
-and for path-reservation primitives (`reserved_by_path`, `reserved_direction`,
-`reserved_for_train`).
+for `Block` physical state (`occupied_by`, `caution`) and for path-reservation
+primitives (`reservation`). The convenience reads `_is_caution`,
+`caution_exit_edge`, `reserved_by_path`, `reserved_direction`,
+`reserved_for_train` are derived `@property` reads on `Block`.
 
 State machine (computed from primitives):
     FREE -> RESERVED -> OCCUPIED -> CAUTION -> FREE
@@ -22,8 +23,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Dict, List, Mapping, Set, Tuple, TYPE_CHECKING
 
-from block import Block, BlockState
-from runtime_payloads import FatalPhysicalEntryConflict, FatalConflictKind
+from block import Block, BlockState, CautionState
+from runtime_payloads import (
+    FatalPhysicalEntryConflict,
+    FatalConflictKind,
+    OccupyResult,
+)
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -206,8 +211,7 @@ class BlockManager:
                 )
                 return False
             block.occupied_by = train_id
-            block._is_caution = False
-            block.caution_exit_edge = None
+            block.caution = None
             # Same-train reservation is consumed by clean entry.
             block.reservation = None
             self._record_history(
@@ -217,8 +221,7 @@ class BlockManager:
 
         # FREE or CAUTION -> OCCUPIED. Clean entry clears stale caution.
         block.occupied_by = train_id
-        block._is_caution = False
-        block.caution_exit_edge = None
+        block.caution = None
         self._record_history(
             block_id, "occupy", prior_state, BlockState.OCCUPIED, train_id
         )
@@ -272,7 +275,12 @@ class BlockManager:
         if prior_state == BlockState.OCCUPIED:
             prev_train = block.occupied_by
             block.occupied_by = None
-            block._is_caution = True
+            # Direction-less CAUTION is a legacy compatibility path used by
+            # admin / test helpers. Use a placeholder neutral edge so the
+            # composite record remains well-formed; routine runtime CAUTION
+            # transitions go through `on_block_tail_vacated()` with a real
+            # exit edge.
+            block.caution = CautionState(exit_edge="")
             self._record_history(
                 block_id,
                 "set_caution",
@@ -297,8 +305,7 @@ class BlockManager:
         prev_train = block.occupied_by
 
         block.occupied_by = None
-        block._is_caution = False
-        block.caution_exit_edge = None
+        block.caution = None
         block.reservation = None
 
         self._record_history(
@@ -362,27 +369,45 @@ class BlockManager:
             return True
         return False
 
-    def occupy_blocks(self, block_ids: List[str], train_id: str) -> bool:
+    def occupy_blocks(
+        self, block_ids: List[str], train_id: str
+    ) -> OccupyResult:
         """Atomically occupy multiple blocks. All-or-nothing with rollback.
 
-        Returns True on full success. On any per-block failure, blocks
-        successfully occupied earlier in this call are rolled back to FREE.
-        Fatal physical-entry conflicts (occupied/reserved by another train,
-        or entry into a disabled block) are reported through the inner
-        ``occupy_block`` call, which forwards a ``FatalPhysicalEntryConflict``
-        to ``SimulationController.enter_failed_runtime(...)``.
+        Per design_new.md "BlockManager" — returns an ``OccupyResult`` whose
+        ``outcome`` is one of ``"clean_entry"`` (at least one block
+        transitioned to OCCUPIED), ``"idempotent_noop"`` (every block was
+        already occupied by the same ``train_id``), or ``"fatal_conflict"``
+        (an entry conflict was detected and reported through
+        ``SimulationController.enter_failed_runtime(...)``).
+
+        ``OccupyResult.__bool__`` returns ``True`` when the outcome is not
+        ``"fatal_conflict"``, so callers that use the result as a boolean
+        continue to behave correctly.
         """
         occupied: List[str] = []
-        try:
-            for block_id in block_ids:
-                if not self.occupy_block(block_id, train_id):
-                    raise ValueError(f"Failed to occupy block {block_id}")
-                occupied.append(block_id)
-            return True
-        except Exception:
-            for block_id in occupied:
-                self.clear_block(block_id)
-            return False
+        any_transition = False
+        for block_id in block_ids:
+            block = self._block_registry.get(block_id)
+            prior = block.state if block is not None else None
+            ok = self.occupy_block(block_id, train_id)
+            if not ok:
+                # Rollback any clean-entry transitions performed earlier in
+                # this call. The conflict has already been reported through
+                # `_report_fatal_conflict` inside `occupy_block`.
+                for prior_id in occupied:
+                    self.clear_block(prior_id)
+                return OccupyResult(
+                    outcome="fatal_conflict",
+                    reason=f"occupy {block_id} rejected",
+                )
+            occupied.append(block_id)
+            if prior != BlockState.OCCUPIED:
+                any_transition = True
+
+        if not any_transition:
+            return OccupyResult(outcome="idempotent_noop")
+        return OccupyResult(outcome="clean_entry")
 
     # ------------------------------------------------------------------
     # New v1 public API
@@ -487,7 +512,7 @@ class BlockManager:
         block_ids: List[str],
         path_id: str,
         completed: bool = False,
-    ) -> None:
+    ) -> bool:
         """Release future-reservation ownership for a path on a set of blocks.
 
         Clears `reserved_by_path`, `reserved_direction`, `reserved_for_train`
@@ -496,15 +521,19 @@ class BlockManager:
 
         - `completed=True` means the path completed with the train fully
           stopped at the terminal; this method may additionally force-clear
-          `_is_caution` and `caution_exit_edge` on still-CAUTION matching
-          owned blocks because the train is no longer moving.
+          `block.caution` on still-CAUTION matching owned blocks because the
+          train is no longer moving.
         - `completed=False` means cancellation mid-flight; physical CAUTION
           state is left untouched so the safety margin survives until the
           normal directional reevaluation clears it.
 
         Never touches `Block.occupied_by` outside the `completed=True`
         caution-fields exception.
+
+        Per design_new.md: returns ``True`` if at least one matching
+        reservation was released; ``False`` if none.
         """
+        any_released = False
         for block_id in block_ids:
             block = self._block_registry.get(block_id)
             if block is None:
@@ -518,9 +547,8 @@ class BlockManager:
                 )
                 continue
             block.release_path_reservation()
-            if completed and block._is_caution:
-                block._is_caution = False
-                block.caution_exit_edge = None
+            if completed and block.caution is not None:
+                block.caution = None
             self._record_history(
                 block_id,
                 "release_reservation",
@@ -528,29 +556,36 @@ class BlockManager:
                 block.state,
                 None,
             )
+            any_released = True
+        return any_released
 
     def on_block_tail_vacated(
         self,
         block_id: str,
         train_id: str,
         direction: str,
-    ) -> None:
+    ) -> bool:
         """Record a tail-vacate observation for a block.
 
         Called by `PathDispatcher.on_controller_progress(...)` after the
         controller-reported observation proves the train no longer occupies
         any tile in the block.
 
-        - If the block does not exist, this is a no-op success (no diag).
-        - If `block.occupied_by != train_id`, leave the block unchanged and
-          emit a one-shot diagnostic.
-        - Otherwise: clear `occupied_by`, set `_is_caution = True`, set
-          `caution_exit_edge = direction`, then call
-          `_reevaluate_caution_blocks()` to cascade any ready-to-FREE blocks.
+        Per design_new.md: returns ``True`` on a clean tail-vacate;
+        ``False`` on the no-op cases (missing block in registry, mismatched
+        owner — see below).
+
+        - If the block does not exist, returns ``False`` (silent no-op).
+        - If `block.occupied_by != train_id`, leaves the block unchanged,
+          emits a one-shot diagnostic, returns ``False``.
+        - Otherwise: clear `occupied_by`, set
+          `block.caution = CautionState(exit_edge=direction)`, then call
+          `_reevaluate_caution_blocks()` to cascade any ready-to-FREE blocks
+          and returns ``True``.
         """
         block = self._block_registry.get(block_id)
         if block is None:
-            return
+            return False
 
         if block.occupied_by != train_id:
             other = block.occupied_by
@@ -558,12 +593,11 @@ class BlockManager:
                 f"[BlockManager] block {block_id} release for train {train_id} "
                 f"skipped: currently occupied by {other!r}"
             )
-            return
+            return False
 
         prior_state = block.state
         block.occupied_by = None
-        block._is_caution = True
-        block.caution_exit_edge = direction
+        block.caution = CautionState(exit_edge=direction)
         self._record_history(
             block_id,
             "tail_vacated",
@@ -572,6 +606,7 @@ class BlockManager:
             train_id,
         )
         self._reevaluate_caution_blocks()
+        return True
 
     def on_switch_position_changed(self, switch_id: str) -> None:
         """Switch-side notification that connectivity may have changed.
@@ -595,12 +630,11 @@ class BlockManager:
         Per design_new.md "`on_block_tail_vacated()` behaviour (directional
         CAUTION evaluation)": for each block currently in CAUTION, follow
         live tile connectivity from the block's exit tile in
-        ``caution_exit_edge`` through any intervening switch (using the
+        ``block.caution.exit_edge`` through any intervening switch (using the
         current ``Switch.position``) until the next reachable block resource is
         found. If that next reachable block is OCCUPIED, keep caution. If it
         is FREE/RESERVED/CAUTION, or if no reachable block exists at all,
-        clear caution by writing ``_is_caution = False`` and
-        ``caution_exit_edge = None``.
+        clear caution by writing ``block.caution = None``.
 
         When the manager has no network back-reference (early bootstrap or
         unit tests), the only safe behaviour is to clear caution entries that
@@ -609,27 +643,25 @@ class BlockManager:
         registry = self._block_registry
         cleared: List[str] = []
         for block in list(registry.values()):
-            if not block._is_caution:
+            if block.caution is None:
                 continue
-            # Direction never recorded: nothing to protect.
-            if block.caution_exit_edge is None:
-                block._is_caution = False
+            edge = block.caution.exit_edge
+            # Direction never recorded (placeholder empty edge from legacy
+            # `set_block_to_caution`): nothing to protect, clear the record.
+            if not edge:
+                block.caution = None
                 cleared.append(block.block_id)
                 continue
             # Without a network we cannot walk topology; bail safely.
             if self.network is None:
                 continue
-            next_block = self._next_block_along_direction(
-                block, block.caution_exit_edge
-            )
+            next_block = self._next_block_along_direction(block, edge)
             if next_block is None:
-                block._is_caution = False
-                block.caution_exit_edge = None
+                block.caution = None
                 cleared.append(block.block_id)
                 continue
             if next_block.state != BlockState.OCCUPIED:
-                block._is_caution = False
-                block.caution_exit_edge = None
+                block.caution = None
                 cleared.append(block.block_id)
 
         for block_id in cleared:

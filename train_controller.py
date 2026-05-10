@@ -107,7 +107,7 @@ ATO_EXIT_MARGIN = ATO_SPEED_TOLERANCE + 1.0
 CURVE_SAMPLE_RESOLUTION_CM = (
     3.0  # 3cm resolution for speed curves (balance between precision and performance)
 )
-ATO_SPEED_MARGIN_KMH = 5.0  # ATO stays 5 km/h below ATC limit
+ATO_SPEED_MARGIN_KMH = 3.0  # ATO stays this far km/h below ATC limit
 
 
 # =============================================================================
@@ -3685,6 +3685,19 @@ class TrainController:
             "is_stopped": self.is_stopped(),
             # Diagnostic: reason for current handle position
             "handle_reason": self.handle_reason,
+            # ATO ETA: integrates the operational_limit speed curve to the
+            # current target stop. None when no path/target/curves.
+            "time_to_target_sec": self._calculate_time_to_target_sec(),
+            # Run instance identifier — populated when a RouteRun is active.
+            # Composed as `${route_id}#${run_number}` so the cab display can
+            # tell apart multiple runs of the same route.
+            "route_run_id": (
+                f"{self.route_executor.execution_state_for(self.train_id).route_id}"
+                f"#{self.route_executor.execution_state_for(self.train_id).run_number}"
+                if self.route_executor is not None
+                and self.route_executor.execution_state_for(self.train_id) is not None
+                else None
+            ),
         }
 
     def _span_to_dict(self) -> Optional[Dict[str, Any]]:
@@ -3819,16 +3832,24 @@ class TrainController:
                 if block.speed_limit_kmh and block.speed_limit_kmh < float("inf"):
                     block_speed_limit = block.speed_limit_kmh
 
+            # `end_cm` must be `start_cm + length_cm`, NOT `clearance_cm` —
+            # clearance is the full distance to the end of authority (which
+            # may extend beyond this block), while end_cm is the block's own
+            # end position in the lookahead frame.
+            block_total_length = (
+                block_length_cm
+                if block_length_cm > 0
+                else head_distance_cm + clearance_cm
+            )
+            block_start_cm = -head_distance_cm
             blocks.append(
                 {
                     "id": current_block_id,
                     "name": current_block_id,
                     "state": block_state or BlockState.OCCUPIED.value,
-                    "start_cm": -head_distance_cm,  # Block starts behind train
-                    "end_cm": clearance_cm,
-                    "length_cm": block_length_cm
-                    if block_length_cm > 0
-                    else head_distance_cm + clearance_cm,
+                    "start_cm": block_start_cm,
+                    "end_cm": block_start_cm + block_total_length,
+                    "length_cm": block_total_length,
                     "tile_count": tile_count,
                     "speed_limit_kmh": block_speed_limit,
                 }
@@ -3916,6 +3937,75 @@ class TrainController:
             },
         }
 
+    def _calculate_time_to_target_sec(self) -> Optional[float]:
+        """Estimate seconds until the train reaches its current ATO stop target.
+
+        Integrates the operational_limit speed curve from the train head
+        (distance_cm == 0) up to target_stop_cm. For each curve segment
+        [d_i, d_{i+1}] the contribution is delta_cm / avg_speed_cms, where
+        avg_speed_cms = mean(operational_limit_kmh) * (100000/3600).
+
+        For the initial segment where current_speed_kmh < operational_limit
+        (i.e. the train is still accelerating into the envelope), uses the
+        max of the two so the integration reflects the train's real motion
+        rather than the unattained ceiling.
+
+        Returns None when there is no useful target — train unpowered, no
+        active authority/path, or target_stop_cm is too close to register
+        as meaningful (<10 cm).
+        """
+        # Gate: only meaningful when the train can actually move toward something.
+        if not self.power_on:
+            return None
+        try:
+            payload = self._compute_canonical_lookahead()
+        except Exception:
+            return None
+        la = (payload or {}).get("lookahead") or {}
+        curves = la.get("speed_curves") or []
+        target_cm = la.get("target_stop_cm") or 0.0
+        if target_cm < 10 or len(curves) < 2:
+            return None
+
+        cm_per_second_per_kmh = 100000.0 / 3600.0  # 27.78
+        current_kmh = float(getattr(self, "current_speed_kmh", 0.0) or 0.0)
+        total_sec = 0.0
+        prev = curves[0]
+        for cur in curves[1:]:
+            d_prev = prev.get("distance_cm", 0.0) or 0.0
+            d_cur = cur.get("distance_cm", 0.0) or 0.0
+            if d_cur > target_cm:
+                break
+            v_prev = prev.get("operational_limit", 0.0) or 0.0
+            v_cur = cur.get("operational_limit", 0.0) or 0.0
+            v_avg = (v_prev + v_cur) / 2.0
+            # If the train hasn't yet reached the envelope, the actual
+            # speed is bounded by what it's already doing.
+            if current_kmh > v_avg:
+                v_avg = max(v_avg, min(current_kmh, max(v_prev, v_cur)))
+            if v_avg < 0.5:
+                prev = cur
+                continue
+            delta_cm = d_cur - d_prev
+            if delta_cm > 0:
+                total_sec += delta_cm / (v_avg * cm_per_second_per_kmh)
+            prev = cur
+
+        return total_sec if total_sec > 0 else None
+
+    def get_current_span(self) -> Optional[Any]:
+        """Return the controller's canonical live span (or None).
+
+        Per design_new.md "Data Flow To UI" — the doc-canonical replacement
+        read interface for current physical span. ``current_span`` remains
+        the canonical TrainSpan storage written by
+        ``on_physics_updated(...)``; this accessor is the public read used
+        by ``RouteExecutor.tick_train_phase1(...)`` and
+        ``PathDispatcher.create_path(...)`` to discover the train's current
+        span without reaching into the dataclass field directly.
+        """
+        return self.current_span
+
     def get_lookahead(self) -> Dict[str, Any]:
         """Return the canonical lookahead payload per design_new.md.
 
@@ -3992,8 +4082,7 @@ class TrainController:
 
         # Locate the head tile inside the resource_sequence (tail→authority
         # order per the canonical resource_sequence schema). The head must
-        # live in some resource's path_tiles slice; if not, fall back to the
-        # no-path lookahead.
+        # live in some resource's path_tiles slice.
         head_resource_index = -1
         head_tile_index = -1
         for r_idx, resource in enumerate(resource_sequence):
@@ -4005,10 +4094,80 @@ class TrainController:
             if head_resource_index >= 0:
                 break
 
+        head_track = self.network.get_track(head_tile[0], head_tile[1])
+        head_block_id: Optional[str] = (
+            head_track.block_section_id if head_track else None
+        )
+
+        # Recovery for the freshly-departed case: a Path's resource_sequence
+        # describes only the authority *forward* of the head, so when the
+        # head sits behind the first path tile (e.g. just after `depart()`)
+        # its tile is not in any `path_tiles` slice. Without this recovery
+        # the function would fall through to `_build_fallback_lookahead`,
+        # which only knows about the head's current block and would silently
+        # drop every downstream block, switch and station. When the head's
+        # block matches the first authority block we anchor the loop at
+        # path[0]'s first tile, then below add the in-block portion behind
+        # that first path tile to `block_back_length_cm` so the head's block
+        # still reports its true length and the chart frame stays aligned
+        # to the head's actual position.
+        recovery_extra_back_cm = 0.0
+        recovery_extra_back_tiles = 0
         if head_resource_index < 0:
-            return self._build_fallback_lookahead(
-                train, head_tile, head_distance_cm, travel_direction
+            if not (
+                head_block_id is not None
+                and resource_sequence[0].resource_type == "block"
+                and resource_sequence[0].resource_id == head_block_id
+                and resource_sequence[0].path_tiles
+            ):
+                return self._build_fallback_lookahead(
+                    train, head_tile, head_distance_cm, travel_direction
+                )
+            head_resource_index = 0
+            head_tile_index = 0
+            # Compute the head's position within its block and the position
+            # of path[0]'s first tile within the same block. The gap between
+            # them is the distance the head still has to travel before
+            # reaching the path; the in-block prefix before path[0] becomes
+            # extra `block_back` content the loop wouldn't otherwise see.
+            first_pt = resource_sequence[0].path_tiles[0]
+            first_pt_tile = (first_pt.x, first_pt.y)
+            block_positions = (
+                self.network.get_block_positions(head_block_id) or []
             )
+            try:
+                head_idx = block_positions.index(head_tile)
+                first_pt_idx = block_positions.index(first_pt_tile)
+            except ValueError:
+                head_idx = -1
+                first_pt_idx = -1
+            if 0 <= head_idx < first_pt_idx:
+                # Sum lengths of every block tile up to (but not including)
+                # path[0]'s first tile — that is the back portion of the
+                # head's block that the path doesn't enumerate.
+                for prev_tile in block_positions[:first_pt_idx]:
+                    recovery_extra_back_cm += self.network._get_tile_length_cm(
+                        prev_tile[0], prev_tile[1]
+                    )
+                    recovery_extra_back_tiles += 1
+                # Distance from head's actual position to start of path[0]'s
+                # first tile (= "gap"). Equals back-in-block-up-to-path[0]
+                # minus the head's already-traversed portion of the block.
+                head_in_block_cm = sum(
+                    self.network._get_tile_length_cm(t[0], t[1])
+                    for t in block_positions[:head_idx]
+                ) + head_distance_cm
+                gap_to_first_path_tile_cm = max(
+                    0.0, recovery_extra_back_cm - head_in_block_cm
+                )
+                # Set head_distance_cm so that the loop's
+                # `cumulative_distance_cm = -head_distance_cm` initialization
+                # places path[0]'s first tile at exactly `gap_to_first_path_tile_cm`.
+                head_distance_cm = -gap_to_first_path_tile_cm
+            else:
+                # Couldn't resolve positions; fall back to placing path[0]
+                # at the lookahead origin (chart shifted by ~one tile).
+                head_distance_cm = 0.0
 
         blocks: List[Dict[str, Any]] = []
         signals: List[Dict[str, Any]] = []
@@ -4017,10 +4176,7 @@ class TrainController:
 
         cumulative_distance_cm = -head_distance_cm
 
-        head_track = self.network.get_track(head_tile[0], head_tile[1])
-        current_block_id: Optional[str] = (
-            head_track.block_section_id if head_track else None
-        )
+        current_block_id: Optional[str] = head_block_id
 
         # Sum the tail length of the head's block — tiles that share the
         # same block_id and lie before the head in tail→authority order. The
@@ -4059,6 +4215,14 @@ class TrainController:
                         block_back_tile_count += 1
                     if stop:
                         break
+
+        # When recovery picked up a same-block prefix that the path doesn't
+        # enumerate (head sits behind path[0] in the same block), fold that
+        # prefix into the back-walk totals so the first block's reported
+        # length, tile_count and start_cm cover the entire block.
+        if recovery_extra_back_cm > 0.0:
+            block_back_length_cm += recovery_extra_back_cm
+            block_back_tile_count += recovery_extra_back_tiles
 
         current_block_start_cm = (
             cumulative_distance_cm - block_back_length_cm
