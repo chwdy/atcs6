@@ -213,11 +213,13 @@ class TestRouteExecutor:
 
     def test_execution_state_dataclass(self):
         """Test RouteExecutionState dataclass."""
-        state = RouteExecutionState(train_id="T001", route_id="R001")
+        state = RouteExecutionState(
+            train_id="T001", route_id="R001", started_at=0.0
+        )
 
         assert state.train_id == "T001"
         assert state.route_id == "R001"
-        assert state.current_waypoint_index == 0
+        assert state.current_waypoint_index is None
         assert state.path_cancelled is False
         assert state.task_runs == []
 

@@ -485,8 +485,8 @@ def register(app, state: AppState) -> None:
 
             status = {
                 "train_id": train_id,
-                "current_waypoint_index": 0,
-                "direction": 1,
+                "current_waypoint_index": None,
+                "direction": "forward",
                 "current_task_kind": None,
                 "current_task_location": None,
                 "at_platform": False,
@@ -496,8 +496,13 @@ def register(app, state: AppState) -> None:
             if route_executor:
                 exec_state = route_executor.execution_states.get(train_id)
                 if exec_state and exec_state.route_id == route.route_id:
+                    # Per design, `current_waypoint_index` is Optional[int]
+                    # (largest finished walk-position, or None). For the
+                    # status read we want the next planning index (the task
+                    # the train is currently working on).
+                    next_idx = exec_state.next_planning_index
                     status["current_waypoint_index"] = exec_state.current_waypoint_index
-                    status["direction"] = exec_state.signed_direction
+                    status["direction"] = exec_state.direction
 
                     controller = route_executor.controllers.get(train_id)
                     if controller is not None:
@@ -505,7 +510,7 @@ def register(app, state: AppState) -> None:
                             controller.state == TrainState.RUNNING_AT_STATION
                         )
 
-                    task = route.get_task_at(exec_state.current_waypoint_index)
+                    task = route.get_task_at(next_idx)
                     if task:
                         from train_route import task_location_to_dict
 
@@ -515,10 +520,10 @@ def register(app, state: AppState) -> None:
                         )
                         if (
                             task.task_kind == "dwell"
-                            and exec_state.current_waypoint_index < len(exec_state.task_runs)
+                            and next_idx < len(exec_state.task_runs)
                         ):
                             dwell_started_at = exec_state.task_started_at(
-                                exec_state.current_waypoint_index
+                                next_idx
                             )
                             if dwell_started_at is not None:
                                 status["dwell_remaining_sec"] = (

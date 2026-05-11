@@ -173,12 +173,16 @@ class TestRaceConditionFix:
 
         # Should trigger EB
         assert controller.eb_active == True, "EB should trigger at 12 km/h overspeed"
-        assert "overspeed" in controller.speed_limit_reason.lower(), (
-            f"Speed limit reason should mention overspeed, got: {controller.speed_limit_reason}"
+        # Per design_new.md ~line 161, "speed-limit reason" comes from the
+        # canonical lookahead at distance 0; for EB-active state that reads
+        # "Emergency brake active". The trigger context (overspeed) is
+        # carried by NotificationCenter via the controller's pending
+        # notifications.
+        assert (controller.speed_limit_reason or "").lower() == "emergency brake active", (
+            f"Lookahead should report EB active, got: {controller.speed_limit_reason}"
         )
-        # Should have notification
-        assert len(controller.pending_notifications) > 0, (
-            "Should have notification for EB"
+        assert any("overspeed" in note.lower() for note in controller.pending_notifications), (
+            f"Should have an overspeed EB notification, got: {controller.pending_notifications}"
         )
 
 

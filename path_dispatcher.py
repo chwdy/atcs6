@@ -17,9 +17,8 @@ current_block_index / priority / dispatcher_id / switch_positions /
 flank_protection_switches / overlap_blocks / approach_locked_blocks /
 blocks_cleared. All call sites here use the v1 fields.
 
-PathSegment (geometry-only candidate from BFS) and the legacy ValidationResult
-/ ValidationError schemas are imported from runtime_payloads.py — Wave 1 moved
-them out of path.py.
+PathSegment (geometry-only candidate from BFS) and the ValidationResult /
+ValidationError schemas are imported from runtime_payloads.py.
 """
 
 from collections import deque
@@ -52,15 +51,11 @@ from runtime_payloads import (
     CancellationResult,
     Command,
     ControllerProgressReport,
-    ConflictResolution,
-    ConflictResolutionType,
     DEFAULT_PATH_PRIORITY,
-    ExtensionResult,
     PathAcquisitionFailureKind,
     PathAcquisitionResult,
     PathAcquisitionResultKind,
     PathCompletionResult,
-    PathResult,
     PathSegment,
     PendingPathCancelRequest,
     ResourceEvent,
@@ -160,13 +155,6 @@ class PathDispatcher:
         dest_part = self._get_block_display_name(dest_block_id)
         return f"PATH_{train_part}_TO_{dest_part}_{self.path_sequence_counter:03d}"
 
-    def generate_path_id(self, start_block_id: str, end_block_id: str) -> str:
-        """Legacy wrapper for callers that still pass start/end."""
-        self.path_sequence_counter += 1
-        start_part = self._get_block_display_name(start_block_id)
-        end_part = self._get_block_display_name(end_block_id)
-        return f"PATH_{start_part}_TO_{end_part}_{self.path_sequence_counter:03d}"
-
     def _get_block_display_name(self, block_id: str) -> str:
         block = self.network.blocks.get(block_id)
         if block and block.name:
@@ -181,16 +169,9 @@ class PathDispatcher:
 
     def _get_route_executor(self):
         sc = self.simulation_controller
-        if sc is not None:
-            return getattr(sc, "route_executor", None)
-        # Fallback: legacy wiring through power_controller.
-        power_controller = getattr(self.network, "power_controller", None)
-        if power_controller is None:
+        if sc is None:
             return None
-        sim = getattr(power_controller, "_sim_controller", None)
-        if sim is None:
-            return None
-        return getattr(sim, "route_executor", None)
+        return getattr(sc, "route_executor", None)
 
     def _get_controller(self, train_id: str):
         sc = self.simulation_controller
@@ -268,9 +249,10 @@ class PathDispatcher:
             # Can't tell from geometry alone; treat as forward and let
             # downstream validation/acquisition reject if needed.
             return True
-        if not path.path_tiles:
+        path_tiles = path.get_path_tiles()
+        if not path_tiles:
             return True
-        terminal = path.path_tiles[-1]
+        terminal = path_tiles[-1]
         terminal_exit = terminal.exit_edge or None
         if not terminal_exit:
             # Existing prefix has no recorded exit_edge; cannot prove a
@@ -363,10 +345,11 @@ class PathDispatcher:
             return ([], f"Path {path_id} not found")
         if not path.can_be_extended():
             return ([], f"Path cannot be extended (status: {path.status.value})")
-        if not path.path_tiles or len(path.path_tiles) < 2:
+        path_tiles = path.get_path_tiles()
+        if not path_tiles or len(path_tiles) < 2:
             return ([], "Path has insufficient tiles to determine direction")
 
-        last_tile = path.path_tiles[-1]
+        last_tile = path_tiles[-1]
         entry_edge = path.get_last_tile_entry_edge()
         if not entry_edge:
             return ([], "Cannot determine path exit direction")
@@ -542,12 +525,6 @@ class PathDispatcher:
         requested_destination_block_id: str = "",
         requested_destination_direction: str = "forward",
         acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
-        # Legacy kwargs accepted for transitional compatibility from
-        # demo/test code that hasn't migrated yet:
-        start_block_id: Optional[str] = None,
-        end_block_id: Optional[str] = None,
-        priority: int = DEFAULT_PATH_PRIORITY,
-        dispatcher_id: str = "system",
     ) -> PathAcquisitionResult:
         """v1 create_path: build authority for a train to a destination block.
 
@@ -560,10 +537,6 @@ class PathDispatcher:
         Returns:
             PathAcquisitionResult.
         """
-        # Legacy fallback: end_block_id provided in old kwargs form.
-        if not requested_destination_block_id and end_block_id:
-            requested_destination_block_id = end_block_id
-
         # Validate direction.
         if requested_destination_direction not in ("forward", "reverse"):
             return PathAcquisitionResult(
@@ -626,9 +599,7 @@ class PathDispatcher:
             )
 
         # Resolve start block from train's current head tile.
-        start_block_id_resolved = (
-            start_block_id or self._get_current_block_id_for_train(train)
-        )
+        start_block_id_resolved = self._get_current_block_id_for_train(train)
         if not start_block_id_resolved:
             return PathAcquisitionResult(
                 success=False,
@@ -700,7 +671,7 @@ class PathDispatcher:
                     path_id=path_id,
                     requested_destination_block_id=requested_destination_block_id,
                     requested_destination_direction=requested_destination_direction,
-                    authority_end_block_id=path.authority_end_block_id,
+                    authority_end_block_id=path.get_authority_end_block_id(),
                     resource_sequence=list(path.resource_sequence),
                     reason="best_effort partial acquisition",
                 )
@@ -721,7 +692,7 @@ class PathDispatcher:
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.authority_end_block_id,
+                authority_end_block_id=path.get_authority_end_block_id(),
                 resource_sequence=list(path.resource_sequence),
                 reason="created",
             )
@@ -735,21 +706,25 @@ class PathDispatcher:
             acquisition_mode == AcquisitionMode.BEST_EFFORT
             and self._train_head_is_on_switch(train)
         ):
+            head_switch_reason = "cannot create best-effort authority while head is on a switch"
+            if last_failed_resource_id:
+                head_switch_reason += f" (blocked at {last_failed_resource_id})"
             return PathAcquisitionResult(
                 success=False,
                 failure_kind=PathAcquisitionFailureKind.HEAD_ON_SWITCH_NO_BLOCK_AUTHORITY,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                failed_resource_id=last_failed_resource_id,
-                reason="cannot create best-effort authority while head is on a switch",
+                reason=head_switch_reason,
             )
+        blocked_reason = last_reason or "All candidate paths blocked"
+        if last_failed_resource_id and last_failed_resource_id not in blocked_reason:
+            blocked_reason = f"{blocked_reason} (blocked at {last_failed_resource_id})"
         return PathAcquisitionResult(
             success=False,
             failure_kind=PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
             requested_destination_block_id=requested_destination_block_id,
             requested_destination_direction=requested_destination_direction,
-            failed_resource_id=last_failed_resource_id,
-            reason=last_reason or "All candidate paths blocked",
+            reason=blocked_reason,
         )
 
     def extend_path(
@@ -758,13 +733,8 @@ class PathDispatcher:
         requested_destination_block_id: str = "",
         requested_destination_direction: str = "forward",
         acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
-        # Legacy
-        new_end_block_id: Optional[str] = None,
     ) -> PathAcquisitionResult:
         """v1 extend_path: append more authority to an existing ACTIVE path."""
-        if not requested_destination_block_id and new_end_block_id:
-            requested_destination_block_id = new_end_block_id
-
         if requested_destination_direction not in ("forward", "reverse"):
             return PathAcquisitionResult(
                 success=False,
@@ -792,7 +762,7 @@ class PathDispatcher:
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 path_id=path_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.authority_end_block_id or None,
+                authority_end_block_id=path.get_authority_end_block_id() or None,
                 reason="requested_destination_block_id required",
             )
 
@@ -804,7 +774,7 @@ class PathDispatcher:
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.authority_end_block_id or None,
+                authority_end_block_id=path.get_authority_end_block_id() or None,
                 reason=f"{requested_destination_block_id} is already in path",
             )
 
@@ -817,12 +787,12 @@ class PathDispatcher:
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.authority_end_block_id or None,
+                authority_end_block_id=path.get_authority_end_block_id() or None,
                 reason="path has no train",
             )
 
         # Find extension geometry from current authority end.
-        start_block_id = path.authority_end_block_id
+        start_block_id = path.get_authority_end_block_id()
         candidates = self.find_paths(
             start_block_id, requested_destination_block_id, train_id
         )
@@ -833,7 +803,7 @@ class PathDispatcher:
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.authority_end_block_id or None,
+                authority_end_block_id=path.get_authority_end_block_id() or None,
                 reason=f"No forward path from {start_block_id} to {requested_destination_block_id}",
             )
 
@@ -855,7 +825,7 @@ class PathDispatcher:
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.authority_end_block_id or None,
+                authority_end_block_id=path.get_authority_end_block_id() or None,
                 reason="extend would reverse at authority end",
             )
         candidates = forward_candidates
@@ -900,7 +870,7 @@ class PathDispatcher:
             # requested target, return REACHED_REQUESTED_TARGET; otherwise
             # the live authority grew but is still short of the target, so
             # return TRUNCATED_GREW.
-            if path.authority_end_block_id == requested_destination_block_id:
+            if path.get_authority_end_block_id() == requested_destination_block_id:
                 grown_kind = PathAcquisitionResultKind.REACHED_REQUESTED_TARGET
                 grown_reason = "extended to requested target"
             else:
@@ -913,20 +883,22 @@ class PathDispatcher:
                 path_id=path_id,
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
-                authority_end_block_id=path.authority_end_block_id,
+                authority_end_block_id=path.get_authority_end_block_id(),
                 resource_sequence=list(path.resource_sequence),
                 reason=grown_reason,
             )
 
+        ext_reason = last_reason or "All extension paths blocked"
+        if last_resource and last_resource not in ext_reason:
+            ext_reason = f"{ext_reason} (blocked at {last_resource})"
         return PathAcquisitionResult(
             success=False,
             failure_kind=PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
             path_id=path_id,
             requested_destination_block_id=requested_destination_block_id,
             requested_destination_direction=requested_destination_direction,
-            authority_end_block_id=path.authority_end_block_id or None,
-            failed_resource_id=last_resource,
-            reason=last_reason or "All extension paths blocked",
+            authority_end_block_id=path.get_authority_end_block_id() or None,
+            reason=ext_reason,
         )
 
     def cancel_path(
@@ -1557,14 +1529,14 @@ class PathDispatcher:
                 reason="controller not stopped at authority end",
             )
 
-        if not path.authority_end_block_id:
+        if not path.get_authority_end_block_id():
             return PathCompletionResult(
                 success=False,
                 path_id=path_id,
                 new_status=path.status,
                 reason="path missing authority end",
             )
-        if path.authority_end_block_id != path.requested_destination_block_id:
+        if path.get_authority_end_block_id() != path.requested_destination_block_id:
             return PathCompletionResult(
                 success=False,
                 path_id=path_id,
@@ -1586,7 +1558,7 @@ class PathDispatcher:
                 reason="path missing requested destination direction",
             )
         terminal_entry = path.resource_sequence[-1] if path.resource_sequence else None
-        terminal_block = self.network.blocks.get(path.authority_end_block_id)
+        terminal_block = self.network.blocks.get(path.get_authority_end_block_id())
         if terminal_entry is None or terminal_block is None:
             return PathCompletionResult(
                 success=False,
@@ -1624,8 +1596,8 @@ class PathDispatcher:
 
         # Record completion event.
         end_tile = (
-            (path.path_tiles[-1].x, path.path_tiles[-1].y)
-            if path.path_tiles
+            (path.get_path_tiles()[-1].x, path.get_path_tiles()[-1].y)
+            if path.get_path_tiles()
             else None
         )
         if end_tile is not None:
@@ -1652,7 +1624,7 @@ class PathDispatcher:
                     handler(
                         train_id,
                         path_id,
-                        path.authority_end_block_id,
+                        path.get_authority_end_block_id(),
                         path.requested_destination_direction,
                         event_time,
                     )
@@ -1720,7 +1692,7 @@ class PathDispatcher:
             "path_id": path.path_id,
             "status": path.status.value,
             "current_resource_index": path.current_resource_index,
-            "authority_end_block_id": path.authority_end_block_id,
+            "authority_end_block_id": path.get_authority_end_block_id(),
             "requested_destination_block_id": path.requested_destination_block_id,
             "requested_destination_direction": path.requested_destination_direction,
             "resource_sequence": [

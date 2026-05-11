@@ -138,9 +138,8 @@ class TestExtendPathBug:
 
         # Create initial path from A to C
         path_result = dispatcher.create_path(
-            start_block_id="BLOCK_A",
-            end_block_id="BLOCK_C",
             train_id=demo_train.train_id,
+            requested_destination_block_id="BLOCK_C",
         )
 
         path_result.path = dispatcher.get_path(path_result.path_id) if path_result.path_id else None
@@ -183,7 +182,7 @@ class TestExtendPathBug:
 
         # Verify dispatcher's Path object is updated
         updated_path = dispatcher.get_path(path.path_id)
-        assert updated_path.authority_end_block_id == "BLOCK_E"
+        assert updated_path.get_authority_end_block_id() == "BLOCK_E"
 
         # Verify controller sees extended path immediately via get_path_tiles()
         extended_tiles = controller.get_path_tiles()
@@ -221,9 +220,8 @@ class TestExtendPathBug:
 
         # Create and assign initial path A -> C
         path_result = dispatcher.create_path(
-            start_block_id="BLOCK_A",
-            end_block_id="BLOCK_C",
             train_id=demo_train.train_id,
+            requested_destination_block_id="BLOCK_C",
         )
 
         path_result.path = dispatcher.get_path(path_result.path_id) if path_result.path_id else None
@@ -307,9 +305,8 @@ class TestExtendPathBug:
 
         # Create and assign path A -> C
         path_result = dispatcher.create_path(
-            start_block_id="BLOCK_A",
-            end_block_id="BLOCK_C",
             train_id=demo_train.train_id,
+            requested_destination_block_id="BLOCK_C",
         )
 
         path_result.path = dispatcher.get_path(path_result.path_id) if path_result.path_id else None
@@ -369,7 +366,7 @@ class TestExtendPathBug:
 
         # Verify dispatcher's Path object is updated
         updated_path = dispatcher.get_path(path_result.path.path_id)
-        assert updated_path.authority_end_block_id == "BLOCK_E"
+        assert updated_path.get_authority_end_block_id() == "BLOCK_E"
 
         # Controller should see extended path immediately
         tiles_after = controller.get_path_tiles()
@@ -403,7 +400,7 @@ class TestExtendPathAtoSync:
 
     FIX: After a successful extension in the endpoint, sync:
     - train.ato_destination_block_id = new_end_block_id
-    - train.current_path = convert_tiles_to_train_path(path.path_tiles)
+    - train.current_path = convert_tiles_to_train_path(path.get_path_tiles())
     - controller.ato_destination_block_id = new_end_block_id
     """
 
@@ -457,9 +454,8 @@ class TestExtendPathAtoSync:
         """Create a dispatcher and an initial path from BLK_A to BLK_B."""
         dispatcher = PathDispatcher(three_block_network)
         result = dispatcher.create_path(
-            start_block_id="BLK_A",
-            end_block_id="BLK_B",
             train_id=train_on_network.train_id,
+            requested_destination_block_id="BLK_B",
         )
 
         result.path = dispatcher.get_path(result.path_id) if result.path_id else None
@@ -471,14 +467,14 @@ class TestExtendPathAtoSync:
         path = dispatcher.get_path(result.path_id)
 
         # Assign path to train
-        raw_path = convert_tiles_to_train_path(path.path_tiles)
+        raw_path = convert_tiles_to_train_path(path.get_path_tiles())
         success, error = assign_complete_path_to_train(
             three_block_network, train_on_network, raw_path
         )
         if not success:
             train_on_network.current_path = raw_path
         train_on_network.assigned_path_id = path.path_id
-        train_on_network.ato_destination_block_id = path.authority_end_block_id
+        train_on_network.ato_destination_block_id = path.get_authority_end_block_id()
 
         return dispatcher, path
 
@@ -535,9 +531,8 @@ class TestExtendPathAtoSync:
 
         # Create a path without a train
         result = dispatcher.create_path(
-            start_block_id="BLK_A",
-            end_block_id="BLK_B",
             train_id=None,
+            requested_destination_block_id="BLK_B",
         )
 
         result.path = dispatcher.get_path(result.path_id) if result.path_id else None
@@ -559,7 +554,7 @@ class TestExtendPathAtoSync:
 
         # Path object should still be updated correctly
         updated_path = dispatcher.get_path(result.path.path_id)
-        assert updated_path.authority_end_block_id == "BLK_C"
+        assert updated_path.get_authority_end_block_id() == "BLK_C"
 
     # v1: removed `test_failed_extension_does_not_sync` — referenced
     # `Train.current_path` (gone in v1) and the v0 sync mechanism. The v1
@@ -628,9 +623,8 @@ class TestGetPathTiles:
 
         # Create a path
         result = dispatcher.create_path(
-            start_block_id="BLOCK_A",
-            end_block_id="BLOCK_C",
             train_id=train.train_id,
+            requested_destination_block_id="BLOCK_C",
         )
 
         result.path = dispatcher.get_path(result.path_id) if result.path_id else None
@@ -688,9 +682,8 @@ class TestGetPathTiles:
 
         # Create initial path
         result = dispatcher.create_path(
-            start_block_id="BLOCK_A",
-            end_block_id="BLOCK_C",
             train_id=train.train_id,
+            requested_destination_block_id="BLOCK_C",
         )
 
         result.path = dispatcher.get_path(result.path_id) if result.path_id else None

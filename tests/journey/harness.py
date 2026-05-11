@@ -199,8 +199,12 @@ def _capture_snapshot(
             active_path_id = getattr(path, "path_id", None)
             status = getattr(path, "status", None)
             active_path_status = getattr(status, "value", str(status)) if status else None
-            active_path_authority_end = getattr(
-                path, "authority_end_block_id", None
+            # Per design_new.md "Path field schema", `Path.path_tiles` and
+            # `Path.authority_end_block_id` are exposed as functions
+            # (`get_path_tiles()`, `get_authority_end_block_id()`).
+            getter = getattr(path, "get_authority_end_block_id", None)
+            active_path_authority_end = (
+                getter() if callable(getter) else None
             ) or getattr(path, "end_block_id", None)
 
     # Route

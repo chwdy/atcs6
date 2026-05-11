@@ -182,24 +182,24 @@ class Path:
         self.status = new_status
         self.last_status_updated_time = when
 
-    @property
-    def path_tiles(self) -> List[PathTileEntry]:
+    def get_path_tiles(self) -> List[PathTileEntry]:
         """Derived ordered tile list — `resource_sequence[*].path_tiles`
         concatenated in `sequence_index` order. Per design_new.md "Path
-        field schema": computed live on every read; not cached; no writers.
+        field schema": exposed as a function (not a property) — computed
+        live on every call; not cached; no writers; no rebuild step. The
+        function name signals "this is work, not a stored read."
         """
         tiles: List[PathTileEntry] = []
         for entry in self.resource_sequence:
             tiles.extend(entry.path_tiles)
         return tiles
 
-    @property
-    def authority_end_block_id(self) -> str:
+    def get_authority_end_block_id(self) -> str:
         """Derived active authority end block.
 
-        Per design_new.md "Path field schema": this is read-only and reflects
-        the terminal block resource of the current `resource_sequence`.
-        Returns "" when the sequence is empty (e.g. before initial
+        Per design_new.md "Path field schema": exposed as a function (not a
+        property) returning `resource_sequence[-1].resource_id` on each
+        call. Returns "" when the sequence is empty (e.g. before initial
         construction has populated it). Path invariants require the terminal
         entry to be a `block` resource; switch-terminated authority is not
         valid in v1 (see "Path invariants").
@@ -313,7 +313,7 @@ class Path:
         previously inferred direction from neighbouring tile coordinates.
         """
         result: Dict[str, str] = {}
-        for tile in self.path_tiles:
+        for tile in self.get_path_tiles():
             key = f"{tile.x},{tile.y}"
             result[key] = tile.exit_edge
         return result
@@ -321,16 +321,18 @@ class Path:
     def get_exit_direction(self) -> Optional[str]:
         """Direction the path is heading at its end (the last tile's
         exit_edge). None if the path has no tiles."""
-        if not self.path_tiles:
+        tiles = self.get_path_tiles()
+        if not tiles:
             return None
-        return self.path_tiles[-1].exit_edge or None
+        return tiles[-1].exit_edge or None
 
     def get_last_tile_entry_edge(self) -> Optional[str]:
         """Edge through which the path enters its last tile. Equal to the
         last tile's entry_edge."""
-        if not self.path_tiles:
+        tiles = self.get_path_tiles()
+        if not tiles:
             return None
-        return self.path_tiles[-1].entry_edge or None
+        return tiles[-1].entry_edge or None
 
     def get_all_locked_switches(self) -> List[str]:
         """All switch resource_ids whose locks were acquired by this path
@@ -350,9 +352,9 @@ class Path:
             "train_id": self.train_id,
             "requested_destination_block_id": self.requested_destination_block_id,
             "requested_destination_direction": self.requested_destination_direction,
-            "authority_end_block_id": self.authority_end_block_id,
+            "authority_end_block_id": self.get_authority_end_block_id(),
             "resource_sequence": [e.to_dict() for e in self.resource_sequence],
-            "path_tiles": [t.to_dict() for t in self.path_tiles],
+            "path_tiles": [t.to_dict() for t in self.get_path_tiles()],
             "current_resource_index": self.current_resource_index,
             "last_status_updated_time": self.last_status_updated_time,
             # Convenience projections for UI consumers.

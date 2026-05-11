@@ -59,7 +59,12 @@ class _Route:
 
 @dataclass
 class _ExecState:
-    current_waypoint_index: int = 0
+    """Test fixture matching the post-D3 semantics: `next_planning_index`
+    is the next task to plan. The legacy `current_waypoint_index` is now
+    `Optional[int]` (largest finished, or None) and is not what the
+    `compute_next_task_index` helper reads.
+    """
+    next_planning_index: int = 0
 
 
 def test_compute_next_task_index_zero_count_returns_none():

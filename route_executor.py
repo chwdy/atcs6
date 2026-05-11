@@ -100,16 +100,20 @@ class RouteExecutionState:
 
     train_id: str
     route_id: str
+    # System-time Unix seconds when this run instance started. Per
+    # design_new.md "Route-run state": "Written exactly once at `RouteRun`
+    # creation as `current_time` and never mutated afterward." Required at
+    # construction; no default.
+    started_at: float
     # Effective traversal direction for the current directed walk.
-    # `1` means forward, `-1` means reverse. Named `signed_direction` to keep
-    # it distinct from the `"forward"`/`"reverse"` string-form direction
-    # carried by `ResolvedNextTaskProjection.direction` and `RouteTask.task_direction`.
-    signed_direction: int = 1
+    # Per design_new.md "Route-run state" — stored as the literal string
+    # `"forward"` or `"reverse"`. ROUND_TRIP arithmetic computes a local
+    # signed integer from this literal at use sites; the stored field is
+    # always the string form.
+    direction: str = "forward"
     # Per-run task table, parallel to Route.tasks. Allocated when the run is
     # created (or on first use) and grown lazily as Route.tasks gains entries.
     task_runs: List[RouteTaskRun] = field(default_factory=list)
-    # System-time Unix seconds when this run instance started. Written once.
-    started_at: Optional[float] = None
     # Composite run-instance number assigned by RouteExecutor (diagnostic only).
     run_number: int = 0
     # v1 latch consumed by Phase-1 route-deviation cleanup. Also drives the
@@ -155,24 +159,37 @@ class RouteExecutionState:
         return self.current_route_status.value
 
     @property
-    def current_waypoint_index(self) -> int:
-        """Derived: index in ``Route.tasks`` of the next task on the walk.
+    def current_waypoint_index(self) -> Optional[int]:
+        """Derived: physical-progress cursor — the largest walk-position
+        index `i` in `task_runs` where `task_runs[i].finished_at is not
+        None`, or `None` when no task has finished yet.
 
-        Per design_new.md lines 296 and 1101 the cursor "advances with the
-        ``finished_at`` write" — there is no parallel stored field. The
-        derived rule:
+        Per design_new.md "Route-run state" — `Optional[int]` (read-only
+        derived). Computed each access from `task_runs`; not a stored
+        field; no writers — the writers that record progress all set
+        `task_runs[i].finished_at`, and the cursor reflects that update on
+        the next read. Returns the underlying `task_index` of the last
+        finished entry (which differs from its position in `task_runs` for
+        `CIRCULAR` / `ROUND_TRIP` walks past `len(Route.tasks)`).
 
-          * Walk ``task_runs`` in order; return the ``task_index`` of the
-            first entry whose ``finished_at is None`` (the next un-finished
-            walk position).
-          * If every entry is finished (terminal walk), return the last
-            entry's ``task_index``.
-          * If ``task_runs`` is empty (pre-allocation edge case), return 0.
+        Consumers that want "next task to plan" should use
+        `next_planning_index` instead.
+        """
+        last_finished_index: Optional[int] = None
+        for run in self.task_runs:
+            if run.finished_at is not None:
+                last_finished_index = run.task_index
+        return last_finished_index
 
-        For ``CIRCULAR`` / ``ROUND_TRIP`` routes the walk grows past
-        ``len(Route.tasks)`` via ``_append_next_walk_task``; each appended
-        ``RouteTaskRun`` carries its own underlying ``task_index``, so this
-        property naturally tracks the wrap/reflection.
+    @property
+    def next_planning_index(self) -> int:
+        """Derived: index in `Route.tasks` of the next task to plan or
+        execute on the walk.
+
+        For an empty walk and a walk where no task has finished yet, this
+        is `0`. Otherwise it is the `task_index` of the first entry in
+        `task_runs` whose `finished_at is None`. If every entry is
+        finished (terminal walk), it is the last entry's `task_index`.
         """
         if not self.task_runs:
             return 0
@@ -196,7 +213,7 @@ class RouteExecutionState:
         - ``ROUND_TRIP``: forward past the last task reflects to
           ``task_count - 2`` (second-to-last); reverse past the first task
           reflects to index ``1`` (second). The appended entry carries no
-          ``direction`` field; ``RouteRun.signed_direction`` is updated by
+          ``direction`` field; ``RouteRun.direction`` is updated by
           ``_find_next_task_target(...)``.
 
         ``route`` may be ``None`` if the caller cannot resolve the shared
@@ -217,7 +234,9 @@ class RouteExecutionState:
         if route.mode == RouteMode.CIRCULAR:
             next_index = (last_index + 1) % task_count
         elif route.mode == RouteMode.ROUND_TRIP:
-            if self.signed_direction >= 0:
+            # Local sign integer derived from the canonical string field.
+            sign = 1 if self.direction == "forward" else -1
+            if sign >= 0:
                 if last_index >= task_count - 1:
                     next_index = max(0, task_count - 2)
                 else:
@@ -663,7 +682,10 @@ class RouteExecutor:
         finished_at write per the canonical rule, so there is no separate
         write step.
         """
-        task_index = exec_state.current_waypoint_index
+        # Per design, `current_waypoint_index` is the largest finished
+        # walk-position; the dwell task currently in flight is the next
+        # planning index.
+        task_index = exec_state.next_planning_index
         task = route.get_task_at(task_index) if hasattr(route, "get_task_at") else None
         if task is None or task.task_kind != "dwell":
             return
@@ -706,8 +728,11 @@ class RouteExecutor:
         """
         self._sync_task_runs(route, exec_state)
         task_count = route.get_task_count()
-        while exec_state.current_waypoint_index < task_count:
-            idx = exec_state.current_waypoint_index
+        # Per design, the loop iterates the next un-finished planning index;
+        # `current_waypoint_index` is the largest finished walk-position
+        # (or None) and is not the right cursor here.
+        while exec_state.next_planning_index < task_count:
+            idx = exec_state.next_planning_index
             task = route.get_task_at(idx)
             if task is None:
                 break
@@ -841,11 +866,10 @@ class RouteExecutor:
                 requested_destination_direction=target_dir,
             )
 
-        # Update direction if projection says so.
-        if projection.direction == "forward":
-            exec_state.signed_direction = 1
-        elif projection.direction == "reverse":
-            exec_state.signed_direction = -1
+        # Update direction if projection says so. The canonical store is
+        # the literal string; no signed-int translation is needed here.
+        if projection.direction in ("forward", "reverse"):
+            exec_state.direction = projection.direction
 
         # Per design_new.md line 1078: Phase 1 always calls depart() after a
         # successful create/extend.
@@ -1012,11 +1036,13 @@ class RouteExecutor:
         if train is None or route is None or exec_state is None:
             return False
 
-        # Walk task_runs from current_waypoint_index + 1 looking for a stop.
+        # Walk task_runs from the next-planning index looking for a stop.
+        # `current_waypoint_index` is the largest finished walk-position
+        # (or None); the next planning index is the cursor we want here.
         self._sync_task_runs(route, exec_state)
         task_count = route.get_task_count()
         match_index: Optional[int] = None
-        for i in range(exec_state.current_waypoint_index + 1, task_count):
+        for i in range(exec_state.next_planning_index, task_count):
             task = route.get_task_at(i)
             if task is None:
                 continue
@@ -1061,8 +1087,9 @@ class RouteExecutor:
         # Record finished_at on the matched stop row plus any intermediate
         # task_runs rows so the derived `current_waypoint_index` advances past
         # the matched stop. (Per design_new.md the cursor is derived; we move
-        # it by writing finished_at, never by direct assignment.)
-        cursor = exec_state.current_waypoint_index
+        # it by writing finished_at, never by direct assignment.) The loop
+        # starts at the next planning index (first un-finished row).
+        cursor = exec_state.next_planning_index
         for i in range(cursor, match_index + 1):
             if not (0 <= i < len(exec_state.task_runs)):
                 continue
@@ -1147,7 +1174,13 @@ class RouteExecutor:
         task_direction: str,
         signed_direction: int,
     ) -> str:
-        """Forward to `RouteTargetResolver.resolve_task_direction(...)`."""
+        """Forward to `RouteTargetResolver.resolve_task_direction(...)`.
+
+        `signed_direction` here is the local int form computed from
+        `RouteRun.direction` at the call site. The resolver helper still
+        takes a signed int because it folds it into per-block traversal
+        sign math; the canonical store is the literal string on RouteRun.
+        """
         from route_target_resolver import RouteTargetResolver
 
         return RouteTargetResolver.resolve_task_direction(
@@ -1188,7 +1221,7 @@ class RouteExecutor:
     def _advance_to_next_task(
         self, route: "Route", exec_state: RouteExecutionState
     ) -> bool:
-        """Maintain ``signed_direction`` for ROUND_TRIP route reflections.
+        """Maintain ``direction`` for ROUND_TRIP route reflections.
 
         The cursor itself (``current_waypoint_index``) is now derived from
         ``task_runs[*].finished_at`` (see ``RouteExecutionState`` property
@@ -1197,30 +1230,36 @@ class RouteExecutor:
         ``RouteTaskRun`` for ``CIRCULAR`` / ``ROUND_TRIP`` routes — that
         append is what advances the derived cursor.
 
-        This helper retains a single responsibility: flip ``signed_direction``
-        at ROUND_TRIP boundaries so the next ``_append_next_walk_task`` call
-        appends the reflected walk-position. Returns ``True`` if the walk
-        can continue (more tasks ahead), ``False`` for a terminal ONE_OFF
-        walk.
+        This helper retains a single responsibility: flip
+        ``RouteRun.direction`` at ROUND_TRIP boundaries so the next
+        ``_append_next_walk_task`` call appends the reflected walk-position.
+        Returns ``True`` if the walk can continue (more tasks ahead),
+        ``False`` for a terminal ONE_OFF walk.
         """
         task_count = route.get_task_count()
         if task_count == 0:
             return False
 
         if route.mode == RouteMode.ONE_OFF:
-            return exec_state.current_waypoint_index < task_count
+            # ONE_OFF terminates when the next planning index exhausts the
+            # task list. `current_waypoint_index` (last finished, may be
+            # None) is not the right cursor here.
+            return exec_state.next_planning_index < task_count
 
         if route.mode == RouteMode.CIRCULAR:
             return True
 
-        # ROUND_TRIP — flip signed_direction at boundaries. The derived
-        # cursor jumps to the reflected position once `_append_next_walk_task`
-        # appends the next entry with the new direction.
-        cursor = exec_state.current_waypoint_index
-        if cursor >= task_count - 1 and exec_state.signed_direction > 0:
-            exec_state.signed_direction = -1
-        elif cursor <= 0 and exec_state.signed_direction < 0:
-            exec_state.signed_direction = 1
+        # ROUND_TRIP — flip the canonical direction string at boundaries.
+        # The derived cursor jumps to the reflected position once
+        # `_append_next_walk_task` appends the next entry with the new
+        # direction. Use the last-finished cursor (None before the first
+        # finish; treat that as -1 for the boundary comparison below).
+        cursor_opt = exec_state.current_waypoint_index
+        cursor = -1 if cursor_opt is None else cursor_opt
+        if cursor >= task_count - 1 and exec_state.direction == "forward":
+            exec_state.direction = "reverse"
+        elif cursor <= 0 and exec_state.direction == "reverse":
+            exec_state.direction = "forward"
 
         return True
 
@@ -1282,13 +1321,18 @@ class RouteExecutor:
     ) -> List[Tuple[int, int, Direction]]:
         """Convert dispatcher path tiles into train path tuples.
 
-        v1 Path stores `path_tiles` as `List[PathTileEntry]` (not a list of
-        `(x, y)` tuples). Project to `(x, y)` for `convert_tiles_to_train_path`
+        v1 Path exposes the ordered tile list via `Path.get_path_tiles()`
+        (per design_new.md "Path field schema": exposed as a function, not
+        a property). Project to `(x, y)` for `convert_tiles_to_train_path`
         which expects a coordinate sequence.
         """
         from path_utils import convert_tiles_to_train_path
 
-        path_tiles = getattr(path, "path_tiles", [])
+        getter = getattr(path, "get_path_tiles", None)
+        if callable(getter):
+            path_tiles = getter()
+        else:
+            path_tiles = getattr(path, "path_tiles", [])
         if not path_tiles:
             return []
         # Project PathTileEntry list to (x, y) tuples.

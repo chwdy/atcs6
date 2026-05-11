@@ -23,8 +23,6 @@ from runtime_payloads import (
     ValidationError,
     ValidationErrorType,
     ValidationResult,
-    PathResult,
-    ExtensionResult,
     CancellationResult,
     DEFAULT_PATH_PRIORITY,
     AcquisitionMode,
@@ -377,17 +375,18 @@ class TestPathIDGeneration:
         network.create_block("BLOCK_A", "Start")
         network.create_block("BLOCK_B", "End")
 
-        path_id = dispatcher.generate_path_id("BLOCK_A", "BLOCK_B")
+        path_id = dispatcher._generate_path_id("TRAIN_X", "BLOCK_B")
         assert path_id.startswith("PATH_")
-        assert "START" in path_id or "BLOCK_A" in path_id
+        assert "TRAIN_X" in path_id
+        assert "END" in path_id or "BLOCK_B" in path_id
 
     def test_path_id_sequence(self, network, dispatcher):
         """Test route ID sequence increments."""
         network.create_block("BLOCK_A")
         network.create_block("BLOCK_B")
 
-        id1 = dispatcher.generate_path_id("BLOCK_A", "BLOCK_B")
-        id2 = dispatcher.generate_path_id("BLOCK_A", "BLOCK_B")
+        id1 = dispatcher._generate_path_id("TRAIN_X", "BLOCK_B")
+        id2 = dispatcher._generate_path_id("TRAIN_X", "BLOCK_B")
 
         assert id1 != id2
         assert "001" in id1
@@ -861,9 +860,24 @@ class TestATODirectionDetection:
         """Attach dispatcher-backed live path tiles to the controller.
 
         v1: controller.received_path_plan reads from path_dispatcher.get_active_path(train_id).
-        controller.ato_destination_block_id is a property reading the path's end_block_id.
+        Per design_new.md "Path field schema", `Path.path_tiles` is exposed as
+        the function `Path.get_path_tiles()`; the stub matches that contract.
         """
-        live_paths = {path_id: SimpleNamespace(path_tiles=tiles, path_id=path_id, end_block_id=end_block_id, status=None)}
+        class _StubPath:
+            def __init__(self, path_tiles, path_id, end_block_id):
+                self._path_tiles = path_tiles
+                self.path_id = path_id
+                self.end_block_id = end_block_id
+                self.resource_sequence = []
+                self.status = None
+
+            def get_path_tiles(self):
+                return self._path_tiles
+
+            def get_authority_end_block_id(self):
+                return self.end_block_id or ""
+
+        live_paths = {path_id: _StubPath(tiles, path_id, end_block_id)}
         # Map train_id -> active path for v1 contract.
         active_paths_by_train = {train.train_id: live_paths[path_id]}
 

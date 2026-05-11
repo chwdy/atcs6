@@ -122,7 +122,7 @@ def register(app, state: AppState) -> None:
                         # owns `assigned_path_id` and the controller derives
                         # `ato_destination_block_id` from `received_path_plan`,
                         # so we no longer mirror those fields back onto Train.
-                        raw_path = _convert_path_tiles_to_train_path(path.path_tiles)
+                        raw_path = _convert_path_tiles_to_train_path(path.get_path_tiles())
                         assign_complete_path_to_train(
                             state.network, train, raw_path
                         )

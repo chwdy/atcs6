@@ -94,7 +94,10 @@ class RouteTargetResolver:
         if task is None:
             return None
 
-        direction_str = "forward" if exec_state.signed_direction >= 0 else "reverse"
+        # Canonical direction store on RouteRun is the literal string;
+        # compute a local signed-int form for callers that still need it.
+        direction_str = exec_state.direction
+        signed_direction = 1 if direction_str == "forward" else -1
 
         if task.task_kind == "dwell":
             return ResolvedNextTaskProjection(
@@ -114,7 +117,7 @@ class RouteTargetResolver:
             )
 
         resolved_dir = self.resolve_task_direction(
-            train, target_block, task.task_direction, exec_state.signed_direction
+            train, target_block, task.task_direction, signed_direction
         )
 
         resolved = ResolvedRouteTarget(
@@ -225,7 +228,10 @@ class RouteTargetResolver:
         if task_count == 0:
             return None
 
-        idx = exec_state.current_waypoint_index
+        # Per design, `current_waypoint_index` is the largest finished
+        # walk-position (Optional[int]); the next planning index is what we
+        # want here.
+        idx = exec_state.next_planning_index
         if 0 <= idx < task_count:
             return idx
 

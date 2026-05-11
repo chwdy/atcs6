@@ -1430,9 +1430,8 @@ class TestManualPathAssignmentAfterArrival:
         # Manually create backward path C->A (this simulates path tool usage)
         # Path should go from (6,0) to (0,0) - heading WEST
         path_result = dispatcher.create_path(
-            start_block_id="STA_C_BLOCK",
-            end_block_id="STA_A_BLOCK",
             train_id=train.train_id,
+            requested_destination_block_id="STA_A_BLOCK",
         )
 
         assert path_result.success, f"Path creation failed: {path_result.error}"
@@ -1440,7 +1439,7 @@ class TestManualPathAssignmentAfterArrival:
         # Convert path to train format
         from path_utils import convert_tiles_to_train_path
 
-        raw_path = convert_tiles_to_train_path(path_result.path.path_tiles)
+        raw_path = convert_tiles_to_train_path(path_result.path.get_path_tiles())
         train.current_path = raw_path
         train.assigned_path_id = path_result.path.path_id
 
@@ -1511,12 +1510,13 @@ class TestManualPathAssignmentAfterArrival:
 
         # Create forward path A->C
         path_result = dispatcher.create_path(
-            start_block_id="BLK_A", end_block_id="BLK_C", train_id=train.train_id
+            train_id=train.train_id,
+            requested_destination_block_id="BLK_C",
         )
 
         from path_utils import convert_tiles_to_train_path
 
-        raw_path = convert_tiles_to_train_path(path_result.path.path_tiles)
+        raw_path = convert_tiles_to_train_path(path_result.path.get_path_tiles())
         train.current_path = raw_path
 
         # Check if turn is needed (should NOT turn)
@@ -1609,14 +1609,13 @@ class TestManualPathAssignmentAfterArrival:
 
         # Assign backward path C->A
         path_result = dispatcher.create_path(
-            start_block_id="STA_C_BLOCK",
-            end_block_id="STA_A_BLOCK",
             train_id=train.train_id,
+            requested_destination_block_id="STA_A_BLOCK",
         )
 
         from path_utils import convert_tiles_to_train_path
 
-        raw_path = convert_tiles_to_train_path(path_result.path.path_tiles)
+        raw_path = convert_tiles_to_train_path(path_result.path.get_path_tiles())
         train.current_path = raw_path
         train.assigned_path_id = path_result.path.path_id
         train.ato_destination_block_id = "STA_A_BLOCK"

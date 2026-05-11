@@ -405,7 +405,7 @@ def register(app, state: AppState) -> None:
                 return jsonify({"error": "Train not found"}), 404
 
             controller = _get_train_controller(train)
-            return jsonify(controller.get_monitor_lookahead())
+            return jsonify(controller.get_lookahead())
 
     @app.route("/api/trains/<train_id>/notifications", methods=["GET"])
     def get_train_notifications(train_id):

@@ -389,7 +389,6 @@ class PathAcquisitionResult:
     authority_end_block_id: Optional[str] = None
     resource_sequence: List[Any] = field(default_factory=list)
     reason: str = ""
-    failed_resource_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -405,7 +404,6 @@ class PathAcquisitionResult:
                 for e in self.resource_sequence
             ],
             "reason": self.reason,
-            "failed_resource_id": self.failed_resource_id,
         }
 
 
@@ -571,13 +569,19 @@ class ResolvedRouteTarget:
 
 
 # =============================================================================
-# Path planning result types (kept here so legacy helpers in path_dispatcher.py
-# still compile; v1 public API uses PathAcquisitionResult / CancellationResult)
+# BFS pathfinding intermediate types
+#
+# These types describe the dispatcher's internal pathfinding pipeline:
+# `PathDispatcher.find_paths(...)` returns `PathSegment` candidates; the
+# `_validate_path_geometry(...)` step builds a `ValidationResult` carrying
+# `ValidationError` records keyed by `ValidationErrorType`. The v1 public
+# API (`PathAcquisitionResult`, `CancellationResult`) is built on top of
+# these intermediates inside `create_path` / `extend_path` / `cancel_path`.
 # =============================================================================
 
 
 class ValidationErrorType(Enum):
-    """Classification for path validation failures (legacy diagnostic only)."""
+    """Classification for path validation failures."""
 
     UNBLOCKED_TILE = "unblocked_tile"
     BLOCK_OCCUPIED = "block_occupied"
@@ -589,7 +593,7 @@ class ValidationErrorType(Enum):
 
 @dataclass
 class ValidationError:
-    """Single validation failure record (legacy diagnostic)."""
+    """Single validation failure record."""
 
     type: ValidationErrorType
     message: str = ""
@@ -622,51 +626,3 @@ class ValidationResult:
     valid: bool
     errors: List[ValidationError] = field(default_factory=list)
     path: Optional[PathSegment] = None
-
-
-@dataclass
-class PathResult:
-    """Legacy result used by the in-tree `find_paths` flow."""
-
-    success: bool
-    path: Any = None  # path.Path; left as Any to avoid circular import
-    error: str = ""
-    attempted_paths: List[Any] = field(default_factory=list)
-    conflict_tiles: List[Tuple[int, int]] = field(default_factory=list)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "success": self.success,
-            "error": self.error,
-            "path": self.path.to_dict() if self.path is not None else None,
-            "conflict_tiles": [list(t) for t in self.conflict_tiles],
-        }
-
-
-@dataclass
-class ExtensionResult:
-    """Legacy result used by the in-tree `extend_path` flow."""
-
-    success: bool
-    extended_blocks: List[str] = field(default_factory=list)
-    error: str = ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "success": self.success,
-            "extended_blocks": list(self.extended_blocks),
-            "error": self.error,
-        }
-
-
-# Conflict-resolution legacy types (returned by helpers that may still run)
-class ConflictResolutionType(Enum):
-    PROCEED = "proceed"
-    BLOCK = "block"
-    REROUTE = "reroute"
-
-
-@dataclass
-class ConflictResolution:
-    type: ConflictResolutionType
-    description: str = ""
