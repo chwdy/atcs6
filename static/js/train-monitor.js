@@ -13,6 +13,7 @@ class TrainMonitor {
         this.clearanceEl = document.getElementById('monitor-clearance');
         this.upcomingEl = document.getElementById('monitor-upcoming');
         this.upcomingContainer = document.getElementById('monitor-upcoming-container');
+        this.upcomingCountEl = document.getElementById('monitor-upcoming-count');
         this.monitorContent = document.querySelector('.train-monitor-content');
         this.resizerEl = document.getElementById('train-monitor-resizer');
         this.closeBtn = document.getElementById('train-monitor-close');
@@ -185,264 +186,6 @@ class TrainMonitor {
         }
     }
     
-    update(train) {
-        // Check for path-based data
-        if (!train) {
-            console.warn('[TrainMonitor] No train data');
-            this.lookaheadData = null;
-            this.render();
-            return;
-        }
-        
-        // ========================================================================
-        // LOOKAHEAD DATA SOURCE
-        // ========================================================================
-        // Primary: lookahead_tile_info (new format with precise distances)
-        //
-        // Data comes from Train.to_dict() which now builds lookahead from current_path
-        // starting at path_index (train head position)
-        const pathInfo = train.lookahead_tile_info || [];
-        const pathTiles = train.lookahead_tiles || [];
-        const hasPathData = pathInfo.length > 0;
-        
-        if (!hasPathData) {
-            console.warn('[TrainMonitor] Missing or empty lookahead data', {
-                trainId: train.id,
-                hasLookaheadTileInfo: !!train.lookahead_tile_info,
-                pathLength: train.path_length,
-                pathIndex: train.path_index
-            });
-            
-            // Build minimal lookahead data with just speed/state info.
-            // target_speed and speed_limit_reason live on the controller in v1
-            // and are exposed via train.onboard (merged in by the backend).
-            this.lookaheadData = {
-                current_speed_kmh: train.speed || 0,
-                target_speed_kmh: train.onboard?.target_speed ?? 0,
-                state: train.state,
-                wait_reason: train.wait_reason,
-                speed_limit_reason: train.onboard?.speed_limit_reason ?? null,
-                blocks: [],
-                signals: [],
-                switches: [],
-                stations: [],
-                distance_into_path_cm: 0,
-                clearance_cm: 0
-            };
-            
-            // Update UI elements with minimal data
-            this.currentSpeedEl.textContent = Math.round(this.lookaheadData.current_speed_kmh || 0);
-            // For minimal data, we don't have speed curves, so show target speed for both
-            const fallbackSpeed = Math.round(this.lookaheadData.target_speed_kmh || 0);
-            if (this.atcSpeedEl) this.atcSpeedEl.textContent = fallbackSpeed;
-            if (this.atoSpeedEl) this.atoSpeedEl.textContent = fallbackSpeed;
-            
-            if (this.speedCmsEl) {
-                const speedCms = ((this.lookaheadData.current_speed_kmh || 0) * 27.78 / this.currentScale).toFixed(1);
-                this.speedCmsEl.textContent = speedCms;
-            }
-            if (this.clearanceEl) {
-                this.clearanceEl.textContent = '0.0';
-            }
-            
-            // wait_reason is set by the train/controller whenever the train
-            // is stalled. running_waiting state was removed in v1; the wait
-            // reason field is now the single source of "waiting" UI.
-            if (this.waitReasonEl) {
-                if (this.lookaheadData.wait_reason) {
-                    this.waitReasonEl.textContent = this.lookaheadData.wait_reason;
-                    this.waitReasonEl.classList.remove('hidden');
-                } else {
-                    this.waitReasonEl.classList.add('hidden');
-                }
-            }
-
-            if (this.speedLimitReasonEl) {
-                const speedLimitReason = this.lookaheadData.speed_limit_reason;
-                if (speedLimitReason && !this.lookaheadData.wait_reason) {
-                    this.speedLimitReasonEl.textContent = speedLimitReason;
-                    this.speedLimitReasonEl.classList.remove('hidden');
-                } else {
-                    this.speedLimitReasonEl.classList.add('hidden');
-                }
-            }
-
-            this.updateUpcomingElements(this.lookaheadData);
-            this.render();
-            return;
-        }
-        
-        // ========================================================================
-        // BUILD LOOKAHEAD VISUALIZATION DATA
-        // ========================================================================
-        // Now lookahead_tile_info contains ALL tiles from head position to end of path
-        // Each tile has distance_to_tile_cm (distance from train head to tile start)
-        //
-        // We process this into blocks, signals, switches for display
-        const blocks = [];
-        const signals = [];
-        const switches = [];
-        const stations = [];
-        
-        const seenBlocks = new Set();
-        
-        // Process each tile in lookahead (already ordered from head forward)
-        for (let i = 0; i < pathInfo.length; i++) {
-            const info = pathInfo[i];
-            const tile = pathTiles[i];
-            if (!info) continue;
-            
-            // distance_to_tile_cm: distance from train head to START of this tile
-            // For first tile (head tile), this is negative (head already into tile)
-            // For subsequent tiles, this is positive
-            const distanceToTileStart = info.distance_to_tile_cm ?? 0;
-            
-            // Train's travel direction on this tile (N/E/S/W)
-            const travelDirection = info.travel_direction;
-            
-            // For blocks: use actual distance (can be negative for current block)
-            // This allows the current block to scroll left as train advances
-            const blockTileStart = info.distance_to_block_start_cm;
-            
-            // For signals/switches: use max(0, dist) since they are point elements
-            const pointElementStart = Math.max(0, distanceToTileStart);
-            
-            // Add block if not seen yet
-            if (info.block_id && !seenBlocks.has(info.block_id)) {
-                seenBlocks.add(info.block_id);
-                
-                // Find all consecutive tiles in this block to calculate total length
-                let blockLength = 0;
-                let tileCount = 0;
-                for (let j = i; j < pathInfo.length; j++) {
-                    if (pathInfo[j]?.block_id === info.block_id) {
-                        blockLength += pathInfo[j].length_cm 
-                        tileCount++;
-                    } else {
-                        break;
-                    }
-                }
-                
-                blocks.push({
-                    id: info.block_id,
-                    name: info.block_id,
-                    state: info.block_state || 'free',
-                    start_cm: blockTileStart,
-                    end_cm: blockTileStart + blockLength,
-                    length_cm: blockLength,
-                    tile_count: tileCount,
-                    sequence: blocks.length
-                });
-            }
-            
-            // Add signals on this tile - only if facing train's travel direction
-            if (info.signals && info.signals.length > 0 && travelDirection) {
-                info.signals.forEach(sig => {
-                    // Only include signals where detection_direction matches train's travel direction
-                    // Signal direction can be single letter (N/E/S/W) or full name (NORTH/EAST/etc)
-                    const sigDir = (sig.direction || '').toUpperCase();
-                    const trainDir = travelDirection.toUpperCase();
-                    const dirMatches = sigDir === trainDir || 
-                                       sigDir === trainDir[0] || 
-                                       sigDir[0] === trainDir[0];
-                    
-                    if (dirMatches) {
-                        signals.push({
-                            id: sig.id,
-                            name: sig.name || sig.id,
-                            state: sig.state,
-                            distance_cm: pointElementStart,
-                            sequence: signals.length
-                        });
-                    }
-                });
-            }
-            
-            // Add switch if present
-            if (info.is_switch && tile && tile.length >= 2) {
-                switches.push({
-                    x: tile[0],
-                    y: tile[1],
-                    name: info.switch_name || `Switch (${tile[0]},${tile[1]})`,
-                    position: info.switch_state === 0 ? 'main' : 'diverging',
-                    distance_cm: pointElementStart,
-                    locked: info.switch_locked || false,
-                    sequence: switches.length
-                });
-            }
-        }
-        
-        // Calculate total clearance (distance from head to end of path)
-        let totalClearance = 0;
-        if (pathInfo.length > 0) {
-            const lastTile = pathInfo[pathInfo.length - 1];
-            const lastTileStart = lastTile.distance_to_tile_cm ?? 0;
-            totalClearance = Math.max(0, lastTileStart) + (lastTile.length_cm || 50);
-        }
-        
-        // Build lookahead-compatible data structure.
-        // target_speed and speed_limit_reason now come from train.onboard
-        // (the controller snapshot merged into the train payload by the
-        // backend) rather than from train fields, which were removed in v1.
-        this.lookaheadData = {
-            current_speed_kmh: train.speed || 0,
-            target_speed_kmh: train.onboard?.target_speed ?? 0,
-            state: train.state,
-            wait_reason: train.wait_reason,
-            speed_limit_reason: train.onboard?.speed_limit_reason ?? null,
-            blocks: blocks,
-            signals: signals,
-            switches: switches,
-            stations: stations,
-            distance_into_path_cm: 0, // Head is always at 0 (we measure from head)
-            clearance_cm: totalClearance
-        };
-        
-        // Update UI elements
-        this.currentSpeedEl.textContent = Math.round(this.lookaheadData.current_speed_kmh || 0);
-        // For update() method, we don't have speed curves yet - use fallback
-        const fallbackSpeed2 = Math.round(this.lookaheadData.target_speed_kmh || 0);
-        if (this.atcSpeedEl) this.atcSpeedEl.textContent = fallbackSpeed2;
-        if (this.atoSpeedEl) this.atoSpeedEl.textContent = fallbackSpeed2;
-        
-        if (this.speedCmsEl) {
-            const speedCms = ((this.lookaheadData.current_speed_kmh || 0) * 27.78 / this.currentScale).toFixed(1);
-            this.speedCmsEl.textContent = speedCms;
-        }
-        if (this.clearanceEl) {
-            const clearanceM = ((this.lookaheadData.clearance_cm || 0) / 100).toFixed(1);
-            this.clearanceEl.textContent = clearanceM;
-        }
-        
-        if (this.waitReasonEl) {
-            if (this.lookaheadData.wait_reason) {
-                this.waitReasonEl.textContent = this.lookaheadData.wait_reason;
-                this.waitReasonEl.classList.remove('hidden');
-            } else {
-                this.waitReasonEl.classList.add('hidden');
-            }
-        }
-
-        if (this.speedLimitReasonEl) {
-            const speedLimitReason = this.lookaheadData.speed_limit_reason;
-            if (speedLimitReason && !this.lookaheadData.wait_reason) {
-                this.speedLimitReasonEl.textContent = speedLimitReason;
-                this.speedLimitReasonEl.classList.remove('hidden');
-            } else {
-                this.speedLimitReasonEl.classList.add('hidden');
-            }
-        }
-
-        // NEW: Check for configuration warnings
-        // User requirement: Show warnings but allow operation (non-blocking)
-        if (this.lookaheadData.warnings && this.lookaheadData.warnings.length > 0) {
-            this._displayConfigurationWarnings(this.lookaheadData.warnings, this.lookaheadData.train_id);
-        }
-        
-        this.updateUpcomingElements(this.lookaheadData);
-        this.render();
-    }
-
     updateFromController(train, payload) {
         if (!train) {
             console.warn('[TrainMonitor] No train data');
@@ -451,9 +194,14 @@ class TrainMonitor {
             return;
         }
 
+        // Live runtime fields (state, current_speed, target_speed,
+        // speed_limit_reason) live on the TrainController per design_new.md
+        // "Data Flow To UI". Resolve via the state-manager sibling cache.
+        const controller = window.stateManager?.getController(train.id);
+
         const lookahead = payload && payload.lookahead ? payload.lookahead : null;
         const speedLimitReason =
-            payload?.speed_limit_reason ?? train.onboard?.speed_limit_reason ?? null;
+            payload?.speed_limit_reason ?? controller?.speed_limit_reason ?? null;
 
         const safetyMarginCm = lookahead?.safety_margin_cm ?? 25;
         const clearanceCm = lookahead?.clearance_cm || 0;
@@ -461,10 +209,9 @@ class TrainMonitor {
         const targetStopCm = Math.max(0, rawTargetStopCm);
 
         this.lookaheadData = {
-            current_speed_kmh: train.speed || 0,
-            target_speed_kmh: train.onboard?.target_speed ?? 0,
-            state: train.state,
-            wait_reason: train.wait_reason,
+            current_speed_kmh: controller?.current_speed ?? 0,
+            target_speed_kmh: controller?.target_speed ?? 0,
+            state: controller?.state,
             speed_limit_reason: speedLimitReason,
             blocks: lookahead?.blocks || [],
             signals: lookahead?.signals || [],
@@ -510,18 +257,15 @@ class TrainMonitor {
             nextDestContainer.classList.add('hidden');
         }
 
+        // wait_reason was removed in v1; speed_limit_reason carries the
+        // diagnostic string that previously lived on a separate field.
         if (this.waitReasonEl) {
-            if (this.lookaheadData.wait_reason) {
-                this.waitReasonEl.textContent = this.lookaheadData.wait_reason;
-                this.waitReasonEl.classList.remove('hidden');
-            } else {
-                this.waitReasonEl.classList.add('hidden');
-            }
+            this.waitReasonEl.classList.add('hidden');
         }
 
         if (this.speedLimitReasonEl) {
             const speedLimitReason = this.lookaheadData.speed_limit_reason;
-            if (speedLimitReason && !this.lookaheadData.wait_reason) {
+            if (speedLimitReason) {
                 this.speedLimitReasonEl.textContent = speedLimitReason;
                 this.speedLimitReasonEl.classList.remove('hidden');
             } else {
@@ -641,43 +385,67 @@ class TrainMonitor {
         });
         
         const upcoming = elements;
-        
+
+        if (this.upcomingCountEl) {
+            this.upcomingCountEl.textContent = upcoming.length;
+        }
+
         if (upcoming.length === 0) {
-            this.upcomingEl.innerHTML = '<span class="text-secondary">No elements ahead</span>';
+            this.upcomingEl.innerHTML = '<div class="tm-upcoming-empty">No elements ahead</div>';
             return;
         }
-        
+
         const trainDist = data.distance_into_path_cm || 0;
-        
+        const escapeHtml = (s) => String(s ?? '').replace(/[<>&"']/g, c => (
+            {'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]
+        ));
+
         this.upcomingEl.innerHTML = upcoming.map(el => {
             const distToStart = el.distance - trainDist;
             const distToEnd = (el.distance + el.length) - trainDist;
             const totalLength = el.length;
-            
+
             const startM = (distToStart / 100).toFixed(1);
             const endM = (distToEnd / 100).toFixed(1);
             const lengthM = (totalLength / 100).toFixed(1);
-            
+
             let icon = '▣';
-            let colorClass = '';
+            let kindClass = '';
+            let typeLabel = el.type;
+
             if (el.type === 'station') {
                 icon = '🚉';
+                kindClass = 'kind-station';
+                typeLabel = totalLength > 0 ? `station · ${lengthM}m` : 'station';
             } else if (el.type === 'switch') {
                 icon = '⇋';
+                kindClass = 'kind-switch';
+                typeLabel = el.position ? `switch · ${el.position}` : 'switch';
             } else if (el.type === 'signal') {
                 icon = '🚦';
-                colorClass = `signal-${el.state || 'unknown'}`;
+                kindClass = `signal-${el.state || 'unknown'}`;
+                typeLabel = el.state ? `signal · ${el.state}` : 'signal';
             } else if (el.type === 'block') {
-                colorClass = `state-${el.state || 'unknown'}`;
+                icon = '▣';
+                kindClass = `state-${el.state || 'unknown'}`;
+                typeLabel = totalLength > 0
+                    ? `block${el.state ? ' · ' + el.state : ''} · ${lengthM}m`
+                    : `block${el.state ? ' · ' + el.state : ''}`;
             }
-            
-            return `<div class="upcoming-item ${colorClass}">
-                <span class="upcoming-icon">${icon}</span>
-                <span class="upcoming-name">${el.name}</span>
-                <div class="upcoming-distances">
-                    <span class="dist-start" title="Distance to start">${startM}m</span>
-                    ${el.length > 0 ? `<span class="dist-end" title="Distance to end">→ ${endM}m</span>` : ''}
-                    ${el.length > 0 ? `<span class="dist-length" title="Length">(${lengthM}m)</span>` : ''}
+
+            const distEnd = totalLength > 0
+                ? `<span class="tm-up-row-dist-end" title="Distance to end">→ ${endM}m</span>`
+                : '';
+
+            return `<div class="tm-up-row ${kindClass}" data-type="${escapeHtml(el.type)}">
+                <span class="tm-up-row-icon">${icon}</span>
+                <div class="tm-up-row-info">
+                    <span class="tm-up-row-name" title="${escapeHtml(el.name)}">${escapeHtml(el.name)}</span>
+                    <span class="tm-up-row-type">${escapeHtml(typeLabel)}</span>
+                </div>
+                <div class="tm-up-row-dist">
+                    <span class="tm-up-row-dist-primary" title="Distance to start">${startM}m</span>
+                    ${distEnd}
                 </div>
             </div>`;
         }).join('');
@@ -754,32 +522,36 @@ class TrainMonitor {
         
         const padding = { left: 30, right: 10, top: 15, bottom: 25 };
         
-        // Even spacing layout with consistent gaps
-        const availableHeight = height - padding.top - padding.bottom;
-        const sectionGap = 8;
-        
-        // Station section: 15% at bottom
-        const stationHeight = Math.max(availableHeight * 0.15, 28);
-        const stationEndY = height - padding.bottom;
-        const stationStartY = stationEndY - stationHeight;
-        const stationTrackY = stationStartY + (stationHeight / 2);
-        
-        // Block section: fixed height to fit content (block + 2 lines of text)
-        // Block rect: 16px centered at trackY (8px above, 8px below)
-        // Text line 1: at trackY + 18 (10px below block bottom)
-        // Text line 2: at trackY + 28 (20px below block bottom)
-        // Need 8px margin at bottom after text
-        // Total: trackY + 28 + 8 = trackY + 36
-        // If trackY is centered at 24px: section = 24 + 36 = 60px
-        const blockHeight = 60;
-        const blockStartY = stationStartY - sectionGap - blockHeight;
-        const blockTrackY = blockStartY + 24;  // Centered at 24px from section top
-        
-        // ATC section: from top padding to block section, respecting 55% target
-        const targetAtcHeight = availableHeight * 0.55;
-        const maxAtcEndY = blockStartY - sectionGap;
-        const atcEndY = Math.min(padding.top + targetAtcHeight, maxAtcEndY);
-        const speedCurveAreaHeight = atcEndY - padding.top;
+        // Section height constants derived from actual content extents
+        // Block: signals reach trackY-38 (double-yellow top) → 42px clearance above trackY
+        //        measurements bottom at trackY+36 → 40px below trackY
+        const BLOCK_TOP       = 42;
+        const BLOCK_BOT       = 40;
+        const BLOCK_SECTION_H = BLOCK_TOP + BLOCK_BOT;   // 82
+
+        // Station: 4px margin + 9px name + 4px gap + 7px rect-half above trackY
+        //          7px rect-half + 4px gap + 9px info + 4px margin below trackY
+        const STN_TOP         = 24;
+        const STN_BOT         = 24;
+        const STN_SECTION_H   = STN_TOP + STN_BOT;        // 48
+
+        const SECTION_GAP     = 8;
+        const MIN_CURVE_H     = 60;
+
+        const hasStations = (data.stations || []).length > 0;
+
+        // Station section anchored to effective bottom
+        const stationSectionUsed = hasStations ? STN_SECTION_H + SECTION_GAP : 0;
+        const stationStartY = hasStations ? height - padding.bottom - STN_SECTION_H : null;
+        const stationTrackY = hasStations ? stationStartY + STN_TOP : null;
+
+        // Block section sits above station section
+        const blockEndY    = height - padding.bottom - stationSectionUsed;
+        const blockStartY  = blockEndY - BLOCK_SECTION_H;
+        const blockTrackY  = blockStartY + BLOCK_TOP;
+
+        // Speed curve fills remaining space with a minimum so it stays readable
+        const speedCurveAreaHeight = Math.max(blockStartY - SECTION_GAP - padding.top, MIN_CURVE_H);
         const trackWidth = width - padding.left - padding.right;
         
         const trainDist = data.distance_into_path_cm || 0;
@@ -859,13 +631,13 @@ class TrainMonitor {
         this.drawSwitches(data.switches || [], cmToX, blockTrackY);
         this.drawSignals(data.signals || [], cmToX, blockTrackY);
         
-        if ((data.stations || []).length > 0) {
+        if (hasStations) {
             this.drawTrackLine(padding.left, stationTrackY, trackWidth, '#2a4a5f');
             this.drawStations(data.stations || [], cmToX, stationTrackY);
         }
-        
+
         this.drawTrainPosition(trainX, blockTrackY);
-        if ((data.stations || []).length > 0) {
+        if (hasStations) {
             this.drawTrainPosition(trainX, stationTrackY);
         }
         
@@ -1043,26 +815,31 @@ class TrainMonitor {
     }
     
     drawStations(stations, cmToX, trackY) {
-        const stationHeight = 14;
-        
+        const RECT_HALF = 7;   // station rect is 14px centered at trackY
+        const NAME_GAP  = 4;   // gap between name text bottom and rect top
+        const INFO_GAP  = 4;   // gap between rect bottom and info text top
+
         stations.forEach(station => {
             const startX = cmToX(station.distance_cm);
             const stationLength = station.length_cm || 50;
             const endX = cmToX(station.distance_cm + stationLength);
-            
+
             if (endX < 0 || startX > this.canvas.width) return;
-            
+
             const stationWidth = Math.max(endX - startX, 10);
-            
+            const centerX = startX + stationWidth / 2;
+
+            // Rect
             this.ctx.fillStyle = '#3498db';
             this.ctx.globalAlpha = 0.4;
-            this.ctx.fillRect(startX, trackY - stationHeight/2, stationWidth, stationHeight);
+            this.ctx.fillRect(startX, trackY - RECT_HALF, stationWidth, RECT_HALF * 2);
             this.ctx.globalAlpha = 1.0;
-            
+
             this.ctx.strokeStyle = '#3498db';
             this.ctx.lineWidth = 1.5;
-            this.ctx.strokeRect(startX, trackY - stationHeight/2, stationWidth, stationHeight);
-            
+            this.ctx.strokeRect(startX, trackY - RECT_HALF, stationWidth, RECT_HALF * 2);
+
+            // Tile dividers
             const tileCount = station.tile_count || 1;
             if (tileCount > 1) {
                 this.ctx.strokeStyle = '#3498db';
@@ -1070,27 +847,34 @@ class TrainMonitor {
                 this.ctx.globalAlpha = 0.6;
                 const tileWidth = stationWidth / tileCount;
                 for (let i = 1; i < tileCount; i++) {
-                    const dividerX = startX + i * tileWidth;
+                    const divX = startX + i * tileWidth;
                     this.ctx.beginPath();
-                    this.ctx.moveTo(dividerX, trackY - stationHeight/2);
-                    this.ctx.lineTo(dividerX, trackY + stationHeight/2);
+                    this.ctx.moveTo(divX, trackY - RECT_HALF);
+                    this.ctx.lineTo(divX, trackY + RECT_HALF);
                     this.ctx.stroke();
                 }
                 this.ctx.globalAlpha = 1.0;
             }
-            
+
+            // Station name ABOVE rect — baseline at trackY - RECT_HALF - NAME_GAP
             const name = station.name || station.platform_id || station.station_id || 'Platform';
             this.ctx.font = '9px Inter, sans-serif';
-            if (stationWidth > 30) {
-                const labelMaxWidth = Math.max(0, stationWidth - 6);
-                const displayName = this.fitTextToWidth(name, labelMaxWidth);
-                if (displayName) {
-                    this.ctx.fillStyle = '#fff';
-                    this.ctx.textAlign = 'center';
-                    this.ctx.textBaseline = 'middle';
-                    this.ctx.fillText(displayName, startX + stationWidth/2, trackY);
-                }
-            }
+            this.ctx.fillStyle = '#7ec8e3';
+            this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'alphabetic';
+            const labelMaxWidth = Math.max(0, stationWidth - 4);
+            const displayName = stationWidth > 20
+                ? (this.fitTextToWidth(name, labelMaxWidth) || name)
+                : name;
+            this.ctx.fillText(displayName, centerX, trackY - RECT_HALF - NAME_GAP);
+
+            // Platform length BELOW rect — top at trackY + RECT_HALF + INFO_GAP
+            const lengthM = ((station.length_cm || 0) / 100).toFixed(0);
+            this.ctx.font = '8px JetBrains Mono, monospace';
+            this.ctx.fillStyle = '#888';
+            this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'top';
+            this.ctx.fillText(`${lengthM}m`, centerX, trackY + RECT_HALF + INFO_GAP);
         });
     }
     
@@ -1270,7 +1054,7 @@ class TrainMonitor {
         
         if (targetSpeed > 0 && targetSpeed < maxSpeed) {
             const targetY = speedToY(targetSpeed);
-            this.ctx.strokeStyle = '#00bcd4';
+            this.ctx.strokeStyle = '#00d4ff';
             this.ctx.lineWidth = 1;
             this.ctx.setLineDash([2, 4]);
             this.ctx.beginPath();

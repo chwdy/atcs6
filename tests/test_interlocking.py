@@ -20,14 +20,22 @@ from path_utils import (
 )
 
 
-def _stub_controller(network=None):
-    """Minimal SimulationController stub for Switch runtime operations.
+def _stub_switch_manager(network=None):
+    """Minimal stand-in for SwitchManager.request_position_change(...).
 
-    Provides the .block_manager.on_switch_state_changed call site and a
-    .network attribute so Switch.on_train_tail_vacated can walk neighbours.
+    Provides the BlockManager notification side-effect that the production
+    `SwitchManager` performs after `Switch.apply_position_change(...)` succeeds.
     """
-    block_manager = SimpleNamespace(on_switch_state_changed=lambda switch_id: None)
-    return SimpleNamespace(block_manager=block_manager, network=network)
+    from switch_manager import SwitchManager
+
+    block_manager = SimpleNamespace(on_switch_position_changed=lambda switch_id: None)
+    sim = SimpleNamespace(block_manager=block_manager, network=network)
+    switches = network.switches if network is not None else {}
+    return SwitchManager(
+        switches=switches,
+        simulation_controller=sim,
+        network=network,
+    )
 
 
 @pytest.fixture
@@ -40,76 +48,92 @@ class TestSwitchLocking:
 
     def test_switch_lock_unlock(self):
         from switch import Switch
+        from runtime_payloads import SwitchLockClaim
 
         switch = Switch(switch_id="SW_1", x=0, y=0)
-        switch.simulation_controller = _stub_controller()
         assert (
-            switch.acquire_lock("PATH_1", "primary", "TRAIN_A", 0, source_switch_id=None)
+            switch.acquire_lock(
+                SwitchLockClaim(
+                    path_id="PATH_1",
+                    train_id="TRAIN_A",
+                    locked_state=0,
+                    source_switch_id=None,
+                )
+            )
             is True
         )
         assert switch.is_locked() is True
-        # v1: locks is a dict keyed by (path_id, claim_role, source_switch_id).
-        assert ("PATH_1", "primary", None) in switch.locks
-        assert switch.locks[("PATH_1", "primary", None)] == ("TRAIN_A", 0)
-        assert (
-            switch.release_lock("PATH_1", "primary", source_switch_id=None) is True
-        )
+        # v1: locks is a dict keyed by (path_id, source_switch_id).
+        assert ("PATH_1", None) in switch.locks
+        assert switch.locks[("PATH_1", None)] == ("TRAIN_A", 0)
+        assert switch.release_lock("PATH_1", source_switch_id=None) is True
         assert switch.is_locked() is False
 
     def test_switch_lock_by_different_path_fails(self):
         from switch import Switch
+        from runtime_payloads import SwitchLockClaim
 
         switch = Switch(switch_id="SW_1", x=0, y=0)
-        switch.simulation_controller = _stub_controller()
         # Same-state locks may co-exist; different-state locks conflict.
         assert (
-            switch.acquire_lock("PATH_1", "primary", "TRAIN_A", 0)
+            switch.acquire_lock(
+                SwitchLockClaim(path_id="PATH_1", train_id="TRAIN_A", locked_state=0)
+            )
             is True
         )
         assert (
-            switch.acquire_lock("PATH_2", "primary", "TRAIN_B", 1)
+            switch.acquire_lock(
+                SwitchLockClaim(path_id="PATH_2", train_id="TRAIN_B", locked_state=1)
+            )
             is False
         )
 
-    def test_switch_state_change_blocked_when_locked(self):
+    def test_switch_position_change_blocked_when_locked(self):
         from switch import Switch
+        from runtime_payloads import SwitchLockClaim
 
         network = RailwayNetwork()
         network.add_track(TrackSegment(0, 0, track_bits=TRACK_EW | TRACK_NE))
         switch = Switch(switch_id="SW_1", x=0, y=0)
-        switch.simulation_controller = _stub_controller(network)
         network.add_switch(switch)
-        switch.acquire_lock("PATH_1", "primary", "TRAIN_A", 0)
-        success, msg = switch.request_state_change(1, network)
+        switch_manager = _stub_switch_manager(network)
+        switch.acquire_lock(
+            SwitchLockClaim(path_id="PATH_1", train_id="TRAIN_A", locked_state=0)
+        )
+        success, msg = switch_manager.request_position_change("SW_1", 1)
         assert success is False
         assert "locked" in msg.lower()
 
-    def test_switch_state_change_allowed_when_unlocked(self):
+    def test_switch_position_change_allowed_when_unlocked(self):
         from switch import Switch
 
         network = RailwayNetwork()
         network.add_track(TrackSegment(0, 0, track_bits=TRACK_EW | TRACK_NE))
         switch = Switch(switch_id="SW_1", x=0, y=0)
-        switch.simulation_controller = _stub_controller(network)
         network.add_switch(switch)
-        success, msg = switch.request_state_change(1, network)
+        switch_manager = _stub_switch_manager(network)
+        success, msg = switch_manager.request_position_change("SW_1", 1)
         assert success is True
-        # v1: state is authoritative on the Switch entity (not the TrackSegment).
-        assert int(switch.state) == 1
+        # v1: position is authoritative on the Switch entity (not the TrackSegment).
+        assert int(switch.position) == 1
 
     def test_switch_serialization_includes_lock_state(self):
         from switch import Switch
+        from runtime_payloads import SwitchLockClaim
 
         switch = Switch(switch_id="SW_1", x=0, y=0)
-        switch.simulation_controller = _stub_controller()
-        switch.acquire_lock("PATH_1", "primary", "TRAIN_A", 1)
+        switch.acquire_lock(
+            SwitchLockClaim(path_id="PATH_1", train_id="TRAIN_A", locked_state=1)
+        )
         data = switch.to_dict()
         # v1: locks is a list of dicts.
         assert isinstance(data["locks"], list)
         assert len(data["locks"]) == 1
         lock_entry = data["locks"][0]
         assert lock_entry["path_id"] == "PATH_1"
+        # claim_role is a derived diagnostic field; "primary" when source_switch_id is None.
         assert lock_entry["claim_role"] == "primary"
+        assert lock_entry["source_switch_id"] is None
         assert lock_entry["train_id"] == "TRAIN_A"
         assert lock_entry["locked_state"] == 1
 
@@ -123,7 +147,6 @@ class TestSwitchLocking:
             "locks": [
                 {
                     "path_id": "PATH_1",
-                    "claim_role": "primary",
                     "source_switch_id": None,
                     "train_id": "TRAIN_A",
                     "locked_state": 1,
@@ -132,8 +155,9 @@ class TestSwitchLocking:
         }
         switch = Switch.from_dict(data)
         assert switch.is_locked() is True
-        assert ("PATH_1", "primary", None) in switch.locks
-        assert switch.locks[("PATH_1", "primary", None)] == ("TRAIN_A", 1)
+        # v1: 2-tuple key (path_id, source_switch_id).
+        assert ("PATH_1", None) in switch.locks
+        assert switch.locks[("PATH_1", None)] == ("TRAIN_A", 1)
 
 
 class TestSwitchLockingInRoutes:
@@ -181,7 +205,7 @@ class TestPathPrepending:
             track.block_section_id = "BLK_1"
             network.add_track(track)
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         train.position = make_train_position((0, 0), Direction.EAST)
         path_tiles = [
@@ -201,7 +225,7 @@ class TestPathPrepending:
             track.block_section_id = "BLK_1"
             network.add_track(track)
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         train.position = make_train_position((0, 0), Direction.EAST)
         path_tiles = [
@@ -225,7 +249,7 @@ class TestPathPrepending:
             network.add_track(track)
         network.blocks["BLK_A"] = Block(block_id="BLK_A")
         network.blocks["BLK_B"] = Block(block_id="BLK_B")
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         train.position = make_train_position((0, 0), Direction.EAST)
         path_tiles = [
@@ -243,7 +267,7 @@ class TestPathPrepending:
         track.block_section_id = "BLK_1"
         network.add_track(track)
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
         train.position = make_train_position((0, 0), Direction.EAST)
         result = prepare_path_for_train(network, train, [])

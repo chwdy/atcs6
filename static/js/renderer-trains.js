@@ -16,11 +16,12 @@ class RendererTrainHandler {
     // ========================================================================
 
     drawTrain(train) {
-        if (!train.path_tiles || train.path_tiles.length === 0 || !train.path_tile_info) {
+        const controller = window.stateManager?.getController(train.id);
+        if (!controller?.span?.occupied_tiles?.length) {
             return;
         }
 
-        this.drawTrainFromPath(train);
+        this.drawTrainFromSpan(train, controller);
     }
 
     /**
@@ -179,71 +180,74 @@ class RendererTrainHandler {
     // ========================================================================
 
     /**
-     * Draw a train using path-based position data.
-     * @param {Object} train - Train object with path_tiles and path_tile_info
+     * Draw a train using its TrainController span.
+     *
+     * Per design_new.md "Data Flow To UI", live position lives on
+     * `controller.span` (occupied_tiles ordered end_a → end_b plus end_a/end_b
+     * geometry). Per-tile length is not in the network payload for v1; we
+     * use a 50cm-per-tile constant for body interpolation (visually
+     * approximate but acceptable for v1).
      */
-    drawTrainFromPath(train) {
-        const pathTiles = train.path_tiles;
-        const pathInfo = train.path_tile_info || [];
-        // Determine head and tail based on active_cab
-        // active_cab reflects whether a cab is actually selected (A/B/null)
-        // leading_end is always set by place_train() even when cab is OFF,
-        // so we must use active_cab to decide marker style (triangle vs square)
-        const hasLeadingEnd = train.active_cab === 'A' || train.active_cab === 'B';
-        const headIndex = train.leading_end === 'b' ? train.end_b_index : train.end_a_index;
-        const tailIndex = train.leading_end === 'b' ? train.end_a_index : train.end_b_index;
-        const headDistanceCm = train.leading_end === 'b' ? train.end_b_distance_cm : train.end_a_distance_cm;
-        const tailDistanceCm = train.leading_end === 'b' ? train.end_a_distance_cm : train.end_b_distance_cm;
-        const headEntryEdge = train.leading_end === 'b' ? train.end_b_entry_edge : train.end_a_entry_edge;
-        const tailEntryEdge = train.leading_end === 'b' ? train.end_a_entry_edge : train.end_b_entry_edge;
-        
-        // Validate indices - enhanced bounds checking
-        if (headIndex === undefined || headIndex === null || 
-            tailIndex === undefined || tailIndex === null) {
-            console.warn('[RendererTrainHandler] Missing head/tail indices', {
-                headIndex, tailIndex, trainId: train.id
-            });
-            return;
-        }
-        
-        if (headIndex >= pathTiles.length || tailIndex >= pathTiles.length) {
-            console.warn('[RendererTrainHandler] Index out of bounds', {
-                headIndex, tailIndex, pathLength: pathTiles.length, trainId: train.id
-            });
-            return;
-        }
-        
-        // Get track bits lookup
+    drawTrainFromSpan(train, controller) {
+        const span = controller.span;
+        const occupiedTiles = span.occupied_tiles || [];
+        if (occupiedTiles.length === 0) return;
+
+        // active_cab is null when the train has no cab selected; we still
+        // draw both endpoints, but as squares rather than head triangle.
+        const hasLeadingEnd = controller.active_cab === 'A' || controller.active_cab === 'B';
+
+        // Resolve which end is head vs tail. occupied_tiles is ordered
+        // end_a → end_b (see network.py). leading_end ('a' or 'b') tells us
+        // which endpoint is the head.
+        const leadingEnd = span.leading_end;
+        const headFromA = leadingEnd === 'a';
+        const headEndpoint = headFromA ? span.end_a : span.end_b;
+        const tailEndpoint = headFromA ? span.end_b : span.end_a;
+        const headTile = headEndpoint.tile;
+        const tailTile = tailEndpoint.tile;
+        const headDistanceCm = headEndpoint.distance_cm;
+        const tailDistanceCm = tailEndpoint.distance_cm;
+        const headEntryEdge = headEndpoint.entry_edge;
+        const tailEntryEdge = tailEndpoint.entry_edge;
+
+        // Per-tile length is not exposed in v1's network payload. 50cm is the
+        // common case in this project's layouts; body interpolation between
+        // head/tail will be slightly approximate when a tile is shorter or
+        // longer than that constant.
+        const TILE_LENGTH_CM = 50;
+
         const tracks = this.currentNetwork?.tracks || [];
         const getTrackBits = (tile) => {
             const t = tracks.find(tr => tr.x === tile[0] && tr.y === tile[1]);
             return t ? t.track_bits : 0;
         };
-        
-        const headTile = pathTiles[headIndex];
-        const tailTile = pathTiles[tailIndex];
-        const headInfo = pathInfo[headIndex] || { length_cm: 50 };
-        const tailInfo = pathInfo[tailIndex] || { length_cm: 50 };
-        
+
         // Calculate head and tail screen positions
         const headPos = this.getTilePathPosition(
-            headTile, headEntryEdge, headDistanceCm, 
-            headInfo.length_cm, getTrackBits(headTile)
+            headTile, headEntryEdge, headDistanceCm,
+            TILE_LENGTH_CM, getTrackBits(headTile)
         );
-        
+
         const tailPos = this.getTilePathPosition(
             tailTile, tailEntryEdge, tailDistanceCm,
-            tailInfo.length_cm, getTrackBits(tailTile)
+            TILE_LENGTH_CM, getTrackBits(tailTile)
         );
-        
+
         const s = this.scale;
-        const occupiedTileCount = Math.abs(headIndex - tailIndex) + 1;
-        
+        const occupiedTileCount = occupiedTiles.length;
+
         // === Draw train body (white stroke with dark border from tail to head) ===
-        // Collect all path points
+        // Walk occupied_tiles tail→head to build a polyline.
+        // occupied_tiles is ordered end_a → end_b; if the head is end_a, we
+        // need to reverse so the walk goes tail → head.
+        const tilesTailToHead = headFromA
+            ? [...occupiedTiles].reverse()
+            : occupiedTiles;
+
         const pathPoints = [];
         pathPoints.push({ x: tailPos.x, y: tailPos.y });
-        
+
         if (!hasLeadingEnd) {
             // No cab active: simple direct line between ends regardless of track path
             pathPoints.push({ x: headPos.x, y: headPos.y });
@@ -262,29 +266,28 @@ class RendererTrainHandler {
             const tailExits = this.getTrackExits(tailTrack, tailEntryEdge);
             const tailExitEdge = tailExits.length > 0 ? tailExits[0] : null;
             const headEntryEdgeCalc = tailExitEdge ? this.getOppositeEdge(tailExitEdge) : headEntryEdge;
-            
+
             if (tailExitEdge) {
                 const tailCenterX = this.gridToScreenX(tailTile[0], tailTile[1]);
                 const tailCenterY = this.gridToScreenY(tailTile[0], tailTile[1]);
                 const tailExitOffset = this.getEdgeCenterOffset(tailExitEdge);
                 pathPoints.push({ x: tailCenterX + tailExitOffset.x, y: tailCenterY + tailExitOffset.y });
             }
-            
+
             if (headEntryEdgeCalc && (headTile[0] !== tailTile[0] || headTile[1] !== tailTile[1])) {
                 const headCenterX = this.gridToScreenX(headTile[0], headTile[1]);
                 const headCenterY = this.gridToScreenY(headTile[0], headTile[1]);
                 const headEntryOffset = this.getEdgeCenterOffset(headEntryEdgeCalc);
                 pathPoints.push({ x: headCenterX + headEntryOffset.x, y: headCenterY + headEntryOffset.y });
             }
-            
+
             pathPoints.push({ x: headPos.x, y: headPos.y });
         } else {
-            // 3+ tiles - draw through all occupied tiles
-            const step = tailIndex <= headIndex ? 1 : -1;
+            // 3+ tiles - walk all occupied tiles tail → head
             let currentEntryEdge = tailEntryEdge;
-            
-            for (let i = tailIndex; i !== headIndex; i += step) {
-                const currentTile = pathTiles[i];
+
+            for (let i = 0; i < tilesTailToHead.length - 1; i++) {
+                const currentTile = tilesTailToHead[i];
                 const track = tracks.find(t => t.x === currentTile[0] && t.y === currentTile[1]);
                 if (!track) {
                     console.warn('[RendererTrainHandler] Track not found for intermediate tile', {
@@ -295,7 +298,7 @@ class RendererTrainHandler {
 
                 const exits = this.getTrackExits(track, currentEntryEdge);
                 const exitEdge = exits.length > 0 ? exits[0] : null;
-                
+
                 if (exitEdge) {
                     const centerX = this.gridToScreenX(currentTile[0], currentTile[1]);
                     const centerY = this.gridToScreenY(currentTile[0], currentTile[1]);
@@ -376,7 +379,7 @@ class RendererTrainHandler {
 
         // === Draw label ===
         const headTrackBits = getTrackBits(headTile);
-        this.drawTrainLabel(train, headPos.x, headPos.y, headTrackBits, train.direction, headTile[0], headTile[1], tracks);
+        this.drawTrainLabel(train, headPos.x, headPos.y, headTrackBits, train.facing_direction, headTile[0], headTile[1], tracks);
     }
 
     /**

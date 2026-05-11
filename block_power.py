@@ -113,7 +113,7 @@ class BlockPowerController:
     The controller determines the appropriate voltage for each block
     based on:
     - Which trains occupy the block
-    - Train state (OFF, IDLE, RUNNING, etc.)
+    - Train state (OFF, READY, RUNNING_*, etc.)
     - Train speed profile and target speed
 
     Attributes:
@@ -132,9 +132,12 @@ class BlockPowerController:
     min_voltage: float = -MAX_TRACK_VOLTAGE  # Allow negative for opposite polarity
     default_lighting_voltage: float = DEFAULT_LIGHTING_VOLTAGE
 
-    # SimulationController back-reference, set by bootstrap so this controller
-    # can fetch the live TrainController for a train and read controller-owned
-    # state (control_mode, target_speed, manual_power_percent, current_speed_kmh).
+    # SimulationController back-reference, set by bootstrap so this
+    # controller can fetch the live `TrainController` (for the operational
+    # state machine and cab) and the live `TrainPhysics` (canonical home of
+    # `track_voltage` per design_new.md "Power-controller role"). This
+    # controller does not read controller-owned manual-mode state directly —
+    # it asks `TrainPhysics.compute_track_voltage(...)` for the scalar.
     _sim_controller: Optional[Any] = None
 
     def set_network(self, network: "RailwayNetwork") -> None:
@@ -149,8 +152,9 @@ class BlockPowerController:
 
         Determines voltage based on train state:
         - OFF: 0V
-        - IDLE/STANDBY/RUNNING_AT_STATION: lighting_voltage
-          (IDLE with ≥2 blocks may use opposite polarity for red lights both ends)
+        - READY/RUNNING_AT_STATION: lighting_voltage
+          (READY + no cab selected with ≥2 blocks may use opposite polarity
+           for red lights both ends)
         - RUNNING_MOVING: voltage based on target speed
 
         Args:
@@ -163,16 +167,22 @@ class BlockPowerController:
         if not occupied_blocks:
             return
 
-        # Per design_new.md ~line 1292, operational state lives on the
-        # controller; resolve it through the wired SimulationController.
+        # Per design_new.md, operational state lives on the controller;
+        # resolve it through the wired SimulationController.
         controller_state = None
+        controller_cab = None
         if self._sim_controller is not None:
             ctrl = self._sim_controller.get_or_create_controller(train.train_id)
-            controller_state = getattr(ctrl, "state", None) if ctrl else None
+            if ctrl is not None:
+                controller_state = getattr(ctrl, "state", None)
+                controller_cab = getattr(ctrl, "cab", None)
 
-        # Check if we should use opposite polarity for IDLE state
+        # Use opposite polarity (red lights both ends) when the train is
+        # READY with no cab selected — the doc's "no cab" flavor of READY
+        # replaces the old IDLE state.
         if (
-            controller_state == TrainState.IDLE
+            controller_state == TrainState.READY
+            and controller_cab is None
             and len(occupied_blocks) >= 2
             and train.is_opposite_polarity_safe(self.network)
         ):
@@ -201,82 +211,23 @@ class BlockPowerController:
     def _calculate_voltage_for_train(
         self, train: "Train", speed_profile: Optional["SpeedProfile"] = None
     ) -> float:
+        """Resolve the train's current `track_voltage` from `TrainPhysics`.
+
+        Per design_new.md "Power-controller role", `TrainPhysics` owns
+        `track_voltage` and `BlockPowerController` is the software-to-
+        hardware emission layer. This method asks
+        `TrainPhysics.compute_track_voltage(...)` for the scalar; it does
+        not branch on `control_mode`, `manual_mode_type`, or any other
+        manual-mode policy.
         """
-        Calculate voltage for a train based on its state.
-
-        Args:
-            train: Train to calculate voltage for
-            speed_profile: Optional speed profile
-
-        Returns:
-            Voltage to output to train's blocks
-        """
-        # Fetch the live controller so we read controller-owned state per
-        # design_new.md (state, control_mode, manual_mode_type,
-        # manual_power_percent, current_speed_kmh, target_speed via lookahead).
-        controller = None
-        if self._sim_controller is not None:
-            controller = self._sim_controller.get_or_create_controller(train.train_id)
-
-        # Resolve operational state from the controller (canonical home).
-        # Fall back to any state on Train only when no controller exists yet.
-        operational_state = (
-            getattr(controller, "state", None) if controller is not None else None
-        )
-        if operational_state is None:
-            operational_state = getattr(train, "state", TrainState.OFF)
-
-        # OFF state = 0V
-        if operational_state == TrainState.OFF:
+        if self._sim_controller is None:
             return 0.0
 
-        # Get lighting voltage from profile or use default
-        lighting_voltage = self.default_lighting_voltage
-        if speed_profile:
-            lighting_voltage = speed_profile.lighting_voltage
-
-        # States that use lighting voltage
-        if operational_state in (
-            TrainState.IDLE,
-            TrainState.STANDBY,
-            TrainState.RUNNING_AT_STATION,
-        ):
-            return lighting_voltage
-
-        # Manual mode: voltage source depends on the manual submode.
-        if controller is not None and controller.control_mode == "manual":
-            if controller.manual_mode_type == "power_percent":
-                # Map percentage -> speed via SpeedProfile.power_speed_curve,
-                # then speed -> voltage. Fall back to a linear voltage on the
-                # raw percentage when no profile is supplied.
-                if speed_profile:
-                    speed = speed_profile.power_percent_to_speed(
-                        controller.manual_power_percent
-                    )
-                    return speed_profile.speed_to_voltage(speed)
-                return self._linear_speed_to_voltage(controller.manual_power_percent)
-            # `simulation` submode: voltage tracks the controller's integrated
-            # current speed (handle drives the speed change rate).
-            current_speed = float(getattr(controller, "current_speed_kmh", 0.0) or 0.0)
-            if speed_profile:
-                return speed_profile.speed_to_voltage(current_speed)
-            return self._linear_speed_to_voltage(current_speed)
-
-        # RUNNING_MOVING: use target speed (live read from controller lookahead)
-        if operational_state == TrainState.RUNNING_MOVING:
-            target_speed = controller.target_speed if controller is not None else 0.0
-            if speed_profile:
-                return speed_profile.speed_to_voltage(target_speed)
-            else:
-                # No profile - linear approximation (12V = 120 km/h)
-                return self._linear_speed_to_voltage(target_speed)
-
-        # Default fallback
-        return 0.0
-
-    def _linear_speed_to_voltage(self, speed_kmh: float) -> float:
-        """Simple linear speed to voltage conversion (fallback)."""
-        return min(self.max_voltage, max(0.0, speed_kmh / 10.0))
+        controller = self._sim_controller.get_or_create_controller(train.train_id)
+        physics = self._sim_controller.get_or_create_physics(train.train_id)
+        if physics is None:
+            return 0.0
+        return physics.compute_track_voltage(controller, speed_profile)
 
     def _get_train_occupied_blocks(self, train: "Train") -> list:
         """Get list of block IDs occupied by train.

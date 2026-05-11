@@ -139,13 +139,13 @@ class TestBlock:
 
     def test_serialization(self):
         block = Block(
-            block_id="BLK_TEST", name="Test Block", length_cm=1000, max_speed_kmh=80
+            block_id="BLK_TEST", name="Test Block", length_cm=1000, speed_limit_kmh=80
         )
         block_dict = block.to_dict()
         assert block_dict["block_id"] == "BLK_TEST"
         assert block_dict["name"] == "Test Block"
         assert block_dict["length_cm"] == 1000
-        assert block_dict["max_speed_kmh"] == 80
+        assert block_dict["speed_limit_kmh"] == 80
         restored = Block.from_dict(block_dict)
         assert restored.block_id == block.block_id
         assert restored.name == block.name
@@ -385,10 +385,12 @@ class TestBlockManager:
     def test_clear_block_from_caution(self):
         from block_manager import BlockManager
 
+        from block import CautionState
+
         blocks = {"B1": Block("B1")}
         manager = BlockManager(blocks)
-        # v1: CAUTION is computed when _is_caution and not occupied.
-        blocks["B1"]._is_caution = True
+        # v1: CAUTION is computed when block.caution is set and not occupied.
+        blocks["B1"].caution = CautionState(exit_edge="E")
         result = manager.clear_block("B1")
         assert result == True
         assert blocks["B1"].state == BlockState.FREE
@@ -517,13 +519,13 @@ class TestFatalConflict:
 
 class TestDirectionalCaution:
     """Directional `_reevaluate_caution_blocks()` must only inspect the
-    forward-adjacent block in `caution_direction`, never the follower
+    forward-adjacent block in `caution_exit_edge`, never the follower
     behind."""
 
     def _build_three_block_chain(self):
         """A -> B -> C laid out west-to-east on row y=0.
 
-        Forward direction is east; ``caution_direction`` for vacating B
+        Forward direction is east; ``caution_exit_edge`` for vacating B
         toward C is "E". The test ensures the walk inspects C, not A.
         """
         from network import RailwayNetwork
@@ -546,50 +548,53 @@ class TestDirectionalCaution:
         return network
 
     def test_forward_neighbor_occupied_keeps_caution(self):
+        from block import CautionState
+
         network = self._build_three_block_chain()
         manager = network.block_manager
-        # Setup: C is OCCUPIED. B becomes CAUTION with caution_direction = "E".
+        # Setup: C is OCCUPIED. B becomes CAUTION with exit_edge = "E".
         network.blocks["C"].occupied_by = "TRAIN_FORWARD"
-        network.blocks["B"]._is_caution = True
-        network.blocks["B"].caution_direction = "E"
+        network.blocks["B"].caution = CautionState(exit_edge="E")
 
         manager._reevaluate_caution_blocks()
 
         # Because the next forward block (C) is OCCUPIED, B's caution stays.
         assert network.blocks["B"]._is_caution is True
-        assert network.blocks["B"].caution_direction == "E"
+        assert network.blocks["B"].caution_exit_edge == "E"
         assert network.blocks["B"].state == BlockState.CAUTION
 
     def test_follower_behind_does_not_block_clear(self):
         """A follower behind B (entering A) must NOT keep B in CAUTION when
         the forward neighbor C is free."""
+        from block import CautionState
+
         network = self._build_three_block_chain()
         manager = network.block_manager
         # B in CAUTION pointing east. C is FREE. A is OCCUPIED by a follower.
-        network.blocks["B"]._is_caution = True
-        network.blocks["B"].caution_direction = "E"
+        network.blocks["B"].caution = CautionState(exit_edge="E")
         network.blocks["A"].occupied_by = "FOLLOWER"
 
         manager._reevaluate_caution_blocks()
 
         # B's caution should clear: forward (C) is free, A is irrelevant.
         assert network.blocks["B"]._is_caution is False
-        assert network.blocks["B"].caution_direction is None
+        assert network.blocks["B"].caution_exit_edge is None
         assert network.blocks["B"].state == BlockState.FREE
 
     def test_no_reachable_forward_block_clears_caution(self):
         """If walking forward runs off the network, caution clears because
         nothing protectable lies ahead."""
+        from block import CautionState
+
         network = self._build_three_block_chain()
         manager = network.block_manager
-        # Vacate C with caution_direction east — nothing is east of C.
-        network.blocks["C"]._is_caution = True
-        network.blocks["C"].caution_direction = "E"
+        # Vacate C with exit_edge east — nothing is east of C.
+        network.blocks["C"].caution = CautionState(exit_edge="E")
 
         manager._reevaluate_caution_blocks()
 
         assert network.blocks["C"]._is_caution is False
-        assert network.blocks["C"].caution_direction is None
+        assert network.blocks["C"].caution_exit_edge is None
 
 
 if __name__ == "__main__":

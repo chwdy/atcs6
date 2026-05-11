@@ -285,66 +285,87 @@
                     </div>
                 </div>
 
-                <!-- Train Monitor Bar (bottom of screen, visible when train selected) -->
-                <div id="train-monitor-bar" class="train-monitor-bar hidden">
-                    <div class="train-monitor-header">
-                        <span class="train-monitor-title" id="train-monitor-title">Train Monitor</span>
-                        
-                        <div class="view-distance-controls">
-                            <button class="view-dist-btn" data-distance="100">1m</button>
-                            <button class="view-dist-btn active" data-distance="500">5m</button>
-                            <button class="view-dist-btn" data-distance="1000">10m</button>
-                            <button class="view-dist-btn" data-distance="0">All</button>
-                            <button class="view-lookahead-btn text-primary" id="view-lookahead-btn" title="View raw lookahead data">📋 JSON</button>
+                <!-- Train Monitor Bar — bottom-of-screen lookahead, styled to match inspector -->
+                <div id="train-monitor-bar" class="tm-panel hidden">
+                    <div class="tm-header">
+                        <span class="tm-title" id="train-monitor-title">Train Monitor</span>
+                        <div class="tm-header-tools">
+                            <div class="tm-segment view-distance-controls" role="group" aria-label="View distance">
+                                <button type="button" class="tm-seg-btn view-dist-btn" data-distance="100">1m</button>
+                                <button type="button" class="tm-seg-btn view-dist-btn active" data-distance="500">5m</button>
+                                <button type="button" class="tm-seg-btn view-dist-btn" data-distance="1000">10m</button>
+                                <button type="button" class="tm-seg-btn view-dist-btn" data-distance="0">All</button>
+                            </div>
+                            <button type="button" class="tm-icon-btn view-lookahead-btn" id="view-lookahead-btn" title="View raw lookahead JSON">{ }</button>
+                            <button type="button" class="tm-close" id="train-monitor-close" title="Close">×</button>
                         </div>
-                        
-                        <button class="train-monitor-close" id="train-monitor-close" title="Close">×</button>
                     </div>
-                    <div class="train-monitor-content">
-                        <div class="train-monitor-info" id="train-monitor-info">
-                            <div class="train-speed-display">
-                                <span class="speed-value" id="monitor-current-speed">0</span>
-                                <span class="speed-unit">km/h</span>
+                    <div class="tm-content">
+                        <aside class="tm-info" id="train-monitor-info">
+                            <div class="tm-speed-block">
+                                <div class="tm-field-label">Current Speed</div>
+                                <div class="tm-speed-row">
+                                    <span class="tm-speed-value" id="monitor-current-speed">0</span>
+                                    <span class="tm-speed-unit">km/h</span>
+                                </div>
                             </div>
-                            <div class="train-target-speed">
-                                <span class="label">ATC Speed:</span>
-                                <span class="value" id="monitor-atc-speed">0</span>
-                                <span class="unit">km/h</span>
+                            <dl class="tm-fields">
+                                <div class="tm-field">
+                                    <dt class="tm-field-label">ATC Limit</dt>
+                                    <dd class="tm-field-value">
+                                        <span class="tm-val tm-val-danger" id="monitor-atc-speed">—</span>
+                                        <span class="tm-val-unit">km/h</span>
+                                    </dd>
+                                </div>
+                                <div class="tm-field">
+                                    <dt class="tm-field-label">ATO Target</dt>
+                                    <dd class="tm-field-value">
+                                        <span class="tm-val tm-val-success" id="monitor-ato-speed">—</span>
+                                        <span class="tm-val-unit">km/h</span>
+                                    </dd>
+                                </div>
+                                <div class="tm-field">
+                                    <dt class="tm-field-label">Speed (raw)</dt>
+                                    <dd class="tm-field-value">
+                                        <span class="tm-val" id="monitor-speed-cms">0</span>
+                                        <span class="tm-val-unit">cm/s</span>
+                                    </dd>
+                                </div>
+                                <div class="tm-field">
+                                    <dt class="tm-field-label">Clearance</dt>
+                                    <dd class="tm-field-value">
+                                        <span class="tm-val" id="monitor-clearance">0</span>
+                                        <span class="tm-val-unit">m</span>
+                                    </dd>
+                                </div>
+                                <div class="tm-field hidden" id="monitor-next-dest-container">
+                                    <dt class="tm-field-label">Next Stop</dt>
+                                    <dd class="tm-field-value">
+                                        <span class="tm-val tm-val-warn" id="monitor-next-dest-dist">0</span>
+                                        <span class="tm-val-unit">m</span>
+                                    </dd>
+                                </div>
+                            </dl>
+                        </aside>
+                        <canvas id="train-monitor-canvas" class="tm-canvas"></canvas>
+                        <div class="tm-resizer" id="train-monitor-resizer" aria-hidden="true"></div>
+                        <aside class="tm-upcoming" id="monitor-upcoming-container">
+                            <div class="tm-upcoming-header">
+                                <span class="tm-upcoming-title">Upcoming</span>
+                                <span class="tm-upcoming-count" id="monitor-upcoming-count">0</span>
                             </div>
-                            <div class="train-target-speed">
-                                <span class="label">ATO Speed:</span>
-                                <span class="value" id="monitor-ato-speed">0</span>
-                                <span class="unit">km/h</span>
-                            </div>
-                            <div class="train-debug-info text-xs mt-2">
-                                <span class="debug-label">Speed:</span>
-                                <span class="debug-value" id="monitor-speed-cms">0</span>
-                                <span class="debug-unit">cm/s</span>
-                            </div>
-                            <div class="train-debug-info text-xs mt-1">
-                                <span class="debug-label">Clearance:</span>
-                                <span class="debug-value" id="monitor-clearance">0</span>
-                                <span class="debug-unit">m</span>
-                            </div>
-                            <div class="train-debug-info text-xs mt-1 hidden" id="monitor-next-dest-container">
-                                <span class="debug-label">Next Stop:</span>
-                                <span class="debug-value" id="monitor-next-dest-dist">0</span>
-                                <span class="debug-unit">m</span>
-                            </div>
-                            <div class="train-speed-limit-reason text-xs mt-2 hidden" id="monitor-speed-limit-reason"></div>
-                            <div class="train-wait-reason text-xs text-secondary mt-2 hidden" id="monitor-wait-reason"></div>
-                        </div>
-                        <canvas id="train-monitor-canvas" class="train-monitor-canvas"></canvas>
-                        <div class="train-monitor-resizer" id="train-monitor-resizer" aria-hidden="true"></div>
-                        <div class="train-monitor-upcoming" id="monitor-upcoming-container">
-                            <div class="upcoming-header">Upcoming</div>
-                            <div class="upcoming-list" id="monitor-upcoming"></div>
-                        </div>
+                            <div class="tm-upcoming-list" id="monitor-upcoming"></div>
+                        </aside>
                         <!-- Expanded Debug Info Panel (appended dynamically) -->
                         <div id="train-monitor-debug-container" class="train-monitor-debug-container hidden">
                             <div class="debug-header">Debug Details</div>
                             <div id="train-monitor-debug-content"></div>
                         </div>
+                    </div>
+                    <!-- Status footer: speed-limit reason etc. -->
+                    <div class="tm-status">
+                        <div class="tm-banner tm-banner-warn hidden" id="monitor-speed-limit-reason"></div>
+                        <div class="tm-banner tm-banner-muted hidden" id="monitor-wait-reason"></div>
                     </div>
                 </div>
             </div>
@@ -353,7 +374,7 @@
 
 
     <script src="js/constants.js?v=15"></script>
-    <script src="js/api.js?v=15"></script>
+    <script src="js/api.js?v=16"></script>
     <script src="js/state-manager.js?v=15"></script>
     <script src="js/helpers.js?v=15"></script>
     <script src="js/pathfinders.js?v=15"></script>
@@ -369,12 +390,12 @@
     <script src="js/editor-stations.js?v=15"></script>
     <script src="js/editor-signals.js?v=15"></script>
     <script src="js/editor-switches.js?v=15"></script>
-    <script src="js/editor-trains.js?v=15"></script>
+    <script src="js/editor-trains.js?v=20"></script>
     <script src="js/editor-paths.js?v=15"></script>
     <script src="js/editor-routes.js?v=16"></script>
     <script src="js/editor-ui.js?v=15"></script>
     <script src="js/editor.js?v=16"></script>
-    <script src="js/train-monitor.js?v=15"></script>
+    <script src="js/train-monitor.js?v=16"></script>
     <script src="js/scenario-recorder.js?v=15"></script>
     <script src="js/app.js?v=15"></script>
     <script src="js/inspector.js?v=1" defer></script>

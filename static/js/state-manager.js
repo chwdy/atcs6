@@ -16,24 +16,34 @@ class StateManager {
         
         // Canonical cache - mirrors backend state
         // Using Map for O(1) lookup and easy iteration
+        //
+        // Per design_new.md "Data Flow To UI" (~line 2065), train runtime
+        // state is split across three sibling maps owned by separate
+        // backend entities. Consumers subscribe to each type independently.
         this.state = {
-            trains: new Map(),      // trainId → train data object
-            blocks: new Map(),      // blockId → block data object
-            signals: new Map(),     // signalId → signal data object
-            switches: new Map(),    // switchId → switch data object
-            stations: new Map(),    // stationId → station data object
-            tracks: new Map(),      // "x,y" string → track data object
+            trains: new Map(),               // trainId → persistent train data
+            controllers: new Map(),          // trainId → TrainController.to_dict()
+            dispatcherProgress: new Map(),   // trainId → dispatcher progress dict | null
+            assignedRoutes: new Map(),       // trainId → assigned route_id | null
+            blocks: new Map(),               // blockId → block data object
+            signals: new Map(),              // signalId → signal data object
+            switches: new Map(),             // switchId → switch data object
+            stations: new Map(),             // stationId → station data object
+            tracks: new Map(),               // "x,y" string → track data object
         };
-        
+
         // ═══════════════════════════════════════════════════════════════
         // SUBSCRIBER MANAGEMENT
         // ═══════════════════════════════════════════════════════════════
-        
+
         // Subscribers organized by type and entity ID
         // Structure: Map<entityId, Set<callback>>
         // Special key '*' means "all entities of this type"
         this.subscribers = {
             trains: new Map(),
+            controllers: new Map(),
+            dispatcherProgress: new Map(),
+            assignedRoutes: new Map(),
             blocks: new Map(),
             signals: new Map(),
             switches: new Map(),
@@ -188,6 +198,36 @@ class StateManager {
     }
 
     // ═══════════════════════════════════════════════════════════════════
+    // TRAIN SIBLING-PAYLOAD ACCESSORS
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Get the live TrainController snapshot for a train (or undefined).
+     * Source: `controllers_by_train_id` sibling map. Contains state,
+     * current_speed, power_on, span, ato_info, lookahead, etc.
+     */
+    getController(trainId) {
+        return this.state.controllers.get(trainId);
+    }
+
+    /**
+     * Get the dispatcher path-progress projection for a train (or null/undefined).
+     * Source: `dispatcher_progress_by_train_id`. Contains path_id, status,
+     * current_resource_index, authority_end_block_id, resource_sequence.
+     */
+    getDispatcherProgress(trainId) {
+        return this.state.dispatcherProgress.get(trainId);
+    }
+
+    /**
+     * Get the assigned route id for a train (or null/undefined).
+     * Source: `assigned_routes_by_train_id`. Owned by RouteExecutor.
+     */
+    getAssignedRouteId(trainId) {
+        return this.state.assignedRoutes.get(trainId);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
     // DATA UPDATE API
     // ═══════════════════════════════════════════════════════════════════
 
@@ -280,7 +320,7 @@ class StateManager {
         
         try {
             // ─────────────────────────────────────────────────────────
-            // UPDATE TRAINS
+            // UPDATE TRAINS (persistent only)
             // ─────────────────────────────────────────────────────────
             const currentTrainIds = new Set(this.state.trains.keys());
             for (const train of network.trains || []) {
@@ -291,7 +331,43 @@ class StateManager {
             for (const deletedId of currentTrainIds) {
                 this.removeEntity('trains', deletedId);
             }
-            
+
+            // ─────────────────────────────────────────────────────────
+            // UPDATE CONTROLLERS (live runtime per train)
+            // ─────────────────────────────────────────────────────────
+            const currentControllerIds = new Set(this.state.controllers.keys());
+            for (const [tid, controller] of Object.entries(network.controllers_by_train_id || {})) {
+                this.updateEntity('controllers', tid, controller);
+                currentControllerIds.delete(tid);
+            }
+            for (const deletedId of currentControllerIds) {
+                this.removeEntity('controllers', deletedId);
+            }
+
+            // ─────────────────────────────────────────────────────────
+            // UPDATE DISPATCHER PROGRESS (path projection per train)
+            // ─────────────────────────────────────────────────────────
+            const currentDispatcherIds = new Set(this.state.dispatcherProgress.keys());
+            for (const [tid, progress] of Object.entries(network.dispatcher_progress_by_train_id || {})) {
+                this.updateEntity('dispatcherProgress', tid, progress);
+                currentDispatcherIds.delete(tid);
+            }
+            for (const deletedId of currentDispatcherIds) {
+                this.removeEntity('dispatcherProgress', deletedId);
+            }
+
+            // ─────────────────────────────────────────────────────────
+            // UPDATE ASSIGNED ROUTES (RouteExecutor-derived per train)
+            // ─────────────────────────────────────────────────────────
+            const currentAssignedRouteIds = new Set(this.state.assignedRoutes.keys());
+            for (const [tid, routeId] of Object.entries(network.assigned_routes_by_train_id || {})) {
+                this.updateEntity('assignedRoutes', tid, routeId);
+                currentAssignedRouteIds.delete(tid);
+            }
+            for (const deletedId of currentAssignedRouteIds) {
+                this.removeEntity('assignedRoutes', deletedId);
+            }
+
             // ─────────────────────────────────────────────────────────
             // UPDATE BLOCKS
             // ─────────────────────────────────────────────────────────
@@ -437,6 +513,9 @@ class StateManager {
             version: this.version,
             counts: {
                 trains: this.state.trains.size,
+                controllers: this.state.controllers.size,
+                dispatcherProgress: this.state.dispatcherProgress.size,
+                assignedRoutes: this.state.assignedRoutes.size,
                 blocks: this.state.blocks.size,
                 signals: this.state.signals.size,
                 switches: this.state.switches.size,
@@ -445,6 +524,9 @@ class StateManager {
             },
             subscriberCounts: {
                 trains: this._countSubscribers('trains'),
+                controllers: this._countSubscribers('controllers'),
+                dispatcherProgress: this._countSubscribers('dispatcherProgress'),
+                assignedRoutes: this._countSubscribers('assignedRoutes'),
                 blocks: this._countSubscribers('blocks'),
                 signals: this._countSubscribers('signals'),
                 switches: this._countSubscribers('switches'),

@@ -60,8 +60,19 @@ class SwitchEditorHandler {
         const currentState = track?.switch_state ?? 0;
         const stateText = currentState === 0 ? 'MAIN' : 'DIVERGE';
         const stateClass = this.getSwitchStateClass(currentState);
-        const isLocked = switchData.locked_by_path !== null;
-        const lockText = isLocked ? `Locked by ${switchData.locked_by_path}` : 'Unlocked';
+        // The Switch entity exposes a `locks` array; the Track mirrors a
+        // single canonical owner via `locked_by_path`. Prefer the Track
+        // mirror for display because it picks the same path the path
+        // dispatcher considers "primary"; fall back to the first entry of
+        // the Switch's lock array when the Track mirror is empty (e.g. a
+        // switch locked outside the path-dispatcher flow).
+        const lockEntries = Array.isArray(switchData.locks) ? switchData.locks : [];
+        const trackLockedBy = track?.locked_by_path || null;
+        const lockedByPath =
+            trackLockedBy ||
+            (lockEntries.length > 0 ? (lockEntries[0].path_id || null) : null);
+        const isLocked = lockedByPath !== null;
+        const lockText = isLocked ? `Locked by ${lockedByPath}` : 'Unlocked';
 
         const content = `
             <!-- INFO SECTION (Read-only) -->
@@ -272,7 +283,11 @@ class SwitchEditorHandler {
         const currentState = track?.switch_state ?? 0;
         const stateText = currentState === 0 ? 'MAIN' : 'DIVERGE';
         const stateClass = this.getSwitchStateClass(currentState);
-        const isLocked = switchData.locked_by_path !== null;
+        const lockEntries = Array.isArray(switchData.locks) ? switchData.locks : [];
+        const lockedByPath =
+            (track?.locked_by_path || null) ||
+            (lockEntries.length > 0 ? (lockEntries[0].path_id || null) : null);
+        const isLocked = lockedByPath !== null;
         
         const stateDot = document.querySelector('.train-status-dot');
         this._replaceSwitchStateClass(stateDot, stateClass);

@@ -36,7 +36,7 @@ def _build_three_block_network() -> RailwayNetwork:
 def test_received_path_plan_reads_live_from_dispatcher():
     """create_path -> controller.received_path_plan returns the new path on next read."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T1", consist=[car], max_speed=60.0)
     network.add_train(train)
     from enums import Direction
@@ -53,21 +53,25 @@ def test_received_path_plan_reads_live_from_dispatcher():
     assert controller.ato_destination_block_id is None
 
     # Create path via dispatcher.
-    result = dispatcher.create_path("BLK_A", "BLK_C", train_id=train.train_id)
+    result = dispatcher.create_path(
+        train_id=train.train_id,
+        requested_destination_block_id="BLK_C",
+        requested_destination_direction="forward",
+    )
     assert result.success
 
     # Live read must reflect the new path immediately, no explicit sync.
     plan = controller.received_path_plan
     assert plan is not None
-    assert plan.path_id == result.path.path_id
-    assert controller.assigned_path_id == result.path.path_id
+    assert plan.path_id == result.path_id
+    assert controller.assigned_path_id == result.path_id
     assert controller.ato_destination_block_id == "BLK_C"
 
 
 def test_lookahead_reflects_new_path_immediately():
     """create_path -> controller.lookahead recomputes and reflects new authority."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_LA", consist=[car], max_speed=60.0)
     network.add_train(train)
     from enums import Direction
@@ -78,20 +82,24 @@ def test_lookahead_reflects_new_path_immediately():
         train_id=train.train_id, network=network, path_dispatcher=dispatcher
     )
     controller.power_on = True
-    controller.active_cab = "A"
+    controller.cab = "A"
 
     # Snapshot initial lookahead (no path).
     initial = controller.lookahead
 
     # Create path via dispatcher.
-    result = dispatcher.create_path("BLK_A", "BLK_C", train_id=train.train_id)
+    result = dispatcher.create_path(
+        train_id=train.train_id,
+        requested_destination_block_id="BLK_C",
+        requested_destination_direction="forward",
+    )
     assert result.success
 
     # Subsequent read must recompute. We confirm the path is now visible
     # through `received_path_plan` on the same controller without any
     # explicit cache invalidation step.
     assert controller.received_path_plan is not None
-    assert controller.received_path_plan.path_id == result.path.path_id
+    assert controller.received_path_plan.path_id == result.path_id
 
     # The lookahead is recomputed every read; calling it twice with the
     # same inputs should yield consistent results.
@@ -108,7 +116,7 @@ def test_received_path_plan_returns_none_after_path_status_changes():
     controller's received_path_plan returns None on the next read with no
     setter call."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_END", consist=[car], max_speed=60.0)
     network.add_train(train)
     from enums import Direction
@@ -119,12 +127,16 @@ def test_received_path_plan_returns_none_after_path_status_changes():
         train_id=train.train_id, network=network, path_dispatcher=dispatcher
     )
 
-    result = dispatcher.create_path("BLK_A", "BLK_C", train_id=train.train_id)
+    result = dispatcher.create_path(
+        train_id=train.train_id,
+        requested_destination_block_id="BLK_C",
+        requested_destination_direction="forward",
+    )
     assert result.success
     assert controller.received_path_plan is not None
 
     # Cancel the path (this drops it from active_paths and changes status).
-    dispatcher.cancel_path(result.path.path_id)
+    dispatcher.cancel_path(result.path_id)
 
     # Next read of received_path_plan returns None automatically — there is
     # no setter, no explicit clear required.

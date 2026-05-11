@@ -25,7 +25,7 @@ Curve Detection (connection-based):
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 import warnings
 
 from enums import TrackType, Direction, SwitchPosition
@@ -172,9 +172,15 @@ class TrackSegment:
     track_bits: int = 0  # 0-63 geometry bits
     dead_end_ports: Set[str] = field(default_factory=set)  # Buffer stops (N/E/S/W)
 
-    # === SWITCH STATE (global per tile) ===
-    # 0 = MAIN (long path active), 1 = DIVERGE (short paths active)
-    _switch_state: int = 0
+    # === SWITCH STATE ===
+    # Per design_new.md "TrackSegment role and traversal" + "Switch entity":
+    # `Switch.position` is the canonical live switch alignment; `TrackSegment`
+    # does not store switch state. The `_switch_state_local` field below is a
+    # fallback used only when this segment is not attached to a `RailwayNetwork`
+    # (e.g. unit tests that construct a bare TrackSegment without a network).
+    # When the segment is attached, the `switch_state` property resolves
+    # through `network.switches[switch_id].position`.
+    _switch_state_local: int = 0
 
     # === FEATURES ===
     signal_ids: List[str] = field(
@@ -216,8 +222,8 @@ class TrackSegment:
         self.dead_end_ports = {
             e for e in (_normalize_edge(p) for p in self.dead_end_ports) if e
         }
-        # Ensure switch state is valid (0 or 1)
-        self._switch_state = 0 if self._switch_state == 0 else 1
+        # Ensure local fallback switch state is valid (0 or 1)
+        self._switch_state_local = 0 if self._switch_state_local == 0 else 1
 
     # ========== Station / block membership (network-derived) ==========
     # Per design_new.md: TrackSegment does not store station, platform, or
@@ -330,12 +336,47 @@ class TrackSegment:
 
     @property
     def switch_state(self) -> int:
-        """Global switch state: 0=MAIN, 1=DIVERGE"""
-        return self._switch_state
+        """Active switch alignment for this tile (0=MAIN, 1=DIVERGE).
+
+        Per design_new.md, `Switch.position` is canonical. When this segment
+        is attached to a `RailwayNetwork` and has an owning `Switch`, this
+        property resolves from `network.switches[switch_id].position`. The
+        local fallback `_switch_state_local` is used only when not attached
+        (e.g. unit tests with bare TrackSegments).
+        """
+        if (
+            self.network is not None
+            and self.switch_id is not None
+            and hasattr(self.network, "switches")
+        ):
+            switch = self.network.switches.get(self.switch_id)
+            if switch is not None:
+                return int(switch.position)
+        return self._switch_state_local
 
     @switch_state.setter
     def switch_state(self, value: int):
-        self._switch_state = 0 if value == 0 else 1
+        """Setter shim for legacy callers.
+
+        When attached to a network with an owning `Switch`, write through to
+        `Switch.position` so the canonical home stays in sync. Otherwise
+        update only the local fallback.
+        """
+        normalized = 0 if value == 0 else 1
+        if (
+            self.network is not None
+            and self.switch_id is not None
+            and hasattr(self.network, "switches")
+        ):
+            switch = self.network.switches.get(self.switch_id)
+            if switch is not None:
+                from enums import SwitchState
+                switch.position = SwitchState(normalized)
+                # Keep the local fallback in step for callers that read it
+                # directly (rare; should go through the property).
+                self._switch_state_local = normalized
+                return
+        self._switch_state_local = normalized
 
     @property
     def switch_states(self) -> Dict[str, int]:
@@ -346,7 +387,7 @@ class TrackSegment:
         """
         if not self.is_switch:
             return {}
-        return {entry: self._switch_state for entry in self.switch_points.keys()}
+        return {entry: self.switch_state for entry in self.switch_points.keys()}
 
     @property
     def track_type(self) -> TrackType:
@@ -459,7 +500,7 @@ class TrackSegment:
         """
         # Always reset to MAIN (0) when geometry changes
         # This ensures consistent initial state and synced multi-switch behavior
-        self._switch_state = 0
+        self.switch_state = 0
 
     # === Dead-ends ===
     def remove_dead_end(self, edge: str) -> None:
@@ -476,7 +517,7 @@ class TrackSegment:
         """Set global switch state. 0=MAIN, 1=DIVERGE."""
         if not self.is_switch:
             return False
-        self._switch_state = 0 if state == 0 else 1
+        self.switch_state = 0 if state == 0 else 1
         return True
 
     def propagate_update(self, network: "RailwayNetwork") -> None:
@@ -528,6 +569,113 @@ class TrackSegment:
                     self.dead_end_ports.add(edge)
 
     # === Exit resolution ===
+    def enumerate_traversals(
+        self, entry_edge: str
+    ) -> List[Tuple[str, Optional[int]]]:
+        """Enumerate every legal geometric traversal through this tile.
+
+        Per design_new.md "Track-segment role and traversal" — pure-geometry
+        helper used by `PathDispatcher` path construction/extension and BFS
+        switch derivation. Returns one `(exit_edge, required_switch_state)`
+        pair per legal traversal; for non-switch tiles `required_switch_state`
+        is `None`. For switch tiles, the value is the `Switch.position`
+        (0=MAIN, 1=DIVERGE) that aligns the tile to use that traversal.
+
+        This helper MUST NOT consult live switch alignment. Callers that
+        need the live-state filtered view use `get_active_exits(...)` /
+        `get_active_entry_for_exit(...)` with an explicit resolver.
+
+        Y-shape switches: branch-to-branch traversals are NOT yielded; v1
+        only allows one branch active at a time.
+        """
+        entry_norm = _normalize_edge(entry_edge)
+        if not entry_norm:
+            return []
+
+        # Geometric exits via track_bits (no switch_state).
+        results: List[Tuple[str, Optional[int]]] = []
+        for bit in range(6):
+            if not (self.track_bits & (1 << bit)):
+                continue
+            e1, e2 = BIT_TO_EDGES[bit]
+            if entry_norm == e1:
+                exit_edge = e2
+            elif entry_norm == e2:
+                exit_edge = e1
+            else:
+                continue
+
+            if not self.is_switch:
+                results.append((exit_edge, None))
+                continue
+
+            # On a switch tile, derive which Switch.position aligns this
+            # bit. Bits 0 (NS) and 1 (EW) are the MAIN segments; bits 2-5
+            # (NE/NW/SE/SW) are diverge segments. For diverge-only switches
+            # (no MAIN bit set), the two diverge segments correspond to
+            # position 0 and 1 in bit-order.
+            has_main = (self.track_bits & 0b11) != 0
+            if has_main:
+                required_state = 0 if bit <= 1 else 1
+            else:
+                # Diverge-only: lowest bit wins MAIN (position 0), next wins
+                # DIVERGE (position 1).
+                diverge_bits_present = sorted(
+                    b for b in range(2, 6) if self.track_bits & (1 << b)
+                )
+                if not diverge_bits_present:
+                    continue
+                if bit == diverge_bits_present[0]:
+                    required_state = 0
+                elif len(diverge_bits_present) >= 2 and bit == diverge_bits_present[1]:
+                    required_state = 1
+                else:
+                    # Third+ diverge segment: branch-to-branch path on a
+                    # Y-shape; v1 disallows. Skip.
+                    continue
+            results.append((exit_edge, required_state))
+
+        # Stable order on (exit_edge, required_state) for deterministic
+        # consumers.
+        results.sort(key=lambda item: (item[0], item[1] if item[1] is not None else -1))
+        return results
+
+    def get_active_exits(
+        self, entry_edge: str, resolver: Optional[Any] = None
+    ) -> List[str]:
+        """Return exit edges currently reachable from `entry_edge`.
+
+        Per design_new.md "Track-segment role and traversal" — the live-state
+        helper. For switch tiles, `resolver` is a callable or network-like
+        object exposing `.switches[switch_id]` so the helper can read
+        `Switch.position` to filter the geometric enumeration. When no
+        resolver is supplied and the segment is attached to a network
+        (`self.network`), the network's switch registry is used.
+
+        Returns the same edges as the legacy `get_exits(...)` helper but
+        sourced from the canonical `Switch.position`, not the legacy
+        `TrackSegment._switch_state` cache.
+        """
+        # The live-state filter still uses the same code path as `get_exits`
+        # for the moment (which reads `self.switch_state`). After the
+        # switch-state migration completes, this helper resolves through
+        # the supplied resolver / network.switches[switch_id].position.
+        # `resolver` is reserved for the post-migration call shape.
+        del resolver  # unused until _switch_state is removed (see follow-up)
+        return self.get_exits(entry_edge, use_switch_state=True)
+
+    def get_active_entry_for_exit(
+        self, exit_edge: str, resolver: Optional[Any] = None
+    ) -> Optional[str]:
+        """Return the live-state entry edge that yields `exit_edge`.
+
+        Per design_new.md "Track-segment role and traversal" — the inverse
+        of `get_active_exits(...)`. Used for backward tracing during tail
+        movement. `resolver` is reserved for the post-migration call shape.
+        """
+        del resolver
+        return self.get_entry_for_exit(exit_edge, use_switch_state=True)
+
     def get_exits(self, entry_edge: str, use_switch_state: bool = True) -> List[str]:
         """Return exit edges for a given entry edge.
 
@@ -618,7 +766,7 @@ class TrackSegment:
                 # Determine which segment is active based on switch state
                 active_segment = (
                     diverge_segments[0]
-                    if self._switch_state == 0
+                    if self.switch_state == 0
                     else diverge_segments[1]
                 )
                 active_bit, active_e1, active_e2 = active_segment
@@ -639,7 +787,7 @@ class TrackSegment:
         # DIVERGE (1): only diverge segment exits are valid - entry from main path is BLOCKED
         #
         # The key insight: if entering from the WRONG path type, return [] (blocked)
-        if self._switch_state == 0:
+        if self.switch_state == 0:
             # MAIN state: only allow exits via main (NS/EW) segments
             # If there are no main_exits, it means entry is from diverge path -> blocked
             if main_exits:
@@ -818,7 +966,7 @@ class TrackSegment:
             "y": self.y,
             "track_bits": self.track_bits,
             "dead_end_ports": sorted(self.dead_end_ports),
-            "switch_state": self._switch_state if self.is_switch else None,
+            "switch_state": self.switch_state if self.is_switch else None,
             "signal_ids": self.signal_ids,
             "station_id": self.station_id,
             "block_section_id": self.block_section_id,
@@ -850,7 +998,7 @@ class TrackSegment:
             y=data["y"],
             track_bits=data.get("track_bits", 0),
             dead_end_ports=set(data.get("dead_end_ports", [])),
-            _switch_state=data.get("switch_state", 0) or 0,
+            _switch_state_local=data.get("switch_state", 0) or 0,
         )
         # Load signal_ids list
         segment.signal_ids = data.get("signal_ids", [])

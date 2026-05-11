@@ -59,7 +59,7 @@ class TestMultiBlockOccupancy:
         """Create a short train (fits in one block)."""
         train = Train(train_id="T_SHORT")
         # Add a single short car (0.5 meters = 50cm)
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=50.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train.consist.append(car)
         return train
 
@@ -69,13 +69,13 @@ class TestMultiBlockOccupancy:
         train = Train(train_id="T_LONG")
         # Add 3 cars, total 250cm = 2.5 meters
         train.consist.append(
-            TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=100.0)
+            TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=100.0)
         )
         train.consist.append(
-            TrainCar(car_id="CAR_2", car_type="PASSENGER", length=100.0)
+            TrainCar(car_id="CAR_2", car_type="PASSENGER", length_cm=100.0)
         )
         train.consist.append(
-            TrainCar(car_id="CAR_3", car_type="PASSENGER", length=50.0)
+            TrainCar(car_id="CAR_3", car_type="PASSENGER", length_cm=50.0)
         )
         return train
 

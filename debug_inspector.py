@@ -287,7 +287,7 @@ def register_debug_routes(app: Flask, state: AppState) -> None:
                 "trains": len(network.trains),
                 "platforms": len(network.platforms),
                 "station_groups": len(network.station_groups),
-                "routes": len(network.routes),
+                "routes": len(state.sim_controller.route_executor.route_registry),
                 "active_paths": len(state.path_dispatcher.active_paths),
                 "simulation_running": state.simulation_running,
             }

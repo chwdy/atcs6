@@ -51,7 +51,7 @@ class TestSimulationController:
         simulation.update(0.1)
 
         # Add a train and update again
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         network.add_train(train)
 
@@ -112,7 +112,7 @@ class TestTrainPlacement:
         network.create_block_with_tracks(
             "BLOCK_1", [(0, 0), (1, 0), (2, 0)], length_cm=150.0
         )
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=30.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=30.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
         final_pos = network.place_train(train, 0, 0, Direction.EAST)
@@ -123,7 +123,7 @@ class TestTrainPlacement:
         assert train.position.head_distance_cm == tile_length_cm
 
     def test_place_train_no_track_raises_error(self, network):
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=30.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=30.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
         with pytest.raises(ValueError):
@@ -219,7 +219,7 @@ class TestTrainPropertyUpdate:
     """Tests for train property updates."""
 
     def test_train_name_update(self, network):
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.name = "Original Name"
         network.add_train(train)
@@ -227,18 +227,18 @@ class TestTrainPropertyUpdate:
         assert network.trains["TRAIN_01"].name == "Updated Name"
 
     def test_train_max_speed_update(self, network):
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         network.add_train(train)
         train.max_speed = 120.0
         assert network.trains["TRAIN_01"].max_speed == 120.0
 
     def test_train_length_update(self, network):
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         network.add_train(train)
         assert train.length_cm == 20.0
-        train.consist.append(TrainCar(car_id="CAR_02", car_type="FREIGHT", length=30.0))
+        train.consist.append(TrainCar(car_id="CAR_02", car_type="FREIGHT", length_cm=30.0))
         assert train.length_cm == 50.0
 
 

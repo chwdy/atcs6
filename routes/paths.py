@@ -18,8 +18,6 @@ from app_state import AppState
 from path_utils import assign_complete_path_to_train, convert_tiles_to_train_path
 from runtime_payloads import (
     AcquisitionMode,
-    PathCancellationKind,
-    PendingPathCancelRequest,
 )
 
 
@@ -43,13 +41,13 @@ def register(app, state: AppState) -> None:
 
     def _parse_acquisition_mode(raw):
         if not raw:
-            return AcquisitionMode.ALL_OR_NOTHING
+            return AcquisitionMode.BEST_EFFORT
         if isinstance(raw, AcquisitionMode):
             return raw
         try:
             return AcquisitionMode(raw)
         except ValueError:
-            return AcquisitionMode.ALL_OR_NOTHING
+            return AcquisitionMode.BEST_EFFORT
 
     @app.route("/api/paths", methods=["POST"])
     def create_path():
@@ -124,7 +122,7 @@ def register(app, state: AppState) -> None:
                         # owns `assigned_path_id` and the controller derives
                         # `ato_destination_block_id` from `received_path_plan`,
                         # so we no longer mirror those fields back onto Train.
-                        raw_path = _convert_path_tiles_to_train_path(path.path_tiles)
+                        raw_path = _convert_path_tiles_to_train_path(path.get_path_tiles())
                         assign_complete_path_to_train(
                             state.network, train, raw_path
                         )
@@ -176,20 +174,21 @@ def register(app, state: AppState) -> None:
     def cancel_path(path_id):
         """Request cancellation of a path.
 
-        v1 semantics: cancellation is latched. The handler writes
-        `controller.pending_path_cancel_request` and returns immediately with
-        ``status: "queued"``. Phase 3 of the simulation tick consumes the
-        latch and calls ``PathDispatcher.cancel_path(...)`` once the train is
-        fully stopped. Block reservations and switch locks are released by
-        the same Phase-3 consumer; clients should refresh path state on a
-        subsequent poll instead of mutating local UI state.
+        v1 semantics (per `design_new.md` lines 270, 351-352, 1003): API
+        callers must not invoke `PathDispatcher.cancel_path(...)` inline.
+        The handler writes `controller.phase_latches.path_cancel_request`
+        and returns immediately with ``status: "queued"``. Phase 3 of the
+        simulation tick consumes the latch and calls
+        ``PathDispatcher.cancel_path(...)`` once the train is fully stopped.
+        Block reservations and switch locks are released by the same Phase-3
+        consumer; clients should refresh path state on a subsequent poll
+        instead of mutating local UI state.
 
-        Paths with no assigned train are cancelled synchronously (no train
-        means nothing to brake first).
+        v1 paths always carry a `train_id` (per `design_new.md` line 870)
+        and every train has a `TrainController`. There is no inline fallback.
 
         Returns:
             200 OK with ``{"status": "queued", ...}`` when latched.
-            200 OK with ``CancellationResult`` when cancelled synchronously.
         """
         with state.simulation_lock:
             path = state.path_dispatcher.get_path(path_id)
@@ -197,42 +196,50 @@ def register(app, state: AppState) -> None:
                 return jsonify({"error": f"Path {path_id} not found"}), 404
 
             train_id = path.train_id
-            if train_id and state.sim_controller:
-                train = state.network.trains.get(train_id)
-                if train:
-                    controller = state.sim_controller._get_or_create_controller(train)
-                    if controller is not None:
-                        controller.pending_path_cancel_request = (
-                            PendingPathCancelRequest(
-                                cancellation_kind=PathCancellationKind.OPERATOR_CANCELLED,
-                                reason="api cancel",
-                                expected_path_id=path_id,
-                            )
-                        )
-                        return jsonify(
-                            {
-                                "success": True,
-                                "status": "queued",
-                                "path_id": path_id,
-                                "train_id": train_id,
-                                "note": "cancel committed when train is stopped",
-                            }
-                        ), 200
+            if not train_id:
+                return jsonify(
+                    {
+                        "error": "Path is not bound to a train; v1 paths require train_id",
+                        "path_id": path_id,
+                    }
+                ), 400
 
-            # No train assigned (or controller unavailable): cancel synchronously.
-            result = state.path_dispatcher.cancel_path(
-                path_id,
-                cancellation_kind=PathCancellationKind.OPERATOR_CANCELLED,
+            if not state.sim_controller:
+                return jsonify(
+                    {"error": "Simulation runtime is not active", "path_id": path_id}
+                ), 503
+
+            train = state.network.trains.get(train_id)
+            if not train:
+                return jsonify(
+                    {
+                        "error": f"Train '{train_id}' not found for path",
+                        "path_id": path_id,
+                    }
+                ), 404
+
+            controller = state.sim_controller._get_or_create_controller(train)
+            if controller is None:
+                return jsonify(
+                    {
+                        "error": f"Controller unavailable for train '{train_id}'",
+                        "path_id": path_id,
+                    }
+                ), 503
+
+            controller.phase_latches.set_path_cancel_request(
+                initiator="operator_cancelled",
                 reason="api cancel",
             )
-            if result.success:
-                state.network.update_signals_from_blocks()
-                return jsonify(
-                    {"status": "success", "path_id": path_id, "success": True}
-                ), 200
             return jsonify(
-                {"error": "Failed to cancel path", "path_id": path_id}
-            ), 400
+                {
+                    "success": True,
+                    "status": "queued",
+                    "path_id": path_id,
+                    "train_id": train_id,
+                    "note": "cancel committed when train is stopped",
+                }
+            ), 200
 
     @app.route("/api/paths/<path_id>/extend", methods=["PUT"])
     def extend_path(path_id):

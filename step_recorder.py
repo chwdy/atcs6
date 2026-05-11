@@ -242,8 +242,8 @@ class StepRecorder:
 
             if block.length_cm > 0:
                 op["length_cm"] = block.length_cm
-            if block.max_speed_kmh is not None:
-                op["max_speed_kmh"] = block.max_speed_kmh
+            if block.speed_limit_kmh is not None:
+                op["speed_limit_kmh"] = block.speed_limit_kmh
 
             steps.append(
                 {

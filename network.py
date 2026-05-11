@@ -14,6 +14,8 @@ from track import TrackSegment
 from train import Train, TrainSchedule
 from block import Block
 from block_manager import BlockManager
+from switch_manager import SwitchManager
+from resource_coordinator import ResourceCoordinator
 from enums import (
     TrackType,
     Direction,
@@ -56,9 +58,10 @@ class RailwayNetwork:
         self.schedules: Dict[str, TrainSchedule] = {}
 
         self.speed_profiles: Dict[str, "SpeedProfile"] = {}
-        self.routes: Dict[str, "Route"] = {}
 
         self.block_manager: Optional[BlockManager] = None
+        self.switch_manager: Optional[SwitchManager] = None
+        self.resource_coordinator: Optional[ResourceCoordinator] = None
         self.power_controller: Optional["BlockPowerController"] = None
 
         # Reverse indices from tile -> owning block / platform.
@@ -68,9 +71,63 @@ class RailwayNetwork:
         self._tile_to_block: Dict[Tuple[int, int], str] = {}
         self._tile_to_platform: Dict[Tuple[int, int], str] = {}
 
+        # Helper modules (signal computation, station registry, block
+        # geometry mutation). Lazy-initialised on first access to keep
+        # `__init__` cheap.
+        self._signal_calculator = None
+        self._block_geometry_manager = None
+        self._station_registry = None
+
     def _ensure_block_manager(self):
         if self.block_manager is None:
             self.block_manager = BlockManager(self.blocks, network=self)
+
+    def _get_signal_calculator(self):
+        """Lazy-init `SignalCalculator`. The actual signal-state /
+        reachability logic lives in `signal_calculator.py`; this network
+        keeps thin forwarders so existing call sites stay unchanged."""
+        if self._signal_calculator is None:
+            from signal_calculator import SignalCalculator
+
+            self._signal_calculator = SignalCalculator(self)
+        return self._signal_calculator
+
+    def _get_block_geometry_manager(self):
+        """Lazy-init `BlockGeometryManager`. Block geometry / topology
+        mutation lives in `block_geometry_manager.py`; this network
+        keeps doc-canonical method names as forwarders."""
+        if self._block_geometry_manager is None:
+            from block_geometry_manager import BlockGeometryManager
+
+            self._block_geometry_manager = BlockGeometryManager(self)
+        return self._block_geometry_manager
+
+    def _get_station_registry(self):
+        """Lazy-init `StationRegistry`. Platform / station CRUD lives in
+        `station_registry.py`; this network keeps doc-canonical method
+        names as forwarders. The `platforms` / `station_groups` /
+        `_tile_to_platform` registries are still owned by `RailwayNetwork`
+        directly — `StationRegistry` reads / writes them through the
+        back-reference."""
+        if self._station_registry is None:
+            from station_registry import StationRegistry
+
+            self._station_registry = StationRegistry(self)
+        return self._station_registry
+
+    def _ensure_resource_managers(self):
+        """Construct BlockManager, SwitchManager, and ResourceCoordinator if not
+        yet wired. The coordinator is the dispatcher-facing facade per
+        design_new.md "ResourceCoordinator"; constructed last because it
+        composes the other two managers.
+        """
+        self._ensure_block_manager()
+        if self.switch_manager is None:
+            self.switch_manager = SwitchManager(self.switches, network=self)
+        if self.resource_coordinator is None:
+            self.resource_coordinator = ResourceCoordinator(
+                self.block_manager, self.switch_manager
+            )
 
     # === Tile -> owning entity reverse indices (v1) ===
 
@@ -83,28 +140,12 @@ class RailwayNetwork:
         return self._tile_to_block.get((x, y))
 
     def tile_to_platform_id(self, x: int, y: int) -> Optional[str]:
-        """Reverse index from tile coordinate to owning Platform id, or None.
-
-        Per design_new.md: TrackSegment does not store platform membership.
-        Returns the concrete physical Platform that owns this tile.
-        """
-        return self._tile_to_platform.get((x, y))
+        """Forward to `StationRegistry.tile_to_platform_id(x, y)`."""
+        return self._get_station_registry().tile_to_platform_id(x, y)
 
     def tile_to_station_id(self, x: int, y: int) -> Optional[str]:
-        """Reverse index from tile coordinate to owning logical Station id.
-
-        v1: a Station is a logical group of platforms. This resolves the
-        platform first, then walks Station.platform_ids to find the group.
-        Returns None if the tile has no platform or the platform is not in
-        any station group.
-        """
-        platform_id = self._tile_to_platform.get((x, y))
-        if platform_id is None:
-            return None
-        for station_id, station in self.station_groups.items():
-            if platform_id in station.platform_ids:
-                return station_id
-        return None
+        """Forward to `StationRegistry.tile_to_station_id(x, y)`."""
+        return self._get_station_registry().tile_to_station_id(x, y)
 
     def _set_tile_block(self, x: int, y: int, block_id: Optional[str]) -> None:
         """Update the tile -> block reverse index.
@@ -119,16 +160,8 @@ class RailwayNetwork:
             self._tile_to_block[key] = block_id
 
     def _set_tile_platform(self, x: int, y: int, platform_id: Optional[str]) -> None:
-        """Update the tile -> platform reverse index.
-
-        Network-internal helper. Use this whenever a tile's platform
-        membership changes (platform creation, extension, deletion).
-        """
-        key = (x, y)
-        if platform_id is None:
-            self._tile_to_platform.pop(key, None)
-        else:
-            self._tile_to_platform[key] = platform_id
+        """Forward to `StationRegistry._set_tile_platform(x, y, platform_id)`."""
+        return self._get_station_registry()._set_tile_platform(x, y, platform_id)
 
     def add_track(self, track: TrackSegment):
         """Add a track segment to the network and propagate updates"""
@@ -280,381 +313,29 @@ class RailwayNetwork:
     # === Centralized Block Management ===
 
     def create_block(self, block_id: str, name: str = "") -> Block:
-        """
-        Create a new empty block.
+        """Forward to `BlockGeometryManager.create_block(block_id, name)`."""
+        return self._get_block_geometry_manager().create_block(block_id, name)
 
-        Args:
-            block_id: Unique identifier for the block
-            name: Optional human-readable name
+    def create_block_with_tracks(self, *args, **kwargs):
+        """Forward to `BlockGeometryManager.create_block_with_tracks(...)`."""
+        return self._get_block_geometry_manager().create_block_with_tracks(*args, **kwargs)
 
-        Returns:
-            Created Block instance
-
-        Raises:
-            ValueError: If block_id already exists
-        """
-        if block_id in self.blocks:
-            raise ValueError(f"Block {block_id} already exists")
-        block = Block(block_id=block_id, name=name)
-        self.blocks[block_id] = block
-        self._ensure_block_manager()
-        return block
-
-    def create_block_with_tracks(
-        self,
-        block_id: str,
-        positions: List[Tuple[int, int]],
-        name: str = "",
-        length_cm: float = 0.0,
-        max_speed_kmh: Optional[float] = None,
-        validate: bool = True,
-    ) -> Block:
-        """
-        Create a new block and assign tracks to it with full validation.
-
-        This is the RECOMMENDED way to create blocks. Validates:
-        - Block ID uniqueness
-        - Block properties are valid
-        - All positions have valid tracks
-        - No tracks are switches, signals, or stations
-        - No tracks are already in other blocks
-        - All tracks form a continuous path
-
-        Args:
-            block_id: Unique block identifier
-            positions: List of (x, y) track positions
-            name: Human-readable block name
-            length_cm: Physical track length
-            max_speed_kmh: Optional speed limit
-            validate: If True, perform full validation (recommended)
-
-        Returns:
-            Created Block instance
-
-        Raises:
-            ValueError: If validation fails
-
-        Example:
-            # Create a block with validated tracks
-            block = network.create_block_with_tracks(
-                block_id="BLOCK_MAIN_1",
-                positions=[(0,0), (1,0), (2,0)],
-                name="Main Line Section 1",
-                length_cm=150.0,
-                max_speed_kmh=80.0
-            )
-        """
-        from block_validation import (
-            validate_block_properties,
-            validate_track_for_block,
-            validate_block_assignment_continuity,
-            validate_station_boundary,
-        )
-
-        # Validate block properties
-        if validate:
-            is_valid, errors = validate_block_properties(
-                block_id, name, length_cm, max_speed_kmh
-            )
-            if not is_valid:
-                raise ValueError(f"Invalid block properties: {', '.join(errors)}")
-
-            # Validate station boundaries - blocks cannot cross station boundaries
-            valid, error = validate_station_boundary(positions, self)
-            if not valid:
-                raise ValueError(f"Station boundary violation: {error}")
-
-        # Check block doesn't already exist
-        if block_id in self.blocks:
-            raise ValueError(f"Block {block_id} already exists")
-
-        # Validate all tracks
-        if validate:
-            for x, y in positions:
-                track = self.get_track(x, y)
-                is_valid, error = validate_track_for_block(track, self)
-                if not is_valid:
-                    raise ValueError(f"Track at ({x}, {y}): {error}")
-
-                # Check not already in another block
-                if track.block_section_id:
-                    raise ValueError(
-                        f"Track at ({x}, {y}) already in block {track.block_section_id}"
-                    )
-
-            # Validate continuity
-            is_continuous, errors = validate_block_assignment_continuity(
-                [], positions, self
-            )
-            if not is_continuous:
-                raise ValueError(f"Block tracks not continuous: {', '.join(errors)}")
-
-        # Create block
-        block = self.create_block(block_id, name)
-        block.length_cm = length_cm
-        if max_speed_kmh:
-            block.max_speed_kmh = max_speed_kmh
-
-        # Assign tracks
-        for x, y in positions:
-            track = self.get_track(x, y)
-            if track:
-                track.block_section_id = block_id
-
-        return block
-
-    def extend_block(
-        self,
-        block_id: str,
-        new_positions: List[Tuple[int, int]],
-        force: bool = False,
-        force_overwrite: bool = False,
-    ) -> Block:
-        """
-        Extend an existing block with new track positions.
-
-        Validates:
-        - Block exists
-        - All new tracks are valid for blocks (unless force=True for signals)
-        - New tracks are adjacent to existing block
-        - Extended block remains continuous
-
-        Args:
-            block_id: ID of block to extend
-            new_positions: List of (x, y) positions to add
-            force: If True, removes signals from tiles to allow block extension.
-                   This allows extending a block past a signal boundary.
-            force_overwrite: If True, allows overwriting tracks that belong to
-                   other blocks (reassigns them to this block).
-
-        Returns:
-            Updated Block instance
-
-        Raises:
-            ValueError: If validation fails
-        """
-        from block_validation import (
-            validate_track_for_block,
-            validate_block_assignment_continuity,
-            get_adjacent_positions,
-            is_crossing,
-        )
-
-        if block_id not in self.blocks:
-            raise ValueError(f"Block {block_id} not found")
-
-        block = self.blocks[block_id]
-        existing_positions = self.get_block_positions(block_id)
-
-        # Track signals that need to be removed when force=True
-        signals_to_remove = []
-        # Track blocks that will be affected by force_overwrite
-        overwritten_blocks = set()
-
-        # Validate each new position
-        for x, y in new_positions:
-            track = self.get_track(x, y)
-            if not track:
-                raise ValueError(f"No track at position ({x}, {y})")
-
-            # Check for crossings (never allowed, even with force)
-            if is_crossing(track.track_bits):
-                raise ValueError(
-                    f"Track at ({x}, {y}): Cannot add crossing to block - crossings isolate paths"
-                )
-
-            # Check for switches (never allowed, even with force)
-            if track.is_switch:
-                raise ValueError(
-                    f"Track at ({x}, {y}): Cannot add switch to block - switches are block boundaries"
-                )
-
-            # Check for signals - can be overridden with force
-            # When force=True, we clear the signal's monitored block (shows warning triangle)
-            # but we do NOT remove the signal itself
-            # Only invalidate signals that monitor the block being extended (block_id)
-            if track.signal_ids:
-                if force:
-                    # Collect signals to invalidate (clear monitored block)
-                    # Only invalidate if the signal monitors the block we're extending
-                    for signal_id in track.signal_ids:
-                        signal = self.signals.get(signal_id)
-                        if signal and signal.monitored_block_id == block_id:
-                            signals_to_remove.append((signal_id, x, y))
-                else:
-                    raise ValueError(
-                        f"Track at ({x}, {y}): Has signal(s) - use force=true to extend past signal"
-                    )
-
-            if track.block_section_id and track.block_section_id != block_id:
-                if force_overwrite:
-                    # Track the block that will lose this track
-                    overwritten_blocks.add(track.block_section_id)
-                else:
-                    raise ValueError(
-                        f"Track at ({x}, {y}) already in block {track.block_section_id}"
-                    )
-
-        # Check adjacency
-        is_adjacent = False
-        for new_x, new_y in new_positions:
-            for old_x, old_y in existing_positions:
-                if abs(new_x - old_x) + abs(new_y - old_y) == 1:
-                    is_adjacent = True
-                    break
-            if is_adjacent:
-                break
-
-        if not is_adjacent and len(existing_positions) > 0:
-            raise ValueError("New positions must be adjacent to existing block")
-
-        # Validate station boundaries - block cannot cross station boundaries
-        from block_validation import validate_station_boundary
-
-        all_positions = existing_positions + new_positions
-        valid, error = validate_station_boundary(all_positions, self)
-        if not valid:
-            raise ValueError(f"Station boundary violation: {error}")
-
-        # Invalidate signals in force mode - clear their monitored block
-        # This causes them to show an orange warning triangle (signal needs reconfiguration)
-        invalidated_signals = []
-        for signal_id, x, y in signals_to_remove:
-            if signal_id in self.signals:
-                signal = self.signals[signal_id]
-                # detection_direction can be either a string or an enum, handle both
-                detection_direction = signal.detection_direction
-                if hasattr(detection_direction, "name"):
-                    detection_direction = detection_direction.name
-                invalidated_signals.append(
-                    {
-                        "signal_id": signal_id,
-                        "position": [x, y],
-                        "detection_direction": detection_direction,
-                        "approach_direction": signal.approach_direction,
-                        "previous_block": signal.monitored_block_id,
-                    }
-                )
-                # Clear the monitored block - signal will show warning triangle
-                signal.monitored_block_id = None
-                # Set signal to RED since it's no longer monitoring a block
-                signal.state = SignalState.RED
-
-        # Validate continuity
-        is_continuous, errors = validate_block_assignment_continuity(
-            existing_positions, new_positions, self
-        )
-        if not is_continuous:
-            raise ValueError(f"Extension would break continuity: {', '.join(errors)}")
-
-        # Assign new tracks
-        for x, y in new_positions:
-            track = self.get_track(x, y)
-            if track:
-                track.block_section_id = block_id
-
-        # Store invalidated signals info on block for API response
-        block._invalidated_signals = invalidated_signals
-
-        return block
+    def extend_block(self, *args, **kwargs):
+        """Forward to `BlockGeometryManager.extend_block(...)`."""
+        return self._get_block_geometry_manager().extend_block(*args, **kwargs)
 
     def delete_block(self, block_id: str) -> bool:
-        """
-        Delete block and clear references from all tracks.
-        Also disconnects signals monitoring this block.
+        """Forward to `BlockGeometryManager.delete_block(block_id)`."""
+        return self._get_block_geometry_manager().delete_block(block_id)
 
-        Args:
-            block_id: ID of block to delete
-
-        Returns:
-            True if deleted, False if not found
-        """
-        if block_id not in self.blocks:
-            return False
-
-        # Clear block_section_id from all tracks in this block
-        for track in self.tracks.values():
-            if track.block_section_id == block_id:
-                track.block_section_id = None
-
-        # Disconnect signals monitoring this block (don't delete them)
-        for signal in self.signals.values():
-            if signal.monitored_block_id == block_id:
-                signal.monitored_block_id = None
-
-        del self.blocks[block_id]
-        return True
-
-    def set_block_state(self, block_id: str, state: BlockState) -> bool:
-        """
-        Set the occupancy state of a block.
-
-        This is the recommended way to change block state as it:
-        - Validates the block exists
-        - Updates the block's state property
-        - Triggers signal recalculation for all signals monitoring this block
-        - Updates track display colors (via signal updates)
-
-        Args:
-            block_id: Block identifier
-            state: New state (FREE, RESERVED, OCCUPIED, CAUTION)
-
-        Returns:
-            True if successful, False if block not found
-
-        Side Effects:
-            - Updates block.state
-            - Triggers signal recalculation for all signals monitoring this block
-        """
-        block = self.blocks.get(block_id)
-        if not block:
-            return False
-
-        block.state = state
-
-        # Trigger signal recalculation for affected signals
-        self.update_signals_from_blocks()
-
-        return True
-
-    def cycle_block_state(self, block_id: str) -> Optional[BlockState]:
-        """
-        Cycle block state: FREE -> RESERVED -> OCCUPIED -> CAUTION -> FREE
-
-        Used by UI right-click to manually cycle through states.
-
-        Args:
-            block_id: Block identifier
-
-        Returns:
-            New state after cycling, or None if block not found
-        """
-        block = self.blocks.get(block_id)
-        if not block:
-            return None
-
-        # Define state cycle order
-        state_cycle = [
-            BlockState.FREE,
-            BlockState.RESERVED,
-            BlockState.OCCUPIED,
-            BlockState.CAUTION,
-        ]
-
-        # Find current state index and advance
-        try:
-            current_index = state_cycle.index(block.state)
-            next_index = (current_index + 1) % len(state_cycle)
-        except ValueError:
-            next_index = 0  # Default to FREE if unknown state
-
-        new_state = state_cycle[next_index]
-        self.set_block_state(block_id, new_state)
-
-        return new_state
+    # `set_block_state` and `cycle_block_state` were admin shims from the
+    # pre-`BlockManager`-as-sole-writer era. They tried to assign `block.state`,
+    # which is now a read-only `@property` derived from `occupied_by` /
+    # `_is_caution` / `reservation`, so calling them raised at runtime. v1's
+    # design owns block state through `BlockManager` / `ResourceCoordinator`;
+    # there is no admin-side direct-mutation surface. Removed in PR 6.
 
     def get_block(self, block_id: str) -> Optional[Block]:
-        """Get block by ID"""
         return self.blocks.get(block_id)
 
     def get_block_tracks(self, block_id: str) -> List[TrackSegment]:
@@ -665,109 +346,13 @@ class RailwayNetwork:
         """Get grid positions of all tracks in block"""
         return [(t.x, t.y) for t in self.get_block_tracks(block_id)]
 
-    def assign_track_to_block(
-        self, x: int, y: int, block_id: Optional[str], validate_continuity: bool = True
-    ) -> None:
-        """
-        Assign a track to a block with comprehensive validation.
-
-        Args:
-            x, y: Track position
-            block_id: Block ID to assign (None to unassign)
-            validate_continuity: If True, check that assignment maintains continuity
-
-        Raises:
-            ValueError: If validation fails with detailed error message
-        """
-        from block_validation import (
-            validate_track_for_block,
-            validate_block_assignment_continuity,
-        )
-
-        track = self.get_track(x, y)
-        if not track:
-            raise ValueError(f"No track at position ({x}, {y})")
-
-        # If assigning to a block
-        if block_id:
-            # Check block exists
-            if block_id not in self.blocks:
-                raise ValueError(f"Block {block_id} does not exist")
-
-            # Validate track can be in a block
-            is_valid, error = validate_track_for_block(track, self)
-            if not is_valid:
-                raise ValueError(f"Cannot assign track at ({x}, {y}) to block: {error}")
-
-            # Check if already assigned to a different block
-            if track.block_section_id and track.block_section_id != block_id:
-                raise ValueError(
-                    f"Track at ({x}, {y}) already assigned to block {track.block_section_id}. "
-                    f"Unassign first or use reassign method."
-                )
-
-            # Validate continuity if requested
-            if validate_continuity:
-                existing_positions = self.get_block_positions(block_id)
-                if len(existing_positions) > 0:
-                    is_continuous, errors = validate_block_assignment_continuity(
-                        existing_positions, [(x, y)], self
-                    )
-                    if not is_continuous:
-                        raise ValueError(
-                            f"Adding track at ({x}, {y}) would create discontinuous block: "
-                            f"{', '.join(errors)}"
-                        )
-
-        # Assignment is valid - update
-        track.block_section_id = block_id
+    def assign_track_to_block(self, *args, **kwargs):
+        """Forward to `BlockGeometryManager.assign_track_to_block(...)`."""
+        return self._get_block_geometry_manager().assign_track_to_block(*args, **kwargs)
 
     def validate_block_continuity(self, block_id: str) -> Tuple[bool, List[str]]:
-        """
-        Check if block tracks form a connected graph.
-
-        Uses BFS to verify all tracks in the block are reachable from
-        any starting track via edge connections.
-
-        Args:
-            block_id: Block ID to validate
-
-        Returns:
-            Tuple of (is_valid, list of error messages)
-        """
-        tracks = self.get_block_tracks(block_id)
-        if len(tracks) <= 1:
-            return True, []
-
-        positions = set((t.x, t.y) for t in tracks)
-        visited = set()
-        errors = []
-
-        # BFS from first track
-        start = tracks[0]
-        to_visit = [(start.x, start.y)]
-
-        while to_visit:
-            pos = to_visit.pop()
-            if pos in visited:
-                continue
-            visited.add(pos)
-
-            track = self.get_track(*pos)
-            if not track:
-                continue
-
-            # Get connected neighbors via edges
-            for neighbor_pos in self._get_block_connected_neighbors(track):
-                if neighbor_pos in positions and neighbor_pos not in visited:
-                    to_visit.append(neighbor_pos)
-
-        if len(visited) != len(positions):
-            unvisited = positions - visited
-            errors.append(f"Disconnected tracks at: {list(unvisited)}")
-            return False, errors
-
-        return True, []
+        """Forward to `BlockGeometryManager.validate_block_continuity(block_id)`."""
+        return self._get_block_geometry_manager().validate_block_continuity(block_id)
 
     def _get_block_connected_neighbors(
         self, track: TrackSegment
@@ -911,7 +496,6 @@ class RailwayNetwork:
         return signal
 
     def get_signal(self, signal_id: str) -> Optional[Signal]:
-        """Get signal by ID."""
         return self.signals.get(signal_id)
 
     def get_signal_at(self, x: int, y: int) -> Optional[Signal]:
@@ -1099,790 +683,54 @@ class RailwayNetwork:
         return True
 
     def _can_reach_block(self, signal: Signal, target_block_id: str) -> bool:
-        """
-        Check if ANY path exists from signal to target block.
-
-        Unlike _check_switch_routing which follows current switch states,
-        this method explores ALL possible paths through switches to determine
-        if the target block is reachable via any switch configuration.
-
-        Uses BFS to explore all possible paths through the track network.
-
-        Args:
-            signal: The signal to start from
-            target_block_id: The block we're trying to reach
-
-        Returns:
-            True if target block is reachable, False otherwise
-        """
-        x, y = signal.position
-        # detection_direction is where trains travel TO
-        travel_dir = signal.detection_direction.upper()
-        # approach_direction is where trains come FROM (signal faces this way)
-        approach_dir = signal.approach_direction.upper()
-
-        # Edge offsets: edge letter -> (dx, dy) to move to adjacent tile
-        edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
-
-        # Opposite edges for determining entry edge
-        opposite_edges = {"N": "S", "S": "N", "E": "W", "W": "E"}
-
-        # Convert travel direction to initial exit edge
-        # detection_direction is already single letter (N/S/E/W)
-        initial_exit = travel_dir[0] if travel_dir else None
-        if not initial_exit:
-            return False
-
-        # BFS: queue of (x, y, exit_edge)
-        # We use exit_edge to track which direction we're leaving each tile
-        queue = deque([(x, y, initial_exit)])
-        visited = set()
-
-        while queue:
-            curr_x, curr_y, exit_edge = queue.popleft()
-
-            # Prevent infinite loops
-            state = (curr_x, curr_y, exit_edge)
-            if state in visited:
-                continue
-            visited.add(state)
-
-            # Safety limit
-            if len(visited) > 500:
-                return False
-
-            # Move to next tile based on exit edge
-            offset = edge_offsets.get(exit_edge)
-            if not offset:
-                continue
-            dx, dy = offset
-            next_x, next_y = curr_x + dx, curr_y + dy
-
-            # Get next track
-            next_track = self.get_track(next_x, next_y)
-            if not next_track:
-                continue  # End of line in this direction
-
-            # Check if we reached the target block
-            if next_track.block_section_id == target_block_id:
-                return True  # Path found!
-
-            # Determine entry edge (opposite of how we exited previous tile)
-            entry_edge = opposite_edges.get(exit_edge)
-            if not entry_edge:
-                continue
-
-            # Check if track allows entry from this edge
-            if entry_edge not in next_track.edges:
-                continue  # Can't enter this track from this direction
-
-            # Get ALL possible exits from this track (ignore switch state)
-            # This explores all paths through switches
-            all_exits = next_track.get_exits(entry_edge, use_switch_state=False)
-
-            if not all_exits:
-                continue  # Dead end
-
-            # Add all possible exits to queue
-            for next_exit in all_exits:
-                queue.append((next_x, next_y, next_exit))
-
-        return False  # No path found
+        """Forward to `SignalCalculator.can_reach_block(signal, target)`."""
+        return self._get_signal_calculator().can_reach_block(signal, target_block_id)
 
     def _get_distance_to_block(
         self, signal: Signal, target_block_id: str
     ) -> Optional[int]:
-        """
-        Get the shortest path distance from signal to target block.
-
-        Similar to _can_reach_block but returns the shortest path distance
-        (in tiles) instead of just a boolean. Uses BFS which guarantees
-        shortest path is found first.
-
-        Args:
-            signal: The signal to start from
-            target_block_id: The block we're trying to reach
-
-        Returns:
-            Distance in tiles if reachable, None otherwise
-        """
-        x, y = signal.position
-        # detection_direction is where trains travel TO
-        detection_dir = signal.detection_direction.upper()
-        # approach_direction is where trains come FROM (signal faces this way)
-        approach_dir = signal.approach_direction.upper()
-
-        # Get the track at signal position
-        signal_track = self.get_track(x, y)
-        if not signal_track:
-            return None
-
-        # Determine entry edge - trains enter from the approach direction
-        # IMPORTANT: For diagonal tracks, approach_direction (geometric opposite) is wrong!
-        # Diagonal tracks only connect two adjacent edges, not opposite edges.
-        # e.g., NE diagonal connects N and E, not N and S
-        # Solution: Use detection_direction to find the exit edge, then get all other edges as entry
-
-        track_bits = signal_track.track_bits
-        is_diagonal = track_bits in (4, 8, 16, 32)
-
-        if is_diagonal:
-            # For diagonal tracks, determine the two edges from track_bits
-            diagonal_edges = {
-                4: ("N", "E"),  # NE
-                8: ("N", "W"),  # NW
-                16: ("S", "E"),  # SE
-                32: ("S", "W"),  # SW
-            }
-            edge1, edge2 = diagonal_edges.get(track_bits, ("N", "E"))
-
-            # Detection direction tells us which edge the train exits from
-            # Entry edge is the OTHER edge of the diagonal
-            detection_edge = detection_dir[0]  # 'N', 'S', 'E', or 'W'
-            entry_edge = edge2 if detection_edge == edge1 else edge1
-        else:
-            # For straight tracks, approach_direction is already single letter (N/S/E/W)
-            entry_edge = approach_dir[0] if approach_dir else None
-            if not entry_edge:
-                return None
-
-        # Get the actual exit edges from the signal's tile based on track geometry
-        # This is crucial for diagonal tracks where exit != opposite of entry
-        initial_exits = signal_track.get_exits(entry_edge, use_switch_state=False)
-        if not initial_exits:
-            return None
-
-        # Edge offsets: edge letter -> (dx, dy) to move to adjacent tile
-        edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
-
-        # Opposite edges for determining entry edge
-        opposite_edges = {"N": "S", "S": "N", "E": "W", "W": "E"}
-
-        # BFS: queue of (x, y, exit_edge, distance)
-        queue = deque()
-
-        # Start with all possible exits from the signal tile
-        for exit_edge in initial_exits:
-            queue.append((x, y, exit_edge, 0))
-
-        visited = set()
-
-        while queue:
-            curr_x, curr_y, exit_edge, dist = queue.popleft()
-
-            # Prevent infinite loops
-            state = (curr_x, curr_y, exit_edge)
-            if state in visited:
-                continue
-            visited.add(state)
-
-            # Safety limit
-            if len(visited) > 500:
-                return None
-
-            # Move to next tile based on exit edge
-            offset = edge_offsets.get(exit_edge)
-            if not offset:
-                continue
-            dx, dy = offset
-            next_x, next_y = curr_x + dx, curr_y + dy
-
-            # Get next track
-            next_track = self.get_track(next_x, next_y)
-            if not next_track:
-                continue  # End of line in this direction
-
-            # Check if we reached the target block
-            if next_track.block_section_id == target_block_id:
-                return dist + 1  # Path found! Return distance
-
-            # Determine entry edge (opposite of how we exited previous tile)
-            entry_edge = opposite_edges.get(exit_edge)
-            if not entry_edge:
-                continue
-
-            # Check if track allows entry from this edge
-            if entry_edge not in next_track.edges:
-                continue  # Can't enter this track from this direction
-
-            # Get ALL possible exits from this track (ignore switch state)
-            all_exits = next_track.get_exits(entry_edge, use_switch_state=False)
-
-            if not all_exits:
-                continue  # Dead end
-
-            # Add all possible exits to queue with incremented distance
-            for next_exit in all_exits:
-                queue.append((next_x, next_y, next_exit, dist + 1))
-
-        return None  # No path found
+        """Forward to `SignalCalculator.distance_to_block(signal, target)`."""
+        return self._get_signal_calculator().distance_to_block(signal, target_block_id)
 
     def get_reachable_blocks(self, signal_id: str) -> list:
-        """
-        Get all blocks that are reachable from a signal, sorted by path distance.
-
-        This is used by the UI to populate the "block to monitor" dropdown
-        with only valid options. Blocks are sorted from nearest to farthest.
-
-        Note: A signal's own block is only included if the signal is on the
-        entry tile of that block (first tile trains encounter when approaching).
-
-        Args:
-            signal_id: The signal ID
-
-        Returns:
-            List of block IDs that are reachable from this signal, sorted by distance
-        """
-        signal = self.signals.get(signal_id)
-        if not signal:
-            return []
-
-        # Get the block at the signal's position (if any)
-        x, y = signal.position
-        track = self.get_track(x, y)
-        own_block = track.block_section_id if track else None
-
-        reachable_with_distance = []
-        for block_id in self.blocks:
-            # Check if this is the signal's own block
-            if block_id == own_block:
-                # Only include own block if signal is on the entry tile
-                if not self.is_signal_on_entry_tile(signal):
-                    continue  # Skip - signal is in the middle of this block
-                # Signal is on entry tile - include own block with distance 0
-                reachable_with_distance.append((0, block_id))
-                continue
-
-            # Get distance to block (None if not reachable)
-            distance = self._get_distance_to_block(signal, block_id)
-            if distance is not None:
-                reachable_with_distance.append((distance, block_id))
-
-        # Sort by distance (nearest first)
-        reachable_with_distance.sort(key=lambda x: x[0])
-
-        return [block_id for _, block_id in reachable_with_distance]
+        """Forward to `SignalCalculator.reachable_blocks(signal_id)`."""
+        return self._get_signal_calculator().reachable_blocks(signal_id)
 
     def is_signal_on_entry_tile(self, signal: Signal) -> bool:
-        """
-        Check if signal is on the entry tile of its own block.
-
-        The entry tile is the FIRST tile of the block that trains would encounter
-        when approaching in the signal's detection direction. This is determined
-        by the track geometry (track_bits), not simple offsets.
-
-        Logic:
-        1. Get the track's path at the detection edge
-        2. The OTHER edge of this path is where trains approach FROM
-        3. Check the neighbor tile in that approach direction
-        4. If neighbor is NOT in the same block, this is the entry tile
-
-        A signal on the entry tile of its block CAN monitor that block.
-        A signal NOT on the entry tile (in the middle) CANNOT monitor that block.
-
-        Args:
-            signal: The Signal to check
-
-        Returns:
-            True if signal is on entry tile of its block, False otherwise
-        """
-        x, y = signal.position
-        track = self.get_track(x, y)
-        if not track or not track.block_section_id:
-            return False  # Not in any block
-
-        block_id = track.block_section_id
-        detection_dir = signal.detection_direction.upper()
-
-        # Get the path at the detection edge using track geometry
-        # For simple tracks (signals can only be on simple tracks), this gives us
-        # (detection_edge, approach_edge) where approach_edge is where trains come FROM
-        path = track.get_path_at_edge(detection_dir)
-        if not path:
-            return (
-                False  # No path at detection edge (shouldn't happen for valid signal)
-            )
-
-        # path = (entry_edge, exit_edge) - for our purposes, the other edge is approach edge
-        # If detection_dir is the first element, the second is approach
-        # If detection_dir is the second element, the first is approach
-        if path[0] == detection_dir:
-            approach_edge = path[1]
-        else:
-            approach_edge = path[0]
-
-        # Get the neighbor tile in the approach direction
-        edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
-        offset = edge_offsets.get(approach_edge)
-        if not offset:
-            return False
-
-        dx, dy = offset
-        neighbor = self.get_track(x + dx, y + dy)
-
-        detect_offset = edge_offsets.get(detection_dir)
-        if not detect_offset:
-            return False
-        detect_dx, detect_dy = detect_offset
-        detect_neighbor = self.get_track(x + detect_dx, y + detect_dy)
-        if not detect_neighbor or detect_neighbor.block_section_id != block_id:
-            return False
-
-        return neighbor is None or neighbor.block_section_id != block_id
+        """Forward to `SignalCalculator.is_signal_on_entry_tile(signal)`."""
+        return self._get_signal_calculator().is_signal_on_entry_tile(signal)
 
     def _find_block_ahead(
         self, x: int, y: int, direction: str, exclude_block: Optional[str] = None
     ) -> Optional[str]:
-        """
-        Find the block ahead of a signal position in the direction of train travel.
-
-        Signal semantics:
-        - Signal "faces" a direction = the light is visible from that direction
-        - Trains approach FROM the facing direction
-        - Trains travel in the OPPOSITE direction (away from the signal face)
-        - We search in the train's travel direction to find the block ahead
-
-        Args:
-            x, y: Signal position
-            direction: Signal facing direction (trains come FROM this direction)
-            exclude_block: Block ID to exclude (typically the signal's own block)
-
-        Returns:
-            Block ID if found, None otherwise
-        """
-        # Signal faces DIRECTION, trains come FROM that direction and travel OPPOSITE
-        # So we look in the OPPOSITE direction for the block ahead
-        opposite_directions = {
-            "NORTH": "SOUTH",
-            "SOUTH": "NORTH",
-            "EAST": "WEST",
-            "WEST": "EAST",
-        }
-        travel_direction = opposite_directions.get(direction.upper(), direction)
-        vector = get_direction_vector(travel_direction)
-        if not vector:
-            return None
-
-        dx, dy = vector
-        current_x, current_y = x + dx, y + dy
-
-        # Traverse up to 50 tiles looking for a block
-        for _ in range(50):
-            track = self.get_track(current_x, current_y)
-            if not track:
-                break
-
-            # Found a block that's not the excluded one
-            if track.block_section_id and track.block_section_id != exclude_block:
-                return track.block_section_id
-
-            # Continue in same direction (simplified - doesn't follow curves)
-            current_x += dx
-            current_y += dy
-
-        return None
+        """Forward to `SignalCalculator.find_block_ahead(x, y, direction, exclude_block)`."""
+        return self._get_signal_calculator().find_block_ahead(
+            x, y, direction, exclude_block
+        )
 
     def get_all_signals(self) -> List[Signal]:
         """Get all signals in the network."""
         return list(self.signals.values())
 
     def update_signals_from_blocks(self) -> None:
-        """
-        Update all BLOCK-type signals based on block occupancy and switch positions.
-
-        Signal state logic:
-        - RED: First block occupied OR switch doesn't route to monitored block
-        - YELLOW: First block clear, but second block ahead is occupied
-        - GREEN: Both blocks clear (or only one block exists)
-
-        Call this after train positions change to update signal states.
-        """
-        for signal in self.signals.values():
-            if signal.signal_type == SignalType.BLOCK and signal.monitored_block_id:
-                # Determine signal state
-                new_state = self._calculate_signal_state(signal)
-                signal.state = new_state
+        """Forward to `SignalCalculator.update_all()`."""
+        self._get_signal_calculator().update_all()
 
     def _calculate_signal_state(self, signal: Signal) -> SignalState:
-        """
-        Calculate signal state based on block states and switch positions.
-
-        Implements the comprehensive specification from Reference_Signals_and_Blocks.md Section 10.
-
-        Signal Color Logic:
-        - RED: No block assigned, block doesn't exist, switch blocks route,
-               Block A is OCCUPIED, or Block A is RESERVED by different train
-        - YELLOW: Block A is CAUTION, or Block A is FREE but Block B is not FREE
-        - GREEN: Block A is FREE, OR Block A is RESERVED for this signal's approaching_train_id
-                 AND (no Block B exists or Block B is FREE or reserved for same train)
-
-        The key enhancement: When a block is RESERVED for the same train that is assigned
-        to this signal (via approaching_train_id), the signal shows GREEN because the
-        route is set for that train.
-
-        Returns SignalState (RED, YELLOW, GREEN)
-        """
-        # Step 1: Check block assignment (fail-safe)
-        if not signal.monitored_block_id:
-            return SignalState.RED  # No block configured
-
-        first_block = self.blocks.get(signal.monitored_block_id)
-        if not first_block:
-            return SignalState.RED  # Block doesn't exist
-
-        # Step 2: Check if switch blocks route to monitored block
-        if not self._check_switch_routing(signal):
-            return SignalState.RED  # Switch is set against this route
-
-        # Step 3: Evaluate Block A state (priority order)
-        if first_block.state == BlockState.OCCUPIED:
-            return SignalState.RED
-
-        if first_block.state == BlockState.RESERVED:
-            # Check if signal is on the SAME path as the monitored block
-            # If so, the path is set up for the train to pass through - show GREEN
-            # BUT: also verify that the path direction matches the signal's detection direction
-            signal_track = self.get_track(*signal.position)
-            if signal_track and signal_track.block_section_id:
-                signal_block = self.blocks.get(signal_track.block_section_id)
-                if (
-                    signal_block
-                    and signal_block.reserved_by_path
-                    and signal_block.reserved_by_path == first_block.reserved_by_path
-                ):
-                    # Same path! But check if path direction matches signal direction
-                    # A signal facing N should only show GREEN if path is going N at that tile
-                    if signal_track.path_direction:
-                        signal_dir = signal.detection_direction.upper()
-                        path_dir = signal_track.path_direction.upper()
-                        if signal_dir != path_dir:
-                            # Path is going opposite direction to signal
-                            return SignalState.RED
-                    # Direction matches (or no direction set) - proceed to Block B check
-                    pass  # Continue to Block B evaluation
-                else:
-                    # Different path or signal's block not reserved
-                    # Check direction and train assignment
-                    if first_block.reserved_direction:
-                        signal_dir = signal.detection_direction.upper()
-                        block_dir = first_block.reserved_direction.upper()
-                        if signal_dir != block_dir:
-                            return (
-                                SignalState.RED
-                            )  # Block reserved for opposite direction path
-
-                    # Check if reserved for THIS signal's approaching train
-                    if (
-                        signal.approaching_train_id
-                        and first_block.occupied_by == signal.approaching_train_id
-                    ):
-                        # Block is reserved for our train in same direction
-                        pass  # Continue to Block B evaluation
-                    else:
-                        return SignalState.RED  # RESERVED for different train
-            else:
-                # Signal not on a block - use existing logic
-                if first_block.reserved_direction:
-                    signal_dir = signal.detection_direction.upper()
-                    block_dir = first_block.reserved_direction.upper()
-                    if signal_dir != block_dir:
-                        return SignalState.RED
-
-                if (
-                    signal.approaching_train_id
-                    and first_block.occupied_by == signal.approaching_train_id
-                ):
-                    pass  # Continue to Block B evaluation
-                else:
-                    return SignalState.RED
-
-        elif first_block.state == BlockState.CAUTION:
-            return SignalState.YELLOW  # CAUTION = train just left, proceed with caution
-
-        # Block A is FREE or RESERVED for our train - check Block B (two-block lookahead)
-
-        # Step 4: Find Block B
-        second_block_id = self._find_next_block_after(
-            signal.monitored_block_id, signal.detection_direction
-        )
-
-        if not second_block_id:
-            return SignalState.GREEN  # No second block exists
-
-        second_block = self.blocks.get(second_block_id)
-        if not second_block:
-            return SignalState.GREEN  # Block B doesn't exist
-
-        # Step 5: Evaluate Block B state
-        if second_block.state == BlockState.FREE:
-            return SignalState.GREEN
-        elif (
-            second_block.state == BlockState.RESERVED
-            and signal.approaching_train_id
-            and second_block.occupied_by == signal.approaching_train_id
-        ):
-            # Block B is also reserved for our train
-            return SignalState.GREEN
-        else:
-            # CAUTION, RESERVED (for other train), or OCCUPIED in Block B → YELLOW
-            return SignalState.YELLOW
+        """Forward to `SignalCalculator.compute_state(signal)`."""
+        return self._get_signal_calculator().compute_state(signal)
 
     def _check_switch_routing(self, signal: Signal) -> bool:
-        """
-        Check if there's a valid path from signal to its monitored block.
-
-        This function traces the actual track connectivity (following switch states)
-        rather than assuming a straight-line path.
-
-        CRITICAL: Also checks if approach tile (switch) allows routing TO the signal.
-
-        Returns True if route is clear, False if blocked by switch position or no path exists.
-        """
-        if not signal.monitored_block_id:
-            return False  # No block to check
-
-        # Get signal position and directions
-        x, y = signal.position
-        detection_dir = signal.detection_direction.upper()
-        approach_dir = signal.approach_direction.upper()
-
-        # Get the track at signal position
-        signal_track = self.get_track(x, y)
-        if not signal_track:
-            return False  # No track at signal position
-
-        # EARLY CHECK: If signal is already ON its monitored block, return True
-        # This handles the case where a signal monitors its own block (common for
-        # signals placed at block entry points looking in the direction of travel)
-        if signal_track.block_section_id == signal.monitored_block_id:
-            return True  # Signal is on the monitored block, no path tracing needed
-
-        # Determine entry edge - trains enter from the approach direction
-        # IMPORTANT: For diagonal tracks, approach_direction (geometric opposite) is wrong!
-        # Diagonal tracks only connect two adjacent edges, not opposite edges.
-        # Solution: Use detection_direction to find the exit edge, then get all other edges as entry
-
-        track_bits = signal_track.track_bits
-        is_diagonal = track_bits in (4, 8, 16, 32)
-
-        if is_diagonal:
-            # For diagonal tracks, determine the two edges from track_bits
-            diagonal_edges = {
-                4: ("N", "E"),  # NE
-                8: ("N", "W"),  # NW
-                16: ("S", "E"),  # SE
-                32: ("S", "W"),  # SW
-            }
-            edge1, edge2 = diagonal_edges.get(track_bits, ("N", "E"))
-
-            # Detection direction tells us which edge the train exits from
-            # Entry edge is the OTHER edge of the diagonal
-            detection_edge = detection_dir[0]  # 'N', 'S', 'E', or 'W'
-            entry_edge = edge2 if detection_edge == edge1 else edge1
-        else:
-            # For straight tracks, use approach_direction (geometric opposite works here)
-            # approach_dir is already a single letter ('N', 'S', 'E', 'W')
-            entry_edge = approach_dir
-            if not entry_edge:
-                return True  # Can't determine, assume OK
-
-        # NOTE: We intentionally do NOT check the approach switch here.
-        # The approach switch is BEHIND the signal and doesn't affect whether
-        # the signal can see its monitored block (which is in the DETECTION direction).
-        #
-        # A signal's state is determined by:
-        # 1. The state of its monitored block (free/occupied/reserved)
-        # 2. Whether there's a valid path from the signal to its monitored block
-        #
-        # The approach switch affects train ROUTING (whether trains can reach
-        # the signal), but not the signal's indication of block status ahead.
-
-        # Get actual exit edges from the signal's tile based on track geometry
-        # This is crucial for diagonal tracks
-        initial_exits = signal_track.get_exits(entry_edge, use_switch_state=True)
-        if not initial_exits:
-            return False  # Can't exit the signal tile
-
-        # Edge offsets: direction -> (dx, dy)
-        edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
-
-        # Try all possible initial exits
-        for initial_exit in initial_exits:
-            current_exit_edge = initial_exit
-            current_x, current_y = x, y
-            visited = set()
-
-            # Trace path following actual track connectivity
-            for _ in range(50):
-                # Prevent infinite loops
-                pos_key = (current_x, current_y, current_exit_edge)
-                if pos_key in visited:
-                    break  # Loop detected, try next initial exit
-                visited.add(pos_key)
-
-                # Move to next tile based on exit edge
-                offset = edge_offsets.get(current_exit_edge)
-                if not offset:
-                    break  # Invalid edge
-                dx, dy = offset
-                next_x, next_y = current_x + dx, current_y + dy
-
-                # Get next track
-                next_track = self.get_track(next_x, next_y)
-                if not next_track:
-                    break  # End of line, try next initial exit
-
-                # Check if we reached the monitored block
-                if next_track.block_section_id == signal.monitored_block_id:
-                    return True  # Path found!
-
-                # Determine entry edge (opposite of how we exited previous tile)
-                entry_edge = {"N": "S", "S": "N", "E": "W", "W": "E"}.get(
-                    current_exit_edge
-                )
-                if not entry_edge:
-                    break
-
-                # Check if track allows entry from this edge
-                if entry_edge not in next_track.edges:
-                    break  # Can't enter this track from this direction
-
-                # Get exit edge(s) from this track
-                # For switches, use current switch state
-                exits = next_track.get_exits(entry_edge, use_switch_state=True)
-
-                if not exits:
-                    break  # No exit from this entry - dead end or blocked
-
-                # Use the first available exit (switch state determines which one)
-                current_exit_edge = (
-                    exits[0] if isinstance(exits, list) else list(exits)[0]
-                )
-                current_x, current_y = next_x, next_y
-
-        return False  # Couldn't find block via any path
+        """Forward to `SignalCalculator.check_switch_routing(signal)`."""
+        return self._get_signal_calculator().check_switch_routing(signal)
 
     def _find_next_block_after(
         self, block_id: str, detection_direction: str
     ) -> Optional[str]:
-        """
-        Find the block after the given block (for two-block lookahead).
-
-        This function traces actual track connectivity (following switch states)
-        starting from the furthest edge of block_id in the travel direction.
-
-        Args:
-            block_id: The first block (Block A) to search beyond
-            detection_direction: The direction trains travel TO
-
-        Returns:
-            The block_id of the next block (Block B), or None if not found
-        """
-        # detection_direction IS the travel direction
-        travel_dir = detection_direction.upper()
-
-        # Edge offsets: edge -> (dx, dy)
-        edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
-
-        # Find all tracks in the given block
-        block_tracks = [
-            (pos, t) for pos, t in self.tracks.items() if t.block_section_id == block_id
-        ]
-        if not block_tracks:
-            return None
-
-        # Convert travel direction to exit edge
-        exit_edge_for_travel = {
-            "NORTH": "N",
-            "SOUTH": "S",
-            "EAST": "E",
-            "WEST": "W",
-        }.get(travel_dir.upper())
-        if not exit_edge_for_travel:
-            return None
-
-        # Find block tracks that have an exit in the travel direction
-        # These are candidates for "edge of block"
-        edge_tracks = []
-        for pos, track in block_tracks:
-            if exit_edge_for_travel in track.edges:
-                # Check if the next tile in this direction is NOT in this block
-                offset = edge_offsets.get(exit_edge_for_travel)
-                if offset:
-                    next_x, next_y = pos[0] + offset[0], pos[1] + offset[1]
-                    next_track = self.get_track(next_x, next_y)
-                    if not next_track or next_track.block_section_id != block_id:
-                        edge_tracks.append((pos, track))
-
-        if not edge_tracks:
-            # Fallback: use furthest track in travel direction
-            vector = get_direction_vector(travel_dir)
-            if not vector:
-                return None
-            dx, dy = vector
-            furthest_pos = max(
-                block_tracks, key=lambda pt: pt[0][0] * dx + pt[0][1] * dy
-            )[0]
-            furthest_track = self.get_track(*furthest_pos)
-            if furthest_track:
-                edge_tracks = [(furthest_pos, furthest_track)]
-
-        # Try each edge track to find path to next block
-        for start_pos, start_track in edge_tracks:
-            # Start tracing from this track's exit
-            current_x, current_y = start_pos
-            current_exit_edge = exit_edge_for_travel
-            visited = set()
-
-            for _ in range(50):
-                # Prevent infinite loops
-                pos_key = (current_x, current_y, current_exit_edge)
-                if pos_key in visited:
-                    break  # Loop, try next edge track
-                visited.add(pos_key)
-
-                # Move to next tile
-                offset = edge_offsets.get(current_exit_edge)
-                if not offset:
-                    break
-                dx, dy = offset
-                next_x, next_y = current_x + dx, current_y + dy
-
-                # Get next track
-                next_track = self.get_track(next_x, next_y)
-                if not next_track:
-                    break  # End of line
-
-                # Found a different block!
-                if (
-                    next_track.block_section_id
-                    and next_track.block_section_id != block_id
-                ):
-                    return next_track.block_section_id
-
-                # Determine entry edge
-                entry_edge = {"N": "S", "S": "N", "E": "W", "W": "E"}.get(
-                    current_exit_edge
-                )
-                if not entry_edge:
-                    break
-
-                # Check if track allows entry
-                if entry_edge not in next_track.edges:
-                    break
-
-                # Get exit edge(s) following switch state
-                exits = next_track.get_exits(entry_edge, use_switch_state=True)
-                if not exits:
-                    break
-
-                # Use the first available exit
-                current_exit_edge = (
-                    exits[0] if isinstance(exits, list) else list(exits)[0]
-                )
-                current_x, current_y = next_x, next_y
-
-        return None  # No next block found
+        """Forward to `SignalCalculator.find_next_block_after(block_id, direction)`."""
+        return self._get_signal_calculator().find_next_block_after(
+            block_id, detection_direction
+        )
 
     def add_train(self, train: Train):
         """Add a train to the network"""
@@ -2015,7 +863,7 @@ class RailwayNetwork:
     def _get_train_length_cm(self, train: Train) -> float:
         """Get train length in cm."""
         if train.consist:
-            total_length = sum(car.length for car in train.consist)
+            total_length = sum(car.length_cm for car in train.consist)
             return total_length
         return DEFAULT_TRAIN_LENGTH_CM
 
@@ -2344,7 +1192,6 @@ class RailwayNetwork:
         return True
 
     def get_train(self, train_id: str) -> Optional[Train]:
-        """Get train by ID"""
         return self.trains.get(train_id)
 
     def add_schedule(self, schedule: TrainSchedule):
@@ -2418,436 +1265,61 @@ class RailwayNetwork:
         # Complex tracks (multiple paths) are not valid
         return False
 
-    def add_station(
-        self,
-        x: int,
-        y: int,
-        station_id: Optional[str] = None,
-        name: str = "",
-        length_cm: float = 0.0,
-        platform_side: str = "both",
-        top_speed_kmh: Optional[float] = None,
-    ) -> Platform:
-        """
-        Create and add a station at the specified position.
+    def add_station(self, *args, **kwargs):
+        """Forward to `StationRegistry.add_station(...)`."""
+        return self._get_station_registry().add_station(*args, **kwargs)
 
-        Args:
-            x, y: Grid coordinates for station placement
-            station_id: Optional specific ID, auto-generated if not provided
-            name: Human-readable station name
-            length_cm: Physical track length in cm (independent of tile count)
-            platform_side: 'left', 'right', or 'both'
-            top_speed_kmh: Optional speed limit through the station
+    def add_platform(self, *args, **kwargs):
+        """Forward to `StationRegistry.add_platform(...)`."""
+        return self._get_station_registry().add_platform(*args, **kwargs)
 
-        Returns:
-            Created Station instance
+    def get_station(self, station_id: str):
+        """Forward to `StationRegistry.get_station(station_id)`."""
+        return self._get_station_registry().get_station(station_id)
 
-        Raises:
-            ValueError: If position invalid, track is not straight, switch, signal exists, or station exists
-        """
-        from track import TRACK_NS, TRACK_EW
-
-        # Check if track exists
-        track = self.get_track(x, y)
-        if not track:
-            raise ValueError(f"No track at position ({x}, {y})")
-
-        # Cannot place station on switches
-        if track.is_switch:
-            raise ValueError(f"Cannot place station on switch at ({x}, {y})")
-
-        # Stations can only be placed on straight paths (pure NS/EW or zigzag forming a straight line)
-        if not self._is_track_on_straight_path(x, y):
-            raise ValueError(
-                f"Cannot place station at ({x}, {y}). Stations require tracks on straight paths (pure NS/EW or zigzag patterns forming straight lines)."
-            )
-
-        # Cannot place station on tile with signal
-        if track.signal_ids:
-            raise ValueError(f"Cannot place station on tile with signal at ({x}, {y})")
-
-        # Check if tile is already part of another station
-        if track.station_id is not None:
-            raise ValueError(
-                f"Tile ({x}, {y}) already belongs to station {track.station_id}"
-            )
-
-        # Generate station ID if not provided
-        if station_id is None:
-            station_id = f"STA_{uuid.uuid4().hex[:6].upper()}"
-
-        # Handle block splitting if track belongs to a block
-        # Stations are block boundaries, so placing a station may split the block
-        original_block_id = track.block_section_id
-        original_block = None
-        length_per_tile_cm = (
-            None  # None means no block, 0.0 means block with zero length
-        )
-
-        if original_block_id:
-            # Get the original block before removal
-            original_block = self.blocks.get(original_block_id)
-            if original_block:
-                # Calculate length per tile from the original block
-                original_positions = self.get_block_positions(original_block_id)
-                if original_positions:
-                    length_per_tile_cm = original_block.length_cm / len(
-                        original_positions
-                    )
-                    # Store this on the original block so child blocks can use it
-                    original_block._length_per_tile_cm = length_per_tile_cm
-
-            # Remove this tile from its block (triggers connectivity check/split)
-            self.remove_tile_from_block(x, y)
-
-        # Create station block for this station
-        station_block_id = f"{station_id}_BLOCK"
-
-        # Calculate station block length:
-        # - If station was on a block, use calculated length per tile × 1 tile (may be 0)
-        # - If not on a block, use the input platform length
-        if length_per_tile_cm is not None:
-            # Was on a block (even if that block had zero length)
-            station_block_length_cm = length_per_tile_cm
-        else:
-            # Was not on a block, use input platform length
-            station_block_length_cm = length_cm if length_cm > 0 else 0.0
-
-        # Use station name in block name if provided, otherwise use station_id
-        block_name = (
-            f"Station Block - {name}" if name else f"Station Block - {station_id}"
-        )
-
-        station_block = self.create_block(block_id=station_block_id, name=block_name)
-
-        # Set the calculated length on the block
-        station_block.length_cm = station_block_length_cm
-
-        # Inherit speed limit from platform to station block
-        # ATC/ATO uses block's max_speed_kmh, not station's top_speed_kmh
-        if top_speed_kmh is not None:
-            station_block.max_speed_kmh = top_speed_kmh
-
-        # Assign station tile to station block
-        track.block_section_id = station_block_id
-
-        # Create station
-        from enums import PlatformSide
-
-        platform_enum = PlatformSide(platform_side.lower())
-
-        # Compute initial orientation from the first tile's track_bits
-        from track import BIT_TO_GROUP
-
-        initial_orientation = None
-        for bit_idx, group in BIT_TO_GROUP.items():
-            if track.track_bits & (1 << bit_idx):
-                initial_orientation = group
-                break
-
-        station = Platform(
-            platform_id=station_id,
-            name=name,
-            positions=[(x, y)],
-            length_cm=length_cm,
-            platform_side=platform_enum,
-            top_speed_kmh=top_speed_kmh,
-            initial_orientation=initial_orientation,
-        )
-
-        # Store physical platform (legacy station semantics)
-        self.platforms[station_id] = station
-
-        # Update track's station reference
-        track.station_id = station_id
-
-        return station
-
-    def add_platform(
-        self,
-        x: int,
-        y: int,
-        platform_id: Optional[str] = None,
-        name: str = "",
-        length_cm: float = 0.0,
-        platform_side: str = "both",
-        top_speed_kmh: Optional[float] = None,
-    ) -> Platform:
-        """Compatibility wrapper: create physical platform via station implementation."""
-        return self.add_station(
-            x=x,
-            y=y,
-            station_id=platform_id,
-            name=name,
-            length_cm=length_cm,
-            platform_side=platform_side,
-            top_speed_kmh=top_speed_kmh,
-        )
-
-    def get_station(self, station_id: str) -> Optional[Platform]:
-        """Get physical platform by legacy station ID."""
-        return self.platforms.get(station_id)
-
-    def get_platform(self, platform_id: str) -> Optional[Platform]:
-        """Get physical platform by ID."""
-        return self.platforms.get(platform_id)
+    def get_platform(self, platform_id: str):
+        """Forward to `StationRegistry.get_platform(platform_id)`."""
+        return self._get_station_registry().get_platform(platform_id)
 
     def delete_station(self, station_id: str) -> bool:
-        """
-        Delete station and clear references from tracks.
-        Also deletes all blocks that are fully contained within this station.
-
-        Args:
-            station_id: ID of station to delete
-
-        Returns:
-            True if deleted, False if not found
-        """
-        if station_id not in self.platforms:
-            return False
-
-        station = self.platforms[station_id]
-
-        # Collect all blocks that are fully within this station
-        # A block is "within the station" if ALL its tiles have station_id matching this station
-        blocks_to_delete = set()
-
-        # Check all blocks to see if they're fully within this station
-        for block_id in list(self.blocks.keys()):
-            block_positions = self.get_block_positions(block_id)
-            if not block_positions:
-                continue
-
-            # Check if ALL tiles in this block belong to this station
-            all_in_station = True
-            for bx, by in block_positions:
-                track = self.get_track(bx, by)
-                if not track or track.station_id != station_id:
-                    all_in_station = False
-                    break
-
-            if all_in_station:
-                blocks_to_delete.add(block_id)
-                print(
-                    f"[Station Delete] Block {block_id} is fully within station {station_id}, will be deleted"
-                )
-
-        # Delete all blocks that are fully within the station
-        for block_id in blocks_to_delete:
-            self.delete_block(block_id)
-            print(f"[Station Delete] Deleted block {block_id}")
-
-        # Clear station_id from all tracks in this station
-        for x, y in station.positions:
-            track = self.get_track(x, y)
-            if track and track.station_id == station_id:
-                track.station_id = None
-
-        # Delete from storage
-        del self.platforms[station_id]
-
-        # Remove this platform from any logical station groups
-        for station_group in self.station_groups.values():
-            if station_id in station_group.platform_ids:
-                station_group.remove_platform(station_id)
-        return True
+        """Forward to `StationRegistry.delete_station(station_id)`."""
+        return self._get_station_registry().delete_station(station_id)
 
     def delete_platform(self, platform_id: str) -> bool:
-        """Compatibility wrapper for physical platform deletion."""
-        return self.delete_station(platform_id)
+        """Forward to `StationRegistry.delete_platform(platform_id)`."""
+        return self._get_station_registry().delete_platform(platform_id)
 
-    def extend_station(
-        self, station_id: str, new_positions: List[Tuple[int, int]]
-    ) -> Platform:
-        """
-        Add adjacent continuous tiles to existing station.
+    def extend_station(self, *args, **kwargs):
+        """Forward to `StationRegistry.extend_station(...)`."""
+        return self._get_station_registry().extend_station(*args, **kwargs)
 
-        Args:
-            station_id: ID of station to extend
-            new_positions: List of (x, y) positions to add
-
-        Returns:
-            Updated Station instance
-
-        Raises:
-            ValueError: If validation fails or platform would be discontinuous
-        """
-        if station_id not in self.platforms:
-            raise ValueError(f"Station {station_id} not found")
-
-        station = self.platforms[station_id]
-
-        # Validate each new position
-        for x, y in new_positions:
-            track = self.get_track(x, y)
-            if not track:
-                raise ValueError(f"No track at position ({x}, {y})")
-
-            if track.is_switch:
-                raise ValueError(f"Cannot add switch at ({x}, {y}) to station")
-
-            # Use same validation as add_station: straight or simple diagonal tracks
-            if not self._is_track_on_straight_path(x, y):
-                raise ValueError(
-                    f"Cannot add track at ({x}, {y}) to station. Stations require tracks on straight paths (pure NS/EW or simple diagonal tracks)."
-                )
-
-            # Check orientation matches station's initial_orientation exactly
-            from track import BIT_TO_GROUP
-
-            new_tile_orientation = None
-            for bit_idx, group in BIT_TO_GROUP.items():
-                if track.track_bits & (1 << bit_idx):
-                    new_tile_orientation = group
-                    break
-
-            if (
-                station.initial_orientation
-                and new_tile_orientation != station.initial_orientation
-            ):
-                raise ValueError(
-                    f"Cannot extend {station.initial_orientation} station to tile at ({x}, {y}). "
-                    f"Tile has {new_tile_orientation} orientation. "
-                    f"Station extension requires exact orientation match."
-                )
-
-            if track.signal_ids:
-                raise ValueError(
-                    f"Cannot add tile with signal at ({x}, {y}) to station"
-                )
-
-            if track.station_id is not None and track.station_id != station_id:
-                raise ValueError(
-                    f"Tile ({x}, {y}) already belongs to station {track.station_id}"
-                )
-
-        # Check if new positions are adjacent to existing station
-        # (simplified check - at least one new position must be adjacent to existing)
-        is_adjacent = False
-        for new_x, new_y in new_positions:
-            for old_x, old_y in station.positions:
-                if abs(new_x - old_x) + abs(new_y - old_y) == 1:
-                    is_adjacent = True
-                    break
-            if is_adjacent:
-                break
-
-        if not is_adjacent and len(station.positions) > 0:
-            raise ValueError("New positions must be adjacent to existing station")
-
-        # Validate continuity (all positions would form connected path)
-        all_positions = station.positions + new_positions
-        is_continuous, errors = self._validate_station_continuity(all_positions)
-        if not is_continuous:
-            raise ValueError(f"Station would not be continuous: {', '.join(errors)}")
-
-        # Add positions to station
-        station_block_id = f"{station_id}_BLOCK"
-
-        for x, y in new_positions:
-            if (x, y) not in station.positions:
-                station.add_position(x, y)
-                track = self.get_track(x, y)
-                if track:
-                    # Handle block splitting if needed - use lifecycle method
-                    if track.block_section_id:
-                        self.remove_tile_from_block(x, y)
-                    # Assign to station's block
-                    if station_block_id in self.blocks:
-                        track.block_section_id = station_block_id
-                    track.station_id = station_id
-
-        return station
-
-    def extend_platform(
-        self, platform_id: str, new_positions: List[Tuple[int, int]]
-    ) -> Platform:
-        """Compatibility wrapper for physical platform extension."""
-        return self.extend_station(platform_id, new_positions)
+    def extend_platform(self, *args, **kwargs):
+        """Forward to `StationRegistry.extend_platform(...)`."""
+        return self._get_station_registry().extend_platform(*args, **kwargs)
 
     def get_station_for_platform(self, platform_id: str) -> Optional[str]:
-        """Get logical station ID for a platform if station groups exist."""
-        for station_id, station in self.station_groups.items():
-            if platform_id in station.platform_ids:
-                return station_id
-        return None
+        """Forward to `StationRegistry.get_station_for_platform(platform_id)`."""
+        return self._get_station_registry().get_station_for_platform(platform_id)
 
-    def get_platforms_for_station(self, station_id: str) -> List[Platform]:
-        """Get physical platforms for a logical station."""
-        station = self.station_groups.get(station_id)
-        if not station:
-            return []
+    def get_platforms_for_station(self, station_id: str):
+        """Forward to `StationRegistry.get_platforms_for_station(station_id)`."""
+        return self._get_station_registry().get_platforms_for_station(station_id)
 
-        result = []
-        for pid in station.platform_ids:
-            platform = self.platforms.get(pid)
-            if platform:
-                result.append(platform)
-        return result
-
-    def create_station_group(
-        self,
-        station_id: Optional[str] = None,
-        name: str = "",
-        platform_ids: Optional[List[str]] = None,
-    ) -> Station:
-        """Create a logical station group for one or more platforms."""
-        if station_id is None:
-            station_id = f"STA_{uuid.uuid4().hex[:6].upper()}"
-        if station_id in self.station_groups:
-            raise ValueError(f"Station {station_id} already exists")
-
-        normalized_platform_ids: List[str] = []
-        for platform_id in platform_ids or []:
-            if platform_id not in self.platforms:
-                raise ValueError(f"Platform {platform_id} not found")
-            existing_station_id = self.get_station_for_platform(platform_id)
-            if existing_station_id:
-                raise ValueError(
-                    f"Platform {platform_id} already belongs to station {existing_station_id}"
-                )
-            if platform_id not in normalized_platform_ids:
-                normalized_platform_ids.append(platform_id)
-
-        station = Station(
-            station_id=station_id,
-            name=name,
-            platform_ids=normalized_platform_ids,
-        )
-        self.station_groups[station_id] = station
-        return station
+    def create_station_group(self, *args, **kwargs):
+        """Forward to `StationRegistry.create_station_group(...)`."""
+        return self._get_station_registry().create_station_group(*args, **kwargs)
 
     def delete_station_group(self, station_id: str) -> bool:
-        """Delete a logical station group."""
-        if station_id not in self.station_groups:
-            return False
-        del self.station_groups[station_id]
-        return True
+        """Forward to `StationRegistry.delete_station_group(station_id)`."""
+        return self._get_station_registry().delete_station_group(station_id)
 
     def add_platform_to_station_group(self, station_id: str, platform_id: str) -> bool:
-        """Add a platform to a logical station group."""
-        station = self.station_groups.get(station_id)
-        if not station:
-            raise ValueError(f"Station {station_id} not found")
-        if platform_id not in self.platforms:
-            raise ValueError(f"Platform {platform_id} not found")
+        """Forward to `StationRegistry.add_platform_to_station_group(...)`."""
+        return self._get_station_registry().add_platform_to_station_group(station_id, platform_id)
 
-        existing_station_id = self.get_station_for_platform(platform_id)
-        if existing_station_id and existing_station_id != station_id:
-            raise ValueError(
-                f"Platform {platform_id} already belongs to station {existing_station_id}"
-            )
-
-        return station.add_platform(platform_id)
-
-    def remove_platform_from_station_group(
-        self, station_id: str, platform_id: str
-    ) -> bool:
-        """Remove a platform from a logical station group."""
-        station = self.station_groups.get(station_id)
-        if not station:
-            raise ValueError(f"Station {station_id} not found")
-        return station.remove_platform(platform_id)
+    def remove_platform_from_station_group(self, *args, **kwargs):
+        """Forward to `StationRegistry.remove_platform_from_station_group(...)`."""
+        return self._get_station_registry().remove_platform_from_station_group(*args, **kwargs)
 
     def _validate_station_continuity(
         self, positions: List[Tuple[int, int]]
@@ -2906,333 +1378,36 @@ class RailwayNetwork:
         return True, []
 
     def _disconnect_signals_for_block(self, block_id: str) -> None:
-        """
-        Disconnect all signals monitoring the specified block.
-
-        Sets monitored_block_id = None for all signals monitoring this block.
-
-        Args:
-            block_id: Block ID to disconnect signals from
-        """
-        for signal in self.signals.values():
-            if signal.monitored_block_id == block_id:
-                signal.monitored_block_id = None
-
-    # === Unified Block Lifecycle Management ===
+        """Forward to `BlockGeometryManager._disconnect_signals_for_block(block_id)`."""
+        return self._get_block_geometry_manager()._disconnect_signals_for_block(block_id)
 
     def remove_tile_from_block(self, x: int, y: int) -> List[str]:
-        """
-        Remove a tile from its block and handle connectivity check.
-
-        This is the core lifecycle method for block management. When a tile
-        is removed from a block (due to station/signal placement, or track deletion),
-        this method:
-        1. Clears the tile's block_section_id
-        2. Checks if remaining block tiles are still connected
-        3. If disconnected, splits into new child blocks
-
-        Args:
-            x, y: Tile position to remove from its block
-
-        Returns:
-            List of affected block IDs (original + any new child blocks created)
-        """
-        track = self.get_track(x, y)
-        if not track or not track.block_section_id:
-            return []
-
-        block_id = track.block_section_id
-        track.block_section_id = None
-
-        # Check and potentially split the block
-        return self._check_block_connectivity(block_id)
+        """Forward to `BlockGeometryManager.remove_tile_from_block(x, y)`."""
+        return self._get_block_geometry_manager().remove_tile_from_block(x, y)
 
     def remove_tiles_from_block(self, positions: List[Tuple[int, int]]) -> List[str]:
-        """
-        Remove multiple tiles from their block(s) and handle connectivity.
-
-        This is a batch version of remove_tile_from_block for efficiency.
-        All tiles should belong to the same block for proper splitting.
-
-        Args:
-            positions: List of (x, y) positions to remove
-
-        Returns:
-            List of affected block IDs
-        """
-        if not positions:
-            return []
-
-        # Group positions by block
-        blocks_affected = {}
-        for x, y in positions:
-            track = self.get_track(x, y)
-            if track and track.block_section_id:
-                block_id = track.block_section_id
-                if block_id not in blocks_affected:
-                    blocks_affected[block_id] = []
-                blocks_affected[block_id].append((x, y))
-                track.block_section_id = None
-
-        # Check connectivity for each affected block
-        all_affected = []
-        for block_id in blocks_affected:
-            affected = self._check_block_connectivity(block_id)
-            all_affected.extend(affected)
-
-        return all_affected
+        """Forward to `BlockGeometryManager.remove_tiles_from_block(positions)`."""
+        return self._get_block_geometry_manager().remove_tiles_from_block(positions)
 
     def _check_block_connectivity(self, block_id: str) -> List[str]:
-        """
-        Check block connectivity and split if disconnected.
+        """Forward to `BlockGeometryManager._check_block_connectivity(block_id)`."""
+        return self._get_block_geometry_manager()._check_block_connectivity(block_id)
 
-        After tiles are removed from a block, this method:
-        1. Gets remaining tile positions
-        2. Finds connected components
-        3. If multiple components, deletes original and creates child blocks
-        4. Remaps orphaned signals to nearest reachable child block
+    def _find_connected_components(self, *args, **kwargs):
+        """Forward to `BlockGeometryManager._find_connected_components(...)`."""
+        return self._get_block_geometry_manager()._find_connected_components(*args, **kwargs)
 
-        Args:
-            block_id: Block ID to check
+    def _get_track_connected_neighbors(self, *args, **kwargs):
+        """Forward to `BlockGeometryManager._get_track_connected_neighbors(...)`."""
+        return self._get_block_geometry_manager()._get_track_connected_neighbors(*args, **kwargs)
 
-        Returns:
-            List of affected block IDs (may include new child block IDs)
-        """
-        block = self.blocks.get(block_id)
-        if not block:
-            return []
+    def _create_child_blocks(self, *args, **kwargs):
+        """Forward to `BlockGeometryManager._create_child_blocks(...)`."""
+        return self._get_block_geometry_manager()._create_child_blocks(*args, **kwargs)
 
-        remaining_positions = self.get_block_positions(block_id)
-
-        # Case 1: Block is now empty
-        if not remaining_positions:
-            self._disconnect_signals_for_block(block_id)
-            self.delete_block(block_id)
-            return [block_id]
-
-        # Find connected components
-        components = self._find_connected_components(remaining_positions)
-
-        # Case 2: Single component - block is still connected
-        if len(components) == 1:
-            return [block_id]
-
-        # Case 3: Multiple components - split into child blocks
-        # Get signals monitoring this block before deletion
-        orphaned_signals = [
-            signal
-            for signal in self.signals.values()
-            if signal.monitored_block_id == block_id
-        ]
-
-        # Create child blocks
-        new_block_ids = self._create_child_blocks(block, components)
-
-        # Delete original block (but don't disconnect signals yet - we'll remap them)
-        if block_id in self.blocks:
-            del self.blocks[block_id]
-
-        # Remap orphaned signals to nearest reachable child block
-        self._remap_orphaned_signals(orphaned_signals, new_block_ids)
-
-        return [block_id] + new_block_ids
-
-    def _find_connected_components(
-        self, positions: List[Tuple[int, int]]
-    ) -> List[List[Tuple[int, int]]]:
-        """
-        Find connected components among tile positions using track connectivity.
-
-        Two tiles are connected if:
-        1. They are adjacent (Manhattan distance = 1)
-        2. Their track_bits allow connection (one has edge pointing to other)
-
-        Uses BFS to group tiles into connected components.
-
-        Args:
-            positions: List of (x, y) tile positions
-
-        Returns:
-            List of components, where each component is a list of positions
-        """
-        if not positions:
-            return []
-
-        position_set = set(positions)
-        visited = set()
-        components = []
-
-        for start_pos in positions:
-            if start_pos in visited:
-                continue
-
-            # BFS to find all connected tiles from this starting point
-            component = []
-            queue = [start_pos]
-            visited.add(start_pos)
-
-            while queue:
-                current = queue.pop(0)
-                component.append(current)
-
-                # Find connected neighbors within the position set
-                for neighbor in self._get_track_connected_neighbors(current):
-                    if neighbor in position_set and neighbor not in visited:
-                        visited.add(neighbor)
-                        queue.append(neighbor)
-
-            components.append(component)
-
-        return components
-
-    def _get_track_connected_neighbors(
-        self, pos: Tuple[int, int]
-    ) -> List[Tuple[int, int]]:
-        """
-        Get positions of tracks connected via edges (track_bits connectivity).
-
-        A neighbor is connected if:
-        1. This track has an edge pointing toward the neighbor
-        2. The neighbor has an edge pointing back
-
-        Args:
-            pos: Position to check neighbors for
-
-        Returns:
-            List of connected neighbor positions
-        """
-        track = self.get_track(*pos)
-        if not track:
-            return []
-
-        neighbors = []
-        edge_offsets = {"N": (0, 1), "S": (0, -1), "E": (1, 0), "W": (-1, 0)}
-        opposite_edge = {"N": "S", "S": "N", "E": "W", "W": "E"}
-
-        for edge in track.edges:
-            if edge not in edge_offsets:
-                continue
-            dx, dy = edge_offsets[edge]
-            neighbor_pos = (pos[0] + dx, pos[1] + dy)
-            neighbor = self.get_track(*neighbor_pos)
-            if neighbor:
-                opp = opposite_edge[edge]
-                if opp in neighbor.edges:
-                    neighbors.append(neighbor_pos)
-
-        return neighbors
-
-    def _create_child_blocks(
-        self, parent_block: Block, components: List[List[Tuple[int, int]]]
-    ) -> List[str]:
-        """
-        Create child blocks from connected components, inheriting parent properties.
-
-        Child blocks inherit:
-        - name: "{parent.name}_1", "{parent.name}_2", etc.
-        - length_cm: Calculated based on tile count × length_per_tile_cm from parent
-        - min_radius_cm, max_speed_kmh (copied as-is)
-        - state: Reset to FREE (original occupancy doesn't transfer cleanly)
-
-        Args:
-            parent_block: Original block being split
-            components: List of connected components (each is list of positions)
-
-        Returns:
-            List of new block IDs
-        """
-        new_block_ids = []
-        base_name = parent_block.name if parent_block.name else parent_block.block_id
-
-        # Calculate length per tile from parent block
-        # Check if parent has stored length_per_tile_cm (from station split)
-        length_per_tile_cm = getattr(parent_block, "_length_per_tile_cm", None)
-
-        if length_per_tile_cm is None:
-            if (
-                not hasattr(parent_block, "length_cm")
-                or parent_block.length_cm is None
-                or parent_block.length_cm <= 0
-            ):
-                parent_block.length_cm = 0.0
-            parent_positions = self.get_block_positions(parent_block.block_id)
-            if parent_positions and parent_block.length_cm > 0:
-                length_per_tile_cm = parent_block.length_cm / len(parent_positions)
-            else:
-                total_tiles = sum(len(comp) for comp in components)
-                if total_tiles > 0 and parent_block.length_cm > 0:
-                    length_per_tile_cm = parent_block.length_cm / total_tiles
-                else:
-                    length_per_tile_cm = 0.0
-
-        for i, component_positions in enumerate(components, start=1):
-            # Generate child block ID and name
-            child_id = f"{parent_block.block_id}_{i}"
-            child_name = f"{base_name}_{i}"
-
-            # Calculate child block length based on tile count
-            child_length_cm = (
-                len(component_positions) * length_per_tile_cm
-                if length_per_tile_cm > 0
-                else 0.0
-            )
-
-            # Create child block with inherited properties
-            # v1: Block.state is a derived @property; do not pass it to the
-            # constructor. occupied_by defaults to None which yields FREE.
-            child_block = Block(
-                block_id=child_id,
-                name=child_name,
-                length_cm=child_length_cm,  # Calculated based on tile count
-                min_radius_cm=parent_block.min_radius_cm,
-                max_speed_kmh=parent_block.max_speed_kmh,
-                occupied_by=None,
-            )
-
-            self.blocks[child_id] = child_block
-            self._ensure_block_manager()
-
-            for x, y in component_positions:
-                track = self.get_track(x, y)
-                if track:
-                    track.block_section_id = child_id
-
-            new_block_ids.append(child_id)
-
-        return new_block_ids
-
-    def _remap_orphaned_signals(
-        self, orphaned_signals: List[Signal], new_block_ids: List[str]
-    ) -> None:
-        """
-        Remap signals that monitored a deleted block to nearest reachable child block.
-
-        For each orphaned signal, uses _can_reach_block to find which new block
-        is reachable, and updates monitored_block_id accordingly.
-
-        Args:
-            orphaned_signals: List of signals that need remapping
-            new_block_ids: List of child block IDs to consider
-        """
-        for signal in orphaned_signals:
-            # Try to find a reachable block among the new child blocks
-            found_block = None
-            for block_id in new_block_ids:
-                if self._can_reach_block(signal, block_id):
-                    found_block = block_id
-                    break
-
-            # Update signal
-            signal.monitored_block_id = found_block
-
-            # Recalculate signal state based on new monitored block
-            if signal.signal_type == SignalType.BLOCK:
-                if signal.monitored_block_id:
-                    signal.state = self._calculate_signal_state(signal)
-                else:
-                    signal.state = SignalState.RED
-
-    # === Centralized Switch Management ===
+    def _remap_orphaned_signals(self, *args, **kwargs):
+        """Forward to `BlockGeometryManager._remap_orphaned_signals(...)`."""
+        return self._get_block_geometry_manager()._remap_orphaned_signals(*args, **kwargs)
 
     def add_switch(self, switch: "Switch") -> None:
         """
@@ -3375,7 +1550,7 @@ class RailwayNetwork:
         for block_id, block_data in data.get("blocks", {}).items():
             self.blocks[block_id] = Block.from_dict(block_data)
 
-        self._ensure_block_manager()
+        self._ensure_resource_managers()
 
         for t_data in data.get("tracks", []):
             track = TrackSegment.from_dict(t_data)

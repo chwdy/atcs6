@@ -5,12 +5,18 @@ This module tests:
 - Route and RouteTask functionality (v1 schema)
 - RouteExecutor class
 - Route mode execution (ONE_OFF, CIRCULAR, ROUND_TRIP)
-- Dwell time logic with timing modes
+- Dwell time logic
 - Task arrival detection
 """
 
 import pytest
-from train_route import Route, RouteTask, TimingMode, RouteMode, RouteRunStatus
+from train_route import (
+    PlatformTarget,
+    Route,
+    RouteMode,
+    RouteRunStatus,
+    RouteTask,
+)
 from route_executor import RouteExecutor, RouteExecutionState
 from train import Train
 from tests.train_test_helpers import make_train_position
@@ -50,13 +56,12 @@ class TestRouteAndTask:
         assert simple_route.is_active is True
         assert simple_route.started_at == 100.0
 
-    def test_dwell_task_should_depart_none_mode(self):
-        """Test dwell task depart logic with NONE timing mode."""
+    def test_dwell_task_should_depart_relative(self):
+        """Test dwell task depart logic with task_time only."""
         task = RouteTask(
             task_kind="dwell",
             task_location="STA_A",
             task_time=30.0,
-            timing_mode=TimingMode.NONE,
         )
 
         # Started dwelling at t=0, now at t=10 (10 sec elapsed) - should not depart
@@ -73,7 +78,6 @@ class TestRouteAndTask:
             task_kind="dwell",
             task_location="STA_A",
             task_time=10.0,
-            timing_mode=TimingMode.ABSOLUTE,
             target_time=1000.0,
         )
 
@@ -115,37 +119,36 @@ class TestRouteAndTask:
         assert len(restored.tasks) == len(simple_route.tasks)
 
     def test_task_to_dict(self):
-        """Test RouteTask serialization."""
+        """Test RouteTask serialization. v1 emits task_location as the
+        canonical structured form (a dict with one of block_id/platform_id/
+        station_id)."""
         task = RouteTask(
             task_kind="dwell",
-            task_location="STA_A",
+            task_location=PlatformTarget(platform_id="STA_A"),
             task_time=45.0,
-            timing_mode=TimingMode.RELATIVE,
             target_time=120.0,
         )
 
         data = task.to_dict()
         assert data["task_kind"] == "dwell"
-        assert data["task_location"] == "STA_A"
+        assert data["task_location"] == {"platform_id": "STA_A"}
         assert data["task_time"] == 45.0
-        assert data["timing_mode"] == "relative"
         assert data["target_time"] == 120.0
 
     def test_task_from_dict(self):
-        """Test RouteTask deserialization."""
+        """Test RouteTask deserialization. Accepts the canonical
+        structured task_location and the legacy dwell_time_sec key."""
         data = {
             "task_kind": "dwell",
-            "task_location": "STA_B",
+            "task_location": {"platform_id": "STA_B"},
             "dwell_time_sec": 60.0,
-            "timing_mode": "absolute",
             "target_time": 500.0,
         }
 
         task = RouteTask.from_dict(data)
         assert task.task_kind == "dwell"
-        assert task.task_location == "STA_B"
+        assert task.task_location == PlatformTarget(platform_id="STA_B")
         assert task.task_time == 60.0
-        assert task.timing_mode == TimingMode.ABSOLUTE
         assert task.target_time == 500.0
 
 class TestRouteExecutor:
@@ -210,25 +213,30 @@ class TestRouteExecutor:
 
     def test_execution_state_dataclass(self):
         """Test RouteExecutionState dataclass."""
-        state = RouteExecutionState(train_id="T001", route_id="R001")
+        state = RouteExecutionState(
+            train_id="T001", route_id="R001", started_at=0.0
+        )
 
         assert state.train_id == "T001"
         assert state.route_id == "R001"
-        assert state.arrived_at_platform_time is None
-        assert state.waiting_for_path is False
-        assert state.last_waypoint_platform_id is None
+        assert state.current_waypoint_index is None
+        assert state.path_cancelled is False
+        assert state.task_runs == []
 
 
 class TestRouteExecutorCompatibilityBugFixes:
     """
-    Regression tests for route assignment compatibility fixes.
+    Regression tests for route assignment behaviour.
 
-    BUG 1: _get_active_route_train_pairs() returned early when it found any
-    route.assigned_train_ids pair, which skipped legacy train.assigned_route_id
-    assignments in mixed deployments.
+    BUG 1 (historical): `_get_active_route_train_pairs()` returned early when
+    it found any `route.assigned_train_ids` pair, which skipped the legacy
+    `train.assigned_route_id` fallback in mixed deployments. After the
+    `Train` persistent-only migration there is only one canonical store
+    (`Route.assigned_train_ids`); this test verifies that every assigned
+    train still surfaces.
 
-    BUG 2: deactivate_route() deleted owned controllers and then called
-    _get_controller(), which recreated a controller entry immediately.
+    BUG 2: `deactivate_route()` deleted owned controllers and then called
+    `_get_controller()`, which recreated a controller entry immediately.
     """
 
     @pytest.fixture
@@ -243,36 +251,35 @@ class TestRouteExecutorCompatibilityBugFixes:
         )
         return network
 
-    def test_get_active_pairs_merges_new_and_legacy_assignments(self, simple_network):
-        """Mixed assignment styles should both contribute active train/route pairs."""
+    def test_get_active_pairs_lists_every_assigned_train(self, simple_network):
+        """Every train assigned to an active route surfaces as a (train, route) pair."""
         executor = RouteExecutor(simple_network)
 
-        route_new = Route(
-            route_id="ROUTE_NEW",
-            name="New-style",
+        route_a = Route(
+            route_id="ROUTE_A",
+            name="Route A",
             tasks=[RouteTask(task_kind="dwell", task_location="STA_A")],
         )
-        route_legacy = Route(
-            route_id="ROUTE_LEGACY",
-            name="Legacy-style",
+        route_b = Route(
+            route_id="ROUTE_B",
+            name="Route B",
             tasks=[RouteTask(task_kind="dwell", task_location="STA_B")],
         )
-        route_new.activate(0.0)
-        route_legacy.activate(0.0)
-        route_new.assign_train("T_NEW")
+        route_a.activate(0.0)
+        route_b.activate(0.0)
+        route_a.assign_train("T_A")
+        route_b.assign_train("T_B")
 
-        train_new = Train(train_id="T_NEW")
-        train_legacy = Train(train_id="T_OLD")
-        train_legacy.assigned_route_id = route_legacy.route_id
+        train_a = Train(train_id="T_A")
+        train_b = Train(train_id="T_B")
 
-        simple_network.routes[route_new.route_id] = route_new
-        simple_network.routes[route_legacy.route_id] = route_legacy
-        simple_network.trains[train_new.train_id] = train_new
-        simple_network.trains[train_legacy.train_id] = train_legacy
+        executor.register_route(route_a)
+        executor.register_route(route_b)
+        simple_network.trains[train_a.train_id] = train_a
+        simple_network.trains[train_b.train_id] = train_b
 
         pairs = executor._get_active_route_train_pairs()
         pair_ids = {(train.train_id, route.route_id) for train, route in pairs}
 
-        assert ("T_NEW", "ROUTE_NEW") in pair_ids
-        assert ("T_OLD", "ROUTE_LEGACY") in pair_ids
-        assert "T_OLD" in route_legacy.assigned_train_ids
+        assert ("T_A", "ROUTE_A") in pair_ids
+        assert ("T_B", "ROUTE_B") in pair_ids

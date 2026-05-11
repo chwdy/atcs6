@@ -34,7 +34,7 @@ class TestTrainPositionUpdates:
         """Create a train positioned at (0, 0) facing EAST."""
         train = Train(
             train_id="DEMO_TRAIN",
-            consist=[TrainCar(car_id="loco1", car_type="LOCOMOTIVE", length=40.0)],
+            consist=[TrainCar(car_id="loco1", car_type="LOCOMOTIVE", length_cm=40.0)],
             max_speed=80.0,
         )
 
@@ -62,7 +62,6 @@ class TestTrainPositionUpdates:
             (3, 0, Direction.EAST),
             (4, 0, Direction.EAST),
         ]
-        train.path_index = 0
 
         simple_network.add_train(train)
         return train

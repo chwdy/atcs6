@@ -29,8 +29,8 @@ class SpeedProfile:
         speed_voltage_curve: List of (speed_kmh, voltage) calibration points
         power_speed_curve: List of (power_percent, speed_kmh) calibration points
             for manual `power_percent` mode. Default is linear 0-100% -> 0-100 km/h.
-        min_start_voltage: Minimum voltage to overcome static friction
-        lighting_voltage: Voltage for lights without movement (IDLE/STANDBY states)
+        startup_voltage: Minimum voltage to overcome static friction
+        lighting_voltage: Voltage for lights without movement (READY state)
         acceleration_rate: Speed increase rate (km/h per second)
         deceleration_rate: Service brake rate (km/h per second)
         emergency_brake_rate: Emergency brake rate (km/h per second)
@@ -44,7 +44,7 @@ class SpeedProfile:
         default_factory=lambda: [(0.0, 0.0), (100.0, 100.0)]
     )
 
-    min_start_voltage: float = 2.0  # Voltage to overcome static friction
+    startup_voltage: float = 2.0  # Voltage to overcome static friction
     lighting_voltage: float = 2.5  # Voltage for lights without movement
     acceleration_rate: float = 10.0  # km/h per second
     deceleration_rate: float = 15.0  # km/h per second (service brake)
@@ -171,7 +171,7 @@ class SpeedProfile:
             "name": self.name,
             "speed_voltage_curve": [[s, v] for s, v in self.speed_voltage_curve],
             "power_speed_curve": [[p, s] for p, s in self.power_speed_curve],
-            "min_start_voltage": self.min_start_voltage,
+            "startup_voltage": self.startup_voltage,
             "lighting_voltage": self.lighting_voltage,
             "acceleration_rate": self.acceleration_rate,
             "deceleration_rate": self.deceleration_rate,
@@ -201,7 +201,7 @@ class SpeedProfile:
             name=data.get("name", ""),
             speed_voltage_curve=curve_tuples,
             power_speed_curve=power_tuples,
-            min_start_voltage=float(data.get("min_start_voltage", 2.0)),
+            startup_voltage=float(data.get("startup_voltage", 2.0)),
             lighting_voltage=float(data.get("lighting_voltage", 2.5)),
             acceleration_rate=float(data.get("acceleration_rate", 10.0)),
             deceleration_rate=float(data.get("deceleration_rate", 15.0)),
@@ -225,7 +225,7 @@ DEFAULT_SPEED_PROFILE = SpeedProfile(
         (100.0, 11.0),
         (120.0, 12.0),
     ],
-    min_start_voltage=2.0,
+    startup_voltage=2.0,
     lighting_voltage=2.5,
     acceleration_rate=10.0,
     deceleration_rate=15.0,

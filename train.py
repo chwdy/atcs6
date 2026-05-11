@@ -342,7 +342,7 @@ class TrainCar:
 
     car_id: str
     car_type: str  # "LOCOMOTIVE", "PASSENGER", "FREIGHT"
-    length: float  # Length in cm
+    length_cm: float  # Car length in centimetres
     max_speed: float = 120.0  # Max speed for this car
 
 
@@ -365,9 +365,11 @@ class Train:
     - travel_direction: 'forward' or 'reverse' (only for MANUAL mode)
     - state: TrainState for DC analog control
     - speed_profile_id: SpeedProfile for this train
-    - assigned_route_id: Route (travel plan) assigned to train
 
-    Note: target_speed and speed_limit_reason are derived from
+    Note: the live "which route is this train on?" read is derived from
+    `RouteExecutor.assigned_route_id_for(train_id)`; it is not stored on
+    `Train` (per design_new.md "Train persistent-only contract").
+    target_speed and speed_limit_reason are derived from
     TrainController.lookahead[0] per design_new.md and are not stored on
     Train. UI/API consumers must read them from the controller directly.
     """
@@ -416,19 +418,30 @@ class Train:
     # `TrainController` per design_new.md ~line 1292; consumers must read
     # them from the controller, not from `Train`.
     speed_profile_id: Optional[str] = None  # SpeedProfile for this train
-    assigned_route_id: Optional[str] = None  # Route (travel plan) assigned
+
+    # `assigned_route_id` is no longer carried on `Train`. The canonical store
+    # is `RouteExecutor.execution_states[train_id].route_id` (with
+    # `Route.assigned_train_ids` as the registry-side mirror). Callers ask
+    # `RouteExecutor.assigned_route_id_for(train_id)` rather than reading off
+    # `Train`. See design_new.md "Train persistent-only contract".
 
     @property
-    def length(self) -> float:
-        """Total length of train in meters (approx track units for now)"""
+    def length_m(self) -> float:
+        """Total length of train in metres (approx track units for now).
+
+        Renamed from `length` to disambiguate from the centimetre-form
+        `length_cm` below; both return the same physical length in
+        different units, and the `_m` / `_cm` suffix makes the unit
+        explicit at every call site.
+        """
         # Assuming 1 track unit = 100m
-        total_meters = sum(car.length for car in self.consist)
+        total_meters = sum(car.length_cm for car in self.consist)
         return total_meters / 100.0 if self.consist else 1.0
 
     @property
     def length_cm(self) -> float:
-        """Total length of train in centimeters."""
-        return sum(car.length for car in self.consist) if self.consist else 50.0
+        """Total length of train in centimetres."""
+        return sum(car.length_cm for car in self.consist) if self.consist else 50.0
 
     # Note: Mass-based calculations removed - using simplified physics model
 
@@ -556,7 +569,7 @@ class Train:
         del network  # reserved for future schema-aware exports
         data = {
             "id": self.train_id,
-            "length": self.length,
+            "length_m": self.length_m,
             "length_cm": self.length_cm,
             "max_speed": self.max_speed,
             "num_cars": self.num_cars,
@@ -567,7 +580,6 @@ class Train:
             if self.facing_direction
             else None,
             "speed_profile_id": self.speed_profile_id,
-            "assigned_route_id": self.assigned_route_id,
         }
 
         if self.schedule:
@@ -618,6 +630,5 @@ class Train:
         train.min_radius_cm = float(data.get("min_radius_cm", 30.0))
 
         train.speed_profile_id = data.get("speed_profile_id")
-        train.assigned_route_id = data.get("assigned_route_id")
 
         return train

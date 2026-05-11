@@ -12,7 +12,6 @@ when the train is stopped; while the train is still rolling, it survives.
 
 import pytest
 from runtime_payloads import (
-    PathCancellationKind,
     PendingPathCancelRequest,
 )
 from network import RailwayNetwork
@@ -42,7 +41,7 @@ def _build_three_block_network() -> RailwayNetwork:
 def test_activate_emergency_with_path_sets_pending_cancel():
     """Emergency activation while a path is active writes the EB latch."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_EB", consist=[car], max_speed=60.0)
     network.add_train(train)
     network.place_train(train, 0, 0, direction=Direction.EAST)
@@ -69,7 +68,7 @@ def test_activate_emergency_with_path_sets_pending_cancel():
     assert controller.received_path_plan is not None
 
     # Pre-condition: no latch.
-    assert controller.pending_path_cancel_request is None
+    assert controller.phase_latches.path_cancel_request is None
     controller.eb_active = False
 
     # Activate emergency.
@@ -77,18 +76,17 @@ def test_activate_emergency_with_path_sets_pending_cancel():
     assert cmd_result.success is True
     assert controller.eb_active is True
 
-    # Latch is written with cancellation_kind == EB.
-    latch = controller.pending_path_cancel_request
+    # Latch is written with initiator == "eb".
+    latch = controller.phase_latches.path_cancel_request
     assert latch is not None
     assert isinstance(latch, PendingPathCancelRequest)
-    assert latch.cancellation_kind == PathCancellationKind.EB
-    assert latch.expected_path_id == result.path.path_id
+    assert latch.initiator == "eb"
 
 
 def test_activate_emergency_without_path_does_not_set_latch():
     """Emergency activation with no live path: no pending_path_cancel_request."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_EB_NOPATH", consist=[car], max_speed=60.0)
     network.add_train(train)
     network.place_train(train, 0, 0, direction=Direction.EAST)
@@ -103,7 +101,7 @@ def test_activate_emergency_without_path_does_not_set_latch():
     assert cmd_result.success is True
     assert controller.eb_active is True
     # No live authority -> no cancel latch.
-    assert controller.pending_path_cancel_request is None
+    assert controller.phase_latches.path_cancel_request is None
 
 
 def test_pending_cancel_latch_survives_while_moving():
@@ -115,7 +113,7 @@ def test_pending_cancel_latch_survives_while_moving():
     is durable across reads and not cleared by any incidental call.
     """
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_MOV", consist=[car], max_speed=60.0)
     network.add_train(train)
     network.place_train(train, 0, 0, direction=Direction.EAST)
@@ -141,23 +139,23 @@ def test_pending_cancel_latch_survives_while_moving():
     controller.current_speed_kmh = 30.0
     controller.current_speed_kmh = 30.0
     controller.activate_emergency_cmd()
-    assert controller.pending_path_cancel_request is not None
+    assert controller.phase_latches.path_cancel_request is not None
 
     # Reading the latch repeatedly does not clear it.
-    latch_first = controller.pending_path_cancel_request
-    latch_second = controller.pending_path_cancel_request
+    latch_first = controller.phase_latches.path_cancel_request
+    latch_second = controller.phase_latches.path_cancel_request
     assert latch_first is latch_second is not None
 
     # Even after some no-op reads while still moving, the latch stays set.
     _ = controller.received_path_plan
     _ = controller.travel_direction
-    assert controller.pending_path_cancel_request is not None
+    assert controller.phase_latches.path_cancel_request is not None
 
 
 def test_activate_emergency_idempotent_rejects_duplicate():
     """When eb_active is already True, activate_emergency_cmd() is rejected."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_DUP", consist=[car], max_speed=60.0)
     network.add_train(train)
     network.place_train(train, 0, 0, direction=Direction.EAST)
@@ -174,27 +172,29 @@ def test_activate_emergency_idempotent_rejects_duplicate():
 # =============================================================================
 
 
-def test_request_route_abort_sets_abort_latch_without_path():
-    """request_route_abort writes pending_route_abort even with no live path."""
-    from runtime_payloads import PendingRouteAbortRequest
-
+def test_set_pending_route_abort_sets_abort_latch_without_path():
+    """_set_pending_route_abort writes pending_route_abort = True even with no live path."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_ABORT", consist=[car], max_speed=60.0)
     network.add_train(train)
     network.place_train(train, 0, 0, direction=Direction.EAST)
 
     controller = create_controller_for_train(train.train_id, network)
     assert controller.received_path_plan is None
-    assert controller.pending_route_abort is None
+    assert controller.phase_latches.route_abort is False
 
-    result = controller.request_route_abort("operator stop")
-    assert result.success is True
+    controller.phase_latches.set_route_abort(
+        "operator stop",
+        has_active_path=controller.received_path_plan is not None,
+    )
 
-    assert isinstance(controller.pending_route_abort, PendingRouteAbortRequest)
-    assert controller.pending_route_abort.reason == "operator stop"
+    # Per design_new.md the abort latch is bool; the diagnostic reason flows
+    # only via the inclusive path_cancellation notification, not via a stored
+    # field on this latch.
+    assert controller.phase_latches.route_abort is True
     # No live path -> no inclusive cancel latch.
-    assert controller.pending_path_cancel_request is None
+    assert controller.phase_latches.path_cancel_request is None
 
 
 class _FakePath:
@@ -216,11 +216,12 @@ class _FakePathDispatcher:
         return self._path
 
 
-def test_request_route_abort_inclusive_cancel_when_path_exists():
-    """request_route_abort writes pending_route_abort + inclusive
-    pending_path_cancel_request(OPERATOR_CANCELLED) when a live path exists."""
+def test_set_pending_route_abort_inclusive_cancel_when_path_exists():
+    """_set_pending_route_abort writes pending_route_abort = True + inclusive
+    pending_path_cancel_request(initiator="operator_cancelled") when a live
+    path exists."""
     network = _build_three_block_network()
-    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_ABORT_PATH", consist=[car], max_speed=60.0)
     network.add_train(train)
     network.place_train(train, 0, 0, direction=Direction.EAST)
@@ -234,15 +235,15 @@ def test_request_route_abort_inclusive_cancel_when_path_exists():
     assert controller.received_path_plan is fake_path
     assert controller.assigned_path_id == "PATH_ABORT_001"
 
-    result = controller.request_route_abort("operator stop")
-    assert result.success is True
-    assert controller.pending_route_abort is not None
-    assert controller.pending_route_abort.expected_path_id == "PATH_ABORT_001"
+    controller.phase_latches.set_route_abort(
+        "operator stop",
+        has_active_path=controller.received_path_plan is not None,
+    )
+    assert controller.phase_latches.route_abort is True
 
-    cancel = controller.pending_path_cancel_request
+    cancel = controller.phase_latches.path_cancel_request
     assert cancel is not None
-    assert cancel.cancellation_kind == PathCancellationKind.OPERATOR_CANCELLED
-    assert cancel.expected_path_id == "PATH_ABORT_001"
+    assert cancel.initiator == "operator_cancelled"
 
 
 class _StubSimController:
@@ -261,19 +262,19 @@ class _StubSimController:
 def test_route_deactivate_writes_latches_per_assigned_train():
     """Route.deactivate(simulation_controller) writes pending_route_deactivate
     on each assigned train's controller, and inclusive
-    pending_path_cancel_request(REVOKED) when that train has a live path."""
+    pending_path_cancel_request(initiator="revoked") when that train has a
+    live path."""
     from train_route import Route, RouteMode
-    from runtime_payloads import PendingRouteDeactivateRequest
 
     network = _build_three_block_network()
 
     # Train 1 has a live path (via fake dispatcher); train 2 does not.
-    car1 = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length=20.0)
+    car1 = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train1 = Train(train_id="T_DEAC_PATH", consist=[car1], max_speed=60.0)
     network.add_train(train1)
     network.place_train(train1, 0, 0, direction=Direction.EAST)
 
-    car2 = TrainCar(car_id="C2", car_type="LOCOMOTIVE", length=20.0)
+    car2 = TrainCar(car_id="C2", car_type="LOCOMOTIVE", length_cm=20.0)
     train2 = Train(train_id="T_DEAC_NOPATH", consist=[car2], max_speed=60.0)
     network.add_train(train2)
     network.place_train(train2, 5, 0, direction=Direction.WEST)
@@ -308,21 +309,16 @@ def test_route_deactivate_writes_latches_per_assigned_train():
 
     assert route.is_active is False
 
-    # Both controllers receive pending_route_deactivate.
-    assert isinstance(
-        controller1.pending_route_deactivate, PendingRouteDeactivateRequest
-    )
-    assert isinstance(
-        controller2.pending_route_deactivate, PendingRouteDeactivateRequest
-    )
+    # Both controllers receive route_deactivate (bool latch).
+    assert controller1.phase_latches.route_deactivate is True
+    assert controller2.phase_latches.route_deactivate is True
 
     # Only controller1 (live path) gets the inclusive cancel latch.
-    cancel1 = controller1.pending_path_cancel_request
+    cancel1 = controller1.phase_latches.path_cancel_request
     assert cancel1 is not None
-    assert cancel1.cancellation_kind == PathCancellationKind.REVOKED
-    assert cancel1.expected_path_id == "PATH_DEAC_001"
+    assert cancel1.initiator == "revoked"
 
-    assert controller2.pending_path_cancel_request is None
+    assert controller2.phase_latches.path_cancel_request is None
 
 
 def test_route_deactivate_without_simulation_controller_just_pauses():

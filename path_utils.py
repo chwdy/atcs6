@@ -6,13 +6,12 @@ This module provides utility functions for train-to-path assignment, including:
 - Prepending tiles from train position to path start
 - Appending tiles to complete destination block to far edge
 - Validating train and path are in same block
-- Syncing path_index when train is ahead of path[0]
 
 Key Concepts:
 - When a path is assigned to a train, the path should start from the train's position
 - Train and path[0] must be in the same block (blocks don't contain switches)
-- If train is before path[0], prepend tiles; if train is past path[0], advance path_index
 - Path should extend through all tiles of destination block to the far edge
+- The dispatcher's `Path` is the source of truth; these helpers only validate.
 """
 
 from typing import List, Literal, Optional, Tuple, Dict, Any, Union
@@ -392,10 +391,10 @@ def assign_path_to_train_with_prepend(
     """
     Validate and prepare a path for a train.
 
-    Per design_new.md ~line 1292, `Train.current_path` and `Train.path_index`
-    are forbidden — the dispatcher's `Path` is the source of truth for path
+    `Train.current_path` and `Train.path_index` are not part of v1 — the
+    dispatcher's `Path` is the source of truth for path
     geometry. This helper now only runs the validation logic and returns
-    its outcome; UI consumers read the live path tiles from
+    its outcome; UI consumers read the active path tiles from
     `PathDispatcher.get_active_path_progress(train_id)`.
 
     Args:
@@ -568,8 +567,8 @@ def assign_complete_path_to_train(
     """
     Validate and prepare a complete path (prepend + append) for a train.
 
-    Per design_new.md ~line 1292, `Train.current_path` and `Train.path_index`
-    are forbidden — the dispatcher's `Path` is the source of truth. This
+    `Train.current_path` and `Train.path_index` are not part of v1 — the
+    dispatcher's `Path` is the source of truth. This
     helper now only validates the path and returns its outcome.
 
     Args:
@@ -587,12 +586,13 @@ def assign_complete_path_to_train(
 
 
 def convert_tiles_to_train_path(
-    tiles: List[Tuple[int, int]], default_direction: Direction = Direction.EAST
+    tiles, default_direction: Direction = Direction.EAST
 ) -> List[Tuple[int, int, Direction]]:
     """Convert tile positions to train path format with directions.
 
     Args:
-        tiles: List of (x, y) tile positions
+        tiles: Iterable of `(x, y)` tuples OR `PathTileEntry` instances. The
+            function reads `(x, y)` from either shape.
         default_direction: Direction for single-tile paths (default: EAST)
 
     Returns:
@@ -601,12 +601,19 @@ def convert_tiles_to_train_path(
     if not tiles:
         return []
 
+    def _xy(item):
+        if hasattr(item, "x") and hasattr(item, "y"):
+            return (item.x, item.y)
+        return (item[0], item[1])
+
+    coords = [_xy(t) for t in tiles]
+
     result = []
     last_direction = default_direction
 
-    for i, tile in enumerate(tiles):
-        if i + 1 < len(tiles):
-            next_tile = tiles[i + 1]
+    for i, tile in enumerate(coords):
+        if i + 1 < len(coords):
+            next_tile = coords[i + 1]
             dx = next_tile[0] - tile[0]
             dy = next_tile[1] - tile[1]
 

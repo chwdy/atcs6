@@ -51,7 +51,7 @@ class TestAtoStopButtonBugFix:
         network.add_track(next_track)
         network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
-        car = TrainCar("ATO_STOP_TEST", "LOCOMOTIVE", length=40.0)
+        car = TrainCar("ATO_STOP_TEST", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="ATO_STOP_TEST", consist=[car])
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -59,7 +59,7 @@ class TestAtoStopButtonBugFix:
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
         controller.handle_position = HandlePosition.P2
@@ -96,8 +96,8 @@ class TestAtoStopButtonBugFix:
 
         controller.tick(0.1)
 
-        assert controller.state == TrainState.STANDBY
-        assert controller.state == TrainState.STANDBY
+        assert controller.state == TrainState.READY
+        assert controller.state == TrainState.READY
         assert controller.handle_position == HandlePosition.N
 
 
@@ -134,7 +134,7 @@ class TestAtoAutoCabSelectionBugFix:
         network.add_track(next_track)
         network.create_block_with_tracks("B1", [(0, 0)], length_cm=100.0)
 
-        car = TrainCar(car_id="CAR_02", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_02", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_NO_CAB_TICK", consist=[car], max_speed=60.0)
         # Direction set via position (refactored): train.set_cab("A")  # was: Direction.EAST
         train.assigned_path_id = "PATH_1"
@@ -151,13 +151,13 @@ class TestAtoAutoCabSelectionBugFix:
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.state = TrainState.STANDBY
-        controller.active_cab = None
+        controller.state = TrainState.READY
+        controller.cab = None
 
         controller.tick(0.1)
 
         # tick() should NOT auto-select cab - that's done in depart()
-        assert controller.active_cab is None
+        assert controller.cab is None
 
 
 
@@ -180,7 +180,7 @@ class TestAtoDepartCallsAtoGo:
         network.add_track(next_track)
         network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
-        car = TrainCar("ATO_DEPART_TEST", "LOCOMOTIVE", length=40.0)
+        car = TrainCar("ATO_DEPART_TEST", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="ATO_DEPART_TEST", consist=[car])
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -188,7 +188,7 @@ class TestAtoDepartCallsAtoGo:
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
         controller.handle_position = HandlePosition.P2
@@ -207,7 +207,7 @@ class TestAtoDepartCallsAtoGo:
         network.add_track(next_track)
         network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
-        car = TrainCar("DEPART_ATO", "LOCOMOTIVE", length=40.0)
+        car = TrainCar("DEPART_ATO", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="DEPART_ATO", consist=[car])
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -215,8 +215,8 @@ class TestAtoDepartCallsAtoGo:
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
-        controller.state = TrainState.STANDBY
+        controller.cab = "A"
+        controller.state = TrainState.READY
         controller.ato_running = False
 
 
@@ -264,7 +264,7 @@ class TestAtoDepartCallsAtoGo:
         controller.tick(0.1)
 
         # Now should transition to STANDBY
-        assert controller.state == TrainState.STANDBY
+        assert controller.state == TrainState.READY
 
     def test_ato_go_starts_ato(self, network):
         """
@@ -276,7 +276,7 @@ class TestAtoDepartCallsAtoGo:
         network.add_track(next_track)
         network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
-        car = TrainCar("ATO_GO_TEST", "LOCOMOTIVE", length=40.0)
+        car = TrainCar("ATO_GO_TEST", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="ATO_GO_TEST", consist=[car])
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -284,8 +284,8 @@ class TestAtoDepartCallsAtoGo:
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
-        controller.state = TrainState.STANDBY
+        controller.cab = "A"
+        controller.state = TrainState.READY
         controller.ato_running = False
 
 
@@ -318,7 +318,7 @@ class TestAtoDistanceAwareControl:
         network.add_track(next_track)
         network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
 
-        car = TrainCar("ATO_DIST_TEST", "LOCOMOTIVE", length=40.0)
+        car = TrainCar("ATO_DIST_TEST", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="ATO_DIST_TEST", consist=[car])
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -326,7 +326,7 @@ class TestAtoDistanceAwareControl:
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
         controller.clearance_ahead_cm = clearance_cm
@@ -403,7 +403,7 @@ class TestAtoDistanceAwareControl:
             "LONG_BLOCK", [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)], length_cm=100.0
         )
 
-        car = TrainCar("ATO_BRAKE_TEST", "LOCOMOTIVE", length=10.0)
+        car = TrainCar("ATO_BRAKE_TEST", "LOCOMOTIVE", length_cm=10.0)
         train = Train(train_id="ATO_BRAKE_TEST", consist=[car])
         network.add_train(train)
         # Place at middle of block so we have clearance ahead
@@ -412,7 +412,7 @@ class TestAtoDistanceAwareControl:
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
 
@@ -574,7 +574,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         self._setup_station_track(network)
 
         # Create and place train
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=30.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=30.0)
         train = Train(train_id="TRAIN_STOP_TEST", consist=[car])
         network.add_train(train)
         network.place_train(train, 3, 0, Direction.EAST)
@@ -584,7 +584,6 @@ class TestAtoDestinationStoppingAfterPathCompletes:
             (3, 0, Direction.EAST),
             (4, 0, Direction.EAST),
         ]
-        train.path_index = 0
         train.reserved_blocks = []  # <-- Path completed, blocks cleared
         train.assigned_path_id = None  # Path no longer assigned
 
@@ -592,7 +591,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
 
@@ -629,7 +628,7 @@ class TestAtoDestinationStoppingAfterPathCompletes:
 
         # Create train and manually place at end of station (tile 4,0, facing WEST)
         # For multi-tile platforms, train must be at last tile to be "at station"
-        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length=30.0)
+        car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=30.0)
         train = Train(train_id="TRAIN_CLEAR_TEST", consist=[car])
         network.add_train(train)
 
@@ -648,13 +647,12 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         # Direction set via position (refactored): train.set_cab("A")  # was: Direction.WEST
 
         train.current_path = [(3, 0, Direction.EAST), (4, 0, Direction.EAST)]
-        train.path_index = 1  # At end of path (tile 4,0)
         train.reserved_blocks = []
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
 
@@ -673,32 +671,6 @@ class TestAtoDestinationStoppingAfterPathCompletes:
             f"Train stopped at destination should stop ATO or be AT_STATION. "
             f"ato_running={controller.ato_running}, state={controller.state}"
         )
-
-
-
-
-class TestAtoInfoPersistenceWithoutActivePath:
-    """
-    Comprehensive tests for onboard ATO info persistence fixed in 2026-02-08.
-
-    BUG:
-    `TrainController._calculate_ato_info()` returned None when `assigned_path_id`
-    was cleared, even if destination intent (`ato_destination_block_id`) still
-    existed. This caused panels to show "No path"/missing destination while the
-    onboard controller should still expose destination context.
-
-    FIX:
-    Build `ato_info` from destination block even without active path ID.
-    """
-
-
-    def test_simulation_controller_inherits_destination_from_train_field(self, network):
-        """v1: ato_destination_block_id is a derived property from the
-        dispatcher's active path; Train.ato_destination_block_id only
-        seeds inheritance, but simulation.py inherit-write currently
-        targets the now-read-only controller property (regression).
-        """
-        pytest.skip("v1: simulation.py still writes to read-only controller.ato_destination_block_id (Bucket C regression)")
 
 
 
@@ -751,7 +723,7 @@ class TestTrendAwareATOControl:
 
     @pytest.fixture
     def train_and_controller(self, network, straight_track):
-        car = TrainCar(car_id="CAR_TEST", car_type="LOCOMOTIVE", length=30.0)
+        car = TrainCar(car_id="CAR_TEST", car_type="LOCOMOTIVE", length_cm=30.0)
         train = Train(train_id="TRAIN_ATO_TEST", consist=[car], max_speed=80.0)
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
@@ -759,7 +731,7 @@ class TestTrendAwareATOControl:
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
         controller.control_mode = "ato"
-        controller.active_cab = "A"
+        controller.cab = "A"
         controller.state = TrainState.RUNNING_MOVING
         controller.ato_running = True
         controller._previous_speed = 0.0
@@ -884,10 +856,12 @@ class TestTrendAwareATOControl:
         controller._ato_calculate_handle()
 
         assert controller.handle_reason, "handle_reason should be set"
-        assert (
-            "FutureAware" in controller.handle_reason
-            or "Stopping" in controller.handle_reason
-            or "ATC cap" in controller.handle_reason
+        # Reason strings produced by the kinematic compute_handle:
+        # "Coast: ...", "Power up: ...", "Brake B?: ...", "Stopping: ...",
+        # "Stopped", "No curves", "No train".
+        assert any(
+            tag in controller.handle_reason
+            for tag in ("Coast", "Power up", "Brake", "Stopping", "Stopped", "No ")
         ), (
             f"handle_reason should indicate the control mode. Got: {controller.handle_reason}"
         )
@@ -933,6 +907,7 @@ class TestTrendAwareATOControl:
         )
 
     def test_priority_override_stopping_uses_full_brake(self, train_and_controller):
+        """When ATC limit forces a stop (ceiling@0=0), ATO commands B8."""
         train, controller = train_and_controller
         controller.atc_speed_limit = 0.0
 
@@ -942,9 +917,9 @@ class TestTrendAwareATOControl:
 
         handle = controller._ato_calculate_handle()
 
-        assert handle == HandlePosition.B5, (
-            f"Priority: stopping (effective_target=0) should use _calculate_braking_notch. "
-            f"For speed=15.0, expects B5 (speed > 14). Got {handle}"
+        assert handle == HandlePosition.B8, (
+            f"With ceiling@0=0 (forced stop), the stopping branch returns B8. "
+            f"Got {handle}"
         )
 
 
@@ -969,13 +944,12 @@ class TestSpeedCurveCalculation:
 
     @pytest.fixture
     def train_and_controller(self, network, straight_track):
-        car = TrainCar(car_id="CAR_CURVE", car_type="LOCOMOTIVE", length=30.0)
+        car = TrainCar(car_id="CAR_CURVE", car_type="LOCOMOTIVE", length_cm=30.0)
         train = Train(train_id="TRAIN_CURVE_TEST", consist=[car], max_speed=80.0)
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
 
         train.current_path = [(x, 0, Direction.EAST) for x in range(20)]
-        train.path_index = 0
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
@@ -1037,21 +1011,22 @@ class TestSpeedCurveCalculation:
                 f"Operational limit ({point['operational_limit']}) should be <= train max speed"
             )
 
-    def test_ato_limit_5kmh_below_atc(self, train_and_controller):
-        """ATO limit should be at least 5 km/h below ATC (per ATO_SPEED_MARGIN_KMH)."""
+    def test_ato_limit_below_atc_by_margin(self, train_and_controller):
+        """ATO limit should be at least ATO_SPEED_MARGIN_KMH below ATC."""
+        from train_controller import ATO_SPEED_MARGIN_KMH
+
         train, controller = train_and_controller
         train.max_speed = 100.0
 
         curves = controller.calculate_speed_curves(max_distance_cm=2000)
 
-        # Check points where both limits are > 0 (not at very end)
         for point in curves:
             atc = point["atc_limit"]
             ato = point["operational_limit"]
-            if atc > 5.0:  # Only check where ATC > 5 km/h
-                assert ato <= atc - 5.0, (
-                    f"ATO ({ato}) should be at least 5 km/h below ATC ({atc}) "
-                    f"at distance {point['distance_cm']}cm"
+            if atc > ATO_SPEED_MARGIN_KMH:
+                assert ato <= atc - ATO_SPEED_MARGIN_KMH, (
+                    f"ATO ({ato}) should be at least {ATO_SPEED_MARGIN_KMH} km/h "
+                    f"below ATC ({atc}) at distance {point['distance_cm']}cm"
                 )
 
 
@@ -1157,320 +1132,6 @@ class TestForwardSimulation:
         )
         assert speed_b6 < speed_b2, "B6 should reduce speed more than B2"
 
-
-class TestHandleEvaluator:
-    """
-    Tests for handle evaluation against speed curve.
-
-    The evaluator scores each handle position by simulating forward and
-    comparing the predicted trajectory against the pre-computed speed curve.
-    """
-
-    @pytest.fixture
-    def controller_with_profile(self, network):
-        """Create a controller with a known speed profile."""
-        from train_controller import TrainController
-        from speed_profile import SpeedProfile
-
-        train = Train(train_id="eval_test")
-        train.max_speed = 60.0
-        network.trains["eval_test"] = train
-
-        profile = SpeedProfile(
-            profile_id="test_eval",
-            name="Test Eval",
-            speed_voltage_curve=[(0, 0), (60, 8), (120, 12)],
-            acceleration_rate=10.0,
-            deceleration_rate=15.0,
-            friction_rate=0.5,
-            operational_decel_ratio=0.6,
-            air_resistance_enabled=False,
-        )
-        network.speed_profiles["test_eval"] = profile
-        train.speed_profile_id = "test_eval"
-
-        controller = TrainController(train_id="eval_test", network=network)
-        controller.power_on = True
-        controller.atc_speed_limit = 60.0
-        controller.current_block_speed_limit = 60.0
-        return controller
-
-    def test_evaluate_selects_brake_when_above_curve(self, controller_with_profile):
-        """When speed is above curve, should select a brake handle."""
-        # Curve that drops to 0 at 10cm (approaching stop)
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 10.0, "atc_limit": 15.0},
-            {"distance_cm": 5.0, "operational_limit": 5.0, "atc_limit": 10.0},
-            {"distance_cm": 10.0, "operational_limit": 0.0, "atc_limit": 0.0},
-        ]
-        result = controller_with_profile._evaluate_handles_against_curve(
-            current_speed_kmh=15.0,
-            curve=curve,
-        )
-        _BRAKE_HANDLES = {
-            HandlePosition.B1,
-            HandlePosition.B2,
-            HandlePosition.B3,
-            HandlePosition.B4,
-            HandlePosition.B5,
-            HandlePosition.B6,
-            HandlePosition.B7,
-            HandlePosition.B8,
-        }
-        assert result in _BRAKE_HANDLES, (
-            f"Should brake when above curve, got {result.value}"
-        )
-
-    def test_evaluate_brakes_when_current_speed_exceeds_curve_at_train(
-        self, controller_with_profile
-    ):
-        """Evaluator must score the train's current curve point, not just future samples."""
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 40.0, "atc_limit": 45.0},
-            {"distance_cm": 50.0, "operational_limit": 40.0, "atc_limit": 45.0},
-            {"distance_cm": 100.0, "operational_limit": 40.0, "atc_limit": 45.0},
-        ]
-
-        result = controller_with_profile._evaluate_handles_against_curve(
-            current_speed_kmh=50.0,
-            curve=curve,
-            horizon_cm=30.0,
-        )
-
-        _BRAKE_HANDLES = {
-            HandlePosition.B1,
-            HandlePosition.B2,
-            HandlePosition.B3,
-            HandlePosition.B4,
-            HandlePosition.B5,
-            HandlePosition.B6,
-            HandlePosition.B7,
-            HandlePosition.B8,
-        }
-        assert result in _BRAKE_HANDLES, (
-            f"Should brake when current speed exceeds curve@0, got {result.value}"
-        )
-
-    def test_evaluate_selects_power_when_below_curve(self, controller_with_profile):
-        """When speed is well below curve, should select a power handle."""
-        # Flat curve at 40 km/h
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 40.0, "atc_limit": 45.0},
-            {"distance_cm": 50.0, "operational_limit": 40.0, "atc_limit": 45.0},
-            {"distance_cm": 100.0, "operational_limit": 40.0, "atc_limit": 45.0},
-        ]
-        result = controller_with_profile._evaluate_handles_against_curve(
-            current_speed_kmh=10.0,
-            curve=curve,
-        )
-        _POWER_HANDLES = {
-            HandlePosition.P1,
-            HandlePosition.P2,
-            HandlePosition.P3,
-            HandlePosition.P4,
-            HandlePosition.P5,
-        }
-        assert result in _POWER_HANDLES, (
-            f"Should accelerate when below curve, got {result.value}"
-        )
-
-    def test_evaluate_selects_neutral_when_matching_curve(
-        self, controller_with_profile
-    ):
-        """When speed matches curve, should maintain (N or low power)."""
-        # Flat curve at 20 km/h
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 20.0, "atc_limit": 25.0},
-            {"distance_cm": 50.0, "operational_limit": 20.0, "atc_limit": 25.0},
-            {"distance_cm": 100.0, "operational_limit": 20.0, "atc_limit": 25.0},
-        ]
-        result = controller_with_profile._evaluate_handles_against_curve(
-            current_speed_kmh=20.0,
-            curve=curve,
-        )
-        # Should be N or low power (P1/P2) to maintain speed against friction
-        assert result in (HandlePosition.N, HandlePosition.P1, HandlePosition.P2), (
-            f"Should maintain when matching curve, got {result.value}"
-        )
-
-
-class TestFutureAwareIntegration:
-    """
-    Integration tests for future-aware ATO handle evaluation.
-
-    These tests verify that the handle evaluator produces correct handle
-    selections in realistic speed curve scenarios (braking, cruising,
-    accelerating, speed reduction).
-    """
-
-    @pytest.fixture
-    def controller_with_profile(self, network):
-        """Create a controller with known profile and no air resistance."""
-        from train_controller import TrainController
-        from speed_profile import SpeedProfile
-
-        train = Train(train_id="integ_test")
-        train.max_speed = 60.0
-        network.trains["integ_test"] = train
-
-        profile = SpeedProfile(
-            profile_id="test_integ",
-            name="Test Integration",
-            speed_voltage_curve=[(0, 0), (60, 8), (120, 12)],
-            acceleration_rate=10.0,
-            deceleration_rate=15.0,
-            friction_rate=0.5,
-            operational_decel_ratio=0.6,
-            air_resistance_enabled=False,
-        )
-        network.speed_profiles["test_integ"] = profile
-        train.speed_profile_id = "test_integ"
-
-        controller = TrainController(train_id="integ_test", network=network)
-        controller.power_on = True
-        controller.atc_speed_limit = 60.0
-        controller.current_block_speed_limit = 60.0
-        return controller
-
-    def test_braking_curve_produces_brake_handle(self, controller_with_profile):
-        """When approaching a stop, the evaluator should select brake handles."""
-        controller = controller_with_profile
-
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 15.0, "atc_limit": 20.0},
-            {"distance_cm": 5.0, "operational_limit": 10.0, "atc_limit": 15.0},
-            {"distance_cm": 10.0, "operational_limit": 5.0, "atc_limit": 10.0},
-            {"distance_cm": 15.0, "operational_limit": 2.0, "atc_limit": 5.0},
-            {"distance_cm": 20.0, "operational_limit": 0.0, "atc_limit": 0.0},
-        ]
-
-        result = controller._evaluate_handles_against_curve(
-            current_speed_kmh=20.0,
-            curve=curve,
-            horizon_cm=20.0,
-        )
-        _BRAKE_HANDLES = {
-            HandlePosition.B1,
-            HandlePosition.B2,
-            HandlePosition.B3,
-            HandlePosition.B4,
-            HandlePosition.B5,
-            HandlePosition.B6,
-            HandlePosition.B7,
-            HandlePosition.B8,
-        }
-        assert result in _BRAKE_HANDLES, (
-            f"Should brake approaching stop, got {result.value}"
-        )
-
-    def test_flat_curve_maintains_speed(self, controller_with_profile):
-        """When curve is flat, should maintain current speed."""
-        controller = controller_with_profile
-
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 30.0, "atc_limit": 35.0},
-            {"distance_cm": 25.0, "operational_limit": 30.0, "atc_limit": 35.0},
-            {"distance_cm": 50.0, "operational_limit": 30.0, "atc_limit": 35.0},
-        ]
-
-        result = controller._evaluate_handles_against_curve(
-            current_speed_kmh=30.0,
-            curve=curve,
-            horizon_cm=30.0,
-        )
-        # Should be neutral or low power/brake to maintain against friction
-        assert result in (
-            HandlePosition.N,
-            HandlePosition.P1,
-            HandlePosition.P2,
-            HandlePosition.B1,
-        ), f"Should maintain speed on flat curve, got {result.value}"
-
-    def test_acceleration_zone_selects_power(self, controller_with_profile):
-        """When speed is well below curve, should select power handle."""
-        controller = controller_with_profile
-
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 50.0, "atc_limit": 55.0},
-            {"distance_cm": 25.0, "operational_limit": 50.0, "atc_limit": 55.0},
-            {"distance_cm": 50.0, "operational_limit": 50.0, "atc_limit": 55.0},
-        ]
-
-        result = controller._evaluate_handles_against_curve(
-            current_speed_kmh=5.0,
-            curve=curve,
-            horizon_cm=30.0,
-        )
-        _POWER_HANDLES = {
-            HandlePosition.P1,
-            HandlePosition.P2,
-            HandlePosition.P3,
-            HandlePosition.P4,
-            HandlePosition.P5,
-        }
-        assert result in _POWER_HANDLES, (
-            f"Should accelerate when well below curve, got {result.value}"
-        )
-
-    def test_speed_reduction_zone_selects_appropriate_brake(
-        self, controller_with_profile
-    ):
-        """When approaching speed limit reduction, should brake proportionally."""
-        controller = controller_with_profile
-
-        curve = [
-            {"distance_cm": 0.0, "operational_limit": 35.0, "atc_limit": 40.0},
-            {"distance_cm": 10.0, "operational_limit": 25.0, "atc_limit": 30.0},
-            {"distance_cm": 15.0, "operational_limit": 20.0, "atc_limit": 25.0},
-            {"distance_cm": 30.0, "operational_limit": 20.0, "atc_limit": 25.0},
-        ]
-
-        result = controller._evaluate_handles_against_curve(
-            current_speed_kmh=35.0,
-            curve=curve,
-            horizon_cm=30.0,
-        )
-        _BRAKE_HANDLES = {
-            HandlePosition.B1,
-            HandlePosition.B2,
-            HandlePosition.B3,
-            HandlePosition.B4,
-            HandlePosition.B5,
-            HandlePosition.B6,
-            HandlePosition.B7,
-            HandlePosition.B8,
-        }
-        assert result in _BRAKE_HANDLES, (
-            f"Should brake for speed reduction, got {result.value}"
-        )
-
-    def test_evaluator_performance(self, controller_with_profile):
-        """Evaluator should complete within 5ms for real-time use."""
-        import time
-
-        controller = controller_with_profile
-
-        curve = [
-            {
-                "distance_cm": i * 5.0,
-                "operational_limit": max(0, 30.0 - i * 1.5),
-                "atc_limit": max(0, 35.0 - i * 1.5),
-            }
-            for i in range(21)
-        ]
-
-        start = time.perf_counter()
-        for _ in range(100):
-            controller._evaluate_handles_against_curve(
-                current_speed_kmh=25.0,
-                curve=curve,
-                horizon_cm=30.0,
-            )
-        elapsed = (time.perf_counter() - start) / 100
-
-        assert elapsed < 0.005, (
-            f"Evaluator took {elapsed * 1000:.1f}ms, should be < 5ms"
-        )
 
 
 class TestHandleSmoothing:

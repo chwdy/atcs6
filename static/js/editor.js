@@ -1017,7 +1017,7 @@ class Editor {
                     // Set max speed if provided
                     if (result.maxSpeed) {
                         await this.api.updateBlock(result.blockId, {
-                            max_speed_kmh: result.maxSpeed
+                            speed_limit_kmh: result.maxSpeed
                         });
                     }
 
@@ -1698,20 +1698,6 @@ class Editor {
                 // Refresh properties panel to show updated switch state
                 await this.selectElement(gridPos);
             }
-            else if (track.block_section_id) {
-                // Right-click cycles block state: FREE → RESERVED → OCCUPIED → CAUTION → FREE
-                // Backend validates route reservations and rejects if block is locked by a route
-                try {
-                    await this.api.cycleBlockState(track.block_section_id);
-                } catch (blockErr) {
-                    // Parse error message from API response
-                    const errMsg = this._parseApiError(blockErr, 'Cannot change block state');
-                    window.showToast(errMsg, 'error', 5000);
-                }
-                await window.app.refreshNetwork();
-                // Refresh properties panel to show updated block state
-                await this.selectElement(gridPos);
-            }
         } catch (err) {
             console.error('Right-click action failed:', err);
         }
@@ -1971,24 +1957,26 @@ class Editor {
                 if (trainsAtTile.length === 0) return '';
                 return `
                 <div class="property-group-header">Train</div>
-                ${trainsAtTile.map(train => `
+                ${trainsAtTile.map(train => {
+                    const controller = window.stateManager.getController(train.id);
+                    return `
                 <div class="property-item-row">
                     <div class="train-summary-row">
                         <div class="train-status-dot" style="background-color: ${
-                            train.wait_reason ? '#ffd93d' :
-                            train.onboard?.control_mode === 'manual' ? '#ff9500' :
-                            train.state === 'running_moving' ? '#04d361' :
-                            train.state === 'running_at_station' ? '#00bfff' :
-                            train.state === 'idle' ? '#888' : '#e83f5b'
+                            controller?.control_mode === 'manual' ? '#ff9500' :
+                            controller?.state === 'running_moving' ? '#04d361' :
+                            controller?.state === 'running_at_station' ? '#00bfff' :
+                            controller?.state === 'idle' ? '#888' : '#e83f5b'
                         }"></div>
                         <div class="train-info">
                             <span class="train-id">${train.id}</span>
-                            <span class="train-state">${train.state || 'unknown'}</span>
+                            <span class="train-state">${controller?.state || 'unknown'}</span>
                         </div>
                         <button class="edit-btn edit-train-btn" data-train-id="${train.id}">Edit</button>
                     </div>
                 </div>
-                `).join('')}
+                `;
+                }).join('')}
                 `;
             })()}
             ${track.occupied_by ? `

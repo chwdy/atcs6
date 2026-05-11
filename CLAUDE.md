@@ -6,6 +6,26 @@ This file collects directives for working in this repo. Most rules below apply O
 
 - All rules in this file that govern document edits apply ONLY to `design_new.md` for now.
 - Other files (code, current docs, implementation index) follow their own conventions.
+- The "Running Python in this repo" section below is global — it applies to every Python invocation, not just `design_new.md` work.
+
+## Running Python in this repo
+
+This project requires the `general` conda environment. Run Python through it for everything: server boot, scripts, ad-hoc `python -c` snippets, pytest, dependency checks.
+
+- **Always use `conda run -n general python ...`** (or `conda run -n general python -m pytest ...`, etc.). Examples:
+  ```
+  conda run -n general python -c "import flask; print(flask.__version__)"
+  conda run -n general python -m pytest tests/
+  ```
+  This works in non-interactive bash subshells without sourcing anything. Plain `python` / `python3` / `pytest` does NOT work — it falls through to `/usr/bin/python3` (system 3.9.6, no flask, no PEP 604 union syntax).
+- **Background / long-running processes need `--no-capture-output`.** Without it, `conda run` buffers stdout/stderr and you cannot tail the server log or pipe output. Use:
+  ```
+  conda run -n general --no-capture-output python server.py --skip-startup-tests --port 5007 > /tmp/server.log 2>&1 &
+  ```
+  for the dev server, demo runs, or anything else you start with `&`. (`--no-capture-output` is harmless for short foreground commands too — it just streams output instead of buffering it.)
+- **Why this matters.** `general` provides Python 3.11.6 with flask, pytest, and the project's other deps installed. Code in this repo uses 3.10+ syntax (e.g. `Flask | None` in `server.py:66`); running under 3.9 raises `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'` at import time.
+- **How to apply.** Anywhere a tool call would invoke `python`, `python3`, `pytest`, `flask`, or run `server.py` / `demo_main.py` / any project script, prefix it with `conda run -n general`. When `pytest` or similar is reported as "not found," it's the env, not a missing install — re-run via `conda run -n general`.
+- **Don't "fix" the 3.10+ syntax.** Modern union syntax (`X | None`, etc.) is intentional. Do not change it to `Optional[X]` or add `from __future__ import annotations` just because a wrong-Python invocation surfaced an error — fix the invocation instead.
 
 ## Authoring rules for `design_new.md`
 

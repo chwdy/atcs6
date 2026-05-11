@@ -118,24 +118,42 @@ class TrainState(Enum):
     """
     Train power and operational states.
 
-    Per design_new.md, the canonical operational state set in v1 is:
+    Per design_new.md, the operational state set in v1 is:
     - OFF: power off
-    - IDLE: powered on, no cab selected
-    - STANDBY: powered on, cab selected, stopped, not dwelling
+    - READY: powered, stopped, not dwelling, regardless of cab selection
     - RUNNING_MOVING: depart accepted; physically moving or stopped at zero
-      ATC clearance under the same live authority
+      ATC clearance under the same active authority
     - RUNNING_AT_STATION: route-managed dwell at a confirmed stop task
 
     Manual driving is a control mode (control_mode == "manual"), not a
-    separate operational state; a stopped manual train sits in STANDBY/IDLE
-    just like an ATO train.
+    separate operational state; a stopped manual train sits in READY just
+    like an ATO train. Cab selection is an orthogonal field — see the
+    Allowed (state, cab) pairs table in design_new.md.
     """
 
     OFF = "off"
-    IDLE = "idle"
-    STANDBY = "standby"
+    READY = "ready"
     RUNNING_MOVING = "running_moving"
     RUNNING_AT_STATION = "running_at_station"
+
+
+class ControllerCondition(Enum):
+    """Derived projection of TrainController recovery-relevant flags.
+
+    Per design_new.md "Controller condition set" canonical home, every member
+    maps to one underlying controller field; TrainController.active_conditions
+    returns a frozenset of currently-true conditions. Predicates such as
+    is_recovery_clean and RouteExecutor.is_clean_for_create read subsets of
+    this set, so adding a new latch in the future is one enum value plus one
+    mapping line.
+    """
+
+    HAS_AUTHORITY = "has_authority"
+    EB_LATCHED = "eb_latched"
+    POWER_OFF_PENDING = "power_off_pending"
+    PATH_CANCEL_PENDING = "path_cancel_pending"
+    ROUTE_ABORT_PENDING = "route_abort_pending"
+    ROUTE_DEACTIVATE_PENDING = "route_deactivate_pending"
 
 
 class PlatformSide(Enum):
@@ -287,16 +305,26 @@ POWER_MULTIPLIERS = {
     HandlePosition.P1: 0.2,
 }
 
-# Deceleration multipliers for brake notches
+# Deceleration multipliers for brake notches.
+# These multiply the *operational* deceleration rate
+# (`profile.deceleration_rate * profile.operational_decel_ratio`),
+# i.e. the rate ATO uses when planning its slow-down curve.
+# B6 = 1.00× = exactly tracks the planned curve.
+# B7-B8 sit above 1× so a train that has fallen behind the curve can catch up.
+# B8 is set high enough to exceed the raw `deceleration_rate` (the rate ATC
+# uses for its curve, ≈1/operational_decel_ratio in op_decel units) so that
+# B8 can close the gap when the train is behind the ATC curve.
+# B1-B5 sit below 1× for gentler-than-curve braking.
+# EB bypasses this table and applies `profile.emergency_brake_rate`.
 BRAKE_MULTIPLIERS = {
-    HandlePosition.B1: 0.125,
-    HandlePosition.B2: 0.25,
-    HandlePosition.B3: 0.375,
-    HandlePosition.B4: 0.5,
-    HandlePosition.B5: 0.625,
-    HandlePosition.B6: 0.75,
-    HandlePosition.B7: 0.875,
-    HandlePosition.B8: 1.0,
+    HandlePosition.B1: 0.20,
+    HandlePosition.B2: 0.40,
+    HandlePosition.B3: 0.55,
+    HandlePosition.B4: 0.70,
+    HandlePosition.B5: 0.85,
+    HandlePosition.B6: 1.00,
+    HandlePosition.B7: 1.30,
+    HandlePosition.B8: 1.70,
 }
 
 

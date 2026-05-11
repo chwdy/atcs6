@@ -53,7 +53,6 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/signal/<signal_id>", methods=["GET"])
     def get_signal(signal_id):
-        """Get signal by ID"""
         signal = state.network.get_signal(signal_id)
         if not signal:
             return jsonify({"error": "Signal not found"}), 404
@@ -90,7 +89,6 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/signal/<signal_id>", methods=["DELETE"])
     def delete_signal(signal_id):
-        """Delete signal by ID"""
         if state.network.remove_signal(signal_id):
             return jsonify(
                 {"status": "success", "message": f"Signal {signal_id} deleted"}

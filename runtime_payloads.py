@@ -12,9 +12,8 @@ Schemas defined here:
 - TileTraversal: per-tile traversal entry inside a PhysicsSpanUpdate (added/removed_tiles)
 - ResourceEvent: a single entered/tail-vacated resource observation
 - ControllerProgressReport: produced by TrainController, consumed by PathDispatcher.on_controller_progress
-- PendingPathCancelRequest / PendingRouteAbortRequest / PendingRouteDeactivateRequest:
+- PendingPathCancelRequest:
   the per-train Phase-3 mailbox payloads
-- PathCancellationKind: the canonical cancellation enum
 
 `TrainSpan` itself is referenced as a forward type and not defined in this module
 because it is the canonical span schema owned by the train/controller side. This
@@ -26,39 +25,20 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
 
 if TYPE_CHECKING:
-    # TrainSpan and its component schemas (SpanEndLocator, SpanTile,
-    # SpanResourceInterval) are owned by the train/controller side. Until they
-    # are formally defined elsewhere, we type-check against `Any` and let
-    # producers/consumers carry whichever concrete shape they currently use.
+    # TrainSpan and its component schemas (SpanEndLocator) are owned by the
+    # train/controller side. Until they are formally defined elsewhere, we
+    # type-check against `Any` and let producers/consumers carry whichever
+    # concrete shape they currently use.
     pass
 
 
 # =============================================================================
-# Shared default constants previously in path.py
+# Path priority constants
 # =============================================================================
 
 DEFAULT_PATH_PRIORITY = 5
 MIN_PRIORITY = 1
 MAX_PRIORITY = 10
-
-
-# =============================================================================
-# Cancellation diagnostic enum
-# =============================================================================
-
-
-class PathCancellationKind(Enum):
-    """Canonical reason kinds for PathDispatcher.cancel_path(...).
-
-    Diagnostic only; routing/planning layers must not branch on this value.
-    """
-
-    EB = "eb"
-    OPERATOR_CANCELLED = "operator_cancelled"
-    POWER_OFF = "power_off"
-    REVOKED = "revoked"
-    OUT_OF_SEQUENCE = "out_of_sequence"
-    AUTHORITY_OVERSHOOT = "authority_overshoot"
 
 
 # =============================================================================
@@ -70,12 +50,8 @@ class PathCancellationKind(Enum):
 class ErrorRecord:
     """Paired error message + timestamp.
 
-    The canonical shape used by `RouteRun.last_error` and
-    `RouteTaskRun.last_error` per design_new.md so the message and its
-    timestamp are always either both present or both absent. Replaces the
-    legacy two-field `last_error: Optional[str]` + `error_time: Optional[float]`
-    pair so callers cannot ever observe a mismatched state where one is set
-    and the other is not.
+    Used by `RouteRun.last_error` and `RouteTaskRun.last_error` so the
+    message and its timestamp are always either both present or both absent.
     """
 
     text: str
@@ -116,7 +92,7 @@ class TileTraversal:
 
 @dataclass
 class PhysicsSpanUpdate:
-    """Canonical payload from TrainPhysics.tick(...) into
+    """Payload from TrainPhysics.tick(...) into
     TrainController.on_physics_updated(event_time, span_update).
 
     Per design_new.md, TrainPhysics emits one update per crossed resource
@@ -139,21 +115,21 @@ class PhysicsSpanUpdate:
 class ResourceEvent:
     """A single entered or tail-vacated resource observation.
 
-    `direction` is required for block tail-vacate events (the vacated block's
-    forward `exit_edge` for the traversal by which the train left the block)
+    `exit_edge` is required for block tail-vacate events (the vacated block's
+    forward exit edge for the traversal by which the train left the block)
     and is `None` for switch tail-vacate events and for entered-resource events.
     """
 
     sequence_index: Optional[int]
     resource_type: Literal["block", "switch"]
     resource_id: str
-    direction: Optional[str] = None  # "N" / "E" / "S" / "W"
+    exit_edge: Optional[str] = None  # "N" / "E" / "S" / "W"
     block_id: Optional[str] = None
 
 
 @dataclass
 class ControllerProgressReport:
-    """Canonical Phase-3 progress report produced by
+    """Phase-3 progress report produced by
     TrainController.on_physics_updated(...) and consumed by
     PathDispatcher.on_controller_progress(...).
 
@@ -181,39 +157,140 @@ class ControllerProgressReport:
 class PendingPathCancelRequest:
     """Phase-3 latched cancellation payload written to TrainController.
 
+    Per design_new.md (Latch Table) the canonical fields are:
+      * `initiator: str` — free-form label populated by the writer for the
+        `path_cancellation` notification. Common values: ``"eb"``,
+        ``"operator_cancelled"``, ``"power_off"``, ``"deviation"``,
+        ``"revoked"``. Functional behavior is identical regardless of value;
+        consumers must not branch on it.
+      * `reason: Optional[str]` — optional plain-text diagnostic.
+
     Consumed by Phase 3 only when the train is fully stopped. While the train
     is still rolling, the latch survives across ticks and is reconsidered on
-    the next eligible Phase 3 pass.
+    the next eligible Phase 3 pass. Because v1 allows at most one active path
+    per train, the payload does not need a `path_id` routing key.
     """
 
-    cancellation_kind: PathCancellationKind
+    initiator: str
     reason: Optional[str] = None
-    expected_path_id: Optional[str] = None
+
+
+# Note: per design_new.md (Latch Table), `pending_route_abort` and
+# `pending_route_deactivate` are bare-bool latches on `TrainController`. The
+# diagnostic `reason` for the originating action is recorded only on the
+# `path_cancellation` and `command_result` notifications (the inclusive
+# `pending_path_cancel_request.reason` carries it through to the cancellation
+# event), not on any field on `RouteRun` or on the route-abort / deactivate
+# latches themselves.
 
 
 @dataclass
-class PendingRouteAbortRequest:
-    """Phase-3 latched route-abort payload written to TrainController.
+class PhaseLatches:
+    """Aggregate of the four Phase-3 latches owned by `TrainController`.
 
-    Consumed by Phase 3 only after the inclusive pending_path_cancel_request
-    has committed and the active path is gone.
+    Per design_new.md (Latch Table) the four latches share the same lifecycle
+    rule: a writer sets them in Phase 2 (or in command handling) and Phase 3
+    consumes-and-clears them on the same tick once the consumer's gate passes.
+    Bundling the four fields plus their canonical writers / consumers into one
+    data class keeps the latch discipline in a single place.
+
+    The leaf writer is `set_path_cancel_request(...)`; the three composite
+    setters (`set_route_abort`, `set_power_off`, `set_route_deactivate`) own
+    their respective bool field and, when an active path exists, fan out to
+    `set_path_cancel_request(...)` with the design-canonical `initiator`
+    value (`"operator_cancelled"`, `"power_off"`, `"revoked"`).
+
+    The cross-field side effect of `power_off` (clearing
+    `TrainController.ato_running`) does NOT live here — that is a controller
+    concern and the caller wires it together with `set_power_off(...)`.
     """
 
-    reason: str
-    expected_path_id: Optional[str] = None
+    path_cancel_request: Optional[PendingPathCancelRequest] = None
+    route_abort: bool = False
+    power_off: bool = False
+    route_deactivate: bool = False
 
+    # ------------------------------------------------------------------
+    # Writers (canonical setters)
+    # ------------------------------------------------------------------
 
-@dataclass
-class PendingRouteDeactivateRequest:
-    """Phase-3 latched route-deactivate payload written per assigned train when
-    route.deactivate() runs.
+    def set_path_cancel_request(
+        self, initiator: str, reason: Optional[str] = None
+    ) -> None:
+        """Leaf writer for `path_cancel_request`."""
+        self.path_cancel_request = PendingPathCancelRequest(
+            initiator=initiator, reason=reason
+        )
 
-    Consumed by Phase 3 only after the inclusive pending_path_cancel_request
-    has committed and any active path is gone.
-    """
+    def set_route_abort(
+        self,
+        reason: str = "operator abort",
+        has_active_path: bool = False,
+    ) -> None:
+        """Set `route_abort`; when a live path exists, also set the inclusive
+        `path_cancel_request` with `initiator="operator_cancelled"`."""
+        self.route_abort = True
+        if has_active_path:
+            self.set_path_cancel_request("operator_cancelled", reason)
 
-    reason: str
-    expected_path_id: Optional[str] = None
+    def set_power_off(
+        self,
+        reason: str = "power off",
+        has_active_path: bool = False,
+    ) -> None:
+        """Set `power_off`; when a live path exists, also set the inclusive
+        `path_cancel_request` with `initiator="power_off"`."""
+        self.power_off = True
+        if has_active_path:
+            self.set_path_cancel_request("power_off", reason)
+
+    def set_route_deactivate(
+        self,
+        reason: str = "route deactivated",
+        has_active_path: bool = False,
+    ) -> None:
+        """Set `route_deactivate`; when a live path exists, also set the
+        inclusive `path_cancel_request` with `initiator="revoked"`."""
+        self.route_deactivate = True
+        if has_active_path:
+            self.set_path_cancel_request("revoked", reason)
+
+    # ------------------------------------------------------------------
+    # Read predicates
+    # ------------------------------------------------------------------
+
+    def is_any_pending(self) -> bool:
+        """True if any of the four latches is currently set."""
+        return (
+            self.path_cancel_request is not None
+            or self.route_abort
+            or self.power_off
+            or self.route_deactivate
+        )
+
+    # ------------------------------------------------------------------
+    # Consumers (read-and-clear)
+    # ------------------------------------------------------------------
+
+    def consume_path_cancel_request(self) -> Optional[PendingPathCancelRequest]:
+        v = self.path_cancel_request
+        self.path_cancel_request = None
+        return v
+
+    def consume_route_abort(self) -> bool:
+        v = self.route_abort
+        self.route_abort = False
+        return v
+
+    def consume_power_off(self) -> bool:
+        v = self.power_off
+        self.power_off = False
+        return v
+
+    def consume_route_deactivate(self) -> bool:
+        v = self.route_deactivate
+        self.route_deactivate = False
+        return v
 
 
 # =============================================================================
@@ -257,12 +334,21 @@ class AcquisitionMode(Enum):
 
 
 class PathAcquisitionResultKind(Enum):
-    """Outcome flavour for create_path / extend_path success cases."""
+    """Outcome flavour for create_path / extend_path success cases.
 
-    CREATED = "created"
+    Per design_new.md "create_path() / extend_path() return contract":
+      * REACHED_REQUESTED_TARGET — live authority reaches the requested target
+      * TRUNCATED_GREW — best_effort acquired at least one new forward
+        resource but the live authority is still short of the requested target
+      * BLOCKED_NO_GROWTH — extend_path proved the existing path is still a
+        valid prefix toward the requested target but could not acquire the
+        next forward resource. Valid only for extend_path; create_path
+        never returns this kind.
+    """
+
+    REACHED_REQUESTED_TARGET = "reached_requested_target"
     TRUNCATED_GREW = "truncated_grew"
     BLOCKED_NO_GROWTH = "blocked_no_growth"
-    EXTENDED = "extended"
 
 
 class PathAcquisitionFailureKind(Enum):
@@ -278,18 +364,20 @@ class PathAcquisitionFailureKind(Enum):
     INVALID_REQUEST = "invalid_request"
     HEAD_ON_SWITCH_NO_BLOCK_AUTHORITY = "head_on_switch_no_block_authority"
     MISSING_OR_INACTIVE_PATH = "missing_or_inactive_path"
+    TRAIN_ALREADY_HAS_ACTIVE_PATH = "train_already_has_active_path"
 
 
 @dataclass
 class PathAcquisitionResult:
     """Structured result for create_path / extend_path.
 
-    `granted_resource_sequence` carries `ResourceSequenceEntry` objects (typed
-    as `Any` here to avoid the path.py forward import). Per design_new.md
-    "create_path() / extend_path() return contract", successful returns echo
-    `requested_destination_block_id` / `requested_destination_direction` (the
-    caller-supplied target contract for that attempt) alongside the live
-    `authority_end_block_id`.
+    Per design_new.md "create_path() / extend_path() return contract", the
+    payload carries the success flag, the structured `result_kind` /
+    `failure_kind` discriminators, the live `path_id`, the live
+    `resource_sequence` (typed as `Any` to avoid the path.py forward
+    import), the caller-supplied target contract, and the live authority
+    boundary. Callers must branch on `success`/`result_kind`/`failure_kind`,
+    not on `reason` text.
     """
 
     success: bool
@@ -299,9 +387,8 @@ class PathAcquisitionResult:
     requested_destination_block_id: Optional[str] = None
     requested_destination_direction: Optional[str] = None
     authority_end_block_id: Optional[str] = None
-    granted_resource_sequence: List[Any] = field(default_factory=list)
+    resource_sequence: List[Any] = field(default_factory=list)
     reason: str = ""
-    failed_resource_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -312,12 +399,11 @@ class PathAcquisitionResult:
             "requested_destination_block_id": self.requested_destination_block_id,
             "requested_destination_direction": self.requested_destination_direction,
             "authority_end_block_id": self.authority_end_block_id,
-            "granted_resource_sequence": [
+            "resource_sequence": [
                 e.to_dict() if hasattr(e, "to_dict") else e
-                for e in self.granted_resource_sequence
+                for e in self.resource_sequence
             ],
             "reason": self.reason,
-            "failed_resource_id": self.failed_resource_id,
         }
 
 
@@ -325,29 +411,29 @@ class PathAcquisitionResult:
 class CancellationResult:
     """Structured result for PathDispatcher.cancel_path(...).
 
-    Per design_new.md "Path cancellation flow"."""
+    Per design_new.md "cancel_path() return contract" (lines 925-934):
+    on success, `success=True`, `path_id` is required, `new_status` is
+    `PathStatus.CANCELLED`. On failure, `success=False`, `path_id=None`,
+    `new_status=None`, and `reason` is required. Callers must not branch
+    on the exact `reason` text; the canonical strings are "path not found",
+    "already completed", "already cancelled".
+    """
 
     success: bool
-    path_id: str = ""
-    cancellation_kind: Optional[PathCancellationKind] = None
-    reason: str = ""
-    released_block_ids: List[str] = field(default_factory=list)
-    released_switch_ids: List[str] = field(default_factory=list)
-    train_id: Optional[str] = None
-    notes: str = ""
+    path_id: Optional[str] = None
+    new_status: Any = None  # PathStatus from path.py; Any to avoid circular import.
+    reason: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "success": self.success,
             "path_id": self.path_id,
-            "cancellation_kind": (
-                self.cancellation_kind.value if self.cancellation_kind else None
+            "new_status": (
+                self.new_status.value
+                if self.new_status is not None and hasattr(self.new_status, "value")
+                else self.new_status
             ),
             "reason": self.reason,
-            "released_block_ids": list(self.released_block_ids),
-            "released_switch_ids": list(self.released_switch_ids),
-            "train_id": self.train_id,
-            "notes": self.notes,
         }
 
 
@@ -415,6 +501,54 @@ class FatalPhysicalEntryConflict:
 
 
 # =============================================================================
+# Switch lock claim payload
+# =============================================================================
+
+
+@dataclass
+class OccupyResult:
+    """Result of `BlockManager.occupy_blocks(...)`.
+
+    Per design_new.md "BlockManager" — `outcome` is one of:
+      - ``"clean_entry"``: at least one block transitioned to OCCUPIED.
+      - ``"idempotent_noop"``: every requested block was already OCCUPIED
+        by the same train (no state change).
+      - ``"fatal_conflict"``: a fatal physical-entry conflict was detected;
+        ``BlockManager`` already invoked
+        ``SimulationController.enter_failed_runtime(...)``.
+
+    On ``"fatal_conflict"`` the caller must stop processing the current
+    physical-entry batch.
+    """
+
+    outcome: str
+    reason: Optional[str] = None
+
+    def __bool__(self) -> bool:
+        """Truthy iff the call did not produce a fatal conflict.
+
+        Existing callers that do `if not occupy_blocks(...)` keep working.
+        """
+        return self.outcome != "fatal_conflict"
+
+
+@dataclass(frozen=True)
+class SwitchLockClaim:
+    """Structured payload for `Switch.acquire_lock(claim)`.
+
+    Per design_new.md "Switch entity" — the canonical claim shape carries
+    `path_id`, `train_id`, `locked_state`, and an optional
+    `source_switch_id`. The role (main/primary vs flank) is derived from
+    `source_switch_id is None`; it is not a separate stored field.
+    """
+
+    path_id: str
+    train_id: str
+    locked_state: int  # 0 = MAIN, 1 = DIVERGE
+    source_switch_id: Optional[str] = None
+
+
+# =============================================================================
 # Resolved-target schema (moved from route_executor.py)
 # =============================================================================
 
@@ -435,13 +569,19 @@ class ResolvedRouteTarget:
 
 
 # =============================================================================
-# Path planning result types (kept here so legacy helpers in path_dispatcher.py
-# still compile; v1 public API uses PathAcquisitionResult / CancellationResult)
+# BFS pathfinding intermediate types
+#
+# These types describe the dispatcher's internal pathfinding pipeline:
+# `PathDispatcher.find_paths(...)` returns `PathSegment` candidates; the
+# `_validate_path_geometry(...)` step builds a `ValidationResult` carrying
+# `ValidationError` records keyed by `ValidationErrorType`. The v1 public
+# API (`PathAcquisitionResult`, `CancellationResult`) is built on top of
+# these intermediates inside `create_path` / `extend_path` / `cancel_path`.
 # =============================================================================
 
 
 class ValidationErrorType(Enum):
-    """Classification for path validation failures (legacy diagnostic only)."""
+    """Classification for path validation failures."""
 
     UNBLOCKED_TILE = "unblocked_tile"
     BLOCK_OCCUPIED = "block_occupied"
@@ -453,7 +593,7 @@ class ValidationErrorType(Enum):
 
 @dataclass
 class ValidationError:
-    """Single validation failure record (legacy diagnostic)."""
+    """Single validation failure record."""
 
     type: ValidationErrorType
     message: str = ""
@@ -486,51 +626,3 @@ class ValidationResult:
     valid: bool
     errors: List[ValidationError] = field(default_factory=list)
     path: Optional[PathSegment] = None
-
-
-@dataclass
-class PathResult:
-    """Legacy result used by the in-tree `find_paths` flow."""
-
-    success: bool
-    path: Any = None  # path.Path; left as Any to avoid circular import
-    error: str = ""
-    attempted_paths: List[Any] = field(default_factory=list)
-    conflict_tiles: List[Tuple[int, int]] = field(default_factory=list)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "success": self.success,
-            "error": self.error,
-            "path": self.path.to_dict() if self.path is not None else None,
-            "conflict_tiles": [list(t) for t in self.conflict_tiles],
-        }
-
-
-@dataclass
-class ExtensionResult:
-    """Legacy result used by the in-tree `extend_path` flow."""
-
-    success: bool
-    extended_blocks: List[str] = field(default_factory=list)
-    error: str = ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "success": self.success,
-            "extended_blocks": list(self.extended_blocks),
-            "error": self.error,
-        }
-
-
-# Conflict-resolution legacy types (returned by helpers that may still run)
-class ConflictResolutionType(Enum):
-    PROCEED = "proceed"
-    BLOCK = "block"
-    REROUTE = "reroute"
-
-
-@dataclass
-class ConflictResolution:
-    type: ConflictResolutionType
-    description: str = ""

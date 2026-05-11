@@ -3,13 +3,13 @@ Tests for Phase 1 - Train System Data Structures
 
 This module tests:
 - SpeedProfile: speed/voltage conversion, acceleration/deceleration
-- Route & Waypoint: route traversal, timing modes
+- Route & RouteTask: route traversal
 - Train modifications: new properties, turn_around, state management
 """
 
 import pytest
 from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
-from train_route import Route, RouteTask, TimingMode, RouteMode
+from train_route import PlatformTarget, Route, RouteTask, RouteMode
 from train import Train, TrainCar, TrainPosition
 from enums import Direction, TrainState, BlockState, HandlePosition
 from network import RailwayNetwork
@@ -79,7 +79,7 @@ class TestSpeedProfile:
                 (60.0, 8.0),
                 (120.0, 12.0),
             ],
-            min_start_voltage=2.0,
+            startup_voltage=2.0,
             lighting_voltage=2.5,
             acceleration_rate=10.0,
             deceleration_rate=15.0,
@@ -154,16 +154,23 @@ class TestRouteTask:
 
     def test_task_initialization(self):
         """Test task default values."""
-        task = RouteTask(task_kind="dwell", task_location="STN_001", task_time=30.0)
-        assert task.task_location == "STN_001"
+        task = RouteTask(
+            task_kind="dwell",
+            task_location=PlatformTarget(platform_id="STN_001"),
+            task_time=30.0,
+        )
+        assert task.task_location == PlatformTarget(platform_id="STN_001")
         assert task.task_kind == "dwell"
         assert task.task_time == 30.0
-        assert task.timing_mode == TimingMode.NONE
         assert task.target_time is None
 
-    def test_should_depart_none_mode(self):
-        """Test departure with no timing constraint."""
-        task = RouteTask(task_kind="dwell", task_location="STN_001", task_time=30.0)
+    def test_should_depart_relative(self):
+        """Test departure with task_time only."""
+        task = RouteTask(
+            task_kind="dwell",
+            task_location=PlatformTarget(platform_id="STN_001"),
+            task_time=30.0,
+        )
 
         # Not enough time yet (dwell started at 0, now 25 = 25s elapsed < 30s)
         assert task.should_depart(now=25.0, dwell_started_at=0.0) is False
@@ -176,8 +183,7 @@ class TestRouteTask:
         """Test departure with absolute timing (target_time)."""
         task = RouteTask(
             task_kind="dwell",
-            task_location="STN_001",
-            timing_mode=TimingMode.ABSOLUTE,
+            task_location=PlatformTarget(platform_id="STN_001"),
             target_time=500.0,  # Leave at simulation time 500
         )
 
@@ -194,9 +200,8 @@ class TestRouteTask:
         """Test task serialization."""
         task = RouteTask(
             task_kind="dwell",
-            task_location="STN_002",
+            task_location=PlatformTarget(platform_id="STN_002"),
             task_time=45.0,
-            timing_mode=TimingMode.RELATIVE,
             target_time=120.0,
         )
 
@@ -206,7 +211,6 @@ class TestRouteTask:
         assert restored.task_location == task.task_location
         assert restored.task_kind == task.task_kind
         assert restored.task_time == task.task_time
-        assert restored.timing_mode == task.timing_mode
         assert restored.target_time == task.target_time
 
 
@@ -296,7 +300,9 @@ class TestTrainPhase1:
         assert basic_train.min_radius_cm == 40.0
         assert basic_train.facing_direction == Direction.EAST
         assert basic_train.speed_profile_id is None
-        assert basic_train.assigned_route_id is None
+        # `Train.assigned_route_id` is no longer a field; the canonical store is
+        # `RouteExecutor.assigned_route_id_for(train_id)`.
+        assert not hasattr(basic_train, "assigned_route_id")
 
     def test_position_reverse(self, basic_train: Train):
         """Test TrainPosition.reverse() flips leading_end and updates facing_direction."""
@@ -339,8 +345,8 @@ class TestTrainPhase1:
         # Power on
         result = controller.power_on_cmd()
         assert result.success is True
-        assert controller.state == TrainState.IDLE
-        assert controller.state == TrainState.IDLE
+        assert controller.state == TrainState.READY
+        assert controller.state == TrainState.READY
 
         # Can't power on again
         result = controller.power_on_cmd()
@@ -349,7 +355,7 @@ class TestTrainPhase1:
         # Power off — acceptance is immediate, OFF transition deferred.
         result = controller.power_off_cmd()
         assert result.success is True
-        assert controller.pending_power_off is True
+        assert controller.phase_latches.power_off is True
 
     def test_power_off_while_moving_fails(self):
         """Test power_off_cmd fails when train is moving."""
@@ -362,17 +368,6 @@ class TestTrainPhase1:
         assert controller.state == TrainState.RUNNING_MOVING
 
 
-    def test_enable_manual_off_fails(self):
-        """Test enable_manual fails when OFF."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.OFF
-        )
-        result = controller.enable_manual()
-        assert result is False
-
-
-
-
     def test_from_dict_restores_new_properties(self, basic_train: Train):
         """Test from_dict restores Phase 1 properties."""
         data = {
@@ -383,9 +378,8 @@ class TestTrainPhase1:
             "min_radius_cm": 50.0,
             "facing_direction": "WEST",
             "travel_direction": "forward",
-            "state": "standby",
+            "state": "ready",
             "speed_profile_id": "profile_002",
-            "assigned_route_id": "route_002",
         }
 
         train = Train.from_dict(data)
@@ -396,7 +390,8 @@ class TestTrainPhase1:
         # facing_direction is computed from position; no stored field.
         assert train.facing_direction is None
         assert train.speed_profile_id == "profile_002"
-        assert train.assigned_route_id == "route_002"
+        # `assigned_route_id` is no longer carried on `Train`; the canonical
+        # store is `RouteExecutor.assigned_route_id_for(train_id)`.
         # Per design_new.md ~line 1292, Train no longer mirrors live
         # state/travel_direction/current_speed; those load on the
         # controller via add_train(...) / explicit controller commands.
@@ -492,22 +487,54 @@ class TestBlockPowerController:
     def controller(self) -> BlockPowerController:
         """Create a basic controller wired with a fake sim_controller.
 
-        v1: TrainController owns target_speed (derived from lookahead). The
-        block-power layer reads it through the sim_controller; tests must
-        provide one to exercise the RUNNING_MOVING branch.
+        v1: `track_voltage` is owned by `TrainPhysics` per design_new.md
+        "Power-controller role". The block-power layer reads it through
+        `sim_controller.get_or_create_physics(...)`. The fake sim resolves
+        the controller's `state` from the test train's `state` attribute
+        (registered via `register_train(...)`) and provides a real
+        `TrainPhysics` instance that computes the canonical voltage.
         """
+        from train_physics import TrainPhysics
+        from train_controller_types import (
+            PhysicsCommand,
+            PHYSICS_KIND_HANDLE,
+        )
+
         class _FakeController:
-            control_mode = "ato"
-            manual_mode_type = "simulation"
-            manual_power_percent = 0
-            current_speed_kmh = 0.0
-            target_speed = 60.0
+            def __init__(self, state):
+                self.state = state
+                self.control_mode = "ato"
+                self.manual_mode_type = "simulation"
+                self.manual_power_percent = 0
+                self.current_speed_kmh = 0.0
+                self.target_speed = 60.0
+
+            def produce_physics_command(self):
+                return PhysicsCommand(
+                    kind=PHYSICS_KIND_HANDLE,
+                    voltage_source_speed_kmh=self.target_speed,
+                )
 
         class _FakeSim:
-            def get_or_create_controller(self, _train_id):
-                return _FakeController()
+            def __init__(self):
+                self._trains_by_id = {}
 
-        return BlockPowerController(_sim_controller=_FakeSim())
+            def register_train(self, train):
+                self._trains_by_id[train.train_id] = train
+
+            def get_or_create_controller(self, train_id):
+                train = self._trains_by_id.get(train_id)
+                state = getattr(train, "state", TrainState.OFF) if train else TrainState.OFF
+                return _FakeController(state)
+
+            def get_or_create_physics(self, train_id):
+                return TrainPhysics(train_id=train_id)
+
+        sim = _FakeSim()
+        # Stash the fake sim so test fixtures can register their trains.
+        bp = BlockPowerController(_sim_controller=sim)
+        bp._fake_sim = sim
+        return bp
 
     @pytest.fixture
     def train_off(self) -> Train:
@@ -520,7 +547,7 @@ class TestBlockPowerController:
     def train_idle(self) -> Train:
         """Create a train in IDLE state."""
         train = Train(train_id="TRAIN_002")
-        train.state = TrainState.IDLE
+        train.state = TrainState.READY
         return train
 
     @pytest.fixture
@@ -556,6 +583,7 @@ class TestBlockPowerController:
         self, controller: BlockPowerController, train_off: Train
     ):
         """Test voltage calculation for OFF state."""
+        controller._fake_sim.register_train(train_off)
         voltage = controller._calculate_voltage_for_train(train_off)
         assert voltage == 0.0
 
@@ -563,13 +591,23 @@ class TestBlockPowerController:
         self, controller: BlockPowerController, train_idle: Train
     ):
         """Test voltage calculation for IDLE state."""
-        voltage = controller._calculate_voltage_for_train(train_idle)
+        controller._fake_sim.register_train(train_idle)
+        # No SpeedProfile supplied; lighting voltage falls through to 0V at
+        # the physics layer (the fake controller has no profile reference).
+        # Pass the default lighting voltage through a minimal SpeedProfile.
+        profile = SpeedProfile(
+            profile_id="test",
+            name="Test",
+            lighting_voltage=DEFAULT_LIGHTING_VOLTAGE,
+        )
+        voltage = controller._calculate_voltage_for_train(train_idle, profile)
         assert voltage == DEFAULT_LIGHTING_VOLTAGE
 
     def test_calculate_voltage_for_running_train(
         self, controller: BlockPowerController, train_running: Train
     ):
         """Test voltage calculation for RUNNING_MOVING state."""
+        controller._fake_sim.register_train(train_running)
         # Without speed profile, uses linear approximation
         voltage = controller._calculate_voltage_for_train(train_running)
         # 60 km/h / 10 = 6V (linear approximation)
@@ -579,6 +617,7 @@ class TestBlockPowerController:
         self, controller: BlockPowerController, train_running: Train
     ):
         """Test voltage calculation with speed profile."""
+        controller._fake_sim.register_train(train_running)
         profile = SpeedProfile(
             profile_id="test",
             name="Test",
@@ -740,17 +779,17 @@ class TestTrainStateTransitions:
         )
         result = controller.power_on_cmd()
         assert result.success is True
-        assert controller.state == TrainState.IDLE
-        assert controller.state == TrainState.IDLE
+        assert controller.state == TrainState.READY
+        assert controller.state == TrainState.READY
 
     def test_power_on_fails_when_already_on(self):
         """Test power_on_cmd() fails when already powered."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.IDLE
+            state=TrainState.READY
         )
         result = controller.power_on_cmd()
         assert result.success is False
-        assert controller.state == TrainState.IDLE
+        assert controller.state == TrainState.READY
 
     def test_power_off_when_stopped(self):
         """Test power_off_cmd() works when stopped.
@@ -759,11 +798,11 @@ class TestTrainStateTransitions:
         transition happens in Phase 3. Acceptance is immediate.
         """
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.IDLE
+            state=TrainState.READY
         )
         result = controller.power_off_cmd()
         assert result.success is True
-        assert controller.pending_power_off is True
+        assert controller.phase_latches.power_off is True
 
     def test_power_off_fails_when_moving(self):
         """Test power_off_cmd() fails when moving."""
@@ -774,33 +813,27 @@ class TestTrainStateTransitions:
         assert result.success is False
         assert controller.state == TrainState.RUNNING_MOVING
 
-    def test_set_standby_transition(self):
-        """Test set_direction_and_standby() transitions IDLE -> STANDBY."""
+    def test_set_cab_transition(self):
+        """set_cab(\"A\") leaves the controller in READY with cab selected."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.IDLE
+            state=TrainState.READY
         )
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
-        result = controller.set_direction_and_standby(Direction.NORTH)
-        assert result is True
-        assert controller.state == TrainState.STANDBY
-
-    def test_set_standby_fails_from_wrong_state(self):
-        """Test set_direction_and_standby() fails from non-IDLE state."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.OFF
-        )
-        result = controller.set_direction_and_standby(Direction.NORTH)
-        assert result is False
-        assert controller.state == TrainState.OFF
+        result = controller.set_cab("A")
+        assert result.success is True
+        assert controller.state == TrainState.READY
+        assert controller.cab == "A"
 
     def test_depart_transition(self):
-        """Test depart() transitions STANDBY -> RUNNING_MOVING."""
+        """Test depart() transitions READY -> RUNNING_MOVING (manual mode)."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.STANDBY
+            state=TrainState.READY
         )
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
-        # Use manual mode to test depart transition (not ATO auto-cab logic)
+        # Use manual mode to test depart transition (not ATO auto-cab logic).
+        # Manual depart now requires a cab to be selected explicitly.
         controller.control_mode = "manual"
+        controller.cab = "A"
         result = controller.depart()
         assert result is True
         assert controller.state == TrainState.RUNNING_MOVING
@@ -815,20 +848,23 @@ class TestTrainStateTransitions:
         train.state = TrainState.RUNNING_MOVING
         controller.state = TrainState.RUNNING_MOVING
         controller.control_mode = "manual"
-        controller.active_cab = "A"
-        controller.path_backed_run_active = True
+        controller.cab = "A"
+        # `path_backed_run_active` is a derived projection (per design_new.md
+        # ~line 161, no controller-owned setter); the assertion below confirms
+        # the projection reads False when no path/route/destination context
+        # exists for this stub controller.
         controller.ato_running = False
 
         controller.tick(0.1)
 
-        assert controller.state == TrainState.STANDBY
-        assert controller.state == TrainState.STANDBY
+        assert controller.state == TrainState.READY
+        assert controller.state == TrainState.READY
         assert controller.path_backed_run_active is False
 
     def test_depart_fails_without_direction(self):
         """Test depart() fails without facing direction."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.STANDBY
+            state=TrainState.READY
         )
         train.position = None
         result = controller.depart()
@@ -837,7 +873,7 @@ class TestTrainStateTransitions:
     def test_depart_fails_from_wrong_state(self):
         """Test depart() fails from non-STANDBY state."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.IDLE
+            state=TrainState.READY
         )
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
         result = controller.depart()
@@ -845,47 +881,24 @@ class TestTrainStateTransitions:
 
 
 
-    def test_arrive_at_station_transition(self):
-        """Test arrive_at_station() transitions RUNNING_MOVING -> RUNNING_AT_STATION.
-
-        v1: Train.target_speed was deleted; target speed lives on the
-        controller as a derived property. Assertion on it is no longer
-        meaningful.
-        """
+    def test_enter_station_dwell_transition(self):
+        """enter_station_dwell() transitions RUNNING_MOVING -> RUNNING_AT_STATION."""
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING
         )
-        result = controller.arrive_at_station()
-        assert result is True
+        controller.enter_station_dwell()
         assert controller.state == TrainState.RUNNING_AT_STATION
 
-    def test_depart_from_station_with_more_waypoints(self):
-        """Test depart_from_station() transitions to STANDBY when more waypoints."""
+    def test_finish_dwell_transition(self):
+        """finish_dwell() transitions RUNNING_AT_STATION -> READY."""
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_AT_STATION
         )
-        train.assigned_route_id = "route1"
-        result = controller.depart_from_station(has_more_waypoints=True)
-        assert result is True
-        assert controller.state == TrainState.STANDBY
-        assert train.assigned_route_id == "route1"  # Route still assigned
-
-    def test_depart_from_station_route_complete(self):
-        """Test depart_from_station() transitions to IDLE when route complete.
-
-        v1: Train.target_speed was deleted; assertion removed.
-        """
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.RUNNING_AT_STATION
-        )
-        train.assigned_route_id = "route1"
-        result = controller.depart_from_station(has_more_waypoints=False)
-        assert result is True
-        assert controller.state == TrainState.IDLE
-        assert train.assigned_route_id is None  # Route cleared
+        controller.finish_dwell()
+        assert controller.state == TrainState.READY
 
     def test_emergency_stop_cmd_from_running(self):
-        """Test emergency_stop_cmd() from RUNNING_MOVING."""
+        """Test activate_emergency_cmd() from RUNNING_MOVING."""
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING
         )
@@ -894,57 +907,72 @@ class TestTrainStateTransitions:
         # against `eb_active` rather than a Train-side `emergency_brake`
         # mirror.
         controller.current_speed_kmh = 80.0
-        result = controller.emergency_stop_cmd()
+        result = controller.activate_emergency_cmd()
         assert result.success is True
         assert controller.eb_active is True
 
     def test_emergency_stop_cmd_always_allowed(self):
-        """Test emergency_stop_cmd() works from any state."""
+        """Test activate_emergency_cmd() works from any state."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.IDLE
+            state=TrainState.READY
         )
-        result = controller.emergency_stop_cmd()
+        result = controller.activate_emergency_cmd()
         assert result.success is True
         assert controller.eb_active is True
 
 
-    def test_enable_manual_fails_when_moving(self):
-        """Test enable_manual() fails when moving."""
+    def test_set_mode_manual_fails_when_moving(self):
+        """set_mode('manual') is rejected while moving."""
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.STANDBY, current_speed=30.0
+            state=TrainState.READY, current_speed=30.0
         )
-        result = controller.enable_manual()
-        assert result is False
-
-    def test_enable_manual_fails_from_off(self):
-        """Test enable_manual() fails from OFF."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.OFF
-        )
-        result = controller.enable_manual()
-        assert result is False
-
-
-
-
-
-    def test_set_direction_and_standby(self):
-        """Test set_direction_and_standby() convenience method."""
-        train, controller, network = create_test_train_with_controller(
-            state=TrainState.IDLE
-        )
-        train.position = make_train_position((0, 0), facing_direction=Direction.SOUTH)
-        result = controller.set_direction_and_standby(Direction.SOUTH)
-        assert result is True
-        assert controller.state == TrainState.STANDBY
-
-
+        result = controller.set_mode("manual")
+        assert result.success is False
 
 
 
 
 class TestStateBasedVoltageOutput:
-    """Tests for state-based voltage output in BlockPowerController."""
+    """Tests for state-based voltage output in BlockPowerController.
+
+    v1: `track_voltage` is owned by `TrainPhysics` per design_new.md
+    "Power-controller role". `BlockPowerController` resolves the scalar
+    through `sim_controller.get_or_create_physics(...)`. These tests wire
+    a fake sim that returns a controller with the appropriate `state` and
+    a real `TrainPhysics` for the canonical computation.
+    """
+
+    @staticmethod
+    def _make_sim(state, target_speed=0.0):
+        from train_physics import TrainPhysics
+        from train_controller_types import (
+            PhysicsCommand,
+            PHYSICS_KIND_HANDLE,
+        )
+
+        class _FakeController:
+            def __init__(self):
+                self.state = state
+                self.control_mode = "ato"
+                self.manual_mode_type = "simulation"
+                self.manual_power_percent = 0
+                self.current_speed_kmh = 0.0
+                self.target_speed = target_speed
+
+            def produce_physics_command(self):
+                return PhysicsCommand(
+                    kind=PHYSICS_KIND_HANDLE,
+                    voltage_source_speed_kmh=self.target_speed,
+                )
+
+        class _FakeSim:
+            def get_or_create_controller(self, _train_id):
+                return _FakeController()
+
+            def get_or_create_physics(self, train_id):
+                return TrainPhysics(train_id=train_id)
+
+        return _FakeSim()
 
     def test_voltage_for_off_state(self):
         """Test voltage is 0 for OFF state."""
@@ -952,83 +980,66 @@ class TestStateBasedVoltageOutput:
         from train import Train
 
         train = Train(train_id="T001")
-        train.state = TrainState.OFF
-
-        controller = BlockPowerController()
+        controller = BlockPowerController(_sim_controller=self._make_sim(TrainState.OFF))
         voltage = controller._calculate_voltage_for_train(train)
         assert voltage == 0.0
 
     def test_voltage_for_idle_state(self):
         """Test voltage is lighting voltage for IDLE state."""
         from block_power import BlockPowerController
+        from speed_profile import SpeedProfile
         from train import Train
 
         train = Train(train_id="T001")
-        train.state = TrainState.IDLE
-
-        controller = BlockPowerController()
-        controller.default_lighting_voltage = 2.5
-        voltage = controller._calculate_voltage_for_train(train)
+        controller = BlockPowerController(_sim_controller=self._make_sim(TrainState.READY))
+        profile = SpeedProfile(profile_id="t", name="T", lighting_voltage=2.5)
+        voltage = controller._calculate_voltage_for_train(train, profile)
         assert voltage == 2.5
 
     def test_voltage_for_standby_state(self):
         """Test voltage is lighting voltage for STANDBY state."""
         from block_power import BlockPowerController
+        from speed_profile import SpeedProfile
         from train import Train
 
         train = Train(train_id="T001")
-        train.state = TrainState.STANDBY
-
-        controller = BlockPowerController()
-        controller.default_lighting_voltage = 2.5
-        voltage = controller._calculate_voltage_for_train(train)
+        controller = BlockPowerController(_sim_controller=self._make_sim(TrainState.READY))
+        profile = SpeedProfile(profile_id="t", name="T", lighting_voltage=2.5)
+        voltage = controller._calculate_voltage_for_train(train, profile)
         assert voltage == 2.5
-
 
     def test_voltage_for_running_at_station_state(self):
         """Test voltage is lighting voltage for RUNNING_AT_STATION state."""
         from block_power import BlockPowerController
+        from speed_profile import SpeedProfile
         from train import Train
 
         train = Train(train_id="T001")
-        train.state = TrainState.RUNNING_AT_STATION
-
-        controller = BlockPowerController()
-        voltage = controller._calculate_voltage_for_train(train)
+        controller = BlockPowerController(
+            _sim_controller=self._make_sim(TrainState.RUNNING_AT_STATION)
+        )
+        profile = SpeedProfile(
+            profile_id="t", name="T",
+            lighting_voltage=controller.default_lighting_voltage,
+        )
+        voltage = controller._calculate_voltage_for_train(train, profile)
         assert voltage == controller.default_lighting_voltage
 
     def test_voltage_for_running_moving_state_uses_speed(self):
-        """Voltage uses controller-derived target_speed for RUNNING_MOVING.
-
-        v1: target_speed lives on TrainController (derived from lookahead);
-        Train no longer mirrors it. Wire a fake sim_controller so block_power
-        can read the controller-owned target speed.
-        """
+        """Voltage uses controller-derived target_speed for RUNNING_MOVING."""
         from block_power import BlockPowerController
-        from train import Train
         from speed_profile import SpeedProfile
+        from train import Train
 
         train = Train(train_id="T001")
-        train.state = TrainState.RUNNING_MOVING
-
-        class _FakeController:
-            control_mode = "ato"
-            manual_mode_type = "simulation"
-            manual_power_percent = 0
-            current_speed_kmh = 0.0
-            target_speed = 60.0
-
-        class _FakeSim:
-            def get_or_create_controller(self, _train_id):
-                return _FakeController()
-
+        controller = BlockPowerController(
+            _sim_controller=self._make_sim(TrainState.RUNNING_MOVING, target_speed=60.0)
+        )
         profile = SpeedProfile(
             profile_id="test",
             name="Test",
             speed_voltage_curve=[(0, 0), (60, 8), (120, 12)],
         )
-
-        controller = BlockPowerController(_sim_controller=_FakeSim())
         voltage = controller._calculate_voltage_for_train(train, profile)
         assert voltage == 8.0
 
@@ -1049,11 +1060,11 @@ class TestCompleteStateFlows:
         # Power on
         result = controller.power_on_cmd()
         assert result.success is True
-        assert controller.state == TrainState.IDLE
+        assert controller.state == TrainState.READY
 
-        # Set direction and standby
-        assert controller.set_direction_and_standby(Direction.NORTH) is True
-        assert controller.state == TrainState.STANDBY
+        # Select cab; controller stays in READY.
+        assert controller.set_cab("A").success is True
+        assert controller.state == TrainState.READY
 
         # Depart (manual mode to bypass ATO auto-cab selection)
         controller.control_mode = "manual"
@@ -1061,37 +1072,41 @@ class TestCompleteStateFlows:
         assert controller.state == TrainState.RUNNING_MOVING
 
     def test_running_to_station_to_complete_flow(self):
-        """Test complete flow through station arrival and route completion."""
+        """Test complete flow through station arrival and route completion.
+
+        v1: route assignment lives on `RouteExecutor.execution_states[train_id]`,
+        not on `Train`. This test only exercises controller state transitions;
+        route preservation is covered by `RouteExecutor` integration tests.
+        """
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING
         )
-        train.assigned_route_id = "route1"
 
-        # Arrive at station
-        assert controller.arrive_at_station() is True
+        # Phase-1 dwell entry transitions to RUNNING_AT_STATION.
+        controller.enter_station_dwell()
         assert controller.state == TrainState.RUNNING_AT_STATION
-        # v1: Train.target_speed was deleted.
 
-        # Depart with more waypoints
-        assert controller.depart_from_station(has_more_waypoints=True) is True
-        assert controller.state == TrainState.STANDBY
-        assert train.assigned_route_id == "route1"
+        # Phase-1 dwell complete transitions back to READY.
+        controller.finish_dwell()
+        assert controller.state == TrainState.READY
 
         # Simulate moving and arriving at final station
         # Need to set controller state too for proper flow
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
-        # Use manual mode to test depart (not ATO auto-cab logic)
+        # Use manual mode to test depart (not ATO auto-cab logic). Manual
+        # depart now requires a cab to be selected explicitly.
         controller.control_mode = "manual"
+        controller.cab = "A"
         controller.depart()
         assert controller.state == TrainState.RUNNING_MOVING
 
-        assert controller.arrive_at_station() is True
+        controller.enter_station_dwell()
         assert controller.state == TrainState.RUNNING_AT_STATION
 
-        # Route complete
-        assert controller.depart_from_station(has_more_waypoints=False) is True
-        assert controller.state == TrainState.IDLE
-        assert train.assigned_route_id is None
+        # Route complete (controller-side state transition only; route
+        # teardown is owned by RouteExecutor in v1).
+        controller.finish_dwell()
+        assert controller.state == TrainState.READY
 
 
     def test_emergency_stop_flow(self):
@@ -1101,7 +1116,7 @@ class TestCompleteStateFlows:
         )
 
         # Emergency stop
-        result = controller.emergency_stop_cmd()
+        result = controller.activate_emergency_cmd()
         assert result.success is True
         assert controller.eb_active is True
         # Emergency stop sets handle to EB
@@ -1132,13 +1147,13 @@ class TestCompleteStateFlows:
 
         # Stop first - simulate stopping
         controller.current_speed_kmh = 0.0
-        controller.state = TrainState.IDLE
-        train.state = TrainState.IDLE
+        controller.state = TrainState.READY
+        train.state = TrainState.READY
 
         # Now can power off — acceptance is immediate, OFF deferred to Phase 3.
         result = controller.power_off_cmd()
         assert result.success is True
-        assert controller.pending_power_off is True
+        assert controller.phase_latches.power_off is True
 
 
 class TestEmergencyResetButtonBugFix:
@@ -1160,7 +1175,7 @@ class TestEmergencyResetButtonBugFix:
             state=TrainState.RUNNING_MOVING, current_speed=40.0
         )
 
-        result = controller.emergency_stop_cmd()
+        result = controller.activate_emergency_cmd()
         assert result.success is True
 
         controller.current_speed_kmh = 0.0
@@ -1175,7 +1190,7 @@ class TestEmergencyResetButtonBugFix:
             state=TrainState.RUNNING_MOVING, current_speed=30.0
         )
 
-        result = controller.emergency_stop_cmd()
+        result = controller.activate_emergency_cmd()
         assert result.success is True
 
         controller.current_speed_kmh = 0.0
@@ -1190,7 +1205,7 @@ class TestEmergencyResetButtonBugFix:
             state=TrainState.RUNNING_MOVING, current_speed=30.0
         )
 
-        result = controller.emergency_stop_cmd()
+        result = controller.activate_emergency_cmd()
         assert result.success is True
 
         result = controller.set_handle(HandlePosition.N)
@@ -1204,7 +1219,7 @@ class TestEmergencyResetButtonBugFix:
             state=TrainState.RUNNING_MOVING, current_speed=0.0
         )
 
-        result = controller.emergency_stop_cmd()
+        result = controller.activate_emergency_cmd()
         assert result.success is True
 
         result = controller.set_handle(HandlePosition.P1)

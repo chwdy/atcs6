@@ -6,11 +6,11 @@ This module defines the Switch entity which represents a railway turnout (switch
 with configurable physical properties for each branch (MAIN and DIVERGE paths).
 
 Design Notes:
-- Each switch has separate length and radius for MAIN (state 0) and DIVERGE (state 1) paths
-- Switch state is authoritative on the Switch entity (not on TrackSegment) in v1
+- Each switch has separate length and radius for MAIN (position 0) and DIVERGE (position 1) paths
+- Switch position is authoritative on the Switch entity (not on TrackSegment) in v1
 - Switches are auto-created when switch tracks are placed
 - Default length is 0.0 cm (unconfigured) which triggers warnings but allows operation
-- Multi-owner future-authority locks: same-state path locks may co-exist; physical
+- Multi-owner future-authority locks: same-position path locks may co-exist; physical
   occupancy (`occupied_by`) is single-owner
 """
 
@@ -18,24 +18,28 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 
 from enums import SwitchState
+from runtime_payloads import SwitchLockClaim
+from track_resource import TrackResource
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
 
 
 @dataclass
-class Switch:
+class Switch(TrackResource):
     """
     Railway switch (turnout) configuration and runtime state.
 
     A switch is placed at a specific track tile and defines the physical
     characteristics of each path through the turnout mechanism, plus the
-    authoritative runtime state (state, occupied_by, locks, protection).
+    authoritative runtime state (position, occupied_by, locks, protection).
 
     Locking model (v1):
     - `locks` is a multi-owner future-authority lock collection keyed by
-      `(path_id, claim_role, source_switch_id)` mapped to `(train_id, locked_state)`.
-      Compatible same-state lock claims may co-exist.
+      `(path_id, source_switch_id)` mapped to `(train_id, locked_state)`.
+      Compatible same-position lock claims may co-exist. The claim role
+      ("primary" vs "flank") is derived from `source_switch_id is None`,
+      not stored as a separate key field.
     - `train_protection_claims` is the train-owned physical protection set used
       after the train head has entered a switch and consumed the path lock.
     - Physical occupancy (`occupied_by`) is single-owner.
@@ -61,7 +65,7 @@ class Switch:
     # ========================================================================
     # AUTHORITATIVE RUNTIME STATE (v1)
     # ========================================================================
-    state: SwitchState = SwitchState.MAIN
+    position: SwitchState = SwitchState.MAIN
     """Authoritative physical alignment of the switch (MAIN=0, DIVERGE=1)."""
 
     occupied_by: Optional[str] = None
@@ -82,24 +86,29 @@ class Switch:
     # ========================================================================
     # MULTI-OWNER FUTURE-AUTHORITY LOCKS
     # ========================================================================
-    locks: Dict[Tuple[str, str, Optional[str]], Tuple[str, int]] = field(
+    locks: Dict[Tuple[str, Optional[str]], Tuple[str, int]] = field(
         default_factory=dict
     )
     """Composite-key lock collection.
 
-    Key: (path_id, claim_role, source_switch_id)
-      - claim_role is one of "primary" / "flank" / "overlap".
-      - source_switch_id is None for "primary"; the source switch_id for "flank".
+    Key: (path_id, source_switch_id)
+      - source_switch_id is None for primary (main) claims; the source
+        switch_id for flank-protection claims. Role ("primary" vs "flank")
+        is derived from this field, not stored separately.
     Value: (train_id, locked_state)
     """
 
     # ========================================================================
-    # RUNTIME BACK-REFERENCE (NOT SERIALIZED)
+    # TrackResource identity
     # ========================================================================
-    simulation_controller: Optional[Any] = None
-    """Back-reference to the owning SimulationController (Any to avoid circular
-    import). Optional in editor mode; required for runtime mutations that must
-    notify BlockManager."""
+
+    @property
+    def resource_id(self) -> str:
+        return self.switch_id
+
+    @property
+    def resource_type(self) -> str:
+        return "switch"
 
     # ========================================================================
     # PHYSICAL HELPERS
@@ -126,13 +135,13 @@ class Switch:
         else:
             return self.diverge_length_cm > 0
 
-    def get_current_state(self, network: "RailwayNetwork") -> int:
-        """Get current switch state.
+    def get_current_position(self, network: "RailwayNetwork") -> int:
+        """Get current switch position.
 
-        v1: state is authoritative on the Switch entity. The `network` argument
-        is retained for signature compatibility with legacy callers.
+        v1: position is authoritative on the Switch entity. The `network`
+        argument is retained for signature compatibility with legacy callers.
         """
-        return int(self.state)
+        return int(self.position)
 
     # ========================================================================
     # MULTI-OWNER LOCK METHODS (v1)
@@ -161,44 +170,31 @@ class Switch:
                 return False
         return True
 
-    def acquire_lock(
-        self,
-        path_id: str,
-        claim_role: str,
-        train_id: str,
-        locked_state: int,
-        source_switch_id: Optional[str] = None,
-    ) -> bool:
+    def acquire_lock(self, claim: "SwitchLockClaim") -> bool:
         """Acquire a future-authority lock claim on the switch.
 
-        Compatible same-state locks may co-exist. The acquisition succeeds when
-        every existing lock has the same `locked_state` as the requested one,
-        no train-owned protection requires a different state, and physical
-        occupancy does not block a switch throw.
-
-        Args:
-            path_id: Path that owns this future claim.
-            claim_role: "primary", "flank", or "overlap".
-            train_id: Train associated with this claim.
-            locked_state: Required physical state (0=MAIN, 1=DIVERGE).
-            source_switch_id: Source main switch_id for "flank" claims; None for "primary".
+        Per design_new.md "Switch entity" — `claim` is the structured payload
+        carrying `path_id`, `train_id`, `locked_state`, and optional
+        `source_switch_id`. The role (primary vs flank) is derived from
+        `source_switch_id is None`. Compatible same-state locks may co-exist.
+        The acquisition succeeds when every existing lock has the same
+        `locked_state` as the requested one, no train-owned protection
+        requires a different state, and physical occupancy does not block a
+        switch throw.
 
         Returns:
             True if recorded (or already present idempotently); False on conflict.
-
-        Raises:
-            RuntimeError: If `simulation_controller` is not wired.
         """
-        if self.simulation_controller is None:
-            raise RuntimeError(
-                "Switch runtime operations require a SimulationController"
-            )
-
         # Disabled switches cannot be locked.
         if self.disabled:
             return False
 
-        key = (path_id, claim_role, source_switch_id)
+        path_id = claim.path_id
+        train_id = claim.train_id
+        locked_state = claim.locked_state
+        source_switch_id = claim.source_switch_id
+
+        key = (path_id, source_switch_id)
         # Idempotent re-acquire of the same canonical claim with the same state.
         if key in self.locks:
             _existing_train_id, existing_state = self.locks[key]
@@ -223,7 +219,7 @@ class Switch:
         # If the requested state differs from the current physical state, a
         # switch throw is required; that is forbidden while the switch is
         # physically occupied (even by the same train).
-        if int(self.state) != locked_state and self.occupied_by is not None:
+        if int(self.position) != locked_state and self.occupied_by is not None:
             return False
 
         self.locks[key] = (train_id, locked_state)
@@ -232,15 +228,16 @@ class Switch:
     def release_lock(
         self,
         path_id: str,
-        claim_role: str,
         source_switch_id: Optional[str] = None,
     ) -> bool:
         """Release a single future-authority lock entry by composite key.
 
+        Per design_new.md "Switch entity" — keyed by `(path_id, source_switch_id)`.
+
         Returns:
             True if a matching entry was removed; False if none found.
         """
-        key = (path_id, claim_role, source_switch_id)
+        key = (path_id, source_switch_id)
         if key in self.locks:
             del self.locks[key]
             return True
@@ -248,20 +245,26 @@ class Switch:
 
     def release_train_protection_from(
         self, source_switch_id: str, train_id: str
-    ) -> None:
+    ) -> bool:
         """Remove all train_protection_claims with the given (source, train) combo.
 
-        Called on tail-vacate cleanup. Does not inspect or mutate `occupied_by`;
-        the caller is responsible for the `train_id == self.occupied_by` ordering
-        check before invoking this helper.
+        Per design_new.md "Switch entity" — returns ``True`` if at least one
+        matching claim was removed; ``False`` if none. Idempotent. Does not
+        inspect or mutate ``occupied_by``; the caller is responsible for the
+        ``train_id == self.occupied_by`` ordering check before invoking this
+        helper.
         """
+        before = len(self.train_protection_claims)
         self.train_protection_claims = [
             claim
             for claim in self.train_protection_claims
             if not (claim[0] == train_id and claim[1] == source_switch_id)
         ]
+        return len(self.train_protection_claims) < before
 
-    def on_train_tail_vacated(self, train_id: str) -> None:
+    def on_train_tail_vacated(
+        self, train_id: str, network: Optional["RailwayNetwork"] = None
+    ) -> None:
         """Handle a tail-vacate event for `train_id` on this switch.
 
         If `self.occupied_by` matches the releasing `train_id`, clear it and
@@ -269,6 +272,10 @@ class Switch:
         source, releasing the train-owned protection sourced from this switch.
         If `self.occupied_by` is set to a different train, leave state unchanged
         and emit a diagnostic.
+
+        `network` is required to walk neighbours; production callers
+        (`SwitchManager.on_switch_tail_vacated`) inject it. In editor / unit
+        contexts where no neighbour walk is needed it may be omitted.
         """
         if self.occupied_by != train_id:
             other = self.occupied_by
@@ -281,11 +288,8 @@ class Switch:
         self.occupied_by = None
 
         # Walk neighbour switches and release train-owned protection sourced
-        # from this switch. Without a wired simulation_controller we cannot
-        # discover neighbours; the dispatcher hook always runs with one.
-        if self.simulation_controller is None:
-            return
-        network = getattr(self.simulation_controller, "network", None)
+        # from this switch. Without a network reference we cannot discover
+        # neighbours.
         if network is None:
             return
         switches = getattr(network, "switches", None)
@@ -301,64 +305,50 @@ class Switch:
                     )
                     break
 
-    def request_state_change(
-        self, new_state: int, network: "RailwayNetwork"
-    ) -> Tuple[bool, str]:
-        """Request to change switch state.
+    def apply_position_change(self, new_position: int) -> Tuple[bool, str]:
+        """Validate and apply a position change to `self.position`.
 
-        Fails if the switch is disabled, physically occupied, or if any future
-        lock or train-owned protection requires a different state. On success,
-        mutates `self.state` and notifies `BlockManager` via the wired
-        `simulation_controller`.
+        Pure data operation: checks disabled / occupied / lock conflicts /
+        train-protection conflicts, and on success mutates `self.position`.
+        Does NOT notify any external entity. The cross-resource notification
+        to `BlockManager` is owned by `SwitchManager.request_position_change`.
 
         Args:
-            new_state: Desired switch state (0=MAIN, 1=DIVERGE).
-            network: Railway network (retained for signature compatibility).
+            new_position: Desired switch position (0=MAIN, 1=DIVERGE).
 
         Returns:
             (success, message) tuple.
-
-        Raises:
-            RuntimeError: If `simulation_controller` is not wired.
         """
-        if self.simulation_controller is None:
-            raise RuntimeError(
-                "Switch runtime operations require a SimulationController"
-            )
-
-        # Disabled switches cannot be targeted by manual/API state-change commands.
+        # Disabled switches cannot be targeted by manual/API position-change commands.
         if self.disabled:
             return (False, f"Switch {self.switch_id} is disabled")
 
-        # Physical occupancy blocks any state mutation.
+        # Physical occupancy blocks any position mutation.
         if self.occupied_by is not None:
             return (
                 False,
                 f"Switch occupied by train {self.occupied_by}",
             )
 
-        # Block any future lock that requires a different state.
+        # Block any future lock that requires a different position.
         for key, (_train_id, locked_state) in self.locks.items():
-            if locked_state != new_state:
+            if locked_state != new_position:
                 path_id = key[0]
                 return (False, f"Switch locked by path {path_id}")
 
-        # Block any train-owned protection that requires a different state.
+        # Block any train-owned protection that requires a different position.
         for claim_train_id, claim_source_id, claim_state in self.train_protection_claims:
-            if claim_state != new_state:
+            if claim_state != new_position:
                 return (
                     False,
                     f"Switch protected by train {claim_train_id} (source {claim_source_id})",
                 )
 
-        # Mutate authoritative state and notify BlockManager.
-        self.state = SwitchState(new_state)
-        self.simulation_controller.block_manager.on_switch_state_changed(
-            self.switch_id
-        )
+        # Mutate authoritative position.
+        self.position = SwitchState(new_position)
 
-        state_name = "MAIN" if new_state == 0 else "DIVERGE"
-        return (True, f"Switch state changed to {state_name}")
+        position_name = "MAIN" if new_position == 0 else "DIVERGE"
+        return (True, f"Switch position changed to {position_name}")
 
     # ========================================================================
     # SERIALIZATION
@@ -380,7 +370,7 @@ class Switch:
             "switch_type": self.switch_type,
             "name": self.name,
             "notes": self.notes,
-            "state": int(self.state),
+            "position": int(self.position),
             "occupied_by": self.occupied_by,
             "disabled": self.disabled,
             "flank_protection": [
@@ -392,16 +382,19 @@ class Switch:
                 for (train_id, source_id, locked_state) in self.train_protection_claims
             ],
             # Locks: dict keys are non-JSON tuples, so serialize as a list of records.
+            # Per design_new.md "Switch entity" — key is `(path_id, source_switch_id)`;
+            # the role is derived from `source_switch_id is None`.
             "locks": [
                 {
                     "path_id": path_id,
-                    "claim_role": claim_role,
                     "source_switch_id": source_switch_id,
                     "train_id": train_id,
                     "locked_state": locked_state,
+                    # Derived role for diagnostic readers.
+                    "claim_role": "primary" if source_switch_id is None else "flank",
                 }
                 for (
-                    (path_id, claim_role, source_switch_id),
+                    (path_id, source_switch_id),
                     (train_id, locked_state),
                 ) in self.locks.items()
             ],
@@ -422,7 +415,7 @@ class Switch:
             name=data.get("name", ""),
             notes=data.get("notes", ""),
         )
-        switch.state = SwitchState(int(data.get("state", 0)))
+        switch.position = SwitchState(int(data.get("position", 0)))
         switch.occupied_by = data.get("occupied_by")
         switch.disabled = bool(data.get("disabled", False))
         switch.flank_protection = [
@@ -437,9 +430,11 @@ class Switch:
         ]
         switch.locks = {}
         for entry in data.get("locks", []):
+            # The 2-tuple key is canonical; the legacy `claim_role` field is
+            # ignored here (it round-trips as a derived diagnostic in to_dict
+            # but is not part of the storage key).
             key = (
                 entry["path_id"],
-                entry["claim_role"],
                 entry.get("source_switch_id"),
             )
             switch.locks[key] = (
@@ -454,6 +449,6 @@ class Switch:
         occ = f", occupied_by={self.occupied_by}" if self.occupied_by else ""
         return (
             f"Switch({self.switch_id} at ({self.x},{self.y}): "
-            f"state={self.state.name}, MAIN={self.main_length_cm}cm, "
+            f"position={self.position.name}, MAIN={self.main_length_cm}cm, "
             f"DIVERGE={self.diverge_length_cm}cm{lock_info}{occ})"
         )

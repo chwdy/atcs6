@@ -1,7 +1,9 @@
 """
 Demo Main Tests
 
-Ensures demo setup configures speed profiles for demo trains.
+Ensures demo setup configures speed profiles for demo trains, and locks the
+bootstrap contracts called out in design_new.md (current_span set before the
+first tick, operator commands queued, Path created on first Phase 1 tick).
 """
 
 import contextlib
@@ -16,10 +18,13 @@ from train_controller import ATO_SPEED_MARGIN_KMH
 
 def test_demo_train_speed_profile_setup():
     """Demo train should use a custom speed profile."""
+    from simulation import SimulationController
+
     network = create_comprehensive_demo()
     dispatcher = PathDispatcher(network)
+    sim_controller = SimulationController(network, dispatcher)
 
-    setup_demo_train(network, dispatcher)
+    setup_demo_train(network, dispatcher, sim_controller)
 
     demo_train = network.trains.get("DEMO_TRAIN")
     assert demo_train is not None
@@ -51,7 +56,7 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
 
     assert terminal_blocks, "East Terminal should have a station block"
     for block_id in terminal_blocks:
-        assert network.blocks[block_id].max_speed_kmh == east_terminal.top_speed_kmh
+        assert network.blocks[block_id].speed_limit_kmh == east_terminal.top_speed_kmh
 
     terminal_limit = east_terminal.top_speed_kmh
     max_terminal_speed = 0.0
@@ -102,7 +107,7 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
             and controller.current_speed_kmh <= 0.5
             and controller.state
             in (
-                TrainState.STANDBY,
+                TrainState.READY,
                 TrainState.RUNNING_AT_STATION,
             )
         ):
@@ -127,3 +132,83 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
     )
     assert max_terminal_speed <= terminal_limit + 0.5
     assert max_terminal_speed >= terminal_limit - ATO_SPEED_MARGIN_KMH - 2.0
+
+
+def test_bootstrap_writes_current_span_before_first_tick():
+    """Per design_new.md, SimulationController.add_train must populate
+    TrainController.current_span before any simulation tick runs."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        network, _, sim_controller, _ = bootstrap_runtime(demo=True, setup_train=True)
+
+    controller = sim_controller.get_or_create_controller("DEMO_TRAIN")
+    assert controller.current_span is not None, (
+        "current_span must be written by add_train(...) before any tick"
+    )
+
+
+def test_bootstrap_queues_power_on_for_first_tick_drain():
+    """Bootstrap must enqueue power_on; Phase 2 drains it. ato_go is left to
+    Phase 1's auto-depart once authority is granted."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        network, _, sim_controller, _ = bootstrap_runtime(demo=True, setup_train=True)
+
+    controller = sim_controller.get_or_create_controller("DEMO_TRAIN")
+
+    # Before first tick: power_on queued, controller still OFF, cab pre-set by
+    # add_train's `initial_cab="A"` placement input.
+    queued_kinds = [cmd.kind for cmd in controller.command_inbox]
+    assert queued_kinds == ["power_on"], (
+        f"Expected queued [power_on]; got {queued_kinds}"
+    )
+    assert controller.state == TrainState.OFF
+    assert controller.cab == "A"
+
+    # One tick should drain the queue and power the train on.
+    sim_controller.update(0.0)
+
+    assert controller.command_inbox == []
+    assert controller.state != TrainState.OFF
+
+
+def test_bootstrap_creates_path_during_phase1_after_power_on():
+    """Per design_new.md, paths are created on demand by Phase 1 once the
+    train is powered on; bootstrap must NOT pre-create the demo Path itself."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        network, path_dispatcher, sim_controller, _ = bootstrap_runtime(
+            demo=True, setup_train=True
+        )
+
+    # Before any tick: no path exists yet.
+    assert path_dispatcher.active_path_id_by_train("DEMO_TRAIN") is None
+
+    # Tick 1: Phase 1 sees OFF and skips; Phase 2 drains power_on. Still no path.
+    sim_controller.update(0.0)
+    assert path_dispatcher.active_path_id_by_train("DEMO_TRAIN") is None
+
+    # Tick 2: Phase 1 sees READY, acquires authority for DEMO_ROUTE.
+    sim_controller.update(0.0)
+    assert path_dispatcher.active_path_id_by_train("DEMO_TRAIN") is not None
+
+
+def test_route_executor_register_route_round_trips():
+    """RouteExecutor.register_route / route_registry / unregister_route."""
+    from route_executor import RouteExecutor
+    from train_route import Route, RouteMode, RouteTask
+
+    network = create_comprehensive_demo()
+    executor = RouteExecutor(network)
+
+    route = Route(
+        route_id="UNIT_ROUTE",
+        name="unit",
+        mode=RouteMode.ONE_OFF,
+        tasks=[RouteTask(task_kind="dwell", task_location="STA_X")],
+    )
+    executor.register_route(route)
+    assert executor.route_registry.get("UNIT_ROUTE") is route
+
+    removed = executor.unregister_route("UNIT_ROUTE")
+    assert removed is route
+    assert "UNIT_ROUTE" not in executor.route_registry
+    # Unregistering a missing id is a no-op.
+    assert executor.unregister_route("NOPE") is None

@@ -53,6 +53,13 @@ from enums import (
 )
 from model_scale import kmh_to_cm_per_sec
 from runtime_payloads import PhysicsSpanUpdate, TileTraversal
+from train_controller_types import (
+    PhysicsCommand,
+    PHYSICS_KIND_EMERGENCY_BRAKE,
+    PHYSICS_KIND_HANDLE,
+    PHYSICS_KIND_TARGET_SPEED,
+)
+from train_span import TrainSpan
 
 if TYPE_CHECKING:
     from block_manager import BlockManager
@@ -209,45 +216,13 @@ class TrainPhysics:
         profile = self._get_speed_profile()
         previous_speed = self._read_current_speed(train)
 
-        # Manual power_percent mode: per design_new.md "Ownership split", the
-        # controller passes raw percentage power to TrainPhysics, which
-        # immediately converts it via SpeedProfile.power_speed_curve into the
-        # calibrated current speed when no braking override is active. ATC and
-        # EB braking force the percent contribution to 0 for the tick. Handle
-        # mode (simulation) keeps the existing acceleration-integration path.
-        if (
-            controller.control_mode == "manual"
-            and getattr(controller, "manual_mode_type", None) == "power_percent"
-        ):
-            new_speed = self._compute_power_percent_speed(
-                controller, profile, previous_speed, delta
-            )
-        else:
-            acceleration = self._get_acceleration_for_handle(
-                controller.handle_position,
-                profile.acceleration_rate,
-                profile.deceleration_rate,
-                profile.emergency_brake_rate,
-            )
-
-            new_speed = previous_speed + (acceleration * delta)
-            new_speed = max(0.0, new_speed)
-
-            if acceleration < 0 and new_speed <= STOPPED_SPEED_THRESHOLD_KMH:
-                new_speed = 0.0
-
-            if controller.handle_position == HandlePosition.N and previous_speed > 0:
-                friction_decel = profile.friction_rate * delta
-                new_speed = max(0.0, new_speed - friction_decel)
-
-            if (
-                profile.air_resistance_enabled
-                and previous_speed > 0
-                and profile.reference_speed_kmh > 0
-            ):
-                speed_ratio = previous_speed / profile.reference_speed_kmh
-                drag_decel = profile.drag_coefficient * (speed_ratio**2) * delta
-                new_speed = max(0.0, new_speed - drag_decel)
+        # Per design_new.md ~line 168, the controller publishes a
+        # `PhysicsCommand` each tick; physics dispatches on `kind` and never
+        # inspects controller mode fields directly.
+        command = self._read_physics_command(controller)
+        new_speed = self._apply_physics_command(
+            command, profile, previous_speed, delta
+        )
 
         logger.debug(
             "[TrainPhysics %s] speed update: new_speed=%.2f delta=%.2f speed_delta=%.2f",
@@ -328,16 +303,22 @@ class TrainPhysics:
         self,
         handle: HandlePosition,
         acceleration_rate: float,
-        deceleration_rate: float,
+        operational_decel_rate: float,
         emergency_brake_rate: float,
     ) -> float:
         """
         Get acceleration/deceleration rate for current handle position.
 
+        Brake notches multiply `operational_decel_rate` (the rate ATO uses
+        for its planned slow-down curve). B6 = 1.00× exactly tracks that
+        curve; B7-B8 sit slightly above 1× for catch-up; B1-B5 sit below.
+        EB bypasses the table and applies `emergency_brake_rate`.
+
         Args:
             handle: Current handle position
             acceleration_rate: Maximum acceleration rate (km/h/s)
-            deceleration_rate: Maximum service deceleration rate (km/h/s)
+            operational_decel_rate: Operational deceleration rate (km/h/s) =
+                profile.deceleration_rate × profile.operational_decel_ratio
             emergency_brake_rate: Emergency braking rate (km/h/s)
 
         Returns:
@@ -353,9 +334,9 @@ class TrainPhysics:
         if handle == HandlePosition.N:
             return 0.0
 
-        # Brake notches (deceleration)
+        # Brake notches (deceleration relative to op_decel)
         if handle in BRAKE_MULTIPLIERS:
-            return -deceleration_rate * BRAKE_MULTIPLIERS[handle]
+            return -operational_decel_rate * BRAKE_MULTIPLIERS[handle]
 
         # Emergency brake
         if handle == HandlePosition.EB:
@@ -363,35 +344,45 @@ class TrainPhysics:
 
         return 0.0
 
-    def _compute_power_percent_speed(
+    def _read_physics_command(
+        self, controller: Optional["TrainController"]
+    ) -> PhysicsCommand:
+        """Ask the controller for its per-tick PhysicsCommand.
+
+        Per design_new.md ~line 168, physics is an executor only and the
+        controller owns mode/EB/ATC policy. Physics calls a single
+        controller-side producer instead of inspecting `control_mode`,
+        `manual_mode_type`, `eb_active`, `atc_speed_limit`, etc. directly.
+
+        Falls back to a coast-handle command when no controller is wired
+        or the test fixture does not implement `produce_physics_command()`
+        (a few test stubs in tests/test_train_system.py rely on this).
+        """
+        producer = getattr(controller, "produce_physics_command", None)
+        if producer is None:
+            return PhysicsCommand(
+                kind=PHYSICS_KIND_HANDLE,
+                handle=HandlePosition.N,
+                voltage_source_speed_kmh=0.0,
+            )
+        return producer()
+
+    def _apply_physics_command(
         self,
-        controller: "TrainController",
+        command: PhysicsCommand,
         profile: "SpeedProfile",
         previous_speed: float,
         delta: float,
     ) -> float:
+        """Compute the next-tick speed by dispatching on the command kind.
+
+        - PHYSICS_KIND_EMERGENCY_BRAKE: decelerate at `emergency_brake_rate`.
+        - PHYSICS_KIND_TARGET_SPEED: snap to `target_speed_kmh` (the
+          controller has already clamped it against ATC and EB rules).
+        - PHYSICS_KIND_HANDLE: integrate the controller-set handle through
+          the standard handle→accel mapping plus friction and drag.
         """
-        Compute the new speed for manual power_percent mode.
-
-        Per design_new.md "Ownership split":
-            user drives with percentage power; the controller passes raw
-            percentage power to TrainPhysics, which immediately converts it
-            via SpeedProfile.power_speed_curve into both track voltage and
-            the calibrated current speed when no braking override is active.
-
-        Per the implementation index manual-mode rule, "ATC/service/EB braking
-        forces the percent to 0 for that tick." The controller publishes the
-        live ATC ceiling at distance 0 in `controller.atc_speed_limit`.
-
-        Behavior summary:
-        - EB latched: emergency-brake decel from previous_speed.
-        - ATC ceiling below previous speed (service brake required): force
-          percent contribution to 0 and apply service decel from
-          previous_speed.
-        - Otherwise: convert percent through SpeedProfile.power_speed_curve
-          and clamp at the ATC ceiling.
-        """
-        if controller.eb_active:
+        if command.kind == PHYSICS_KIND_EMERGENCY_BRAKE:
             new_speed = max(
                 0.0, previous_speed - profile.emergency_brake_rate * delta
             )
@@ -399,23 +390,40 @@ class TrainPhysics:
                 new_speed = 0.0
             return new_speed
 
-        atc_limit_kmh = float(getattr(controller, "atc_speed_limit", 0.0) or 0.0)
+        if command.kind == PHYSICS_KIND_TARGET_SPEED:
+            return max(0.0, float(command.target_speed_kmh))
 
-        # ATC requires deceleration: percent treated as 0 for this tick.
-        if previous_speed > atc_limit_kmh + 0.01:
-            new_speed = max(
-                0.0, previous_speed - profile.deceleration_rate * delta
-            )
-            if new_speed <= STOPPED_SPEED_THRESHOLD_KMH:
-                new_speed = 0.0
-            return new_speed
+        # PHYSICS_KIND_HANDLE: integrate from previous_speed.
+        operational_decel = (
+            profile.deceleration_rate * profile.operational_decel_ratio
+        )
+        acceleration = self._get_acceleration_for_handle(
+            command.handle,
+            profile.acceleration_rate,
+            operational_decel,
+            profile.emergency_brake_rate,
+        )
 
-        # No braking override: convert percent through calibration curve.
-        pct = float(getattr(controller, "manual_power_percent", 0.0) or 0.0)
-        target_kmh = profile.power_percent_to_speed(pct)
-        if atc_limit_kmh > 0 and target_kmh > atc_limit_kmh:
-            target_kmh = atc_limit_kmh
-        return max(0.0, target_kmh)
+        new_speed = previous_speed + (acceleration * delta)
+        new_speed = max(0.0, new_speed)
+
+        if acceleration < 0 and new_speed <= STOPPED_SPEED_THRESHOLD_KMH:
+            new_speed = 0.0
+
+        if command.handle == HandlePosition.N and previous_speed > 0:
+            friction_decel = profile.friction_rate * delta
+            new_speed = max(0.0, new_speed - friction_decel)
+
+        if (
+            profile.air_resistance_enabled
+            and previous_speed > 0
+            and profile.reference_speed_kmh > 0
+        ):
+            speed_ratio = previous_speed / profile.reference_speed_kmh
+            drag_decel = profile.drag_coefficient * (speed_ratio**2) * delta
+            new_speed = max(0.0, new_speed - drag_decel)
+
+        return new_speed
 
     def _speed_to_distance(self, speed_kmh: float, delta: float) -> float:
         """
@@ -432,6 +440,56 @@ class TrainPhysics:
         """
         cm_per_second = kmh_to_cm_per_sec(speed_kmh)
         return cm_per_second * delta
+
+    # =========================================================================
+    # Track voltage (canonical home per design_new.md "Power-controller role")
+    # =========================================================================
+
+    def compute_track_voltage(
+        self,
+        controller: Optional["TrainController"],
+        speed_profile: Optional["SpeedProfile"],
+    ) -> float:
+        """Canonical home for `track_voltage`.
+
+        Per design_new.md "Voltage behavior" and "Power-controller role",
+        `track_voltage` is per-tick derived state owned by `TrainPhysics`.
+        Operational state (OFF / READY / RUNNING_AT_STATION / RUNNING_MOVING)
+        selects the voltage shape; for RUNNING_MOVING the speed scalar is
+        published by the controller as `PhysicsCommand.voltage_source_speed_kmh`
+        so physics never inspects manual-mode fields directly.
+
+        `BlockPowerController` consumes this scalar without making any
+        manual-mode policy decisions itself.
+        """
+        # OFF or no controller: 0V.
+        operational_state = (
+            getattr(controller, "state", None) if controller is not None else None
+        )
+        if controller is None or operational_state == TrainState.OFF:
+            return 0.0
+
+        lighting_voltage = (
+            speed_profile.lighting_voltage if speed_profile is not None else 0.0
+        )
+
+        # Stopped lit states: lighting voltage scalar.
+        if operational_state in (TrainState.READY, TrainState.RUNNING_AT_STATION):
+            return lighting_voltage
+
+        # RUNNING_MOVING: the speed reference comes from the controller's
+        # PhysicsCommand. EB collapses voltage_source_speed_kmh to 0.0 in
+        # the producer, so no extra branch is needed here.
+        command = self._read_physics_command(controller)
+        voltage_speed = float(command.voltage_source_speed_kmh)
+        if speed_profile is not None:
+            return speed_profile.speed_to_voltage(voltage_speed)
+        return self._linear_speed_to_voltage(voltage_speed)
+
+    @staticmethod
+    def _linear_speed_to_voltage(speed_kmh: float) -> float:
+        """Fallback linear conversion when no SpeedProfile is supplied."""
+        return min(12.0, max(0.0, float(speed_kmh) / 10.0))
 
     # =========================================================================
     # Span-update / boundary-callback helpers
@@ -645,7 +703,11 @@ class TrainPhysics:
         ``train.position`` snapshot; the controller owns the canonical span
         storage and uses ``span_update.new_span`` to refresh it.
         """
-        new_span = train.position
+        new_span = (
+            TrainSpan.from_train_position(train.position)
+            if train.position is not None
+            else None
+        )
 
         added_groups = self._group_traversals_by_resource(added_traversals)
         removed_groups = self._group_traversals_by_resource(removed_traversals)
@@ -688,8 +750,13 @@ class TrainPhysics:
     ) -> None:
         """Emit the final no-boundary PhysicsSpanUpdate for ticks where no
         movement occurred (powered-off ticks)."""
+        new_span = (
+            TrainSpan.from_train_position(train.position)
+            if train.position is not None
+            else None
+        )
         update = PhysicsSpanUpdate(
-            new_span=train.position,
+            new_span=new_span,
             current_speed_kmh=current_speed_kmh,
             added_tiles=[],
             removed_tiles=[],
@@ -1021,8 +1088,7 @@ class TrainPhysics:
         Diagnostic-only sync check between tile-derived blocks and the local
         last-occupied-blocks tracker.
 
-        Per design_new.md the controller now owns occupied_resources via the
-        span_update; the tile-derived block set should match the local
+        The tile-derived block set should match the local
         _last_occupied_blocks set on every tick. We only log the discrepancy
         here — block-state corrections belong to the dispatcher progress flow.
         """
@@ -1051,46 +1117,16 @@ class TrainPhysics:
         """
         Output voltage to all blocks occupied by this train.
 
-        Uses SpeedProfile to convert target speed to voltage. Voltage is
-        per-tick derived state owned by TrainPhysics and emitted as the
-        software-to-hardware output layer through BlockPowerController.
+        Per design_new.md ~line 168, voltage emission delegates to
+        `compute_track_voltage(...)` so physics does not inspect controller
+        mode fields. The EB-zero override is already baked into the
+        controller-published `PhysicsCommand.voltage_source_speed_kmh`.
         """
         power_controller = self._get_power_controller()
         if not power_controller:
             return
 
-        profile = self._get_speed_profile()
-
-        # State source: controller state (canonical owner per design_new.md).
-        operational_state = getattr(controller, "state", TrainState.OFF)
-
-        # Voltage selection by operational state. v1 states are OFF, IDLE,
-        # STANDBY, RUNNING_MOVING, RUNNING_AT_STATION.
-        if operational_state == TrainState.OFF:
-            voltage = 0.0
-        elif operational_state == TrainState.RUNNING_MOVING:
-            # Manual power_percent mode: voltage tracks the calibrated speed
-            # produced by SpeedProfile.power_speed_curve (per design_new.md
-            # "Ownership split"). All other modes use lookahead target_speed.
-            if (
-                controller.control_mode == "manual"
-                and getattr(controller, "manual_mode_type", None)
-                == "power_percent"
-            ):
-                voltage = profile.speed_to_voltage(
-                    float(getattr(controller, "current_speed_kmh", 0.0) or 0.0)
-                )
-            else:
-                voltage = profile.speed_to_voltage(controller.target_speed)
-        else:
-            # IDLE / STANDBY / RUNNING_AT_STATION: powered but not moving.
-            voltage = profile.lighting_voltage
-
-        # Emergency stop override
-        if controller.eb_active:
-            voltage = 0.0
-
-        # Set voltage for all occupied blocks
+        voltage = self.compute_track_voltage(controller, self._get_speed_profile())
         self._set_voltage_for_blocks(train, voltage)
 
     def _set_voltage_for_blocks(self, train: "Train", voltage: float) -> None:

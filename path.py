@@ -2,14 +2,14 @@
 Path entity (dispatcher-owned authority record).
 
 Per design_new.md "Path field schema", a Path is the dispatcher-owned
-record of a single live authority for one train. It is born ACTIVE on a
+record of a single active authority for one train. It is born ACTIVE on a
 successful PathDispatcher.create_path(...) and transitions to COMPLETED or
 CANCELLED. Resource geometry is stored once in resource_sequence (the
 single source of truth) plus a derived flat path_tiles geometry. There is
 no v0 block_sequence / start_block_id / end_block_id / current_block_index;
 authority extents are described by requested_destination_block_id +
 requested_destination_direction (the caller's target) and
-authority_end_block_id (the live-authority end).
+authority_end_block_id (the active-authority end).
 
 See also:
 - design_new.md "## Path And PathDispatcher" (Path field schema, path_tile
@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from enums import PathStatus, direction_from_delta, OPPOSITE_DIRECTIONS
-from runtime_payloads import PathCancellationKind
 
 
 # ============================================================================
@@ -104,6 +103,22 @@ class ResourceSequenceEntry:
             exit_edge=str(data.get("exit_edge", "")),
         )
 
+    def resolve(self, network) -> Optional[Any]:
+        """Return the live `TrackResource` (Block or Switch) for this entry,
+        or None if the resource_id is not registered on the network.
+
+        ResourceSequenceEntry stays the source of truth for path-local
+        geometry (`path_tiles`, `entry_edge`, `exit_edge`); this helper is a
+        pure registry read so callers that want polymorphic access to the
+        underlying entity do not have to duplicate the
+        `network.blocks.get(...)` / `network.switches.get(...)` branch.
+        """
+        if self.resource_type == "block":
+            return network.blocks.get(self.resource_id)
+        if self.resource_type == "switch":
+            return network.switches.get(self.resource_id)
+        return None
+
 
 # ============================================================================
 # Path
@@ -143,19 +158,14 @@ class Path:
     requested_destination_direction: str = ""
 
     # Geometry. resource_sequence is the single source of truth; path_tiles
-    # is the concatenation of resource_sequence[*].path_tiles in
-    # sequence_index order, rebuilt on every successful create/extend.
+    # is a derived `@property` that concatenates resource_sequence[*].path_tiles
+    # live on every read. There is no stored copy.
     resource_sequence: List[ResourceSequenceEntry] = field(default_factory=list)
-    path_tiles: List[PathTileEntry] = field(default_factory=list)
 
     # Head-based progress through resource_sequence. Stores the
     # sequence_index of the current path-progress anchor resource, not the
     # first matching raw resource ID.
     current_resource_index: int = 0
-
-    # Diagnostic-only cancellation kind. Set when status transitions to
-    # CANCELLED. Routing/planning logic must not branch on this value.
-    cancellation_kind: Optional[PathCancellationKind] = None
 
     # System-time Unix timestamp (seconds) of the most recent status
     # change. Set on creation and on every transition.
@@ -172,13 +182,24 @@ class Path:
         self.status = new_status
         self.last_status_updated_time = when
 
-    @property
-    def authority_end_block_id(self) -> str:
-        """Derived live authority end block.
+    def get_path_tiles(self) -> List[PathTileEntry]:
+        """Derived ordered tile list — `resource_sequence[*].path_tiles`
+        concatenated in `sequence_index` order. Per design_new.md "Path
+        field schema": exposed as a function (not a property) — computed
+        live on every call; not cached; no writers; no rebuild step. The
+        function name signals "this is work, not a stored read."
+        """
+        tiles: List[PathTileEntry] = []
+        for entry in self.resource_sequence:
+            tiles.extend(entry.path_tiles)
+        return tiles
 
-        Per design_new.md "Path field schema": this is read-only and reflects
-        the terminal block resource of the current `resource_sequence`.
-        Returns "" when the sequence is empty (e.g. before initial
+    def get_authority_end_block_id(self) -> str:
+        """Derived active authority end block.
+
+        Per design_new.md "Path field schema": exposed as a function (not a
+        property) returning `resource_sequence[-1].resource_id` on each
+        call. Returns "" when the sequence is empty (e.g. before initial
         construction has populated it). Path invariants require the terminal
         entry to be a `block` resource; switch-terminated authority is not
         valid in v1 (see "Path invariants").
@@ -292,7 +313,7 @@ class Path:
         previously inferred direction from neighbouring tile coordinates.
         """
         result: Dict[str, str] = {}
-        for tile in self.path_tiles:
+        for tile in self.get_path_tiles():
             key = f"{tile.x},{tile.y}"
             result[key] = tile.exit_edge
         return result
@@ -300,16 +321,18 @@ class Path:
     def get_exit_direction(self) -> Optional[str]:
         """Direction the path is heading at its end (the last tile's
         exit_edge). None if the path has no tiles."""
-        if not self.path_tiles:
+        tiles = self.get_path_tiles()
+        if not tiles:
             return None
-        return self.path_tiles[-1].exit_edge or None
+        return tiles[-1].exit_edge or None
 
     def get_last_tile_entry_edge(self) -> Optional[str]:
         """Edge through which the path enters its last tile. Equal to the
         last tile's entry_edge."""
-        if not self.path_tiles:
+        tiles = self.get_path_tiles()
+        if not tiles:
             return None
-        return self.path_tiles[-1].entry_edge or None
+        return tiles[-1].entry_edge or None
 
     def get_all_locked_switches(self) -> List[str]:
         """All switch resource_ids whose locks were acquired by this path
@@ -329,15 +352,10 @@ class Path:
             "train_id": self.train_id,
             "requested_destination_block_id": self.requested_destination_block_id,
             "requested_destination_direction": self.requested_destination_direction,
-            "authority_end_block_id": self.authority_end_block_id,
+            "authority_end_block_id": self.get_authority_end_block_id(),
             "resource_sequence": [e.to_dict() for e in self.resource_sequence],
-            "path_tiles": [t.to_dict() for t in self.path_tiles],
+            "path_tiles": [t.to_dict() for t in self.get_path_tiles()],
             "current_resource_index": self.current_resource_index,
-            "cancellation_kind": (
-                self.cancellation_kind.value
-                if self.cancellation_kind is not None
-                else None
-            ),
             "last_status_updated_time": self.last_status_updated_time,
             # Convenience projections for UI consumers.
             "tile_directions": self.get_tile_directions(),
@@ -346,13 +364,6 @@ class Path:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Path":
-        cancellation_kind_raw = data.get("cancellation_kind")
-        cancellation_kind = (
-            PathCancellationKind(cancellation_kind_raw)
-            if cancellation_kind_raw is not None
-            else None
-        )
-
         return cls(
             path_id=str(data["path_id"]),
             status=PathStatus(data.get("status", PathStatus.ACTIVE.value)),
@@ -363,16 +374,12 @@ class Path:
             requested_destination_direction=str(
                 data.get("requested_destination_direction", "")
             ),
-            # `authority_end_block_id` is derived from resource_sequence;
-            # the serialized value is ignored on read.
+            # `authority_end_block_id` and `path_tiles` are both derived from
+            # `resource_sequence`; their serialized values are ignored on read.
             resource_sequence=[
                 ResourceSequenceEntry.from_dict(e)
                 for e in data.get("resource_sequence", [])
             ],
-            path_tiles=[
-                PathTileEntry.from_dict(t) for t in data.get("path_tiles", [])
-            ],
             current_resource_index=int(data.get("current_resource_index", 0)),
-            cancellation_kind=cancellation_kind,
             last_status_updated_time=float(data.get("last_status_updated_time", 0.0)),
         )

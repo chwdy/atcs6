@@ -67,7 +67,6 @@ class TestTrainControllerMonitorLookahead:
             (1, 0, Direction.EAST),
             (2, 0, Direction.EAST),
         ]
-        train.path_index = 0
         network.add_train(train)
 
         controller = TrainController(train_id=train.train_id, network=network)
@@ -106,7 +105,6 @@ class TestTrainControllerMonitorLookahead:
             (1, 0, Direction.EAST),
             (2, 0, Direction.EAST),
         ]
-        train.path_index = 1
         network.add_train(train)
 
         controller = TrainController(train_id=train.train_id, network=network)
@@ -177,7 +175,6 @@ class TestLookaheadTrackUsabilityBugFix:
             (1, 0, Direction.EAST),
             (2, 0, Direction.EAST),
         ]
-        train.path_index = 0
         train.assigned_path_id = "PATH_OWN"
         network.add_train(train)
         return train
@@ -225,15 +222,16 @@ class TestTrainControlPanelDataBugFix:
     BUG: /api/network returned train data without controller state, so the
     train control panel could not reflect power/handle status or ATO path info.
 
-    FIX: /api/network includes an onboard controller snapshot per train.
+    FIX: /api/network exposes a sibling `controllers_by_train_id` map per
+    design_new.md "Data Flow To UI" (~line 2065).
     """
 
-    def test_network_includes_onboard_snapshot(self):
-        """Network response should include onboard controller state per train."""
+    def test_network_includes_controller_sibling(self):
+        """Network response should include controllers_by_train_id sibling map."""
         from simulation import build_network_payload
 
         network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.assigned_path_id = "PATH_1"
         network.add_train(train)
@@ -245,12 +243,13 @@ class TestTrainControlPanelDataBugFix:
         controller.control_mode = "ato"
 
         payload = build_network_payload(network, sim_controller)
-        train_data = payload["trains"][0]
-        assert "onboard" in train_data
-        assert train_data["onboard"]["power_on"] is True
-        assert train_data["onboard"]["handle_position"] == "P2"
-        assert train_data["onboard"]["control_mode"] == "ato"
-        assert "ato_info" in train_data["onboard"]
+        controllers = payload["controllers_by_train_id"]
+        assert "TRAIN_01" in controllers
+        controller_data = controllers["TRAIN_01"]
+        assert controller_data["power_on"] is True
+        assert controller_data["handle_position"] == "P2"
+        assert controller_data["control_mode"] == "ato"
+        assert "ato_info" in controller_data
 
 
 
@@ -258,20 +257,20 @@ class TestEmergencyResetButtonDataBugFix:
     """
     Comprehensive tests for emergency reset button data fix (2026-01-24).
 
-    BUG: Onboard controller payload only included `eb_active`, while the
-    control panel expects `emergency_stop_active`, so the reset button never
+    BUG: Controller payload only included `eb_active`, while the control
+    panel expects `emergency_stop_active`, so the reset button never
     appears even when emergency braking is active.
 
-    FIX: Provide `emergency_stop_active` in onboard snapshots alongside
+    FIX: Provide `emergency_stop_active` in controller snapshots alongside
     `eb_active`.
     """
 
-    def test_onboard_includes_emergency_stop_active(self):
-        """Onboard payload should expose emergency_stop_active for UI state."""
+    def test_controller_payload_includes_emergency_stop_active(self):
+        """Controller payload should expose emergency_stop_active for UI state."""
         from simulation import build_network_payload
 
         network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         network.add_train(train)
 
@@ -280,8 +279,8 @@ class TestEmergencyResetButtonDataBugFix:
         controller.eb_active = True
 
         payload = build_network_payload(network, sim_controller)
-        train_data = payload["trains"][0]
-        assert train_data["onboard"]["emergency_stop_active"] is True
+        controller_data = payload["controllers_by_train_id"]["TRAIN_01"]
+        assert controller_data["eb_active"] is True
 
 
 
@@ -303,7 +302,7 @@ class TestTrainAssignedPathSerializationBugFix:
         controller.current_speed_kmh, not controller.current_speed_kmh.
         """
         network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_LOG_2", consist=[car], max_speed=60.0)
         network.add_train(train)
 

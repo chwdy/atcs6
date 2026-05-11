@@ -206,14 +206,21 @@ class TestBlockRoutes:
         data = response.get_json()
         assert data["status"] == "success"
 
-    def test_cycle_block_state(self, client, app_state):
-        """POST /api/blocks/<block_id>/cycle-state should cycle state."""
-        pytest.skip(
-            "v1: Block.state is a read-only @property; the network.set_block_state "
-            "helper still tries to assign block.state = state. The cycle endpoint "
-            "exercises that legacy path and raises AttributeError until the "
-            "endpoint is rewritten to mutate primitives."
-        )
+    def test_cycle_block_state_endpoint_is_gone(self, client, app_state):
+        """The cycle-state admin shim was removed in PR 6.
+
+        Block state is owned by BlockManager / ResourceCoordinator in v1
+        and computed as a read-only @property from `occupied_by` /
+        `_is_caution` / `reservation`; there is no admin-side
+        direct-mutation surface. The endpoint that used to expose this
+        path is removed; calling it now returns 404.
+        """
+        app_state.network.create_block("BLK_001", "Test")
+        response = client.post("/api/blocks/BLK_001/cycle-state")
+        # 404 if Flask doesn't know the route at all; 405 if Flask
+        # matches the URL prefix but rejects the method. Either way the
+        # admin shim is no longer reachable.
+        assert response.status_code in (404, 405)
 
     def test_create_block_with_tracks(self, client, network_with_tracks):
         """POST /api/blocks/create-with-tracks should create block with tracks."""
@@ -531,7 +538,7 @@ class TestTrainRoutes:
 
     def test_get_train(self, client, app_state):
         """GET /api/trains/<train_id> should return train details."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=1000.0, max_speed=100.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=1000.0, max_speed=100.0)
         train = Train("TRAIN_001", consist=[car])
         app_state.network.add_train(train)
         response = client.get("/api/trains/TRAIN_001")
@@ -539,7 +546,7 @@ class TestTrainRoutes:
 
     def test_delete_train(self, client, app_state):
         """DELETE /api/trains/<train_id> should delete train."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=1000.0, max_speed=100.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=1000.0, max_speed=100.0)
         train = Train("TRAIN_001", consist=[car])
         app_state.network.add_train(train)
         response = client.delete("/api/trains/TRAIN_001")
@@ -547,7 +554,7 @@ class TestTrainRoutes:
 
     def test_train_power_on(self, client, app_state, network_with_tracks):
         """POST /api/trains/<train_id>/power-on should power on train."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0, max_speed=100.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
         train = Train("TRAIN_001", consist=[car])
         app_state.network.add_train(train)
         app_state.network.place_train(train, 0, 0, Direction.EAST)
@@ -556,27 +563,12 @@ class TestTrainRoutes:
 
     def test_train_power_off(self, client, app_state, network_with_tracks):
         """POST /api/trains/<train_id>/power-off should power off train."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0, max_speed=100.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
         train = Train("TRAIN_001", consist=[car])
         app_state.network.add_train(train)
         app_state.network.place_train(train, 0, 0, Direction.EAST)
         response = client.post("/api/trains/TRAIN_001/power-off")
         assert response.status_code in [200, 400]
-
-    def test_train_set_direction(self, client, app_state, network_with_tracks):
-        """POST /api/trains/<train_id>/set-direction should set direction."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0, max_speed=100.0)
-        train = Train("TRAIN_001", consist=[car])
-        app_state.network.add_train(train)
-        app_state.network.place_train(train, 0, 0, Direction.EAST)
-
-        client.post("/api/trains/TRAIN_001/power-on")
-
-        response = client.post(
-            "/api/trains/TRAIN_001/set-direction", json={"direction": "EAST"}
-        )
-        assert response.status_code in [200, 400]
-
 
 # ============================================================================
 # Path Routes Tests (9 routes)
@@ -606,7 +598,7 @@ class TestPathRoutes:
         app_state.network.create_block_with_tracks("BLK_002", [(2, 0), (3, 0)])
         app_state.network.create_block_with_tracks("BLK_003", [(4, 0)])
 
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length=40.0, max_speed=100.0)
+        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
         train = Train("TRAIN_001", consist=[car])
         app_state.network.add_train(train)
         app_state.network.place_train(train, 0, 0, Direction.EAST)
@@ -635,7 +627,9 @@ class TestPathRoutes:
         first_path_id = first_data.get("path_id") or first_data.get("path", {}).get(
             "path_id"
         )
-        assert train.assigned_path_id == first_path_id
+        # Per design_new.md, the dispatcher owns active-path lookup; Train no
+        # longer carries `assigned_path_id`.
+        assert app_state.path_dispatcher.active_path_id_by_train("TRAIN_001") == first_path_id
 
         second_response = client.post(
             "/api/paths",
@@ -653,7 +647,7 @@ class TestPathRoutes:
         second_data = second_response.get_json()
         assert second_data["success"] is False
         # Train should still hold the original path.
-        assert train.assigned_path_id == first_path_id
+        assert app_state.path_dispatcher.active_path_id_by_train("TRAIN_001") == first_path_id
 
     def test_list_paths(self, client):
         """GET /api/paths should list all paths."""
@@ -738,7 +732,7 @@ class TestRouteRedesignApis:
     """Coverage for newly added route-panel redesign APIs."""
 
     def _create_train(self, app_state, train_id: str = "TRAIN_A"):
-        car = TrainCar(car_id=f"{train_id}_CAR", car_type="LOCOMOTIVE", length=20.0)
+        car = TrainCar(car_id=f"{train_id}_CAR", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id=train_id, consist=[car], max_speed=80.0)
         app_state.network.add_train(train)
 
@@ -807,40 +801,6 @@ class TestRouteRedesignApis:
         assert len(data["results"]) == 1
         assert data["results"][0]["from"] == "PLT_A"
         assert data["results"][0]["to"] == "PLT_B"
-
-    def test_assign_route_with_next_waypoint_and_status(self, client, app_state):
-        self._setup_connected_platforms(app_state, client)
-        self._create_train(app_state, "TRAIN_A")
-
-        create_route_resp = client.post(
-            "/api/train-routes",
-            json={
-                "name": "Route A",
-                "mode": "one_off",
-                "waypoints": [
-                    {"platform_id": "PLT_A", "dwell_time_sec": 5},
-                    {"platform_id": "PLT_B", "dwell_time_sec": 5},
-                ],
-            },
-        )
-        assert create_route_resp.status_code == 200
-        route_id = create_route_resp.get_json()["route"]["route_id"]
-
-        assign_resp = client.put(
-            "/api/trains/TRAIN_A/assign-route",
-            json={"route_id": route_id, "next_waypoint_index": 1, "force": True},
-        )
-        assert assign_resp.status_code == 200
-
-        status_resp = client.get(f"/api/train-routes/{route_id}/status")
-        assert status_resp.status_code == 200
-        status_data = status_resp.get_json()
-        assert status_data["route_id"] == route_id
-        train_status = next(
-            t for t in status_data["trains"] if t["train_id"] == "TRAIN_A"
-        )
-        assert train_status["current_waypoint_index"] == 1
-
 
 # ============================================================================
 # Summary

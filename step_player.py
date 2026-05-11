@@ -187,7 +187,7 @@ class StepPlayer:
         positions = [tuple(p) for p in op["positions"]]
         name = op.get("name", "")
         length_cm = op.get("length_cm", 0.0)
-        max_speed_kmh = op.get("max_speed_kmh")
+        speed_limit_kmh = op.get("speed_limit_kmh", op.get("max_speed_kmh"))
 
         # First, ensure all tracks exist
         for x, y in positions:
@@ -201,7 +201,7 @@ class StepPlayer:
             positions=positions,
             name=name,
             length_cm=length_cm,
-            max_speed_kmh=max_speed_kmh,
+            speed_limit_kmh=speed_limit_kmh,
             validate=False,  # Skip validation during replay
         )
 

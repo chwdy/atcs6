@@ -99,7 +99,6 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/blocks", methods=["POST"])
     def create_block():
-        """Create a new block"""
         data = request.json or {}
         block_id = data.get("block_id") or f"BLK_{uuid.uuid4().hex[:8].upper()}"
         name = data.get("name", "")
@@ -110,8 +109,10 @@ def register(app, state: AppState) -> None:
                 block.length_cm = float(data["length_cm"])
             if "min_radius_cm" in data:
                 block.min_radius_cm = data["min_radius_cm"]
-            if "max_speed_kmh" in data:
-                block.max_speed_kmh = data["max_speed_kmh"]
+            if "speed_limit_kmh" in data:
+                block.speed_limit_kmh = data["speed_limit_kmh"]
+            elif "max_speed_kmh" in data:
+                block.speed_limit_kmh = data["max_speed_kmh"]
             return jsonify(block.to_dict())
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -171,20 +172,25 @@ def register(app, state: AppState) -> None:
             block.length_cm = float(data["length_cm"])
         if "min_radius_cm" in data:
             block.min_radius_cm = data["min_radius_cm"]
-        if "max_speed_kmh" in data:
-            block.max_speed_kmh = data["max_speed_kmh"]
+        if "speed_limit_kmh" in data:
+            block.speed_limit_kmh = data["speed_limit_kmh"]
+        elif "max_speed_kmh" in data:
+            block.speed_limit_kmh = data["max_speed_kmh"]
         if "state" in data:
-            # Convert string to BlockState enum and use set_block_state for proper signal updates
-            state_str = data["state"].lower()
-            try:
-                new_state = BlockStateEnum(state_str)
-                state.network.set_block_state(block_id, new_state)
-            except ValueError:
-                return jsonify(
-                    {
-                        "error": f"Invalid state: {state_str}. Valid: free, reserved, occupied, caution"
-                    }
-                ), 400
+            # Block state is owned by BlockManager / ResourceCoordinator in v1
+            # and computed from `occupied_by` / `_is_caution` / `reservation`;
+            # there is no admin-side direct-mutation surface. The cycle-state
+            # endpoint that exercised this path was removed in PR 6.
+            return jsonify(
+                {
+                    "error": (
+                        "Direct block state mutation is not supported in v1. "
+                        "Block state is derived from occupied_by / "
+                        "_is_caution / reservation, written exclusively by "
+                        "BlockManager and ResourceCoordinator."
+                    )
+                }
+            ), 410
 
         return jsonify(block.to_dict())
 
@@ -197,41 +203,11 @@ def register(app, state: AppState) -> None:
             )
         return jsonify({"error": "Block not found"}), 404
 
-    @app.route("/api/blocks/<block_id>/cycle-state", methods=["POST"])
-    def cycle_block_state(block_id):
-        """
-        Cycle block state: FREE -> RESERVED -> OCCUPIED -> CAUTION -> FREE
-
-        Used by UI right-click to manually cycle through states for testing.
-        Rejects changes if block is reserved by an active route.
-        """
-        # Check if block is reserved by a route - reject manual changes
-        block = state.network.get_block(block_id)
-        if not block:
-            return jsonify({"error": "Block not found"}), 404
-
-        if block.reserved_by_path:
-            return jsonify(
-                {
-                    "error": f"Block is reserved by path {block.reserved_by_path}",
-                    "reserved_by_path": block.reserved_by_path,
-                    "current_state": block.state.value,
-                }
-            ), 409  # 409 Conflict
-
-        new_state = state.network.cycle_block_state(block_id)
-        if new_state is None:
-            return jsonify({"error": "Block not found"}), 404
-
-        block = state.network.get_block(block_id)
-        return jsonify(
-            {
-                "status": "success",
-                "block_id": block_id,
-                "new_state": new_state.value,
-                "block": block.to_dict(),
-            }
-        )
+    # The `POST /api/blocks/<block_id>/cycle-state` endpoint was removed in
+    # PR 6. v1's design owns block state through BlockManager /
+    # ResourceCoordinator (see Block model in design_new.md); the admin
+    # cycle-state shim tried to assign `block.state`, which is now a
+    # read-only computed property, and so always raised AttributeError.
 
     @app.route("/api/blocks/create-with-tracks", methods=["POST"])
     def create_block_with_tracks():
@@ -244,7 +220,7 @@ def register(app, state: AppState) -> None:
             "positions": [[0,0], [1,0], [2,0]],
             "name": "Main Line",
             "length_cm": 150.0,
-            "max_speed_kmh": 80.0
+            "speed_limit_kmh": 80.0
         }
         """
         data = request.json
@@ -265,7 +241,9 @@ def register(app, state: AppState) -> None:
                 positions=positions,
                 name=data.get("name", ""),
                 length_cm=data.get("length_cm", 0.0),
-                max_speed_kmh=data.get("max_speed_kmh"),
+                speed_limit_kmh=data.get(
+                    "speed_limit_kmh", data.get("max_speed_kmh")
+                ),
             )
             return jsonify(block.to_dict())
         except ValueError as e:

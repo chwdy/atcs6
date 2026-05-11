@@ -10,6 +10,7 @@ from typing import Optional
 from flask import send_from_directory, jsonify, request
 
 from app_state import AppState
+from enums import TrainState
 from simulation import build_network_payload
 from train_route import Route, RouteTask
 
@@ -20,13 +21,15 @@ def _coerce_route_task(item: dict) -> RouteTask:
     Accepts both the v1 shape (``task_kind`` + ``task_location`` etc.) and the
     legacy shape (``platform_id`` + ``dwell_time_sec``-only). When
     ``task_kind`` is omitted, infer ``"dwell"`` if ``dwell_time_sec`` is
-    positive, otherwise ``"stop"``.
+    positive, otherwise ``"stop"``. ``task_location`` accepts the canonical
+    structured form ``{"block_id"|"platform_id"|"station_id": "..."}`` or a
+    plain string (legacy: interpreted as a platform_id by RouteTask.from_dict).
     """
     data = dict(item or {})
 
-    # Legacy alias: platform_id -> task_location.
+    # Legacy alias: platform_id -> task_location (structured form).
     if "task_location" not in data and "platform_id" in data:
-        data["task_location"] = data["platform_id"]
+        data["task_location"] = {"platform_id": data["platform_id"]}
 
     if "task_kind" not in data:
         try:
@@ -55,7 +58,9 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/network", methods=["GET"])
     def get_network():
-        return jsonify(build_network_payload(state.network, state.sim_controller))
+        payload = build_network_payload(state.network, state.sim_controller)
+        payload["simulation_running"] = state.simulation_running
+        return jsonify(payload)
 
     @app.route("/api/simulation/control", methods=["POST"])
     def control_simulation():
@@ -271,7 +276,7 @@ def register(app, state: AppState) -> None:
     @app.route("/api/train-routes", methods=["GET"])
     def list_train_routes():
         routes = []
-        for route in state.network.routes.values():
+        for route in state.sim_controller.route_executor.route_registry.values():
             routes.append(route.to_dict())
         return jsonify({"routes": routes})
 
@@ -307,15 +312,14 @@ def register(app, state: AppState) -> None:
         for train_id in assigned_train_ids:
             if train_id in state.network.trains:
                 route.assign_train(train_id)
-                state.network.trains[train_id].assigned_route_id = route.route_id
 
-        state.network.routes[route_id] = route
+        state.sim_controller.route_executor.register_route(route)
 
         return jsonify({"status": "success", "route": route.to_dict()})
 
     @app.route("/api/train-routes/<route_id>", methods=["GET"])
     def get_train_route(route_id):
-        route = state.network.routes.get(route_id)
+        route = state.sim_controller.route_executor.route_registry.get(route_id)
         if not route:
             return jsonify({"error": "Route not found"}), 404
         return jsonify(route.to_dict())
@@ -331,10 +335,10 @@ def register(app, state: AppState) -> None:
             "tasks": [
                 {
                     "task_kind": "waypoint"|"stop"|"dwell",
-                    "task_location": str,
+                    "task_location": {"block_id"|"platform_id"|"station_id": "..."}
+                                     | str (legacy: interpreted as platform_id),
                     "task_direction": "forward"|"reverse"|"either",
-                    "dwell_time_sec": float,
-                    "timing_mode": str ("none"|"relative"|"absolute"),
+                    "task_time": float (optional),
                     "target_time": float (optional)
                 },
                 ...
@@ -354,7 +358,7 @@ def register(app, state: AppState) -> None:
         from train_route import RouteMode
 
         with state.simulation_lock:
-            route = state.network.routes.get(route_id)
+            route = state.sim_controller.route_executor.route_registry.get(route_id)
             if not route:
                 return jsonify({"error": f"Route '{route_id}' not found"}), 404
 
@@ -404,15 +408,14 @@ def register(app, state: AppState) -> None:
                 for task in new_tasks:
                     route.add_task(task)
 
-                if state.sim_controller and state.sim_controller.route_executor:
-                    for (
-                        exec_state
-                    ) in state.sim_controller.route_executor.execution_states.values():
-                        if exec_state.route_id == route_id:
-                            exec_state.current_waypoint_index = min(
-                                exec_state.current_waypoint_index,
-                                max(0, route.get_task_count() - 1),
-                            )
+                # Per design_new.md line 1074, structural route edits should
+                # tear down active `RouteRun`s and let Phase 1 allocate fresh
+                # runs. The legacy in-place cursor clamp here was an admin
+                # shortcut that is incompatible with the derived
+                # `current_waypoint_index`. Operator/admin tooling that
+                # actually needs to retarget mid-flight should call
+                # `controller.phase_latches.set_route_abort(...)` for each
+                # affected train (see `PUT /api/trains/<id>/assign-route`).
 
             if "assigned_train_ids" in data:
                 requested_train_ids = set(data.get("assigned_train_ids", []))
@@ -420,39 +423,34 @@ def register(app, state: AppState) -> None:
 
                 for train_id in current_train_ids - requested_train_ids:
                     route.unassign_train(train_id)
-                    train = state.network.trains.get(train_id)
-                    if train and train.assigned_route_id == route.route_id:
-                        train.assigned_route_id = None
 
                 for train_id in requested_train_ids - current_train_ids:
                     if train_id in state.network.trains:
                         route.assign_train(train_id)
-                        state.network.trains[
-                            train_id
-                        ].assigned_route_id = route.route_id
 
         return jsonify(route.to_dict())
 
     @app.route("/api/train-routes/<route_id>", methods=["DELETE"])
     def delete_train_route(route_id):
-        if route_id not in state.network.routes:
+        registry = state.sim_controller.route_executor.route_registry
+        if route_id not in registry:
             return jsonify({"error": "Route not found"}), 404
 
-        route = state.network.routes[route_id]
-        for train in state.network.trains.values():
-            if train.assigned_route_id == route_id:
-                train.assigned_route_id = None
+        route = registry[route_id]
+        previously_assigned = list(route.assigned_train_ids)
+        for train_id in previously_assigned:
+            route.unassign_train(train_id)
 
         if state.sim_controller and state.sim_controller.route_executor:
-            for train_id in list(route.assigned_train_ids):
+            for train_id in previously_assigned:
                 state.sim_controller.route_executor.execution_states.pop(train_id, None)
 
-        del state.network.routes[route_id]
+        state.sim_controller.route_executor.unregister_route(route_id)
         return jsonify({"status": "success", "message": f"Route {route_id} deleted"})
 
     @app.route("/api/train-routes/<route_id>/activate", methods=["POST"])
     def activate_train_route(route_id):
-        route = state.network.routes.get(route_id)
+        route = state.sim_controller.route_executor.route_registry.get(route_id)
         if not route:
             return jsonify({"error": "Route not found"}), 404
 
@@ -461,7 +459,7 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/train-routes/<route_id>/deactivate", methods=["POST"])
     def deactivate_train_route(route_id):
-        route = state.network.routes.get(route_id)
+        route = state.sim_controller.route_executor.route_registry.get(route_id)
         if not route:
             return jsonify({"error": "Route not found"}), 404
 
@@ -471,7 +469,7 @@ def register(app, state: AppState) -> None:
     @app.route("/api/train-routes/<route_id>/status", methods=["GET"])
     def get_train_route_status(route_id):
         """Get per-train execution status for a route."""
-        route = state.network.routes.get(route_id)
+        route = state.sim_controller.route_executor.route_registry.get(route_id)
         if not route:
             return jsonify({"error": "Route not found"}), 404
 
@@ -487,38 +485,53 @@ def register(app, state: AppState) -> None:
 
             status = {
                 "train_id": train_id,
-                "current_waypoint_index": 0,
-                "direction": 1,
+                "current_waypoint_index": None,
+                "direction": "forward",
                 "current_task_kind": None,
                 "current_task_location": None,
-                "resolved_platform_id": None,
                 "at_platform": False,
-                "waiting_for_path": False,
                 "dwell_remaining_sec": None,
             }
 
             if route_executor:
                 exec_state = route_executor.execution_states.get(train_id)
                 if exec_state and exec_state.route_id == route.route_id:
+                    # Per design, `current_waypoint_index` is Optional[int]
+                    # (largest finished walk-position, or None). For the
+                    # status read we want the next planning index (the task
+                    # the train is currently working on).
+                    next_idx = exec_state.next_planning_index
                     status["current_waypoint_index"] = exec_state.current_waypoint_index
                     status["direction"] = exec_state.direction
-                    status["resolved_platform_id"] = exec_state.resolved_platform_id
-                    status["at_platform"] = (
-                        exec_state.arrived_at_platform_time is not None
-                    )
-                    status["waiting_for_path"] = exec_state.waiting_for_path
 
-                    task = route.get_task_at(exec_state.current_waypoint_index)
+                    controller = route_executor.controllers.get(train_id)
+                    if controller is not None:
+                        status["at_platform"] = (
+                            controller.state == TrainState.RUNNING_AT_STATION
+                        )
+
+                    task = route.get_task_at(next_idx)
                     if task:
+                        from train_route import task_location_to_dict
+
                         status["current_task_kind"] = task.task_kind
-                        status["current_task_location"] = task.task_location
-                        if exec_state.arrived_at_platform_time is not None:
-                            status["dwell_remaining_sec"] = (
-                                task.get_remaining_dwell_time(
-                                    state.sim_controller.simulation_time,
-                                    exec_state.arrived_at_platform_time,
-                                )
+                        status["current_task_location"] = task_location_to_dict(
+                            task.task_location
+                        )
+                        if (
+                            task.task_kind == "dwell"
+                            and next_idx < len(exec_state.task_runs)
+                        ):
+                            dwell_started_at = exec_state.task_started_at(
+                                next_idx
                             )
+                            if dwell_started_at is not None:
+                                status["dwell_remaining_sec"] = (
+                                    task.get_remaining_dwell_time(
+                                        state.sim_controller.simulation_time,
+                                        dwell_started_at,
+                                    )
+                                )
 
             trains_status.append(status)
 
@@ -810,7 +823,6 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/schedules/<schedule_id>", methods=["DELETE"])
     def delete_schedule(schedule_id):
-        """Delete a schedule."""
         if schedule_id not in state.network.schedules:
             return jsonify({"error": "Schedule not found"}), 404
 
@@ -1228,8 +1240,20 @@ def register(app, state: AppState) -> None:
             if not switch:
                 return jsonify({"error": f"Switch {switch_id} not found"}), 404
 
-            # Use request_state_change which checks lock status
-            success, message = switch.request_state_change(new_state, state.network)
+            switch_manager = state.network.switch_manager
+            if switch_manager is None:
+                return (
+                    jsonify(
+                        {"error": "SwitchManager not available — runtime not initialised"}
+                    ),
+                    503,
+                )
+
+            # Route through SwitchManager so the BlockManager notification is
+            # paired with the position write.
+            success, message = switch_manager.request_position_change(
+                switch_id, new_state
+            )
 
             if success:
                 return jsonify(
