@@ -1358,13 +1358,24 @@ class PathDispatcher:
     def _tile_exit_edge(
         self, tiles: List[Tuple[int, int]], i: int
     ) -> Optional[str]:
-        if i + 1 >= len(tiles):
-            return None
-        curr = tiles[i]
-        nxt = tiles[i + 1]
-        dx = nxt[0] - curr[0]
-        dy = nxt[1] - curr[1]
-        return direction_from_delta(dx, dy)
+        if i + 1 < len(tiles):
+            curr = tiles[i]
+            nxt = tiles[i + 1]
+            dx = nxt[0] - curr[0]
+            dy = nxt[1] - curr[1]
+            return direction_from_delta(dx, dy)
+        # Terminal tile fallback: the path ends here, so there's no next
+        # tile to derive the exit direction from. The forward traversal
+        # direction is still well-defined — it's the opposite of how the
+        # train entered this tile. `PathDispatcher.try_complete_active_path(...)`
+        # consults this exit edge to verify the terminal authority direction
+        # matches `Path.requested_destination_direction`; leaving it empty
+        # would make completion impossible.
+        if i > 0:
+            entry = self._tile_entry_edge(tiles, i)
+            if entry is not None:
+                return OPPOSITE_DIRECTIONS.get(entry)
+        return None
 
     def _flatten_resource_sequence_tiles(
         self, sequence: List[ResourceSequenceEntry]

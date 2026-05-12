@@ -193,9 +193,9 @@ class RendererTrainHandler {
         const occupiedTiles = span.occupied_tiles || [];
         if (occupiedTiles.length === 0) return;
 
-        // active_cab is null when the train has no cab selected; we still
-        // draw both endpoints, but as squares rather than head triangle.
-        const hasLeadingEnd = controller.active_cab === 'A' || controller.active_cab === 'B';
+        // controller.cab is null when the train has no cab selected; we
+        // still draw both endpoints, but as squares rather than head triangle.
+        const hasLeadingEnd = controller.cab === 'A' || controller.cab === 'B';
 
         // Resolve which end is head vs tail. occupied_tiles is ordered
         // end_a → end_b (see network.py). leading_end ('a' or 'b') tells us
@@ -211,27 +211,47 @@ class RendererTrainHandler {
         const headEntryEdge = headEndpoint.entry_edge;
         const tailEntryEdge = tailEndpoint.entry_edge;
 
-        // Per-tile length is not exposed in v1's network payload. 50cm is the
-        // common case in this project's layouts; body interpolation between
-        // head/tail will be slightly approximate when a tile is shorter or
-        // longer than that constant.
-        const TILE_LENGTH_CM = 50;
-
+        // Per-tile length is `block.length_cm / number_of_tiles_in_block`
+        // (matching `RailwayNetwork._get_tile_length_cm` on the backend).
+        // Switches have length 0 — the head transits them instantly, and
+        // interpolation on a 0-length tile is meaningless, so the renderer
+        // pins it at the entry edge (handled inside getTilePathPosition).
         const tracks = this.currentNetwork?.tracks || [];
-        const getTrackBits = (tile) => {
-            const t = tracks.find(tr => tr.x === tile[0] && tr.y === tile[1]);
-            return t ? t.track_bits : 0;
+        const blocks = this.currentNetwork?.blocks || {};
+        const DEFAULT_TILE_LENGTH_CM = 50;
+
+        const tileCountByBlock = new Map();
+        for (const tr of tracks) {
+            if (!tr.block_section_id) continue;
+            tileCountByBlock.set(
+                tr.block_section_id,
+                (tileCountByBlock.get(tr.block_section_id) || 0) + 1
+            );
+        }
+
+        const getTrack = (tile) => tracks.find(tr => tr.x === tile[0] && tr.y === tile[1]);
+        const getTrackBits = (tile) => getTrack(tile)?.track_bits || 0;
+        const getTileLengthCm = (tile) => {
+            const t = getTrack(tile);
+            if (!t) return DEFAULT_TILE_LENGTH_CM;
+            if (t.is_switch) return 0;
+            if (!t.block_section_id) return DEFAULT_TILE_LENGTH_CM;
+            const block = blocks[t.block_section_id];
+            const blockLen = block?.length_cm;
+            if (!blockLen || blockLen <= 0) return DEFAULT_TILE_LENGTH_CM;
+            const tileCount = tileCountByBlock.get(t.block_section_id) || 1;
+            return blockLen / tileCount;
         };
 
         // Calculate head and tail screen positions
         const headPos = this.getTilePathPosition(
             headTile, headEntryEdge, headDistanceCm,
-            TILE_LENGTH_CM, getTrackBits(headTile)
+            getTileLengthCm(headTile), getTrackBits(headTile)
         );
 
         const tailPos = this.getTilePathPosition(
             tailTile, tailEntryEdge, tailDistanceCm,
-            TILE_LENGTH_CM, getTrackBits(tailTile)
+            getTileLengthCm(tailTile), getTrackBits(tailTile)
         );
 
         const s = this.scale;
@@ -248,6 +268,20 @@ class RendererTrainHandler {
         const pathPoints = [];
         pathPoints.push({ x: tailPos.x, y: tailPos.y });
 
+        // Exit edge from one occupied tile to the next is fixed by their
+        // grid positions — derive it directly. Using `getTrackExits()` with
+        // the live `switch_state` would pick the wrong branch any time the
+        // switch state differs from what the train actually traversed.
+        const edgeFromDelta = (curr, next) => {
+            const dx = next[0] - curr[0];
+            const dy = next[1] - curr[1];
+            if (dy > 0) return 'N';
+            if (dy < 0) return 'S';
+            if (dx > 0) return 'E';
+            if (dx < 0) return 'W';
+            return null;
+        };
+
         if (!hasLeadingEnd) {
             // No cab active: simple direct line between ends regardless of track path
             pathPoints.push({ x: headPos.x, y: headPos.y });
@@ -255,17 +289,9 @@ class RendererTrainHandler {
             // Same tile - direct line
             pathPoints.push({ x: headPos.x, y: headPos.y });
         } else if (occupiedTileCount === 2) {
-            // 2 tiles - go through boundary between tiles
-            const tailTrack = tracks.find(t => t.x === tailTile[0] && t.y === tailTile[1]);
-            if (!tailTrack) {
-                console.warn('[RendererTrainHandler] Track not found for tail tile', {
-                    tailTile, trainId: train.id
-                });
-                return;
-            }
-            const tailExits = this.getTrackExits(tailTrack, tailEntryEdge);
-            const tailExitEdge = tailExits.length > 0 ? tailExits[0] : null;
-            const headEntryEdgeCalc = tailExitEdge ? this.getOppositeEdge(tailExitEdge) : headEntryEdge;
+            // 2 tiles - go through the shared boundary derived from grid positions.
+            const tailExitEdge = edgeFromDelta(tailTile, headTile);
+            const headEntryEdgeCalc = tailExitEdge ? this.getOppositeEdge(tailExitEdge) : null;
 
             if (tailExitEdge) {
                 const tailCenterX = this.gridToScreenX(tailTile[0], tailTile[1]);
@@ -274,7 +300,7 @@ class RendererTrainHandler {
                 pathPoints.push({ x: tailCenterX + tailExitOffset.x, y: tailCenterY + tailExitOffset.y });
             }
 
-            if (headEntryEdgeCalc && (headTile[0] !== tailTile[0] || headTile[1] !== tailTile[1])) {
+            if (headEntryEdgeCalc) {
                 const headCenterX = this.gridToScreenX(headTile[0], headTile[1]);
                 const headCenterY = this.gridToScreenY(headTile[0], headTile[1]);
                 const headEntryOffset = this.getEdgeCenterOffset(headEntryEdgeCalc);
@@ -283,29 +309,24 @@ class RendererTrainHandler {
 
             pathPoints.push({ x: headPos.x, y: headPos.y });
         } else {
-            // 3+ tiles - walk all occupied tiles tail → head
-            let currentEntryEdge = tailEntryEdge;
-
+            // 3+ tiles - walk all occupied tiles tail → head, using each
+            // tile-to-next-tile delta to pick the shared edge.
             for (let i = 0; i < tilesTailToHead.length - 1; i++) {
                 const currentTile = tilesTailToHead[i];
-                const track = tracks.find(t => t.x === currentTile[0] && t.y === currentTile[1]);
-                if (!track) {
-                    console.warn('[RendererTrainHandler] Track not found for intermediate tile', {
-                        tile: currentTile, trainId: train.id
-                    });
-                    continue;
-                }
+                const nextTile = tilesTailToHead[i + 1];
+                const exitEdge = edgeFromDelta(currentTile, nextTile);
+                if (!exitEdge) continue;
 
-                const exits = this.getTrackExits(track, currentEntryEdge);
-                const exitEdge = exits.length > 0 ? exits[0] : null;
+                const centerX = this.gridToScreenX(currentTile[0], currentTile[1]);
+                const centerY = this.gridToScreenY(currentTile[0], currentTile[1]);
+                const exitOffset = this.getEdgeCenterOffset(exitEdge);
+                pathPoints.push({ x: centerX + exitOffset.x, y: centerY + exitOffset.y });
 
-                if (exitEdge) {
-                    const centerX = this.gridToScreenX(currentTile[0], currentTile[1]);
-                    const centerY = this.gridToScreenY(currentTile[0], currentTile[1]);
-                    const exitOffset = this.getEdgeCenterOffset(exitEdge);
-                    pathPoints.push({ x: centerX + exitOffset.x, y: centerY + exitOffset.y });
-                    currentEntryEdge = this.getOppositeEdge(exitEdge);
-                }
+                const entryEdge = this.getOppositeEdge(exitEdge);
+                const nextCenterX = this.gridToScreenX(nextTile[0], nextTile[1]);
+                const nextCenterY = this.gridToScreenY(nextTile[0], nextTile[1]);
+                const entryOffset = this.getEdgeCenterOffset(entryEdge);
+                pathPoints.push({ x: nextCenterX + entryOffset.x, y: nextCenterY + entryOffset.y });
             }
             pathPoints.push({ x: headPos.x, y: headPos.y });
         }

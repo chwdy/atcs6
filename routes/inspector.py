@@ -473,7 +473,7 @@ _ATO_DEBUG_FIELDS: List[Dict[str, Any]] = [
     {"name": "required_decel_kmh_s", "doc": "max required deceleration across all non-skipped samples"},
     {"name": "multiplier_needed", "doc": "required_decel / op_decel — looked up against BRAKE_MULTIPLIERS"},
     {"name": "target_handle", "doc": "notch picked by pick_brake_notch_for_multiplier (or power/coast in non-brake modes)"},
-    {"name": "overspeed_at_zero", "doc": "True when speed > ceiling + ATO_SPEED_TOLERANCE — bypasses rate-limit"},
+    {"name": "overspeed_at_zero", "doc": "True when speed > ceiling + ato_speed_tolerance(ref) — bypasses rate-limit"},
     {"name": "rate_limited", "doc": "True when rate_limit_handle clipped target_handle to one notch closer to current"},
     {"name": "final_handle", "doc": "the handle actually returned by compute_handle this tick"},
 ]

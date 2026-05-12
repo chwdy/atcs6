@@ -177,10 +177,47 @@ class RailwayPathfinder:
             if next_block_id and next_block_id not in new_blocks:
                 new_blocks.append(next_block_id)
             if next_block_id == end_block_id:
+                # Walk forward through the rest of the destination block so
+                # the path covers every tile inside it. Without this, the
+                # BFS stops at the entry tile and a multi-tile destination
+                # (e.g. a platform spanning several tiles) ends up with
+                # authority for only its first tile — the train then stops
+                # near the start of the platform instead of the far end.
+                ext_tiles = list(new_path_tiles)
+                ext_distance = new_distance
+                cx, cy = next_x, next_y
+                came_via_exit = exit_edge
+                while True:
+                    cur_track = self.network.get_track(cx, cy)
+                    if cur_track is None or cur_track.is_switch:
+                        break
+                    cur_entry = OPPOSITE_EDGE.get(came_via_exit)
+                    if not cur_entry or cur_entry not in cur_track.edges:
+                        break
+                    cur_exits = cur_track.get_exits(
+                        cur_entry, use_switch_state=False
+                    )
+                    if len(cur_exits) != 1:
+                        break
+                    fwd_exit = cur_exits[0]
+                    fwd_offset = EDGE_OFFSETS.get(fwd_exit)
+                    if not fwd_offset:
+                        break
+                    fdx, fdy = fwd_offset
+                    fx, fy = cx + fdx, cy + fdy
+                    fwd_track = self.network.get_track(fx, fy)
+                    if fwd_track is None:
+                        break
+                    if fwd_track.block_section_id != end_block_id:
+                        break
+                    ext_distance += fwd_track.length * 100.0
+                    ext_tiles.append((fx, fy))
+                    cx, cy = fx, fy
+                    came_via_exit = fwd_exit
                 walks.append(
                     PathSegment(
-                        tiles=new_path_tiles,
-                        distance_cm=new_distance,
+                        tiles=ext_tiles,
+                        distance_cm=ext_distance,
                         required_switches=dict(switches),
                         blocks=new_blocks,
                     )
@@ -307,7 +344,11 @@ class RailwayPathfinder:
         if not ordered_tiles or len(walk.tiles) < 2:
             return None
 
-        dest_block_id = dest_block.block_section_id
+        # `Block` carries its id as `block_id`; `block_section_id` is a
+        # `TrackSegment` field pointing to the owning block. The original
+        # code conflated the two — never noticed because `ordered_tiles`
+        # used to be empty in v1 runtime, which short-circuits this method.
+        dest_block_id = dest_block.block_id
         # Find the first tile that belongs to the destination block.
         first_dest_tile: Optional[Tuple[int, int]] = None
         for tile in walk.tiles:

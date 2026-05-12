@@ -28,8 +28,125 @@ if TYPE_CHECKING:
 class BlockGeometryManager:
     """Owns block topology / geometry mutation for one `RailwayNetwork`."""
 
+    _EDGE_OFFSETS = {"N": (0, 1), "E": (1, 0), "S": (0, -1), "W": (-1, 0)}
+    _OPPOSITE_EDGE = {"N": "S", "S": "N", "E": "W", "W": "E"}
+
     def __init__(self, network: "RailwayNetwork") -> None:
         self._n = network
+
+    # ------------------------------------------------------------------
+    # ordered_tiles maintenance
+    # ------------------------------------------------------------------
+
+    def rebuild_block_ordered_tiles(self, block_id: str) -> None:
+        """Recompute `Block.ordered_tiles` from the block's current tile members.
+
+        Per design_new.md "Block model": `ordered_tiles` is a list of
+        `(x, y, entry_edge)` entries giving the canonical local traversal
+        order. Each `entry_edge` is the external edge through which forward
+        traversal enters that tile. `ordered_tiles[0]` is the canonical
+        forward-entry anchor.
+
+        Every geometry mutation that adds or removes a tile from a block
+        must call this so consumers (path completion direction check,
+        block-direction helper, etc.) see the live order.
+        """
+        from block import BlockTileEntry
+
+        block = self._n.blocks.get(block_id)
+        if block is None:
+            return
+
+        in_block = []
+        for (x, y), track in self._n.tracks.items():
+            if track is None or track.is_switch:
+                continue
+            if getattr(track, "block_section_id", None) == block_id:
+                in_block.append((x, y))
+
+        if not in_block:
+            block.ordered_tiles = []
+            return
+
+        # Build adjacency over same-block neighbours.
+        in_block_set = set(in_block)
+        neighbours = {t: [] for t in in_block}
+        for tile in in_block:
+            x, y = tile
+            for edge, (dx, dy) in self._EDGE_OFFSETS.items():
+                nbr = (x + dx, y + dy)
+                if nbr in in_block_set:
+                    neighbours[tile].append((nbr, edge))
+
+        # Pick a deterministic starting endpoint: the tile with the fewest
+        # in-block neighbours, breaking ties by sorted coordinate. For a
+        # linear block this finds an end; for a single-tile block it picks
+        # that tile.
+        start = sorted(in_block, key=lambda t: (len(neighbours[t]), t))[0]
+
+        # Walk from the start, recording each tile and the edge the train
+        # entered it through.
+        ordered = [start]
+        prev = None
+        while True:
+            current = ordered[-1]
+            options = [n for (n, _e) in neighbours[current] if n != prev]
+            if not options:
+                break
+            # Deterministic next pick when a tile has multiple options
+            # (only happens for non-linear members or branchy blocks; v1
+            # validation forbids those, but stay safe here).
+            next_tile = sorted(options)[0]
+            ordered.append(next_tile)
+            prev = current
+
+        # Compute entry_edges.
+        entries = []
+        for i, tile in enumerate(ordered):
+            if i == 0:
+                entry_edge = self._external_entry_edge(tile, in_block_set)
+            else:
+                prev_tile = ordered[i - 1]
+                dx = tile[0] - prev_tile[0]
+                dy = tile[1] - prev_tile[1]
+                edge_from_prev = self._edge_for_delta(dx, dy)
+                entry_edge = self._OPPOSITE_EDGE.get(edge_from_prev or "", "") or ""
+            entries.append(
+                BlockTileEntry(x=tile[0], y=tile[1], entry_edge=entry_edge)
+            )
+        block.ordered_tiles = entries
+
+    def _external_entry_edge(
+        self, tile: Tuple[int, int], in_block_set: set
+    ) -> str:
+        """Pick the entry edge for the first tile in `ordered_tiles`.
+
+        For multi-tile blocks the first tile has at most one external
+        neighbouring track tile in the right direction; we use the edge
+        facing that neighbour. For single-tile blocks we fall back to the
+        first external direction with a connecting track. Returns an empty
+        string if no external connection exists.
+        """
+        x, y = tile
+        for edge, (dx, dy) in self._EDGE_OFFSETS.items():
+            nbr = (x + dx, y + dy)
+            if nbr in in_block_set:
+                continue
+            nbr_track = self._n.get_track(nbr[0], nbr[1])
+            if nbr_track is not None:
+                return edge
+        return ""
+
+    def _edge_for_delta(self, dx: int, dy: int) -> Optional[str]:
+        if dx == 0 and dy > 0:
+            return "N"
+        if dx == 0 and dy < 0:
+            return "S"
+        if dy == 0 and dx > 0:
+            return "E"
+        if dy == 0 and dx < 0:
+            return "W"
+        return None
 
     def create_block(self, block_id: str, name: str = "") -> Block:
         """
@@ -152,6 +269,11 @@ class BlockGeometryManager:
             track = self._n.get_track(x, y)
             if track:
                 track.block_section_id = block_id
+
+        # Populate Block.ordered_tiles per design_new.md "Block model" so
+        # path completion direction check and the block-direction helper
+        # have geometry to work with.
+        self.rebuild_block_ordered_tiles(block_id)
 
         return block
 
@@ -304,6 +426,13 @@ class BlockGeometryManager:
             track = self._n.get_track(x, y)
             if track:
                 track.block_section_id = block_id
+
+        # Refresh ordered_tiles for both this block and any block we
+        # overwrote tiles from, so the geometry view stays in sync.
+        self.rebuild_block_ordered_tiles(block_id)
+        for ob in overwritten_blocks:
+            if ob != block_id and ob in self._n.blocks:
+                self.rebuild_block_ordered_tiles(ob)
 
         # Store invalidated signals info on block for API response
         block._invalidated_signals = invalidated_signals
@@ -648,9 +777,75 @@ class BlockGeometryManager:
                 if track:
                     track.block_section_id = child_id
 
+            # Populate ordered_tiles per design_new.md "Block model".
+            # Inherit each tile's `entry_edge` from the parent block so the
+            # child's local traversal direction matches the parent's (this
+            # matters for single-tile child blocks where the connectivity
+            # graph alone is ambiguous — picking the first cardinal
+            # neighbour can flip the block's forward direction).
+            self._rebuild_child_ordered_tiles(child_id, parent_block)
+
             new_block_ids.append(child_id)
 
         return new_block_ids
+
+    def _rebuild_child_ordered_tiles(
+        self, child_id: str, parent_block: "Block"
+    ) -> None:
+        """Rebuild a child block's ordered_tiles using inherited entry_edges
+        from `parent_block.ordered_tiles` where possible.
+
+        Falls back to the standard rebuild for any tile the parent didn't
+        record an entry_edge for.
+        """
+        from block import BlockTileEntry
+
+        child = self._n.blocks.get(child_id)
+        if child is None:
+            return
+
+        parent_entry_by_tile = {
+            (entry.x, entry.y): entry.entry_edge
+            for entry in (parent_block.ordered_tiles or [])
+        }
+
+        child_tiles = []
+        for (x, y), track in self._n.tracks.items():
+            if track is None or track.is_switch:
+                continue
+            if getattr(track, "block_section_id", None) == child_id:
+                child_tiles.append((x, y))
+
+        if not child_tiles:
+            child.ordered_tiles = []
+            return
+
+        # Walk in the parent's order: any of the child's tiles that the
+        # parent listed first comes first here.
+        parent_order = {
+            (entry.x, entry.y): i
+            for i, entry in enumerate(parent_block.ordered_tiles or [])
+        }
+        child_tiles.sort(key=lambda t: (parent_order.get(t, 10**9), t))
+
+        entries = []
+        for tile in child_tiles:
+            inherited = parent_entry_by_tile.get(tile)
+            if inherited:
+                entries.append(
+                    BlockTileEntry(x=tile[0], y=tile[1], entry_edge=inherited)
+                )
+            else:
+                # Fallback for tiles the parent didn't record (shouldn't
+                # happen, but stay safe).
+                entries.append(
+                    BlockTileEntry(
+                        x=tile[0],
+                        y=tile[1],
+                        entry_edge=self._external_entry_edge(tile, set(child_tiles)),
+                    )
+                )
+        child.ordered_tiles = entries
 
     def _find_connected_components(
         self, positions: List[Tuple[int, int]]

@@ -178,6 +178,14 @@ class StationRegistry:
         # Assign station tile to station block
         track.block_section_id = station_block_id
 
+        # Refresh ordered_tiles for both the new station block and the
+        # parent block we split from (its membership just changed).
+        geom = self._n._get_block_geometry_manager()
+        if geom is not None:
+            geom.rebuild_block_ordered_tiles(station_block_id)
+            if original_block_id and original_block_id in self._n.blocks:
+                geom.rebuild_block_ordered_tiles(original_block_id)
+
         # Create station
         from enums import PlatformSide
 
@@ -391,6 +399,7 @@ class StationRegistry:
         # Add positions to station
         station_block_id = f"{station_id}_BLOCK"
 
+        affected_blocks: set = set()
         for x, y in new_positions:
             if (x, y) not in station.positions:
                 station.add_position(x, y)
@@ -398,11 +407,22 @@ class StationRegistry:
                 if track:
                     # Handle block splitting if needed - use lifecycle method
                     if track.block_section_id:
+                        if track.block_section_id != station_block_id:
+                            affected_blocks.add(track.block_section_id)
                         self._n.remove_tile_from_block(x, y)
                     # Assign to station's block
                     if station_block_id in self._n.blocks:
                         track.block_section_id = station_block_id
                     track.station_id = station_id
+
+        # Refresh ordered_tiles on the station block plus any block we
+        # split tiles away from, so the geometry view stays in sync.
+        geom = self._n._get_block_geometry_manager()
+        if geom is not None:
+            geom.rebuild_block_ordered_tiles(station_block_id)
+            for bid in affected_blocks:
+                if bid in self._n.blocks:
+                    geom.rebuild_block_ordered_tiles(bid)
 
         return station
 

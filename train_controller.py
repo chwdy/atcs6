@@ -99,9 +99,6 @@ YELLOW_SIGNAL_SPEED_KMH = 40.0
 CAUTION_SPEED_LIMIT_KMH = 40.0
 
 SPEED_TREND_EPSILON = 0.1
-ATO_SPEED_TOLERANCE = 2.0
-ATO_ENTRY_MARGIN = ATO_SPEED_TOLERANCE - 1.0
-ATO_EXIT_MARGIN = ATO_SPEED_TOLERANCE + 1.0
 
 # Speed curve constants
 CURVE_SAMPLE_RESOLUTION_CM = (
@@ -824,17 +821,19 @@ class TrainController:
 
         # ===== 8. STATE TRANSITIONS =====
         if self.state == TrainState.RUNNING_MOVING:
-            # Check for station arrival
-            if self._is_at_station():
-                self.state = TrainState.RUNNING_AT_STATION
-                self.ato_running = False
-                # RouteExecutor will handle dwell timing
-                logger.debug(
-                    "[TrainController %s] state -> RUNNING_AT_STATION",
-                    self.train_id,
-                )
+            # Per design_new.md "Per-train tick transaction" (~line 196,
+            # 282, 297): only RouteExecutor (Phase 1) writes
+            # RUNNING_AT_STATION, via TrainController.enter_station_dwell().
+            # Phase 2 must not transition to RUNNING_AT_STATION here, even
+            # when the stopped train sits in a scheduled-stop station
+            # block — the path-completion gate is_stopped_at_authority_end()
+            # requires state == RUNNING_MOVING, and Phase 3's
+            # try_complete_active_path(...) runs after this method
+            # returns. Dwell entry happens on the next eligible Phase 1
+            # tick once the dispatcher has completed the path and recorded
+            # the stop's finished_at.
 
-            elif self._is_standalone_path_complete(train):
+            if self._is_standalone_path_complete(train):
                 self.transition_to_ready()
                 logger.debug(
                     "[TrainController %s] standalone path complete -> READY",
@@ -1744,12 +1743,24 @@ class TrainController:
     def is_stopped_at_authority_end(self) -> bool:
         """True when the train is stopped at the usable end of active authority.
 
-        Per design_new.md, this is the post-physics usable-authority stop
-        check used by Phase 3 path completion. The full predicate requires
-        depart-acceptance (state == RUNNING_MOVING), active authority, and a
-        distance-0 ATC limit of 0 whose reason code is
-        `AtcLimitReasonCode.AUTHORITY_STOP`. v1 keys this predicate on the
-        enum value (not on free-form reason strings).
+        Per design_new.md step `8df5`, this is the post-physics usable-
+        authority stop check used by Phase 3 path completion. The full
+        predicate requires depart-acceptance (state == RUNNING_MOVING),
+        active authority, and the distance-0 lookahead curve reporting
+        no remaining positive clearance with reason code
+        `AtcLimitReasonCode.AUTHORITY_STOP`.
+
+        Clearance is measured against the lookahead's `operational_limit`
+        at distance 0 — the same curve ATO controls to — rather than the
+        raw `atc_limit`. ATO maintains an `ATO_SPEED_MARGIN_KMH` operational
+        headroom below ATC, so a train that ATO has stopped naturally at
+        the authority end sits with `operational_limit ≈ 0` while `atc_limit`
+        still reads a few km/h above zero. Per the second clause of step
+        `8df5` ("remaining projected authority distance is too short to
+        grant additional positive clearance after applying the controller
+        safety margin"), that natural stopping point is the intended
+        commit point — gating on the raw ATC value would force the train
+        to creep into the safety margin itself.
         """
         if not self.is_stopped():
             return False
@@ -1759,15 +1770,17 @@ class TrainController:
             return False
         if self.received_path_plan is None:
             return False
-        if self.atc_speed_limit > STOPPED_SPEED_THRESHOLD_KMH:
-            return False
-        # Read the canonical reason code from the live lookahead (per
-        # design_new.md ~line 161 — there is no controller-owned cache).
+        # Read the canonical lookahead live (per design_new.md ~line 161 —
+        # there is no controller-owned cache).
         payload = self._compute_canonical_lookahead()
         curves = (payload or {}).get("lookahead", {}).get("speed_curves") or []
         if not curves:
             return False
-        code = curves[0].get("atc_limit_reason_code")
+        head_point = curves[0]
+        operational_at_zero = head_point.get("operational_limit", 0.0) or 0.0
+        if operational_at_zero > STOPPED_SPEED_THRESHOLD_KMH:
+            return False
+        code = head_point.get("atc_limit_reason_code")
         return code == AtcLimitReasonCode.AUTHORITY_STOP.value
 
     # -------------------------------------------------------------------------

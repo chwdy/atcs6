@@ -571,7 +571,7 @@ class TrainEditorHandler {
                         </div>
                         <div class="tc-field">
                             <dt class="tc-field-label">Cab</dt>
-                            <dd class="tc-field-value">${controller?.active_cab || '—'}</dd>
+                            <dd class="tc-field-value">${controller?.cab || '—'}</dd>
                         </div>
                         <div class="tc-field">
                             <dt class="tc-field-label">Power</dt>
@@ -724,9 +724,9 @@ class TrainEditorHandler {
                     <div class="tc-row">
                         <span class="tc-row-label">Cab</span>
                         <div class="tc-segment" role="group">
-                            <button type="button" id="train-cab-a-btn" class="tc-seg-btn switch-btn ${controller?.active_cab === 'A' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>A</button>
-                            <button type="button" id="train-cab-b-btn" class="tc-seg-btn switch-btn ${controller?.active_cab === 'B' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>B</button>
-                            <button type="button" id="train-cab-off-btn" class="tc-seg-btn switch-btn ${!controller?.active_cab ? 'active' : ''}" ${!powerOn || !isStopped || !controller?.active_cab ? 'disabled' : ''}>Off</button>
+                            <button type="button" id="train-cab-a-btn" class="tc-seg-btn switch-btn ${controller?.cab === 'A' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>A</button>
+                            <button type="button" id="train-cab-b-btn" class="tc-seg-btn switch-btn ${controller?.cab === 'B' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>B</button>
+                            <button type="button" id="train-cab-off-btn" class="tc-seg-btn switch-btn ${!controller?.cab ? 'active' : ''}" ${!powerOn || !isStopped || !controller?.cab ? 'disabled' : ''}>Off</button>
                         </div>
                     </div>
                     <div class="tc-row">
@@ -1533,7 +1533,7 @@ class TrainEditorHandler {
         const powerOn = controller?.power_on ?? false;
         const controlMode = controller?.control_mode || 'ato';
         const isStopped = controller?.is_stopped ?? true;
-        const activeCab = controller?.active_cab || null;
+        const activeCab = controller?.cab || null;
         const travelDirection = controller?.travel_direction || 'forward';
 
         this.updateCabButtons(panel, powerOn, isStopped, activeCab);

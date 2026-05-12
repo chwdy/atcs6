@@ -7,7 +7,7 @@ no_overspeed, span ⇔ resource consistency).
 
 from typing import Callable
 
-from enums import TrainState
+from enums import BlockState, TrainState
 
 from .events import Invariant
 from .harness import Snapshot
@@ -214,3 +214,163 @@ def span_switch_consistency() -> Invariant:
             )
 
     return Invariant(name="span_switch_consistency", check=check)
+
+
+# --------------------------------------------------------------------------- #
+# Block state contract (per design_new.md "Block" section)
+# --------------------------------------------------------------------------- #
+
+
+def block_occupied_iff_span_covers_block() -> Invariant:
+    """Per design_new.md "Block model" — `Block.occupied_by` is *physical*
+    train presence. The invariant therefore has two directions:
+
+      (a) If any tile of a block is in the train's `current_span.occupied_tiles`,
+          that block MUST have `occupied_by == train_id`. Otherwise the
+          train is physically inside a block the manager believes is free.
+
+      (b) If `block.occupied_by == train_id` but NO tile of that block is in
+          the span, the block is stale: physical occupancy should have been
+          cleared on tail-vacate but wasn't.
+
+    This is the canonical block↔span correctness check. Failure in direction
+    (a) means an OCCUPIED→FREE transition happened too early (e.g. the
+    Phase-3 still_occupied_block_ids guard in TrainController used a stale
+    `new_span.occupied_blocks`). Failure in direction (b) means a tail-vacate
+    was never reported (the same stale-list bug, but in the other direction).
+    """
+
+    def check(s: Snapshot) -> None:
+        train_id = s.fixture.train_id
+        span_tiles = {tuple(t) for t in s.occupied_tiles}
+
+        # Direction (a): every tile-in-block must be in a block we own.
+        for tile in span_tiles:
+            track = s.network.get_track(*tile)
+            if track is None:
+                continue
+            block_id = getattr(track, "block_section_id", None)
+            if not block_id:
+                continue  # switch / boundary tile
+            block = s.network.blocks.get(block_id)
+            if block is None:
+                continue
+            assert block.occupied_by == train_id, (
+                f"span tile {tile} is inside block {block_id} but "
+                f"block.occupied_by={block.occupied_by!r} "
+                f"(expected {train_id!r}); block.state={block.state.value}, "
+                f"caution={block.caution!r}, "
+                f"span={sorted(span_tiles)}"
+            )
+
+        # Direction (b): every block we claim must have at least one span tile.
+        for bid, block in s.network.blocks.items():
+            if block.occupied_by != train_id:
+                continue
+            positions = s.network.get_block_positions(bid) or []
+            block_tiles = {(p[0], p[1]) for p in positions}
+            if not block_tiles:
+                continue  # empty/legacy block; nothing to verify
+            assert block_tiles & span_tiles, (
+                f"block {bid} claims occupied_by={train_id} but none of its "
+                f"tiles {sorted(block_tiles)} appear in span "
+                f"{sorted(span_tiles)} (stale physical occupancy — "
+                f"tail-vacate likely never fired)"
+            )
+
+    return Invariant(name="block_occupied_iff_span_covers_block", check=check)
+
+
+def block_reservation_excludes_occupied_other_train() -> Invariant:
+    """Per design_new.md "BlockManager" — `reserve_blocks_for_path(...)` must
+    refuse to reserve a block whose `occupied_by` is not the requesting train.
+    Equivalently: at every observation, if a block is `RESERVED`/`CAUTION`
+    (state-wise) by some path for train T1, then `occupied_by` must be either
+    None or T1 — never a different train.
+    """
+
+    def check(s: Snapshot) -> None:
+        for bid, block in s.network.blocks.items():
+            if block.reservation is None:
+                continue
+            res_train = block.reserved_for_train
+            occ = block.occupied_by
+            assert occ is None or occ == res_train, (
+                f"block {bid} reserved for {res_train!r} but occupied_by="
+                f"{occ!r} (state={block.state.value})"
+            )
+
+    return Invariant(
+        name="block_reservation_excludes_occupied_other_train", check=check
+    )
+
+
+def active_path_blocks_held_or_owned() -> Invariant:
+    """Per design_new.md "Path And PathDispatcher" — while a path is `ACTIVE`,
+    every block in its forward authority must be either physically occupied
+    by the path's train OR reserved by that same path. A block that is FREE
+    while the path is active means the dispatcher lost its claim mid-flight
+    (e.g. an unexpected `release_path_block_reservations` or a tail-vacate
+    that should not have fired).
+
+    Blocks that the train has already exited cleanly transition to CAUTION
+    (and then FREE/RESERVED depending on neighbour reevaluation); they are
+    no longer in the active forward authority, so we restrict the check to
+    blocks whose tiles still appear in the path's resource sequence ahead of
+    the train head.
+    """
+
+    def check(s: Snapshot) -> None:
+        if s.active_path_id is None:
+            return
+        train_id = s.fixture.train_id
+        sim = s.sim_controller
+        dispatcher = sim.path_dispatcher
+        if dispatcher is None:
+            return
+        path = dispatcher.get_active_path(train_id)
+        if path is None:
+            return
+
+        # Resource sequence: a list of (resource_type, resource_id) the path
+        # commits to traverse. Find every block past the head's current
+        # block in that sequence; those are future authority blocks.
+        seq = getattr(path, "resource_sequence", None) or []
+        head_block = None
+        if s.occupied_tiles:
+            head = s.head_tile
+            if head is not None:
+                track = s.network.get_track(*head)
+                head_block = getattr(track, "block_section_id", None) if track else None
+
+        # Find head position in sequence; if not found, fall back to checking
+        # every block in the sequence (still useful — none should be FREE).
+        start_idx = 0
+        if head_block is not None:
+            for i, entry in enumerate(seq):
+                rtype = getattr(entry, "resource_type", None)
+                rid = getattr(entry, "resource_id", None)
+                if rtype == "block" and rid == head_block:
+                    start_idx = i
+                    break
+
+        for entry in seq[start_idx:]:
+            rtype = getattr(entry, "resource_type", None)
+            rid = getattr(entry, "resource_id", None)
+            if rtype != "block" or not rid:
+                continue
+            block = s.network.blocks.get(rid)
+            if block is None:
+                continue
+            owned = block.occupied_by == train_id
+            reserved = block.reserved_by_path == s.active_path_id
+            assert owned or reserved, (
+                f"active path {s.active_path_id!r} has forward block {rid} "
+                f"that is neither occupied by {train_id!r} nor reserved by "
+                f"the same path "
+                f"(occupied_by={block.occupied_by!r}, "
+                f"reserved_by_path={block.reserved_by_path!r}, "
+                f"state={block.state.value})"
+            )
+
+    return Invariant(name="active_path_blocks_held_or_owned", check=check)

@@ -328,13 +328,6 @@ class RailwayNetwork:
         """Forward to `BlockGeometryManager.delete_block(block_id)`."""
         return self._get_block_geometry_manager().delete_block(block_id)
 
-    # `set_block_state` and `cycle_block_state` were admin shims from the
-    # pre-`BlockManager`-as-sole-writer era. They tried to assign `block.state`,
-    # which is now a read-only `@property` derived from `occupied_by` /
-    # `_is_caution` / `reservation`, so calling them raised at runtime. v1's
-    # design owns block state through `BlockManager` / `ResourceCoordinator`;
-    # there is no admin-side direct-mutation surface. Removed in PR 6.
-
     def get_block(self, block_id: str) -> Optional[Block]:
         return self.blocks.get(block_id)
 

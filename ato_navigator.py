@@ -51,11 +51,35 @@ if TYPE_CHECKING:
 # Tuning constants. ATO_RESTRICTION_LOOKAHEAD_CM caps how far ahead the
 # planner samples the curve; PLANNING_TICKS_AHEAD scales the actual horizon
 # with current speed and tick dt.
-ATO_SPEED_TOLERANCE = 2.0
+#
+# Speed-tracking deadband is scaled to the operating band rather than fixed
+# at one value. A 1-2 km/h gap is natural at 50 km/h cruise but huge at
+# 1 km/h creep — the same fixed deadband would prevent the train from
+# holding a low-speed ceiling. `ato_speed_tolerance(reference)` returns
+# `clamp(reference * RATIO, MIN, MAX)`, so the band stays a similar
+# fraction of the speed it is bounding. MAX preserves the prior high-speed
+# behavior; MIN keeps creep precise enough to honor sub-km/h ceilings near
+# the authority-end safety margin.
+ATO_SPEED_TOLERANCE_MAX = 2.0
+ATO_SPEED_TOLERANCE_MIN = 0.05
+ATO_SPEED_TOLERANCE_RATIO = 0.1
 ATO_RESTRICTION_LOOKAHEAD_CM = 150.0
 PLANNING_TICKS_AHEAD = 100
 MIN_PLANNING_HORIZON_CM = 30.0
 PLANNING_SAMPLE_COUNT = 6
+
+
+def ato_speed_tolerance(reference_kmh: float) -> float:
+    """Speed-tracking tolerance for ATO at the given reference speed.
+
+    `reference_kmh` is typically `max(current_speed_kmh, ceiling_at_zero)` —
+    the value the band is sized against. The result is clamped to
+    [ATO_SPEED_TOLERANCE_MIN, ATO_SPEED_TOLERANCE_MAX].
+    """
+    return max(
+        ATO_SPEED_TOLERANCE_MIN,
+        min(ATO_SPEED_TOLERANCE_MAX, max(0.0, reference_kmh) * ATO_SPEED_TOLERANCE_RATIO),
+    )
 
 
 # =============================================================================
@@ -451,9 +475,14 @@ class ATONavigator:
                 "multiplier": 0.0,
             }
 
-            if target_at_d >= speed_kmh - ATO_SPEED_TOLERANCE:
+            # Deadband scales with the reference speed: 2 km/h at cruise is
+            # natural; the same gap at 1 km/h creep is huge in relative terms
+            # and would let the train coast past low-speed ceilings.
+            skip_tolerance = ato_speed_tolerance(max(speed_kmh, target_at_d))
+            if target_at_d >= speed_kmh - skip_tolerance:
                 sample["skipped"] = True
                 sample["skip_reason"] = "target ≥ speed - tolerance"
+                sample["tolerance_kmh"] = skip_tolerance
                 samples.append(sample)
                 continue
 
@@ -485,12 +514,18 @@ class ATONavigator:
         debug["required_decel_kmh_s"] = round(required_decel_kmh_s, 3)
 
         # No braking required — power up while below the ceiling, else coast.
-        # Power-up deadband is ATO_SPEED_TOLERANCE (~2 km/h) so the train
-        # actually reaches and holds near the operational ceiling instead of
-        # bleeding speed below it after coasting in.
+        # Power-up deadband scales with the reference speed via
+        # `ato_speed_tolerance(...)`. At cruise this is ~2 km/h so the train
+        # holds near the ceiling instead of bleeding off after coasting in;
+        # at very low ceilings (e.g. a 0.8 km/h authority-end creep band) it
+        # tightens automatically so the deadband does not eat the ceiling.
         if required_decel_kmh_s <= 0.0:
             debug["multiplier_needed"] = 0.0
-            if speed_kmh < ceiling_at_zero - ATO_SPEED_TOLERANCE:
+            power_up_tolerance = ato_speed_tolerance(
+                max(speed_kmh, ceiling_at_zero)
+            )
+            debug["power_up_tolerance_kmh"] = power_up_tolerance
+            if speed_kmh < ceiling_at_zero - power_up_tolerance:
                 target_handle = self.calculate_power_notch(
                     speed_kmh, ceiling_at_zero
                 )
@@ -522,7 +557,9 @@ class ATONavigator:
         # Brake notch from required deceleration as a multiple of op_decel.
         multiplier_needed = required_decel_kmh_s / op_decel
         target_handle = self.pick_brake_notch_for_multiplier(multiplier_needed)
-        overspeed_at_zero = speed_kmh > ceiling_at_zero + ATO_SPEED_TOLERANCE
+        overspeed_at_zero = speed_kmh > ceiling_at_zero + ato_speed_tolerance(
+            max(speed_kmh, ceiling_at_zero)
+        )
 
         debug.update(
             {

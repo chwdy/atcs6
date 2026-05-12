@@ -232,6 +232,23 @@ class RouteTargetResolver:
         # walk-position (Optional[int]); the next planning index is what we
         # want here.
         idx = exec_state.next_planning_index
+
+        # ONE_OFF terminal-walk detection: `next_planning_index` returns the
+        # *last entry's* task_index as a sentinel when every task_run is
+        # finished (see its docstring). For ONE_OFF that means "no more
+        # tasks to walk" — `_append_next_walk_task` is a no-op there. The
+        # in-range check below would otherwise mistakenly resurrect the
+        # already-finished last task as the "next" one and prevent Phase 1
+        # from calling `finish_route_run(train_id)`.
+        task_runs = getattr(exec_state, "task_runs", None) or []
+        if route.mode == RouteMode.ONE_OFF and task_runs:
+            last_run = task_runs[-1]
+            if (
+                getattr(last_run, "finished_at", None) is not None
+                and idx == getattr(last_run, "task_index", None)
+            ):
+                return None
+
         if 0 <= idx < task_count:
             return idx
 

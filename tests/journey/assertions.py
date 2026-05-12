@@ -7,7 +7,7 @@ identifies the exact mismatch.
 
 from typing import Callable, Iterable, Optional, Set, Tuple, Union
 
-from enums import AtcLimitReasonCode, TrainState
+from enums import AtcLimitReasonCode, BlockState, TrainState
 
 from .harness import Snapshot
 
@@ -167,6 +167,105 @@ def assert_block_id_unoccupied(block_id: str) -> Check:
         assert block.occupied_by is None, (
             f"block {block_id} still occupied_by={block.occupied_by!r}"
         )
+
+    return check
+
+
+def assert_block_id_occupied_by(block_id: str, train_id: str) -> Check:
+    def check(s: Snapshot) -> None:
+        block = s.network.blocks.get(block_id)
+        assert block is not None, f"block {block_id} not found"
+        assert block.occupied_by == train_id, (
+            f"block {block_id} occupied_by={block.occupied_by!r}, "
+            f"expected {train_id!r}"
+        )
+
+    return check
+
+
+def assert_block_id_state(block_id: str, expected: BlockState) -> Check:
+    """Assert the computed `state` property of a block.
+
+    Per design_new.md "Block" — `state` is derived with priority
+    OCCUPIED > CAUTION > RESERVED > FREE from the underlying primitives.
+    """
+
+    def check(s: Snapshot) -> None:
+        block = s.network.blocks.get(block_id)
+        assert block is not None, f"block {block_id} not found"
+        assert block.state == expected, (
+            f"block {block_id} state={block.state.value}, "
+            f"expected {expected.value} "
+            f"(occupied_by={block.occupied_by!r}, "
+            f"caution={block.caution!r}, "
+            f"reservation={block.reservation!r})"
+        )
+
+    return check
+
+
+# --------------------------------------------------------------------------- #
+# Block reservation (path-side)
+# --------------------------------------------------------------------------- #
+
+
+def assert_block_id_reserved_by_path(
+    block_id: str, path_id_or_none: Optional[str] = None
+) -> Check:
+    """Assert a block is held by an active path's dispatcher reservation.
+
+    `path_id_or_none=None` accepts any non-None reservation path id; pass a
+    concrete id to require an exact match.
+    """
+
+    def check(s: Snapshot) -> None:
+        block = s.network.blocks.get(block_id)
+        assert block is not None, f"block {block_id} not found"
+        assert block.reserved_by_path is not None, (
+            f"block {block_id} has no reservation "
+            f"(expected reserved_by_path != None)"
+        )
+        if path_id_or_none is not None:
+            assert block.reserved_by_path == path_id_or_none, (
+                f"block {block_id} reserved_by_path={block.reserved_by_path!r}, "
+                f"expected {path_id_or_none!r}"
+            )
+
+    return check
+
+
+def assert_block_id_reserved_for_train(block_id: str, train_id: str) -> Check:
+    def check(s: Snapshot) -> None:
+        block = s.network.blocks.get(block_id)
+        assert block is not None, f"block {block_id} not found"
+        assert block.reserved_for_train == train_id, (
+            f"block {block_id} reserved_for_train={block.reserved_for_train!r}, "
+            f"expected {train_id!r}"
+        )
+
+    return check
+
+
+def assert_block_id_not_reserved(block_id: str) -> Check:
+    def check(s: Snapshot) -> None:
+        block = s.network.blocks.get(block_id)
+        assert block is not None, f"block {block_id} not found"
+        assert block.reservation is None, (
+            f"block {block_id} still reserved "
+            f"(reserved_by_path={block.reserved_by_path!r}, "
+            f"reserved_for_train={block.reserved_for_train!r})"
+        )
+
+    return check
+
+
+def assert_block_at_tile_reserved_by_path(
+    tile: Tuple[int, int], path_id_or_none: Optional[str] = None
+) -> Check:
+    def check(s: Snapshot) -> None:
+        block_id = _resolve_block_id_at_tile(s, tile)
+        assert block_id is not None, f"no block at tile {tile}"
+        assert_block_id_reserved_by_path(block_id, path_id_or_none)(s)
 
     return check
 

@@ -249,11 +249,13 @@ class TrainPhysics:
         if self._force_stop:
             new_speed = 0.0
 
-        # 11. Update block occupancy. The dispatcher-mediated block release
-        # path remains in place for in-flight v1 wiring; it will be lifted to
-        # PathDispatcher.on_controller_progress(...) by Agent B. The line that
-        # mirrors occupied_blocks back onto train.position has been removed —
-        # the controller derives that via the just-delivered span_update.
+        # 11. Update block occupancy. Recomputes `train.position.occupied_blocks`
+        # from the current `occupied_tiles` so the `TrainSpan` forwarded to
+        # `TrainController.on_physics_updated(...)` carries the live block
+        # ownership view. The actual `Block.occupied_by` / `Block.caution`
+        # writes still flow through Phase 3 via
+        # `PathDispatcher.on_controller_progress(...)` →
+        # `BlockManager.on_block_tail_vacated(...)` / `occupy_blocks(...)`.
         self._update_block_occupancy(train)
         logger.debug(
             "[TrainPhysics %s] occupied_blocks=%s caution_blocks=%s",
@@ -1037,8 +1039,12 @@ class TrainPhysics:
         delta. TrainPhysics does not write Block state — those writes flow
         through PathDispatcher.on_controller_progress(report) →
         BlockManager.occupy_blocks(...) / on_block_tail_vacated(...). This
-        method only maintains local diagnostics:
+        method maintains:
 
+        - train.position.occupied_blocks: ordered block-level ownership view
+          (forwarded to TrainSpan via from_train_position() so Phase 3's
+          tail-vacate suppression guard `still_occupied_block_ids` sees the
+          live set, not the stale snapshot written at place_train time)
         - last_block_transitions: entered/vacated sets, read by tests
         - _last_occupied_blocks: cached set used by _validate_position_sync
           and by serialize/restore round-trips
@@ -1054,9 +1060,24 @@ class TrainPhysics:
             "vacated": newly_vacated,
         }
 
-        # Update tracking. occupied_blocks is no longer mirrored back onto
-        # train.position; the controller derives it from the span_update
-        # delivered through TrainController.on_physics_updated(...).
+        # Mirror block-level ownership back onto train.position in physical
+        # tile order. TrainSpan.from_train_position(...) forwards this list
+        # to TrainController.on_physics_updated(...), which uses it as
+        # `still_occupied_block_ids` to suppress spurious tail-vacate
+        # reports when a train moves between tiles of the same multi-tile
+        # block.
+        if train.position is not None:
+            ordered_blocks: List[str] = []
+            seen: Set[str] = set()
+            tiles = train.position.occupied_tiles or []
+            for tile in tiles:
+                track = self.network.tracks.get(tile) if self.network else None
+                bid = getattr(track, "block_section_id", None) if track else None
+                if bid and bid not in seen:
+                    ordered_blocks.append(bid)
+                    seen.add(bid)
+            train.position.occupied_blocks = ordered_blocks
+
         self._last_occupied_blocks = new_occupied
 
     def _get_blocks_for_train(self, train: "Train") -> Set[str]:
