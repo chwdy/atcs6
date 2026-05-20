@@ -565,20 +565,6 @@ class API {
     }
 
 
-    /**
-     * Set travel direction.
-     * @param {string} trainId - Train ID
-     * @param {string} direction - 'forward' or 'reverse'
-     * @returns {Promise<object>} Result
-     */
-    async trainSetTravelDirection(trainId, direction) {
-        return this._request(`/trains/${encodeURIComponent(trainId)}/travel-direction`, {
-            method: 'POST',
-            body: { direction }
-        }, 'trainSetTravelDirection');
-    }
-
-
     // === OnboardComputer API (New Train Control Architecture) ===
     
     /**
@@ -1072,24 +1058,9 @@ class API {
             method: 'PUT',
             body: {
                 route_id: routeId,
-                force: options.force || false,
-                auto_park: options.auto_park !== false,
-                next_waypoint_index: options.nextWaypointIndex
+                force: options.force || false
             }
         }, 'assignRoute');
-    }
-
-    /**
-     * Override a train's current waypoint index.
-     * @param {string} trainId - Train ID
-     * @param {number} waypointIndex - New waypoint index
-     * @returns {Promise<object>} Result
-     */
-    async setTrainWaypoint(trainId, waypointIndex) {
-        return this._request(`/trains/${encodeURIComponent(trainId)}/set-waypoint`, {
-            method: 'POST',
-            body: { waypoint_index: waypointIndex }
-        }, 'setTrainWaypoint');
     }
 }
 

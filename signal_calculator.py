@@ -106,9 +106,16 @@ class SignalCalculator:
                     and signal_block.occupied_by == block_train
                 )
                 if same_path_reservation or same_train_continuity:
-                    if signal_track.path_direction:
+                    # Verify the path direction at the signal's block matches
+                    # the signal's detection direction. Canonical home per
+                    # design_new.md is `Block.reserved_direction`; when the
+                    # signal's block is already OCCUPIED (train past entry,
+                    # reservation consumed and direction cleared), the entry-
+                    # time direction check has already vetted alignment so we
+                    # do not re-check here.
+                    if signal_block and signal_block.reserved_direction:
                         signal_dir = signal.detection_direction.upper()
-                        path_dir = signal_track.path_direction.upper()
+                        path_dir = signal_block.reserved_direction.upper()
                         if signal_dir != path_dir:
                             return SignalState.RED
                     pass  # Continue to Block B evaluation

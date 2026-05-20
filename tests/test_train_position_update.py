@@ -49,21 +49,10 @@ class TestTrainPositionUpdates:
             leading_end=LeadingEnd.A,
         )
 
-        # Set state to RUNNING_MOVING
-        train.state = TrainState.RUNNING_MOVING
-        train.target_speed = 50.0
-        train.current_speed = 50.0
-
-        # Create simple path (straight line)
-        train.current_path = [
-            (0, 0, Direction.EAST),
-            (1, 0, Direction.EAST),
-            (2, 0, Direction.EAST),
-            (3, 0, Direction.EAST),
-            (4, 0, Direction.EAST),
-        ]
-
         simple_network.add_train(train)
+        # State, current_speed, and path geometry live on TrainController /
+        # PathDispatcher in v1; tests reviving this fixture should drive
+        # those owners directly rather than writing onto Train.
         return train
 
 

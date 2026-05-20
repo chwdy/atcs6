@@ -210,9 +210,8 @@ class TrainPhysics:
         )
         prev_tail_locator = self._get_tail_locator(train)
 
-        # 3. Resolve speed for this tick. Read previous speed from controller-
-        # owned storage when available (canonical source per design); fall back
-        # to the train-side mirror only as a transitional safety net.
+        # 3. Resolve speed for this tick from controller-owned storage
+        # (canonical source per design).
         profile = self._get_speed_profile()
         previous_speed = self._read_current_speed(train)
 
@@ -780,10 +779,32 @@ class TrainPhysics:
             distance_cm: Distance to move in cm
         """
         if not train.position:
-            logger.warning(
-                "[TrainPhysics] Train %s missing TrainPosition; skipping move",
-                train.train_id,
+            sc = getattr(self.controller, "simulation_controller", None)
+            nc = (
+                getattr(sc, "notification_center", None) if sc is not None else None
             )
+            emitted = False
+            if nc is not None:
+                try:
+                    from notification_center import Severity as _Severity
+
+                    nc.emit(
+                        source="TrainPhysics",
+                        kind="missing_position",
+                        severity=_Severity.WARNING,
+                        event_time=time.time(),
+                        train_id=train.train_id,
+                        payload={"action": "skip_move"},
+                    )
+                    emitted = True
+                except Exception:
+                    pass
+            if not emitted:
+                logger.warning(
+                    "[TrainPhysics] Train %s missing TrainPosition; skipping move "
+                    "(NotificationCenter unavailable)",
+                    train.train_id,
+                )
             return
 
         position = train.position
@@ -1118,13 +1139,37 @@ class TrainPhysics:
 
         expected_blocks = self._get_blocks_for_train(train)
         if expected_blocks != self._last_occupied_blocks:
-            logger.warning(
-                "[TrainPhysics %s] tile-derived blocks %s differ from local "
-                "tracker %s",
-                train.train_id,
-                sorted(expected_blocks),
-                sorted(self._last_occupied_blocks),
+            sc = getattr(self.controller, "simulation_controller", None)
+            nc = (
+                getattr(sc, "notification_center", None) if sc is not None else None
             )
+            emitted = False
+            if nc is not None:
+                try:
+                    from notification_center import Severity as _Severity
+
+                    nc.emit(
+                        source="TrainPhysics",
+                        kind="block_tracker_desync",
+                        severity=_Severity.WARNING,
+                        event_time=time.time(),
+                        train_id=train.train_id,
+                        payload={
+                            "tile_derived": sorted(expected_blocks),
+                            "local_tracker": sorted(self._last_occupied_blocks),
+                        },
+                    )
+                    emitted = True
+                except Exception:
+                    pass
+            if not emitted:
+                logger.warning(
+                    "[TrainPhysics %s] tile-derived blocks %s differ from local "
+                    "tracker %s (NotificationCenter unavailable)",
+                    train.train_id,
+                    sorted(expected_blocks),
+                    sorted(self._last_occupied_blocks),
+                )
             return False
         return True
 

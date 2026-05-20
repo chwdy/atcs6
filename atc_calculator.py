@@ -21,21 +21,21 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional, Tuple
 
-from constants import STOPPED_SPEED_THRESHOLD_KMH
+from constants import (
+    CAUTION_SPEED_LIMIT_KMH,
+    PLATFORM_SAFETY_MARGIN_CM,
+    STOPPED_SPEED_THRESHOLD_KMH,
+)
 from enums import AtcLimitReasonCode, BlockState
 
 if TYPE_CHECKING:
     from train_controller import TrainController
 
 
-# ATC tuning constants — sourced from `train_controller` module-level
-# constants. Re-declared here to keep the module self-contained; they
-# stay in lockstep because the values are short and stable.
-TRACK_END_SAFETY_MARGIN_CM = 25.0
-PLATFORM_SAFETY_MARGIN_CM = 5.0
+# ATC tuning constants local to this module (not authored on `constants.py`
+# because they have no consumer outside ATCCalculator).
 ATC_NO_BLOCK_FALLBACK_CM = 100000.0
 YELLOW_SIGNAL_SPEED_KMH = 40.0
-CAUTION_SPEED_LIMIT_KMH = 40.0
 
 
 class ATCCalculator:
@@ -100,10 +100,19 @@ class ATCCalculator:
         Uses physics `v^2 = 2*a*d` with the effective safety margin to
         derive a safe speed for the current clearance. Layers in CAUTION,
         yellow-signal, and block-speed caps as separate concerns.
+
+        Per design_new.md step `22a9` (canonical lookahead), without a
+        received path plan the controller publishes no forward authority:
+        ATC limit is `0` and the reason is `no_authority`. There is no
+        block-bounded fallback — movement authority is binary on
+        `received_path_plan`.
         """
         from train_controller import calculate_max_safe_speed
 
         c = self._c
+        if c.received_path_plan is None:
+            return 0.0, "no_authority"
+
         profile = c._get_speed_profile()
         decel_rate = profile.deceleration_rate
 

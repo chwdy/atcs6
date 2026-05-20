@@ -503,7 +503,6 @@ class TestSetCabDoubleFlipBugFix:
 
         # Simulate: train was running, ATO stopped, route cancelled -> READY
         controller.state = TrainState.READY
-        train.state = TrainState.READY
         controller.ato_running = False
         controller.current_speed_kmh = 0.0
 
@@ -513,7 +512,7 @@ class TestSetCabDoubleFlipBugFix:
         result = controller.set_cab("B")
         assert result.success is True, (
             f"set_cab(\"B\") should work from READY state with cab selected, "
-            f"train.state={train.state}"
+            f"controller.state={controller.state}"
         )
         assert train.facing_direction == Direction.WEST
         assert controller.cab == "B"

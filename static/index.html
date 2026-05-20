@@ -346,8 +346,11 @@
                                     </dd>
                                 </div>
                             </dl>
+                            <div class="tm-banner tm-banner-warn hidden" id="monitor-speed-limit-reason"></div>
                         </aside>
-                        <canvas id="train-monitor-canvas" class="tm-canvas"></canvas>
+                        <div class="tm-canvas-wrap" id="train-monitor-canvas-wrap">
+                            <canvas id="train-monitor-canvas" class="tm-canvas"></canvas>
+                        </div>
                         <div class="tm-resizer" id="train-monitor-resizer" aria-hidden="true"></div>
                         <aside class="tm-upcoming" id="monitor-upcoming-container">
                             <div class="tm-upcoming-header">
@@ -361,11 +364,6 @@
                             <div class="debug-header">Debug Details</div>
                             <div id="train-monitor-debug-content"></div>
                         </div>
-                    </div>
-                    <!-- Status footer: speed-limit reason etc. -->
-                    <div class="tm-status">
-                        <div class="tm-banner tm-banner-warn hidden" id="monitor-speed-limit-reason"></div>
-                        <div class="tm-banner tm-banner-muted hidden" id="monitor-wait-reason"></div>
                     </div>
                 </div>
             </div>
@@ -395,7 +393,7 @@
     <script src="js/editor-routes.js?v=16"></script>
     <script src="js/editor-ui.js?v=15"></script>
     <script src="js/editor.js?v=16"></script>
-    <script src="js/train-monitor.js?v=16"></script>
+    <script src="js/train-monitor.js?v=20"></script>
     <script src="js/scenario-recorder.js?v=15"></script>
     <script src="js/app.js?v=15"></script>
     <script src="js/inspector.js?v=1" defer></script>

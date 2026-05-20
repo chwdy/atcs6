@@ -281,15 +281,11 @@ class Block(TrackResource):
         if raw_reservation:
             reservation = BlockReservation.from_dict(raw_reservation)
 
-        # Reconstruct caution. The canonical key is `"caution"` (an object
-        # with `exit_edge`); reads of legacy `"_is_caution"` / `"caution_exit_edge"`
-        # are kept here so saves written before the composite record still load.
+        # Reconstruct caution from the canonical `"caution"` object.
         caution: Optional[CautionState] = None
         raw_caution = data.get("caution")
         if isinstance(raw_caution, dict) and raw_caution.get("exit_edge"):
             caution = CautionState(exit_edge=str(raw_caution["exit_edge"]))
-        elif data.get("_is_caution") and data.get("caution_exit_edge"):
-            caution = CautionState(exit_edge=str(data["caution_exit_edge"]))
 
         return cls(
             block_id=data["block_id"],

@@ -46,7 +46,12 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, FrozenSet, List, Optional, Tuple
 
-from constants import STOPPED_SPEED_THRESHOLD_KMH
+from constants import (
+    CAUTION_SPEED_LIMIT_KMH,
+    PLATFORM_SAFETY_MARGIN_CM,
+    STOPPED_SPEED_THRESHOLD_KMH,
+    TRACK_END_SAFETY_MARGIN_CM,
+)
 from enums import (
     BRAKE_MULTIPLIERS,
     HANDLE_POSITION_INDEX,
@@ -87,16 +92,15 @@ OPPOSITE_EDGES = {"N": "S", "S": "N", "E": "W", "W": "E"}
 EDGE_TO_DIRECTION_NAME = {"N": "NORTH", "E": "EAST", "S": "SOUTH", "W": "WEST"}
 
 
-TRACK_END_SAFETY_MARGIN_CM = 25.0
-PLATFORM_SAFETY_MARGIN_CM = 5.0
+# `TRACK_END_SAFETY_MARGIN_CM`, `PLATFORM_SAFETY_MARGIN_CM`, and
+# `CAUTION_SPEED_LIMIT_KMH` are imported from `constants.py` (the canonical
+# home per design_new.md "Safety margin globals" and "CAUTION speed cap").
+# The remaining tunables are local because they have no consumer outside
+# the controller.
 ATC_SIGNAL_LOOKAHEAD_BLOCKS = 3
 ATC_MIN_CLEARANCE_CM = 10.0
 ATC_NO_BLOCK_FALLBACK_CM = 100000.0
 YELLOW_SIGNAL_SPEED_KMH = 40.0
-# Speed cap applied when the next forward block is in CAUTION state, per
-# design_new.md ("`CAUTION` vs reservation independence"). Signal-state limits
-# remain a separate concern (`YELLOW_SIGNAL_SPEED_KMH`).
-CAUTION_SPEED_LIMIT_KMH = 40.0
 
 SPEED_TREND_EPSILON = 0.1
 
@@ -296,9 +300,13 @@ class TrainController:
     # -------------------------------------------------------------------------
     # Note: target_speed and speed_limit_reason are read live from
     # `self.lookahead[0]` per design_new.md; they are not stored.
+    # `_last_atc_limit_reason_code` mirrors the structured
+    # `AtcLimitReasonCode` from `speed_curves[0]` so consumers can read the
+    # enum directly without parsing the free-form string detail.
     clearance_ahead_cm: float = 0.0
     atc_speed_limit: float = 0.0
     current_block_speed_limit: float = float("inf")
+    _last_atc_limit_reason_code: Optional["AtcLimitReasonCode"] = None
 
     # Configuration
     safety_margin_cm: float = TRACK_END_SAFETY_MARGIN_CM
@@ -638,12 +646,42 @@ class TrainController:
         # this, queued commands would never take effect.
         try:
             self._drain_command_inbox(self._estimate_event_time())
-        except Exception:
+        except Exception as exc:
             # Defensive: do not let a single bad command crash the tick.
-            logger.exception(
-                "command-drain raised for train %s; continuing tick",
-                self.train_id,
+            # Surface via NotificationCenter so operators see the failure;
+            # fall back to logger only if the canonical sink is itself broken.
+            import traceback as _tb
+
+            event_time = self._estimate_event_time()
+            sc = self.simulation_controller
+            nc = (
+                getattr(sc, "notification_center", None) if sc is not None else None
             )
+            emitted = False
+            if nc is not None:
+                try:
+                    from notification_center import Severity as _Severity
+
+                    nc.emit(
+                        source="TrainController",
+                        kind="command_drain_failed",
+                        severity=_Severity.ERROR,
+                        event_time=event_time,
+                        train_id=self.train_id,
+                        payload={
+                            "reason": str(exc),
+                            "traceback": _tb.format_exc(),
+                        },
+                    )
+                    emitted = True
+                except Exception:
+                    pass
+            if not emitted:
+                logger.exception(
+                    "command-drain raised for train %s; continuing tick "
+                    "(NotificationCenter unavailable)",
+                    self.train_id,
+                )
 
         train = self._get_train()
         if not train:
@@ -697,12 +735,14 @@ class TrainController:
         # ===== 3. ATC INFO COLLECTION =====
         if self.cab is None:
             self.atc_speed_limit = 0.0
+            self._last_atc_limit_reason_code = AtcLimitReasonCode.NO_CAB
             logger.debug(
                 "[TrainController %s] ATC blocked: no cab selected",
                 self.train_id,
             )
         elif self._is_cab_wrong_direction():
             self.atc_speed_limit = 0.0
+            self._last_atc_limit_reason_code = AtcLimitReasonCode.WRONG_DIRECTION_CAB
             logger.debug(
                 "[TrainController %s] ATC blocked: cab opposite active authority",
                 self.train_id,
@@ -711,13 +751,18 @@ class TrainController:
             # Get block speed limit for current block
             self.current_block_speed_limit = self._get_current_block_speed_limit()
 
-            # Calculate clearance and ATC speed from existing methods
-            # (These use lookahead data internally). Per design_new.md, the
+            # Calculate clearance and ATC speed. Per design_new.md, the
             # canonical reason for the published ATC limit is the
             # `atc_limit_reason_*` fields at distance 0 of the lookahead;
-            # we do not cache it on the controller.
+            # the structured code is mirrored onto `_last_atc_limit_reason_code`
+            # so consumers (journey harness, monitor) can read the enum
+            # without parsing the free-form string.
             self.clearance_ahead_cm = self._calculate_clearance_ahead()
-            self.atc_speed_limit, _ = self._calculate_atc_speed_limit()
+            (
+                self.atc_speed_limit,
+                _,
+                self._last_atc_limit_reason_code,
+            ) = self._calculate_atc_speed_limit_with_code()
             logger.debug(
                 "[TrainController %s] ATC: clearance=%.2f limit=%.2f",
                 self.train_id,
@@ -1436,20 +1481,26 @@ class TrainController:
     def _build_empty_monitor_lookahead(
         self,
         *,
+        head_tile: Optional[Tuple[int, int]] = None,
         head_distance_cm: float = 0.0,
         travel_direction: Optional[str] = None,
         speed_limit_reason: Optional[str] = None,
+        reason_code: Optional[AtcLimitReasonCode] = None,
     ) -> Dict[str, Any]:
         """Build a consistent empty lookahead payload for Train Monitor.
 
-        Per design_new.md "canonical lookahead payload", the empty/no-cab/
-        no-train form preserves the full top-level and nested key shape with
-        empty lists and zero distances. Compatibility consumers see the same
-        keys regardless of whether a path is live.
+        Per design_new.md "canonical lookahead payload", the empty form
+        preserves the full top-level and nested key shape with empty lists and
+        zero distances. When `reason_code` is provided, a single distance-0
+        anchor is stamped onto `speed_curves` so consumers reading the
+        canonical reason at distance 0 (target_speed / speed_limit_reason
+        properties) see the structured `AtcLimitReasonCode` without a separate
+        controller-owned cache. Used for the no-cab, no-authority (no path),
+        and head-off-path cases.
         """
-        return {
+        payload: Dict[str, Any] = {
             "train_id": self.train_id,
-            "head_tile": None,
+            "head_tile": list(head_tile) if head_tile is not None else None,
             "head_distance_cm": head_distance_cm,
             "travel_direction": travel_direction,
             "cab": self.cab,
@@ -1465,6 +1516,17 @@ class TrainController:
                 "speed_curves": [],
             },
         }
+        if reason_code is not None:
+            payload["lookahead"]["speed_curves"] = [
+                {
+                    "distance_cm": 0.0,
+                    "atc_limit": 0.0,
+                    "operational_limit": 0.0,
+                    "atc_limit_reason_code": reason_code.value,
+                    "atc_limit_reason_detail": speed_limit_reason,
+                }
+            ]
+        return payload
 
     def _get_remaining_distance_in_current_block(self) -> float:
         """
@@ -1744,23 +1806,23 @@ class TrainController:
         """True when the train is stopped at the usable end of active authority.
 
         Per design_new.md step `8df5`, this is the post-physics usable-
-        authority stop check used by Phase 3 path completion. The full
-        predicate requires depart-acceptance (state == RUNNING_MOVING),
-        active authority, and the distance-0 lookahead curve reporting
-        no remaining positive clearance with reason code
-        `AtcLimitReasonCode.AUTHORITY_STOP`.
+        authority stop check used by Phase 3 path completion.
 
-        Clearance is measured against the lookahead's `operational_limit`
-        at distance 0 — the same curve ATO controls to — rather than the
-        raw `atc_limit`. ATO maintains an `ATO_SPEED_MARGIN_KMH` operational
-        headroom below ATC, so a train that ATO has stopped naturally at
-        the authority end sits with `operational_limit ≈ 0` while `atc_limit`
-        still reads a few km/h above zero. Per the second clause of step
-        `8df5` ("remaining projected authority distance is too short to
-        grant additional positive clearance after applying the controller
-        safety margin"), that natural stopping point is the intended
-        commit point — gating on the raw ATC value would force the train
-        to creep into the safety margin itself.
+        The spec lists two satisfying cases for this gate: the train has
+        either "physically progressed through the final `resource_sequence`
+        entry" (i.e. its head occupies the authority-end block), or "the
+        remaining projected authority distance is too short to grant
+        additional positive clearance after applying the controller safety
+        margin" (i.e. `atc_limit` at distance 0 has fallen to zero). The
+        first case is the natural commit point under discrete physics:
+        ATO brakes the train to rest somewhere inside the destination
+        block, and forward-Euler integration cannot land exactly on the
+        safety-margin boundary, so `atc_limit` at d=0 generally still
+        reads a few km/h. Requiring `atc_limit == 0` (or the operational-
+        limit equivalent) would leave the gate failing in normal cases
+        and trap ATO in a low-speed creep loop. Using head-in-destination
+        + reason-code AUTHORITY_STOP captures the canonical intent without
+        depending on a precision the integrator cannot deliver.
         """
         if not self.is_stopped():
             return False
@@ -1768,20 +1830,26 @@ class TrainController:
             return False
         if self.eb_active:
             return False
-        if self.received_path_plan is None:
+        plan = self.received_path_plan
+        if plan is None:
             return False
-        # Read the canonical lookahead live (per design_new.md ~line 161 —
-        # there is no controller-owned cache).
+        # ATO curve has terminated at the authority end: distance-0
+        # lookahead's dominant restriction is the path-end stop.
         payload = self._compute_canonical_lookahead()
         curves = (payload or {}).get("lookahead", {}).get("speed_curves") or []
         if not curves:
             return False
-        head_point = curves[0]
-        operational_at_zero = head_point.get("operational_limit", 0.0) or 0.0
-        if operational_at_zero > STOPPED_SPEED_THRESHOLD_KMH:
+        if (
+            curves[0].get("atc_limit_reason_code")
+            != AtcLimitReasonCode.AUTHORITY_STOP.value
+        ):
             return False
-        code = head_point.get("atc_limit_reason_code")
-        return code == AtcLimitReasonCode.AUTHORITY_STOP.value
+        # Train head is at the destination (authority-end) block — the
+        # spec's first satisfying case.
+        head_block_id = self._get_current_block_id()
+        if head_block_id is None:
+            return False
+        return head_block_id == plan.get_authority_end_block_id()
 
     # -------------------------------------------------------------------------
     # Physics callback — Phase 2 storage / Phase 3 enqueue (per design_new.md)
@@ -3674,255 +3742,23 @@ class TrainController:
             "leading_end": span.leading_end.value if span.leading_end else None,
         }
 
-    def _build_fallback_lookahead(
-        self,
-        train: "Train",
-        head_tile: Tuple[int, int],
-        head_distance_cm: float,
-        travel_direction: Optional[str],
-    ) -> Dict[str, Any]:
-        """
-        Build lookahead data when no path is available.
-
-        This is used when:
-        - Train is first placed (no path yet)
-        - Path is canceled (train must stop safely)
-        - Train enters last tile and path is cleared
-
-        The lookahead is built from the train's occupied blocks and facing direction,
-        calculating clearance to the end of the current block.
-        """
-        blocks: List[Dict[str, Any]] = []
-        signals: List[Dict[str, Any]] = []
-        switches: List[Dict[str, Any]] = []
-        stations: List[Dict[str, Any]] = []
-
-        # Get current block from head tile
-        head_track = (
-            self.network.get_track(head_tile[0], head_tile[1]) if self.network else None
-        )
-        current_block_id = head_track.block_section_id if head_track else None
-
-        clearance_cm = 0.0
-        block_length_cm = 0.0
-        tile_count = 1
-
-        # If controller has a known clearance (from simulation), use it as baseline
-        # This ensures we don't underestimate clearance when path is temporarily unavailable
-        if self.clearance_ahead_cm > 0:
-            clearance_cm = self.clearance_ahead_cm
-
-        if current_block_id and self.network and train.position:
-            block = self.network.blocks.get(current_block_id)
-            facing_dir = train.position.facing_direction
-
-            # Calculate remaining distance in current tile
-            current_tile_length = self.network._get_tile_length_cm(
-                head_tile[0], head_tile[1]
-            )
-            remaining_in_tile = max(0, current_tile_length - head_distance_cm)
-
-            # Calculate remaining distance in the ENTIRE block (not just current tile)
-            # This is critical for first placement in multi-tile blocks
-            if clearance_cm == 0 and block and block.length_cm > 0:
-                # Get all tiles in the block to calculate proper remaining distance
-                block_positions = self.network.get_block_positions(current_block_id)
-                if block_positions:
-                    tile_count = len(block_positions)
-                    per_tile_length = block.length_cm / tile_count
-
-                    # Calculate how far into the block the train is
-                    # We need to find where head_tile is in the block
-                    # and sum the lengths of tiles behind + distance in current tile
-                    distance_into_block = head_distance_cm
-
-                    # For tiles the train has already passed through in this block
-                    # (tiles in occupied_tiles that are in this block, before head tile)
-                    if train.position.occupied_tiles:
-                        for tile in train.position.occupied_tiles:
-                            if tile == head_tile:
-                                break
-                            tile_track = self.network.get_track(tile[0], tile[1])
-                            if (
-                                tile_track
-                                and tile_track.block_section_id == current_block_id
-                            ):
-                                distance_into_block += self.network._get_tile_length_cm(
-                                    tile[0], tile[1]
-                                )
-
-                    # Remaining distance = total block length - distance already traveled
-                    clearance_cm = max(0.0, block.length_cm - distance_into_block)
-                    block_length_cm = block.length_cm
-                else:
-                    # Fallback: use remaining in tile if we can't get block positions
-                    clearance_cm = remaining_in_tile
-                    block_length_cm = current_tile_length
-            elif clearance_cm == 0:
-                # No block info available, use remaining in tile as minimum
-                clearance_cm = remaining_in_tile
-                block_length_cm = current_tile_length
-            else:
-                # We have clearance from simulation, just get block length for info
-                if block and block.length_cm > 0:
-                    block_length_cm = block.length_cm
-                    block_positions = self.network.get_block_positions(current_block_id)
-                    if block_positions:
-                        tile_count = len(block_positions)
-                else:
-                    block_length_cm = current_tile_length
-
-            # The clearance is the remaining distance in the current block
-            # For safety, we use the remaining tile distance as minimum
-            # This ensures the train stops before the end of the known track
-
-            # Build block info
-            block_state = None
-            block_speed_limit: Optional[float] = None
-            if block:
-                if block.state:
-                    block_state = block.state.value
-                if block.speed_limit_kmh and block.speed_limit_kmh < float("inf"):
-                    block_speed_limit = block.speed_limit_kmh
-
-            # `end_cm` must be `start_cm + length_cm`, NOT `clearance_cm` —
-            # clearance is the full distance to the end of authority (which
-            # may extend beyond this block), while end_cm is the block's own
-            # end position in the lookahead frame.
-            block_total_length = (
-                block_length_cm
-                if block_length_cm > 0
-                else head_distance_cm + clearance_cm
-            )
-            block_start_cm = -head_distance_cm
-            blocks.append(
-                {
-                    "id": current_block_id,
-                    "name": current_block_id,
-                    "state": block_state or BlockState.OCCUPIED.value,
-                    "start_cm": block_start_cm,
-                    "end_cm": block_start_cm + block_total_length,
-                    "length_cm": block_total_length,
-                    "tile_count": tile_count,
-                    "speed_limit_kmh": block_speed_limit,
-                }
-            )
-
-            # Check if there's a station in this block
-            if head_track and head_track.station_id:
-                platform_id = head_track.station_id
-                station = self.network.platforms.get(platform_id)
-                if station:
-                    # Get station length from station positions
-                    station_tile_count = (
-                        len(station.positions) if station.positions else 1
-                    )
-                    station_length_cm = (
-                        station.length_cm if station.length_cm > 0 else block_length_cm
-                    )
-                    station_group_id: Optional[str] = None
-                    if hasattr(self.network, "get_station_for_platform"):
-                        try:
-                            station_group_id = self.network.get_station_for_platform(
-                                platform_id
-                            )
-                        except Exception:
-                            station_group_id = None
-                    stations.append(
-                        {
-                            "platform_id": platform_id,
-                            "station_id": station_group_id,
-                            "name": station.name if station else platform_id,
-                            "distance_cm": 0,  # We're already in the station
-                            "length_cm": station_length_cm,
-                            "tile_count": station_tile_count,
-                            "top_speed_kmh": station.top_speed_kmh if station else None,
-                        }
-                    )
-
-        # Calculate safety margin
-        effective_safety_margin = self._get_effective_safety_margin()
-        target_stop_cm = max(0.0, clearance_cm - effective_safety_margin)
-        # Without an active path, the authority boundary delta is the
-        # distance from the head to the safety-margin-adjusted end of the
-        # current occupied block. The forward axis matches `speed_curves`.
-        authority_boundary_delta_cm = target_stop_cm
-
-        # EB forces ATC to zero regardless of geometry; surface that as the
-        # canonical override on every curve sample. The trigger context
-        # ("ATC overspeed", "operator EB", etc.) is published as a separate
-        # NotificationCenter event when EB activates; the lookahead detail
-        # only carries the steady-state "Emergency brake active" string.
-        override_code: Optional[AtcLimitReasonCode] = None
-        override_detail: Optional[str] = None
-        if self.eb_active:
-            override_code = AtcLimitReasonCode.EB
-            override_detail = "Emergency brake active"
-
-        # Calculate speed curves for the available clearance. Without a live
-        # path, the canonical reason code at the stop boundary is
-        # `no_authority` rather than `authority_stop`.
-        speed_curves = self.calculate_speed_curves(
-            max_distance_cm=clearance_cm if clearance_cm > 0 else 50.0,
-            lookahead_blocks=blocks,
-            lookahead_signals=signals,
-            lookahead_stations=stations,
-            target_stop_cm=target_stop_cm,
-            override_reason_code=override_code,
-            override_reason_detail=override_detail,
-            path_end_reason_code=AtcLimitReasonCode.NO_AUTHORITY,
-        )
-
-        # Top-level `speed_limit_reason` is a convenience read of the
-        # canonical position-0 detail; derive it locally to avoid recursing
-        # back through the `speed_limit_reason` property.
-        top_reason: Optional[str] = None
-        if speed_curves:
-            top_reason = (
-                speed_curves[0].get("atc_limit_reason_detail")
-                or (
-                    str(speed_curves[0].get("atc_limit_reason_code"))
-                    if speed_curves[0].get("atc_limit_reason_code")
-                    else None
-                )
-            )
-
-        return {
-            "train_id": self.train_id,
-            "head_tile": [head_tile[0], head_tile[1]],
-            "head_distance_cm": head_distance_cm,
-            "travel_direction": travel_direction,
-            "cab": self.cab,
-            "speed_limit_reason": top_reason,
-            "lookahead": {
-                "blocks": blocks,
-                "signals": signals,
-                "switches": switches,
-                "stations": stations,
-                "clearance_cm": clearance_cm,
-                "safety_margin_cm": effective_safety_margin,
-                "target_stop_cm": target_stop_cm,
-                "authority_boundary_delta_cm": authority_boundary_delta_cm,
-                "speed_curves": speed_curves,
-            },
-        }
-
     def _calculate_time_to_target_sec(self) -> Optional[float]:
         """Estimate seconds until the train reaches its current ATO stop target.
 
         Integrates the operational_limit speed curve from the train head
-        (distance_cm == 0) up to target_stop_cm. For each curve segment
-        [d_i, d_{i+1}] the contribution is delta_cm / avg_speed_cms, where
-        avg_speed_cms = mean(operational_limit_kmh) * (100000/3600).
+        (distance_cm == 0) up to target_stop_cm. For each segment we track
+        a running ``v_actual`` so the integration reflects the train's real
+        motion, not just the curve ceiling: at the start of a segment the
+        train is at ``v_actual``; over the segment it accelerates toward
+        the segment's curve endpoint, bounded by ``_ETA_ACCEL_CM_PER_S2``.
+        The segment's average speed is ``(v_actual_start + v_actual_end)/2``.
 
-        For the initial segment where current_speed_kmh < operational_limit
-        (i.e. the train is still accelerating into the envelope), uses the
-        max of the two so the integration reflects the train's real motion
-        rather than the unattained ceiling.
+        Falls back to a coarse kinematic estimate when the curve is too
+        sparse (single sample or no segments before target) but a real
+        target distance is still published.
 
-        Returns None when there is no useful target — train unpowered, no
-        active authority/path, or target_stop_cm is too close to register
-        as meaningful (<10 cm).
+        Returns None when there is no useful target — train unpowered or
+        target_stop_cm is too close to register as meaningful (<10 cm).
         """
         # Gate: only meaningful when the train can actually move toward something.
         if not self.power_on:
@@ -3934,34 +3770,82 @@ class TrainController:
         la = (payload or {}).get("lookahead") or {}
         curves = la.get("speed_curves") or []
         target_cm = la.get("target_stop_cm") or 0.0
-        if target_cm < 10 or len(curves) < 2:
+        if target_cm < 10:
             return None
 
         cm_per_second_per_kmh = 100000.0 / 3600.0  # 27.78
         current_kmh = float(getattr(self, "current_speed_kmh", 0.0) or 0.0)
+
+        if len(curves) < 2:
+            return self._kinematic_time_to_target_sec(target_cm, current_kmh)
+
         total_sec = 0.0
+        v_actual_kmh = current_kmh  # running actual speed at d_prev
         prev = curves[0]
         for cur in curves[1:]:
             d_prev = prev.get("distance_cm", 0.0) or 0.0
             d_cur = cur.get("distance_cm", 0.0) or 0.0
             if d_cur > target_cm:
                 break
-            v_prev = prev.get("operational_limit", 0.0) or 0.0
-            v_cur = cur.get("operational_limit", 0.0) or 0.0
-            v_avg = (v_prev + v_cur) / 2.0
-            # If the train hasn't yet reached the envelope, the actual
-            # speed is bounded by what it's already doing.
-            if current_kmh > v_avg:
-                v_avg = max(v_avg, min(current_kmh, max(v_prev, v_cur)))
-            if v_avg < 0.5:
+            delta_cm = d_cur - d_prev
+            if delta_cm <= 0:
                 prev = cur
                 continue
-            delta_cm = d_cur - d_prev
-            if delta_cm > 0:
-                total_sec += delta_cm / (v_avg * cm_per_second_per_kmh)
+
+            v_curve_cur = cur.get("operational_limit", 0.0) or 0.0
+            v_start_kmh = v_actual_kmh
+            # Acceleration-bounded end-of-segment speed: starting from
+            # v_start_kmh, how fast can the train be at the end of this
+            # segment if it accelerates constantly at _ETA_ACCEL_CM_PER_S2?
+            # v_end_cms = sqrt(v_start_cms^2 + 2*a*delta_cm). Then clamp
+            # by the curve ceiling (the train cannot exceed it).
+            v_start_cms = v_start_kmh * cm_per_second_per_kmh
+            v_end_unbounded_cms_sq = (
+                v_start_cms * v_start_cms
+                + 2.0 * self._ETA_ACCEL_CM_PER_S2 * delta_cm
+            )
+            v_end_unbounded_kmh = (
+                math.sqrt(max(0.0, v_end_unbounded_cms_sq))
+                / cm_per_second_per_kmh
+            )
+            v_end_kmh = min(v_curve_cur, v_end_unbounded_kmh)
+            v_avg_kmh = (v_start_kmh + v_end_kmh) / 2.0
+            if v_avg_kmh < 0.5:
+                prev = cur
+                continue
+            total_sec += delta_cm / (v_avg_kmh * cm_per_second_per_kmh)
+            v_actual_kmh = v_end_kmh
             prev = cur
 
         return total_sec if total_sec > 0 else None
+
+    # Default acceleration used by the ETA estimator when the curve does
+    # not constrain the train. ~0.5 m/s² matches a typical metro service
+    # rate; it is intentionally conservative so ETA is slightly long
+    # rather than misleadingly short.
+    _ETA_ACCEL_CM_PER_S2 = 50.0
+
+    def _kinematic_time_to_target_sec(
+        self, target_cm: float, current_kmh: float
+    ) -> Optional[float]:
+        """Coarse ETA when the speed curve is too sparse to integrate.
+
+        Assumes the train accelerates from ``current_kmh`` at
+        ``_ETA_ACCEL_CM_PER_S2`` until covering ``target_cm``. Used as a
+        fallback when the lookahead curve has fewer than two samples but
+        a real target distance is still published.
+        """
+        if target_cm <= 0:
+            return None
+        cm_per_second_per_kmh = 100000.0 / 3600.0
+        v0_cms = max(0.0, current_kmh) * cm_per_second_per_kmh
+        a = self._ETA_ACCEL_CM_PER_S2
+        # v² = v0² + 2*a*d → v = sqrt(v0² + 2*a*d). Time = (v - v0) / a.
+        v_end_cms = math.sqrt(v0_cms * v0_cms + 2.0 * a * target_cm)
+        time_sec = (v_end_cms - v0_cms) / a if a > 0 else None
+        if time_sec is None or time_sec <= 0:
+            return None
+        return time_sec
 
     def get_current_span(self) -> Optional[Any]:
         """Return the controller's canonical live span (or None).
@@ -4000,23 +3884,10 @@ class TrainController:
             return self._build_empty_monitor_lookahead(speed_limit_reason=None)
 
         if self.cab not in ("A", "B"):
-            payload = self._build_empty_monitor_lookahead(
-                speed_limit_reason="No cab selected"
+            return self._build_empty_monitor_lookahead(
+                speed_limit_reason="No cab selected",
+                reason_code=AtcLimitReasonCode.NO_CAB,
             )
-            # Stamp the no_cab reason code on a single anchor curve point so
-            # consumers sampling the payload see the structured reason even
-            # with no path/cab. Detail carries the human-readable string
-            # so `speed_limit_reason` reads canonically from the lookahead.
-            payload["lookahead"]["speed_curves"] = [
-                {
-                    "distance_cm": 0.0,
-                    "atc_limit": 0.0,
-                    "operational_limit": 0.0,
-                    "atc_limit_reason_code": AtcLimitReasonCode.NO_CAB.value,
-                    "atc_limit_reason_detail": "No cab selected",
-                }
-            ]
-            return payload
 
         head_tile = self._get_head_tile()
         head_distance_cm = self._get_head_distance_cm()
@@ -4040,8 +3911,28 @@ class TrainController:
             getattr(plan, "resource_sequence", None) if plan else None
         )
         if not plan or not resource_sequence:
-            return self._build_fallback_lookahead(
-                train, head_tile, head_distance_cm, travel_direction
+            # Per design_new.md step `22a9` (canonical lookahead), without a
+            # path plan the canonical payload is the no-authority empty form:
+            # a single distance-0 anchor with atc_limit/operational_limit=0
+            # and reason `no_authority`. There is no block-bounded fallback;
+            # movement authority is binary on `received_path_plan`.
+            # EB is a higher-priority safety state — when EB is latched the
+            # reason is stamped as `eb` even though authority is also absent
+            # (the cancellation-during-EB sequence drops authority too, and
+            # operators should see the safety state, not the latent
+            # "no_authority" condition).
+            if self.eb_active:
+                reason_code = AtcLimitReasonCode.EB
+                reason_detail = "Emergency brake active"
+            else:
+                reason_code = AtcLimitReasonCode.NO_AUTHORITY
+                reason_detail = "no_authority"
+            return self._build_empty_monitor_lookahead(
+                head_tile=head_tile,
+                head_distance_cm=head_distance_cm,
+                travel_direction=travel_direction,
+                speed_limit_reason=reason_detail,
+                reason_code=reason_code,
             )
 
         # Locate the head tile inside the resource_sequence (tail→authority
@@ -4066,15 +3957,16 @@ class TrainController:
         # Recovery for the freshly-departed case: a Path's resource_sequence
         # describes only the authority *forward* of the head, so when the
         # head sits behind the first path tile (e.g. just after `depart()`)
-        # its tile is not in any `path_tiles` slice. Without this recovery
-        # the function would fall through to `_build_fallback_lookahead`,
-        # which only knows about the head's current block and would silently
-        # drop every downstream block, switch and station. When the head's
-        # block matches the first authority block we anchor the loop at
-        # path[0]'s first tile, then below add the in-block portion behind
-        # that first path tile to `block_back_length_cm` so the head's block
-        # still reports its true length and the chart frame stays aligned
-        # to the head's actual position.
+        # its tile is not in any `path_tiles` slice. When the head's block
+        # matches the first authority block we anchor the loop at path[0]'s
+        # first tile, then below add the in-block portion behind that first
+        # path tile to `block_back_length_cm` so the head's block still
+        # reports its true length and the chart frame stays aligned to the
+        # head's actual position. When the head's block doesn't match
+        # path[0]'s block either, the path is structurally disconnected from
+        # the head and the function publishes the no-authority empty payload
+        # (per step `22a9`) so the train doesn't drive under fabricated
+        # block-bounded authority.
         recovery_extra_back_cm = 0.0
         recovery_extra_back_tiles = 0
         if head_resource_index < 0:
@@ -4084,8 +3976,20 @@ class TrainController:
                 and resource_sequence[0].resource_id == head_block_id
                 and resource_sequence[0].path_tiles
             ):
-                return self._build_fallback_lookahead(
-                    train, head_tile, head_distance_cm, travel_direction
+                # Path exists but the head's tile is not in its
+                # resource_sequence and the head's block doesn't match the
+                # first authority block either — the path is structurally
+                # disconnected from the head. Per design_new.md step `22a9`,
+                # we publish the no-authority empty payload rather than
+                # silently fabricating block-bounded authority. If the train
+                # is rolling, the no-authority overspeed branch in step
+                # `826a` will escalate to EB.
+                return self._build_empty_monitor_lookahead(
+                    head_tile=head_tile,
+                    head_distance_cm=head_distance_cm,
+                    travel_direction=travel_direction,
+                    speed_limit_reason="no_authority",
+                    reason_code=AtcLimitReasonCode.NO_AUTHORITY,
                 )
             head_resource_index = 0
             head_tile_index = 0

@@ -877,15 +877,40 @@ class RouteExecutor:
         if callable(depart):
             try:
                 depart()
-            except Exception:
-                # Phase 1 retries depart() on a later tick; logging the
-                # raised reason keeps non-acceptance visible without
-                # aborting the planning kernel.
-                logger.warning(
-                    "depart() raised for train %s; will retry on a later tick",
-                    getattr(train, "train_id", "?"),
-                    exc_info=True,
+            except Exception as exc:
+                # Phase 1 retries depart() on a later tick; surface the
+                # raised reason via NotificationCenter so operators see
+                # non-acceptance without aborting the planning kernel.
+                train_id = getattr(train, "train_id", "?")
+                sc = self.simulation_controller
+                nc = (
+                    getattr(sc, "notification_center", None)
+                    if sc is not None
+                    else None
                 )
+                emitted = False
+                if nc is not None:
+                    try:
+                        from notification_center import Severity as _Severity
+
+                        nc.emit(
+                            source="RouteExecutor",
+                            kind="depart_failed",
+                            severity=_Severity.WARNING,
+                            event_time=time.time(),
+                            train_id=train_id,
+                            payload={"reason": str(exc), "will_retry": True},
+                        )
+                        emitted = True
+                    except Exception:
+                        pass
+                if not emitted:
+                    logger.warning(
+                        "depart() raised for train %s; will retry on a later "
+                        "tick (NotificationCenter unavailable)",
+                        train_id,
+                        exc_info=True,
+                    )
 
     def finish_route_run(self, train_id: str) -> None:
         """Phase 1 terminal-walk handler.
@@ -1134,13 +1159,39 @@ class RouteExecutor:
             if callable(finish_dwell):
                 try:
                     finish_dwell()
-                except Exception:
-                    logger.warning(
-                        "finish_dwell() raised for train %s during route-run "
-                        "removal",
-                        train_id,
-                        exc_info=True,
+                except Exception as exc:
+                    sc = self.simulation_controller
+                    nc = (
+                        getattr(sc, "notification_center", None)
+                        if sc is not None
+                        else None
                     )
+                    emitted = False
+                    if nc is not None:
+                        try:
+                            from notification_center import Severity as _Severity
+
+                            nc.emit(
+                                source="RouteExecutor",
+                                kind="finish_dwell_failed",
+                                severity=_Severity.WARNING,
+                                event_time=time.time(),
+                                train_id=train_id,
+                                payload={
+                                    "reason": str(exc),
+                                    "context": "route_run_removal",
+                                },
+                            )
+                            emitted = True
+                        except Exception:
+                            pass
+                    if not emitted:
+                        logger.warning(
+                            "finish_dwell() raised for train %s during route-run "
+                            "removal (NotificationCenter unavailable)",
+                            train_id,
+                            exc_info=True,
+                        )
 
         route_id = exec_state.route_id
         if route_id:
@@ -1289,20 +1340,6 @@ class RouteExecutor:
         from train_at_target_predicates import TrainAtTargetPredicates
 
         return TrainAtTargetPredicates.get_target_platform_tile(train, platform)
-
-    def _get_target_station_tile(
-        self, train: "Train", station: object
-    ) -> Optional[Tuple[int, int]]:
-        """Forward to `TrainAtTargetPredicates.get_target_station_tile(...)`."""
-        from train_at_target_predicates import TrainAtTargetPredicates
-
-        return TrainAtTargetPredicates.get_target_station_tile(train, station)
-
-    def _is_train_at_station(self, train: "Train", station_id: str) -> bool:
-        """Forward to `TrainAtTargetPredicates.is_train_at_station(...)`."""
-        return self._get_at_target_predicates().is_train_at_station(
-            train, station_id
-        )
 
     def _get_platform(self, platform_id: str) -> Optional[object]:
         """Forward to `RouteTargetResolver.get_platform(platform_id)`."""

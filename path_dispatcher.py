@@ -175,33 +175,21 @@ class PathDispatcher:
 
     def _get_controller(self, train_id: str):
         sc = self.simulation_controller
-        if sc is not None:
-            getter = (
-                getattr(sc, "get_or_create_controller", None)
-                or getattr(sc, "get_controller", None)
-                or getattr(sc, "_get_or_create_controller", None)
-            )
-            if callable(getter):
-                try:
-                    return getter(train_id)
-                except Exception:
-                    pass
-            controllers = getattr(sc, "controllers", None)
-            if isinstance(controllers, dict):
-                return controllers.get(train_id)
-        # Legacy wiring fallback.
-        power_controller = getattr(self.network, "power_controller", None)
-        if power_controller is None:
+        if sc is None:
             return None
-        sim = getattr(power_controller, "_sim_controller", None)
-        if sim is None:
-            return None
-        getter = getattr(sim, "get_controller", None)
+        getter = (
+            getattr(sc, "get_or_create_controller", None)
+            or getattr(sc, "get_controller", None)
+            or getattr(sc, "_get_or_create_controller", None)
+        )
         if callable(getter):
             try:
                 return getter(train_id)
             except Exception:
-                return None
+                pass
+        controllers = getattr(sc, "controllers", None)
+        if isinstance(controllers, dict):
+            return controllers.get(train_id)
         return None
 
     def _get_current_block_id_for_train(self, train) -> Optional[str]:
@@ -964,11 +952,7 @@ class PathDispatcher:
             if route_executor is not None:
                 handler = getattr(route_executor, "handle_path_cancellation", None)
                 if callable(handler):
-                    try:
-                        handler(train_id, path_id, initiator)
-                    except TypeError:
-                        # Legacy 2-arg signature fallback.
-                        handler(train_id, path_id)
+                    handler(train_id, path_id, initiator)
 
         # Emit the canonical `path_cancellation` notification.
         sc = self.simulation_controller
@@ -1631,17 +1615,13 @@ class PathDispatcher:
         if route_executor is not None:
             handler = getattr(route_executor, "handle_path_completion", None)
             if callable(handler):
-                try:
-                    handler(
-                        train_id,
-                        path_id,
-                        path.get_authority_end_block_id(),
-                        path.requested_destination_direction,
-                        event_time,
-                    )
-                except TypeError:
-                    # Legacy 2-arg signature fallback.
-                    handler(train_id, path_id)
+                handler(
+                    train_id,
+                    path_id,
+                    path.get_authority_end_block_id(),
+                    path.requested_destination_direction,
+                    event_time,
+                )
 
         # Per design_new.md ~line 80: completed paths remain in
         # `paths_by_id[path_id]` for history. `Path.status == COMPLETED`
@@ -1653,14 +1633,6 @@ class PathDispatcher:
             new_status=PathStatus.COMPLETED,
             reason=None,
         )
-
-    # Legacy alias
-    def complete_path(self, path_id: str) -> bool:
-        path = self.paths.get(path_id)
-        if path is None or path.train_id is None:
-            return False
-        result = self.try_complete_active_path(path.train_id, self._now())
-        return result.success
 
     # ========================================================================
     # Query API

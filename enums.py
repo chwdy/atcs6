@@ -56,7 +56,6 @@ class TrackType(Enum):
     CURVE = "curve"  # Connection-based: different orientation groups
     SWITCH = "switch"
     DIAMOND = "diamond"  # 2-path crossing without switches
-    CROSSING = "diamond"  # Alias for compatibility
     WYE = "wye"
     COMPLEX = "complex"
     SCISSORS = "scissors"

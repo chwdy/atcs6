@@ -564,34 +564,34 @@ class App {
     
     updateTrainDebugPanel(train) {
         const checkbox = document.getElementById('debug-show-train-position');
-        
-        // If debug is disabled, hide the debug container
+        const debugGeometry = document.getElementById('train-debug-geometry');
+
+        // If debug is disabled, hide both debug sub-blocks
         if (checkbox && !checkbox.checked) {
             const controlDebug = document.getElementById('train-control-debug-section');
             if (controlDebug) controlDebug.classList.add('hidden');
+            if (debugGeometry) debugGeometry.classList.add('hidden');
             return;
         }
-        
+
         if (!train) return;
 
         // Target the Train Control panel debug section
         const controlPanelDebug = document.getElementById('train-control-debug-section');
         if (!controlPanelDebug) return;
 
+        // Reveal the geometry + read-only properties block (Status fields moved here).
+        if (debugGeometry) debugGeometry.classList.remove('hidden');
+
         const controller = window.stateManager.getController(train.id);
         const dispatcher = window.stateManager.getDispatcherProgress(train.id);
+        const span = controller?.span || null;
 
-        // Build HTML content
         let html = '<div class="train-debug-panel info-display-compact" style="background: transparent; border: none; padding: 0;">';
 
-        // Basic info
         html += `<div class="train-debug-row"><span class="train-debug-label">Train ID:</span><span class="train-debug-value">${train.id}</span></div>`;
         html += `<div class="train-debug-row"><span class="train-debug-label">State:</span><span class="train-debug-value">${controller?.state || 'unknown'}</span></div>`;
-        html += `<div class="train-debug-row"><span class="train-debug-label">Length:</span><span class="train-debug-value">${train.length_cm?.toFixed(1) || 0} cm</span></div>`;
-        html += `<div class="train-debug-row"><span class="train-debug-label">Path Index:</span><span class="train-debug-value">${dispatcher?.current_resource_index != null ? dispatcher.current_resource_index + 1 : '-'} / ${dispatcher?.resource_sequence?.length ?? '-'}</span></div>`;
-        html += `<div class="train-debug-row"><span class="train-debug-label">Distance on Track:</span><span class="train-debug-value">${train.distance_on_track_cm?.toFixed(2) ?? '-'} cm</span></div>`;
 
-        // Resource sequence
         if (dispatcher?.resource_sequence && dispatcher.resource_sequence.length > 0) {
             html += `<div class="train-debug-subsection">Resource Sequence (${dispatcher.resource_sequence.length})</div>`;
             html += `<div class="train-debug-path">`;
@@ -603,181 +603,39 @@ class App {
             html += `</div>`;
         }
 
-        // Span with end_a/end_b
-        if (controller?.span?.end_a) {
-            const p = controller.span;
-
+        if (span?.occupied_tiles && span.occupied_tiles.length > 0) {
             html += `<div class="train-debug-subsection">`;
-            html += `<div class="train-debug-subsection-title">End A (${p.leading_end === 'a' ? 'HEAD' : 'TAIL'})</div>`;
-            html += `<div class="train-debug-row"><span class="train-debug-label">Tile:</span><span class="train-debug-value text-track">(${p.end_a.tile[0]}, ${p.end_a.tile[1]})</span></div>`;
-            html += `<div class="train-debug-row"><span class="train-debug-label">Distance:</span><span class="train-debug-value">${p.end_a.distance_cm?.toFixed(1) || 0} cm</span></div>`;
-            html += `<div class="train-debug-row"><span class="train-debug-label">Entry Edge:</span><span class="train-debug-value">${p.end_a.entry_edge || '-'}</span></div>`;
-            html += `</div>`;
-
-            html += `<div class="train-debug-subsection">`;
-            html += `<div class="train-debug-subsection-title">End B (${p.leading_end === 'b' ? 'HEAD' : 'TAIL'})</div>`;
-            html += `<div class="train-debug-row"><span class="train-debug-label">Tile:</span><span class="train-debug-value text-track">(${p.end_b.tile[0]}, ${p.end_b.tile[1]})</span></div>`;
-            html += `<div class="train-debug-row"><span class="train-debug-label">Distance:</span><span class="train-debug-value">${p.end_b.distance_cm?.toFixed(1) || 0} cm</span></div>`;
-            html += `<div class="train-debug-row"><span class="train-debug-label">Entry Edge:</span><span class="train-debug-value">${p.end_b.entry_edge || '-'}</span></div>`;
-            html += `</div>`;
-
-            html += `<div class="train-debug-subsection">`;
-            html += `<div class="train-debug-subsection-title">Position Info</div>`;
-            html += `<div class="train-debug-row"><span class="train-debug-label">Leading End:</span><span class="train-debug-value">${p.leading_end?.toUpperCase() || '-'}</span></div>`;
-            html += `<div class="train-debug-row"><span class="train-debug-label">Facing:</span><span class="train-debug-value">${train.facing_direction || '-'}</span></div>`;
-            html += `</div>`;
-
-            // Occupied tiles
-            if (p.occupied_tiles && p.occupied_tiles.length > 0) {
-                html += `<div class="train-debug-subsection">`;
-                html += `<div class="train-debug-subsection-title">Occupied Tiles (${p.occupied_tiles.length})</div>`;
-                html += `<div class="train-debug-tiles">`;
-                p.occupied_tiles.forEach(t => {
-                    html += `<span class="train-debug-tile">(${t[0]}, ${t[1]})</span>`;
-                });
-                html += `</div></div>`;
-            }
-
-            // Occupied blocks
-            if (p.occupied_blocks && p.occupied_blocks.length > 0) {
-                html += `<div class="train-debug-subsection">`;
-                html += `<div class="train-debug-subsection-title">Occupied Blocks (${p.occupied_blocks.length})</div>`;
-                html += `<div class="train-debug-tiles">`;
-                p.occupied_blocks.forEach(b => {
-                    html += `<span class="train-debug-tile" style="color: var(--accent-purple);">${b}</span>`;
-                });
-                html += `</div></div>`;
-            }
+            html += `<div class="train-debug-subsection-title">Occupied Tiles (${span.occupied_tiles.length})</div>`;
+            html += `<div class="train-debug-tiles">`;
+            span.occupied_tiles.forEach(t => {
+                html += `<span class="train-debug-tile">(${t[0]}, ${t[1]})</span>`;
+            });
+            html += `</div></div>`;
         }
 
+        if (span?.occupied_blocks && span.occupied_blocks.length > 0) {
+            html += `<div class="train-debug-subsection">`;
+            html += `<div class="train-debug-subsection-title">Occupied Blocks (${span.occupied_blocks.length})</div>`;
+            html += `<div class="train-debug-tiles">`;
+            span.occupied_blocks.forEach(b => {
+                html += `<span class="train-debug-tile" style="color: var(--accent-purple);">${b}</span>`;
+            });
+            html += `</div></div>`;
+        }
 
-        // This is a placeholder for the lookahead section which will be updated separately
-        html += `<div class="train-debug-lookahead"></div>`;
-        
-        html += '</div>'; // End wrapper
-        
-        // Inject into the new location in the Train Control panel
-        if (controlPanelDebug) {
-             controlPanelDebug.innerHTML = html;
-             controlPanelDebug.classList.remove('hidden');
-        }
-        
-        // Re-append stored lookahead data if available
-        if (this.lastLookaheadData && this.selectedTrainId === train.id) {
-            this.updateTrainDebugWithLookahead(this.lastLookaheadData);
-        }
+        html += '</div>';
+
+        controlPanelDebug.innerHTML = html;
+        controlPanelDebug.classList.remove('hidden');
     }
 
     hideTrainDebugPanel() {
         const controlDebug = document.getElementById('train-control-debug-section');
         if (controlDebug) controlDebug.classList.add('hidden');
-    }
-    
-    // Update debug panel with lookahead data for additional info
-    updateTrainDebugWithLookahead(lookahead) {
-        // We now append to the train control panel
-        const targetContent = document.getElementById('train-control-debug-section');
-        
-        if (!targetContent) return;
-        
-        // Find if there's already a lookahead section and replace it, else append
-        let existingLookahead = targetContent.querySelector('.train-debug-lookahead');
-        
-        let extra = '';
-        
-        // Speed & Position Info
-        extra += `<div class="train-debug-subsection">`;
-        extra += `<div class="train-debug-subsection-title">Lookahead - Speed & Position</div>`;
-        extra += `<div class="train-debug-row"><span class="train-debug-label">Current Speed:</span><span class="train-debug-value">${lookahead.current_speed_kmh?.toFixed(1) || 0} km/h</span></div>`;
-        extra += `<div class="train-debug-row"><span class="train-debug-label">Target Speed:</span><span class="train-debug-value">${lookahead.target_speed_kmh?.toFixed(1) || 0} km/h</span></div>`;
-        extra += `<div class="train-debug-row"><span class="train-debug-label">ATC Target:</span><span class="train-debug-value">${lookahead.atc_target_speed_kmh?.toFixed(1) || 0} km/h</span></div>`;
-        extra += `<div class="train-debug-row"><span class="train-debug-label">Max Speed:</span><span class="train-debug-value">${lookahead.speed_limit_kmh?.toFixed(1) || 0} km/h</span></div>`;
-        extra += `<div class="train-debug-row"><span class="train-debug-label">Distance into Path:</span><span class="train-debug-value">${lookahead.distance_into_path_cm?.toFixed(1) || 0} cm</span></div>`;
-        extra += `<div class="train-debug-row"><span class="train-debug-label">To Next Tile:</span><span class="train-debug-value">${lookahead.distance_to_next_tile_cm?.toFixed(1) || '-'} cm</span></div>`;
-        extra += `<div class="train-debug-row"><span class="train-debug-label">Clearance:</span><span class="train-debug-value text-track">${lookahead.clearance_cm?.toFixed(1) || 0} cm</span></div>`;
-        if (lookahead.speed_limit_reason) {
-            extra += `<div class="train-debug-row"><span class="train-debug-label">Speed Limit:</span><span class="train-debug-value text-signal-danger">${lookahead.speed_limit_reason}</span></div>`;
-        }
-        if (lookahead.wait_reason) {
-            extra += `<div class="train-debug-row"><span class="train-debug-label">Wait Reason:</span><span class="train-debug-value text-signal-danger">${lookahead.wait_reason}</span></div>`;
-        }
-        extra += `</div>`;
-        
-        // Blocks ahead
-        if (lookahead.blocks && lookahead.blocks.length > 0) {
-            extra += `<div class="train-debug-subsection">`;
-            extra += `<div class="train-debug-subsection-title">Lookahead - Blocks (${lookahead.blocks.length})</div>`;
-            lookahead.blocks.slice(0, 5).forEach((block, i) => {
-                const stateColor = block.state === 'free' ? 'text-success' : 
-                                   block.state === 'occupied' ? 'text-danger' : 
-                                   block.state === 'reserved' ? 'text-warning' : '';
-                extra += `<div class="train-debug-row">`;
-                extra += `<span class="train-debug-label">${block.name || block.id}:</span>`;
-                extra += `<span class="train-debug-value ${stateColor}">${block.state} @ ${block.start_cm?.toFixed(0)}-${block.end_cm?.toFixed(0)} cm</span>`;
-                extra += `</div>`;
-            });
-            if (lookahead.blocks.length > 5) {
-                extra += `<div class="train-debug-row text-muted text-xs">...and ${lookahead.blocks.length - 5} more</div>`;
-            }
-            extra += `</div>`;
-        }
-        
-        // Signals ahead
-        if (lookahead.signals && lookahead.signals.length > 0) {
-            extra += `<div class="train-debug-subsection">`;
-            extra += `<div class="train-debug-subsection-title">Lookahead - Signals (${lookahead.signals.length})</div>`;
-            lookahead.signals.slice(0, 5).forEach((signal, i) => {
-                const aspectColor = signal.state === 'green' ? 'text-success' :
-                                    signal.state === 'yellow' ? 'text-warning' :
-                                    signal.state === 'red' ? 'text-danger' : '';
-                extra += `<div class="train-debug-row">`;
-                extra += `<span class="train-debug-label">${signal.id}:</span>`;
-                extra += `<span class="train-debug-value ${aspectColor}">${signal.state} @ ${signal.distance_cm?.toFixed(0)} cm</span>`;
-                extra += `</div>`;
-            });
-            if (lookahead.signals.length > 5) {
-                extra += `<div class="train-debug-row text-muted text-xs">...and ${lookahead.signals.length - 5} more</div>`;
-            }
-            extra += `</div>`;
-        }
-        
-        // Platforms ahead
-        if (lookahead.stations && lookahead.stations.length > 0) {
-            extra += `<div class="train-debug-subsection">`;
-            extra += `<div class="train-debug-subsection-title">Lookahead - Platforms (${lookahead.stations.length})</div>`;
-            lookahead.stations.forEach((station, i) => {
-                extra += `<div class="train-debug-row">`;
-                extra += `<span class="train-debug-label">${station.name || station.platform_id || station.station_id}:</span>`;
-                extra += `<span class="train-debug-value text-station">@ ${station.distance_cm?.toFixed(0)} cm (${station.length_cm?.toFixed(0)} cm long)</span>`;
-                extra += `</div>`;
-            });
-            extra += `</div>`;
-        }
-        
-        // Switches ahead
-        if (lookahead.switches && lookahead.switches.length > 0) {
-            extra += `<div class="train-debug-subsection">`;
-            extra += `<div class="train-debug-subsection-title">Lookahead - Switches (${lookahead.switches.length})</div>`;
-            lookahead.switches.slice(0, 5).forEach((sw, i) => {
-                extra += `<div class="train-debug-row">`;
-                extra += `<span class="train-debug-label">(${sw.x},${sw.y}):</span>`;
-                extra += `<span class="train-debug-value">${sw.position || 'unknown'} @ ${sw.distance_cm?.toFixed(0)} cm</span>`;
-                extra += `</div>`;
-            });
-            if (lookahead.switches.length > 5) {
-                extra += `<div class="train-debug-row text-muted text-xs">...and ${lookahead.switches.length - 5} more</div>`;
-            }
-            extra += `</div>`;
-        }
-        
-        if (existingLookahead) {
-            existingLookahead.outerHTML = `<div class="train-debug-lookahead">${extra}</div>`;
-        } else {
-            targetContent.insertAdjacentHTML('beforeend', `<div class="train-debug-lookahead">${extra}</div>`);
-        }
+        const debugGeometry = document.getElementById('train-debug-geometry');
+        if (debugGeometry) debugGeometry.classList.add('hidden');
     }
 
-    
     async fetchTrainLookahead(trainId, train) {
         if (!trainId) {
             return;
@@ -806,11 +664,13 @@ class App {
                 if (this.trainMonitor.isVisible()) {
                     this.trainMonitor.updateFromController(trainSnapshot, lookaheadPayload);
                 }
+                // Lookahead detail lives in the Train Monitor (bottom panel),
+                // not in this debug strip. Cache the data only — the monitor
+                // is the canonical surface for it.
                 const lookaheadData = this.trainMonitor.lookaheadData;
                 if (lookaheadData) {
                     this.lastLookaheadData = lookaheadData;
                     lookaheadData.speed_limit_kmh = trainSnapshot.max_speed || 0;
-                    this.updateTrainDebugWithLookahead(lookaheadData);
                 }
             }
         } catch (e) {

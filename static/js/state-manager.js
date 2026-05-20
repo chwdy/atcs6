@@ -54,18 +54,23 @@ class StateManager {
         // ═══════════════════════════════════════════════════════════════
         // METADATA
         // ═══════════════════════════════════════════════════════════════
-        
+
         // Track when each entity was last updated (for debugging/staleness)
         this.lastUpdate = new Map();  // "type:id" → timestamp
-        
+
         // Global version counter (increments on any change)
         this.version = 0;
-        
+
         // Flag to pause all notifications (e.g., during bulk load)
         this._notificationsPaused = false;
-        
+
         // Pending notifications during pause
         this._pendingNotifications = [];
+
+        // Simulation clock (seconds since start) — refreshed from
+        // /api/network payload. Top-level scalar, not a subscribable entity;
+        // panels read this when they re-render off a controller update.
+        this.simulationTime = 0.0;
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -317,7 +322,13 @@ class StateManager {
         // Pause notifications during bulk update to avoid spam
         this._notificationsPaused = true;
         this._pendingNotifications = [];
-        
+
+        // Update simulation clock scalar before bulk entity refresh so any
+        // subscriber callback firing during the flush sees the new clock.
+        if (typeof network.simulation_time === 'number') {
+            this.simulationTime = network.simulation_time;
+        }
+
         try {
             // ─────────────────────────────────────────────────────────
             // UPDATE TRAINS (persistent only)

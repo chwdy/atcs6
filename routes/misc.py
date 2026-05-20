@@ -18,27 +18,13 @@ from train_route import Route, RouteTask
 def _coerce_route_task(item: dict) -> RouteTask:
     """Build a RouteTask from a JSON request item.
 
-    Accepts both the v1 shape (``task_kind`` + ``task_location`` etc.) and the
-    legacy shape (``platform_id`` + ``dwell_time_sec``-only). When
-    ``task_kind`` is omitted, infer ``"dwell"`` if ``dwell_time_sec`` is
-    positive, otherwise ``"stop"``. ``task_location`` accepts the canonical
-    structured form ``{"block_id"|"platform_id"|"station_id": "..."}`` or a
-    plain string (legacy: interpreted as a platform_id by RouteTask.from_dict).
+    Requires the v1 shape: ``task_kind`` (``"waypoint"|"stop"|"dwell"``) and
+    ``task_location`` as the structured dict form
+    ``{"block_id"|"platform_id"|"station_id": "..."}``. Other fields
+    (``task_direction``, ``task_time``, ``target_time``) follow the
+    ``RouteTask`` schema.
     """
-    data = dict(item or {})
-
-    # Legacy alias: platform_id -> task_location (structured form).
-    if "task_location" not in data and "platform_id" in data:
-        data["task_location"] = {"platform_id": data["platform_id"]}
-
-    if "task_kind" not in data:
-        try:
-            dwell = float(data.get("dwell_time_sec", 0.0))
-        except (TypeError, ValueError):
-            dwell = 0.0
-        data["task_kind"] = "dwell" if dwell > 0.0 else "stop"
-
-    return RouteTask.from_dict(data)
+    return RouteTask.from_dict(dict(item or {}))
 
 
 def register(app, state: AppState) -> None:
@@ -301,11 +287,7 @@ def register(app, state: AppState) -> None:
 
         route = Route(route_id=route_id, name=name, mode=mode)
 
-        # Accept either v1 ``tasks`` or the legacy ``waypoints`` key.
-        tasks_data = data.get("tasks")
-        if tasks_data is None:
-            tasks_data = data.get("waypoints", [])
-        for task_data in tasks_data:
+        for task_data in data.get("tasks", []):
             route.add_task(_coerce_route_task(task_data))
 
         assigned_train_ids = data.get("assigned_train_ids", [])
@@ -335,8 +317,7 @@ def register(app, state: AppState) -> None:
             "tasks": [
                 {
                     "task_kind": "waypoint"|"stop"|"dwell",
-                    "task_location": {"block_id"|"platform_id"|"station_id": "..."}
-                                     | str (legacy: interpreted as platform_id),
+                    "task_location": {"block_id"|"platform_id"|"station_id": "..."},
                     "task_direction": "forward"|"reverse"|"either",
                     "task_time": float (optional),
                     "target_time": float (optional)
@@ -344,11 +325,6 @@ def register(app, state: AppState) -> None:
                 ...
             ] (optional, replaces all tasks)
         }
-
-        The legacy ``waypoints`` key is also accepted and mapped to ``tasks``;
-        each item may use the legacy ``platform_id`` field instead of
-        ``task_location`` and may omit ``task_kind`` (in which case the kind
-        is inferred from ``dwell_time_sec``).
 
         Returns:
             200 OK with updated route data
@@ -381,26 +357,14 @@ def register(app, state: AppState) -> None:
                     else:
                         return jsonify({"error": f"Invalid mode '{mode_str}'"}), 400
 
-            tasks_payload = None
             if "tasks" in data:
-                tasks_payload = data["tasks"]
-            elif "waypoints" in data:
-                tasks_payload = data["waypoints"]
-
-            if tasks_payload is not None:
                 new_tasks = []
-                for task_data in tasks_payload:
+                for task_data in data["tasks"]:
                     if not isinstance(task_data, dict):
                         return jsonify({"error": "task entry must be an object"}), 400
-                    location = task_data.get("task_location") or task_data.get(
-                        "platform_id"
-                    )
-                    if not location:
+                    if not task_data.get("task_location"):
                         return jsonify(
-                            {
-                                "error": "task_location (or legacy platform_id) "
-                                "required for each task"
-                            }
+                            {"error": "task_location required for each task"}
                         ), 400
                     new_tasks.append(_coerce_route_task(task_data))
 
@@ -1270,98 +1234,15 @@ def register(app, state: AppState) -> None:
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
-    @app.route("/api/switches/<switch_id>/lock", methods=["POST"])
-    def lock_switch(switch_id: str):
-        """
-        Lock a switch for a path.
-
-        Request body:
-            {"path_id": "PATH_123", "state": 0 or 1}
-
-        Returns:
-            200: {"success": true, "switch": {...}}
-            404: {"error": "Switch not found"}
-            409: {"error": "Switch already locked by different path"}
-        """
-        try:
-            data = request.json
-            if not data:
-                return jsonify({"error": "No data provided"}), 400
-
-            path_id = data.get("path_id")
-            state_val = data.get("state")
-
-            if not path_id:
-                return jsonify({"error": "Missing 'path_id' in request body"}), 400
-            if state_val not in (0, 1):
-                return jsonify(
-                    {"error": "Invalid state value. Must be 0 (MAIN) or 1 (DIVERGE)"}
-                ), 400
-
-            switch = state.network.switches.get(switch_id)
-            if not switch:
-                return jsonify({"error": f"Switch {switch_id} not found"}), 404
-
-            # First change state, then lock
-            track = state.network.get_track(switch.x, switch.y)
-            if track:
-                track.set_switch_state(state_val)
-
-            success = switch.lock(path_id, state_val)
-
-            if success:
-                return jsonify(
-                    {"success": True, "switch": switch.to_dict(state.network)}
-                )
-            else:
-                return jsonify(
-                    {"error": f"Switch already locked by path {switch.locked_by_path}"}
-                ), 409
-
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-
-    @app.route("/api/switches/<switch_id>/unlock", methods=["POST"])
-    def unlock_switch(switch_id: str):
-        """
-        Unlock a switch.
-
-        Request body:
-            {"path_id": "PATH_123"}
-
-        Returns:
-            200: {"success": true, "switch": {...}}
-            404: {"error": "Switch not found"}
-            403: {"error": "Switch not locked by this path"}
-        """
-        try:
-            data = request.json
-            if not data:
-                return jsonify({"error": "No data provided"}), 400
-
-            path_id = data.get("path_id")
-            if not path_id:
-                return jsonify({"error": "Missing 'path_id' in request body"}), 400
-
-            switch = state.network.switches.get(switch_id)
-            if not switch:
-                return jsonify({"error": f"Switch {switch_id} not found"}), 404
-
-            success = switch.unlock(path_id)
-
-            if success:
-                return jsonify(
-                    {"success": True, "switch": switch.to_dict(state.network)}
-                )
-            else:
-                if switch.is_locked():
-                    return jsonify(
-                        {
-                            "error": f"Switch locked by different path: {switch.locked_by_path}"
-                        }
-                    ), 403
-                else:
-                    return jsonify({"error": "Switch is not locked"}), 400
-
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
+    # NOTE: pre-v1 admin endpoints `/api/switches/<id>/lock` and
+    # `/api/switches/<id>/unlock` were removed. They called non-existent
+    # `Switch.lock()` / `Switch.unlock()` and read non-existent
+    # `Switch.locked_by_path` (relics of the single-owner schema). Per
+    # design_new.md, switch locks are owned by `Switch.locks` (multi-owner,
+    # keyed by `(path_id, source_switch_id)`) and acquired/released through
+    # `Switch.acquire_lock(SwitchLockClaim(...))` / `Switch.release_lock(...)`
+    # called by `PathDispatcher` via `SwitchManager`. Admin/operator surface
+    # for path lifecycle (which is what would create or release these locks)
+    # is `PathDispatcher.create_path(...)` / `PathDispatcher.cancel_path(...)`
+    # exposed via the `/api/paths` routes; manual switch alignment goes
+    # through `PUT /api/switches/<id>/state` above.

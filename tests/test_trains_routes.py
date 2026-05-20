@@ -123,7 +123,6 @@ class TestBlockTileSyncValidation:
             occupied_tiles=[(0, 0), (1, 0), (2, 0)],
             occupied_blocks=["B1"],
         )
-        train.current_speed = 0.0
         network.add_train(train)
 
         controller = TrainController(train_id="T1", network=network)
@@ -663,15 +662,12 @@ class TestMultiTilePlatformStopping:
             occupied_tiles=[(9, 3)],
             occupied_blocks=["STATION_BLOCK"],
         )
-        train.current_speed = 20.0  # Moving
-        train.current_path = [
-            (9, 2, Direction.NORTH),
-            (9, 3, Direction.NORTH),
-            (9, 4, Direction.NORTH),
-        ]
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
+        # `_calculate_clearance_to_end_of_current_block` reads `train.position`
+        # and the network, not current_speed or current_path — both of those
+        # live on TrainController / PathDispatcher in v1.
 
         # Calculate clearance - should include distance to end of platform
         clearance = controller._calculate_clearance_to_end_of_current_block()

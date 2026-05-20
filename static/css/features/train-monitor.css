@@ -16,7 +16,10 @@
 
 /* ---- Panel shell ---- */
 .tm-panel {
-    height: 300px;
+    position: relative;
+    height: 350px;
+    min-height: 200px;
+    max-height: 80vh;
     background-color: var(--bg-panel);
     color: var(--text-primary);
     border-top: 1px solid var(--border-color);
@@ -31,6 +34,27 @@
 }
 
 .tm-panel.hidden { display: none; }
+
+/* Top-edge resize handle — drag to adjust panel height.
+   Mirrors the sidebar pattern (gradient that fades in on hover). */
+.tm-panel::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 8px;
+    cursor: ns-resize;
+    background: linear-gradient(to top, transparent, rgba(130, 87, 229, 0.3));
+    opacity: 0;
+    transition: opacity 0.2s;
+    z-index: 1000;
+}
+.tm-panel:hover::before { opacity: 1; }
+.tm-panel.resizing::before {
+    opacity: 1;
+    background: linear-gradient(to top, transparent, rgba(130, 87, 229, 0.6));
+}
 
 /* ---- Header strip ---- */
 .tm-header {
@@ -241,13 +265,7 @@
     color: var(--text-secondary);
 }
 
-/* ---- Status footer (full-width banners below the main content row) ---- */
-.tm-status {
-    display: flex;
-    flex-direction: column;
-    flex-shrink: 0;
-}
-
+/* ---- Speed-limit reason banner (rendered inside the info column) ---- */
 .tm-banner {
     font-size: 11px;
     padding: 5px 12px;
@@ -274,11 +292,20 @@
     font-style: italic;
 }
 
-/* ---- Canvas ---- */
-.tm-canvas {
+/* ---- Canvas wrap (scrollable container around the fixed-height canvas) ---- */
+.tm-canvas-wrap {
     flex: 1;
     min-width: 0;
-    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    background-color: var(--bg-dark);
+}
+
+/* ---- Canvas (fixed height; wrap scrolls when panel is shorter) ---- */
+.tm-canvas {
+    display: block;
+    width: 100%;
+    height: 306px;
     background-color: var(--bg-dark);
 }
 

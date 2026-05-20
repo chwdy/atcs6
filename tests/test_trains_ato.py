@@ -45,6 +45,11 @@ class TestAtoStopButtonBugFix:
     """
 
     def _setup_ato_train(self, network):
+        from tests.train_test_helpers import (
+            attach_synthetic_path,
+            make_synthetic_path,
+        )
+
         track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
         next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
         network.add_track(track)
@@ -57,6 +62,17 @@ class TestAtoStopButtonBugFix:
         network.place_train(train, 0, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
+        # Per Option B, the controller needs a live `received_path_plan` for
+        # ATC/ATO to compute service-brake authority. Wire a one-block
+        # synthetic path covering the train's current block.
+        attach_synthetic_path(
+            controller,
+            make_synthetic_path(
+                train_id=train.train_id,
+                block_id="BLOCK_1",
+                block_tiles=[(0, 0), (1, 0)],
+            ),
+        )
         controller.power_on = True
         controller.control_mode = "ato"
         controller.cab = "A"
@@ -136,17 +152,13 @@ class TestAtoAutoCabSelectionBugFix:
 
         car = TrainCar(car_id="CAR_02", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_NO_CAB_TICK", consist=[car], max_speed=60.0)
-        # Direction set via position (refactored): train.set_cab("A")  # was: Direction.EAST
-        train.assigned_path_id = "PATH_1"
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
 
-        class DummyPath:
-            path_id = "PATH_1"
-            end_a = (0, 0)
-            end_b = (1, 0)
-
-        network.paths = {"PATH_1": DummyPath()}
+        # v1: paths are owned by PathDispatcher; the controller reads its
+        # active plan via `received_path_plan`. This test only exercises the
+        # "no cab selected" branch of tick(), which does not depend on path
+        # state, so no dispatcher wiring is needed.
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
@@ -311,7 +323,19 @@ class TestAtoDistanceAwareControl:
     """
 
     def _setup_ato_train_with_path(self, network, clearance_cm: float = 1000.0):
-        """Helper to set up an ATO train with specified clearance."""
+        """Helper to set up an ATO train with specified clearance.
+
+        Per Option B (design_new.md step `22a9`), the controller needs a
+        live `received_path_plan` for ATC/ATO to compute service-brake
+        authority. We wire a one-block synthetic path covering the train's
+        current block; the `clearance_cm` arg becomes the manually-pinned
+        controller field, but the live recompute walks the synthetic path.
+        """
+        from tests.train_test_helpers import (
+            attach_synthetic_path,
+            make_synthetic_path,
+        )
+
         track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
         next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
         network.add_track(track)
@@ -324,6 +348,14 @@ class TestAtoDistanceAwareControl:
         network.place_train(train, 0, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
+        attach_synthetic_path(
+            controller,
+            make_synthetic_path(
+                train_id=train.train_id,
+                block_id="BLOCK_1",
+                block_tiles=[(0, 0), (1, 0)],
+            ),
+        )
         controller.power_on = True
         controller.control_mode = "ato"
         controller.cab = "A"
@@ -560,61 +592,49 @@ class TestAtoDestinationStoppingAfterPathCompletes:
 
         return station
 
-    def test_ato_has_clearance_after_path_completes(self, network):
-        """
-        When path completes (reserved_blocks cleared), ATO should still have
-        clearance based on ato_destination_block_id.
+    def test_ato_has_no_clearance_after_path_completes(self, network):
+        """Per design_new.md step `22a9` (Option B): once the path
+        transitions out of ACTIVE, `received_path_plan` reads `None` and
+        the canonical lookahead is the no-authority empty payload — no
+        block-bounded fallback authority. A stopped train sits at rest;
+        a rolling train escalates to EB through step `826a`.
 
-        Scenario:
-        1. Train is on tile (3,0), heading EAST toward station end
-        2. Path is completed, train.reserved_blocks is cleared
-        3. ato_destination_block_id is set to "BLOCK_B" (the station block)
-        4. ATO should calculate clearance to block end, not return 0
+        This test pins the post-path-completion behavior: clearance and
+        ATC limit must both be `0`, with `no_authority` reason. The train
+        cannot drive forward without a freshly-issued path.
         """
+        from enums import AtcLimitReasonCode
+
         self._setup_station_track(network)
 
-        # Create and place train
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=30.0)
         train = Train(train_id="TRAIN_STOP_TEST", consist=[car])
         network.add_train(train)
         network.place_train(train, 3, 0, Direction.EAST)
 
-        # Train has path tiles but reserved_blocks is EMPTY (path completed)
-        train.current_path = [
-            (3, 0, Direction.EAST),
-            (4, 0, Direction.EAST),
-        ]
-        train.reserved_blocks = []  # <-- Path completed, blocks cleared
-        train.assigned_path_id = None  # Path no longer assigned
-
-        # Create controller with ATO running
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
         controller.control_mode = "ato"
         controller.cab = "A"
-        controller.state = TrainState.RUNNING_MOVING
-        controller.ato_running = True
+        controller.state = TrainState.READY
+        controller.ato_running = False
+        controller.current_speed_kmh = 0.0
 
-        # Set destination to station block - this is what should provide stopping info
-
-        controller.current_speed_kmh = 20.0
-
-        # Tick the controller
         controller.tick(0.1)
 
-        # Clearance should NOT be 0 - should be distance to block end
-        # The station block is 100cm long, train is at start of tile (3,0)
-        # So clearance should be approximately 100cm (block length)
-        assert controller.clearance_ahead_cm > 0, (
-            f"Clearance should be > 0 when ato_destination_block_id is set, "
-            f"but got {controller.clearance_ahead_cm}. "
-            f"ATO should use block end stopping point, not rely on reserved_blocks."
+        assert controller.atc_speed_limit == 0.0, (
+            f"Post-completion ATC limit must be 0 under Option B, "
+            f"got {controller.atc_speed_limit}"
         )
-
-        # ATC speed limit should allow some movement toward the stop
-        assert controller.atc_speed_limit > 0 or controller.current_speed_kmh < 1.0, (
-            f"ATC should allow deceleration toward station, not immediate stop. "
-            f"atc_speed_limit={controller.atc_speed_limit}"
+        assert (
+            controller._last_atc_limit_reason_code == AtcLimitReasonCode.NO_AUTHORITY
+        ), (
+            f"Post-completion reason must be NO_AUTHORITY, "
+            f"got {controller._last_atc_limit_reason_code!r}"
+        )
+        assert controller.target_speed == 0.0, (
+            f"target_speed reads operational_limit at distance 0; "
+            f"with no path it must be 0, got {controller.target_speed}"
         )
 
 
@@ -645,9 +665,9 @@ class TestAtoDestinationStoppingAfterPathCompletes:
             occupied_blocks=["BLOCK_B"],
         )
         # Direction set via position (refactored): train.set_cab("A")  # was: Direction.WEST
-
-        train.current_path = [(3, 0, Direction.EAST), (4, 0, Direction.EAST)]
-        train.reserved_blocks = []
+        # v1: path geometry / future-authority blocks live on the dispatcher;
+        # this test exercises the at-station-stopped branch which does not
+        # depend on having an active path wired.
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
@@ -719,16 +739,38 @@ class TestTrendAwareATOControl:
         for x in range(10):
             track = TrackSegment(x=x, y=0, track_bits=TRACK_EW)
             network.add_track(track)
+        # Per Option B, ATC/ATO need a real `received_path_plan` to compute
+        # forward authority. Create a block so the synthetic path below
+        # resolves; the tests in this class exercise the ATO handle
+        # evaluator under that authority.
+        network.create_block_with_tracks(
+            "BLOCK_TREND",
+            [(x, 0) for x in range(10)],
+            length_cm=1000.0,
+        )
         return network
 
     @pytest.fixture
     def train_and_controller(self, network, straight_track):
+        from tests.train_test_helpers import (
+            attach_synthetic_path,
+            make_synthetic_path,
+        )
+
         car = TrainCar(car_id="CAR_TEST", car_type="LOCOMOTIVE", length_cm=30.0)
         train = Train(train_id="TRAIN_ATO_TEST", consist=[car], max_speed=80.0)
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
 
         controller = TrainController(train_id=train.train_id, network=network)
+        attach_synthetic_path(
+            controller,
+            make_synthetic_path(
+                train_id=train.train_id,
+                block_id="BLOCK_TREND",
+                block_tiles=[(x, 0) for x in range(10)],
+            ),
+        )
         controller.power_on = True
         controller.control_mode = "ato"
         controller.cab = "A"
@@ -948,8 +990,9 @@ class TestSpeedCurveCalculation:
         train = Train(train_id="TRAIN_CURVE_TEST", consist=[car], max_speed=80.0)
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
-
-        train.current_path = [(x, 0, Direction.EAST) for x in range(20)]
+        # `calculate_speed_curves` reads `train.position` and the network/
+        # block geometry; path geometry lives on PathDispatcher in v1 and
+        # is not required for the curve-shape assertions below.
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True

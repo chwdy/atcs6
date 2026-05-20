@@ -23,7 +23,6 @@ from train_route import (
     PlatformTarget,
     RouteMode,
     StationTarget,
-    task_location_id,
 )
 
 if TYPE_CHECKING:
@@ -179,18 +178,13 @@ class RouteTargetResolver:
                     return bid
             return None
 
-        # Fallback: legacy string (only reachable if a caller bypassed
-        # `_coerce_task_location`).
-        legacy = task_location_id(loc) if loc else ""
-        if not legacy:
-            return None
-        blocks = getattr(e.network, "blocks", {}) or {}
-        if legacy in blocks:
-            return legacy
-        block_id = self.platform_block_id(legacy)
-        if block_id:
-            return block_id
-        return None
+        # `task_location` is guaranteed to be one of the three tagged-union
+        # variants by `RouteTask.__post_init__` -> `_coerce_task_location`;
+        # any other type is a caller bug.
+        raise TypeError(
+            f"task_location must be BlockTarget / PlatformTarget / StationTarget; "
+            f"got {type(loc).__name__}"
+        )
 
     # ------------------------------------------------------------------
     # Direction resolution ("either" → forward / reverse)

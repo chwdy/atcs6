@@ -572,8 +572,6 @@ class RouteEditorHandler {
                         </div>
                         <div class="flex items-center gap-8 text-xs">
                             <span class="text-muted">${wpText}</span>
-                            <input type="number" min="1" step="1" class="property-input route-input-compact route-number-input set-waypoint-input" value="${(trainStatus?.current_waypoint_index || 0) + 1}" data-train-id="${trainId}">
-                            <button class="btn btn-sm btn-secondary set-waypoint-btn" data-train-id="${trainId}">Set WP</button>
                         </div>
                     </div>
                 `;
@@ -754,14 +752,6 @@ class RouteEditorHandler {
             };
         });
 
-        document.querySelectorAll('.set-waypoint-btn').forEach(btn => {
-            btn.onclick = (e) => {
-                const trainId = e.target.dataset.trainId;
-                const input = document.querySelector(`.set-waypoint-input[data-train-id="${trainId}"]`);
-                const waypointIndex = (parseInt(input?.value || '1', 10) || 1) - 1;
-                this.setTrainWaypoint(trainId, waypointIndex);
-            };
-        });
     }
 
     /**
@@ -965,8 +955,7 @@ class RouteEditorHandler {
 
         try {
             await this.api.assignRoute(trainId, this.currentRoute.route_id, {
-                force: forceAssign,
-                auto_park: true
+                force: forceAssign
             });
             
             this.currentRoute.assigned_train_ids.push(trainId);
@@ -986,9 +975,7 @@ class RouteEditorHandler {
      */
     async unassignTrain(trainId) {
         try {
-            await this.api.assignRoute(trainId, null, {
-                auto_park: true
-            });
+            await this.api.assignRoute(trainId, null);
             
             this.currentRoute.assigned_train_ids = this.currentRoute.assigned_train_ids.filter(
                 id => id !== trainId
@@ -1004,16 +991,4 @@ class RouteEditorHandler {
         }
     }
 
-    async setTrainWaypoint(trainId, waypointIndex) {
-        try {
-            await this.api.setTrainWaypoint(trainId, waypointIndex);
-            this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
-            window.showToast(`Train ${trainId} waypoint set to ${waypointIndex + 1}`, 'success', 3000);
-
-            this.rerenderRouteEditor();
-        } catch (err) {
-            console.error('[RouteEditor] Failed to set waypoint:', err);
-            window.showToast('Failed to set waypoint: ' + err.message, 'error', 5000);
-        }
-    }
 }

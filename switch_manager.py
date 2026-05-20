@@ -175,14 +175,11 @@ class SwitchManager:
                 block_manager = self._resolve_block_manager()
                 if block_manager is not None:
                     block_manager.on_switch_position_changed(req.switch_id)
-            # Mirror the lock + alignment onto the underlying Track record so
-            # the UI (which reads track.locked_by_path / track.switch_state)
-            # reflects the path's claim. The Switch entity stores the
-            # canonical lock map; the Track field is a UI projection that the
-            # editor reads to draw the 🔒 indicator and toggle the segment
-            # color. Without this mirror, paths invisibly own switches and
-            # users see them as unlocked.
-            self._sync_track_from_switch(switch, path_id=path_id)
+            # Per design_new.md, `Switch.locks` is the canonical store. The
+            # UI fields `track.locked_by_path` / `track.locked_state` /
+            # `track.switch_state` are derived properties on `TrackSegment`
+            # that resolve through `network.switches[switch_id]`; no manual
+            # Track-side mirror is needed.
             recorded.append(req)
         return LockAcquireResult(
             success=True,
@@ -197,7 +194,6 @@ class SwitchManager:
             if switch is None:
                 continue
             switch.release_lock(path_id, req.source_switch_id)
-            self._sync_track_from_switch(switch)
 
     # ------------------------------------------------------------------
     # Path-level release
@@ -212,7 +208,6 @@ class SwitchManager:
                 continue
             for (_pid, source_id) in keys:
                 switch.release_lock(path_id, source_id)
-            self._sync_track_from_switch(switch)
             released.append(switch.switch_id)
         return released
 
@@ -230,7 +225,6 @@ class SwitchManager:
                 continue
             for (_pid, source_id) in keys:
                 switch.release_lock(path_id, source_id)
-            self._sync_track_from_switch(switch)
             released.append(sid)
         return released
 
@@ -270,7 +264,6 @@ class SwitchManager:
         block_manager = self._resolve_block_manager()
         if block_manager is not None:
             block_manager.on_switch_position_changed(switch_id)
-        self._sync_track_from_switch(switch)
         return (True, message)
 
     def _resolve_block_manager(self):
@@ -284,57 +277,6 @@ class SwitchManager:
         if self.network is not None:
             return getattr(self.network, "block_manager", None)
         return None
-
-    def _sync_track_from_switch(
-        self, switch, path_id: Optional[str] = None
-    ) -> None:
-        """Push the Switch entity's canonical position + lock map onto the
-        underlying Track so UI consumers see them.
-
-        The UI reads `track.switch_state` (segment colour) and
-        `track.locked_by_path` / `track.is_locked_by_path()` (🔒 indicator).
-        These are projections of the Switch entity; when the path machinery
-        mutates `Switch.position` or `Switch.locks`, the Track copy must be
-        kept in sync or the editor and renderer go stale.
-
-        Locking semantics: the Track only stores a SINGLE lock owner via
-        `locked_by_path`. When multiple paths share a switch (compatible
-        same-state locks), we record the first one we see and leave the rest
-        invisible — that matches the existing single-owner UI design. When
-        the Switch has no locks left, clear the Track lock.
-
-        `path_id` is optional and used only as a hint for which path to
-        prefer when multiple are recorded.
-        """
-        if self.network is None:
-            return
-        track = self.network.get_track(switch.x, switch.y)
-        if track is None:
-            return
-        # Mirror physical position so segment colour + switch_state UI sees
-        # the path's throw immediately.
-        try:
-            track.switch_state = int(switch.position)
-        except Exception:
-            pass
-        # Mirror lock ownership. Prefer `path_id` if it's actually present in
-        # the switch's lock map; otherwise pick any extant primary lock.
-        chosen_path = None
-        chosen_state = None
-        if switch.locks:
-            if path_id is not None:
-                for (pid, _src) in switch.locks.keys():
-                    if pid == path_id:
-                        chosen_path = pid
-                        chosen_state = switch.locks[(pid, _src)][1]
-                        break
-            if chosen_path is None:
-                # First lock entry wins.
-                first_key = next(iter(switch.locks.keys()))
-                chosen_path = first_key[0]
-                chosen_state = switch.locks[first_key][1]
-        track.locked_by_path = chosen_path
-        track.locked_state = chosen_state
 
     # ------------------------------------------------------------------
     # Clean physical entry + flank conversion + fatal-conflict reporting

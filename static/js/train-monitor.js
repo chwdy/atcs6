@@ -7,7 +7,6 @@ class TrainMonitor {
         this.currentSpeedEl = document.getElementById('monitor-current-speed');
         this.atcSpeedEl = document.getElementById('monitor-atc-speed');
         this.atoSpeedEl = document.getElementById('monitor-ato-speed');
-        this.waitReasonEl = document.getElementById('monitor-wait-reason');
         this.speedLimitReasonEl = document.getElementById('monitor-speed-limit-reason');
         this.speedCmsEl = document.getElementById('monitor-speed-cms');
         this.clearanceEl = document.getElementById('monitor-clearance');
@@ -31,6 +30,7 @@ class TrainMonitor {
         
         this.initViewDistanceButtons();
         this.initColumnResizer();
+        this.initPanelResizer();
         
         this.viewLookaheadBtn = document.getElementById('view-lookahead-btn');
         if (this.viewLookaheadBtn) {
@@ -127,6 +127,42 @@ class TrainMonitor {
         });
     }
 
+    initPanelResizer() {
+        if (!this.bar) return;
+        const EDGE = 8;
+        let dragging = false;
+        let startY = 0;
+        let startH = 0;
+
+        this.bar.addEventListener('mousedown', (e) => {
+            const rect = this.bar.getBoundingClientRect();
+            if (e.clientY > rect.top + EDGE) return;
+            dragging = true;
+            startY = e.clientY;
+            startH = rect.height;
+            this.bar.classList.add('resizing');
+            document.body.style.cursor = 'ns-resize';
+            document.body.style.userSelect = 'none';
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!dragging) return;
+            const minH = parseInt(getComputedStyle(this.bar).minHeight, 10) || 200;
+            const maxH = window.innerHeight * 0.8;
+            const newH = Math.max(minH, Math.min(maxH, startH + (startY - e.clientY)));
+            this.bar.style.height = `${newH}px`;
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (!dragging) return;
+            dragging = false;
+            this.bar.classList.remove('resizing');
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+        });
+    }
+
     dumpLookaheadData() {
         if (this.lookaheadData) {
             if (window.app && window.app.editor) {
@@ -210,7 +246,6 @@ class TrainMonitor {
 
         this.lookaheadData = {
             current_speed_kmh: controller?.current_speed ?? 0,
-            target_speed_kmh: controller?.target_speed ?? 0,
             state: controller?.state,
             speed_limit_reason: speedLimitReason,
             blocks: lookahead?.blocks || [],
@@ -225,15 +260,12 @@ class TrainMonitor {
         };
 
         this.currentSpeedEl.textContent = Math.round(this.lookaheadData.current_speed_kmh || 0);
-        
-        // Extract ATC and ATO speeds from speed_curves if available
+
+        // Per design_new.md: target speed and ATC/ATO limits live at position 0
+        // of `lookahead.speed_curves`. There is no standalone scalar.
         const curves = this.lookaheadData.speed_curves || [];
-        let atcSpeed = this.lookaheadData.target_speed_kmh || 0;
-        let atoSpeed = this.lookaheadData.target_speed_kmh || 0;
-        if (curves.length > 0) {
-            atcSpeed = curves[0].atc_limit ?? atcSpeed;
-            atoSpeed = curves[0].operational_limit ?? atoSpeed;
-        }
+        const atcSpeed = curves.length > 0 ? (curves[0].atc_limit ?? 0) : 0;
+        const atoSpeed = curves.length > 0 ? (curves[0].operational_limit ?? 0) : 0;
         if (this.atcSpeedEl) this.atcSpeedEl.textContent = Math.round(atcSpeed);
         if (this.atoSpeedEl) this.atoSpeedEl.textContent = Math.round(atoSpeed);
 
@@ -255,12 +287,6 @@ class TrainMonitor {
             nextDestContainer.classList.remove('hidden');
         } else if (nextDestContainer) {
             nextDestContainer.classList.add('hidden');
-        }
-
-        // wait_reason was removed in v1; speed_limit_reason carries the
-        // diagnostic string that previously lived on a separate field.
-        if (this.waitReasonEl) {
-            this.waitReasonEl.classList.add('hidden');
         }
 
         if (this.speedLimitReasonEl) {
@@ -536,22 +562,20 @@ class TrainMonitor {
         const STN_SECTION_H   = STN_TOP + STN_BOT;        // 48
 
         const SECTION_GAP     = 8;
-        const MIN_CURVE_H     = 60;
+        const CURVE_H         = 120;
 
         const hasStations = (data.stations || []).length > 0;
 
-        // Station section anchored to effective bottom
-        const stationSectionUsed = hasStations ? STN_SECTION_H + SECTION_GAP : 0;
-        const stationStartY = hasStations ? height - padding.bottom - STN_SECTION_H : null;
-        const stationTrackY = hasStations ? stationStartY + STN_TOP : null;
-
-        // Block section sits above station section
-        const blockEndY    = height - padding.bottom - stationSectionUsed;
-        const blockStartY  = blockEndY - BLOCK_SECTION_H;
+        // Speed curve sits at top with a fixed height. Blocks and stations
+        // follow underneath in order; whatever vertical room remains is left
+        // blank above the distance scale.
+        const speedCurveAreaHeight = CURVE_H;
+        const blockStartY  = padding.top + speedCurveAreaHeight + SECTION_GAP;
         const blockTrackY  = blockStartY + BLOCK_TOP;
+        const blockEndY    = blockStartY + BLOCK_SECTION_H;
 
-        // Speed curve fills remaining space with a minimum so it stays readable
-        const speedCurveAreaHeight = Math.max(blockStartY - SECTION_GAP - padding.top, MIN_CURVE_H);
+        const stationStartY = hasStations ? blockEndY + SECTION_GAP : null;
+        const stationTrackY = hasStations ? stationStartY + STN_TOP : null;
         const trackWidth = width - padding.left - padding.right;
         
         const trainDist = data.distance_into_path_cm || 0;
@@ -575,7 +599,6 @@ class TrainMonitor {
                 data.speed_curves,
                 cmToX,
                 data.current_speed_kmh,
-                data.target_speed_kmh,
                 padding,
                 speedCurveAreaHeight
             );
@@ -935,7 +958,7 @@ class TrainMonitor {
         });
     }
 
-    drawSpeedCurves(speedCurves, cmToX, currentSpeed, targetSpeed, padding, areaHeight) {
+    drawSpeedCurves(speedCurves, cmToX, currentSpeed, padding, areaHeight) {
         if (!speedCurves || speedCurves.length === 0) return;
         
         const curveTop = padding.top;
@@ -1051,19 +1074,7 @@ class TrainMonitor {
             this.ctx.textAlign = 'left';
             this.ctx.fillText(`${Math.round(currentSpeed)}`, this.canvas.width - padding.right + 3, currentY);
         }
-        
-        if (targetSpeed > 0 && targetSpeed < maxSpeed) {
-            const targetY = speedToY(targetSpeed);
-            this.ctx.strokeStyle = '#00d4ff';
-            this.ctx.lineWidth = 1;
-            this.ctx.setLineDash([2, 4]);
-            this.ctx.beginPath();
-            this.ctx.moveTo(padding.left, targetY);
-            this.ctx.lineTo(this.canvas.width - padding.right, targetY);
-            this.ctx.stroke();
-            this.ctx.setLineDash([]);
-        }
-        
+
         this.ctx.font = '8px Inter, sans-serif';
         const legendX = padding.left + 10;
         const legendY = curveTop + 8;

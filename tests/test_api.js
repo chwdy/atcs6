@@ -994,58 +994,6 @@ async function test_POST_train_disable_manual() {
         'onboard.control_mode should be "ato" after disable-manual');
 }
 
-async function test_POST_train_manual_speed() {
-    await resetNetwork();
-
-    // Create track and train, power on, enable manual
-    await createTrack(0, 0, TRACK_EW);
-    await fetchJSON('/trains', {
-        method: 'POST',
-        body: JSON.stringify({
-            id: 'TRAIN_SPEED_TEST',
-            length: 1.0,
-            position: { x: 0, y: 0 },
-            direction: 'EAST'
-        })
-    });
-    await fetchJSON('/trains/TRAIN_SPEED_TEST/power-on', { method: 'POST' });
-    await fetchJSON('/trains/TRAIN_SPEED_TEST/enable-manual', { method: 'POST' });
-
-    const result = await fetchJSON('/trains/TRAIN_SPEED_TEST/manual-speed', {
-        method: 'POST',
-        body: JSON.stringify({ speed: 50.0 })
-    });
-
-    assert(result.ok, 'POST /trains/{id}/manual-speed should succeed');
-    assert(result.data.manual_target_speed === 50.0, 'Manual speed should be set to 50');
-}
-
-async function test_POST_train_travel_direction() {
-    await resetNetwork();
-
-    // Create track and train, power on, enable manual
-    await createTrack(0, 0, TRACK_EW);
-    await fetchJSON('/trains', {
-        method: 'POST',
-        body: JSON.stringify({
-            id: 'TRAIN_TRAVDIR_TEST',
-            length: 1.0,
-            position: { x: 0, y: 0 },
-            direction: 'EAST'
-        })
-    });
-    await fetchJSON('/trains/TRAIN_TRAVDIR_TEST/power-on', { method: 'POST' });
-    await fetchJSON('/trains/TRAIN_TRAVDIR_TEST/enable-manual', { method: 'POST' });
-
-    const result = await fetchJSON('/trains/TRAIN_TRAVDIR_TEST/travel-direction', {
-        method: 'POST',
-        body: JSON.stringify({ direction: 'reverse' })
-    });
-
-    assert(result.ok, 'POST /trains/{id}/travel-direction should succeed');
-    assert(result.data.travel_direction === 'reverse', 'Travel direction should be reverse');
-}
-
 async function test_POST_train_emergency_stop() {
     await resetNetwork();
 
@@ -1732,8 +1680,6 @@ async function runAllTests() {
     await runTest('POST /api/trains/{id}/turn-around', test_POST_train_turn_around);
     await runTest('POST /api/trains/{id}/enable-manual', test_POST_train_enable_manual);
     await runTest('POST /api/trains/{id}/disable-manual', test_POST_train_disable_manual);
-    await runTest('POST /api/trains/{id}/manual-speed', test_POST_train_manual_speed);
-    await runTest('POST /api/trains/{id}/travel-direction', test_POST_train_travel_direction);
     await runTest('POST /api/trains/{id}/emergency-stop', test_POST_train_emergency_stop);
 
     // Platform additional endpoints
@@ -2418,8 +2364,6 @@ async function runAllTestsUpdated() {
     await runTest('POST /api/trains/{id}/turn-around', test_POST_train_turn_around);
     await runTest('POST /api/trains/{id}/enable-manual', test_POST_train_enable_manual);
     await runTest('POST /api/trains/{id}/disable-manual', test_POST_train_disable_manual);
-    await runTest('POST /api/trains/{id}/manual-speed', test_POST_train_manual_speed);
-    await runTest('POST /api/trains/{id}/travel-direction', test_POST_train_travel_direction);
     await runTest('POST /api/trains/{id}/emergency-stop', test_POST_train_emergency_stop);
     
     // Train endpoints (NEW - Bug Fix Tests)

@@ -203,19 +203,35 @@ class TrackSegment:
     # === OTHER PROPERTIES ===
     length: float = 1.0
     curve_radius: Optional[float] = None  # Minimum curve radius (None = straight track)
-    occupied_by: Optional[str] = None
-    reserved_by: Optional[str] = None
+    # Per design_new.md line 566, `occupied_by` and `reserved_by` are removed
+    # live runtime fields on TrackSegment in v1. Physical occupancy lives on
+    # the owning resource (`Block.occupied_by` / `Switch.occupied_by`) and
+    # reservations live on `Block.reserved_for_train` /
+    # `Block.reserved_by_path`. The `occupied_by` / `reserved_by` reads on
+    # `TrackSegment` are derived `@property` shims defined below. The
+    # `_local` fallbacks are used only when the segment is not attached to a
+    # `RailwayNetwork` (e.g. unit tests with bare TrackSegments).
+    _occupied_by_local: Optional[str] = None
+    _reserved_by_local: Optional[str] = None
     wear_level: float = 0.0
     last_maintenance: Optional[str] = None
     maintenance_count: int = 0
 
     # === PATH LOCKING (Dispatcher System) ===
-    # Note: "path" = dispatcher's reserved route; "route" = train's travel plan
-    locked_by_path: Optional[str] = None  # Path ID that locked this switch
-    locked_state: Optional[int] = None  # The state the switch is locked to (0 or 1)
-    path_direction: Optional[str] = (
-        None  # Direction the path is traveling at this tile (N/E/S/W)
-    )
+    # Per design_new.md "Track-segment role and traversal", switch lock
+    # ownership lives on `Switch.locks` (keyed by `(path_id, source_switch_id)`).
+    # `TrackSegment` does not store live lock state. `_locked_by_path_local`
+    # and `_locked_state_local` are fallbacks used only when this segment is
+    # not attached to a `RailwayNetwork` (e.g. unit tests with bare
+    # TrackSegments). When attached, the `locked_by_path` / `locked_state`
+    # properties resolve through `network.switches[switch_id].locks`.
+    _locked_by_path_local: Optional[str] = None
+    _locked_state_local: Optional[int] = None
+    # Note: pre-v1 also stored `path_direction` on TrackSegment. Per
+    # design_new.md line 566/941 it is a removed field; traversal direction
+    # is owned by `Block.reserved_direction` (dispatcher reservation) and
+    # `Path.resource_sequence[*].entry_edge` (per-resource frame data). Live
+    # consumers read those instead of any tile-stored direction.
 
     def __post_init__(self):
         # Normalize dead-end inputs
@@ -377,6 +393,139 @@ class TrackSegment:
                 self._switch_state_local = normalized
                 return
         self._switch_state_local = normalized
+
+    # ========== Physical occupancy / reservation (network-derived) ==========
+    # Per design_new.md, physical occupancy lives on `Block.occupied_by` /
+    # `Switch.occupied_by`, and dispatcher reservations live on
+    # `Block.reserved_for_train`. `TrackSegment` exposes derived read shims
+    # so the existing UI / API surface (which serialises track tiles) can
+    # show per-tile occupancy without storing it.
+
+    @property
+    def occupied_by(self) -> Optional[str]:
+        """Train ID currently occupying this tile, derived from the owning
+        `Switch.occupied_by` (when the tile is a switch) or
+        `Block.occupied_by` (when the tile is a block member). Returns
+        `_occupied_by_local` when the segment is not attached to a
+        `RailwayNetwork`.
+        """
+        if self.network is None:
+            return self._occupied_by_local
+        # Switch tiles: prefer the owning switch's physical occupancy.
+        if self.switch_id is not None and hasattr(self.network, "switches"):
+            switch = self.network.switches.get(self.switch_id)
+            if switch is not None:
+                return getattr(switch, "occupied_by", None)
+        # Block tiles: read through the owning block.
+        bsid = self.block_section_id
+        if bsid is not None and hasattr(self.network, "blocks"):
+            block = self.network.blocks.get(bsid)
+            if block is not None:
+                return getattr(block, "occupied_by", None)
+        return self._occupied_by_local
+
+    @occupied_by.setter
+    def occupied_by(self, value: Optional[str]) -> None:
+        """Setter shim for legacy callers / deserialization.
+
+        Writes only the detached-mode fallback. When attached, the canonical
+        store is `Block.occupied_by` / `Switch.occupied_by`; live writers
+        route through `BlockManager` / `SwitchManager`.
+        """
+        self._occupied_by_local = value
+
+    @property
+    def reserved_by(self) -> Optional[str]:
+        """Train ID this tile is reserved for, derived from the owning
+        block's `Block.reserved_for_train`. Returns `_reserved_by_local`
+        when the segment is not attached to a `RailwayNetwork`.
+
+        Switches do not carry a "reserved for train" concept; future
+        authority on a switch is `Switch.locks` (multi-owner). The
+        `locked_by_path` / `locked_state` properties cover that.
+        """
+        if self.network is None:
+            return self._reserved_by_local
+        bsid = self.block_section_id
+        if bsid is not None and hasattr(self.network, "blocks"):
+            block = self.network.blocks.get(bsid)
+            if block is not None:
+                return getattr(block, "reserved_for_train", None)
+        return self._reserved_by_local
+
+    @reserved_by.setter
+    def reserved_by(self, value: Optional[str]) -> None:
+        """Setter shim for legacy callers / deserialization.
+
+        Writes only the detached-mode fallback. When attached, the canonical
+        store is `Block.reserved_for_train`; live writers route through
+        `BlockManager`.
+        """
+        self._reserved_by_local = value
+
+    @property
+    def locked_by_path(self) -> Optional[str]:
+        """Path that holds a future-authority lock on the owning switch.
+
+        Per design_new.md, switch lock ownership lives on `Switch.locks`
+        keyed by `(path_id, source_switch_id)`; `TrackSegment` does not
+        store live lock state. When this segment is attached to a
+        `RailwayNetwork` and has an owning `Switch`, this property returns
+        the first lock entry's `path_id` (representative when multiple
+        compatible locks share the switch). Detached segments fall back
+        to `_locked_by_path_local`.
+        """
+        if (
+            self.network is not None
+            and self.switch_id is not None
+            and hasattr(self.network, "switches")
+        ):
+            switch = self.network.switches.get(self.switch_id)
+            if switch is not None and switch.locks:
+                first_key = next(iter(switch.locks.keys()))
+                return first_key[0]
+            return None
+        return self._locked_by_path_local
+
+    @locked_by_path.setter
+    def locked_by_path(self, value: Optional[str]) -> None:
+        """Setter shim for legacy callers and deserialization.
+
+        Writes only the detached-mode fallback. When attached to a network
+        the canonical store is `Switch.locks`; mutations must route through
+        `Switch.acquire_lock` / `Switch.release_lock`.
+        """
+        self._locked_by_path_local = value
+
+    @property
+    def locked_state(self) -> Optional[int]:
+        """Locked state (0=MAIN, 1=DIVERGE) for the path returned by
+        `locked_by_path`.
+
+        Resolved from the same first-lock entry of `Switch.locks` when
+        attached; falls back to `_locked_state_local` when detached.
+        """
+        if (
+            self.network is not None
+            and self.switch_id is not None
+            and hasattr(self.network, "switches")
+        ):
+            switch = self.network.switches.get(self.switch_id)
+            if switch is not None and switch.locks:
+                first_key = next(iter(switch.locks.keys()))
+                _train_id, lock_state = switch.locks[first_key]
+                return int(lock_state)
+            return None
+        return self._locked_state_local
+
+    @locked_state.setter
+    def locked_state(self, value: Optional[int]) -> None:
+        """Setter shim for legacy callers and deserialization.
+
+        Writes only the detached-mode fallback. When attached to a network
+        the canonical store is `Switch.locks`.
+        """
+        self._locked_state_local = value
 
     @property
     def switch_states(self) -> Dict[str, int]:
@@ -975,7 +1124,6 @@ class TrackSegment:
             # Path locking
             "locked_by_path": self.locked_by_path,
             "locked_state": self.locked_state,
-            "path_direction": self.path_direction,
             # Computed
             "type": self.track_type.value,
             "edges": sorted(self.edges),
@@ -1066,55 +1214,6 @@ class TrackSegment:
     # ========================================================================
     # Path Locking Methods (Dispatcher System)
     # ========================================================================
-
-    def lock_for_path(self, path_id: str, state: int) -> bool:
-        """
-        Lock this switch in a specific state for a path.
-
-        Only switches can be locked. The switch will be set to the specified
-        state and locked so it cannot be changed until unlocked.
-
-        Note: "path" = dispatcher's reserved route; "route" = train's travel plan
-
-        Args:
-            path_id: The path ID locking this switch
-            state: The switch state to lock to (0=MAIN, 1=DIVERGE)
-
-        Returns:
-            True if lock successful, False if already locked by different path
-        """
-        if not self.is_switch:
-            return False  # Only switches can be locked
-
-        # Already locked by same path in same state - OK
-        if self.locked_by_path == path_id and self.locked_state == state:
-            return True
-
-        # Already locked by different path
-        if self.locked_by_path is not None and self.locked_by_path != path_id:
-            return False
-
-        # Lock the switch
-        self.set_switch_state(state)
-        self.locked_by_path = path_id
-        self.locked_state = state
-        return True
-
-    def unlock_for_path(self, path_id: str) -> bool:
-        """
-        Unlock this switch if it was locked by the specified path.
-
-        Args:
-            path_id: The path ID that should own the lock
-
-        Returns:
-            True if unlocked, False if not locked by this path
-        """
-        if self.locked_by_path == path_id:
-            self.locked_by_path = None
-            self.locked_state = None
-            return True
-        return False
 
     def is_locked_by_path(self) -> bool:
         """Check if this switch is locked by any path."""

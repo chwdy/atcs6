@@ -35,9 +35,7 @@ if TYPE_CHECKING:
 #
 # Per design_new.md line 1125, `RouteTask.task_location` is a tagged union of
 # three concrete target dataclasses. The union enforces that exactly one
-# targeting mode is present — the type system replaces the legacy
-# probe-in-order pattern (block → platform → station) with structural
-# dispatch.
+# targeting mode is present and dispatch is structural rather than probe-in-order.
 
 
 @dataclass(frozen=True)
@@ -71,9 +69,9 @@ def _coerce_task_location(value: Any) -> TaskLocation:
       * an already-built `BlockTarget` / `PlatformTarget` / `StationTarget`.
       * a structured dict carrying exactly one of the three id keys
         (`{"block_id": ...}`, `{"platform_id": ...}`, `{"station_id": ...}`).
-      * a plain string — interpreted as a platform_id (the dominant v1
-        caller pattern). This is a transitional convenience for in-process
-        constructors; persisted JSON should always use the structured form.
+      * a plain string — convenience for in-process constructors, interpreted
+        as a platform_id. Persisted JSON and HTTP payloads must use the
+        structured dict form.
     """
     if isinstance(value, (BlockTarget, PlatformTarget, StationTarget)):
         return value
@@ -253,9 +251,8 @@ class RouteTask:
     def from_dict(cls, data: Dict[str, Any]) -> "RouteTask":
         """Reconstruct from dict after deserialization.
 
-        `task_location` accepts the canonical structured form
-        (`{"block_id"/"platform_id"/"station_id": "..."}`) or a plain
-        string (legacy: interpreted as a platform_id).
+        `task_location` must use the canonical structured form
+        (`{"block_id"/"platform_id"/"station_id": "..."}`).
         """
         kind = data.get("task_kind", "waypoint")
         if kind not in ("waypoint", "stop", "dwell"):
@@ -265,15 +262,11 @@ class RouteTask:
         if direction not in ("forward", "reverse", "either"):
             direction = "either"
 
-        # Accept the canonical `task_time` and fall back to legacy
-        # `dwell_time_sec` saved data.
-        if "task_time" in data and data["task_time"] is not None:
-            task_time: Optional[float] = float(data["task_time"])
-        elif "dwell_time_sec" in data:
-            legacy = float(data.get("dwell_time_sec", 0.0))
-            task_time = legacy if legacy > 0.0 else None
-        else:
-            task_time = None
+        task_time: Optional[float] = (
+            float(data["task_time"])
+            if data.get("task_time") is not None
+            else None
+        )
 
         return cls(
             task_kind=kind,  # type: ignore[arg-type]

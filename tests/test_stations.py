@@ -21,7 +21,6 @@ from railway_platform import Platform
 from block import Block
 from railway_signal import Signal, SignalType
 from enums import BlockState, PlatformSide, Direction
-from persistence import PersistenceManager
 from route_executor import RouteExecutionState, RouteExecutor
 from step_player import StepPlayer
 from train import Train
@@ -337,7 +336,7 @@ class TestStationStoppingBehavior:
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.position = make_train_position((1, 0), Direction.EAST)
         executor = RouteExecutor(network)
-        target_tile = executor._get_target_station_tile(train, station)
+        target_tile = executor._get_target_platform_tile(train, station)
         assert target_tile == (1, 0)
 
     def test_multi_tile_station_traveling_east_stops_at_easternmost(self, network):
@@ -360,7 +359,7 @@ class TestStationStoppingBehavior:
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.position = make_train_position((1, 0), Direction.EAST)
         executor = RouteExecutor(network)
-        target_tile = executor._get_target_station_tile(train, station)
+        target_tile = executor._get_target_platform_tile(train, station)
         assert target_tile == (3, 0)
 
     def test_multi_tile_station_traveling_north_stops_at_northernmost(self, network):
@@ -383,7 +382,7 @@ class TestStationStoppingBehavior:
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         train.position = make_train_position((0, 1), Direction.NORTH)
         executor = RouteExecutor(network)
-        target_tile = executor._get_target_station_tile(train, station)
+        target_tile = executor._get_target_platform_tile(train, station)
         assert target_tile == (0, 3)
 
 
@@ -428,51 +427,6 @@ class TestStationPlatformSchemaBugFixes:
     BUG 3: PlatformSide.EITHER serialized as right-side only.
     FIX 3: EITHER now serializes to both orientation sides.
     """
-
-    def test_legacy_stations_list_migrates_to_platforms(self):
-        """Legacy list-shaped `stations` payload should load physical platforms."""
-        manager = PersistenceManager()
-        snapshot = {
-            "tracks": [],
-            "stations": [
-                {
-                    "station_id": "STA_LEGACY_1",
-                    "name": "Legacy Station 1",
-                    "positions": [[0, 0]],
-                    "length_cm": 100.0,
-                    "platform_side": "both",
-                }
-            ],
-        }
-
-        migrated = manager._migrate_route_station_schema(snapshot)
-        network = RailwayNetwork()
-        network.from_dict(migrated)
-
-        assert "platforms" in migrated
-        assert "STA_LEGACY_1" in network.platforms
-
-    def test_legacy_stations_dict_migrates_to_platforms(self):
-        """Legacy dict-shaped `stations` payload should preserve keyed IDs."""
-        manager = PersistenceManager()
-        snapshot = {
-            "tracks": [],
-            "stations": {
-                "STA_LEGACY_2": {
-                    "name": "Legacy Station 2",
-                    "positions": [[1, 0]],
-                    "length_cm": 120.0,
-                    "platform_side": "left",
-                }
-            },
-        }
-
-        migrated = manager._migrate_route_station_schema(snapshot)
-        network = RailwayNetwork()
-        network.from_dict(migrated)
-
-        assert "STA_LEGACY_2" in network.platforms
-        assert network.platforms["STA_LEGACY_2"].platform_side == PlatformSide.LEFT
 
     def test_step_player_play_clears_station_groups_with_clear_first(self):
         """play() should clear stale station_groups when loading a new layout."""

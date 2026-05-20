@@ -136,12 +136,12 @@ class TestRouteAndTask:
         assert data["target_time"] == 120.0
 
     def test_task_from_dict(self):
-        """Test RouteTask deserialization. Accepts the canonical
-        structured task_location and the legacy dwell_time_sec key."""
+        """Test RouteTask deserialization from the canonical v1 shape:
+        structured `task_location` plus `task_time`."""
         data = {
             "task_kind": "dwell",
             "task_location": {"platform_id": "STA_B"},
-            "dwell_time_sec": 60.0,
+            "task_time": 60.0,
             "target_time": 500.0,
         }
 
@@ -195,21 +195,21 @@ class TestRouteExecutor:
         assert executor.network == simple_network
         assert len(executor.execution_states) == 0
 
-    def test_route_executor_is_train_at_station(self, simple_network):
-        """Test checking if train is at station."""
+    def test_route_executor_is_train_at_platform(self, simple_network):
+        """Test checking if train is at platform."""
         executor = RouteExecutor(simple_network)
         train = Train(train_id="T001")
         train.position = make_train_position((0, 0), Direction.EAST)
 
         # Train is at STA_A
-        assert executor._is_train_at_station(train, "STA_A") is True
+        assert executor._is_train_at_platform(train, "STA_A") is True
 
         # Train is not at STA_B
-        assert executor._is_train_at_station(train, "STA_B") is False
+        assert executor._is_train_at_platform(train, "STA_B") is False
 
         # Move train to STA_B
         train.position = make_train_position((1, 0), Direction.EAST)
-        assert executor._is_train_at_station(train, "STA_B") is True
+        assert executor._is_train_at_platform(train, "STA_B") is True
 
     def test_execution_state_dataclass(self):
         """Test RouteExecutionState dataclass."""

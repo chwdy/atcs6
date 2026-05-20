@@ -89,14 +89,3 @@ def test_get_target_platform_tile_west_picks_lowest_x():
     assert res == (0, 0)
 
 
-def test_get_target_station_tile_aliases_platform_tile():
-    """`get_target_station_tile` is a compatibility alias for the platform variant."""
-    expected = TrainAtTargetPredicates.get_target_platform_tile(
-        train=_StubTrain(facing_direction=Direction.EAST),
-        platform=_StubPlatform(positions=[(0, 0), (5, 0)]),
-    )
-    actual = TrainAtTargetPredicates.get_target_station_tile(
-        train=_StubTrain(facing_direction=Direction.EAST),
-        station=_StubPlatform(positions=[(0, 0), (5, 0)]),
-    )
-    assert actual == expected

@@ -68,6 +68,12 @@ PLANNING_TICKS_AHEAD = 100
 MIN_PLANNING_HORIZON_CM = 30.0
 PLANNING_SAMPLE_COUNT = 6
 
+# Tick duration the rate-limiter's per-tick step budget is sized against.
+# At play-speed multipliers > 1 the simulation packs more sim-time into one
+# tick; the rate limiter scales `max_step` by `delta / NOMINAL_TICK_DT` so the
+# handle-change rate stays consistent in sim-time rather than per-tick.
+NOMINAL_TICK_DT = 0.1
+
 
 def ato_speed_tolerance(reference_kmh: float) -> float:
     """Speed-tracking tolerance for ATO at the given reference speed.
@@ -91,11 +97,16 @@ def rate_limit_handle(
     current: HandlePosition,
     target: HandlePosition,
     allow_fast: bool = False,
+    delta_seconds: float = NOMINAL_TICK_DT,
 ) -> HandlePosition:
     """Rate-limit handle changes to prevent jitter.
 
-    Limits handle movement to ±1 notch per call (±2 if `allow_fast=True`).
-    Emergency brake (`HandlePosition.EB`) always bypasses rate limiting.
+    At the nominal tick rate (`delta_seconds == NOMINAL_TICK_DT`), limits
+    handle movement to ±1 notch per call (±2 if `allow_fast=True`). The
+    nominal step budget is scaled by `delta_seconds / NOMINAL_TICK_DT` so
+    the handle-change rate stays consistent in sim-time when the play
+    speed packs more sim-time into one tick. Emergency brake
+    (`HandlePosition.EB`) always bypasses rate limiting.
     """
     if target == HandlePosition.EB:
         return HandlePosition.EB
@@ -103,7 +114,9 @@ def rate_limit_handle(
     current_idx = HANDLE_POSITION_INDEX.get(current, 5)
     target_idx = HANDLE_POSITION_INDEX.get(target, 5)
 
-    max_step = 2 if allow_fast else 1
+    nominal_step = 2 if allow_fast else 1
+    scale = max(1e-6, delta_seconds) / NOMINAL_TICK_DT
+    max_step = max(1, int(round(nominal_step * scale)))
 
     if target_idx > current_idx:
         new_idx = min(current_idx + max_step, target_idx)
@@ -543,11 +556,15 @@ class ATONavigator:
             debug["target_handle"] = target_handle.value
             # Power-up uses the same fast rate (±2 notches/tick) as braking,
             # so re-accelerating after a slow zone matches the snap of a
-            # fresh start instead of crawling up one notch per tick.
+            # fresh start instead of crawling up one notch per tick. The
+            # rate limiter scales by `delta_seconds / NOMINAL_TICK_DT` so
+            # the handle-change rate stays sim-time-proportional at play
+            # speeds > 1×.
             final = rate_limit_handle(
                 current=c.handle_position,
                 target=target_handle,
                 allow_fast=True,
+                delta_seconds=delta_seconds,
             )
             debug["rate_limited"] = final != target_handle
             debug["final_handle"] = final.value
@@ -589,6 +606,7 @@ class ATONavigator:
             current=c.handle_position,
             target=target_handle,
             allow_fast=True,
+            delta_seconds=delta_seconds,
         )
         debug["rate_limited"] = final != target_handle
         debug["final_handle"] = final.value

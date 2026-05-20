@@ -1169,16 +1169,18 @@ class RailwayNetwork:
 
         if train.position:
             track = self.get_track(*train.position.head_tile)
-            if track:
-                if track.occupied_by == train.train_id:
-                    track.occupied_by = None
-                if track.block_section_id:
-                    block = self.blocks.get(track.block_section_id)
-                    if block and block.occupied_by == train.train_id:
-                        if self.block_manager:
-                            self.block_manager.clear_block(track.block_section_id)
-                        else:
-                            block.release()
+            if track and track.block_section_id:
+                # Per design_new.md, physical occupancy lives on
+                # `Block.occupied_by`; the tile's `track.occupied_by` shim
+                # derives from the block (no separate tile-side store to
+                # clear). Clear the owning block's occupancy through the
+                # canonical writer.
+                block = self.blocks.get(track.block_section_id)
+                if block and block.occupied_by == train.train_id:
+                    if self.block_manager:
+                        self.block_manager.clear_block(track.block_section_id)
+                    else:
+                        block.release()
 
         self.trains.pop(train_id, None)
         self.update_signals_from_blocks()

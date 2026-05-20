@@ -7,11 +7,10 @@ Saves both snapshot and steps in a single file:
 - Steps: Fallback for recovery if snapshot fails
 """
 
-import copy
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -121,15 +120,9 @@ class PersistenceManager:
         if not self._is_compatible_version(version):
             raise ValueError(f"Incompatible layout version: {version}")
 
-        # Try snapshot first (new merged format)
-        if "snapshot" in wrapper:
-            return self._migrate_route_station_schema(wrapper["snapshot"])
-
-        # Fall back to old format (data key)
-        if "data" in wrapper:
-            return self._migrate_route_station_schema(wrapper["data"])
-
-        raise ValueError(f"Layout '{name}' has no snapshot or data")
+        if "snapshot" not in wrapper:
+            raise ValueError(f"Layout '{name}' has no snapshot")
+        return wrapper["snapshot"]
 
     def load_layout_with_fallback(self, name: str, network: "RailwayNetwork") -> dict:
         """
@@ -156,26 +149,14 @@ class PersistenceManager:
         except json.JSONDecodeError as e:
             return {"success": False, "method": None, "error": f"Invalid JSON: {e}"}
 
-        # Try snapshot first (new merged format)
         snapshot_error = None
         if "snapshot" in wrapper:
             try:
-                network.from_dict(
-                    self._migrate_route_station_schema(wrapper["snapshot"])
-                )
+                network.from_dict(wrapper["snapshot"])
                 return {"success": True, "method": "snapshot", "error": None}
             except Exception as e:
                 snapshot_error = str(e)
                 print(f"[Persistence] Snapshot load failed: {e}, trying steps...")
-
-        # Try old format (data key)
-        elif "data" in wrapper:
-            try:
-                network.from_dict(self._migrate_route_station_schema(wrapper["data"]))
-                return {"success": True, "method": "snapshot", "error": None}
-            except Exception as e:
-                snapshot_error = str(e)
-                print(f"[Persistence] Data load failed: {e}, trying steps...")
 
         # Fall back to steps
         if "steps" in wrapper and wrapper["steps"]:
@@ -233,7 +214,7 @@ class PersistenceManager:
                         "description": description,
                         "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
                         "size_bytes": stat.st_size,
-                        "has_snapshot": "snapshot" in wrapper or "data" in wrapper,
+                        "has_snapshot": "snapshot" in wrapper,
                         "has_steps": "steps" in wrapper
                         and len(wrapper.get("steps", [])) > 0,
                     }
@@ -282,46 +263,6 @@ class PersistenceManager:
         try:
             file_major = int(version.split(".")[0])
             current_major = int(self.SCHEMA_VERSION.split(".")[0])
-            return file_major == current_major or file_major == 1
+            return file_major == current_major
         except (ValueError, IndexError):
             return False
-
-    def _migrate_route_station_schema(self, data: dict) -> dict:
-        """Migrate legacy station-shaped snapshots to platform schema."""
-        if not isinstance(data, dict):
-            return data
-
-        migrated = copy.deepcopy(data)
-
-        # Legacy layouts used `stations` for physical platforms.
-        # Current schema stores these under `platforms`.
-        if "platforms" not in migrated and "stations" in migrated:
-            legacy_stations = migrated.get("stations", [])
-            normalized_platforms = []
-
-            if isinstance(legacy_stations, dict):
-                iterable = legacy_stations.items()
-                for station_id, station_data in iterable:
-                    if not isinstance(station_data, dict):
-                        continue
-                    platform_data = dict(station_data)
-                    if "platform_id" not in platform_data:
-                        platform_data["platform_id"] = platform_data.get(
-                            "station_id", station_id
-                        )
-                    normalized_platforms.append(platform_data)
-            elif isinstance(legacy_stations, list):
-                for station_data in legacy_stations:
-                    if not isinstance(station_data, dict):
-                        continue
-                    platform_data = dict(station_data)
-                    if (
-                        "platform_id" not in platform_data
-                        and "station_id" in platform_data
-                    ):
-                        platform_data["platform_id"] = platform_data["station_id"]
-                    normalized_platforms.append(platform_data)
-
-            migrated["platforms"] = normalized_platforms
-
-        return migrated

@@ -8,8 +8,7 @@ network's track / platform registries; no mutation, no side effects.
 
 `RouteExecutor` keeps the doc-canonical method names
 (`_is_train_at_block`, `_is_train_at_platform`,
-`_is_train_at_platform_for_task`, `_is_train_at_station`,
-`_get_target_platform_tile`, `_get_target_station_tile`,
+`_is_train_at_platform_for_task`, `_get_target_platform_tile`,
 `_get_current_block_id`) as thin forwarders that delegate here.
 """
 
@@ -80,10 +79,6 @@ class TrainAtTargetPredicates:
             return False
         return train.position.head_tile == target_tile
 
-    def is_train_at_station(self, train: "Train", station_id: str) -> bool:
-        """Compatibility alias for `is_train_at_platform`."""
-        return self.is_train_at_platform(train, station_id)
-
     # ------------------------------------------------------------------
     # Target-tile picking (direction-aware)
     # ------------------------------------------------------------------
@@ -117,13 +112,6 @@ class TrainAtTargetPredicates:
             return 0
 
         return sorted(positions, key=sort_key)[0]
-
-    @classmethod
-    def get_target_station_tile(
-        cls, train: "Train", station: object
-    ) -> Optional[Tuple[int, int]]:
-        """Compatibility alias for `get_target_platform_tile`."""
-        return cls.get_target_platform_tile(train, station)
 
     # ------------------------------------------------------------------
     # Current block lookup

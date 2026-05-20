@@ -18,6 +18,7 @@ from train_controller import TrainController, create_controller_for_train
 from path_dispatcher import PathDispatcher
 from train_route import Route, RouteMode
 from switch import Switch
+from runtime_payloads import SwitchLockClaim
 
 
 @pytest.fixture
@@ -62,11 +63,6 @@ class TestTrainControllerMonitorLookahead:
             end_b_entry_edge="E",
             leading_end=LeadingEnd.A,
         )
-        train.current_path = [
-            (0, 0, Direction.EAST),
-            (1, 0, Direction.EAST),
-            (2, 0, Direction.EAST),
-        ]
         network.add_train(train)
 
         controller = TrainController(train_id=train.train_id, network=network)
@@ -100,11 +96,6 @@ class TestTrainControllerMonitorLookahead:
             end_b_entry_edge="E",
             leading_end=None,
         )
-        train.current_path = [
-            (0, 0, Direction.EAST),
-            (1, 0, Direction.EAST),
-            (2, 0, Direction.EAST),
-        ]
         network.add_train(train)
 
         controller = TrainController(train_id=train.train_id, network=network)
@@ -127,19 +118,17 @@ class TestTrainControllerMonitorLookahead:
 
 
 
-class TestLookaheadTrackUsabilityBugFix:
-    """
-    Comprehensive tests for lookahead usability checks fixed in 2026-02-08.
+class TestLookaheadNoPathRegardlessOfNetworkState:
+    """Per design_new.md step `22a9` (Option B): the canonical lookahead is
+    the no-authority empty payload whenever `received_path_plan is None`,
+    regardless of physical track geometry, switch state, or foreign lock
+    state around the train. There is no block-bounded fallback that walks
+    the network to truncate at unusable switches.
 
-    BUG:
-    After switching cabs at terminal/end-of-path situations, lookahead scanned all
-    tiles in the stored path even when the route was physically unusable (switch set
-    against movement) or not owned (locked by another path).
-
-    FIX:
-    Lookahead traversal now validates each path step against active switch state and
-    path ownership/locks. It stops at the first unusable step so ATO braking curves
-    are based on truly reachable track only.
+    These tests pin the invariant for two failure modes the old fallback
+    had to validate by walking the network: (a) wrong-side switch after a
+    cab change, (b) switch locked by another path. Under Option B, both
+    cases collapse to the same answer — empty `blocks`, no_authority.
     """
 
     def _build_three_tile_with_switch(self, network: RailwayNetwork) -> Train:
@@ -160,7 +149,7 @@ class TestLookaheadTrackUsabilityBugFix:
         for block_id in ("BLOCK_0", "BLOCK_1", "BLOCK_2"):
             network.blocks[block_id] = Block(block_id=block_id, name=block_id)
 
-        train = Train(train_id="TRAIN_LOOKAHEAD_USABILITY")
+        train = Train(train_id="TRAIN_LOOKAHEAD_NO_PATH")
         train.position = TrainPosition(
             end_a_tile=(0, 0),
             end_a_distance_cm=10.0,
@@ -170,17 +159,30 @@ class TestLookaheadTrackUsabilityBugFix:
             end_b_entry_edge="E",
             leading_end=LeadingEnd.A,
         )
-        train.current_path = [
-            (0, 0, Direction.EAST),
-            (1, 0, Direction.EAST),
-            (2, 0, Direction.EAST),
-        ]
-        train.assigned_path_id = "PATH_OWN"
         network.add_train(train)
         return train
 
-    def test_lookahead_stops_before_wrong_side_switch_after_cab_change(self, network):
-        """Switch set against movement must truncate reverse lookahead at current tile."""
+    def _assert_no_authority(self, payload):
+        from enums import AtcLimitReasonCode
+
+        inner = payload["lookahead"]
+        assert inner["blocks"] == [], (
+            f"Lookahead without path must publish no blocks, got {inner['blocks']}"
+        )
+        assert inner["clearance_cm"] == 0.0
+        assert inner["authority_boundary_delta_cm"] == 0.0
+        curves = inner["speed_curves"]
+        assert len(curves) == 1
+        assert curves[0]["atc_limit"] == 0.0
+        assert curves[0]["operational_limit"] == 0.0
+        assert (
+            curves[0]["atc_limit_reason_code"]
+            == AtcLimitReasonCode.NO_AUTHORITY.value
+        )
+
+    def test_no_path_yields_no_authority_with_wrong_side_switch(self, network):
+        """A switch set against the cab's travel frame is irrelevant when no
+        path is wired — the payload is no-authority regardless."""
         train = self._build_three_tile_with_switch(network)
         network.get_track(1, 0).switch_state = 1
 
@@ -188,30 +190,26 @@ class TestLookaheadTrackUsabilityBugFix:
         controller.set_cab("A")
         controller.set_cab("B")
 
-        payload = controller.get_lookahead()
-        block_ids = [block["id"] for block in payload["lookahead"]["blocks"]]
+        self._assert_no_authority(controller.get_lookahead())
 
-        assert payload["head_tile"] == [2, 0]
-        assert block_ids == ["BLOCK_2"], (
-            f"Lookahead should stop at wrong-side switch. Got blocks: {block_ids}"
-        )
-
-    def test_lookahead_stops_before_switch_locked_by_other_path(self, network):
-        """Lookahead must not traverse a switch locked by another path."""
+    def test_no_path_yields_no_authority_with_foreign_locked_switch(self, network):
+        """A switch locked by another path is irrelevant when no path is
+        wired — the payload is no-authority regardless."""
         train = self._build_three_tile_with_switch(network)
         switch_track = network.get_track(1, 0)
-        switch_track.lock_for_path("PATH_OTHER", 0)
+        switch_entity = Switch(switch_id="SW_1_0", x=1, y=0)
+        network.add_switch(switch_entity)
+        switch_track.switch_id = switch_entity.switch_id
+        switch_entity.acquire_lock(
+            SwitchLockClaim(
+                path_id="PATH_OTHER", train_id="TRAIN_OTHER", locked_state=0
+            )
+        )
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.set_cab("A")
 
-        payload = controller.get_lookahead()
-        block_ids = [block["id"] for block in payload["lookahead"]["blocks"]]
-
-        assert payload["head_tile"] == [0, 0]
-        assert block_ids == ["BLOCK_0"], (
-            f"Lookahead should stop before foreign-locked switch. Got blocks: {block_ids}"
-        )
+        self._assert_no_authority(controller.get_lookahead())
 
 
 
@@ -233,7 +231,6 @@ class TestTrainControlPanelDataBugFix:
         network = RailwayNetwork()
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
-        train.assigned_path_id = "PATH_1"
         network.add_train(train)
 
         sim_controller = SimulationController(network)
@@ -324,27 +321,23 @@ class TestTrainAssignedPathSerializationBugFix:
 
 
 
-class TestFallbackLookaheadMultiTileBlock:
-    """
-    Tests for fallback lookahead calculation in multi-tile blocks.
+class TestNoPathProducesNoAuthorityPayload:
+    """Per design_new.md step `22a9`: without a `received_path_plan`, the
+    canonical lookahead is the no-authority empty payload regardless of how
+    much physical block geometry sits ahead of the head. Movement authority
+    is binary on `received_path_plan` — there is no block-bounded fallback.
 
-    Fixed bug: When train is first placed in a multi-tile block (no path yet),
-    the fallback lookahead was only calculating remaining distance in the
-    current TILE, not the remaining distance in the entire BLOCK.
-
-    This caused the destination line to appear at the wrong position
-    (middle of block instead of end of block).
-    """
+    These tests cover several head positions inside a multi-tile block to
+    verify the no-authority shape is independent of block geometry."""
 
     @pytest.fixture
     def multi_tile_block_network(self):
-        """Create network with a 3-tile block for testing."""
-        network = RailwayNetwork()
+        """3-tile, 150cm `TERMINAL` block for placing a train without a path."""
+        from enums import AtcLimitReasonCode  # local import for clarity
 
-        # Create a 3-tile block (simulates terminal station)
-        # v1: state is a computed @property; set primitive occupied_by instead.
+        network = RailwayNetwork()
         block = Block(block_id="TERMINAL", length_cm=150.0)
-        block.occupied_by = "TRAIN_FALLBACK"
+        block.occupied_by = "TRAIN_NO_PATH"
         network.blocks["TERMINAL"] = block
 
         for x in range(3):
@@ -354,173 +347,85 @@ class TestFallbackLookaheadMultiTileBlock:
 
         return network
 
-    def test_fallback_calculates_full_block_clearance(self, multi_tile_block_network):
-        """
-        When train is placed on first tile of multi-tile block,
-        clearance should include remaining distance to end of block.
-        """
-        network = multi_tile_block_network
-
-        # Place train on first tile (x=0), facing EAST
-        # Train head at tile (0,0) at the exit edge (distance = tile_length)
-        train = Train(train_id="TRAIN_FALLBACK_TEST")
-
-        # Each tile is 150/3 = 50 cm long
-        per_tile_length = 50.0
-
+    def _place_and_build(self, network, *, train_id, head_tile, head_distance_cm,
+                        occupied_tiles):
+        train = Train(train_id=train_id)
         train.position = make_train_position(
+            head_tile=head_tile,
+            head_distance_cm=head_distance_cm,
+        )
+        train.position.occupied_tiles = occupied_tiles
+        train.position.occupied_blocks = ["TERMINAL"]
+        network.add_train(train)
+        controller = TrainController(train_id=train.train_id, network=network)
+        controller.set_cab("A")
+        return controller
+
+    def _assert_no_authority_payload(self, lookahead):
+        """The canonical no-authority shape, repeated across positions."""
+        from enums import AtcLimitReasonCode
+
+        inner = lookahead["lookahead"]
+        assert inner["blocks"] == []
+        assert inner["signals"] == []
+        assert inner["switches"] == []
+        assert inner["stations"] == []
+        assert inner["clearance_cm"] == 0.0
+        assert inner["authority_boundary_delta_cm"] == 0.0
+        curves = inner["speed_curves"]
+        assert len(curves) == 1
+        anchor = curves[0]
+        assert anchor["distance_cm"] == 0.0
+        assert anchor["atc_limit"] == 0.0
+        assert anchor["operational_limit"] == 0.0
+        assert anchor["atc_limit_reason_code"] == AtcLimitReasonCode.NO_AUTHORITY.value
+
+    def test_first_tile_placement_returns_no_authority(self, multi_tile_block_network):
+        controller = self._place_and_build(
+            multi_tile_block_network,
+            train_id="TRAIN_NO_PATH_FIRST",
             head_tile=(0, 0),
-            head_distance_cm=per_tile_length,  # At exit edge of first tile
+            head_distance_cm=50.0,
+            occupied_tiles=[(0, 0)],
         )
-        train.position.occupied_tiles = [(0, 0)]
-        train.position.occupied_blocks = ["TERMINAL"]
+        self._assert_no_authority_payload(controller.get_lookahead())
 
-        # NO current_path - simulates first placement
-        train.current_path = None
-        train.reserved_blocks = []
-
-        network.add_train(train)
-
-        controller = TrainController(train_id=train.train_id, network=network)
-        controller.set_cab("A")
-
-        # Get lookahead WITHOUT calling update() first
-        # This simulates the API call on first placement
-        lookahead = controller.get_lookahead()
-
-        # The clearance should be the remaining distance to end of block
-        # Block is 150cm, train has traveled 50cm (one tile), so remaining = 100cm
-        clearance_cm = lookahead["lookahead"]["clearance_cm"]
-
-        # Should be ~100cm (2 tiles remaining), not just 0cm (no remaining in current tile)
-        assert clearance_cm >= 95.0, (
-            f"Clearance should be ~100cm (2 tiles remaining), but got {clearance_cm}. "
-            "The fallback lookahead should calculate remaining distance in ENTIRE block, "
-            "not just current tile."
+    def test_mid_tile_placement_returns_no_authority(self, multi_tile_block_network):
+        controller = self._place_and_build(
+            multi_tile_block_network,
+            train_id="TRAIN_NO_PATH_MID",
+            head_tile=(1, 0),
+            head_distance_cm=25.0,
+            occupied_tiles=[(0, 0), (1, 0)],
         )
+        self._assert_no_authority_payload(controller.get_lookahead())
 
-    def test_fallback_mid_block_placement(self, multi_tile_block_network):
-        """
-        Train placed in middle tile of block should have correct remaining distance.
-        """
-        network = multi_tile_block_network
-        per_tile_length = 50.0  # 150cm / 3 tiles
-
-        train = Train(train_id="TRAIN_MID_BLOCK")
-        train.position = make_train_position(
-            head_tile=(1, 0),  # Middle tile
-            head_distance_cm=25.0,  # Halfway through middle tile
+    def test_last_tile_placement_returns_no_authority(self, multi_tile_block_network):
+        controller = self._place_and_build(
+            multi_tile_block_network,
+            train_id="TRAIN_NO_PATH_LAST",
+            head_tile=(2, 0),
+            head_distance_cm=40.0,
+            occupied_tiles=[(0, 0), (1, 0), (2, 0)],
         )
-        train.position.occupied_tiles = [(0, 0), (1, 0)]
-        train.position.occupied_blocks = ["TERMINAL"]
-        train.current_path = None
-        train.reserved_blocks = []
+        self._assert_no_authority_payload(controller.get_lookahead())
 
-        network.add_train(train)
-        controller = TrainController(train_id=train.train_id, network=network)
-        controller.set_cab("A")
-
-        lookahead = controller.get_lookahead()
-        clearance_cm = lookahead["lookahead"]["clearance_cm"]
-
-        # Train at (1,0), 25cm into tile
-        # Tiles behind train in block: (0,0) = 50cm
-        # Distance into current tile: 25cm
-        # Total distance into block: 50 + 25 = 75cm
-        # Remaining in block: 150 - 75 = 75cm
-        assert 70.0 <= clearance_cm <= 80.0, (
-            f"Clearance should be ~75cm, but got {clearance_cm}"
-        )
-
-    def test_fallback_last_tile_placement(self, multi_tile_block_network):
-        """
-        Train at end of block should have minimal clearance (just remaining in last tile).
-        """
-        network = multi_tile_block_network
-        per_tile_length = 50.0
-
-        train = Train(train_id="TRAIN_LAST_TILE")
-        train.position = make_train_position(
-            head_tile=(2, 0),  # Last tile
-            head_distance_cm=40.0,  # Near end of last tile
-        )
-        train.position.occupied_tiles = [(0, 0), (1, 0), (2, 0)]
-        train.position.occupied_blocks = ["TERMINAL"]
-        train.current_path = None
-        train.reserved_blocks = []
-
-        network.add_train(train)
-        controller = TrainController(train_id=train.train_id, network=network)
-        controller.set_cab("A")
-
-        lookahead = controller.get_lookahead()
-        clearance_cm = lookahead["lookahead"]["clearance_cm"]
-
-        # Train at (2,0), 40cm into tile
-        # Tiles behind: (0,0) + (1,0) = 100cm
-        # Distance into current: 40cm
-        # Total into block: 140cm
-        # Remaining: 150 - 140 = 10cm
-        assert clearance_cm <= 15.0, (
-            f"Clearance should be ~10cm (near end of block), but got {clearance_cm}"
-        )
-
-    def test_fallback_uses_correct_block_length(self, multi_tile_block_network):
-        """
-        The fallback should report the correct block length in the block info.
-        """
-        network = multi_tile_block_network
-
-        train = Train(train_id="TRAIN_BLOCK_INFO")
-        train.position = make_train_position(
+    def test_prior_clearance_field_does_not_leak_into_payload(
+        self, multi_tile_block_network
+    ):
+        """Even if the controller's `clearance_ahead_cm` field carries a
+        legacy value (e.g. left over from before path completion), the
+        canonical no-authority lookahead publishes `clearance_cm = 0`. The
+        field is not a source of authority on its own."""
+        controller = self._place_and_build(
+            multi_tile_block_network,
+            train_id="TRAIN_NO_PATH_PRIOR_CLEARANCE",
             head_tile=(0, 0),
             head_distance_cm=25.0,
+            occupied_tiles=[(0, 0)],
         )
-        train.position.occupied_tiles = [(0, 0)]
-        train.position.occupied_blocks = ["TERMINAL"]
-        train.current_path = None
-        train.reserved_blocks = []
-
-        network.add_train(train)
-        controller = TrainController(train_id=train.train_id, network=network)
-        controller.set_cab("A")
-
-        lookahead = controller.get_lookahead()
-        blocks = lookahead["lookahead"]["blocks"]
-
-        assert len(blocks) == 1
-        assert blocks[0]["id"] == "TERMINAL"
-        assert blocks[0]["length_cm"] == pytest.approx(150.0)
-        assert blocks[0]["tile_count"] == 3
-
-    def test_fallback_with_prior_clearance(self, multi_tile_block_network):
-        """
-        If controller has a prior clearance value, fallback should use it.
-        """
-        network = multi_tile_block_network
-
-        train = Train(train_id="TRAIN_PRIOR_CLEARANCE")
-        train.position = make_train_position(
-            head_tile=(0, 0),
-            head_distance_cm=25.0,
-        )
-        train.position.occupied_tiles = [(0, 0)]
-        train.position.occupied_blocks = ["TERMINAL"]
-        train.current_path = None
-        train.reserved_blocks = []
-
-        network.add_train(train)
-        controller = TrainController(train_id=train.train_id, network=network)
-        controller.set_cab("A")
-
-        # Set a prior clearance (simulating simulation update ran earlier)
-        controller.clearance_ahead_cm = 200.0
-
-        lookahead = controller.get_lookahead()
-        clearance_cm = lookahead["lookahead"]["clearance_cm"]
-
-        # Should use the prior clearance value
-        assert clearance_cm == 200.0
+        controller.clearance_ahead_cm = 200.0  # stale leftover
+        self._assert_no_authority_payload(controller.get_lookahead())
 
 
 

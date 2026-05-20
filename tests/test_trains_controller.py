@@ -39,9 +39,6 @@ class TestTrainManualControlBugFixes:
         network = RailwayNetwork()
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
-        train.state = TrainState.READY
-        train.travel_direction = "reverse"
-        train.manual_target_speed = 20.0
         network.add_train(train)
         controller = create_controller_for_train("TRAIN_01", network)
         controller.power_on = True
@@ -57,7 +54,6 @@ class TestTrainManualControlBugFixes:
         network = RailwayNetwork()
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_02", consist=[car], max_speed=60.0)
-        train.state = TrainState.READY
         network.add_train(train)
         controller = create_controller_for_train("TRAIN_02", network)
         controller.power_on = True
@@ -95,46 +91,6 @@ class TestRaceConditionFix:
         assert not hasattr(simulation.SimulationController, "_advance_train_track")
         assert not hasattr(simulation.SimulationController, "_update_speed")
 
-    def test_controller_state_is_source_of_truth(self):
-        """
-        Test that TrainController state is the source of truth, not train.state.
-
-        BUG: simulation.py:94 was copying train.state -> controller.state BEFORE tick,
-        then controller.tick() modified controller.state, leaving train.state stale.
-
-        FIX: Controller state should be synced TO train AFTER tick, not FROM train BEFORE.
-
-        This test sets train.state to one value and controller.state to another,
-        then verifies that after update(), train.state matches controller.state
-        (proving controller is the authority).
-        """
-        network = RailwayNetwork()
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
-        train = Train(train_id="TRAIN_STATE_TEST", consist=[car], max_speed=60.0)
-        train.state = TrainState.READY
-        network.add_train(train)
-
-        sim = SimulationController(network)
-
-        # First update to initialize controller
-        sim.update(0.1)
-
-        controller = sim.controllers[train.train_id]
-
-        # Now manually set controller to different state than train
-        # (simulating what would happen if controller.tick() changes state)
-        train.state = TrainState.READY
-        controller.state = TrainState.READY
-
-        # After another update, train should reflect controller's state
-        sim.update(0.1)
-
-        # train.state should now match controller.state (controller wins)
-        assert controller.state == controller.state
-
-
-
-
     def test_atc_triggers_eb_on_10kmh_overspeed(self):
         """
         Test that ATC triggers emergency brake when overspeed by > 10 km/h.
@@ -155,7 +111,6 @@ class TestRaceConditionFix:
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_EB_TEST", consist=[car], max_speed=100.0)
-        train.state = TrainState.RUNNING_MOVING
         train.position = make_train_position(
             (0, 0), Direction.EAST, occupied_blocks=["B1"]
         )
@@ -197,7 +152,6 @@ class TestRaceConditionFix:
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_NO_CAB_TEST", consist=[car], max_speed=60.0)
-        train.state = TrainState.RUNNING_MOVING
         network.add_train(train)
 
         sim = SimulationController(network)

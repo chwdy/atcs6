@@ -28,10 +28,12 @@ from runtime_payloads import (
     AcquisitionMode,
     PathAcquisitionResult,
     PathAcquisitionFailureKind,
+    SwitchLockClaim,
 )
 from enums import PathStatus
 from path_dispatcher import PathDispatcher
 from network import RailwayNetwork
+from switch import Switch
 from track import (
     TrackSegment,
     TRACK_NS,
@@ -270,96 +272,128 @@ class TestValidationError:
 
 
 class TestSwitchLocking:
-    """Tests for switch locking methods."""
+    """Tests for v1 multi-owner switch locking via `Switch.acquire_lock` /
+    `Switch.release_lock`. `Track.locked_by_path` / `Track.locked_state` /
+    `Track.is_locked_by_path()` are derived projections that resolve through
+    `network.switches[switch_id].locks` per design_new.md."""
+
+    def _make_switch_at(self, network, x: int, y: int):
+        track = TrackSegment(x=x, y=y, track_bits=TRACK_EW | TRACK_NE)
+        network.add_track(track)
+        switch = Switch(switch_id=f"SW_{x}_{y}", x=x, y=y)
+        network.add_switch(switch)
+        track.switch_id = switch.switch_id
+        return track, switch
 
     def test_lock_switch_success(self, network):
-        """Test successful switch locking."""
-        # Create a switch (EW + NE)
-        switch = TrackSegment(x=0, y=0, track_bits=TRACK_EW | TRACK_NE)
-        network.add_track(switch)
+        """Successful future-authority lock acquisition surfaces on the
+        derived Track projection."""
+        track, switch = self._make_switch_at(network, 0, 0)
 
-        assert switch.is_switch
-        assert not switch.is_locked_by_path()
+        assert track.is_switch
+        assert not track.is_locked_by_path()
 
-        assert switch.lock_for_path("PATH_001", 0)
-        assert switch.is_locked_by_path()
-        assert switch.is_locked_by("PATH_001")
-        assert switch.locked_state == 0
+        claim = SwitchLockClaim(
+            path_id="PATH_001", train_id="TRAIN_X", locked_state=0
+        )
+        assert switch.acquire_lock(claim)
+        assert track.is_locked_by_path()
+        assert track.is_locked_by("PATH_001")
+        assert track.locked_state == 0
 
-    def test_lock_switch_already_locked(self, network):
-        """Test locking fails when already locked by different route."""
-        switch = TrackSegment(x=0, y=0, track_bits=TRACK_EW | TRACK_NE)
-        network.add_track(switch)
+    def test_lock_switch_conflicting_state(self, network):
+        """Acquiring a lock with a different state than an existing lock fails
+        (v1 multi-owner compatibility rule)."""
+        _, switch = self._make_switch_at(network, 0, 0)
 
-        assert switch.lock_for_path("PATH_001", 0)
-        assert not switch.lock_for_path("PATH_002", 0)
-        assert switch.is_locked_by("PATH_001")
+        first = SwitchLockClaim(
+            path_id="PATH_001", train_id="TRAIN_X", locked_state=0
+        )
+        assert switch.acquire_lock(first)
 
-    def test_lock_switch_same_route_same_state(self, network):
-        """Test locking succeeds for same route same state."""
-        switch = TrackSegment(x=0, y=0, track_bits=TRACK_EW | TRACK_NE)
-        network.add_track(switch)
+        # Same state from a different path is allowed in v1 (compatible).
+        compat = SwitchLockClaim(
+            path_id="PATH_002", train_id="TRAIN_Y", locked_state=0
+        )
+        assert switch.acquire_lock(compat)
 
-        assert switch.lock_for_path("PATH_001", 0)
-        assert switch.lock_for_path("PATH_001", 0)  # Same route, same state - OK
+        # Different state is rejected.
+        conflict = SwitchLockClaim(
+            path_id="PATH_003", train_id="TRAIN_Z", locked_state=1
+        )
+        assert not switch.acquire_lock(conflict)
+
+    def test_lock_switch_same_route_same_state_idempotent(self, network):
+        """Same canonical claim with the same state is idempotently accepted."""
+        _, switch = self._make_switch_at(network, 0, 0)
+
+        claim = SwitchLockClaim(
+            path_id="PATH_001", train_id="TRAIN_X", locked_state=0
+        )
+        assert switch.acquire_lock(claim)
+        assert switch.acquire_lock(claim)
 
     def test_unlock_switch(self, network):
-        """Test unlocking switch."""
-        switch = TrackSegment(x=0, y=0, track_bits=TRACK_EW | TRACK_NE)
-        network.add_track(switch)
+        """`release_lock` removes the future-authority claim; derived Track
+        projection clears."""
+        track, switch = self._make_switch_at(network, 0, 0)
 
-        switch.lock_for_path("PATH_001", 0)
-        assert switch.unlock_for_path("PATH_001")
-        assert not switch.is_locked_by_path()
+        switch.acquire_lock(
+            SwitchLockClaim(path_id="PATH_001", train_id="TRAIN_X", locked_state=0)
+        )
+        assert switch.release_lock("PATH_001", None)
+        assert not track.is_locked_by_path()
 
     def test_unlock_switch_wrong_route(self, network):
-        """Test unlocking fails for wrong route."""
-        switch = TrackSegment(x=0, y=0, track_bits=TRACK_EW | TRACK_NE)
-        network.add_track(switch)
+        """Releasing a non-existent claim returns False; existing claim
+        remains."""
+        track, switch = self._make_switch_at(network, 0, 0)
 
-        switch.lock_for_path("PATH_001", 0)
-        assert not switch.unlock_for_path("PATH_002")
-        assert switch.is_locked_by("PATH_001")
+        switch.acquire_lock(
+            SwitchLockClaim(path_id="PATH_001", train_id="TRAIN_X", locked_state=0)
+        )
+        assert not switch.release_lock("PATH_002", None)
+        assert track.is_locked_by("PATH_001")
 
     def test_get_lock_info(self, network):
-        """Test getting lock info."""
-        switch = TrackSegment(x=0, y=0, track_bits=TRACK_EW | TRACK_NE)
-        network.add_track(switch)
+        """`Track.get_lock_info()` projects from `Switch.locks`."""
+        track, switch = self._make_switch_at(network, 0, 0)
 
-        assert switch.get_lock_info() is None
+        assert track.get_lock_info() is None
 
-        switch.lock_for_path("PATH_001", 1)
-        info = switch.get_lock_info()
+        switch.acquire_lock(
+            SwitchLockClaim(path_id="PATH_001", train_id="TRAIN_X", locked_state=1)
+        )
+        info = track.get_lock_info()
         assert info is not None
         assert info["path_id"] == "PATH_001"
         assert info["locked_state"] == 1
 
-    def test_can_lock_for_path(self, network):
-        """Test can_lock_for_path check."""
-        switch = TrackSegment(x=0, y=0, track_bits=TRACK_EW | TRACK_NE)
-        network.add_track(switch)
+    def test_can_lock_predicate(self, network):
+        """`Switch.can_lock(state)` is the canonical multi-owner predicate."""
+        _, switch = self._make_switch_at(network, 0, 0)
 
-        # Not locked - can lock
-        assert switch.can_lock_for_path("PATH_001", 0)
+        # Empty switch — can lock either state.
+        assert switch.can_lock(0)
+        assert switch.can_lock(1)
 
-        switch.lock_for_path("PATH_001", 0)
+        switch.acquire_lock(
+            SwitchLockClaim(path_id="PATH_001", train_id="TRAIN_X", locked_state=0)
+        )
 
-        # Same route, same state - can lock
-        assert switch.can_lock_for_path("PATH_001", 0)
-
-        # Same route, different state - cannot lock
-        assert not switch.can_lock_for_path("PATH_001", 1)
-
-        # Different route - cannot lock
-        assert not switch.can_lock_for_path("PATH_002", 0)
+        # Same state still acquirable by other compatible owners.
+        assert switch.can_lock(0)
+        # Different state rejected while existing lock holds state=0.
+        assert not switch.can_lock(1)
 
     def test_non_switch_cannot_be_locked(self, network):
-        """Test that non-switches cannot be locked."""
+        """Non-switch track has no owning `Switch` entity; the derived
+        projection always reports unlocked."""
         straight = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
         network.add_track(straight)
 
         assert not straight.is_switch
-        assert not straight.lock_for_path("PATH_001", 0)
+        assert not straight.is_locked_by_path()
 
 
 # ============================================================================

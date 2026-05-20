@@ -284,6 +284,37 @@
             handle.addEventListener("pointercancel", endResize);
         }
 
+        // ----- Viewport clamp ----------------------------------------------
+
+        _clampPositionToViewport() {
+            if (!this._position) return; // using default CSS positioning (right: 20px)
+            const margin = 8;
+            const rect = this._panelEl.getBoundingClientRect();
+            const width = rect.width || this._width || DEFAULT_WIDTH;
+            const height = rect.height;
+
+            let x = this._position.x;
+            let y = this._position.y;
+
+            if (x + width > window.innerWidth - margin) {
+                x = window.innerWidth - width - margin;
+            }
+            if (x < margin) x = margin;
+
+            if (height > 0 && y + height > window.innerHeight - margin) {
+                y = window.innerHeight - height - margin;
+            }
+            if (y < margin) y = margin;
+
+            if (x !== this._position.x || y !== this._position.y) {
+                this._position = { x, y };
+                this._panelEl.style.left = x + "px";
+                this._panelEl.style.top = y + "px";
+                this._panelEl.style.right = "auto";
+                this._persistState();
+            }
+        }
+
         // ----- Name interactions: click-to-copy + hover tooltip + JSON carets
 
         _setupNameInteractions() {
@@ -426,6 +457,7 @@
         show() {
             this._visible = true;
             this._panelEl.classList.remove("hidden");
+            this._clampPositionToViewport();
             this._refreshTrainList().then(() => {
                 this._startPolling();
             });
@@ -473,6 +505,7 @@
             this._rateSelectEl.value = String(this._refreshHz);
             if (this._visible) {
                 this._panelEl.classList.remove("hidden");
+                this._clampPositionToViewport();
             }
         }
 

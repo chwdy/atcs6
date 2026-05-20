@@ -1105,3 +1105,250 @@
     .tc-ato-actions .tc-btn-hero { height: 56px; font-size: 16px; }
     .tc-btn-hero .tc-btn-glyph { font-size: 20px; }
 }
+
+/* ============================================================================
+   FOUR-ZONE LAYOUT (Task / Status / Controls / Debug)
+   Reuses .tc-section base. The Task zone carries the OBC accent border
+   that previously lived on .tc-status; the others are semantic wrappers.
+   ============================================================================ */
+
+.tc-section-task {
+    background-color: var(--bg-hover);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    border-top: 1px solid var(--border-color);
+    padding: 10px 12px;
+    gap: 8px;
+}
+.tc-section-task.obc-power-on    { border-left-color: var(--success-color); }
+.tc-section-task.obc-power-off   { border-left-color: var(--text-secondary); }
+.tc-section-task.obc-power-emergency {
+    border-left-color: var(--danger-color);
+    background: linear-gradient(90deg, rgba(232, 63, 91, 0.10), var(--bg-hover) 60%);
+}
+
+/* Other zones keep the default .tc-section divider rule. */
+.tc-section-status,
+.tc-section-controls,
+.tc-section-debug {
+    /* No additional styling — inherit .tc-section. */
+}
+
+/* Section subtitle — used for Span / Properties subgroups inside Status. */
+.tc-section-subtitle {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 4px 0 0 0;
+}
+
+/* A full-width field row (e.g. "Next Destination" in Task zone). */
+.tc-field-wide {
+    grid-column: 1 / -1;
+}
+
+/* Two-column span-end grid — tighter than the default 3-col status fields. */
+.tc-span-grid {
+    grid-template-columns: repeat(2, 1fr);
+}
+
+/* Action button group — Open Train Monitor / Delete Train at bottom of Controls. */
+.tc-action-group {
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
+}
+.tc-action-group .tc-btn {
+    flex: 1;
+}
+
+/* Ghost variants used by the action group. */
+.tc-btn-ghost {
+    color: var(--text-primary);
+}
+.tc-btn-ghost:hover:not(:disabled) {
+    border-color: var(--accent-color);
+    color: var(--accent-hover);
+}
+
+.tc-btn-danger-ghost {
+    color: var(--text-secondary);
+    border-color: var(--border-color);
+}
+.tc-btn-danger-ghost:hover:not(:disabled) {
+    color: var(--danger-color);
+    border-color: var(--danger-color);
+    background-color: rgba(232, 63, 91, 0.08);
+}
+
+/* ============================================================================
+   STATUS HMI (cab-style display) — row-based sizing grid
+
+   The HMI is a 2-column CSS grid with a fixed unit row height (--tc-row).
+   Each cell sets:
+     - placement:   col-l (left) | col-r (right) | col-full (both)
+     - vertical:    rows-1 | rows-2 | rows-3 | rows-4
+   Font size and line-height scale with row span, so swapping `rows-2`→`rows-3`
+   on a cell grows the text in place without re-flowing neighbouring cells.
+   Container queries below scale --tc-row at narrow / wide sidebar widths.
+   ============================================================================ */
+
+/* Outer container: stacks header / EB alert / speed-hero grid / footer vertically.
+   Only the .tc-hmi-grid child uses 3 columns; everything else is full-width. */
+.tc-hmi {
+    --tc-row: 16px;
+    display: flex;
+    flex-direction: column;
+    padding: 10px 12px;
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+}
+
+/* Row sizing classes — font-size + line-height scale from --tc-row. Cell
+   placement is dictated by structure (flex order or grid-area). */
+.tc-hmi .rows-1 { font-size: calc(var(--tc-row) * 0.7);  line-height: var(--tc-row); }
+.tc-hmi .rows-2 { font-size: calc(var(--tc-row) * 1.4);  line-height: calc(var(--tc-row) * 2); }
+.tc-hmi .rows-3 { font-size: calc(var(--tc-row) * 2.25); line-height: calc(var(--tc-row) * 3); }
+.tc-hmi .rows-4 { font-size: calc(var(--tc-row) * 3);    line-height: calc(var(--tc-row) * 4); }
+
+/* Horizontal text-alignment helpers (no grid placement). */
+.tc-hmi .col-l    { text-align: left;   }
+.tc-hmi .col-r    { text-align: right;  }
+.tc-hmi .col-full { text-align: center; }
+
+/* Hidden conditional cells removed from layout flow. */
+.tc-hmi .hidden { display: none; }
+
+/* Top header row: time at left edge, train ID at right edge. Full width. */
+.tc-hmi-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    width: 100%;
+}
+
+/* EB alert: full-width banner (sibling of grid, not inside it). */
+.tc-hmi > #hmi-eb-alert {
+    width: 100%;
+    text-align: center;
+}
+
+/* Main 3-column grid: speed (centre, 1/3 width, 3 rows tall) | ATC/ATO right |
+   handle bottom-left | cab-run bottom-right (bottom-aligned with handle).
+   Total 4 rows × --tc-row tall. Speed is in column 2. */
+.tc-hmi-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: var(--tc-row) var(--tc-row) var(--tc-row) var(--tc-row);
+    grid-template-areas:
+        ".      speed   atc  "
+        ".      speed   ato  "
+        "handle speed   .    "
+        "handle .       cab  ";
+    column-gap: 6px;
+    row-gap: 0;
+}
+
+.tc-hmi-grid #hmi-speed    { grid-area: speed; }
+.tc-hmi-grid #hmi-atc      { grid-area: atc; }
+.tc-hmi-grid #hmi-ato      { grid-area: ato; }
+.tc-hmi-grid #hmi-handle   { grid-area: handle; align-self: end; line-height: 1; }
+.tc-hmi-grid #hmi-cab-run  { grid-area: cab;    align-self: end; line-height: 1; }
+
+/* Element-specific styling */
+.tc-hmi-time {
+    color: var(--text-secondary);
+    letter-spacing: 0.05em;
+}
+
+.tc-hmi-meta {
+    color: var(--text-secondary);
+    letter-spacing: 0.05em;
+}
+
+.tc-hmi-speed {
+    color: var(--success-color);
+    font-weight: 700;
+    letter-spacing: 0.02em;
+}
+
+.tc-hmi-atc {
+    color: var(--danger-color);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+
+.tc-hmi-ato {
+    color: var(--success-color);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+
+.tc-hmi-handle {
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    /* Zone colors (handle-power / handle-brake / handle-neutral) are applied
+       by JS via _replaceVisualClass — see editor-trains.js. */
+}
+.tc-hmi-handle.handle-power   { color: var(--success-color); }
+.tc-hmi-handle.handle-brake   { color: var(--warning-color); }
+.tc-hmi-handle.handle-neutral { color: var(--text-secondary); }
+
+.tc-hmi-cab-run {
+    color: var(--text-secondary);
+    letter-spacing: 0.05em;
+}
+
+/* Conditional alert banners (EB and speed-limit reason). */
+.tc-hmi-alert {
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border-radius: 2px;
+    padding: 0 6px;
+}
+.tc-hmi-alert.tc-alert-eb {
+    background-color: var(--danger-color);
+    color: #fff;
+}
+.tc-hmi-alert.tc-alert-warn {
+    background-color: var(--warning-color);
+    color: #1a1a1a;
+}
+
+/* Footer row inside the HMI grid: next-stop (L) · distance (C) · ETA (R).
+   Padding is symmetric top/bottom; cell height grows with content (e.g. when
+   the destination name wraps to a second line). */
+.tc-hmi-footer {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    column-gap: 6px;
+    align-items: center;
+    margin-top: 4px;
+    padding: 4px 0;
+    border-top: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    line-height: 1.3;
+}
+.tc-hmi-footer .hmi-footer-l { text-align: left;   }
+.tc-hmi-footer .hmi-footer-c { text-align: center; }
+.tc-hmi-footer .hmi-footer-r { text-align: right;  }
+
+/* Adaptive scaling: narrow sidebar → smaller row unit; wide → bigger. The
+   numbers grow/shrink uniformly because every cell derives size from --tc-row.
+   Floor is 14px so the rows-1 label (×0.7) stays ~10px and readable. */
+@container (max-width: 300px) {
+    .tc-hmi { --tc-row: 15px; padding: 8px 10px; column-gap: 6px; }
+}
+@container (max-width: 240px) {
+    .tc-hmi { --tc-row: 14px; padding: 6px 8px; }
+}
+@container (min-width: 400px) {
+    .tc-hmi { --tc-row: 20px; padding: 12px 14px; }
+}

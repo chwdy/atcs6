@@ -555,16 +555,27 @@ class SimulationController:
             raise
 
         # Refresh signals so the new occupancy is reflected. Signal refresh
-        # is a UI projection only — log and continue if it fails so the
-        # train-add itself still succeeds.
+        # is a UI projection only — emit a runtime notification and continue
+        # if it fails so the train-add itself still succeeds.
         try:
             self.network.update_signals_from_blocks()
-        except Exception:
-            logger.warning(
-                "update_signals_from_blocks() failed during add_train(%s)",
-                train_id,
-                exc_info=True,
-            )
+        except Exception as exc:
+            try:
+                self.notification_center.emit(
+                    source="SimulationController",
+                    kind="signal_refresh_failed",
+                    severity=Severity.WARNING,
+                    event_time=self.simulation_time,
+                    train_id=train_id,
+                    payload={"context": "add_train", "reason": str(exc)},
+                )
+            except Exception:
+                logger.warning(
+                    "update_signals_from_blocks() failed during add_train(%s); "
+                    "NotificationCenter.emit() also failed",
+                    train_id,
+                    exc_info=True,
+                )
 
         # Register controller and physics instances. add_train is the sole
         # entry point that writes the initial TrainController.current_span,
@@ -820,7 +831,10 @@ def build_network_payload(
         payload["controllers_by_train_id"] = {}
         payload["dispatcher_progress_by_train_id"] = {}
         payload["assigned_routes_by_train_id"] = {}
+        payload["simulation_time"] = 0.0
         return payload
+
+    payload["simulation_time"] = float(sim_controller.simulation_time)
 
     path_dispatcher = getattr(sim_controller, "path_dispatcher", None)
     route_executor = getattr(sim_controller, "route_executor", None)

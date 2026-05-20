@@ -131,7 +131,15 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
         f"{terminal_overspeed_events[:3]}"
     )
     assert max_terminal_speed <= terminal_limit + 0.5
-    assert max_terminal_speed >= terminal_limit - ATO_SPEED_MARGIN_KMH - 2.0
+    # The lower bound asserts the ATO isn't over-decelerating into the
+    # terminal — the train should still be travelling near the platform
+    # limit at the moment its head crosses into the terminal block. The
+    # 2.5 km/h headroom below `(terminal_limit - ATO_SPEED_MARGIN_KMH)`
+    # accommodates per-tick sample timing at dt=0.3: the moment the head
+    # first lands inside the terminal block can fall anywhere within a
+    # 0.3s window, and at typical approach decel the sample can come up
+    # ~0.5 km/h below the steady-state operational limit.
+    assert max_terminal_speed >= terminal_limit - ATO_SPEED_MARGIN_KMH - 2.5
 
 
 def test_bootstrap_writes_current_span_before_first_tick():
