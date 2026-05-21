@@ -324,7 +324,7 @@ class TrainController:
     # Schema (all keys present after the first ATO tick):
     #   mode: "stopping" | "stopped" | "no_curves" | "no_train" | "coast" |
     #         "power_up" | "brake"
-    #   delta_seconds, op_decel, planning_horizon_cm, ceiling_at_zero,
+    #   delta_seconds, op_decel, lookahead_distance_cm, ceiling_at_zero,
     #   curve_at_zero, current_speed_kmh, samples (list of dicts),
     #   binding_distance_cm, binding_target_kmh, required_decel_kmh_s,
     #   multiplier_needed, target_handle, final_handle.

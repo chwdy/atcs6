@@ -48,10 +48,6 @@ if TYPE_CHECKING:
     from train_controller import TrainController
 
 
-# Tuning constants. ATO_RESTRICTION_LOOKAHEAD_CM caps how far ahead the
-# planner samples the curve; PLANNING_TICKS_AHEAD scales the actual horizon
-# with current speed and tick dt.
-#
 # Speed-tracking deadband is scaled to the operating band rather than fixed
 # at one value. A 1-2 km/h gap is natural at 50 km/h cruise but huge at
 # 1 km/h creep — the same fixed deadband would prevent the train from
@@ -63,10 +59,27 @@ if TYPE_CHECKING:
 ATO_SPEED_TOLERANCE_MAX = 2.0
 ATO_SPEED_TOLERANCE_MIN = 0.05
 ATO_SPEED_TOLERANCE_RATIO = 0.1
-ATO_RESTRICTION_LOOKAHEAD_CM = 150.0
-PLANNING_TICKS_AHEAD = 100
-MIN_PLANNING_HORIZON_CM = 30.0
-PLANNING_SAMPLE_COUNT = 6
+
+# Braking lookahead: how far ahead the controller reads the operational_limit
+# envelope when choosing a brake notch.
+#   look = max(MIN_LOOKAHEAD_CM, travel_this_tick * (1 + LOOKAHEAD_HEADROOM))
+# capped at the curve's extent. The travel term guarantees `look >= per-tick
+# travel`, so the train never overshoots the point it planned for inside one
+# tick (this is what makes the law dt-stable — a bigger dt looks further). The
+# headroom adds lead time; the floor keeps a creep approach anticipating the
+# next stop. Because operational_limit is the op_decel braking envelope, the
+# chord (u²−v²)/(2·look) evaluates to op_decel at any look distance, so a train
+# riding the curve commands B6 regardless of dt.
+LOOKAHEAD_HEADROOM = 0.5
+MIN_LOOKAHEAD_CM = 5.0
+LOOKAHEAD_SAMPLE_COUNT = 4
+
+# Braking deadband: ignore a sub-notch speed excess so the controller does not
+# dither between a faint brake and coast while holding a flat ceiling. Far
+# smaller than the cruise power-up tolerance: on a one-tick horizon the envelope
+# only drops ~op_decel*dt (well under 1 km/h) per tick, so a 2 km/h band would
+# swallow the entire braking signal.
+BRAKE_DEADBAND_KMH = 0.3
 
 # Tick duration the rate-limiter's per-tick step budget is sized against.
 # At play-speed multipliers > 1 the simulation packs more sim-time into one
@@ -449,72 +462,55 @@ class ATONavigator:
             c.ato_debug = debug
             return HandlePosition.N
 
-        # Planning horizon: scale with speed and tick dt, capped at
-        # ATO_RESTRICTION_LOOKAHEAD_CM and floored at MIN_PLANNING_HORIZON_CM.
-        planning_distance_cm = speed_cm_s * delta_seconds * PLANNING_TICKS_AHEAD
-        max_curve_dist = curves[-1].get("distance_cm", ATO_RESTRICTION_LOOKAHEAD_CM)
-        horizon_cm = min(
-            ATO_RESTRICTION_LOOKAHEAD_CM,
-            max(MIN_PLANNING_HORIZON_CM, planning_distance_cm),
-            max_curve_dist,
-        )
+        # One-tick-ahead lookahead distance: at least the distance the train
+        # travels this tick (so it never overshoots the planned point within
+        # one tick), plus a dt-scaled headroom for lead time, floored for
+        # creep approaches, and capped at how far the curve extends.
+        travel_cm = speed_cm_s * delta_seconds
+        max_curve_dist = curves[-1].get("distance_cm", MIN_LOOKAHEAD_CM)
+        look_cm = max(MIN_LOOKAHEAD_CM, travel_cm * (1.0 + LOOKAHEAD_HEADROOM))
+        look_cm = min(look_cm, max_curve_dist)
 
         debug.update(
             {
-                "planning_distance_cm": float(planning_distance_cm),
-                "planning_horizon_cm": float(horizon_cm),
-                "planning_horizon_cap_cm": float(ATO_RESTRICTION_LOOKAHEAD_CM),
+                "lookahead_travel_cm": float(travel_cm),
+                "lookahead_distance_cm": float(look_cm),
                 "max_curve_distance_cm": float(max_curve_dist),
             }
         )
 
-        # Sample the curve and find the largest required deceleration to be
-        # at-or-below the curve at each sample point.
+        # For each sampled point in [0, look], compute the deceleration needed
+        # to be at-or-below the envelope there, and bind on the largest. On the
+        # op_decel envelope the chord (u²−v²)/(2d) evaluates to op_decel exactly
+        # (→ B6) at any look distance. A point where the train is already over
+        # the envelope (d≈0, target below current speed) needs op_decel plus the
+        # gap as catch-up — taking the max across samples is what keeps the
+        # final creep under a fast-collapsing authority-stop limit.
         required_decel_kmh_s = 0.0
         binding_dist_cm = 0.0
         binding_target_kmh = ceiling_at_zero
         samples: List[Dict[str, Any]] = []
-
-        for i in range(PLANNING_SAMPLE_COUNT + 1):
-            d_cm = horizon_cm * i / PLANNING_SAMPLE_COUNT
+        for i in range(LOOKAHEAD_SAMPLE_COUNT + 1):
+            d_cm = look_cm * i / LOOKAHEAD_SAMPLE_COUNT
             target_at_d = self.sample_curve_at(curves, d_cm, "operational_limit")
             target_at_d = min(target_at_d, train.max_speed, c.atc_speed_limit)
+            samples.append(
+                {"distance_cm": round(d_cm, 2), "target_kmh": round(target_at_d, 2)}
+            )
 
-            sample: Dict[str, Any] = {
-                "distance_cm": round(d_cm, 2),
-                "target_kmh": round(target_at_d, 2),
-                "skipped": False,
-                "required_decel_kmh_s": 0.0,
-                "multiplier": 0.0,
-            }
-
-            # Deadband scales with the reference speed: 2 km/h at cruise is
-            # natural; the same gap at 1 km/h creep is huge in relative terms
-            # and would let the train coast past low-speed ceilings.
-            skip_tolerance = ato_speed_tolerance(max(speed_kmh, target_at_d))
-            if target_at_d >= speed_kmh - skip_tolerance:
-                sample["skipped"] = True
-                sample["skip_reason"] = "target ≥ speed - tolerance"
-                sample["tolerance_kmh"] = skip_tolerance
-                samples.append(sample)
+            gap_kmh = speed_kmh - target_at_d
+            if gap_kmh <= BRAKE_DEADBAND_KMH:
                 continue
 
             if d_cm <= 0:
-                # Already over the curve at the train head — close the gap
-                # in roughly one second of catch-up over op_decel.
-                gap_kmh = speed_kmh - target_at_d
+                # Already over the envelope at the head — close the gap on top
+                # of op_decel rather than letting a far target dilute it.
                 req = op_decel + gap_kmh
-                sample["formula"] = "op_decel + (speed - target)"
             else:
                 u_cm_s = speed_cm_s
                 v_cm_s = target_at_d * km_h_to_cm_s
                 a_cm_s2 = (u_cm_s * u_cm_s - v_cm_s * v_cm_s) / (2.0 * d_cm)
                 req = a_cm_s2 / km_h_to_cm_s
-                sample["formula"] = "(u² - v²) / (2 d)"
-
-            sample["required_decel_kmh_s"] = round(req, 3)
-            sample["multiplier"] = round(req / op_decel, 3)
-            samples.append(sample)
 
             if req > required_decel_kmh_s:
                 required_decel_kmh_s = req

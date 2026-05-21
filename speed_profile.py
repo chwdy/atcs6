@@ -50,7 +50,7 @@ class SpeedProfile:
     deceleration_rate: float = 15.0  # km/h per second (service brake)
     emergency_brake_rate: float = 30.0  # km/h per second
     friction_rate: float = 0.5  # km/h per second (coasting deceleration)
-    operational_decel_ratio: float = 0.6  # Use 60% of max brake for smoother ATO curve
+    operational_decel_ratio: float = 0.8  # Use 80% of max brake for smoother ATO curve
     # Air resistance simulation (quadratic drag model)
     # Applied to all running trains for realistic simulation
     # Set air_resistance_enabled=False or drag_coefficient=0.0 to disable (for real train operation)
@@ -207,7 +207,7 @@ class SpeedProfile:
             deceleration_rate=float(data.get("deceleration_rate", 15.0)),
             emergency_brake_rate=float(data.get("emergency_brake_rate", 30.0)),
             friction_rate=float(data.get("friction_rate", 0.5)),
-            operational_decel_ratio=float(data.get("operational_decel_ratio", 0.6)),
+            operational_decel_ratio=float(data.get("operational_decel_ratio", 0.8)),
             air_resistance_enabled=bool(data.get("air_resistance_enabled", True)),
             drag_coefficient=float(data.get("drag_coefficient", 0.001)),
             reference_speed_kmh=float(data.get("reference_speed_kmh", 100.0)),
