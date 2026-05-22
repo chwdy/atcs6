@@ -17,7 +17,7 @@ Network layout reference (from `demo_main.py`):
                         top_speed_kmh=20 (block may auto-split around station)
 """
 
-from enums import AtcLimitReasonCode, TrainState
+from enums import AtcLimitReasonCode, BRAKE_MULTIPLIERS, HandlePosition, TrainState
 
 from ..actions import attempt_set_switch_position
 from ..assertions import (
@@ -40,7 +40,7 @@ from ..assertions import (
     assert_switch_unlocked,
     assert_switch_unoccupied,
 )
-from ..events import Event, Journey
+from ..events import Event, Invariant, Journey
 from ..invariants import (
     ato_running_implies_running_moving_with_cab,
     no_eb,
@@ -101,6 +101,34 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
             )
 
         return check
+
+    # Deepest-brake tracker. The one-tick-ahead ATO braking law tracks the
+    # operational_limit envelope at ~B6 (= op_decel) and reaches B7/B8 for
+    # catch-up; the old far-lookahead behavior never braked past B3. We record
+    # the deepest brake notch used across the run with a no-raise accumulator
+    # invariant and assert at the post-stop event that it reached at least B6.
+    # `brake_seen` is created per build (journeys are never cached), so the
+    # accumulator does not leak across parametrized harness runs.
+    brake_seen = {"max_mult": 0.0, "handle": "N"}
+
+    def _track_deepest_brake(s):
+        mult = BRAKE_MULTIPLIERS.get(s.handle_position)
+        if mult is not None and mult > brake_seen["max_mult"]:
+            brake_seen["max_mult"] = mult
+            brake_seen["handle"] = getattr(
+                s.handle_position, "value", str(s.handle_position)
+            )
+
+    def assert_reached_b6_braking(s):
+        floor = BRAKE_MULTIPLIERS[HandlePosition.B6]
+        assert brake_seen["max_mult"] >= floor - 1e-9, (
+            f"ATO never braked at B6 (op_decel) or deeper during the run; "
+            f"deepest notch was {brake_seen['handle']} "
+            f"({brake_seen['max_mult']:.2f}x op_decel). The one-tick-ahead "
+            f"braking law should track the curve at ~B6 — a deepest notch "
+            f"around B3 means it regressed to the old far-lookahead, "
+            f"brake-too-early-and-gently behavior."
+        )
 
     # ----- Events --------------------------------------------------------- #
 
@@ -273,6 +301,13 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
             assertions=[
                 # East Terminal top_speed_kmh = 20 (demo_main.py:364).
                 assert_speed_le(20.0, epsilon=0.5),
+                # Lower bound pins the dt-stable, efficient approach the
+                # one-tick-ahead ATO braking law produces: the head crosses
+                # into the terminal at ~17 km/h across dt=0.1/0.2/0.3
+                # (16.7-17.1 observed). The old far-lookahead/gentle-brake
+                # behavior dropped this to ~7.5 km/h at dt=0.3; this bound
+                # catches that regression.
+                assert_speed_gt(14.0),
             ],
         ),
         Event(
@@ -336,6 +371,9 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
                         )
                     )
                 ),
+                # The run must have braked at B6 (op_decel) or deeper at some
+                # point — pins the one-tick-ahead curve-tracking braking law.
+                assert_reached_b6_braking,
             ],
         ),
         # NOTE: Two additional events were planned but are NOT included
@@ -374,6 +412,9 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
         no_pending_power_off(),
         state_cab_pair_valid(),
         ato_running_implies_running_moving_with_cab(),
+        # No-raise accumulator: records the deepest brake notch used; consumed
+        # by assert_reached_b6_braking in E16.
+        Invariant(name="track_deepest_brake", check=_track_deepest_brake),
     ]
 
     return Journey(train_id=train_id, events=events, invariants=invariants)
