@@ -1,0 +1,82 @@
+{
+  "add-train": {
+    "kind": "tabler",
+    "value": "plus"
+  },
+  "block": {
+    "kind": "tabler",
+    "value": "plus"
+  },
+  "cancel-path": {
+    "kind": "tabler",
+    "value": "x"
+  },
+  "eraser": {
+    "kind": "tabler",
+    "value": "eraser"
+  },
+  "extend-block": {
+    "kind": "tabler",
+    "value": "arrows-horizontal"
+  },
+  "extend-path": {
+    "kind": "tabler",
+    "value": "arrows-horizontal"
+  },
+  "extend-platform": {
+    "kind": "tabler",
+    "value": "arrows-horizontal"
+  },
+  "new-route": {
+    "kind": "tabler",
+    "value": "plus"
+  },
+  "path": {
+    "kind": "tabler",
+    "value": "plus"
+  },
+  "paths-panel": {
+    "kind": "tabler",
+    "value": "route"
+  },
+  "platform": {
+    "kind": "tabler",
+    "value": "plus"
+  },
+  "remove-block-tile": {
+    "kind": "tabler",
+    "value": "minus"
+  },
+  "remove-platform-tile": {
+    "kind": "tabler",
+    "value": "minus"
+  },
+  "routes-panel": {
+    "kind": "tabler",
+    "value": "map-route"
+  },
+  "schedules-panel": {
+    "kind": "tabler",
+    "value": "calendar"
+  },
+  "select": {
+    "kind": "tabler",
+    "value": "pointer"
+  },
+  "signal": {
+    "kind": "tabler",
+    "value": "traffic-lights"
+  },
+  "stations-panel": {
+    "kind": "tabler",
+    "value": "home"
+  },
+  "track": {
+    "kind": "tabler",
+    "value": "track"
+  },
+  "train-panel": {
+    "kind": "tabler",
+    "value": "train"
+  }
+}

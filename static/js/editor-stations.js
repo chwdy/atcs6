@@ -255,26 +255,6 @@ class PlatformEditorHandler {
         await this.showEditor(platformId);
     }
 
-    async enterExtendMode(platformId, _direction) {
-        this.editor.stationExtendMode = { active: true, platformId };
-        window.showToast(`Platform extend mode: ${platformId}`, 'info', 2500);
-    }
-
-    exitExtendMode() {
-        this.editor.stationExtendMode = { active: false };
-    }
-
-    async handleExtendClick(x, y) {
-        const platformId = this.editor.stationExtendMode?.platformId;
-        if (!platformId) {
-            return false;
-        }
-        await this.api.extendPlatform(platformId, [[x, y]]);
-        await window.app.refreshNetwork();
-        await this.showEditor(platformId);
-        return true;
-    }
-
     _cleanup() {}
 }
 

@@ -21,8 +21,6 @@ class BlockEditorHandler {
     set cachedBlocks(value) { this.editor.cachedBlocks = value; }
     get selectedBlockId() { return this.editor.selectedBlockId; }
     set selectedBlockId(value) { this.editor.selectedBlockId = value; }
-    get blockExtendMode() { return this.editor.blockExtendMode; }
-    set blockExtendMode(value) { this.editor.blockExtendMode = value; }
     get selectedElement() { return this.editor.selectedElement; }
 
     // === Block Manager Methods ===
@@ -276,7 +274,7 @@ class BlockEditorHandler {
         const extendBlockStartBtn = document.getElementById('extend-block-start-btn');
         if (extendBlockStartBtn) {
             extendBlockStartBtn.onclick = () => {
-                this.enterExtendMode(blockId, 'start');
+                this.extendBlock(blockId, 'start');
             };
         }
 
@@ -284,7 +282,7 @@ class BlockEditorHandler {
         const extendBlockEndBtn = document.getElementById('extend-block-end-btn');
         if (extendBlockEndBtn) {
             extendBlockEndBtn.onclick = () => {
-                this.enterExtendMode(blockId, 'end');
+                this.extendBlock(blockId, 'end');
             };
         }
 
@@ -311,21 +309,18 @@ class BlockEditorHandler {
         });
     }
 
-    // === Block Extend Mode ===
-
-    async enterExtendMode(blockId, direction) {
+    // Auto-extend a block by one tile in the given direction. Not a multi-step
+    // mode — the call performs the API extend immediately.
+    async extendBlock(blockId, direction) {
         console.log(`[BlockEditorHandler] Auto-extending block: ${blockId} (${direction})`);
-        
+
         try {
-            // Get block data
             const block = await this.api.getBlock(blockId);
             if (!block || block.error) {
                 throw new Error('Block not found');
             }
 
-            // Get sorted positions
             const sortedPositions = block.sorted_positions || block.track_positions;
-
             if (!sortedPositions || sortedPositions.length === 0) {
                 throw new Error('Block has no positions');
             }
@@ -337,83 +332,19 @@ class BlockEditorHandler {
             const nextTile = calculateNextTile(sortedPositions, orientation, direction, tracks);
             console.log(`[BlockEditorHandler] Auto-extending to tile (${nextTile.x}, ${nextTile.y}) with track bits ${nextTile.trackBits}`);
 
-            // Extend the block (use force=false to let backend validate)
             await this.api.extendBlock(blockId, [[nextTile.x, nextTile.y]], false);
             await window.app.refreshNetwork();
-            
-            // Refresh block editor
+
             this.showEditor(blockId);
-            
-            // Refresh main properties panel if showing this tile
+
             if (this.selectedElement?.x === nextTile.x && this.selectedElement?.y === nextTile.y) {
                 await this.editor.selectElement({ x: nextTile.x, y: nextTile.y });
             }
-            
+
             window.showToast(`Block extended ${direction} to (${nextTile.x}, ${nextTile.y})`, 'success', 3000);
         } catch (err) {
             console.error('Failed to auto-extend block:', err);
             window.showToast(`Failed to extend block: ${err.message}`, 'error', 5000);
-        }
-    }
-
-    exitExtendMode() {
-        if (this.blockExtendMode?.active) {
-            console.log('[BlockEditorHandler] Exiting block extend mode');
-            this.blockExtendMode = { active: false };
-            
-            // Restore header
-            const secondarySidebar = document.getElementById('secondary-sidebar-content');
-            if (secondarySidebar) {
-                const header = secondarySidebar.closest('.secondary-sidebar')?.querySelector('h3');
-                if (header) {
-                    header.textContent = '📦 Block Editor';
-                }
-            }
-        }
-    }
-
-    async handleExtendClick(x, y) {
-        if (!this.blockExtendMode?.active) return false;
-        
-        const { blockId, direction } = this.blockExtendMode;
-        
-        try {
-            // Validate the tile can be extended
-            const canExtend = await this.api.canExtendBlock(blockId, x, y);
-            
-            if (!canExtend.can_extend) {
-                // Check if it requires force flags
-                if (canExtend.requires_force) {
-                    window.showToast(`Tile has signal - use force mode to extend (not yet implemented)`, 'warning', 5000);
-                } else if (canExtend.requires_force_overwrite) {
-                    window.showToast(`Tile in another block - use force overwrite (not yet implemented)`, 'warning', 5000);
-                } else {
-                    window.showToast(`Cannot extend: ${canExtend.reason}`, 'error', 5000);
-                }
-                return true; // Handled, but failed
-            }
-            
-            // Extend the block
-            await this.api.extendBlock(blockId, [[x, y]]);
-            await window.app.refreshNetwork();
-            
-            // Exit extend mode
-            this.exitExtendMode();
-            
-            // Refresh block editor
-            this.showEditor(blockId);
-            
-            // Refresh main properties panel if showing this tile
-            if (this.selectedElement?.x === x && this.selectedElement?.y === y) {
-                await this.editor.selectElement({ x, y });
-            }
-            
-            window.showToast(`Tile (${x}, ${y}) added to block`, 'success', 5000);
-            return true;
-        } catch (err) {
-            console.error('Failed to extend block:', err);
-            window.showToast(`Failed to extend block: ${err.message}`, 'error', 5000);
-            return true;
         }
     }
 

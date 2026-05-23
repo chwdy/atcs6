@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Tool icon browse — Tabler candidates</title>
+<link rel="stylesheet" href="/static/vendor/tabler/tabler-icons.min.css">
+<style>
+  :root {
+    --bg-dark: #121214;
+    --bg-panel: #1e1e24;
+    --bg-hover: #2a2a35;
+    --border-color: #333340;
+    --text-primary: #e1e1e6;
+    --text-secondary: #a8a8b3;
+    --text-tertiary: #83838f;
+    --accent-color: #8257e5;
+    --accent-hover: #9466ff;
+    --warning-color: #ffcd1e;
+    --success-color: #04d361;
+    --control-radius-sm: 6px;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    padding: 24px 28px 64px;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #0d0d10;
+    color: var(--text-primary);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  h1 {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    margin: 0 0 6px;
+  }
+  .intro {
+    color: var(--text-secondary);
+    font-size: 12px;
+    margin: 0 0 18px;
+    max-width: 720px;
+  }
+
+  .top-bar {
+    display: flex;
+    gap: 18px;
+    align-items: center;
+    color: var(--text-tertiary);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 24px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border-color);
+    flex-wrap: wrap;
+  }
+  .legend-swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  .save-status {
+    margin-left: auto;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-dark);
+    color: var(--text-secondary);
+    font-size: 10px;
+    text-transform: none;
+    letter-spacing: 0;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .save-status[data-state="dirty"] { border-color: var(--warning-color); color: var(--warning-color); }
+  .save-status[data-state="saved"] { border-color: var(--success-color); color: var(--success-color); }
+  .save-status[data-state="error"] { border-color: #e83f5b; color: #e83f5b; }
+  .top-bar button {
+    border: 1px solid var(--border-color);
+    background: var(--bg-dark);
+    color: var(--text-primary);
+    border-radius: var(--control-radius-sm);
+    padding: 4px 10px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+  }
+  .top-bar button:hover { border-color: var(--accent-color); color: var(--accent-hover); }
+
+  /* Two-column shell: candidates (scroll) + sticky live palette */
+  .shell {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 240px;
+    gap: 28px;
+    align-items: start;
+  }
+
+  /* CANDIDATES */
+  .category { margin-bottom: 28px; }
+  .category-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    letter-spacing: 0.08em;
+    font-weight: 600;
+    margin: 0 0 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-color);
+  }
+  .tool-row {
+    display: grid;
+    grid-template-columns: 130px repeat(6, minmax(72px, 1fr));
+    gap: 10px;
+    align-items: start;
+    padding: 8px 0;
+  }
+  .tool-row + .tool-row { border-top: 1px dotted var(--border-color); }
+  .tool-name {
+    font-size: 12px;
+    color: var(--text-primary);
+    font-weight: 500;
+    padding-top: 8px;
+  }
+  .tool-purpose {
+    display: block;
+    margin-top: 2px;
+    color: var(--text-tertiary);
+    font-size: 10px;
+    line-height: 1.4;
+  }
+
+  .candidate {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  /* Replicates .tool-btn from static/css/components/tools.css */
+  .tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    padding: 2px;
+    width: 38px;
+    height: 38px;
+    background-color: var(--bg-dark);
+    border: 2px solid transparent;
+    border-radius: var(--control-radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: color 0.12s, background-color 0.12s, border-color 0.12s;
+    font-size: 0.5rem;
+    position: relative;
+  }
+  .tile:hover {
+    background-color: var(--bg-hover);
+    color: var(--accent-hover);
+  }
+  .tile.is-current { background-color: rgba(255, 205, 30, 0.06); }
+  .tile.is-current:hover { background-color: rgba(255, 205, 30, 0.15); color: var(--warning-color); }
+  .tile.is-selected {
+    border-color: var(--accent-color);
+    background-color: rgba(130, 87, 229, 0.18);
+    color: var(--accent-hover);
+  }
+  .tile.is-selected.is-current {
+    border-color: var(--warning-color);
+    background-color: rgba(255, 205, 30, 0.22);
+    color: var(--warning-color);
+  }
+
+  .tile-icon { font-size: 18px; line-height: 1; }
+  .tile-icon.unicode { font-size: 16px; }
+  .tile-label {
+    font-size: 7px;
+    line-height: 1;
+    color: inherit;
+    text-transform: none;
+    margin-top: 1px;
+  }
+  .caption {
+    font-size: 9px;
+    color: var(--text-tertiary);
+    text-align: center;
+    font-family: 'JetBrains Mono', 'Menlo', monospace;
+    line-height: 1.2;
+    word-break: break-all;
+    max-width: 80px;
+  }
+  .caption.current { color: var(--warning-color); }
+
+  /* LIVE PALETTE PREVIEW (right sidebar, sticky) */
+  .live-palette {
+    position: sticky;
+    top: 24px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    overflow: hidden;
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
+  }
+  .live-palette-header {
+    padding: 8px 10px;
+    background: linear-gradient(135deg, rgba(130, 87, 229, 0.12), rgba(130, 87, 229, 0.04));
+    border-bottom: 1px solid var(--border-color);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: 0.02em;
+  }
+  .live-palette-body { padding: 8px; }
+  .lp-category { margin-bottom: 4px; padding-bottom: 4px; border-bottom: 1px solid var(--border-color); }
+  .lp-category:last-child { border: none; margin-bottom: 0; padding-bottom: 0; }
+  .lp-category-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-secondary);
+    font-weight: 600;
+    margin: 4px 0;
+    padding: 0 4px;
+  }
+  .lp-row { display: flex; flex-wrap: wrap; gap: 2px; }
+  .lp-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    padding: 2px;
+    width: 38px;
+    height: 38px;
+    background-color: var(--bg-dark);
+    border-radius: var(--control-radius-sm);
+    color: var(--text-secondary);
+    font-size: 0.5rem;
+  }
+  .lp-tile.is-unset { color: var(--text-tertiary); opacity: 0.7; }
+  .lp-tile .ti { font-size: 16px; }
+  .lp-tile .unicode { font-size: 15px; line-height: 1; }
+  .lp-tile-label {
+    font-size: 7px;
+    line-height: 1;
+    margin-top: 1px;
+  }
+
+  @media (max-width: 1100px) {
+    .shell { grid-template-columns: 1fr; }
+    .live-palette { position: relative; top: 0; max-height: none; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Tool icon browse — Tabler candidates vs current Unicode</h1>
+<p class="intro">
+  Click a tile to pick it for that tool. The first tile (amber tint) is the current Unicode glyph — pick it to keep what's already there. Your choices auto-save to the server and you can see the live palette assembling itself on the right. When you're done, tell me you're finished and I'll pull <code>static/icon-selections.json</code> to see your picks.
+</p>
+
+<div class="top-bar">
+  <span><span class="legend-swatch" style="background: rgba(255, 205, 30, 0.18)"></span>Current Unicode</span>
+  <span><span class="legend-swatch" style="background: var(--bg-dark); border: 1px solid var(--border-color)"></span>Tabler candidate</span>
+  <span><span class="legend-swatch" style="background: rgba(130, 87, 229, 0.4); border: 1px solid var(--accent-color)"></span>Selected</span>
+  <button id="reset-all" type="button">Clear all picks</button>
+  <span class="save-status" id="save-status" data-state="idle">Idle</span>
+</div>
+
+<div class="shell">
+  <main id="candidates"></main>
+  <aside class="live-palette">
+    <div class="live-palette-header">Live palette preview</div>
+    <div class="live-palette-body" id="live-palette-body"></div>
+  </aside>
+</div>
+
+<script>
+  /* ---------- Tool catalogue ---------- */
+  /* Each tool: id, category, label, purpose, current Unicode glyph,
+     and up to 5 Tabler candidate icon names. */
+
+  const CATEGORIES = [
+    { id: 'general', label: 'General', tools: [
+      { id: 'select', label: 'Select', purpose: 'Cursor / pick on map',
+        unicode: '↖',
+        tabler: ['pointer', 'hand-finger', 'cursor-text', 'click', 'arrow-up-left'] },
+      { id: 'eraser', label: 'Eraser', purpose: 'Destroy hovered tile',
+        unicode: '⌫',
+        tabler: ['eraser', 'trash-x', 'x', 'square-x', 'eraser-off'] },
+    ]},
+
+    { id: 'track', label: 'Network', tools: [
+      { id: 'track', label: 'Track', purpose: 'Draw rail segment',
+        unicode: '═',
+        tabler: ['track', 'train', 'road', 'line-dashed', 'grid-3x3'] },
+      { id: 'signal', label: 'Signal', purpose: 'Place a wayside signal',
+        unicode: '◉',
+        tabler: ['traffic-lights', 'circle-dot', 'lamp', 'bulb', 'lighthouse'] },
+    ]},
+
+    { id: 'platform', label: 'Platform', tools: [
+      { id: 'platform', label: 'New', purpose: 'Place a platform',
+        unicode: '▤',
+        tabler: ['plus', 'layout-bottombar', 'rectangle', 'building-bridge', 'road-sign'] },
+      { id: 'extend-platform', label: 'Extend', purpose: 'Grow platform by 1 tile',
+        unicode: '＋',
+        tabler: ['arrow-bar-to-right', 'arrows-maximize', 'square-plus', 'arrow-right-bar', 'arrows-horizontal'] },
+      { id: 'remove-platform-tile', label: 'Remove', purpose: 'Shrink platform by 1 tile',
+        unicode: '−',
+        tabler: ['arrow-bar-to-left', 'arrows-minimize', 'square-minus', 'arrow-left-bar', 'minus'] },
+      { id: 'stations-panel', label: 'Stations', purpose: 'List of all stations',
+        unicode: '☰',
+        tabler: ['home', 'building', 'building-community', 'building-pavilion', 'list-details'] },
+    ]},
+
+    { id: 'block', label: 'Block', tools: [
+      { id: 'block', label: 'New', purpose: 'Place an occupancy block',
+        unicode: '▣',
+        tabler: ['plus', 'square', 'rectangle', 'box', 'border-all'] },
+      { id: 'extend-block', label: 'Extend', purpose: 'Grow block by 1 tile',
+        unicode: '＋',
+        tabler: ['arrow-bar-to-right', 'arrows-maximize', 'square-plus', 'arrow-right-bar', 'arrows-horizontal'] },
+      { id: 'remove-block-tile', label: 'Remove', purpose: 'Shrink block by 1 tile',
+        unicode: '−',
+        tabler: ['arrow-bar-to-left', 'arrows-minimize', 'square-minus', 'arrow-left-bar', 'minus'] },
+    ]},
+
+    { id: 'dispatch', label: 'Path', tools: [
+      { id: 'path', label: 'New', purpose: 'Draw a one-train path',
+        unicode: '⇋',
+        tabler: ['plus', 'route', 'route-square', 'map-route', 'arrow-right'] },
+      { id: 'extend-path', label: 'Extend', purpose: 'Extend a path tile',
+        unicode: '＋',
+        tabler: ['arrow-bar-to-right', 'arrows-maximize', 'square-plus', 'arrow-right-bar', 'arrows-horizontal'] },
+      { id: 'cancel-path', label: 'Cancel', purpose: 'Cancel in-progress path',
+        unicode: '✕',
+        tabler: ['x', 'route-x', 'circle-x', 'square-x', 'ban'] },
+      { id: 'paths-panel', label: 'Paths', purpose: 'List of all paths',
+        unicode: '☰',
+        tabler: ['route', 'list-details', 'route-2', 'list', 'menu-2'] },
+    ]},
+
+    { id: 'train', label: 'Train', tools: [
+      { id: 'add-train', label: 'New', purpose: 'Create a new train',
+        unicode: '＋',
+        tabler: ['train', 'circle-plus', 'square-plus', 'plus', 'train-tram'] },
+      { id: 'train-panel', label: 'Trains', purpose: 'List of all trains',
+        unicode: '☰',
+        tabler: ['train', 'list-details', 'list', 'menu-2', 'layout-list'] },
+    ]},
+
+    { id: 'route', label: 'Route', tools: [
+      { id: 'new-route', label: 'New', purpose: 'Create a saved route',
+        unicode: '＋',
+        tabler: ['map-route', 'map-pin-plus', 'route-alt-left', 'route', 'plus'] },
+      { id: 'routes-panel', label: 'Routes', purpose: 'List of all routes',
+        unicode: '⇄',
+        tabler: ['map-route', 'list-details', 'route', 'road', 'navigation'] },
+      { id: 'schedules-panel', label: 'Schedules', purpose: 'Timetable panel',
+        unicode: '◷',
+        tabler: ['calendar-event', 'calendar-clock', 'timeline', 'clock', 'calendar'] },
+    ]},
+  ];
+
+  /* ---------- State ---------- */
+  const STORAGE_KEY = 'icon-selections-v1';
+  let selections = loadSelections();
+
+  function loadSelections() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); }
+    catch { return {}; }
+  }
+  function saveLocal() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(selections));
+  }
+
+  let saveTimer = null;
+  function scheduleSave() {
+    setStatus('dirty', 'Saving…');
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(syncToServer, 250);
+  }
+  async function syncToServer() {
+    try {
+      const r = await fetch('/api/icon-selections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(selections),
+      });
+      if (!r.ok) throw new Error('http ' + r.status);
+      setStatus('saved', 'Saved ' + new Date().toLocaleTimeString());
+    } catch (e) {
+      setStatus('error', 'Save failed: ' + e.message);
+    }
+  }
+  function setStatus(state, text) {
+    const el = document.getElementById('save-status');
+    el.dataset.state = state;
+    el.textContent = text;
+  }
+
+  /* ---------- Render: candidate rows ---------- */
+  function pickTile(toolId, kind, value) {
+    selections[toolId] = { kind, value };
+    saveLocal();
+    scheduleSave();
+    refreshRow(toolId);
+    refreshLivePalette();
+  }
+
+  function refreshRow(toolId) {
+    document.querySelectorAll(`[data-tool="${toolId}"] .tile`).forEach(tile => {
+      const sel = selections[toolId];
+      const isMatch = sel
+        && tile.dataset.kind === sel.kind
+        && tile.dataset.value === sel.value;
+      tile.classList.toggle('is-selected', !!isMatch);
+    });
+  }
+
+  function buildTile(toolId, kind, value, label) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tile' + (kind === 'unicode' ? ' is-current' : '');
+    btn.dataset.kind = kind;
+    btn.dataset.value = value;
+
+    const icon = document.createElement('span');
+    if (kind === 'unicode') {
+      icon.className = 'tile-icon unicode';
+      icon.textContent = value;
+    } else {
+      icon.className = 'ti ti-' + value + ' tile-icon';
+    }
+    btn.appendChild(icon);
+
+    const lbl = document.createElement('span');
+    lbl.className = 'tile-label';
+    lbl.textContent = label;
+    btn.appendChild(lbl);
+
+    btn.addEventListener('click', () => pickTile(toolId, kind, value));
+    return btn;
+  }
+
+  function buildCandidate(toolId, kind, value, label, captionText, captionClass) {
+    const wrap = document.createElement('div');
+    wrap.className = 'candidate';
+    wrap.appendChild(buildTile(toolId, kind, value, label));
+    const cap = document.createElement('span');
+    cap.className = 'caption' + (captionClass ? ' ' + captionClass : '');
+    cap.textContent = captionText;
+    wrap.appendChild(cap);
+    return wrap;
+  }
+
+  function renderCandidates() {
+    const root = document.getElementById('candidates');
+    root.innerHTML = '';
+    for (const cat of CATEGORIES) {
+      const section = document.createElement('section');
+      section.className = 'category';
+
+      const h = document.createElement('h2');
+      h.className = 'category-label';
+      h.textContent = cat.label;
+      section.appendChild(h);
+
+      for (const tool of cat.tools) {
+        const row = document.createElement('div');
+        row.className = 'tool-row';
+        row.dataset.tool = tool.id;
+
+        const name = document.createElement('div');
+        name.className = 'tool-name';
+        name.innerHTML = `${tool.label}<span class="tool-purpose">${tool.purpose}</span>`;
+        row.appendChild(name);
+
+        // Current Unicode tile
+        row.appendChild(buildCandidate(
+          tool.id, 'unicode', tool.unicode, tool.label,
+          'current ' + tool.unicode, 'current'
+        ));
+
+        // 5 Tabler candidates
+        for (const name of tool.tabler) {
+          row.appendChild(buildCandidate(tool.id, 'tabler', name, tool.label, name));
+        }
+
+        section.appendChild(row);
+      }
+      root.appendChild(section);
+    }
+
+    // Apply existing selections
+    for (const toolId of Object.keys(selections)) refreshRow(toolId);
+  }
+
+  /* ---------- Render: live palette ---------- */
+  function renderLivePalette() {
+    const root = document.getElementById('live-palette-body');
+    root.innerHTML = '';
+    for (const cat of CATEGORIES) {
+      const section = document.createElement('div');
+      section.className = 'lp-category';
+      const h = document.createElement('div');
+      h.className = 'lp-category-label';
+      h.textContent = cat.label;
+      section.appendChild(h);
+
+      const row = document.createElement('div');
+      row.className = 'lp-row';
+      for (const tool of cat.tools) {
+        const tile = document.createElement('div');
+        tile.className = 'lp-tile';
+        tile.dataset.tool = tool.id;
+        tile.title = tool.label + ' — ' + tool.purpose;
+
+        const icon = document.createElement('span');
+        const lbl = document.createElement('span');
+        lbl.className = 'lp-tile-label';
+        lbl.textContent = tool.label;
+        tile.appendChild(icon);
+        tile.appendChild(lbl);
+        row.appendChild(tile);
+      }
+      section.appendChild(row);
+      root.appendChild(section);
+    }
+    refreshLivePalette();
+  }
+
+  function refreshLivePalette() {
+    for (const cat of CATEGORIES) {
+      for (const tool of cat.tools) {
+        const tile = document.querySelector(`.lp-tile[data-tool="${tool.id}"]`);
+        if (!tile) continue;
+        const iconSpan = tile.firstChild;
+        const sel = selections[tool.id];
+        tile.classList.toggle('is-unset', !sel);
+        if (sel && sel.kind === 'tabler') {
+          iconSpan.className = 'ti ti-' + sel.value;
+          iconSpan.textContent = '';
+        } else if (sel && sel.kind === 'unicode') {
+          iconSpan.className = 'unicode';
+          iconSpan.textContent = sel.value;
+        } else {
+          iconSpan.className = 'unicode';
+          iconSpan.textContent = tool.unicode;
+        }
+      }
+    }
+  }
+
+  /* ---------- Init ---------- */
+  document.getElementById('reset-all').addEventListener('click', () => {
+    if (!confirm('Clear every selection?')) return;
+    selections = {};
+    saveLocal();
+    scheduleSave();
+    document.querySelectorAll('.tile.is-selected').forEach(t => t.classList.remove('is-selected'));
+    refreshLivePalette();
+  });
+
+  renderCandidates();
+  renderLivePalette();
+  if (Object.keys(selections).length) setStatus('saved', 'Loaded from localStorage');
+  else setStatus('idle', 'No picks yet');
+</script>
+
+</body>
+</html>

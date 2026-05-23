@@ -32,6 +32,21 @@ class PathEditorHandler {
         document.getElementById('status-state').textContent = 'Ready';
     }
 
+    // EditorMode factory for the route-creation tool.
+    buildRouteToolMode() {
+        return {
+            name: 'Route creation',
+            toolName: 'path',
+            cancelMessage: 'Route creation cancelled',
+            onEnter: () => this.enterRouteToolMode(),
+            onClick: async ({ gridPos }) => {
+                await this.handleRouteToolClick(gridPos);
+                return true;
+            },
+            onExit: () => this.exitRouteToolMode()
+        };
+    }
+
     async resetRouteToolState() {
         this.pathToolState = {
             active: false,
@@ -708,6 +723,21 @@ class PathEditorHandler {
         document.getElementById('status-state').textContent = 'Ready';
     }
 
+    // EditorMode factory for the extend-route tool.
+    buildExtendRouteMode() {
+        return {
+            name: 'Extend route',
+            toolName: 'extend-path',
+            cancelMessage: 'Extend route cancelled',
+            onEnter: () => this.enterExtendRouteMode(),
+            onClick: async ({ gridPos }) => {
+                await this.handleExtendRouteToolClick(gridPos);
+                return true;
+            },
+            onExit: () => this.exitExtendRouteMode()
+        };
+    }
+
     async resetExtendRouteState() {
         this.extendPathState = {
             active: false,
@@ -943,6 +973,21 @@ class PathEditorHandler {
 
     exitCancelRouteMode() {
         document.getElementById('status-state').textContent = 'Ready';
+    }
+
+    // EditorMode factory for the cancel-route tool.
+    buildCancelRouteMode() {
+        return {
+            name: 'Cancel route',
+            toolName: 'cancel-path',
+            cancelMessage: 'Cancel-route mode exited',
+            onEnter: () => this.enterCancelRouteMode(),
+            onClick: async ({ gridPos }) => {
+                await this.handleCancelRouteToolClick(gridPos);
+                return true;
+            },
+            onExit: () => this.exitCancelRouteMode()
+        };
     }
 
     async handleCancelRouteToolClick(gridPos) {

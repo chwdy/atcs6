@@ -10,7 +10,10 @@ TODO List:
 - [ ] Accept optional runtime configuration inputs
 """
 
-from flask import Flask, request
+import json
+from pathlib import Path
+
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from werkzeug.routing import IntegerConverter
 
@@ -62,5 +65,15 @@ def create_app(state: AppState) -> Flask:
 
     # Register debug inspector routes
     register_debug_routes(app, state)
+
+    # Dev-only: backs static/icon-preview.html so Claude can read the user's
+    # picks back. Safe to delete once the icon set is locked in.
+    _icon_selections_path = Path(__file__).parent / "static" / "icon-selections.json"
+
+    @app.post("/api/icon-selections")
+    def _save_icon_selections():
+        payload = request.get_json(silent=True) or {}
+        _icon_selections_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        return jsonify({"ok": True})
 
     return app

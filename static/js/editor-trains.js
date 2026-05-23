@@ -1275,7 +1275,7 @@ class TrainEditorHandler {
         // Train Monitor's cache — coupling the two panels would mean closing
         // the monitor would silently empty the dwell display.
         this._dwellLookahead = null;
-        const dwellPoll = setInterval(async () => {
+        const fetchDwellOnce = async () => {
             if (this._trainId !== trainId) return;
             try {
                 const payload = await this.api.getTrainLookahead(trainId);
@@ -1283,6 +1283,15 @@ class TrainEditorHandler {
                 const train = window.stateManager.get('trains', trainId);
                 if (train) this.updateControlPanelValuesFromData(train);
             } catch (e) { /* ignore transient errors */ }
+        };
+        // Populate once on open so paused/cold-open panels still show dwell data.
+        fetchDwellOnce();
+        // Recurring poll skips while the sim is paused — dwell timing is a
+        // function of sim-clock advance, so a frozen clock means a frozen
+        // payload. Resumes naturally on the next tick after play.
+        const dwellPoll = setInterval(() => {
+            if (!window.app?.isSimulationRunning) return;
+            fetchDwellOnce();
         }, 250);
 
         this._unsubscribe = () => {

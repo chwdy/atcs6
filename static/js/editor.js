@@ -33,12 +33,6 @@ class Editor {
         this.shiftKeyHeld = false;
         this.diagonalBuildMode = false;  // True when building diagonal/short-path tracks
 
-        // Platform extend mode
-        this.stationExtendMode = { active: false };
-        
-        // Block extend mode
-        this.blockExtendMode = { active: false };
-
         // Route tool state
         this.pathToolState = {
             active: false,
@@ -51,11 +45,28 @@ class Editor {
         };
         this.cachedPaths = [];            // List of active routes
 
-        // Panel-driven map interaction (route waypoint-add / train-assign).
-        // At most one is active. Shape: { name, onClick(payload)->bool,
-        // onExit(), onEnter? }. Tools on `selectedTool` (path/extend/cancel)
-        // are a separate axis; entering one cancels the other.
-        this.mapInteraction = null;
+        // === Active editor mode ===
+        //
+        // An EditorMode is the unified abstraction for any multi-step
+        // interaction on the layout (drawing a route, picking a tile,
+        // extending a structure, etc.). Shape:
+        //
+        //   {
+        //     name:           string,                       // log + default ESC toast
+        //     toolName?:      string,                       // toolbar tool this mode owns
+        //     cancelMessage?: string,                       // override for the ESC toast
+        //     onEnter?:       () => void | Promise<void>,   // setup hook
+        //     onClick:        ({gridPos, screenX, screenY, event}) => bool | Promise<bool>,
+        //     onExit:         () => void | Promise<void>    // teardown hook
+        //   }
+        //
+        // Invariants:
+        //   - At most one activeMode at a time. enterMode exits the prior.
+        //   - When activeMode.toolName is set, selectedTool === activeMode.toolName.
+        //     enterMode sets the tool; exitMode resets it to 'select'.
+        //   - When activeMode.toolName is null/undefined (sidebar/panel-driven),
+        //     selectedTool is forced to 'select' on enter and untouched on exit.
+        this.activeMode = null;
 
         this.pathfinder = new ConstructionPathfinder();
         this.existingOnlyPathfinder = new ExistingTrackPathfinder();
@@ -408,24 +419,8 @@ class Editor {
         return this.switchHandler.showEditor(switchId);
     }
 
-    exitPlatformExtendMode() {
-        return this.platformHandler.exitExtendMode();
-    }
-
-    async handlePlatformExtendClick(x, y) {
-        return this.platformHandler.handleExtendClick(x, y);
-    }
-
     async showStationsPanel() {
         return this.stationGroupHandler.showPanel();
-    }
-
-    exitBlockExtendMode() {
-        return this.blockHandler.exitExtendMode();
-    }
-
-    async handleBlockExtendClick(x, y) {
-        return this.blockHandler.handleExtendClick(x, y);
     }
 
     async initTrainEditorHandlers(trainId) {
@@ -448,99 +443,74 @@ class Editor {
         return this.trainHandler.showTrainControlPanel(trainId);
     }
 
+    // Tools that activate a multi-step EditorMode. The factory builds a fresh
+    // EditorMode object on each entry.
+    _modeFactoriesByTool() {
+        return {
+            'path':        () => this.pathHandler.buildRouteToolMode(),
+            'extend-path': () => this.pathHandler.buildExtendRouteMode(),
+            'cancel-path': () => this.pathHandler.buildCancelRouteMode(),
+        };
+    }
+
+    // Tools that just open a panel or run a one-shot action. They never change
+    // selectedTool — clicking one of these buttons re-activates the prior tool
+    // button and leaves the editor in its previous state.
+    _panelOnlyTools() {
+        return {
+            'paths-panel':     () => this.showPathsPanel(),
+            'add-train':       () => this.showAddTrainDialog(),
+            'train-panel':     () => this.showTrainsPanel(),
+            'schedules-panel': () => this.showSchedulesPanel(),
+            'routes-panel':    () => this.showRoutesPanel(),
+            'new-route':       () => this.routeHandler.createNewRoute(),
+            'stations-panel':  () => this.showStationsPanel(),
+        };
+    }
+
     setupEventListeners() {
+        const modeFactories = this._modeFactoriesByTool();
+        const panelOnlyTools = this._panelOnlyTools();
+
         // Tool selection
         document.querySelectorAll('.tool-btn').forEach(btn => {
             btn.addEventListener('click', async (e) => {
-                document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
-                e.currentTarget.classList.add('active');
-
                 const newTool = e.currentTarget.dataset.tool;
                 const oldTool = this.selectedTool;
 
-                // Selecting any toolbar tool cancels a panel-driven map
-                // interaction (it's null during the select-tool click that
-                // enterMapInteraction itself triggers, so this is a no-op then).
-                this.exitMapInteraction();
-
-                // Auto-toggle block debug when entering/leaving block tools
-                const blockDebugCheckbox = document.getElementById('debug-show-blocks');
-                const isBlockTool = ['block', 'extend-block'].includes(newTool);
-                const wasBlockTool = ['block', 'extend-block'].includes(oldTool);
-
-                if (isBlockTool && !wasBlockTool) {
-                    // Entering block tool mode - enable block colors only (no debug info)
-                    this._savedBlockDebugState = blockDebugCheckbox?.checked;
-                    this.renderer.showBlockColorsOnly = true;
-                    window.app.refreshNetwork(); // Refresh to show block colors
-                } else if (!isBlockTool && wasBlockTool) {
-                    // Leaving block tool mode - restore normal rendering
-                    this.renderer.showBlockColorsOnly = false;
-                    window.app.refreshNetwork(); // Refresh to update display
+                // Panel-only tools: run the action, leave selectedTool alone.
+                // The .active class flip the browser does on click is reverted
+                // explicitly here.
+                if (newTool in panelOnlyTools) {
+                    panelOnlyTools[newTool]();
+                    return;
                 }
 
-                // Handle route tool special actions
-                if (newTool === 'path') {
-                    this.enterRouteToolMode();
-                } else if (newTool === 'extend-path') {
-                    this.enterExtendRouteMode();
-                } else if (newTool === 'cancel-path') {
-                    this.enterCancelRouteMode();
-                } else if (newTool === 'paths-panel') {
-                    this.showPathsPanel();
-                    // Don't change selected tool - keep current tool active
-                    e.currentTarget.classList.remove('active');
-                    document.querySelector(`.tool-btn[data-tool="${oldTool}"]`)?.classList.add('active');
-                    return;
-                } else if (newTool === 'add-train') {
-                    this.showAddTrainDialog();
-                    // Don't change selected tool - keep select tool active
-                    e.currentTarget.classList.remove('active');
-                    document.querySelector(`.tool-btn[data-tool="${oldTool}"]`)?.classList.add('active');
-                    return;
-                } else if (newTool === 'train-panel') {
-                    this.showTrainsPanel();
-                    // Don't change selected tool - keep current tool active
-                    e.currentTarget.classList.remove('active');
-                    document.querySelector(`.tool-btn[data-tool="${oldTool}"]`)?.classList.add('active');
-                    return;
-                } else if (newTool === 'schedules-panel') {
-                    this.showSchedulesPanel();
-                    // Don't change selected tool - keep current tool active
-                    e.currentTarget.classList.remove('active');
-                    document.querySelector(`.tool-btn[data-tool="${oldTool}"]`)?.classList.add('active');
-                    return;
-                } else if (newTool === 'routes-panel') {
-                    this.showRoutesPanel();
-                    // Don't change selected tool - keep current tool active
-                    e.currentTarget.classList.remove('active');
-                    document.querySelector(`.tool-btn[data-tool="${oldTool}"]`)?.classList.add('active');
-                    return;
-                } else if (newTool === 'new-route') {
-                    this.routeHandler.createNewRoute();
-                    // Don't change selected tool - keep current tool active
-                    e.currentTarget.classList.remove('active');
-                    document.querySelector(`.tool-btn[data-tool="${oldTool}"]`)?.classList.add('active');
-                    return;
-                } else if (newTool === 'stations-panel') {
-                    this.showStationsPanel();
-                    e.currentTarget.classList.remove('active');
-                    document.querySelector(`.tool-btn[data-tool="${oldTool}"]`)?.classList.add('active');
-                    return;
-                } else if (oldTool === 'path') {
-                    // Leaving path tool mode
-                    await this.exitRouteToolMode();
-                } else if (oldTool === 'extend-path') {
-                    // Leaving extend-path tool mode
-                    await this.exitExtendRouteMode();
-                } else if (oldTool === 'cancel-path') {
-                    // Leaving cancel-path tool mode
-                    this.exitCancelRouteMode();
+                document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+                e.currentTarget.classList.add('active');
+
+                // Exit any active mode before switching tools. enterMode below
+                // also auto-exits, but we need this for tools that don't map
+                // to a mode (block, station, signal, etc.).
+                if (this.activeMode) {
+                    await this.exitMode();
+                }
+
+                // Auto-toggle block debug when entering/leaving block tools
+                const isBlockTool = ['block', 'extend-block'].includes(newTool);
+                const wasBlockTool = ['block', 'extend-block'].includes(oldTool);
+                if (isBlockTool !== wasBlockTool) {
+                    this.renderer.showBlockColorsOnly = isBlockTool;
+                    window.app.refreshNetwork();
+                }
+
+                if (newTool in modeFactories) {
+                    await this.enterMode(modeFactories[newTool]());
                 }
 
                 this.selectedTool = newTool;
                 this.previewPath = null;
-                
+
                 // Auto-expand the category containing the selected tool
                 this.expandCategoryForTool(newTool);
             });
@@ -726,44 +696,14 @@ class Editor {
             const y = e.clientY - rect.top;
             const gridPos = this.renderer.screenToGrid(x, y);
             
-            // Check if in station extend mode
-            if (this.stationExtendMode?.active) {
-                const handled = await this.handlePlatformExtendClick(gridPos.x, gridPos.y);
-                if (handled) return;
-            }
-            
-            // Check if in block extend mode
-            if (this.blockExtendMode?.active) {
-                const handled = await this.handleBlockExtendClick(gridPos.x, gridPos.y);
-                if (handled) return;
-            }
-            
-            // Check if in path tool mode
-            if (this.selectedTool === 'path') {
-                await this.handleRouteToolClick(gridPos);
-                return;
-            }
-            
-            // Check if in extend-path tool mode
-            if (this.selectedTool === 'extend-path') {
-                await this.handleExtendRouteToolClick(gridPos);
-                return;
-            }
-            
-            // Check if in cancel-path tool mode
-            if (this.selectedTool === 'cancel-path') {
-                await this.handleCancelRouteToolClick(gridPos);
-                return;
-            }
-            
-            // Check if a panel-driven map interaction is active (route
-            // waypoint-add / train-assign). It owns the click when it returns
-            // true; otherwise the click falls through (e.g. a no-op tile).
-            if (this.mapInteraction) {
-                const handled = await this.mapInteraction.onClick({
+            // Any active EditorMode gets the first shot at the click.
+            // Returning true consumes the click; false lets it fall through.
+            if (this.activeMode) {
+                const handled = await this.activeMode.onClick({
                     gridPos,
                     screenX: e.clientX,
-                    screenY: e.clientY
+                    screenY: e.clientY,
+                    event: e
                 });
                 if (handled) return;
             }
@@ -840,73 +780,53 @@ class Editor {
                     return; // Let modal/input handlers deal with it
                 }
 
-                // Exit station extend mode if active
-                if (this.stationExtendMode?.active) {
-                    this.exitPlatformExtendMode();
-                    window.showToast('Extend mode cancelled', 'info', 3000);
+                // Exit the active EditorMode if any, then revert to select.
+                if (this.activeMode) {
+                    const m = this.activeMode;
+                    await this.exitMode();
+                    if (this.selectedTool !== 'select') this._setSelectedTool('select');
+                    window.showToast(m.cancelMessage ?? `${m.name} cancelled`, 'info', 3000);
                     return;
                 }
 
-                // Exit block extend mode if active
-                if (this.blockExtendMode?.active) {
-                    this.exitBlockExtendMode();
-                    window.showToast('Extend mode cancelled', 'info', 3000);
-                    return;
-                }
-
-                // Exit path tool mode if active
-                if (this.pathToolState?.active) {
-                    await this.exitRouteToolMode();
-                    window.showToast('Route creation cancelled', 'info', 3000);
-                    return;
-                }
-
-                // Exit a panel-driven map interaction if active
-                if (this.mapInteraction) {
-                    this.exitMapInteraction();
-                    window.showToast('Cancelled', 'info', 3000);
-                    return;
-                }
-
-                // Switch to select tool
+                // Otherwise revert any non-mode tool (block, station, etc.)
+                // back to select.
                 if (this.selectedTool !== 'select') {
-                    const selectBtn = document.querySelector('.tool-btn[data-tool="select"]');
-                    if (selectBtn) {
-                        selectBtn.click(); // This triggers the existing tool switch logic
-                    }
+                    this._setSelectedTool('select');
                 }
             }
         });
     }
 
-    /**
-     * Activate a panel-driven map interaction (route waypoint-add /
-     * train-assign). Exits any prior interaction, drops a canvas tool back to
-     * select so the two don't both consume clicks, then stores and enters the
-     * new one. Interaction shape: { name, onClick(payload)->bool, onExit(),
-     * onEnter? }.
-     */
-    enterMapInteraction(interaction) {
-        if (this.mapInteraction) {
-            try { this.mapInteraction.onExit(); } catch (e) { /* best effort */ }
-            this.mapInteraction = null;
-        }
-        if (this.selectedTool !== 'select') {
-            // Triggers the tool-switch handler (which calls exitMapInteraction
-            // while the slot is still null, so it's harmless here).
-            document.querySelector('.tool-btn[data-tool="select"]')?.click();
-        }
-        this.mapInteraction = interaction;
-        if (interaction && typeof interaction.onEnter === 'function') {
-            interaction.onEnter();
+    // === ModeManager ===
+    // See the EditorMode contract documented on the activeMode field in the
+    // constructor. Use these helpers to enter/exit any drawing or picking
+    // mode on the layout.
+
+    async enterMode(mode) {
+        if (this.activeMode) await this.exitMode();
+        this._setSelectedTool(mode.toolName ?? 'select');
+        this.activeMode = mode;
+        if (mode.onEnter) {
+            try { await mode.onEnter(); } catch (e) { console.error('[ModeManager] onEnter threw', e); }
         }
     }
 
-    exitMapInteraction() {
-        if (!this.mapInteraction) return;
-        const interaction = this.mapInteraction;
-        this.mapInteraction = null;
-        try { interaction.onExit(); } catch (e) { /* best effort */ }
+    // Exits the active mode and runs its onExit. Does NOT change selectedTool —
+    // the caller decides what tool to leave the editor in (ESC reverts to
+    // 'select'; the tool-button handler sets the new tool itself).
+    async exitMode() {
+        if (!this.activeMode) return;
+        const m = this.activeMode;
+        this.activeMode = null;     // clear first so onExit can re-enter another mode
+        try { await m.onExit(); } catch (e) { console.error('[ModeManager] onExit threw', e); }
+    }
+
+    // Pure DOM + state update. Does NOT call enter/exitMode (no recursion).
+    _setSelectedTool(toolName) {
+        this.selectedTool = toolName;
+        document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+        document.querySelector(`.tool-btn[data-tool="${toolName}"]`)?.classList.add('active');
     }
 
     setupBlockManager() {
@@ -1705,9 +1625,10 @@ class Editor {
     }
 
     async handleRightClick(gridPos) {
-        // Check if we're in path tool mode - cancel path creation
-        if (this.selectedTool === 'path' && this.pathToolState?.active) {
-            this.resetRouteToolState();
+        // Scrap an in-flight path selection but stay in the path tool so the
+        // user can immediately start a new one.
+        if (this.activeMode?.name === 'Route creation' && this.pathToolState?.active) {
+            await this.resetRouteToolState();
             window.showToast('Route creation cancelled', 'info', 3000);
             return;
         }

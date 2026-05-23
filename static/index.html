@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rail Control System</title>
     <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="/static/vendor/tabler/tabler-icons.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 </head>
 <body>
@@ -65,23 +66,23 @@
                         <div class="tool-category-label">General</div>
                         <div class="tool-row">
                             <button class="tool-btn active" data-tool="select" title="Select">
-                                <span class="tool-icon">↖</span> Select
+                                <i class="ti ti-pointer tool-icon"></i> Select
                             </button>
                             <button class="tool-btn" data-tool="eraser" title="Eraser">
-                                <span class="tool-icon">⌫</span> Eraser
+                                <i class="ti ti-eraser tool-icon"></i> Eraser
                             </button>
                         </div>
                     </div>
 
-                    <!-- Row 2: Track -->
+                    <!-- Row 2: Network -->
                     <div class="tool-category">
-                        <div class="tool-category-label">Track</div>
+                        <div class="tool-category-label">Network</div>
                         <div class="tool-row">
                             <button class="tool-btn" data-tool="track" title="Track">
-                                <span class="tool-icon">═</span> Track
+                                <i class="ti ti-track tool-icon"></i> Track
                             </button>
                             <button class="tool-btn" data-tool="signal" title="Signal">
-                                <span class="tool-icon">◉</span> Signal
+                                <i class="ti ti-traffic-lights tool-icon"></i> Signal
                             </button>
                         </div>
                     </div>
@@ -90,17 +91,17 @@
                     <div class="tool-category">
                         <div class="tool-category-label">Platform</div>
                         <div class="tool-row">
-                            <button class="tool-btn" data-tool="platform" title="Platform">
-                                <span class="tool-icon">▤</span> Platform
+                            <button class="tool-btn" data-tool="platform" title="Place a Platform">
+                                <i class="ti ti-plus tool-icon"></i> New
                             </button>
                             <button class="tool-btn" data-tool="extend-platform" title="Extend Existing Platform">
-                                <span class="tool-icon">＋</span> Extend
+                                <i class="ti ti-arrows-horizontal tool-icon"></i> Extend
                             </button>
                             <button class="tool-btn" data-tool="remove-platform-tile" title="Remove Platform Tile">
-                                <span class="tool-icon">−</span> Remove
+                                <i class="ti ti-minus tool-icon"></i> Remove
                             </button>
                             <button class="tool-btn" data-tool="stations-panel" title="Logical Station Groups">
-                                <span class="tool-icon">☰</span> Stations
+                                <i class="ti ti-home tool-icon"></i> Stations
                             </button>
                         </div>
                     </div>
@@ -110,32 +111,32 @@
                         <div class="tool-category-label">Block</div>
                         <div class="tool-row">
                             <button class="tool-btn" data-tool="block" title="Create New Block">
-                                <span class="tool-icon">▣</span> Block
+                                <i class="ti ti-plus tool-icon"></i> New
                             </button>
                             <button class="tool-btn" data-tool="extend-block" title="Extend Existing Block">
-                                <span class="tool-icon">＋</span> Extend
+                                <i class="ti ti-arrows-horizontal tool-icon"></i> Extend
                             </button>
                             <button class="tool-btn" data-tool="remove-block-tile" title="Remove Block Tile">
-                                <span class="tool-icon">−</span> Remove
+                                <i class="ti ti-minus tool-icon"></i> Remove
                             </button>
                         </div>
                     </div>
 
-                    <!-- Row 5: Dispatch -->
+                    <!-- Row 5: Path -->
                     <div class="tool-category">
-                        <div class="tool-category-label">Dispatch</div>
+                        <div class="tool-category-label">Path</div>
                         <div class="tool-row">
                             <button class="tool-btn" data-tool="path" title="Create Path Between Blocks">
-                                <span class="tool-icon">⇋</span> Path
+                                <i class="ti ti-plus tool-icon"></i> New
                             </button>
                             <button class="tool-btn" data-tool="extend-path" title="Extend Existing Path">
-                                <span class="tool-icon">＋</span> Extend
+                                <i class="ti ti-arrows-horizontal tool-icon"></i> Extend
                             </button>
                             <button class="tool-btn" data-tool="cancel-path" title="Cancel Path">
-                                <span class="tool-icon">✕</span> Cancel
+                                <i class="ti ti-route-x tool-icon"></i> Cancel
                             </button>
                             <button class="tool-btn" data-tool="paths-panel" title="View Active Paths">
-                                <span class="tool-icon">☰</span> Paths
+                                <i class="ti ti-route tool-icon"></i> Paths
                             </button>
                         </div>
                     </div>
@@ -145,10 +146,10 @@
                         <div class="tool-category-label">Train</div>
                         <div class="tool-row">
                             <button class="tool-btn" data-tool="add-train" title="Add New Train">
-                                <span class="tool-icon">＋</span> Add
+                                <i class="ti ti-plus tool-icon"></i> New
                             </button>
                             <button class="tool-btn" data-tool="train-panel" title="Train Management">
-                                <span class="tool-icon">☰</span> Trains
+                                <i class="ti ti-train tool-icon"></i> Trains
                             </button>
                         </div>
                     </div>
@@ -158,13 +159,13 @@
                         <div class="tool-category-label">Route</div>
                         <div class="tool-row">
                             <button class="tool-btn" data-tool="new-route" title="Create New Route">
-                                <span class="tool-icon">＋</span> New Route
+                                <i class="ti ti-plus tool-icon"></i> New
                             </button>
                             <button class="tool-btn" data-tool="routes-panel" title="Train Route Editor">
-                                <span class="tool-icon">⇄</span> Routes
+                                <i class="ti ti-map-route tool-icon"></i> Routes
                             </button>
                             <button class="tool-btn" data-tool="schedules-panel" title="View Schedules">
-                                <span class="tool-icon">◷</span> Schedules
+                                <i class="ti ti-calendar tool-icon"></i> Schedules
                             </button>
                         </div>
                     </div>

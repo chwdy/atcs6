@@ -918,7 +918,7 @@ class RouteEditorHandler {
         const addTaskMapBtn = document.getElementById('add-task-map-btn');
         if (addTaskMapBtn) {
             addTaskMapBtn.onclick = () =>
-                this.editor.enterMapInteraction(this._waypointAddInteraction());
+                this.editor.enterMode(this.buildWaypointAddMode());
         }
 
         // Activate/Deactivate buttons
@@ -1039,7 +1039,7 @@ class RouteEditorHandler {
         const assignTrainMapBtn = document.getElementById('assign-train-map-btn');
         if (assignTrainMapBtn) {
             assignTrainMapBtn.onclick = () =>
-                this.editor.enterMapInteraction(this._trainAssignInteraction());
+                this.editor.enterMode(this.buildTrainAssignMode());
         }
 
         const forceCheckbox = document.getElementById('assign-train-force');
@@ -1047,7 +1047,7 @@ class RouteEditorHandler {
             forceCheckbox.onchange = (e) => {
                 this._assignForce = !!e.target.checked;
                 // Live-update the eligible-train highlight when toggled mid-mode.
-                if (this.editor.mapInteraction?.name === 'route-train-assign') {
+                if (this.editor.activeMode?.name === 'route-train-assign') {
                     this.refreshAssignCandidates();
                 }
             };
@@ -1087,12 +1087,13 @@ class RouteEditorHandler {
     // ===================================================================
 
     /**
-     * Build the shared map-interaction object for adding waypoints by clicking
-     * the layout. Registered via `editor.enterMapInteraction(...)`.
+     * Build the EditorMode for adding waypoints by clicking the layout.
+     * Activated via `editor.enterMode(...)`.
      */
-    _waypointAddInteraction() {
+    buildWaypointAddMode() {
         return {
             name: 'route-waypoint-add',
+            cancelMessage: 'Cancelled',
             onEnter: () => {
                 this._setStatus('Route: click a tile to add a waypoint — reachable tiles are highlighted. Esc to finish.');
                 this.refreshWaypointFeasibility();
@@ -1296,9 +1297,10 @@ class RouteEditorHandler {
     // Map-driven train assignment
     // ===================================================================
 
-    _trainAssignInteraction() {
+    buildTrainAssignMode() {
         return {
             name: 'route-train-assign',
+            cancelMessage: 'Cancelled',
             onEnter: () => {
                 this.refreshAssignCandidates();
             },
