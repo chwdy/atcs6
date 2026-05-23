@@ -653,16 +653,25 @@ class TestBlockCurrentVoltage:
         block = Block(block_id="BLK_001")
         assert block.current_voltage == 0.0
 
-    def test_block_current_voltage_serialization(self):
-        """Test current_voltage is serialized."""
+    def test_block_current_voltage_in_frontend_payload_but_not_persisted(self):
+        """`current_voltage` is exposed in the live frontend payload (to_dict)
+        but is runtime state (design_new.md Out of Scope: "Persistence /
+        save-load of runtime state | In-memory only"), so from_dict must not
+        restore it from disk — voltage defaults back to 0.0.
+        """
         block = Block(block_id="BLK_001")
         block.current_voltage = 8.5
 
+        # Frontend payload still carries the live value.
         data = block.to_dict()
         assert data["current_voltage"] == 8.5
 
+        # Reload (the persistence path uses Block.to_layout_dict which omits
+        # current_voltage entirely; this stricter case feeds the legacy
+        # to_dict output through from_dict and confirms runtime fields are
+        # still dropped).
         restored = Block.from_dict(data)
-        assert restored.current_voltage == 8.5
+        assert restored.current_voltage == 0.0
 
 
 # =============================================================================

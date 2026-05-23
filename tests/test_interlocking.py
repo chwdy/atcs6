@@ -137,7 +137,11 @@ class TestSwitchLocking:
         assert lock_entry["train_id"] == "TRAIN_A"
         assert lock_entry["locked_state"] == 1
 
-    def test_switch_deserialization_restores_lock_state(self):
+    def test_switch_deserialization_ignores_runtime_locks(self):
+        """Runtime lock state is not persisted (design_new.md Out of Scope:
+        "Persistence / save-load of runtime state | In-memory only"), so
+        legacy snapshots that carry `locks` must be loaded clean.
+        """
         from switch import Switch
 
         data = {
@@ -154,10 +158,8 @@ class TestSwitchLocking:
             ],
         }
         switch = Switch.from_dict(data)
-        assert switch.is_locked() is True
-        # v1: 2-tuple key (path_id, source_switch_id).
-        assert ("PATH_1", None) in switch.locks
-        assert switch.locks[("PATH_1", None)] == ("TRAIN_A", 1)
+        assert switch.is_locked() is False
+        assert switch.locks == {}
 
 
 class TestSwitchLockingInRoutes:

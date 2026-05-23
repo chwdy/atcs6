@@ -61,7 +61,7 @@ strips, banner tints, and badge backgrounds. Don't introduce new hues.
 | Token | Value | Use |
 |-------|-------|-----|
 | `--control-height-xs` | `28px` | Default — every control inside a panel (buttons, selects, text/number inputs, segments, icon buttons) |
-| `--control-height-sm` | `32px` | Top-level forms outside the panel shell, larger CTAs |
+| `--control-height-sm` | `32px` | Top-level forms **outside the panel shell** only, larger CTAs — do not use inside sidebar panels |
 | `--control-radius-sm` | `6px` | All buttons, panel corners, cards |
 
 ### Type
@@ -126,13 +126,13 @@ border-color: var(--accent-color);
 color: var(--accent-hover);
 ```
 
-Use a single Unicode glyph for icon buttons (`↻` refresh, `⊞` expand, `⊟` collapse, `{ }` JSON, `×` close). When you need a label, keep it ≤ 4 characters in mono.
+Use a single Unicode glyph for icon buttons (`↻` refresh, `⊞` expand, `⊟` collapse, `×` close). When there is no single-codepoint glyph for the action, use a short mono label instead (≤ 4 characters, e.g. `JSON`).
 
 ### Flat ghost (in-container button)
 
-For buttons sitting inside a container that already groups them — a header
-strip, a toolbar row, a segmented cluster, a tool sidebar — drop the
-per-button border. Affordance comes from a hover bg-tint, not a hairline.
+For buttons sitting inside a grouped container — a segmented cluster, a
+toolbar row, a tool sidebar — drop the per-button border. Affordance comes
+from a hover bg-tint, not a hairline.
 
 ```css
 height: var(--control-height-xs);
@@ -150,10 +150,18 @@ background-color: rgba(130, 87, 229, 0.18);
 color: var(--accent-hover);
 ```
 
+This pattern requires the container's own background to be `--bg-dark` or
+`--bg-panel` — the hover tint (`--bg-hover`) must read against something
+darker for the state to be visible. Never place flat ghosts directly on a
+`--bg-hover` surface (such as the header strip itself); always wrap them in
+a segmented cluster or toolbar row that carries its own `--bg-dark` fill.
+When a header needs buttons, they live inside a bordered segmented container
+inside the header — not free-floating on the header's `--bg-hover` surface.
+
 Rule of thumb: **the container is bordered, or the buttons are bordered —
 never both.** When a button stands alone on the panel body (no container
-row around it), use the regular ghost above. When it lives in a row with
-siblings inside a header, toolbar, or grouped cluster, use the flat ghost.
+row around it), use the regular ghost above. When it lives inside a
+`--bg-dark` grouped cluster or `--bg-panel` toolbar, use the flat ghost.
 
 ### Tool button (icon grid tile)
 
@@ -340,7 +348,7 @@ Three patterns for showing a row's status:
 3. **Source badge**: a small color-coded pill (used by inspector to show
    `stored / property / latch / external`). Background is the accent color
    at full opacity, text is a deep complementary color (e.g.
-   `var(--accent-blue)` bg + `#001a22` text).
+   `--info-color` bg + `#001a22` text).
 
 ---
 
@@ -406,7 +414,13 @@ sizes across a single row.
 
 ## 11. Cards
 
-Bordered content containers used inside panel bodies. Four variants by use:
+Bordered content containers used inside panel bodies. Four variants by use.
+
+**Action buttons inside a card go flat.** The card already carries the
+border, so a 1px-bordered Edit / Delete button inside would read as a
+box-in-a-box. Use the Flat ghost pattern from §3 — transparent bg, no
+border, hover bg-tint as the affordance. Destructive actions keep their
+danger-color text and pick up a 10%-tinted danger bg on hover.
 
 ### Standard card
 
@@ -453,9 +467,15 @@ important state right now" — train OBC power state, current task.
 ```css
 padding: 10px 12px;
 background-color: var(--bg-hover);
-border-left: 3px solid var(--border-color);  /* state-driven color */
+border-left: 3px solid <state-driven accent>;  /* never --border-color */
 border-radius: var(--control-radius-sm);
 ```
+
+Because this component exists to surface the most important state right now,
+its left-border always carries a meaningful accent color from the palette —
+initialize it to whatever the component's idle or default state maps to.
+Using `--border-color` here is wrong: it makes the block visually
+indistinguishable from a standard card border and defeats the callout intent.
 
 For an alert state, layer a horizontal gradient wash over the bg:
 `linear-gradient(90deg, rgba(232, 63, 91, 0.10), var(--bg-hover) 60%)`
@@ -468,7 +488,10 @@ A card whose body collapses behind a native `<details>` / `<summary>`
 toggle. Used for "I might want to look at this, but not by default"
 (debug zone, advanced settings). The card itself follows the Standard
 card styling. Summary row is 10px UPPERCASE weight-600 `--text-secondary`
-with a rotating `▸` caret that points down when open.
+with a rotating `▸` caret that points down when open. (`--text-secondary`
+rather than the `--text-tertiary` used for field labels: a disclosure
+summary is a structural toggle that controls section visibility, not a
+field descriptor, so it sits one brightness tier higher.)
 
 Reference: `.tc-disclosure` in
 [features/train-control.css](../static/css/features/train-control.css).
@@ -500,8 +523,9 @@ max-width: 520px;
 z-index: 1001;
 ```
 
-The header strip reuses the purple gradient from the secondary sidebar
-header so floating dialogs feel like they belong to the same product.
+The header strip uses the same purple gradient as `.secondary-sidebar-header`
+(`background: linear-gradient(135deg, rgba(130, 87, 229, 0.1), rgba(130, 87, 229, 0.05))`)
+so floating dialogs feel like they belong to the same product.
 Reference: `.block-modal` in
 [components/common.css](../static/css/components/common.css).
 
@@ -549,10 +573,10 @@ Reference: `.route-resource-picker` in
 
 ## 13. Don'ts
 
-- **No emojis in chrome.** Single Unicode glyphs (`▣ ⇋ 🚦 🚉` for content, `↻ ⊞ ⊟ ×` for chrome) are OK. Don't sprinkle 📋 / 📊 / 🚨 across buttons — they read as noise.
+- **No color emoji anywhere in the UI.** Monochrome Unicode symbols (`↻ ⊞ ⊟ × ▸ ▣ ⇋`) render in the CSS `color` property and are fine. Color emoji (`🚦 🚉 📋 📊 🚨`) render as color pictographs regardless of `color:` and fight with the token palette — never use them in buttons, headers, labels, or any panel chrome. Quick test: if setting `color: red` on the character turns it red, it's a monochrome symbol and is OK; if it stays a colorful picture, it's an emoji and is not.
 - **No new colors.** If you can't reach for a token, the design doesn't have a slot for it yet — pause and discuss instead of inventing.
 - **No solid filled buttons in panels.** Use the ghost + accent-tint pattern.
-- **Don't border the container *and* every child.** If the container has a border (segmented cluster, tool grid, tab strip), the children inside are flat ghosts. If the children need their own borders (standalone buttons on the panel body), the container is unbordered. Doubling the borders reads as fenced-off boxes inside fenced-off boxes — the rendered weight is double what the structure needs.
+- **Don't border the container *and* every child.** If the container has a border (segmented cluster, tool grid, tab strip, card), the children inside are flat ghosts. If the children need their own borders (standalone buttons on the panel body), the container is unbordered. Doubling the borders reads as fenced-off boxes inside fenced-off boxes — the rendered weight is double what the structure needs.
 - **No nested panels.** A panel inside a panel inside a panel is a sign the structure is wrong.
 - **No multi-paragraph banners.** A footer banner is a single line of diagnostic text. Anything longer belongs in a tooltip or a disclosure.
 - **No `box-shadow` for emphasis.** Use border + background tint. The only shadow tokens are the panel drop-shadows (`0 10px 30px rgba(0,0,0,0.45)` for floating, `0 -6px 20px rgba(0,0,0,0.35)` for bottom-anchored).
@@ -563,7 +587,7 @@ Reference: `.route-resource-picker` in
 
 When in doubt, copy the structure of one of these:
 
-- **Floating debug panel** → [inspector.css](../static/css/features/inspector.css) — header + toolbar + scrolling body + footer, draggable, resizable. Header has no border; relies on `--bg-hover` against `--bg-panel`. Toolbar keeps `border-bottom` because it sits on `--bg-panel` (same as body).
+- **Floating debug panel** → [inspector.css](../static/css/features/inspector.css) — header + toolbar + scrolling body + footer, draggable, resizable. Header has no border; relies on `--bg-hover` against `--bg-panel`. Toolbar keeps `border-bottom` because it shares `--bg-panel` with the body (per the §2 toolbar rule: same surface → hairline separator needed).
 - **Bottom dock** → [train-monitor.css](../static/css/features/train-monitor.css) — header + multi-column body + status footer, full-width, fixed height. Header has no border; the segmented view-distance control inside the header is a bordered container of flat ghosts (no internal dividers).
 - **Sidebar form** → [train-control.css](../static/css/features/train-control.css) — sectioned vertical stack inside a secondary sidebar. Status rows use the 3px left-border accent only, no surrounding 1px box.
 - **Tab strip** → [layout/shell.css](../static/css/layout/shell.css) `.secondary-sidebar-tabs` — the row has one `border-bottom`; tabs themselves are flat with an accent underline on active.

@@ -606,24 +606,19 @@ class Train:
         """
         Reconstruct a Train from a persisted snapshot.
 
-        Per design_new.md ~line 1292, only persistent/configuration state
-        loads here. Live runtime fields (`current_speed`, `state`,
-        `active_cab`, `travel_direction`, `ato_running`, `control_mode`,
-        `wait_reason`, `emergency_brake`, `is_emergency_braking`) live on
+        Per design_new.md, only persistent/configuration state loads here.
+        Live runtime fields (position/span, current_speed, state,
+        active_cab, travel_direction, ato_running, control_mode,
+        wait_reason, emergency_brake, is_emergency_braking) live on
         `TrainController` and are seeded through `add_train(...)` or via
-        explicit controller commands; legacy values present in saved
-        snapshots are intentionally ignored on load.
+        explicit controller commands; any such values present in legacy
+        saved snapshots are silently ignored on load.
         """
         train = cls(
             train_id=data.get("id", ""),
             max_speed=data.get("max_speed", 100.0),
             num_cars=int(data.get("num_cars", 1)),
         )
-
-        if "position" in data and isinstance(data["position"], dict):
-            pos_data = data["position"]
-            if "end_a" in pos_data:
-                train.position = TrainPosition.from_dict(pos_data)
 
         train.model = data.get("model", "")
         train.car_number = data.get("car_number", "")

@@ -68,14 +68,30 @@ class StateManager {
         this._pendingNotifications = [];
 
         // Simulation clock (seconds since start) — refreshed from
-        // /api/network payload. Top-level scalar, not a subscribable entity;
-        // panels read this when they re-render off a controller update.
+        // /api/network payload. Subscribers registered via subscribeSimClock()
+        // are called on every update so panels can track the clock even when
+        // no entity changes in that poll cycle.
         this.simulationTime = 0.0;
+        this._clockSubscribers = new Set();
     }
 
     // ═══════════════════════════════════════════════════════════════════
     // SUBSCRIPTION API
     // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Subscribe to simulation clock updates.
+     * The callback receives the new simulationTime (seconds) on every poll
+     * cycle, even when no entity data has changed. This allows clock displays
+     * to stay live after the train reaches a stable resting state.
+     *
+     * @param {Function} callback - Called with (simulationTime: number)
+     * @returns {Function} Unsubscribe function
+     */
+    subscribeSimClock(callback) {
+        this._clockSubscribers.add(callback);
+        return () => this._clockSubscribers.delete(callback);
+    }
 
     /**
      * Subscribe to changes for a specific entity.
@@ -327,6 +343,11 @@ class StateManager {
         // subscriber callback firing during the flush sees the new clock.
         if (typeof network.simulation_time === 'number') {
             this.simulationTime = network.simulation_time;
+            for (const cb of this._clockSubscribers) {
+                try { cb(this.simulationTime); } catch (e) {
+                    console.error('[StateManager] Clock subscriber error:', e);
+                }
+            }
         }
 
         try {

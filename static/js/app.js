@@ -63,14 +63,17 @@ class App {
         });
 
         document.querySelectorAll('.speed-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const speed = parseFloat(e.target.dataset.speed);
-                window.api.controlSimulation('set_speed', speed);
-                
-                // Update active state
-                document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
-                e.target.classList.add('active');
-                
+            btn.addEventListener('click', async (e) => {
+                const speed = parseFloat(e.currentTarget.dataset.speed);
+                if (!Number.isFinite(speed)) return;
+                try {
+                    await window.api.controlSimulation('set_speed', speed);
+                } catch (err) {
+                    console.error('[App] set_speed error:', err);
+                    window.showToast(`Failed to set speed: ${err.message}`, 'error', 2000);
+                    return;
+                }
+                this.syncSpeedPresetUI(speed);
                 window.showToast(`Speed set to ${speed}x`, 'info', 1000);
             });
         });
@@ -135,16 +138,32 @@ class App {
     updatePlaybackUI(isPlaying) {
         const btn = document.getElementById('btn-play-pause');
         if (!btn) return;
-        
+
         if (isPlaying) {
             btn.innerHTML = '<span class="icon">⏸</span> Pause';
             btn.classList.remove('btn-primary');
-            btn.classList.add('btn-secondary'); 
+            btn.classList.add('btn-secondary');
         } else {
             btn.innerHTML = '<span class="icon">▶</span> Play';
             btn.classList.remove('btn-secondary');
             btn.classList.add('btn-primary');
         }
+    }
+
+    syncSpeedPresetUI(serverSpeed) {
+        const buttons = document.querySelectorAll('.speed-btn');
+        if (!buttons.length) return;
+        let match = null;
+        for (const btn of buttons) {
+            if (Math.abs(parseFloat(btn.dataset.speed) - serverSpeed) < 1e-6) {
+                match = btn;
+                break;
+            }
+        }
+        if (!match) return;
+        if (match.classList.contains('active')) return;
+        buttons.forEach(b => b.classList.remove('active'));
+        match.classList.add('active');
     }
 
     setupLayoutControls() {
@@ -512,6 +531,11 @@ class App {
                 this.isSimulationRunning = network.simulation_running;
                 this.updatePlaybackUI(this.isSimulationRunning);
             }
+
+            // Sync speed-preset active state with server state
+            if (typeof network.simulation_speed === 'number') {
+                this.syncSpeedPresetUI(network.simulation_speed);
+            }
         } catch (e) {
             console.error('[App] Failed to refresh network:', e);
         }
@@ -606,45 +630,97 @@ class App {
         const dispatcher = window.stateManager.getDispatcherProgress(train.id);
         const span = controller?.span || null;
 
-        let html = '<div class="train-debug-panel info-display-compact" style="background: transparent; border: none; padding: 0;">';
-
-        html += `<div class="train-debug-row"><span class="train-debug-label">Train ID:</span><span class="train-debug-value">${train.id}</span></div>`;
-        html += `<div class="train-debug-row"><span class="train-debug-label">State:</span><span class="train-debug-value">${controller?.state || 'unknown'}</span></div>`;
-
-        if (dispatcher?.resource_sequence && dispatcher.resource_sequence.length > 0) {
-            html += `<div class="train-debug-subsection">Resource Sequence (${dispatcher.resource_sequence.length})</div>`;
-            html += `<div class="train-debug-path">`;
-            dispatcher.resource_sequence.forEach((entry, idx) => {
-                const isCurrent = idx === dispatcher.current_resource_index;
-                const cls = isCurrent ? 'train-debug-path-current' : '';
-                html += `<span class="train-debug-path-step ${cls}">${entry.resource_type}: ${entry.resource_id} (${entry.entry_edge || '?'}→${entry.exit_edge || '?'})</span>`;
-            });
-            html += `</div>`;
+        // Build the skeleton once. Subsequent calls reuse the same DOM nodes so
+        // the Resource Sequence list's scroll position is preserved across the
+        // 200ms sim poll + every controller/dispatcher subscription tick.
+        let panel = controlPanelDebug.querySelector('.train-debug-panel');
+        if (!panel) {
+            controlPanelDebug.innerHTML = `
+                <div class="train-debug-panel info-display-compact" style="background: transparent; border: none; padding: 0;">
+                    <div class="train-debug-row"><span class="train-debug-label">Train ID:</span><span class="train-debug-value" data-debug-field="train-id"></span></div>
+                    <div class="train-debug-row"><span class="train-debug-label">State:</span><span class="train-debug-value" data-debug-field="state"></span></div>
+                    <div data-debug-block="resource-sequence"></div>
+                    <div data-debug-block="occupied-tiles"></div>
+                    <div data-debug-block="occupied-blocks"></div>
+                </div>
+            `;
+            panel = controlPanelDebug.querySelector('.train-debug-panel');
         }
 
-        if (span?.occupied_tiles && span.occupied_tiles.length > 0) {
-            html += `<div class="train-debug-subsection">`;
-            html += `<div class="train-debug-subsection-title">Occupied Tiles (${span.occupied_tiles.length})</div>`;
-            html += `<div class="train-debug-tiles">`;
-            span.occupied_tiles.forEach(t => {
-                html += `<span class="train-debug-tile">(${t[0]}, ${t[1]})</span>`;
-            });
-            html += `</div></div>`;
+        panel.querySelector('[data-debug-field="train-id"]').textContent = train.id;
+        panel.querySelector('[data-debug-field="state"]').textContent = controller?.state || 'unknown';
+
+        // Resource sequence: rebuild children only when the sequence identity
+        // changes (path reassigned / extended). Otherwise just toggle the
+        // `train-debug-path-current` class so scroll position survives.
+        const seqBlock = panel.querySelector('[data-debug-block="resource-sequence"]');
+        const seq = dispatcher?.resource_sequence;
+        if (seq && seq.length > 0) {
+            const first = seq[0];
+            const last = seq[seq.length - 1];
+            const sig = `${dispatcher.path_id || ''}|${seq.length}|${first.resource_id}|${last.resource_id}`;
+            let pathContainer = seqBlock.querySelector('.train-debug-path');
+            if (!pathContainer || seqBlock.dataset.sig !== sig) {
+                let html = `<div class="train-debug-subsection">Resource Sequence (${seq.length})</div>`;
+                html += `<div class="train-debug-path">`;
+                seq.forEach((entry) => {
+                    html += `<span class="train-debug-path-step">${entry.resource_type}: ${entry.resource_id} (${entry.entry_edge || '?'}→${entry.exit_edge || '?'})</span>`;
+                });
+                html += `</div>`;
+                seqBlock.innerHTML = html;
+                seqBlock.dataset.sig = sig;
+                pathContainer = seqBlock.querySelector('.train-debug-path');
+            }
+            const steps = pathContainer.children;
+            const currentIdx = dispatcher.current_resource_index;
+            for (let i = 0; i < steps.length; i++) {
+                steps[i].classList.toggle('train-debug-path-current', i === currentIdx);
+            }
+        } else if (seqBlock.dataset.sig) {
+            seqBlock.innerHTML = '';
+            delete seqBlock.dataset.sig;
         }
 
-        if (span?.occupied_blocks && span.occupied_blocks.length > 0) {
-            html += `<div class="train-debug-subsection">`;
-            html += `<div class="train-debug-subsection-title">Occupied Blocks (${span.occupied_blocks.length})</div>`;
-            html += `<div class="train-debug-tiles">`;
-            span.occupied_blocks.forEach(b => {
-                html += `<span class="train-debug-tile" style="color: var(--accent-purple);">${b}</span>`;
-            });
-            html += `</div></div>`;
+        const tilesBlock = panel.querySelector('[data-debug-block="occupied-tiles"]');
+        const tiles = span?.occupied_tiles;
+        if (tiles && tiles.length > 0) {
+            const sig = `${tiles.length}|${tiles.map(t => `${t[0]},${t[1]}`).join('|')}`;
+            if (tilesBlock.dataset.sig !== sig) {
+                let html = `<div class="train-debug-subsection">`;
+                html += `<div class="train-debug-subsection-title">Occupied Tiles (${tiles.length})</div>`;
+                html += `<div class="train-debug-tiles">`;
+                tiles.forEach(t => {
+                    html += `<span class="train-debug-tile">(${t[0]}, ${t[1]})</span>`;
+                });
+                html += `</div></div>`;
+                tilesBlock.innerHTML = html;
+                tilesBlock.dataset.sig = sig;
+            }
+        } else if (tilesBlock.dataset.sig) {
+            tilesBlock.innerHTML = '';
+            delete tilesBlock.dataset.sig;
         }
 
-        html += '</div>';
+        const blocksBlock = panel.querySelector('[data-debug-block="occupied-blocks"]');
+        const blocks = span?.occupied_blocks;
+        if (blocks && blocks.length > 0) {
+            const sig = `${blocks.length}|${blocks.join('|')}`;
+            if (blocksBlock.dataset.sig !== sig) {
+                let html = `<div class="train-debug-subsection">`;
+                html += `<div class="train-debug-subsection-title">Occupied Blocks (${blocks.length})</div>`;
+                html += `<div class="train-debug-tiles">`;
+                blocks.forEach(b => {
+                    html += `<span class="train-debug-tile" style="color: var(--accent-purple);">${b}</span>`;
+                });
+                html += `</div></div>`;
+                blocksBlock.innerHTML = html;
+                blocksBlock.dataset.sig = sig;
+            }
+        } else if (blocksBlock.dataset.sig) {
+            blocksBlock.innerHTML = '';
+            delete blocksBlock.dataset.sig;
+        }
 
-        controlPanelDebug.innerHTML = html;
         controlPanelDebug.classList.remove('hidden');
     }
 

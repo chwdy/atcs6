@@ -10,6 +10,10 @@ class TrainMonitor {
         this.speedLimitReasonEl = document.getElementById('monitor-speed-limit-reason');
         this.speedCmsEl = document.getElementById('monitor-speed-cms');
         this.clearanceEl = document.getElementById('monitor-clearance');
+        this.dwellRemainingContainer = document.getElementById('monitor-dwell-remaining-container');
+        this.dwellRemainingEl = document.getElementById('monitor-dwell-remaining');
+        this.dwellFinishContainer = document.getElementById('monitor-dwell-finish-container');
+        this.dwellFinishEl = document.getElementById('monitor-dwell-finish');
         this.upcomingEl = document.getElementById('monitor-upcoming');
         this.upcomingContainer = document.getElementById('monitor-upcoming-container');
         this.upcomingCountEl = document.getElementById('monitor-upcoming-count');
@@ -194,6 +198,14 @@ class TrainMonitor {
         }
     }
 
+    _formatSimClock(totalSec) {
+        const t = Math.max(0, Math.floor(totalSec));
+        const h = Math.floor(t / 3600);
+        const m = Math.floor((t % 3600) / 60);
+        const s = t % 60;
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
     handleMouseMove(e) {
         if (!this.lookaheadData) return;
 
@@ -341,10 +353,28 @@ class TrainMonitor {
             }
         }
 
+        // Dwell task: show remaining time and target finish time
+        const isDwell = payload?.current_task_kind === 'dwell';
+        const dwellRemaining = payload?.dwell_remaining_sec ?? null;
+        const dwellFinishSimSec = payload?.dwell_finish_sim_sec ?? null;
+        if (isDwell && dwellRemaining !== null) {
+            if (this.dwellRemainingEl) this.dwellRemainingEl.textContent = Math.ceil(dwellRemaining);
+            this.dwellRemainingContainer?.classList.remove('hidden');
+            if (dwellFinishSimSec !== null) {
+                if (this.dwellFinishEl) this.dwellFinishEl.textContent = this._formatSimClock(dwellFinishSimSec);
+                this.dwellFinishContainer?.classList.remove('hidden');
+            } else {
+                this.dwellFinishContainer?.classList.add('hidden');
+            }
+        } else {
+            this.dwellRemainingContainer?.classList.add('hidden');
+            this.dwellFinishContainer?.classList.add('hidden');
+        }
+
         this.updateUpcomingElements(this.lookaheadData);
         this.render();
     }
-    
+
     _displayConfigurationWarnings(warnings, trainId) {
         // Display configuration warnings via toast notifications.
         // Track which warnings we've already shown to avoid spam

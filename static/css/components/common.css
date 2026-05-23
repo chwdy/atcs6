@@ -421,6 +421,52 @@
     color: var(--accent-hover);
 }
 
+/* Flat actions inside bordered cards — per DESIGN_LANGUAGE.md §3 / §11.
+   The card is bordered, so the action buttons inside go flat (no border,
+   transparent bg); affordance comes from the hover bg-tint. Covers the
+   summary-row family (Properties pane in the editor sidebar) and the
+   route-row / path-row list cards. */
+.signal-summary-row .edit-btn,
+.block-summary-row .edit-btn,
+.station-summary-row .edit-btn,
+.switch-summary-row .edit-btn,
+.train-summary-row .edit-btn,
+.route-row .edit-btn,
+.route-row .btn,
+.path-row .edit-btn,
+.path-row .btn {
+    background-color: transparent;
+    border: none;
+}
+
+.signal-summary-row .edit-btn:hover,
+.block-summary-row .edit-btn:hover,
+.station-summary-row .edit-btn:hover,
+.switch-summary-row .edit-btn:hover,
+.train-summary-row .edit-btn:hover,
+.route-row .edit-btn:hover,
+.route-row .btn:hover:not(:disabled),
+.path-row .edit-btn:hover,
+.path-row .btn:hover:not(:disabled) {
+    background-color: var(--bg-hover);
+    color: var(--accent-hover);
+    border-color: transparent;
+}
+
+/* Destructive actions inside cards keep their danger hue (so they still read
+   as "this deletes things") but lose the solid danger fill. */
+.route-row .btn-danger,
+.path-row .btn-danger {
+    color: var(--danger-color);
+    background-color: transparent;
+}
+
+.route-row .btn-danger:hover:not(:disabled),
+.path-row .btn-danger:hover:not(:disabled) {
+    background-color: rgba(232, 63, 91, 0.10);
+    color: var(--danger-color);
+}
+
 /* Trains Panel */
 .trains-list {
     max-height: 200px;

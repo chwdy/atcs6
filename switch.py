@@ -355,9 +355,11 @@ class Switch(TrackResource):
     # ========================================================================
 
     def to_dict(self, network: "RailwayNetwork" = None) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization.
+        """Convert to dictionary for the live frontend payload.
 
-        Note: `simulation_controller` is intentionally NOT serialized.
+        Includes runtime state (position, occupied_by, locks,
+        flank_protection, train_protection_claims) for UI rendering.
+        Persistence does NOT use this path; see `to_layout_dict()` instead.
         """
         return {
             "switch_id": self.switch_id,
@@ -400,9 +402,37 @@ class Switch(TrackResource):
             ],
         }
 
+    def to_layout_dict(self) -> Dict[str, Any]:
+        """Layout-only serialization used by persistence.
+
+        Per design_new.md Out of Scope, runtime state (`position`,
+        `occupied_by`, `flank_protection`, `train_protection_claims`,
+        `locks`) is excluded — the switch loads at the dataclass default
+        position (MAIN) with empty locks and protection sets.
+        """
+        return {
+            "switch_id": self.switch_id,
+            "x": self.x,
+            "y": self.y,
+            "main_length_cm": self.main_length_cm,
+            "diverge_length_cm": self.diverge_length_cm,
+            "main_radius_cm": self.main_radius_cm,
+            "diverge_radius_cm": self.diverge_radius_cm,
+            "switch_type": self.switch_type,
+            "name": self.name,
+            "notes": self.notes,
+            "disabled": self.disabled,
+        }
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Switch":
-        """Reconstruct from dictionary after deserialization."""
+        """Reconstruct from a layout snapshot.
+
+        Runtime fields (`position`, `occupied_by`, `flank_protection`,
+        `train_protection_claims`, `locks`) are not loaded from disk;
+        defaults apply and the engine repopulates them. Legacy snapshots
+        that carry those keys are silently ignored.
+        """
         switch = cls(
             switch_id=data["switch_id"],
             x=data["x"],
@@ -415,32 +445,7 @@ class Switch(TrackResource):
             name=data.get("name", ""),
             notes=data.get("notes", ""),
         )
-        switch.position = SwitchState(int(data.get("position", 0)))
-        switch.occupied_by = data.get("occupied_by")
         switch.disabled = bool(data.get("disabled", False))
-        switch.flank_protection = [
-            (neighbour_id, int(blocking_state))
-            for (neighbour_id, blocking_state) in data.get("flank_protection", [])
-        ]
-        switch.train_protection_claims = [
-            (train_id, source_id, int(locked_state))
-            for (train_id, source_id, locked_state) in data.get(
-                "train_protection_claims", []
-            )
-        ]
-        switch.locks = {}
-        for entry in data.get("locks", []):
-            # The 2-tuple key is canonical; the legacy `claim_role` field is
-            # ignored here (it round-trips as a derived diagnostic in to_dict
-            # but is not part of the storage key).
-            key = (
-                entry["path_id"],
-                entry.get("source_switch_id"),
-            )
-            switch.locks[key] = (
-                entry["train_id"],
-                int(entry["locked_state"]),
-            )
         return switch
 
     def __repr__(self) -> str:

@@ -1503,7 +1503,13 @@ class RailwayNetwork:
         return switch
 
     def to_dict(self) -> dict:
-        """Convert network to dictionary for serialization"""
+        """Convert network to dictionary for the live frontend payload.
+
+        Includes runtime state on every sub-entity (block occupancy,
+        signal aspects, switch position/locks, track locks) for UI
+        rendering. Persistence does NOT use this path; see
+        `to_layout_dict()` instead.
+        """
         # Enrich tracks with full signal data for frontend
         enriched_tracks = []
         for t in self.tracks.values():
@@ -1527,7 +1533,30 @@ class RailwayNetwork:
             "station_groups": [s.to_dict() for s in self.station_groups.values()],
             "switches": {
                 k: v.to_dict() for k, v in self.switches.items()
-            },  # NEW: Switch persistence
+            },
+        }
+
+    def to_layout_dict(self) -> dict:
+        """Layout-only serialization used by persistence.
+
+        Per design_new.md Out of Scope ("Persistence / save-load of
+        runtime state | In-memory only"), this writes only editor /
+        configuration data: track geometry, block / switch / signal
+        definitions, platforms, station groups, and train config. Live
+        runtime fields on every sub-entity are excluded.
+        """
+        return {
+            "tracks": [t.to_layout_dict() for t in self.tracks.values()],
+            "trains": [t.to_dict(self) for t in self.trains.values()],
+            "blocks": {k: v.to_layout_dict() for k, v in self.blocks.items()},
+            "signals": {k: v.to_layout_dict() for k, v in self.signals.items()},
+            "platforms": [
+                p.to_dict_with_orientation(self) for p in self.platforms.values()
+            ],
+            "station_groups": [s.to_dict() for s in self.station_groups.values()],
+            "switches": {
+                k: v.to_layout_dict() for k, v in self.switches.items()
+            },
         }
 
     def from_dict(self, data: dict):

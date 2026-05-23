@@ -29,6 +29,7 @@ from runtime_payloads import (
     FatalConflictKind,
     OccupyResult,
 )
+from track import EDGE_MASKS
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -632,9 +633,14 @@ class BlockManager:
         live tile connectivity from the block's exit tile in
         ``block.caution.exit_edge`` through any intervening switch (using the
         current ``Switch.position``) until the next reachable block resource is
-        found. If that next reachable block is OCCUPIED, keep caution. If it
-        is FREE/RESERVED/CAUTION, or if no reachable block exists at all,
-        clear caution by writing ``block.caution = None``.
+        found. If that next reachable block is OCCUPIED by a train whose
+        current ``travel_direction`` is the same as ``block.caution.exit_edge``,
+        keep caution — the train ahead is still moving away in the protect
+        direction. If it is FREE/RESERVED/CAUTION, if no reachable block
+        exists at all, or if the OCCUPIED forward block holds a train whose
+        ``travel_direction`` is the opposite of ``block.caution.exit_edge``
+        (train has reversed its cab and is no longer moving away), clear
+        caution by writing ``block.caution = None``.
 
         When the manager has no network back-reference (early bootstrap or
         unit tests), the only safe behaviour is to clear caution entries that
@@ -663,6 +669,10 @@ class BlockManager:
             if next_block.state != BlockState.OCCUPIED:
                 block.caution = None
                 cleared.append(block.block_id)
+                continue
+            if self._forward_train_has_reversed(next_block, edge):
+                block.caution = None
+                cleared.append(block.block_id)
 
         for block_id in cleared:
             self._record_history(
@@ -672,6 +682,43 @@ class BlockManager:
                 registry[block_id].state,
                 None,
             )
+
+    def _forward_train_has_reversed(
+        self, next_block: Block, caution_exit_edge: str
+    ) -> bool:
+        """Return True when the OCCUPIED ``next_block`` holds a train whose
+        current ``travel_direction`` is the opposite of ``caution_exit_edge``.
+
+        The CAUTION block's protection chain was built assuming the train
+        ahead is still moving away in ``caution_exit_edge``. If the train
+        has since flipped its cab so its travel direction now points back
+        through the CAUTION block, the protection is stale.
+
+        Returns False (preserve current keep-caution behaviour) whenever the
+        train, its controller, or its travel direction cannot be resolved —
+        the call must never escalate to a clear without positive evidence
+        of reversal.
+        """
+        train_id = next_block.occupied_by
+        if train_id is None:
+            return False
+        if self.simulation_controller is None:
+            return False
+        get_controller = getattr(
+            self.simulation_controller, "get_controller", None
+        )
+        if get_controller is None:
+            return False
+        controller = get_controller(train_id)
+        if controller is None:
+            return False
+        travel_direction = getattr(controller, "travel_direction", None)
+        if not isinstance(travel_direction, str) or not travel_direction:
+            return False
+        opposite = self._OPPOSITE_EDGE.get(caution_exit_edge.upper())
+        if opposite is None:
+            return False
+        return travel_direction.upper() == opposite
 
     # ------------------------------------------------------------------
     # Topology walk helper for directional caution reevaluation
@@ -702,10 +749,17 @@ class BlockManager:
             return None
 
         # Locate the exit tile inside `block` for this direction: the tile
-        # whose neighbour in `direction` is not part of the same block.
+        # whose own track has an edge in `direction` AND whose neighbour in
+        # `direction` is not part of the same block. Filtering on the track's
+        # own edge mask is essential — a tile like TRACK_NS has no E edge, so
+        # its eastern grid-neighbour is irrelevant even if that cell is empty.
+        edge_mask = EDGE_MASKS.get(direction, 0)
         exit_tile: Optional[Tuple[int, int]] = None
         for entry in block.ordered_tiles:
             tx, ty = int(entry[0]), int(entry[1])
+            tile = self.network.get_track(tx, ty)
+            if tile is None or not (tile.track_bits & edge_mask):
+                continue
             dx, dy = self._EDGE_OFFSETS[direction]
             neighbour = self.network.get_track(tx + dx, ty + dy)
             if neighbour is None or neighbour.block_section_id != block.block_id:

@@ -1110,6 +1110,12 @@ class TrackSegment:
 
     # ========== Serialization ==========
     def to_dict(self) -> dict:
+        """Convert tile to dictionary for the live frontend payload.
+
+        Includes runtime state (`locked_by_path`, `locked_state`, the
+        dispatcher-driven `switch_state`, `is_locked`) for UI rendering.
+        Persistence does NOT use this path; see `to_layout_dict()` instead.
+        """
         return {
             "x": self.x,
             "y": self.y,
@@ -1139,24 +1145,45 @@ class TrackSegment:
             "is_locked": self.is_locked_by_path(),
         }
 
+    def to_layout_dict(self) -> dict:
+        """Layout-only serialization used by persistence.
+
+        Per design_new.md Out of Scope, runtime fields (`locked_by_path`,
+        `locked_state`, and the live `switch_state` mirror) are excluded.
+        Computed/derived reads used by the frontend are also dropped — they
+        are recomputed from `track_bits` on load.
+        """
+        return {
+            "x": self.x,
+            "y": self.y,
+            "track_bits": self.track_bits,
+            "dead_end_ports": sorted(self.dead_end_ports),
+            "signal_ids": self.signal_ids,
+            "station_id": self.station_id,
+            "block_section_id": self.block_section_id,
+            "switch_id": self.switch_id,
+            "length": self.length,
+        }
+
     @classmethod
     def from_dict(cls, data: dict) -> "TrackSegment":
+        """Reconstruct tile from a layout snapshot.
+
+        Runtime fields (`locked_by_path`, `locked_state`, the dispatcher
+        `switch_state` mirror) are not loaded from disk; they default to
+        unlocked / state 0 and the engine repopulates them.
+        """
         segment = cls(
             x=data["x"],
             y=data["y"],
             track_bits=data.get("track_bits", 0),
             dead_end_ports=set(data.get("dead_end_ports", [])),
-            _switch_state_local=data.get("switch_state", 0) or 0,
         )
-        # Load signal_ids list
         segment.signal_ids = data.get("signal_ids", [])
         segment.station_id = data.get("station_id")
         segment.block_section_id = data.get("block_section_id")
-        segment.switch_id = data.get("switch_id")  # NEW: Load switch reference
+        segment.switch_id = data.get("switch_id")
         segment.length = data.get("length", 1.0)
-        # Path locking
-        segment.locked_by_path = data.get("locked_by_path")
-        segment.locked_state = data.get("locked_state")
         return segment
 
     # ========== Utility ==========

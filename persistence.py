@@ -50,8 +50,10 @@ class PersistenceManager:
         if not safe_name:
             raise ValueError(f"Invalid layout name: {name}")
 
-        # Generate both formats
-        snapshot_data = network.to_dict()
+        # Layout-only snapshot — runtime state is not persisted (see
+        # design_new.md "Persistence / save-load of runtime state | In-memory
+        # only"). The frontend payload still uses `network.to_dict()`.
+        snapshot_data = network.to_layout_dict()
 
         steps_data = []
         steps_error = None

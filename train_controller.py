@@ -1916,6 +1916,22 @@ class TrainController:
             # skipped — do not enqueue a report.
             return
 
+        # Build a tile_xy -> sequence_index lookup from the active path so
+        # entered/tail-vacated events can carry the resource's sequence_index.
+        # Per design_new.md "Physical progress / deviation procedure" and the
+        # TileTraversal docstring in runtime_payloads.py, the controller is
+        # the canonical site that derives sequence_index from the live
+        # `received_path_plan.resource_sequence`; dispatcher must not search
+        # by raw resource_id.
+        plan = self.received_path_plan
+        tile_xy_to_seq_index: Dict[Tuple[int, int], int] = {}
+        if plan is not None:
+            for entry in plan.resource_sequence:
+                for path_tile in entry.path_tiles:
+                    tile_xy_to_seq_index[(path_tile.x, path_tile.y)] = (
+                        entry.sequence_index
+                    )
+
         entered_resources: List[ResourceEvent] = []
         seen_entered: set = set()
         for tile in span_update.added_tiles:
@@ -1929,7 +1945,7 @@ class TrainController:
             seen_entered.add(key)
             entered_resources.append(
                 ResourceEvent(
-                    sequence_index=None,
+                    sequence_index=tile_xy_to_seq_index.get(tile.tile_xy),
                     resource_type=res_type,
                     resource_id=res_id,
                     exit_edge=None,
@@ -1966,7 +1982,7 @@ class TrainController:
             exit_edge = tile.exit_edge if res_type == "block" else None
             tail_vacated_resources.append(
                 ResourceEvent(
-                    sequence_index=None,
+                    sequence_index=tile_xy_to_seq_index.get(tile.tile_xy),
                     resource_type=res_type,
                     resource_id=res_id,
                     exit_edge=exit_edge,
@@ -3715,6 +3731,10 @@ class TrainController:
             # ATO ETA: integrates the operational_limit speed curve to the
             # current target stop. None when no path/target/curves.
             "time_to_target_sec": self._calculate_time_to_target_sec(),
+            # Model-scale factor (model cm/s per prototype km/h). Clients use
+            # this to convert lookahead distances (model cm) and prototype
+            # speeds (km/h) into ETA seconds when time_to_target_sec is None.
+            "speed_conversion_factor": get_speed_conversion_factor(),
             # Run instance identifier — populated when a RouteRun is active.
             # Composed as `${route_id}#${run_number}` so the cab display can
             # tell apart multiple runs of the same route.
@@ -3779,7 +3799,7 @@ class TrainController:
         if target_cm < 10:
             return None
 
-        cm_per_second_per_kmh = 100000.0 / 3600.0  # 27.78
+        cm_per_second_per_kmh = get_speed_conversion_factor()  # model cm/s per prototype km/h
         current_kmh = float(getattr(self, "current_speed_kmh", 0.0) or 0.0)
 
         if len(curves) < 2:
@@ -3825,11 +3845,12 @@ class TrainController:
 
         return total_sec if total_sec > 0 else None
 
-    # Default acceleration used by the ETA estimator when the curve does
-    # not constrain the train. ~0.5 m/s² matches a typical metro service
-    # rate; it is intentionally conservative so ETA is slightly long
-    # rather than misleadingly short.
-    _ETA_ACCEL_CM_PER_S2 = 50.0
+    # Default acceleration used by the ETA estimator when the curve does not
+    # constrain the train.  Value is in **model** cm/s² (not real-world cm/s²).
+    # 0.5 model cm/s² ≈ 0.8 real m/s² at 1:160 N-scale, matching a typical
+    # metro service rate.  Intentionally conservative so ETA runs slightly
+    # long rather than misleadingly short.
+    _ETA_ACCEL_CM_PER_S2 = 0.5
 
     def _kinematic_time_to_target_sec(
         self, target_cm: float, current_kmh: float
@@ -3843,7 +3864,7 @@ class TrainController:
         """
         if target_cm <= 0:
             return None
-        cm_per_second_per_kmh = 100000.0 / 3600.0
+        cm_per_second_per_kmh = get_speed_conversion_factor()  # model cm/s per prototype km/h
         v0_cms = max(0.0, current_kmh) * cm_per_second_per_kmh
         a = self._ETA_ACCEL_CM_PER_S2
         # v² = v0² + 2*a*d → v = sqrt(v0² + 2*a*d). Time = (v - v0) / a.
@@ -4098,6 +4119,54 @@ class TrainController:
             block_back_length_cm += recovery_extra_back_cm
             block_back_tile_count += recovery_extra_back_tiles
 
+        # Sum the tail length of the head's station — tiles before the head
+        # in the path that share the same platform_id. Mirrors the block
+        # back-walk above so the station rect's left edge can sit behind
+        # the train marker once the head has crossed into the station,
+        # instead of being pinned to the marker (distance_cm = 0).
+        head_platform_id: Optional[str] = (
+            head_track.station_id if head_track else None
+        )
+        station_back_length_cm = 0.0
+        station_back_tile_count = 0
+        if head_platform_id:
+            stop = False
+            for prev_tile in reversed(
+                resource_sequence[head_resource_index].path_tiles[:head_tile_index]
+            ):
+                prev_track = self.network.get_track(prev_tile.x, prev_tile.y)
+                prev_platform_id = (
+                    prev_track.station_id if prev_track else None
+                )
+                if prev_platform_id != head_platform_id:
+                    stop = True
+                    break
+                station_back_length_cm += self.network._get_tile_length_cm(
+                    prev_tile.x, prev_tile.y
+                )
+                station_back_tile_count += 1
+            if not stop:
+                for r_idx in range(head_resource_index - 1, -1, -1):
+                    earlier = resource_sequence[r_idx]
+                    for prev_tile in reversed(earlier.path_tiles):
+                        prev_track = self.network.get_track(
+                            prev_tile.x, prev_tile.y
+                        )
+                        prev_platform_id = (
+                            prev_track.station_id if prev_track else None
+                        )
+                        if prev_platform_id != head_platform_id:
+                            stop = True
+                            break
+                        station_back_length_cm += (
+                            self.network._get_tile_length_cm(
+                                prev_tile.x, prev_tile.y
+                            )
+                        )
+                        station_back_tile_count += 1
+                    if stop:
+                        break
+
         current_block_start_cm = (
             cumulative_distance_cm - block_back_length_cm
             if current_block_id
@@ -4258,6 +4327,9 @@ class TrainController:
                     if platform_id not in seen_stations:
                         seen_stations.add(platform_id)
                         station = self.network.platforms.get(platform_id)
+                        used_canonical_length = bool(
+                            station and station.length_cm
+                        )
                         station_length = station.length_cm if station else 0.0
                         station_tile_count = 0
                         if not station_length:
@@ -4286,6 +4358,26 @@ class TrainController:
                                     station_tile_count += 1
                                 if done:
                                     break
+                        # When the head sits inside this station, anchor
+                        # the rect's left edge behind the train marker so
+                        # it slides off with the blocks above instead of
+                        # being pinned to 0. If the length came from the
+                        # forward walk (station.length_cm was missing),
+                        # also fold the back-walk tiles in so the rect
+                        # spans the station's full footprint.
+                        use_back_walk = (
+                            is_first_step
+                            and platform_id == head_platform_id
+                            and station_back_length_cm > 0.0
+                        )
+                        station_distance_cm = (
+                            cumulative_distance_cm - station_back_length_cm
+                            if use_back_walk
+                            else point_element_start
+                        )
+                        if use_back_walk and not used_canonical_length:
+                            station_length += station_back_length_cm
+                            station_tile_count += station_back_tile_count
                         station_group_id: Optional[str] = None
                         if hasattr(self.network, "get_station_for_platform"):
                             try:
@@ -4301,7 +4393,7 @@ class TrainController:
                                 "platform_id": platform_id,
                                 "station_id": station_group_id,
                                 "name": station.name if station else platform_id,
-                                "distance_cm": point_element_start,
+                                "distance_cm": station_distance_cm,
                                 "length_cm": station_length,
                                 "tile_count": station_tile_count or 1,
                                 "top_speed_kmh": station.top_speed_kmh

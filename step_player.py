@@ -145,6 +145,8 @@ class StepPlayer:
 
         if op_type == "add_track":
             return self._op_add_track(op, network)
+        elif op_type == "add_switch":
+            return self._op_add_switch(op, network)
         elif op_type == "create_block_with_tracks":
             return self._op_create_block(op, network)
         elif op_type == "add_signal":
@@ -174,12 +176,33 @@ class StepPlayer:
         track_bits = op["track_bits"]
 
         track = TrackSegment(x, y, track_bits=track_bits)
-
-        if "switch_state" in op:
-            track.switch_state = op["switch_state"]
-
         network.add_track(track)
         return f"{x},{y}"
+
+    def _op_add_switch(self, op: dict, network: "RailwayNetwork") -> str:
+        """Execute add_switch operation.
+
+        Registers a `Switch` entity at an already-placed switch tile. The
+        underlying `TrackSegment` must have been created by an earlier
+        `add_track` step (the recorder orders tracks before switches).
+        """
+        from switch import Switch
+
+        switch = Switch(
+            switch_id=op["switch_id"],
+            x=op["x"],
+            y=op["y"],
+            main_length_cm=op.get("main_length_cm", 0.0),
+            diverge_length_cm=op.get("diverge_length_cm", 0.0),
+            main_radius_cm=op.get("main_radius_cm"),
+            diverge_radius_cm=op.get("diverge_radius_cm"),
+            switch_type=op.get("switch_type", "standard"),
+            name=op.get("name", ""),
+            notes=op.get("notes", ""),
+        )
+        switch.disabled = bool(op.get("disabled", False))
+        network.add_switch(switch)
+        return switch.switch_id
 
     def _op_create_block(self, op: dict, network: "RailwayNetwork") -> str:
         """Execute create_block_with_tracks operation."""
@@ -267,29 +290,31 @@ class StepPlayer:
         return platform_id
 
     def _op_add_train(self, op: dict, network: "RailwayNetwork") -> str:
-        """Execute add_train operation."""
+        """Execute add_train operation (config-only).
+
+        Per design_new.md, train placement is a run-time concern handled by
+        `SimulationController.add_train(...)`. Steps only restore Train
+        config; legacy `position` / `direction` keys in older snapshots are
+        ignored.
+        """
         from train import Train
-        from enums import Direction
 
         train_id = op["train_id"]
-        max_speed = op.get("max_speed", 100.0)
-
-        train = Train(train_id=train_id, max_speed=max_speed)
-
-        direction = Direction.EAST
-        if "direction" in op:
-            try:
-                direction = Direction[op["direction"]]
-            except KeyError:
-                print(f"[StepPlayer] Unknown direction '{op['direction']}', defaulting to EAST")
-                direction = Direction.EAST
+        train = Train(
+            train_id=train_id,
+            max_speed=op.get("max_speed", 100.0),
+            num_cars=int(op.get("num_cars", 1)),
+        )
+        if "model" in op:
+            train.model = op["model"]
+        if "car_number" in op:
+            train.car_number = op["car_number"]
+        if "min_radius_cm" in op:
+            train.min_radius_cm = float(op["min_radius_cm"])
+        if "speed_profile_id" in op:
+            train.speed_profile_id = op["speed_profile_id"]
 
         network.add_train(train)
-
-        if "position" in op:
-            pos = op["position"]
-            network.place_train(train, pos["x"], pos["y"], direction)
-
         return train_id
 
     def _verify_result(

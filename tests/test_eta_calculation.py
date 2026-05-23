@@ -12,11 +12,12 @@ Run with: pytest tests/test_eta_calculation.py -v
 import math
 import pytest
 
+from model_scale import get_speed_conversion_factor
 from network import RailwayNetwork
 from train_controller import TrainController
 
 
-CM_PER_SECOND_PER_KMH = 100000.0 / 3600.0
+CM_PER_SECOND_PER_KMH = get_speed_conversion_factor()  # model cm/s per prototype km/h
 
 
 def _make_controller(current_speed_kmh: float = 0.0, power_on: bool = True) -> TrainController:
@@ -115,8 +116,10 @@ class TestEtaSparseCurveFallback:
         assert eta > 0
 
         # Sanity check the kinematic estimate: v = sqrt(2·a·d).
-        # v = sqrt(2·50·2000) = sqrt(200000) ≈ 447 cm/s. Time = v / a = ~8.94 s.
-        expected = math.sqrt(2.0 * 50.0 * 2000.0) / 50.0
+        # a = _ETA_ACCEL_CM_PER_S2 = 0.5 model cm/s²
+        # v = sqrt(2·0.5·2000) = sqrt(2000) ≈ 44.7 model cm/s. Time = v / a ≈ 89.4 s.
+        a = TrainController._ETA_ACCEL_CM_PER_S2
+        expected = math.sqrt(2.0 * a * 2000.0) / a
         assert math.isclose(eta, expected, rel_tol=0.05)
 
     def test_empty_curves_still_returns_eta_with_target(self):

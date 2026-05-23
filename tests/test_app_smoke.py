@@ -178,26 +178,20 @@ class TestAppSmoke:
 
     def test_train_monitor_upcoming_default_width(self):
         """Train monitor upcoming column default width should be widened."""
-        # CSS was refactored to modular files, so we check the specific feature file
         css_file = PROJECT_ROOT / "static" / "css" / "features" / "train-monitor.css"
-
-        # Fallback to style.css if feature file doesn't exist (backward compatibility)
-        if not css_file.exists():
-            css_file = PROJECT_ROOT / "static" / "css" / "style.css"
-
         content = css_file.read_text()
 
-        assert ".train-monitor-upcoming" in content, (
+        assert ".tm-upcoming" in content, (
             "Train monitor upcoming styles missing"
         )
         assert "width: 280px" in content, (
             "Train monitor upcoming default width should be 280px"
         )
-        assert "min-width: 200px" in content, (
-            "Train monitor upcoming min width should be 200px"
+        assert "min-width: 220px" in content, (
+            "Train monitor upcoming min width should be 220px"
         )
-        assert "max-width: 400px" in content, (
-            "Train monitor upcoming max width should be 400px"
+        assert "max-width: 420px" in content, (
+            "Train monitor upcoming max width should be 420px"
         )
 
     def test_train_monitor_json_button_order(self):
@@ -213,11 +207,17 @@ class TestAppSmoke:
         assert all_pos < json_pos, "JSON button should appear after the All button"
 
     def test_train_monitor_json_button_label_and_color(self):
-        """JSON button should include icon and use primary text color."""
+        """JSON button should use the monochrome `{ }` glyph and the icon-button class."""
         index_file = PROJECT_ROOT / "static" / "index.html"
         content = index_file.read_text()
 
         assert 'id="view-lookahead-btn"' in content, "JSON view button missing"
-        assert "📋" in content, "JSON button icon missing"
-        assert "JSON" in content, "JSON button label missing"
-        assert "text-primary" in content, "JSON button should use primary text color"
+        # Per docs/DESIGN_LANGUAGE.md §"No color emoji anywhere in the UI",
+        # the clipboard emoji was replaced with a monochrome curly-brace glyph.
+        assert "{ }" in content, "JSON button glyph `{ }` missing"
+        assert "View raw lookahead JSON" in content, "JSON button tooltip missing"
+        # tm-icon-btn supplies `color: var(--text-primary)` for icon buttons in
+        # the train-monitor header (static/css/features/train-monitor.css).
+        assert "tm-icon-btn view-lookahead-btn" in content, (
+            "JSON button should carry the tm-icon-btn class for primary text color"
+        )

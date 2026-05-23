@@ -634,7 +634,8 @@ def setup_demo_train(
         route_id="DEMO_ROUTE_V2",
         name=(
             "Demo v2: East Terminal → East Branch Terminal → "
-            "BLOCK_MAIN_WEST turnaround → North Terminal"
+            "BLOCK_MAIN_WEST turnaround → North Terminal → "
+            "BLOCK_BRANCH_2 turnaround → back at North Station facing south"
         ),
         mode=RouteMode.ONE_OFF,
         is_active=True,
@@ -676,6 +677,20 @@ def setup_demo_train(
             task_kind="dwell",
             task_location=north_terminal_target,
             task_time=2.0,
+        ),
+        # Final turnaround: run up to the BLOCK_BRANCH_2 dead-end, then
+        # return to the North Station platform.  The cab auto-flips on the
+        # return trip, so the route ends with the train at North Station
+        # facing south.
+        RouteTask(
+            task_kind="stop",
+            task_location=BlockTarget(block_id="BLOCK_BRANCH_2"),
+            task_direction="either",
+        ),
+        RouteTask(
+            task_kind="stop",
+            task_location=north_terminal_target,
+            task_direction="either",
         ),
     ):
         demo_route_v2.add_task(task)

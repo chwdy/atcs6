@@ -212,11 +212,11 @@ class Block(TrackResource):
     # ========================================================================
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert block to dictionary for serialization.
+        """Convert block to dictionary for the live frontend payload.
 
-        `state` is included as a computed read-only convenience but is NOT
-        written back by `from_dict()`; reconstruction relies on the underlying
-        primitives instead.
+        Includes runtime state (occupied_by, caution, reservation, voltage,
+        computed `state`) for UI rendering. Persistence does NOT use this
+        path; see `to_layout_dict()` instead.
         """
         return {
             "block_id": self.block_id,
@@ -249,12 +249,35 @@ class Block(TrackResource):
             ],
         }
 
+    def to_layout_dict(self) -> Dict[str, Any]:
+        """Layout-only serialization used by persistence.
+
+        Per design_new.md Out of Scope ("Persistence / save-load of runtime
+        state | In-memory only"), this writes block geometry and config only.
+        Runtime fields (occupied_by, caution, reservation, current_voltage,
+        computed state) are excluded.
+        """
+        return {
+            "block_id": self.block_id,
+            "name": self.name,
+            "length_cm": self.length_cm,
+            "min_radius_cm": self.min_radius_cm,
+            "speed_limit_kmh": self.speed_limit_kmh,
+            "disabled": self.disabled,
+            "allowed_travel_directions": sorted(self.allowed_travel_directions),
+            "ordered_tiles": [
+                [int(x), int(y), str(edge)] for (x, y, edge) in self.ordered_tiles
+            ],
+        }
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Block":
-        """Reconstruct block from dictionary.
+        """Reconstruct block from a layout snapshot.
 
-        Note: the `state` key, if present, is ignored. State is always
-        recomputed from the underlying primitive fields.
+        Runtime fields (`occupied_by`, `caution`, `reservation`,
+        `current_voltage`, computed `state`) are not loaded from disk —
+        they default-initialize and the engine populates them at run time.
+        Legacy snapshots that carry those keys are silently ignored.
         """
         atd = data.get("allowed_travel_directions")
         if atd is None:
@@ -275,29 +298,13 @@ class Block(TrackResource):
                 edge = str(entry[2])
             ordered_tiles.append(BlockTileEntry(x=x, y=y, entry_edge=edge))
 
-        # Reconstruct reservation.
-        reservation: Optional[BlockReservation] = None
-        raw_reservation = data.get("reservation")
-        if raw_reservation:
-            reservation = BlockReservation.from_dict(raw_reservation)
-
-        # Reconstruct caution from the canonical `"caution"` object.
-        caution: Optional[CautionState] = None
-        raw_caution = data.get("caution")
-        if isinstance(raw_caution, dict) and raw_caution.get("exit_edge"):
-            caution = CautionState(exit_edge=str(raw_caution["exit_edge"]))
-
         return cls(
             block_id=data["block_id"],
             name=data.get("name", ""),
             length_cm=data.get("length_cm", 0.0),
             min_radius_cm=data.get("min_radius_cm"),
             speed_limit_kmh=data.get("speed_limit_kmh", data.get("max_speed_kmh")),
-            occupied_by=data.get("occupied_by"),
-            caution=caution,
-            reservation=reservation,
             disabled=bool(data.get("disabled", False)),
-            current_voltage=float(data.get("current_voltage", 0.0)),
             allowed_travel_directions=allowed,
             ordered_tiles=ordered_tiles,
         )

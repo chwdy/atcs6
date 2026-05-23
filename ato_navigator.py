@@ -325,10 +325,27 @@ class ATONavigator:
 
     @staticmethod
     def calculate_power_notch(
-        current_speed: float, target_speed: float
+        current_speed: float,
+        target_speed: float,
+        speed_trend_kmh_s: float = 0.0,
     ) -> HandlePosition:
-        """Pick a power notch to accelerate toward `target_speed`."""
+        """Pick a power notch to accelerate toward `target_speed`.
+
+        `speed_trend_kmh_s` is the measured rate of speed change this tick
+        (positive = accelerating). When the trend is a small negative value
+        and the deficit is modest, the speed is declining due to friction
+        only — P1 is enough to counteract it. A steeper decline (grade or
+        active decel) passes through to the normal gap table so the
+        controller escalates appropriately.
+        """
         diff = target_speed - current_speed
+        # Gentle-drift guard: if speed is declining slowly (friction-like,
+        # not grade-driven) and the gap is small, P1 suffices — a higher
+        # notch would overshoot the narrow cruise band and cause jitter.
+        # The 1.0 km/h/s threshold is ~2× the friction constant; anything
+        # faster indicates grade is also acting and the normal table applies.
+        if speed_trend_kmh_s < 0.0 and abs(speed_trend_kmh_s) < 1.0 and diff < 3.0:
+            return HandlePosition.P1
         if diff > 8:
             return HandlePosition.P5
         if diff > 5:
@@ -400,6 +417,7 @@ class ATONavigator:
             return HandlePosition.N
 
         speed_kmh = c.current_speed_kmh
+        speed_trend_kmh_s = (speed_kmh - c._previous_speed) / delta_seconds if delta_seconds > 0 else 0.0
         c._previous_speed = speed_kmh
 
         lookahead = c.get_lookahead()
@@ -490,6 +508,11 @@ class ATONavigator:
         binding_dist_cm = 0.0
         binding_target_kmh = ceiling_at_zero
         samples: List[Dict[str, Any]] = []
+        # True when any sample was skipped solely because its gap fell within
+        # BRAKE_DEADBAND (gap > 0 but ≤ deadband).  Used below to suppress
+        # power-up: if a restriction is this close the train should coast, not
+        # accelerate into the limit.
+        deadband_approached = False
         for i in range(LOOKAHEAD_SAMPLE_COUNT + 1):
             d_cm = look_cm * i / LOOKAHEAD_SAMPLE_COUNT
             target_at_d = self.sample_curve_at(curves, d_cm, "operational_limit")
@@ -500,6 +523,8 @@ class ATONavigator:
 
             gap_kmh = speed_kmh - target_at_d
             if gap_kmh <= BRAKE_DEADBAND_KMH:
+                if gap_kmh > 0:
+                    deadband_approached = True
                 continue
 
             if d_cm <= 0:
@@ -530,13 +555,25 @@ class ATONavigator:
         # tightens automatically so the deadband does not eat the ceiling.
         if required_decel_kmh_s <= 0.0:
             debug["multiplier_needed"] = 0.0
+            debug["deadband_approached"] = deadband_approached
             power_up_tolerance = ato_speed_tolerance(
                 max(speed_kmh, ceiling_at_zero)
             )
             debug["power_up_tolerance_kmh"] = power_up_tolerance
-            if speed_kmh < ceiling_at_zero - power_up_tolerance:
+            debug["speed_trend_kmh_s"] = round(speed_trend_kmh_s, 3)
+            if deadband_approached:
+                # A speed limit ahead is within the braking deadband — the
+                # train would brake if going slightly faster.  Don't accelerate
+                # into the restriction; coast and let friction close the gap.
+                target_handle = HandlePosition.N
+                c.handle_reason = (
+                    f"Coast (limit near): speed={speed_kmh:.1f} "
+                    f"approaching restriction"
+                )
+                debug["mode"] = "coast_limit_near"
+            elif speed_kmh < ceiling_at_zero - power_up_tolerance:
                 target_handle = self.calculate_power_notch(
-                    speed_kmh, ceiling_at_zero
+                    speed_kmh, ceiling_at_zero, speed_trend_kmh_s
                 )
                 c.handle_reason = (
                     f"Power up: speed={speed_kmh:.1f} "
@@ -589,14 +626,6 @@ class ATONavigator:
             f"({multiplier_needed:.2f}× op_decel) "
             f"target={binding_target_kmh:.1f}@{binding_dist_cm:.0f}cm"
         )
-
-        if overspeed_at_zero:
-            # Already over the ceiling — bypass rate-limit so the chosen
-            # notch takes effect immediately.
-            debug["rate_limited"] = False
-            debug["final_handle"] = target_handle.value
-            c.ato_debug = debug
-            return target_handle
 
         final = rate_limit_handle(
             current=c.handle_position,

@@ -1261,21 +1261,31 @@
     grid-template-columns: 1fr 1fr 1fr;
     grid-template-rows: var(--tc-row) var(--tc-row) var(--tc-row) var(--tc-row);
     grid-template-areas:
-        ".      speed   atc  "
-        ".      speed   ato  "
+        "dwellR speed   atc  "
+        "dwellU speed   ato  "
         "handle speed   .    "
         "handle .       cab  ";
     column-gap: 6px;
     row-gap: 0;
 }
 
-.tc-hmi-grid #hmi-speed    { grid-area: speed; }
-.tc-hmi-grid #hmi-atc      { grid-area: atc; }
-.tc-hmi-grid #hmi-ato      { grid-area: ato; }
-.tc-hmi-grid #hmi-handle   { grid-area: handle; align-self: end; line-height: 1; }
-.tc-hmi-grid #hmi-cab-run  { grid-area: cab;    align-self: end; line-height: 1; }
+.tc-hmi-grid #hmi-speed            { grid-area: speed; }
+.tc-hmi-grid #hmi-atc              { grid-area: atc; }
+.tc-hmi-grid #hmi-ato              { grid-area: ato; }
+.tc-hmi-grid #hmi-dwell-remaining  { grid-area: dwellR; }
+.tc-hmi-grid #hmi-dwell-until      { grid-area: dwellU; }
+.tc-hmi-grid #hmi-handle           { grid-area: handle; align-self: end; line-height: 1; }
+.tc-hmi-grid #hmi-cab-run          { grid-area: cab;    align-self: end; line-height: 1; }
 
-/* Element-specific styling */
+.tc-hmi-dwell-rem,
+.tc-hmi-dwell-until {
+    color: var(--text-secondary);
+    font-size: 13px;
+    letter-spacing: 0.02em;
+    align-self: center;
+    line-height: 1;
+}
+
 .tc-hmi-time {
     color: var(--text-secondary);
     letter-spacing: 0.05em;

@@ -80,7 +80,12 @@ class Signal:
         return opposites.get(self.detection_direction.upper(), self.detection_direction)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert signal to dictionary for JSON serialization."""
+        """Convert signal to dictionary for the live frontend payload.
+
+        Includes runtime state (aspect, approaching_train_id) for UI
+        rendering. Persistence does NOT use this path; see
+        `to_layout_dict()` instead.
+        """
         return {
             "signal_id": self.signal_id,
             "x": self.position[0],
@@ -96,9 +101,33 @@ class Signal:
             "approaching_train_id": self.approaching_train_id,
         }
 
+    def to_layout_dict(self) -> Dict[str, Any]:
+        """Layout-only serialization used by persistence.
+
+        Per design_new.md Out of Scope, runtime state (`state` aspect,
+        `approaching_train_id`) is excluded — signals load at the default
+        aspect and the engine repopulates them at run time.
+        """
+        return {
+            "signal_id": self.signal_id,
+            "x": self.position[0],
+            "y": self.position[1],
+            "detection_direction": self.detection_direction,
+            "signal_type": self.signal_type.value,
+            "name": self.name,
+            "monitored_block_id": self.monitored_block_id,
+            "monitored_switch_id": self.monitored_switch_id,
+            "monitored_signal_id": self.monitored_signal_id,
+        }
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Signal":
-        """Create a Signal from a dictionary."""
+        """Create a Signal from a layout snapshot.
+
+        Runtime state (`state` aspect, `approaching_train_id`) is not loaded
+        from disk; the signal starts at the dataclass default aspect.
+        Legacy snapshots that carry those keys are silently ignored.
+        """
         # Normalize detection_direction: handle both "EAST"/"WEST" and "E"/"W" formats
         detection_dir = data["detection_direction"]
         direction_map = {
@@ -118,10 +147,8 @@ class Signal:
             position=(data["x"], data["y"]),
             detection_direction=normalized_dir,
             signal_type=SignalType(data.get("signal_type", "block")),
-            state=SignalState(data.get("state", "red")),
             name=data.get("name"),
             monitored_block_id=data.get("monitored_block_id"),
             monitored_switch_id=data.get("monitored_switch_id"),
             monitored_signal_id=data.get("monitored_signal_id"),
-            approaching_train_id=data.get("approaching_train_id"),
         )

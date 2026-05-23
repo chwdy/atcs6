@@ -733,14 +733,21 @@ class RouteExecutor:
         controller: TrainController,
         now: float,
     ) -> None:
-        """Phase 1 step 4: skip already-covered `waypoint` tasks.
+        """Phase 1 step 4: skip already-covered `waypoint` and same-block `stop` tasks.
 
-        Walks forward through the route; for each next non-finished `waypoint`
-        whose resolved target block is already inside the current span, write
-        `finished_at` (which triggers `_append_next_walk_task` for
-        CIRCULAR/ROUND_TRIP and advances the derived
-        `current_waypoint_index`). Stops at a `stop` or `dwell` task, when
-        no further task fits coverage, or when the cursor stops advancing.
+        For each next non-finished task:
+        - `waypoint`: satisfied when the resolved target block is already inside
+          the current span.
+        - `stop`: satisfied when the train is stopped with no active path and
+          the resolved target block equals the train's current block (same-block
+          case — the train is already at the destination, so no movement is
+          needed). This handles routes created while the train is already at the
+          destination platform.
+        - `dwell`: never satisfied here; must go through the dwell-entry step.
+
+        Writes `finished_at` when satisfied (triggers `_append_next_walk_task`
+        for CIRCULAR/ROUND_TRIP and advances the derived `current_waypoint_index`).
+        Stops advancing when the next task is not satisfiable or is a `dwell`.
         """
         self._sync_task_runs(route, exec_state)
         task_count = route.get_task_count()
@@ -753,19 +760,29 @@ class RouteExecutor:
             if task is None:
                 break
 
-            # Block coverage never finishes a stop or dwell.
-            if task.task_kind in ("stop", "dwell"):
+            if task.task_kind == "dwell":
                 break
 
-            # waypoint coverage: resolve target block and check current span.
             target_block = self._resolve_task_target_block(task)
             if not target_block:
                 break
 
-            if not self._is_train_at_block(train, target_block):
-                # waypoint can also be satisfied by being at the platform tile.
-                if not self._is_train_at_platform_for_task(train, task):
+            if task.task_kind == "stop":
+                # A stop is immediately satisfied only when the train is already
+                # stopped at the destination block with no active path. The
+                # pathfinder returns 0 candidates for same-block paths, so
+                # create_path would never succeed in this case.
+                if not controller.is_stopped():
                     break
+                if self._get_active_path_id(train.train_id) is not None:
+                    break
+                if not self._is_train_at_block(train, target_block):
+                    break
+            else:
+                # waypoint coverage: check current span or platform tile.
+                if not self._is_train_at_block(train, target_block):
+                    if not self._is_train_at_platform_for_task(train, task):
+                        break
 
             # Write finished_at on the matching task_runs row. The derived
             # `current_waypoint_index` then naturally advances on the next

@@ -35,43 +35,7 @@ class StepRecorder:
         Returns:
             A dictionary containing the step-based layout format.
         """
-        steps = []
-        step_id = 1
-
-        # 1. Generate track steps (grouped by block or contiguous regions)
-        track_steps = self._generate_track_steps(network)
-        for step in track_steps:
-            step["id"] = step_id
-            steps.append(step)
-            step_id += 1
-
-        # 2. Generate block steps
-        block_steps = self._generate_block_steps(network)
-        for step in block_steps:
-            step["id"] = step_id
-            steps.append(step)
-            step_id += 1
-
-        # 3. Generate signal steps
-        signal_steps = self._generate_signal_steps(network)
-        for step in signal_steps:
-            step["id"] = step_id
-            steps.append(step)
-            step_id += 1
-
-        # 4. Generate platform steps
-        platform_steps = self._generate_platform_steps(network)
-        for step in platform_steps:
-            step["id"] = step_id
-            steps.append(step)
-            step_id += 1
-
-        # 5. Generate train steps
-        train_steps = self._generate_train_steps(network)
-        for step in train_steps:
-            step["id"] = step_id
-            steps.append(step)
-            step_id += 1
+        steps = self._collect_all_steps(network)
 
         # Build the full document
         now = datetime.now().isoformat()
@@ -93,35 +57,46 @@ class StepRecorder:
         Generate just the steps list without the full document wrapper.
         Used by save_merged_layout() for embedding in the main file.
         """
-        steps = []
+        return self._collect_all_steps(network)
+
+    def _collect_all_steps(self, network: "RailwayNetwork") -> List[dict]:
+        """Run every per-category generator in canonical order and number them.
+
+        Order matters: tracks must come before switches (network.add_switch
+        looks up the underlying tile), switches before blocks (so block
+        creation sees switch-aware tiles), and platforms before trains
+        (trains may reference platform-owned blocks). Station-owned blocks
+        are created by `add_platform` itself and are skipped in
+        `_generate_block_steps`.
+        """
+        steps: List[dict] = []
         step_id = 1
-
-        for step in self._generate_track_steps(network):
-            step["id"] = step_id
-            steps.append(step)
-            step_id += 1
-
-        for step in self._generate_block_steps(network):
-            step["id"] = step_id
-            steps.append(step)
-            step_id += 1
-
-        for step in self._generate_signal_steps(network):
-            step["id"] = step_id
-            steps.append(step)
-            step_id += 1
-
-        for step in self._generate_platform_steps(network):
-            step["id"] = step_id
-            steps.append(step)
-            step_id += 1
-
-        for step in self._generate_train_steps(network):
-            step["id"] = step_id
-            steps.append(step)
-            step_id += 1
-
+        for category in (
+            self._generate_track_steps,
+            self._generate_switch_steps,
+            self._generate_block_steps,
+            self._generate_signal_steps,
+            self._generate_platform_steps,
+            self._generate_train_steps,
+        ):
+            for step in category(network):
+                step["id"] = step_id
+                steps.append(step)
+                step_id += 1
         return steps
+
+    @staticmethod
+    def _platform_owned_block_ids(network: "RailwayNetwork") -> Set[str]:
+        """Block IDs that `add_platform` creates on its own.
+
+        `StationRegistry.add_station` (the implementation behind
+        `network.add_platform`) creates a block named
+        ``f"{platform_id}_BLOCK"`` and assigns the platform's tile to it.
+        The recorder must skip those blocks in `_generate_block_steps`
+        otherwise replay double-creates them and `create_block_with_tracks`
+        fails with "Block ... already exists".
+        """
+        return {f"{platform_id}_BLOCK" for platform_id in network.platforms.keys()}
 
     def _generate_track_steps(self, network: "RailwayNetwork") -> List[dict]:
         """
@@ -219,11 +194,59 @@ class StepRecorder:
 
         return steps
 
-    def _generate_block_steps(self, network: "RailwayNetwork") -> List[dict]:
-        """Generate block creation steps."""
+    def _generate_switch_steps(self, network: "RailwayNetwork") -> List[dict]:
+        """Generate Switch-entity creation steps.
+
+        A switch TrackSegment is laid down by `add_track`, but the
+        corresponding `Switch` entity (carrying lengths, radii, type, name)
+        must be registered separately via `network.add_switch(...)`. Without
+        this step, switches survive snapshot round-trip but vanish on the
+        steps-fallback recovery path.
+        """
         steps = []
+        for switch_id, switch in sorted(network.switches.items()):
+            op = {
+                "op": "add_switch",
+                "switch_id": switch.switch_id,
+                "x": switch.x,
+                "y": switch.y,
+                "main_length_cm": switch.main_length_cm,
+                "diverge_length_cm": switch.diverge_length_cm,
+                "switch_type": switch.switch_type,
+            }
+            if switch.main_radius_cm is not None:
+                op["main_radius_cm"] = switch.main_radius_cm
+            if switch.diverge_radius_cm is not None:
+                op["diverge_radius_cm"] = switch.diverge_radius_cm
+            if switch.name:
+                op["name"] = switch.name
+            if switch.notes:
+                op["notes"] = switch.notes
+            if switch.disabled:
+                op["disabled"] = True
+
+            steps.append(
+                {
+                    "type": "switch",
+                    "description": f"Switch: {switch.name or switch_id}",
+                    "operations": [op],
+                }
+            )
+        return steps
+
+    def _generate_block_steps(self, network: "RailwayNetwork") -> List[dict]:
+        """Generate block creation steps.
+
+        Skips platform-owned blocks — `add_platform` creates those itself
+        (see `_platform_owned_block_ids`).
+        """
+        steps = []
+        skip_ids = self._platform_owned_block_ids(network)
 
         for block_id, block in sorted(network.blocks.items()):
+            if block_id in skip_ids:
+                continue
+
             # Find all tracks belonging to this block
             positions = []
             for pos, track in network.tracks.items():
@@ -354,7 +377,13 @@ class StepRecorder:
         return steps
 
     def _generate_train_steps(self, network: "RailwayNetwork") -> List[dict]:
-        """Generate train creation steps."""
+        """Generate train creation steps (config only).
+
+        Per design_new.md, Train carries only persistent/config state — live
+        position/span comes from `SimulationController.add_train(...)` at
+        run time. Steps therefore record the same fields Train.to_dict
+        writes and never emit a `position` field.
+        """
         steps = []
 
         for train_id, train in sorted(network.trains.items()):
@@ -362,16 +391,16 @@ class StepRecorder:
                 "op": "add_train",
                 "train_id": train.train_id,
                 "max_speed": train.max_speed,
+                "num_cars": train.num_cars,
             }
-
-            if train.position:
-                op["position"] = {
-                    "x": train.position.head_tile[0],
-                    "y": train.position.head_tile[1],
-                }
-
-                if train.position.facing_direction:
-                    op["direction"] = train.position.facing_direction.name
+            if train.model:
+                op["model"] = train.model
+            if train.car_number:
+                op["car_number"] = train.car_number
+            if train.min_radius_cm is not None:
+                op["min_radius_cm"] = train.min_radius_cm
+            if train.speed_profile_id is not None:
+                op["speed_profile_id"] = train.speed_profile_id
 
             steps.append(
                 {

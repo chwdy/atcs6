@@ -2,6 +2,7 @@
 Train Management Routes - Train CRUD, control, and state management.
 """
 
+import time
 from typing import Dict
 
 from flask import jsonify, request
@@ -405,7 +406,40 @@ def register(app, state: AppState) -> None:
                 return jsonify({"error": "Train not found"}), 404
 
             controller = _get_train_controller(train)
-            return jsonify(controller.get_lookahead())
+            payload = controller.get_lookahead()
+
+            route_executor = state.sim_controller.route_executor
+            if route_executor:
+                route_id = route_executor.assigned_route_id_for(train_id)
+                if route_id:
+                    route = route_executor.route_registry.get(route_id)
+                    exec_state = route_executor.execution_states.get(train_id)
+                    if route and exec_state and exec_state.route_id == route_id:
+                        next_idx = exec_state.next_planning_index
+                        task = route.get_task_at(next_idx)
+                        if (
+                            task
+                            and task.task_kind == "dwell"
+                            and next_idx < len(exec_state.task_runs)
+                        ):
+                            # `target_time` and `dwell_started_at` are stored
+                            # as wall-clock Unix seconds (RouteExecutor._now()
+                            # uses time.time()), so the remaining duration
+                            # must be computed in wall-clock units too.
+                            # The finish time is then shifted onto the
+                            # sim-clock the HMI already shows.
+                            wall_now = time.time()
+                            sim_now = state.sim_controller.simulation_time
+                            dwell_started_at = exec_state.task_started_at(next_idx)
+                            remaining = task.get_remaining_dwell_time(
+                                wall_now, dwell_started_at
+                            )
+                            finish_sim_sec = sim_now + remaining
+                            payload["current_task_kind"] = "dwell"
+                            payload["dwell_remaining_sec"] = remaining
+                            payload["dwell_finish_sim_sec"] = finish_sim_sec
+
+            return jsonify(payload)
 
     @app.route("/api/trains/<train_id>/notifications", methods=["GET"])
     def get_train_notifications(train_id):

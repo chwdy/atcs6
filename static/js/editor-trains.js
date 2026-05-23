@@ -226,8 +226,21 @@ class TrainEditorHandler {
         let etaSec = null;
         if (ato != null && Number.isFinite(ato) && ato > 0) {
             etaSec = ato;
-        } else if (clearanceCm != null && Number.isFinite(clearanceCm) && currentSpeed > 0.5) {
-            etaSec = (clearanceCm / 100) * 3.6 / currentSpeed;
+        } else {
+            // Fallback: distance-over-speed estimate using the path-end point
+            // from the lookahead list and the ATO target speed.  Both distance
+            // (model cm) and speed (prototype km/h) need the same conversion
+            // factor that the backend uses, exposed as speed_conversion_factor.
+            const convFactor = controller?.speed_conversion_factor;
+            const lookahead = controller?.lookahead ?? [];
+            const pathEnd = lookahead.findLast?.(lp => lp.is_path_end)
+                ?? [...lookahead].reverse().find(lp => lp.is_path_end);
+            const distCm = pathEnd?.distance_cm ?? clearanceCm;
+            const atoSpeed = controller?.target_speed;
+            const speed = (atoSpeed != null && atoSpeed > 0.5) ? atoSpeed : currentSpeed;
+            if (distCm != null && Number.isFinite(distCm) && speed > 0.5 && convFactor > 0) {
+                etaSec = distCm / (speed * convFactor);
+            }
         }
         if (etaSec == null) return '—';
 
@@ -248,14 +261,18 @@ class TrainEditorHandler {
         return `${mins}m ${secs}s`;
     }
 
-    _formatSimClock(totalSec) {
-        const t = Math.max(0, Math.floor(totalSec));
+    _formatSimClock(totalSec, { subsecond = false } = {}) {
+        const t = Math.max(0, totalSec);
         const h = Math.floor(t / 3600);
         const m = Math.floor((t % 3600) / 60);
-        const s = t % 60;
+        const s = Math.floor(t % 60);
         const hh = String(h).padStart(2, '0');
         const mm = String(m).padStart(2, '0');
         const ss = String(s).padStart(2, '0');
+        if (subsecond) {
+            const ds = Math.floor((t % 1) * 10);
+            return `${hh}:${mm}:${ss}.${ds}`;
+        }
         return `${hh}:${mm}:${ss}`;
     }
 
@@ -551,7 +568,7 @@ class TrainEditorHandler {
         // Simulation clock — sourced from StateManager's network-wide scalar.
         const simTimeRaw = window.stateManager?.simulationTime;
         const simClockStr = (typeof simTimeRaw === 'number' && Number.isFinite(simTimeRaw))
-            ? this._formatSimClock(simTimeRaw)
+            ? this._formatSimClock(simTimeRaw, { subsecond: true })
             : '—';
 
         const handleDescription =
@@ -651,6 +668,8 @@ class TrainEditorHandler {
                             <div id="hmi-speed" class="col-full rows-3 tc-hmi-speed train-speed-display">${Number.isFinite(currentSpeed) ? Math.round(currentSpeed) : '—'}</div>
                             <div id="hmi-atc" class="col-r rows-1 tc-hmi-atc">ATC ${atcLimit != null && Number.isFinite(atcLimit) ? Math.round(atcLimit) : '—'}</div>
                             <div id="hmi-ato" class="col-r rows-1 tc-hmi-ato ${isATO ? '' : 'hidden'}">ATO ${targetSpeed != null && Number.isFinite(targetSpeed) ? Math.round(targetSpeed) : '—'}</div>
+                            <div id="hmi-dwell-remaining" class="tc-hmi-dwell-rem hidden"></div>
+                            <div id="hmi-dwell-until" class="tc-hmi-dwell-until hidden"></div>
                             <div id="hmi-handle" class="col-l rows-2 tc-hmi-handle ${handleClass}">${handlePosition}</div>
                             <div id="hmi-cab-run" class="col-r rows-1 tc-hmi-cab-run">CAB ${controller?.cab || '—'}${runId ? ` · RUN ${runId}` : ''}</div>
                         </div>
@@ -1240,10 +1259,39 @@ class TrainEditorHandler {
             { immediate: false }
         );
 
+        // Keep the HMI clock live even when the train is parked and no entity
+        // data changes between poll cycles.
+        const unsubClock = window.stateManager.subscribeSimClock((simTime) => {
+            const panel = document.querySelector(`.tc-panel[data-train-id="${trainId}"]`);
+            const simTimeEl = panel?.querySelector('#hmi-time');
+            if (simTimeEl) {
+                simTimeEl.textContent = this._formatSimClock(simTime, { subsecond: true });
+            }
+        });
+
+        // Self-contained dwell poll: the HMI's dwell rows need data that lives
+        // on /api/trains/<id>/lookahead. The panel owns this fetch directly
+        // rather than reading window.app.lastLookaheadPayload, which is the
+        // Train Monitor's cache — coupling the two panels would mean closing
+        // the monitor would silently empty the dwell display.
+        this._dwellLookahead = null;
+        const dwellPoll = setInterval(async () => {
+            if (this._trainId !== trainId) return;
+            try {
+                const payload = await this.api.getTrainLookahead(trainId);
+                this._dwellLookahead = payload;
+                const train = window.stateManager.get('trains', trainId);
+                if (train) this.updateControlPanelValuesFromData(train);
+            } catch (e) { /* ignore transient errors */ }
+        }, 250);
+
         this._unsubscribe = () => {
             try { unsubTrain && unsubTrain(); } catch (e) { /* ignore */ }
             try { unsubController && unsubController(); } catch (e) { /* ignore */ }
             try { unsubDispatcher && unsubDispatcher(); } catch (e) { /* ignore */ }
+            try { unsubClock && unsubClock(); } catch (e) { /* ignore */ }
+            try { clearInterval(dwellPoll); } catch (e) { /* ignore */ }
+            this._dwellLookahead = null;
         };
     }
 
@@ -1608,8 +1656,29 @@ class TrainEditorHandler {
                 const simTime = window.stateManager?.simulationTime;
                 simTimeEl.textContent =
                     (typeof simTime === 'number' && Number.isFinite(simTime))
-                        ? this._formatSimClock(simTime)
+                        ? this._formatSimClock(simTime, { subsecond: true })
                         : '—';
+            }
+            const dwellRemEl = panel.querySelector('#hmi-dwell-remaining');
+            const dwellUntilEl = panel.querySelector('#hmi-dwell-until');
+            if (dwellRemEl && dwellUntilEl) {
+                const lookahead = this._dwellLookahead;
+                const isDwell = lookahead?.current_task_kind === 'dwell';
+                const remaining = lookahead?.dwell_remaining_sec ?? null;
+                const finishSec = lookahead?.dwell_finish_sim_sec ?? null;
+                if (isDwell && remaining !== null) {
+                    dwellRemEl.textContent = `${Math.ceil(remaining)}s left`;
+                    dwellRemEl.classList.remove('hidden');
+                    if (finishSec !== null) {
+                        dwellUntilEl.textContent = `${this._formatSimClock(finishSec)} ←`;
+                        dwellUntilEl.classList.remove('hidden');
+                    } else {
+                        dwellUntilEl.classList.add('hidden');
+                    }
+                } else {
+                    dwellRemEl.classList.add('hidden');
+                    dwellUntilEl.classList.add('hidden');
+                }
             }
             const trainIdEl = panel.querySelector('#hmi-train-id');
             if (trainIdEl) {
