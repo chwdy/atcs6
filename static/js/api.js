@@ -143,6 +143,17 @@ class API {
     }
 
     /**
+     * Map of train_id -> assigned route_id (or null), from the /trains sibling
+     * payload's `assigned_routes_by_train_id`. Used to tell which trains are
+     * free for assignment.
+     * @returns {Promise<Object>} { [trainId]: routeId|null }
+     */
+    async getAssignedRoutesByTrain() {
+        const result = await this._request('/trains', {}, 'getTrains');
+        return result.assigned_routes_by_train_id || {};
+    }
+
+    /**
      * Delete a train.
      * @param {string} trainId - Train ID
      * @returns {Promise<object>} Result
@@ -181,6 +192,25 @@ class API {
             method: 'POST',
             body: data
         }, 'controlSimulation');
+    }
+
+    /**
+     * Restart the server process. The server flushes autosave, then
+     * replaces itself via os.execv. Caller should immediately switch
+     * the UI into a reconnect-polling state.
+     */
+    async restartServer() {
+        return this._request('/server/restart', {
+            method: 'POST'
+        }, 'restartServer');
+    }
+
+    /**
+     * Lightweight server health check. Used by the reconnect flow to
+     * detect when a restarted server is back up.
+     */
+    async healthCheck() {
+        return this._request('/health', {}, 'healthCheck');
     }
 
     // === Block Management ===
@@ -1035,15 +1065,43 @@ class API {
     }
 
     /**
-     * Check viability between platform pairs.
-     * @param {Array} pairs - Array of [from_platform_id, to_platform_id] pairs
-     * @returns {Promise<object>} Viability results
+     * Check viability between consecutive route-task target pairs.
+     * @param {Array} pairs - Array of [fromTarget, toTarget] pairs, where each
+     *   target is a canonical location dict ({block_id}/{platform_id}/{station_id})
+     *   or a bare platform-id string.
+     * @returns {Promise<object>} Viability results ({results: [{from,to,viable,hop_count?,error?}]})
      */
     async checkViability(pairs) {
         return this._request('/train-routes/check-viability', {
             method: 'POST',
             body: { pairs }
         }, 'checkViability');
+    }
+
+    /**
+     * Blocks/stations reachable from a route-task target (for feasibility
+     * highlighting when building waypoints). Resolves block/platform/station
+     * to a block server-side, then returns its topological reachable set.
+     * @param {('block'|'platform'|'station')} type - Target type
+     * @param {string} id - Target id
+     * @returns {Promise<object>} { reachable_endpoints: [], block_id, count }
+     */
+    async getReachableFrom(type, id) {
+        return this._request(
+            `/train-routes/reachable-from?type=${encodeURIComponent(type)}&id=${encodeURIComponent(id)}`,
+            {},
+            'getReachableFrom'
+        );
+    }
+
+    /**
+     * Read-only run history for a route (activation time + per-run task
+     * completion timestamps), aggregated across all trains.
+     * @param {string} routeId - Route ID
+     * @returns {Promise<object>} { route_id, activated_at, is_active, runs: [...] }
+     */
+    async getRouteHistory(routeId) {
+        return this._request(`/train-routes/${encodeURIComponent(routeId)}/history`, {}, 'getRouteHistory');
     }
 
     /**

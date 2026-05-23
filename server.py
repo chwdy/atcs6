@@ -18,11 +18,8 @@ TODO List:
 - [ ] Keep side-effectful initialization behind the app factory entrypoint
 """
 
-from datetime import datetime, timedelta
-import json
+from datetime import datetime
 import threading
-import time
-import uuid
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -159,7 +156,6 @@ def _build_state_and_app() -> tuple[AppState, Flask]:
     run_startup_tests()
 
     network = demo_main.create_comprehensive_demo()
-    network = demo_main.create_track_showcase(network)
 
     path_dispatcher = PathDispatcher(network)
     sim_controller = SimulationController(network, path_dispatcher)
@@ -195,56 +191,10 @@ def _build_state_and_app() -> tuple[AppState, Flask]:
 # directly, so module-level init must be skipped. When imported by a WSGI
 # server (e.g. gunicorn), __name__ != "__main__" and this block runs normally.
 if __name__ != "__main__":
+    from runtime import start_all_threads
+
     state, app = _build_state_and_app()
-
-    def simulation_loop():
-        global last_update_time
-        while True:
-            current_time = datetime.now()
-            delta_seconds = (current_time - last_update_time).total_seconds()
-            last_update_time = current_time
-
-            if simulation_running:
-                # Scale delta by simulation speed
-                sim_delta = delta_seconds * simulation_speed
-                with simulation_lock:
-                    sim_controller.update(sim_delta)
-
-            time.sleep(0.1)
-
-    # Start simulation thread
-    sim_thread = threading.Thread(target=simulation_loop, daemon=True)
-    sim_thread.start()
-
-    # ============================================================================
-    # Auto-Save Configuration
-    # ============================================================================
-    AUTOSAVE_INTERVAL = 300  # 5 minutes in seconds
-    AUTOSAVE_FILENAME = "_autosave"
-    last_autosave_time = time.time()
-
-    def autosave_loop():
-        """Background thread that saves to _autosave every 5 minutes."""
-        global last_autosave_time
-        while True:
-            time.sleep(60)  # Check every minute
-            if time.time() - last_autosave_time >= AUTOSAVE_INTERVAL:
-                with simulation_lock:
-                    try:
-                        result = persistence_manager.save_merged_layout(
-                            AUTOSAVE_FILENAME, network, "Auto-saved"
-                        )
-                        last_autosave_time = time.time()
-                        msg = f"[AutoSave] Saved at {datetime.now().isoformat()}"
-                        if result.get("steps_error"):
-                            msg += f" (steps failed: {result['steps_error']})"
-                        print(msg)
-                    except Exception as e:
-                        print(f"[AutoSave] Failed: {e}")
-
-    # Start autosave thread
-    autosave_thread = threading.Thread(target=autosave_loop, daemon=True)
-    autosave_thread.start()
+    start_all_threads(state)
 
 
 # ============================================================================

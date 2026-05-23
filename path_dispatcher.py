@@ -1564,7 +1564,20 @@ class PathDispatcher:
         terminal_block_direction = terminal_block.block_direction_for_compass_exit(
             terminal_entry.exit_edge
         )
-        if terminal_block_direction != requested_direction:
+        # Per design_new.md line 687, block-relative `"forward"` / `"reverse"`
+        # are defined against the increasing/decreasing direction of
+        # `Block.ordered_tiles`. A single-tile destination block has only
+        # one entry in `ordered_tiles`, so there is no increasing direction
+        # to anchor against and the pathfinder's terminal-direction derivation
+        # (`RailwayPathfinder._terminal_direction`) and the block's own
+        # `block_direction_for_compass_exit` use independent conventions that
+        # need not agree. The head-in-destination block + authority-end
+        # equality checks above already pin the physical arrival, so for
+        # single-tile destinations the direction match is skipped.
+        if (
+            terminal_block_direction != requested_direction
+            and len(terminal_block.ordered_tiles) > 1
+        ):
             return PathCompletionResult(
                 success=False,
                 path_id=path_id,

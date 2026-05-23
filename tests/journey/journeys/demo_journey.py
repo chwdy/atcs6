@@ -145,7 +145,7 @@ def build_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
                 assert_no_active_path(),
                 assert_command_inbox_contains("power_on"),
                 # Route already registered + assigned at bootstrap.
-                assert_route_assigned("DEMO_ROUTE"),
+                assert_route_assigned("DEMO_ROUTE_V1"),
             ],
         ),
         Event(

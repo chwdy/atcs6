@@ -1,3 +1,17 @@
+/* Tools panel header — header strip matching the train editor (secondary
+   sidebar): mixed-case title on a subtle purple gradient, flush to the
+   section edges. See docs/DESIGN_LANGUAGE.md §2. */
+.sidebar-tools-section h3 {
+    margin: -6px -8px 8px;
+    padding: 8px 10px;
+    background: linear-gradient(135deg, rgba(130, 87, 229, 0.12), rgba(130, 87, 229, 0.04));
+    border-bottom: 1px solid var(--border-color);
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--text-primary);
+}
+
 /* Tool Categories - Organized rows with labels */
 .tool-category {
     margin-bottom: 4px;
@@ -12,11 +26,11 @@
 }
 
 .tool-category-label {
-    font-size: 0.55rem;
+    font-size: 0.62rem;
     text-transform: uppercase;
     color: var(--text-secondary);
     margin-bottom: 2px;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.06em;
     font-weight: 600;
     cursor: pointer;
     display: flex;
@@ -66,6 +80,10 @@
     gap: 4px;
 }
 
+/* Tool tiles per DESIGN_LANGUAGE.md §3 "Flat ghost" — no per-tile border;
+   the .bg-dark fill contrasts with the panel and gives each tile its shape,
+   and the .tool-category dividers (border-bottom between groups) carry the
+   structure that per-tile borders previously suggested. */
 .tool-btn {
     display: flex;
     flex-direction: column;
@@ -76,26 +94,26 @@
     width: 38px;
     height: 38px;
     background-color: var(--bg-dark);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
+    border: none;
+    border-radius: var(--control-radius-sm);
     color: var(--text-secondary);
     cursor: pointer;
-    transition: all 0.2s;
+    transition: color 0.15s, background-color 0.15s;
     font-size: 0.5rem;
     flex-shrink: 0;
 }
 
 .tool-btn:hover {
     background-color: var(--bg-hover);
-    color: var(--text-primary);
+    color: var(--accent-hover);
 }
 
 .tool-btn.active {
-    background-color: var(--bg-hover);
-    border-color: var(--accent-color);
-    color: var(--accent-color);
+    background-color: rgba(130, 87, 229, 0.18);
+    color: var(--accent-hover);
 }
 
 .tool-icon {
-    font-size: 0.9rem;
+    font-size: 1rem;
+    line-height: 1;
 }

@@ -27,6 +27,13 @@ class TrainMonitor {
         this.hoveredBlock = null;
         this.blockRects = [];
         this.isColumnResizing = false;
+
+        // Reference lines: live crosshair follows the cursor; pinnedCm is a
+        // fixed line the user drops by clicking (stored as absolute path-cm so
+        // it stays anchored to the same distance across view-distance changes).
+        this.mouseX = null;
+        this.mouseY = null;
+        this.pinnedCm = null;
         
         this.initViewDistanceButtons();
         this.initColumnResizer();
@@ -40,8 +47,11 @@ class TrainMonitor {
         this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
         this.canvas.addEventListener('mouseleave', () => {
             this.hoveredBlock = null;
+            this.mouseX = null;
+            this.mouseY = null;
             this.render();
         });
+        this.canvas.addEventListener('click', (e) => this.handleClick(e));
         
         this.stateColors = {
             'free': '#04d361',
@@ -65,6 +75,9 @@ class TrainMonitor {
         this.trainId = trainId;
         this.titleEl.textContent = trainName || `Train ${trainId}`;
         this.bar.classList.remove('hidden');
+        this.pinnedCm = null;
+        this.mouseX = null;
+        this.mouseY = null;
         this.resizeCanvas();
     }
     
@@ -183,11 +196,13 @@ class TrainMonitor {
 
     handleMouseMove(e) {
         if (!this.lookaheadData) return;
-        
+
+        // CSS pixels: the canvas context is scaled by devicePixelRatio, so all
+        // drawn geometry (including blockRects) lives in CSS-pixel space.
         const rect = this.canvas.getBoundingClientRect();
-        const mouseX = (e.clientX - rect.left) * window.devicePixelRatio;
-        const mouseY = (e.clientY - rect.top) * window.devicePixelRatio;
-        
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
         let found = null;
         for (const block of this.blockRects) {
             if (mouseX >= block.x && mouseX <= block.x + block.w &&
@@ -196,11 +211,37 @@ class TrainMonitor {
                 break;
             }
         }
-        
-        if (this.hoveredBlock !== found) {
+
+        const moved = mouseX !== this.mouseX || mouseY !== this.mouseY;
+        this.mouseX = mouseX;
+        this.mouseY = mouseY;
+        if (moved || this.hoveredBlock !== found) {
             this.hoveredBlock = found;
             this.render();
         }
+    }
+
+    handleClick(e) {
+        if (!this.lookaheadData || !this._xToCm) return;
+
+        const rect = this.canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const { padding, width, visibleStartCm, visibleEndCm } = this._view;
+        if (x < padding.left || x > width - padding.right) return;
+
+        // Clicking on (or within a few px of) the existing pin clears it.
+        if (this.pinnedCm != null) {
+            const pinX = this._cmToX(this.pinnedCm);
+            if (Math.abs(pinX - x) <= 6) {
+                this.pinnedCm = null;
+                this.render();
+                return;
+            }
+        }
+
+        const cm = this._xToCm(x);
+        this.pinnedCm = Math.max(visibleStartCm, Math.min(visibleEndCm, cm));
+        this.render();
     }
     
     async loadScale() {
@@ -292,7 +333,8 @@ class TrainMonitor {
         if (this.speedLimitReasonEl) {
             const speedLimitReason = this.lookaheadData.speed_limit_reason;
             if (speedLimitReason) {
-                this.speedLimitReasonEl.textContent = speedLimitReason;
+                const limitKmh = Math.round(atcSpeed);
+                this.speedLimitReasonEl.textContent = `ATC ${limitKmh} km/h — ${speedLimitReason}`;
                 this.speedLimitReasonEl.classList.remove('hidden');
             } else {
                 this.speedLimitReasonEl.classList.add('hidden');
@@ -549,17 +591,17 @@ class TrainMonitor {
         const padding = { left: 30, right: 10, top: 15, bottom: 25 };
         
         // Section height constants derived from actual content extents
-        // Block: signals reach trackY-38 (double-yellow top) → 42px clearance above trackY
-        //        measurements bottom at trackY+36 → 40px below trackY
-        const BLOCK_TOP       = 42;
-        const BLOCK_BOT       = 40;
-        const BLOCK_SECTION_H = BLOCK_TOP + BLOCK_BOT;   // 82
+        // Block: inline signal dot reaches trackY-14 → 16px above trackY
+        //        measurement labels bottom at trackY+27 → 28px below trackY
+        const BLOCK_TOP       = 16;
+        const BLOCK_BOT       = 28;
+        const BLOCK_SECTION_H = BLOCK_TOP + BLOCK_BOT;   // 44
 
-        // Station: 4px margin + 9px name + 4px gap + 7px rect-half above trackY
-        //          7px rect-half + 4px gap + 9px info + 4px margin below trackY
-        const STN_TOP         = 24;
+        // Station: 7px rect-half + 1px gap + 8px name above trackY → 16px
+        //          7px rect-half + 4px gap + 8px info + ~5px margin below trackY → 24px
+        const STN_TOP         = 16;
         const STN_BOT         = 24;
-        const STN_SECTION_H   = STN_TOP + STN_BOT;        // 48
+        const STN_SECTION_H   = STN_TOP + STN_BOT;        // 40
 
         const SECTION_GAP     = 8;
         const CURVE_H         = 120;
@@ -592,6 +634,13 @@ class TrainMonitor {
         const visibleEndCm = trainDist + lookaheadDistance;
         const visibleRangeCm = visibleEndCm - visibleStartCm;
         const cmToX = (cm) => padding.left + ((cm - visibleStartCm) / visibleRangeCm) * trackWidth;
+        const xToCm = (x) => visibleStartCm + ((x - padding.left) / trackWidth) * visibleRangeCm;
+
+        // Expose the current view transform so the mouse/click handlers can map
+        // pixel positions back to path-cm without recomputing the layout.
+        this._cmToX = cmToX;
+        this._xToCm = xToCm;
+        this._view = { padding, width, height, visibleStartCm, visibleEndCm };
         
         // Draw speed curves (ATC and operational limits)
         if (data.speed_curves && data.speed_curves.length > 0) {
@@ -665,7 +714,9 @@ class TrainMonitor {
         }
         
         this.drawDistanceScale(padding.left, height - 5, trackWidth, trainDist, visibleRangeCm);
-        
+
+        this.drawReferenceLines(cmToX, xToCm, padding, width, height, data);
+
         this.drawHoverTooltip();
     }
     
@@ -750,50 +801,48 @@ class TrainMonitor {
             }
             
             // Draw measurements below the block
-            const labelY = trackY + blockHeight/2 + 10;
-            
+            const labelY = trackY + blockHeight/2 + 2;
+
             const lengthM = (block.length_cm / 100).toFixed(1);
             const lengthLabel = `${lengthM}m (${tileCount} tile${tileCount > 1 ? 's' : ''})`;
-            
+
             this.ctx.font = '8px JetBrains Mono, monospace';
             this.ctx.fillStyle = '#999';
             this.ctx.textAlign = 'center';
             this.ctx.textBaseline = 'top';
             this.ctx.fillText(lengthLabel, startX + blockWidth/2, labelY);
-            
+
             const startM = (block.start_cm / 100).toFixed(1);
             const endM = (block.end_cm / 100).toFixed(1);
             const posLabel = `${startM}m - ${endM}m`;
-            
-            this.ctx.fillText(posLabel, startX + blockWidth/2, labelY + 10);
+
+            this.ctx.fillText(posLabel, startX + blockWidth/2, labelY + 9);
         });
     }
     
     drawSignals(signals, cmToX, trackY) {
         signals.forEach(signal => {
             const x = cmToX(signal.distance_cm);
-            
+
             if (x < 0 || x > this.canvas.width) return;
-            
+
             const state = signal.state ? signal.state.toLowerCase() : null;
             const color = this.signalColors[state] || '#888';
-            
-            this.ctx.strokeStyle = '#555';
-            this.ctx.lineWidth = 2;
-            this.ctx.beginPath();
-            this.ctx.moveTo(x, trackY - 8);
-            this.ctx.lineTo(x, trackY - 22);
-            this.ctx.stroke();
-            
+
+            // Inline indicator just above the block bar (bar top sits at trackY-8).
+            // Filled dot in state color; double-yellow gets an outer ring to
+            // distinguish it from single-yellow without a second stacked dot.
             this.ctx.fillStyle = color;
             this.ctx.beginPath();
-            this.ctx.arc(x, trackY - 26, 4, 0, Math.PI * 2);
+            this.ctx.arc(x, trackY - 11, 3, 0, Math.PI * 2);
             this.ctx.fill();
-            
+
             if (state === 'double_yellow') {
+                this.ctx.strokeStyle = color;
+                this.ctx.lineWidth = 1;
                 this.ctx.beginPath();
-                this.ctx.arc(x, trackY - 34, 4, 0, Math.PI * 2);
-                this.ctx.fill();
+                this.ctx.arc(x, trackY - 11, 5, 0, Math.PI * 2);
+                this.ctx.stroke();
             }
         });
     }
@@ -839,7 +888,7 @@ class TrainMonitor {
     
     drawStations(stations, cmToX, trackY) {
         const RECT_HALF = 7;   // station rect is 14px centered at trackY
-        const NAME_GAP  = 4;   // gap between name text bottom and rect top
+        const NAME_GAP  = 1;   // gap between name text baseline and rect top
         const INFO_GAP  = 4;   // gap between rect bottom and info text top
 
         stations.forEach(station => {
@@ -881,7 +930,7 @@ class TrainMonitor {
 
             // Station name ABOVE rect — baseline at trackY - RECT_HALF - NAME_GAP
             const name = station.name || station.platform_id || station.station_id || 'Platform';
-            this.ctx.font = '9px Inter, sans-serif';
+            this.ctx.font = '8px Inter, sans-serif';
             this.ctx.fillStyle = '#7ec8e3';
             this.ctx.textAlign = 'center';
             this.ctx.textBaseline = 'alphabetic';
@@ -915,6 +964,108 @@ class TrainMonitor {
         this.ctx.textAlign = 'right';
         const maxM = Math.round(rangeCm / 100);
         this.ctx.fillText(`${maxM}m`, x + width, y);
+    }
+
+    /**
+     * Linearly interpolate a speed-curve field (atc_limit / operational_limit)
+     * at an arbitrary path-cm, matching the polyline drawn by drawSpeedCurves.
+     * Clamps to the endpoints outside the curve's range; null if no curve.
+     */
+    interpolateCurve(curves, cm, key) {
+        if (!curves || curves.length === 0) return null;
+        if (cm <= curves[0].distance_cm) return curves[0][key];
+        const last = curves[curves.length - 1];
+        if (cm >= last.distance_cm) return last[key];
+        for (let i = 1; i < curves.length; i++) {
+            const a = curves[i - 1];
+            const b = curves[i];
+            if (cm <= b.distance_cm) {
+                const span = b.distance_cm - a.distance_cm;
+                const t = span > 0 ? (cm - a.distance_cm) / span : 0;
+                return a[key] + t * (b[key] - a[key]);
+            }
+        }
+        return last[key];
+    }
+
+    drawReferenceLines(cmToX, xToCm, padding, width, height, data) {
+        const top = padding.top;
+        const bottom = height - padding.bottom;
+        const { visibleStartCm, visibleEndCm } = this._view;
+
+        // Pinned line first so the live crosshair renders on top of it.
+        if (this.pinnedCm != null &&
+            this.pinnedCm >= visibleStartCm && this.pinnedCm <= visibleEndCm) {
+            this._drawRefMarker(cmToX(this.pinnedCm), top, bottom, this.pinnedCm, data, {
+                color: '#8257e5', dash: [5, 3], lineWidth: 1.5, anchor: 'top', tag: 'PIN'
+            });
+        }
+
+        if (this.mouseX != null &&
+            this.mouseX >= padding.left && this.mouseX <= width - padding.right) {
+            this._drawRefMarker(this.mouseX, top, bottom, xToCm(this.mouseX), data, {
+                color: 'rgba(255, 255, 255, 0.55)', dash: [], lineWidth: 1, anchor: 'bottom', tag: null
+            });
+        }
+    }
+
+    _drawRefMarker(x, top, bottom, cm, data, opts) {
+        const ctx = this.ctx;
+        ctx.save();
+
+        // Vertical line spanning the full chart (curves + track + stations).
+        ctx.strokeStyle = opts.color;
+        ctx.lineWidth = opts.lineWidth;
+        ctx.setLineDash(opts.dash);
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, bottom);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Readout: distance from the train plus the ATC/ATO limits at this point.
+        const distM = (cm - (data.distance_into_path_cm || 0)) / 100;
+        const atc = this.interpolateCurve(data.speed_curves, cm, 'atc_limit');
+        const ato = this.interpolateCurve(data.speed_curves, cm, 'operational_limit');
+
+        const lines = [];
+        if (opts.tag) lines.push(opts.tag);
+        lines.push(`${distM.toFixed(0)}m`);
+        if (atc != null) lines.push(`ATC ${Math.round(atc)}`);
+        if (ato != null) lines.push(`ATO ${Math.round(ato)}`);
+
+        ctx.font = '9px JetBrains Mono, monospace';
+        const padX = 5;
+        const padY = 4;
+        const lh = 11;
+        let boxW = 0;
+        lines.forEach(l => { boxW = Math.max(boxW, ctx.measureText(l).width); });
+        boxW += padX * 2;
+        const boxH = lines.length * lh + padY * 2;
+
+        // Sit beside the line, flipping to the left near the right edge.
+        const cssW = this._view.width;
+        const cssH = this._view.height;
+        let bx = x + 6;
+        if (bx + boxW > cssW - 4) bx = x - 6 - boxW;
+        bx = Math.max(4, bx);
+        let by = opts.anchor === 'top' ? top + 2 : bottom - boxH - 2;
+        by = Math.max(2, Math.min(by, cssH - boxH - 2));
+
+        ctx.fillStyle = 'rgba(20, 20, 28, 0.92)';
+        ctx.fillRect(bx, by, boxW, boxH);
+        ctx.strokeStyle = opts.color;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(bx, by, boxW, boxH);
+
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        lines.forEach((l, i) => {
+            ctx.fillStyle = (opts.tag && i === 0) ? opts.color : '#e0e0e8';
+            ctx.fillText(l, bx + padX, by + padY + i * lh);
+        });
+
+        ctx.restore();
     }
 
     drawHoverTooltip() {

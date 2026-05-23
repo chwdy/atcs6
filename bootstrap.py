@@ -26,7 +26,6 @@ def create_demo_network() -> RailwayNetwork:
     import demo_main
 
     network = demo_main.create_comprehensive_demo()
-    network = demo_main.create_track_showcase(network)
     return network
 
 

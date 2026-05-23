@@ -62,12 +62,25 @@ from enums import TrainState
 def _run_demo_until_stopped(max_ticks: int = 2000, dt: float = 0.1):
     """Build the demo scene, run it until the train has been stopped for
     at least 80 ticks, return `(network, sim_controller, controller, ticks)`.
+
+    Bootstrap defaults the demo train to ``DEMO_ROUTE_V2`` (the extended
+    multi-leg journey); these audit tests need the original single-stop
+    terminal behavior, so re-point the train to ``DEMO_ROUTE_V1``.
     """
     with contextlib.redirect_stdout(io.StringIO()):
         network, _path, sim_controller, _persistence = bootstrap_runtime(
             demo=True, setup_train=True
         )
     train_id = "DEMO_TRAIN"
+    registry = sim_controller.route_executor.route_registry
+    v2 = registry.get("DEMO_ROUTE_V2")
+    if v2 is not None:
+        v2.is_active = False
+        v2.unassign_train(train_id)
+    v1 = registry.get("DEMO_ROUTE_V1")
+    if v1 is not None:
+        v1.is_active = True
+        v1.assign_train(train_id)
     controller = sim_controller.get_or_create_controller(train_id)
     stopped_streak = 0
     last_tick = 0

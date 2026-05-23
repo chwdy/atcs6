@@ -90,7 +90,7 @@ def build_strict_demo_journey(train_id: str = "DEMO_TRAIN") -> Journey:
                 assert_state(TrainState.OFF),
                 assert_block_at_tile_occupied_by((0, 0), train_id),
                 assert_block_id_state("BLOCK_MAIN_WEST", BlockState.OCCUPIED),
-                assert_route_assigned("DEMO_ROUTE"),
+                assert_route_assigned("DEMO_ROUTE_V1"),
             ],
         ),
         # E1 — after path acquired. Forward blocks should be RESERVED by the

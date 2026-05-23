@@ -158,9 +158,9 @@
 .app-modal {
     width: min(460px, 100%);
     background: var(--bg-panel);
-    border: 1px solid #3a3a4e;
+    border: 1px solid var(--border-color);
     border-radius: 10px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.7);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
     overflow: hidden;
 }
 
@@ -231,6 +231,50 @@
     display: flex;
     justify-content: flex-end;
     gap: 8px;
+}
+
+/* Restart-server reconnect overlay */
+.restart-overlay {
+    z-index: 1200;
+}
+
+.restart-card {
+    width: min(360px, 100%);
+    padding: 28px 24px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+}
+
+.restart-spinner {
+    width: 32px;
+    height: 32px;
+    border: 3px solid var(--border-color);
+    border-top-color: var(--text-primary);
+    border-radius: 50%;
+    animation: restart-spin 0.9s linear infinite;
+}
+
+@keyframes restart-spin {
+    to { transform: rotate(360deg); }
+}
+
+.restart-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.restart-sub {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.restart-actions {
+    margin-top: 6px;
 }
 
 /* Form Styles */
@@ -384,12 +428,12 @@
 
 .layout-format-badge.snapshot {
     background-color: rgba(4, 211, 97, 0.2);
-    color: #04d361;
+    color: var(--success-color);
 }
 
 .layout-format-badge.steps {
     background-color: rgba(130, 87, 229, 0.2);
-    color: #8257e5;
+    color: var(--accent-color);
 }
 
 /* Autosave entry styling */

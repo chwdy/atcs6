@@ -11,48 +11,46 @@
     <div class="app-container">
         <header class="app-header">
             <div class="logo">
-                <span class="icon">🚅</span>
-                <h1>Rail</h1>
+                <span class="logo-mark" aria-hidden="true"></span>
+                <h1>RAIL</h1>
             </div>
             <div class="controls">
                 <div class="simulation-controls">
                     <button id="btn-play-pause" class="btn btn-primary" title="Start/Pause Simulation">
                         <span class="icon">▶</span> Play
                     </button>
-                    <button id="btn-reset" class="btn btn-danger" title="Reset Simulation">
-                        <span class="icon">↺</span>
+                    <button id="btn-restart-server" class="btn" title="Restart Server" aria-label="Restart Server">
+                        <span class="icon">↻</span>
                     </button>
-                    <div class="speed-presets">
-                        <button class="btn btn-sm speed-btn" data-speed="0.5">0.5x</button>
-                        <button class="btn btn-sm speed-btn active" data-speed="1">1x</button>
-                        <button class="btn btn-sm speed-btn" data-speed="2">2x</button>
-                        <button class="btn btn-sm speed-btn" data-speed="3">3x</button>
+                    <div class="speed-presets" role="group" aria-label="Playback speed">
+                        <button class="speed-btn" data-speed="0.5">0.5x</button>
+                        <button class="speed-btn active" data-speed="1">1x</button>
+                        <button class="speed-btn" data-speed="2">2x</button>
+                        <button class="speed-btn" data-speed="3">3x</button>
                     </div>
                 </div>
                 <div class="recorder-controls">
-                    <button id="btn-record" class="btn btn-outline btn-record" title="Record Scenario">
+                    <button id="btn-record" class="btn btn-record" title="Record Scenario">
                         <span class="record-dot"></span> Record
                     </button>
-                    <button id="btn-checkpoint" class="btn btn-outline" title="Add Checkpoint" disabled>
-                        &#x2691; Checkpoint
+                    <button id="btn-checkpoint" class="btn" title="Add Checkpoint" disabled>
+                        Checkpoint
                     </button>
-                    <button id="btn-save-scenario" class="btn btn-outline" title="Save Scenario" disabled>
-                        Save Scenario
+                    <button id="btn-save-scenario" class="btn" title="Save Scenario" disabled>
+                        Save
                     </button>
                 </div>
-                <div class="mode-switch">
-                    <button id="mode-edit" class="btn btn-size-tight active">Editor</button>
-                    <button id="mode-sim" class="btn btn-size-tight">Simulation</button>
+                <div class="mode-switch" role="group" aria-label="Mode">
+                    <button id="mode-edit" class="mode-btn active">Editor</button>
+                    <button id="mode-sim" class="mode-btn">Simulation</button>
                 </div>
                 <div class="layout-controls">
-                    <button id="btn-new-layout" class="btn btn-outline" title="New Layout">📄 New</button>
-                    <button id="btn-save-layout" class="btn btn-outline" title="Save Layout">💾 Save</button>
-                    <button id="btn-load-layout" class="btn btn-outline" title="Load Layout">📂 Load</button>
+                    <button id="btn-new-layout" class="btn" title="New Layout">New</button>
+                    <button id="btn-save-layout" class="btn" title="Save Layout">Save</button>
+                    <button id="btn-load-layout" class="btn" title="Load Layout">Load</button>
                 </div>
                 <div class="inspector-controls">
-                    <button id="btn-inspector-toggle" class="btn btn-outline" title="Toggle Inspector">
-                        <span class="icon">🔍</span> Inspector
-                    </button>
+                    <button id="btn-inspector-toggle" class="btn" title="Toggle Inspector">Inspector</button>
                 </div>
             </div>
         </header>
@@ -83,7 +81,7 @@
                                 <span class="tool-icon">═</span> Track
                             </button>
                             <button class="tool-btn" data-tool="signal" title="Signal">
-                                <span class="tool-icon">🚦</span> Signal
+                                <span class="tool-icon">◉</span> Signal
                             </button>
                         </div>
                     </div>
@@ -93,16 +91,16 @@
                         <div class="tool-category-label">Platform</div>
                         <div class="tool-row">
                             <button class="tool-btn" data-tool="platform" title="Platform">
-                                <span class="tool-icon">🚉</span> Platform
+                                <span class="tool-icon">▤</span> Platform
                             </button>
                             <button class="tool-btn" data-tool="extend-platform" title="Extend Existing Platform">
-                                <span class="tool-icon">🚉+</span> Extend
+                                <span class="tool-icon">＋</span> Extend
                             </button>
                             <button class="tool-btn" data-tool="remove-platform-tile" title="Remove Platform Tile">
-                                <span class="tool-icon">➖🚉</span> Remove
+                                <span class="tool-icon">−</span> Remove
                             </button>
                             <button class="tool-btn" data-tool="stations-panel" title="Logical Station Groups">
-                                <span class="tool-icon">🏛️</span> Stations
+                                <span class="tool-icon">☰</span> Stations
                             </button>
                         </div>
                     </div>
@@ -115,10 +113,10 @@
                                 <span class="tool-icon">▣</span> Block
                             </button>
                             <button class="tool-btn" data-tool="extend-block" title="Extend Existing Block">
-                                <span class="tool-icon">▣+</span> Extend
+                                <span class="tool-icon">＋</span> Extend
                             </button>
                             <button class="tool-btn" data-tool="remove-block-tile" title="Remove Block Tile">
-                                <span class="tool-icon">➖▣</span> Remove
+                                <span class="tool-icon">−</span> Remove
                             </button>
                         </div>
                     </div>
@@ -128,16 +126,16 @@
                         <div class="tool-category-label">Dispatch</div>
                         <div class="tool-row">
                             <button class="tool-btn" data-tool="path" title="Create Path Between Blocks">
-                                <span class="tool-icon">🛤️</span> Path
+                                <span class="tool-icon">⇋</span> Path
                             </button>
                             <button class="tool-btn" data-tool="extend-path" title="Extend Existing Path">
-                                <span class="tool-icon">🛤️+</span> Extend
+                                <span class="tool-icon">＋</span> Extend
                             </button>
                             <button class="tool-btn" data-tool="cancel-path" title="Cancel Path">
-                                <span class="tool-icon">🛤️✕</span> Cancel
+                                <span class="tool-icon">✕</span> Cancel
                             </button>
                             <button class="tool-btn" data-tool="paths-panel" title="View Active Paths">
-                                <span class="tool-icon">📋</span> Paths
+                                <span class="tool-icon">☰</span> Paths
                             </button>
                         </div>
                     </div>
@@ -147,16 +145,26 @@
                         <div class="tool-category-label">Train</div>
                         <div class="tool-row">
                             <button class="tool-btn" data-tool="add-train" title="Add New Train">
-                                <span class="tool-icon">🚂</span> Add
+                                <span class="tool-icon">＋</span> Add
                             </button>
                             <button class="tool-btn" data-tool="train-panel" title="Train Management">
-                                <span class="tool-icon">📋</span> Trains
+                                <span class="tool-icon">☰</span> Trains
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Row 7: Route -->
+                    <div class="tool-category">
+                        <div class="tool-category-label">Route</div>
+                        <div class="tool-row">
+                            <button class="tool-btn" data-tool="new-route" title="Create New Route">
+                                <span class="tool-icon">＋</span> New Route
                             </button>
                             <button class="tool-btn" data-tool="routes-panel" title="Train Route Editor">
-                                <span class="tool-icon">🛤️</span> Train Routes
+                                <span class="tool-icon">⇄</span> Routes
                             </button>
                             <button class="tool-btn" data-tool="schedules-panel" title="View Schedules">
-                                <span class="tool-icon">📅</span> Schedules
+                                <span class="tool-icon">◷</span> Schedules
                             </button>
                         </div>
                     </div>

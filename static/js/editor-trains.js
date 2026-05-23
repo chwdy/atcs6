@@ -667,27 +667,30 @@ class TrainEditorHandler {
                 <!-- ZONE 3: CONTROLS -->
                 <section class="tc-section tc-section-controls">
                     <div class="tc-section-title">Controls</div>
-                    <div class="tc-row">
-                        <span class="tc-row-label">Power</span>
-                        <div class="tc-segment" role="group">
-                            <button type="button" id="train-power-on-btn" class="tc-seg-btn switch-btn ${powerOn ? 'active' : ''}" ${powerOn ? 'disabled' : ''}>On</button>
-                            <button type="button" id="train-power-off-btn" class="tc-seg-btn switch-btn ${!powerOn ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>Off</button>
+                    <div class="tc-controls-pair">
+                        <div class="tc-row">
+                            <span class="tc-row-label">Power</span>
+                            <div class="tc-segment" role="group">
+                                <button type="button" id="train-power-on-btn" class="tc-seg-btn switch-btn ${powerOn ? 'active' : ''}" ${powerOn ? 'disabled' : ''}>On</button>
+                                <button type="button" id="train-power-off-btn" class="tc-seg-btn switch-btn ${!powerOn ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>Off</button>
+                            </div>
+                        </div>
+                        <div class="tc-row">
+                            <span class="tc-row-label">Mode</span>
+                            <div class="tc-segment" role="group">
+                                <button type="button" id="train-mode-ato-btn" class="tc-seg-btn switch-btn ${isATO ? 'active' : ''}" ${!canSwitchModes ? 'disabled' : ''}>ATO</button>
+                                <button type="button" id="train-mode-manual-btn" class="tc-seg-btn switch-btn ${isManual ? 'active' : ''}" ${!canSwitchModes ? 'disabled' : ''}>Manual</button>
+                            </div>
                         </div>
                     </div>
-                    <div class="tc-row">
+                    <div class="tc-row tc-row-cab">
                         <span class="tc-row-label">Cab</span>
                         <div class="tc-segment" role="group">
                             <button type="button" id="train-cab-a-btn" class="tc-seg-btn switch-btn ${controller?.cab === 'A' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>A</button>
-                            <button type="button" id="train-cab-b-btn" class="tc-seg-btn switch-btn ${controller?.cab === 'B' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>B</button>
                             <button type="button" id="train-cab-off-btn" class="tc-seg-btn switch-btn ${!controller?.cab ? 'active' : ''}" ${!powerOn || !isStopped || !controller?.cab ? 'disabled' : ''}>Off</button>
+                            <button type="button" id="train-cab-b-btn" class="tc-seg-btn switch-btn ${controller?.cab === 'B' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>B</button>
                         </div>
-                    </div>
-                    <div class="tc-row">
-                        <span class="tc-row-label">Mode</span>
-                        <div class="tc-segment" role="group">
-                            <button type="button" id="train-mode-ato-btn" class="tc-seg-btn switch-btn ${isATO ? 'active' : ''}" ${!canSwitchModes ? 'disabled' : ''}>ATO</button>
-                            <button type="button" id="train-mode-manual-btn" class="tc-seg-btn switch-btn ${isManual ? 'active' : ''}" ${!canSwitchModes ? 'disabled' : ''}>Manual</button>
-                        </div>
+                        <button id="train-monitor-btn" type="button" class="tc-btn tc-btn-ghost tc-monitor-btn">Monitor →</button>
                     </div>
 
                     <!-- ATO Go/Stop (visible when control_mode==='ato') -->
@@ -751,12 +754,6 @@ class TrainEditorHandler {
                     <div class="tc-emergency-row">
                         <button id="train-emergency-btn" class="tc-eb-btn" type="button">EMERGENCY STOP</button>
                         <button id="train-emergency-reset-btn" class="tc-eb-reset-btn ${emergencyActive ? '' : 'hidden'}" type="button">Reset</button>
-                    </div>
-
-                    <!-- ACTION BUTTON GROUP -->
-                    <div class="tc-action-group">
-                        <button id="train-monitor-btn" type="button" class="tc-btn tc-btn-ghost">Open Train Monitor →</button>
-                        <button id="delete-train-btn" type="button" class="tc-btn tc-btn-danger-ghost">Delete Train</button>
                     </div>
                 </section>
 
@@ -1153,7 +1150,6 @@ class TrainEditorHandler {
         // (Removed as properties are now inline)
 
         const saveBtn = document.getElementById('save-train-btn');
-        const deleteBtn = document.getElementById('delete-train-btn');
         const maxSpeedInput = document.getElementById('train-max-speed-input');
         const lengthInput = document.getElementById('train-length-input');
         const carNumberInput = document.getElementById('train-car-number-input');
@@ -1186,30 +1182,6 @@ class TrainEditorHandler {
                 } catch (err) {
                     console.error('Failed to save train properties:', err);
                     window.showToast('Failed to save train properties: ' + err.message, 'error', 5000);
-                }
-            };
-        }
-
-        if (deleteBtn) {
-            deleteBtn.onclick = async () => {
-                const confirmed = await showConfirmModal({
-                    title: 'Delete Train',
-                    message: `Delete train "${trainId}"?`,
-                    detail: 'This action cannot be undone.',
-                    confirmText: 'Delete',
-                    confirmVariant: 'danger'
-                });
-                if (!confirmed) {
-                    return;
-                }
-                try {
-                    await this.api.deleteTrain(trainId);
-                    await window.app.refreshNetwork();
-                    this.editor.hideSecondarySidebar();
-                    window.showToast('Train deleted', 'success', 5000);
-                } catch (err) {
-                    console.error('Failed to delete train:', err);
-                    window.showToast('Failed to delete train: ' + err.message, 'error', 5000);
                 }
             };
         }

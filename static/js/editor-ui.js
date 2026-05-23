@@ -254,10 +254,13 @@ class EditorUIHandler {
 
             titleEl.textContent = title;
             contentEl.innerHTML = content;
-            
+
             sidebar.classList.remove('compact');
-            
-            
+            // The route editor re-adds this after rendering; clearing it here
+            // means every other panel resets to the default width.
+            sidebar.classList.remove('route-editor-wide');
+
+
             sidebar.classList.add('visible');
 
             this.currentSecondaryPanel = {
@@ -279,6 +282,7 @@ class EditorUIHandler {
         if (sidebar) {
             sidebar.classList.remove('visible');
             sidebar.classList.remove('compact');
+            sidebar.classList.remove('route-editor-wide');
         }
 
         this.cleanupSecondaryPanelSubscriptions();

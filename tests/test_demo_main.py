@@ -193,7 +193,7 @@ def test_bootstrap_creates_path_during_phase1_after_power_on():
     sim_controller.update(0.0)
     assert path_dispatcher.active_path_id_by_train("DEMO_TRAIN") is None
 
-    # Tick 2: Phase 1 sees READY, acquires authority for DEMO_ROUTE.
+    # Tick 2: Phase 1 sees READY, acquires authority for DEMO_ROUTE_V2.
     sim_controller.update(0.0)
     assert path_dispatcher.active_path_id_by_train("DEMO_TRAIN") is not None
 

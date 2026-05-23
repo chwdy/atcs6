@@ -10,7 +10,7 @@ TODO List:
 - [ ] Accept optional runtime configuration inputs
 """
 
-from flask import Flask
+from flask import Flask, request
 from flask_cors import CORS
 from werkzeug.routing import IntegerConverter
 
@@ -39,6 +39,23 @@ def create_app(state: AppState) -> Flask:
     CORS(app)
     app.url_map.converters["sint"] = SignedIntConverter
     app.extensions["state"] = state
+
+    @app.after_request
+    def _log_non_2xx(response):
+        if not (200 <= response.status_code < 300):
+            lines = [f"\n  !! {request.method} {request.path} -> {response.status_code}"]
+            if request.args:
+                lines.append(f"     params: {dict(request.args)}")
+            json_body = request.get_json(silent=True)
+            if json_body:
+                lines.append(f"     body:   {json_body}")
+            if not response.direct_passthrough:
+                resp_text = response.get_data(as_text=True)
+                if resp_text:
+                    preview = resp_text[:400] + ("..." if len(resp_text) > 400 else "")
+                    lines.append(f"     result: {preview}")
+            app.logger.warning("\n".join(lines))
+        return response
 
     # Register route modules
     register_all(app, state)

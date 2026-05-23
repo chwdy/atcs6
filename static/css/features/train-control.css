@@ -47,7 +47,6 @@
     gap: 8px;
     padding: 10px 12px;
     background-color: var(--bg-hover);
-    border: 1px solid var(--border-color);
     border-left: 3px solid var(--border-color);
     border-radius: var(--control-radius-sm);
 }
@@ -139,17 +138,17 @@
 .tc-field {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 3px;
     min-width: 0;
     margin: 0;
 }
 
 .tc-field-label {
     font-size: 10px;
-    color: var(--text-secondary);
+    color: var(--text-tertiary);
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    font-weight: 600;
+    font-weight: 500;
     margin: 0;
     line-height: 1;
 }
@@ -677,6 +676,34 @@
     white-space: nowrap;
 }
 
+/* Controls zone — compact layout. The two 2-button toggles (Power + Mode) sit
+   side by side via .tc-controls-pair; the wider 3-button Cab keeps its own row.
+   Scoped to .tc-section-controls so the shared .tc-row used by the Debug-zone
+   property inputs is untouched. A narrower label width reclaims horizontal room
+   for the full-width Cab/Input rows. */
+.tc-section-controls { gap: 5px; }
+.tc-section-controls .tc-row { min-height: 24px; gap: 6px; }
+.tc-section-controls .tc-row-label { flex: 0 0 46px; }
+
+.tc-controls-pair {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+}
+/* Each toggle stacks its label above a full-width segment, so the segment never
+   competes with the label for horizontal room — the longest option ("Manual")
+   can't clip even on a narrow sidebar. The two cells sit side by side and the
+   second wraps to its own line only when the sidebar gets very narrow. */
+.tc-controls-pair > .tc-row {
+    flex: 1 1 110px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+    min-height: 0;
+}
+.tc-controls-pair > .tc-row > .tc-row-label { flex: 0 0 auto; }
+.tc-controls-pair > .tc-row > .tc-segment { flex: 0 0 auto; }
+
 /* Segmented control — same vocabulary as the train-monitor view-distance group */
 .tc-segment {
     flex: 1;
@@ -696,7 +723,6 @@
     padding: 0 8px;
     background: transparent;
     border: none;
-    border-right: 1px solid var(--border-color);
     color: var(--text-secondary);
     font-family: var(--font-main);
     font-size: 11px;
@@ -708,7 +734,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.tc-seg-btn:last-child { border-right: none; }
 .tc-seg-btn:hover:not(:disabled) {
     color: var(--accent-hover);
     background-color: var(--bg-hover);
@@ -1114,10 +1139,8 @@
 
 .tc-section-task {
     background-color: var(--bg-hover);
-    border: 1px solid var(--border-color);
     border-left: 3px solid var(--border-color);
     border-radius: var(--control-radius-sm);
-    border-top: 1px solid var(--border-color);
     padding: 10px 12px;
     gap: 8px;
 }
@@ -1155,33 +1178,24 @@
     grid-template-columns: repeat(2, 1fr);
 }
 
-/* Action button group — Open Train Monitor / Delete Train at bottom of Controls. */
-.tc-action-group {
-    display: flex;
-    gap: 8px;
-    margin-top: 4px;
-}
-.tc-action-group .tc-btn {
+/* Inline "Monitor →" button — sits to the right of the Cab segment and grows
+   to fill the leftover row width, splitting it evenly with the segment (flex: 1
+   on both, so the cab buttons stay comfortable). Never wraps. */
+.tc-monitor-btn {
     flex: 1;
+    padding: 0 10px;
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
 }
 
-/* Ghost variants used by the action group. */
+/* Ghost variant used by the Monitor button. */
 .tc-btn-ghost {
     color: var(--text-primary);
 }
 .tc-btn-ghost:hover:not(:disabled) {
     border-color: var(--accent-color);
     color: var(--accent-hover);
-}
-
-.tc-btn-danger-ghost {
-    color: var(--text-secondary);
-    border-color: var(--border-color);
-}
-.tc-btn-danger-ghost:hover:not(:disabled) {
-    color: var(--danger-color);
-    border-color: var(--danger-color);
-    background-color: rgba(232, 63, 91, 0.08);
 }
 
 /* ============================================================================

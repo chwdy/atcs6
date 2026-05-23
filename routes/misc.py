@@ -70,6 +70,50 @@ def register(app, state: AppState) -> None:
             }
         )
 
+    @app.route("/api/health", methods=["GET"])
+    def health():
+        return jsonify({"ok": True})
+
+    @app.route("/api/server/restart", methods=["POST"])
+    def restart_server():
+        """Replace the server process with a fresh invocation of ``sys.argv``.
+
+        Flushes autosave first so editor changes from the last <5 minutes are
+        not lost, then schedules ``os.execv`` on a short timer so the HTTP
+        response can reach the client before the process image is replaced.
+        """
+        import os
+        import sys
+        import threading as _threading
+
+        state.simulation_running = False
+        try:
+            with state.simulation_lock:
+                state.persistence_manager.save_merged_layout(
+                    "_autosave", state.network, "Pre-restart autosave"
+                )
+                state.last_autosave_time = time.time()
+            flushed = True
+            flush_error = None
+        except Exception as e:
+            flushed = False
+            flush_error = str(e)
+            print(f"[Restart] Pre-restart autosave failed: {e}")
+
+        def _do_restart() -> None:
+            print("[Restart] Exec'ing fresh process image...")
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        _threading.Timer(0.2, _do_restart).start()
+
+        return jsonify(
+            {
+                "status": "restarting",
+                "flushed": flushed,
+                "flush_error": flush_error,
+            }
+        )
+
     @app.route("/api/network/steps", methods=["GET"])
     def get_network_steps():
         """Return current network layout as StepRecorder steps.
@@ -508,34 +552,133 @@ def register(app, state: AppState) -> None:
             }
         )
 
+    @app.route("/api/train-routes/<route_id>/history", methods=["GET"])
+    def get_train_route_history(route_id):
+        """Read-only run history for a route.
+
+        Aggregates every `RouteRun` for the route (running + archived, across
+        all trains) into a flat timeline of run-start and per-task completion
+        timestamps. Reads existing run state only — no new persisted log, no
+        mutation.
+        """
+        route = state.sim_controller.route_executor.route_registry.get(route_id)
+        if not route:
+            return jsonify({"error": "Route not found"}), 404
+
+        route_executor = state.sim_controller.route_executor
+        runs_out = []
+        for run in route_executor.history_for_route(route_id):
+            tasks_out = []
+            for i, task_run in enumerate(run.task_runs):
+                tasks_out.append(
+                    {
+                        "task_index": task_run.task_index,
+                        "started_at": run.task_started_at(i),
+                        "finished_at": task_run.finished_at,
+                        "delay_class": task_run.delay_class,
+                    }
+                )
+            runs_out.append(
+                {
+                    "train_id": run.train_id,
+                    "run_number": run.run_number,
+                    "started_at": run.started_at,
+                    "status": run.current_route_status.value,
+                    "tasks": tasks_out,
+                }
+            )
+
+        return jsonify(
+            {
+                "route_id": route.route_id,
+                "activated_at": route.started_at,
+                "is_active": route.is_active,
+                "runs": runs_out,
+            }
+        )
+
+    @app.route("/api/train-routes/reachable-from", methods=["GET"])
+    def reachable_from_target():
+        """Blocks/stations reachable from a route-task target.
+
+        Query params: ``type`` (``block``/``platform``/``station``) and
+        ``id``. Resolves the target to a block via the same network-only
+        resolver the runtime uses, then returns the topological
+        reachable-endpoints set (blocks + stations) for that block. Used by
+        the route editor to highlight feasible next-waypoint tiles. Read-only.
+        """
+        target_type = (request.args.get("type") or "").strip()
+        target_id = (request.args.get("id") or "").strip()
+        key_by_type = {
+            "block": "block_id",
+            "platform": "platform_id",
+            "station": "station_id",
+        }
+        if target_type not in key_by_type or not target_id:
+            return jsonify(
+                {"error": "type must be block|platform|station and id is required"}
+            ), 400
+
+        route_executor = getattr(state.sim_controller, "route_executor", None)
+        if route_executor is None:
+            return jsonify({"error": "Route executor unavailable"}), 503
+
+        try:
+            task = RouteTask(
+                task_kind="waypoint",
+                task_location={key_by_type[target_type]: target_id},
+            )
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid target"}), 400
+
+        block_id = route_executor._resolve_task_target_block(task)
+        if not block_id:
+            return jsonify({"error": "Could not resolve target to a block"}), 404
+
+        with state.simulation_lock:
+            reachable = state.path_dispatcher.get_reachable_endpoints(
+                block_id, include_stations=True
+            )
+
+        return jsonify(
+            {
+                "type": target_type,
+                "id": target_id,
+                "block_id": block_id,
+                "reachable_endpoints": reachable,
+                "count": len(reachable),
+            }
+        )
+
     @app.route("/api/train-routes/check-viability", methods=["POST"])
     def check_train_route_viability():
-        """Check connectivity viability between platform waypoint pairs."""
+        """Check connectivity viability between route-task target pairs.
+
+        Each pair element is a canonical target — a dict carrying exactly one
+        of ``block_id`` / ``platform_id`` / ``station_id``, or a bare string
+        (treated as a platform id, matching ``_coerce_task_location``). Every
+        target is resolved to a block id through the same network-only resolver
+        the runtime uses, so block / platform / station targets all work.
+        """
+        from train_route import RouteTask
+
         data = request.get_json() or {}
         pairs = data.get("pairs", [])
 
-        def get_platform(platform_id: str):
-            platforms = getattr(state.network, "platforms", None)
-            if isinstance(platforms, dict) and platform_id in platforms:
-                return platforms[platform_id]
-            return None
+        route_executor = getattr(
+            getattr(state, "sim_controller", None), "route_executor", None
+        )
 
-        def get_platform_block_id(platform_id: str) -> Optional[str]:
-            platform = get_platform(platform_id)
-            if not platform:
+        def resolve_target_block(elem) -> Optional[str]:
+            """Resolve a canonical target (dict or bare platform-id string) to
+            a block id via the runtime resolver, or None when unresolvable."""
+            if route_executor is None:
                 return None
-
-            get_all_assigned_blocks = getattr(platform, "get_all_assigned_blocks", None)
-            if callable(get_all_assigned_blocks):
-                block_ids = get_all_assigned_blocks()
-                if isinstance(block_ids, (set, list, tuple)) and block_ids:
-                    return list(block_ids)[0]
-
-            for x, y in getattr(platform, "positions", []):
-                track = state.network.get_track(x, y)
-                if track and track.block_section_id:
-                    return track.block_section_id
-            return None
+            try:
+                task = RouteTask(task_kind="waypoint", task_location=elem)
+            except (ValueError, TypeError):
+                return None
+            return route_executor._resolve_task_target_block(task)
 
         def build_block_graph() -> dict:
             graph = {}
@@ -589,17 +732,17 @@ def register(app, state: AppState) -> None:
                 )
                 continue
 
-            from_platform, to_platform = pair
-            from_block = get_platform_block_id(from_platform)
-            to_block = get_platform_block_id(to_platform)
+            from_target, to_target = pair
+            from_block = resolve_target_block(from_target)
+            to_block = resolve_target_block(to_target)
 
             if not from_block or not to_block:
                 results.append(
                     {
-                        "from": from_platform,
-                        "to": to_platform,
+                        "from": from_target,
+                        "to": to_target,
                         "viable": False,
-                        "error": "Missing platform or block assignment",
+                        "error": "Could not resolve target to a block",
                     }
                 )
                 continue
@@ -608,8 +751,8 @@ def register(app, state: AppState) -> None:
             if hops is None:
                 results.append(
                     {
-                        "from": from_platform,
-                        "to": to_platform,
+                        "from": from_target,
+                        "to": to_target,
                         "viable": False,
                         "error": "No path found",
                     }
@@ -618,8 +761,8 @@ def register(app, state: AppState) -> None:
 
             results.append(
                 {
-                    "from": from_platform,
-                    "to": to_platform,
+                    "from": from_target,
+                    "to": to_target,
                     "viable": True,
                     "hop_count": hops,
                     "distance_cm": float(hops * 50.0),

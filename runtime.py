@@ -59,6 +59,10 @@ def create_simulation_loop(state: AppState) -> Callable[[], None]:
 def create_autosave_loop(state: AppState) -> Callable[[], None]:
     """Create an autosave loop function bound to the given state.
 
+    Reads and writes `state.last_autosave_time` so that manual saves
+    (which also update that field) defer the next autosave by the
+    full interval rather than racing the timer.
+
     Args:
         state: AppState containing persistence manager and lock.
 
@@ -67,16 +71,16 @@ def create_autosave_loop(state: AppState) -> Callable[[], None]:
     """
 
     def autosave_loop() -> None:
-        last_autosave_time = time.time()
+        state.last_autosave_time = time.time()
         while True:
             time.sleep(60)  # Check every minute
-            if time.time() - last_autosave_time >= AUTOSAVE_INTERVAL:
+            if time.time() - state.last_autosave_time >= AUTOSAVE_INTERVAL:
                 with state.simulation_lock:
                     try:
                         result = state.persistence_manager.save_merged_layout(
                             AUTOSAVE_FILENAME, state.network, "Auto-saved"
                         )
-                        last_autosave_time = time.time()
+                        state.last_autosave_time = time.time()
                         msg = f"[AutoSave] Saved at {datetime.now().isoformat()}"
                         if result.get("steps_error"):
                             msg += f" (steps failed: {result['steps_error']})"

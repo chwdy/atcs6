@@ -368,6 +368,22 @@ class RouteExecutor:
             out.append(live)
         return sorted(out, key=lambda r: r.run_number)
 
+    def history_for_route(self, route_id: str) -> List[RouteExecutionState]:
+        """Return every `RouteRun` for `route_id`, sorted by start.
+
+        The route-keyed counterpart of `history_for_train`: includes RUNNING,
+        FINISHED, and DEACTIVATED rows for the route across every train that
+        has run it (archived rows plus any live run still in a slot). A
+        read-only aggregation — touches no run state.
+        """
+        out: List[RouteExecutionState] = [
+            r for r in self._historical_runs if r.route_id == route_id
+        ]
+        for live in self.execution_states.values():
+            if live.route_id == route_id:
+                out.append(live)
+        return sorted(out, key=lambda r: (r.started_at, r.run_number))
+
     # ------------------------------------------------------------------ helpers
     def _get_controller(self, train: "Train") -> TrainController:
         """Get or create TrainController for a train."""
@@ -1232,9 +1248,7 @@ class RouteExecutor:
         takes a signed int because it folds it into per-block traversal
         sign math; the canonical store is the literal string on RouteRun.
         """
-        from route_target_resolver import RouteTargetResolver
-
-        return RouteTargetResolver.resolve_task_direction(
+        return self._get_route_target_resolver().resolve_task_direction(
             train, block_id, task_direction, signed_direction
         )
 

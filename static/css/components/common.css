@@ -114,7 +114,7 @@
 }
 
 .btn-success:hover {
-    background-color: #03b350;
+    filter: brightness(0.9);
 }
 
 .btn-outline {
@@ -126,6 +126,26 @@
 .btn-outline:hover {
     background-color: var(--bg-hover);
     border-color: var(--accent-color);
+}
+
+/* Flat ghost — per DESIGN_LANGUAGE.md §3, for buttons sitting in a container
+   that already groups them (toolbar row, header strip, segmented cluster).
+   No border, no fill; affordance comes from the hover bg-tint. */
+.btn-flat {
+    background-color: transparent;
+    border: none;
+    color: var(--text-primary);
+}
+
+.btn-flat:hover {
+    background-color: var(--bg-hover);
+    color: var(--accent-hover);
+}
+
+.btn-flat.active,
+.btn-flat:active {
+    background-color: rgba(130, 87, 229, 0.18);
+    color: var(--accent-hover);
 }
 
 .btn-sm {
@@ -212,12 +232,12 @@
 
 /* Signal Summary Row */
 .signal-summary-row {
-    background: #1e2025;
-    padding: 4px 6px; /* Reduced padding */
-    border-radius: 4px;
+    background-color: var(--bg-dark);
+    padding: 4px 6px;
+    border-radius: var(--control-radius-sm);
     display: flex;
     align-items: center;
-    gap: 6px; /* Reduced gap */
+    gap: 6px;
     border: 1px solid var(--border-color);
 }
 
@@ -226,7 +246,6 @@
     height: 10px;
     border-radius: 50%;
     flex-shrink: 0;
-    box-shadow: 0 0 5px rgba(0,0,0,0.5);
 }
 
 .signal-info {
@@ -238,23 +257,23 @@
 .signal-id {
     font-family: var(--font-mono);
     font-size: 11px;
-    color: #00ff88;
+    color: var(--text-primary);
 }
 
 .signal-dir {
     font-size: 10px;
-    color: #888;
+    color: var(--text-secondary);
 }
 
 /* Block Summary Row */
 .block-summary-row {
-    background: #1e2025;
-    padding: 4px 6px; /* Reduced padding */
-    border-radius: 4px;
+    background-color: var(--bg-dark);
+    padding: 4px 6px;
+    border-radius: var(--control-radius-sm);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 6px; /* Reduced gap */
+    gap: 6px;
     border: 1px solid var(--border-color);
 }
 
@@ -278,15 +297,15 @@
 
 /* Station Summary Row */
 .station-summary-row {
-    background: #1e2025;
-    padding: 4px 6px; /* Reduced padding */
-    border-radius: 4px;
+    background-color: var(--bg-dark);
+    padding: 4px 6px;
+    border-radius: var(--control-radius-sm);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 6px; /* Reduced gap */
+    gap: 6px;
     border: 1px solid var(--border-color);
-    border-left: 3px solid #ffd93d;
+    border-left: 3px solid var(--info-color);
 }
 
 .station-info {
@@ -303,17 +322,17 @@
 
 .station-name {
     font-size: 11px;
-    color: #ffd93d;
+    color: var(--info-color);
 }
 
 /* Switch Summary Row */
 .switch-summary-row {
-    background: #1e2025;
-    padding: 4px 6px; /* Reduced padding */
-    border-radius: 4px;
+    background-color: var(--bg-dark);
+    padding: 4px 6px;
+    border-radius: var(--control-radius-sm);
     display: flex;
     align-items: center;
-    gap: 6px; /* Reduced gap */
+    gap: 6px;
     border: 1px solid var(--border-color);
 }
 
@@ -322,7 +341,6 @@
     height: 10px;
     border-radius: 50%;
     flex-shrink: 0;
-    box-shadow: 0 0 5px rgba(0,0,0,0.5);
 }
 
 .switch-info {
@@ -345,14 +363,17 @@
 
 /* Train Summary Row */
 .train-summary-row {
-    background: #1e2025;
-    padding: 4px 6px; /* Reduced padding */
-    border-radius: 4px;
+    background-color: var(--bg-dark);
+    padding: 4px 6px;
+    border-radius: var(--control-radius-sm);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 6px; /* Reduced gap */
+    gap: 6px;
     border: 1px solid var(--border-color);
+    /* Fixed identity color: purple = train (matches the map's train label),
+       independent of run state. Status is shown by the dot, not the bar. */
+    border-left: 3px solid var(--accent-color);
 }
 
 .train-status-dot {
@@ -360,7 +381,6 @@
     height: 10px;
     border-radius: 50%;
     flex-shrink: 0;
-    box-shadow: 0 0 5px rgba(0,0,0,0.5);
 }
 
 .train-info {
@@ -384,10 +404,10 @@
 .edit-btn {
     min-height: var(--control-height-sm);
     padding: 0 10px;
-    background: #2a2a35;
-    border: 1px solid #3a3a45;
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
     border-radius: var(--control-radius-sm);
-    color: #ccc;
+    color: var(--text-primary);
     font-size: 12px;
     cursor: pointer;
     transition: all 0.2s;
@@ -397,9 +417,8 @@
 }
 
 .edit-btn:hover {
-    background: var(--accent-color);
     border-color: var(--accent-color);
-    color: white;
+    color: var(--accent-hover);
 }
 
 /* Trains Panel */
@@ -883,7 +902,7 @@
 }
 
 .block-modal-field input::placeholder {
-    color: #666;
+    color: var(--text-secondary);
 }
 
 .block-modal-info {
@@ -1001,12 +1020,12 @@
 
 .modal-warning {
     font-size: 13px;
-    color: #ffd93d;
+    color: var(--warning-color);
     margin-bottom: 16px;
     padding: 12px;
-    background: rgba(255, 217, 61, 0.1);
+    background: rgba(255, 205, 30, 0.1);
     border-radius: 6px;
-    border-left: 3px solid #ffd93d;
+    border-left: 3px solid var(--warning-color);
 }
 
 .block-selection-list {
@@ -1071,22 +1090,22 @@
 }
 
 .state-free {
-    background: #04d361;
+    background: var(--success-color);
     color: #fff;
 }
 
 .state-occupied {
-    background: #e83f5b;
+    background: var(--danger-color);
     color: #fff;
 }
 
 .state-reserved {
-    background: #ff8800;
+    background: var(--accent-color);
     color: #fff;
 }
 
 .state-caution {
-    background: #ffcd1e;
+    background: var(--warning-color);
     color: #000;
 }
 
@@ -1142,17 +1161,17 @@
 }
 
 .signal-state-badge.state-red {
-    background: #e83f5b;
+    background: var(--danger-color);
     color: #fff;
 }
 
 .signal-state-badge.state-green {
-    background: #04d361;
+    background: var(--success-color);
     color: #fff;
 }
 
 .signal-state-badge.state-yellow {
-    background: #ffcd1e;
+    background: var(--warning-color);
     color: #000;
 }
 
@@ -1192,7 +1211,7 @@
     padding: 12px 16px;
     min-width: 250px;
     max-width: 400px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
     display: flex;
     align-items: center;
     gap: 12px;
@@ -1271,54 +1290,29 @@
 }
 
 
-.layout-controls {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-
-.layout-controls .btn {
-    font-size: 0.85rem;
-    padding: 6px 16px;
-    min-width: 90px;
-    width: auto;
-}
-
-/* Scenario Recorder Controls */
-.recorder-controls {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding-left: 16px;
-    border-left: 1px solid var(--border-color);
-}
-
-.recorder-controls .btn {
-    font-size: 0.8rem;
-    padding: 4px 12px;
-}
-
+/* Recording indicator dot. Sizing and the .recording active state live with
+   the header rules in layout/shell.css and rely on these animation keyframes. */
 .record-dot {
     display: inline-block;
-    width: 8px;
-    height: 8px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
-    background: var(--text-secondary);
-    margin-right: 4px;
-    vertical-align: middle;
-}
-
-.btn-record.recording .record-dot {
-    background: #ff4444;
-    animation: record-pulse 1s ease-in-out infinite;
+    background-color: var(--text-tertiary);
+    transition: background-color 0.15s;
+    flex-shrink: 0;
 }
 
 .btn-record.recording {
-    border-color: #ff4444;
-    color: #ff4444;
+    color: var(--danger-color);
+    border-color: var(--danger-color);
+}
+
+.btn-record.recording .record-dot {
+    background-color: var(--danger-color);
+    animation: record-pulse 1.2s ease-in-out infinite;
 }
 
 @keyframes record-pulse {
     0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
+    50% { opacity: 0.35; }
 }

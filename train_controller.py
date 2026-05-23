@@ -835,11 +835,15 @@ class TrainController:
             else:
                 # ATO not running - brake to stop. Transition to the
                 # state-machine-derived stopped ready state once stopped.
+                # RUNNING_AT_STATION (dwell) is also a powered-stopped state
+                # and is owned by Phase 1's dwell-complete check; preserve it
+                # here so a single tick doesn't clobber dwell entry.
                 self.handle_position = self._calculate_braking_notch_for_speed(
                     self.current_speed_kmh, 0.0
                 )
                 if self.current_speed_kmh <= STOPPED_SPEED_THRESHOLD_KMH:
-                    self.transition_to_ready()
+                    if self.state != TrainState.RUNNING_AT_STATION:
+                        self.transition_to_ready()
                     self.handle_position = HandlePosition.N
         else:
             # Manual mode - ATC still enforces braking if overspeed
@@ -1649,6 +1653,12 @@ class TrainController:
         - It's occupied by another train
         - It's reserved for a different path
         - It's disabled
+
+        Per design_new.md lines 703 and 1751, CAUTION is NOT an obstruction:
+        its only operational effect on lookahead is the CAUTION_SPEED_LIMIT_KMH
+        cap applied in `ATCCalculator.speed_limit()`. A CAUTION block that is
+        otherwise free / reserved-for-this-train must remain enterable so a
+        train can re-approach a block it (or another train) recently vacated.
         """
         train = self._get_train()
         if not train:
@@ -1673,10 +1683,6 @@ class TrainController:
                 else:
                     # Block reserved but train has no path
                     return True
-
-        # CAUTION state means train just left
-        if block.state == BlockState.CAUTION:
-            return True
 
         return False
 

@@ -6,6 +6,7 @@ class App {
         this.scenarioRecorder = new ScenarioRecorder(window.api);
         this.simulationInterval = null;
         this.currentNetwork = null;
+        this.hasInitiallyCentered = false;
         this.isSimulationRunning = false;
         this.selectedTrainId = null;
         this.lastLookaheadFetch = 0;
@@ -37,14 +38,28 @@ class App {
             }
         });
 
-        document.getElementById('btn-reset').addEventListener('click', () => {
-            window.api.controlSimulation('reset').catch(e => console.error('[App] Reset error:', e));
+        document.getElementById('btn-restart-server').addEventListener('click', async () => {
+            const confirmed = await showConfirmModal({
+                title: 'Restart Server?',
+                message: 'The server process will exit and relaunch.',
+                detail: 'Unsaved layout edits will be flushed to autosave first. The page will reload automatically when the server is back (~3–5s).',
+                confirmText: 'Restart',
+                cancelText: 'Cancel',
+                confirmVariant: 'danger'
+            });
+            if (!confirmed) return;
+
+            try {
+                await window.api.restartServer();
+            } catch (e) {
+                console.error('[App] Restart request failed:', e);
+                window.showToast?.('Could not reach server to restart.', 'error', 4000);
+                return;
+            }
+
             this.stopSimulationPolling();
             this.updatePlaybackUI(false);
-            this.refreshNetwork();
-            if (this.editor?.uiHandler) {
-                this.editor.uiHandler.clearSecondaryInspectorState();
-            }
+            this.startRestartReconnectFlow();
         });
 
         document.querySelectorAll('.speed-btn').forEach(btn => {
@@ -484,6 +499,10 @@ class App {
             window.stateManager.updateFromNetwork(network);
 
             this.editor.setCachedNetwork(network);
+            if (!this.hasInitiallyCentered && network.tracks && network.tracks.length > 0) {
+                this.renderer.centerOnContent(network.tracks);
+                this.hasInitiallyCentered = true;
+            }
             this.renderer.drawNetwork(network);
             // Validate that the current editor still exists (close if deleted)
             this.editor.validateCurrentEditor();
@@ -1011,6 +1030,68 @@ class App {
         this.isSimulationRunning = false;
         // One final refresh to show stopped state
         this.refreshNetwork();
+    }
+
+    startRestartReconnectFlow({ timeoutMs = 60000, pollIntervalMs = 500 } = {}) {
+        const existing = document.querySelector('.restart-overlay');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.className = 'app-modal-overlay restart-overlay';
+        overlay.innerHTML = `
+            <div class="app-modal restart-card">
+                <div class="restart-spinner" aria-hidden="true"></div>
+                <div class="restart-title">Restarting server…</div>
+                <div class="restart-sub">Reconnecting when the new process is ready.</div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        const startedAt = Date.now();
+        let stopped = false;
+
+        const finishSuccess = () => {
+            stopped = true;
+            setTimeout(() => window.location.reload(), 300);
+        };
+
+        const finishTimeout = () => {
+            stopped = true;
+            const card = overlay.querySelector('.restart-card');
+            card.innerHTML = `
+                <div class="restart-title">Server did not come back</div>
+                <div class="restart-sub">Check the terminal where the server was launched, then refresh manually.</div>
+                <div class="restart-actions">
+                    <button class="btn btn-secondary btn-sm" id="restart-reload-btn">Reload</button>
+                </div>
+            `;
+            card.querySelector('#restart-reload-btn').addEventListener('click', () => {
+                window.location.reload();
+            });
+        };
+
+        const tick = async () => {
+            if (stopped) return;
+            try {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 800);
+                const res = await fetch('/api/health', { signal: controller.signal });
+                clearTimeout(timer);
+                if (res.ok) {
+                    finishSuccess();
+                    return;
+                }
+            } catch (_e) {
+                // Expected during exec — keep polling.
+            }
+            if (Date.now() - startedAt >= timeoutMs) {
+                finishTimeout();
+                return;
+            }
+            setTimeout(tick, pollIntervalMs);
+        };
+
+        setTimeout(tick, pollIntervalMs);
     }
 }
 

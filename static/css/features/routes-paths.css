@@ -12,9 +12,34 @@
     gap: 8px;
 }
 
+/* Per DESIGN_LANGUAGE.md §3 "Flat ghost" — the routes toolbar is a container
+   row, so its buttons drop their solid fills and become flat ghosts. Hover
+   bg-tint is the affordance. Overrides the .btn-primary/.btn-secondary fills
+   inherited from common.css. */
+.routes-toolbar .btn-primary,
+.routes-toolbar .btn-secondary,
+.routes-toolbar .btn-success {
+    background-color: transparent;
+    color: var(--text-primary);
+    border: none;
+}
+
+.routes-toolbar .btn-primary:hover:not(:disabled),
+.routes-toolbar .btn-secondary:hover:not(:disabled),
+.routes-toolbar .btn-success:hover:not(:disabled) {
+    background-color: var(--bg-hover);
+    color: var(--accent-hover);
+}
+
+/* The "+ New Route" CTA keeps a subtle accent tint to read as the primary
+   action without becoming a solid-filled button. */
+.routes-toolbar .btn-primary {
+    color: var(--accent-hover);
+}
+
 .routes-empty-state {
     padding: 28px 14px;
-    border: 1px dashed #3a3a4e;
+    border: 1px dashed var(--border-color);
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.01);
 }
@@ -31,7 +56,7 @@
     justify-content: space-between;
     gap: 8px;
     padding: 8px 10px;
-    border: 1px solid #3a3a4e;
+    border: 1px solid var(--border-color);
     border-radius: 8px;
     background: #171925;
 }
@@ -61,7 +86,6 @@
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    box-shadow: 0 0 6px currentColor;
 }
 
 .route-status-label {
@@ -119,14 +143,363 @@
     align-items: center;
 }
 
+/* Live route status pill shown beside the activate/deactivate button. */
+.route-status-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: var(--control-radius-sm);
+    border-left: 3px solid var(--border-color);
+    background: var(--bg-dark);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.route-status-pill .route-status-dot {
+    background: currentColor;
+}
+
+.route-status-pill.is-active {
+    border-left-color: var(--success-color);
+    color: var(--success-color);
+}
+
+.route-status-pill.is-info {
+    border-left-color: var(--info-color);
+    color: var(--info-color);
+}
+
+.route-status-pill.is-inactive {
+    border-left-color: var(--border-color);
+    color: var(--text-tertiary);
+}
+
+.route-status-trains {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.route-status-train {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 11px;
+    padding: 3px 0;
+    border-bottom: 1px dotted var(--border-color);
+}
+
+.route-status-train:last-child {
+    border-bottom: none;
+}
+
+/* Route run-history timeline. */
+.route-history-empty {
+    padding: 12px;
+    text-align: center;
+    font-style: italic;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.route-history-activated {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.route-history-run {
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    padding: 8px;
+    margin-bottom: 8px;
+    background: var(--bg-dark);
+}
+
+.route-history-run-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.route-history-status {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+}
+
+.route-history-status.is-running { color: var(--info-color); }
+.route-history-status.is-finished { color: var(--success-color); }
+.route-history-status.is-deactivated { color: var(--text-tertiary); }
+
+.route-history-tasks {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.route-history-task {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+}
+
+.route-history-task.is-pending {
+    opacity: 0.55;
+}
+
+.route-history-task-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.route-history-task-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.route-history-time {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+}
+
+.route-delay-chip {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 1px 6px;
+    border-radius: 999px;
+}
+
+.route-delay-chip.early { color: var(--info-color); background: rgba(0, 212, 255, 0.12); }
+.route-delay-chip.on_time { color: var(--success-color); background: rgba(4, 211, 97, 0.12); }
+.route-delay-chip.late { color: var(--warning-color); background: rgba(255, 205, 30, 0.12); }
+
 .route-empty-dashed {
     padding: 24px 16px;
-    border: 2px dashed #3a3a4e;
+    border: 2px dashed var(--border-color);
     border-radius: 8px;
 }
 
 .waypoint-card {
-    border: 1px solid #3a3a4e;
+    border: 1px solid var(--border-color);
+}
+
+/* Compact form controls inside the route editor sidebar.
+
+   The shared --control-height-sm (32px) and .property-input default
+   (padding: 10px 12px → ~38px) are sized for spacious top-level forms.
+   In this 440px sidebar that costs too much vertical room — the inspector
+   panel's reference (`.inspector-panel-field select`) uses 28px
+   (--control-height-xs) and we match it here. Scoped to .route-editor so
+   the change doesn't ripple to other panels that may want the looser
+   default. */
+.route-editor .property-input,
+.route-editor .property-input.input-compact,
+.route-editor .property-input.route-input-compact {
+    height: var(--control-height-xs);
+    min-height: var(--control-height-xs);
+    padding: 0 8px;
+    font-size: 12px;
+}
+
+.route-editor .property-input.route-number-input,
+.route-editor .property-input.input-tiny {
+    /* keep their tighter width override but inherit the 28px height */
+    height: var(--control-height-xs);
+    padding: 0 6px;
+}
+
+.route-editor .btn:not(.btn-icon-only):not(.btn-size-lg) {
+    min-height: var(--control-height-xs);
+    padding: 0 10px;
+    font-size: 11px;
+}
+
+.route-editor .btn-icon-only {
+    width: var(--control-height-xs);
+    height: var(--control-height-xs);
+    min-width: var(--control-height-xs);
+    min-height: var(--control-height-xs);
+    padding: 0;
+    font-size: 12px;
+    line-height: 1;
+}
+
+/* Ghost button styling for the route editor.
+
+   Per design-language Section 3: panels use the ghost pattern, not solid
+   fills. The shared .btn-primary / -secondary / -success are filled
+   variants meant for top-level CTAs; here we flatten them to ghost so the
+   panel reads as visually quiet. Hover color signals the action role:
+   purple for default / primary, red for destructive (.btn-danger).
+
+   The selectors mirror shell.css's `.secondary-sidebar-content .btn:not(...)`
+   pattern so they beat the global `border: none` rule that rule applies. */
+.secondary-sidebar-content .route-editor .btn-primary:not(.btn-icon-only):not(.btn-size-lg):not(.btn-outline),
+.secondary-sidebar-content .route-editor .btn-secondary:not(.btn-icon-only):not(.btn-size-lg):not(.btn-outline),
+.secondary-sidebar-content .route-editor .btn-success:not(.btn-icon-only):not(.btn-size-lg):not(.btn-outline) {
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+}
+
+.secondary-sidebar-content .route-editor .btn-primary:not(.btn-icon-only):not(.btn-size-lg):not(.btn-outline):hover:not(:disabled),
+.secondary-sidebar-content .route-editor .btn-secondary:not(.btn-icon-only):not(.btn-size-lg):not(.btn-outline):hover:not(:disabled),
+.secondary-sidebar-content .route-editor .btn-success:not(.btn-icon-only):not(.btn-size-lg):not(.btn-outline):hover:not(:disabled) {
+    background-color: var(--bg-dark);
+    color: var(--accent-hover);
+    border-color: var(--accent-color);
+}
+
+.secondary-sidebar-content .route-editor .btn-danger:not(.btn-icon-only):not(.btn-size-lg):not(.btn-outline) {
+    background-color: var(--bg-dark);
+    color: var(--danger-color);
+    border: 1px solid var(--border-color);
+}
+
+.secondary-sidebar-content .route-editor .btn-danger:not(.btn-icon-only):not(.btn-size-lg):not(.btn-outline):hover:not(:disabled) {
+    background-color: var(--bg-dark);
+    color: var(--danger-color);
+    border-color: var(--danger-color);
+}
+
+/* Icon-only buttons (locate, up, down, delete) keep their tight square shape
+   but also follow the ghost pattern. .btn-icon-only is excluded from the
+   shell `border: none` rule, so we don't need the elaborate :not() chain. */
+.route-editor .btn-icon-only.btn-secondary,
+.route-editor .btn-icon-only.btn-primary {
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+}
+
+.route-editor .btn-icon-only.btn-secondary:hover:not(:disabled),
+.route-editor .btn-icon-only.btn-primary:hover:not(:disabled) {
+    background-color: var(--bg-dark);
+    color: var(--accent-hover);
+    border-color: var(--accent-color);
+}
+
+.route-editor .btn-icon-only.btn-danger {
+    background-color: var(--bg-dark);
+    color: var(--danger-color);
+    border: 1px solid var(--border-color);
+}
+
+.route-editor .btn-icon-only.btn-danger:hover:not(:disabled) {
+    background-color: var(--bg-dark);
+    color: var(--danger-color);
+    border-color: var(--danger-color);
+}
+
+.waypoint-ordinal {
+    font-family: var(--font-mono);
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--info-color);
+    min-width: 16px;
+}
+
+.waypoint-actions {
+    flex-shrink: 0;
+}
+
+/* Stacked waypoint controls — a 2-column grid so each control gets room
+   instead of fighting in one cramped horizontal row. */
+.waypoint-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 12px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-color);
+}
+
+.waypoint-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.waypoint-field.waypoint-field-wide {
+    grid-column: 1 / -1;
+}
+
+.waypoint-field > label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 500;
+    color: var(--text-tertiary);
+}
+
+.waypoint-target-row {
+    display: flex;
+    gap: 6px;
+}
+
+.waypoint-target-row .task-target-type-select {
+    flex: 0 0 38%;
+}
+
+.waypoint-target-row .task-target-id-select {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* Floating resource picker shown when a clicked tile has >1 targetable
+   resource (platform / block / station). Matches the panel language. */
+.route-resource-picker {
+    position: fixed;
+    z-index: 1000;
+    min-width: 160px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.route-resource-option {
+    height: var(--control-height-xs);
+    padding: 0 10px;
+    text-align: left;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--text-primary);
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.route-resource-option:hover {
+    border-color: var(--accent-color);
+    color: var(--accent-hover);
 }
 
 .waypoint-flex-toggle {
@@ -368,7 +741,7 @@
 }
 
 .path-row {
-    border: 1px solid #3a3a4e;
+    border: 1px solid var(--border-color);
     border-radius: 8px;
     background: #171925;
     padding: 8px 10px;
@@ -498,7 +871,7 @@
     max-height: 150px;
     overflow-y: auto;
     padding: 8px;
-    border: 1px solid #3a3a4e;
+    border: 1px solid var(--border-color);
 }
 
 .json-viewer-panel {
@@ -516,7 +889,7 @@
     flex: 1;
     overflow: auto;
     background: #0d1020;
-    border: 1px solid #3a3a4e;
+    border: 1px solid var(--border-color);
     border-radius: 6px;
     padding: 12px;
 }
@@ -534,7 +907,7 @@
 /* Individual Route Item */
 .route-item {
     background: #1a1a2e;
-    border: 1px solid #3a3a4e;
+    border: 1px solid var(--border-color);
     border-radius: 8px;
     padding: 12px;
     transition: border-color 0.2s ease;
@@ -627,7 +1000,6 @@
     height: 12px;
     border-radius: 50%;
     display: inline-block;
-    box-shadow: 0 0 6px currentColor;
 }
 
 /* Route Setup Panel (during route creation) */
@@ -658,7 +1030,7 @@
     -webkit-appearance: none;
     appearance: none;
     height: 6px;
-    background: #3a3a4e;
+    background: var(--border-color);
     border-radius: 3px;
     outline: none;
 }
@@ -671,7 +1043,6 @@
     background: #00d4ff;
     border-radius: 50%;
     cursor: pointer;
-    box-shadow: 0 0 6px rgba(0, 212, 255, 0.5);
 }
 
 #route-priority-slider::-moz-range-thumb {
@@ -681,5 +1052,4 @@
     border-radius: 50%;
     cursor: pointer;
     border: none;
-    box-shadow: 0 0 6px rgba(0, 212, 255, 0.5);
 }

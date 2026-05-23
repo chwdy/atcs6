@@ -51,6 +51,12 @@ class Editor {
         };
         this.cachedPaths = [];            // List of active routes
 
+        // Panel-driven map interaction (route waypoint-add / train-assign).
+        // At most one is active. Shape: { name, onClick(payload)->bool,
+        // onExit(), onEnter? }. Tools on `selectedTool` (path/extend/cancel)
+        // are a separate axis; entering one cancels the other.
+        this.mapInteraction = null;
+
         this.pathfinder = new ConstructionPathfinder();
         this.existingOnlyPathfinder = new ExistingTrackPathfinder();
         this.blockHandler = new BlockEditorHandler(this);
@@ -452,6 +458,11 @@ class Editor {
                 const newTool = e.currentTarget.dataset.tool;
                 const oldTool = this.selectedTool;
 
+                // Selecting any toolbar tool cancels a panel-driven map
+                // interaction (it's null during the select-tool click that
+                // enterMapInteraction itself triggers, so this is a no-op then).
+                this.exitMapInteraction();
+
                 // Auto-toggle block debug when entering/leaving block tools
                 const blockDebugCheckbox = document.getElementById('debug-show-blocks');
                 const isBlockTool = ['block', 'extend-block'].includes(newTool);
@@ -501,6 +512,12 @@ class Editor {
                     return;
                 } else if (newTool === 'routes-panel') {
                     this.showRoutesPanel();
+                    // Don't change selected tool - keep current tool active
+                    e.currentTarget.classList.remove('active');
+                    document.querySelector(`.tool-btn[data-tool="${oldTool}"]`)?.classList.add('active');
+                    return;
+                } else if (newTool === 'new-route') {
+                    this.routeHandler.createNewRoute();
                     // Don't change selected tool - keep current tool active
                     e.currentTarget.classList.remove('active');
                     document.querySelector(`.tool-btn[data-tool="${oldTool}"]`)?.classList.add('active');
@@ -739,12 +756,18 @@ class Editor {
                 return;
             }
             
-            // Check if route editor is in waypoint click mode
-            if (this.routeHandler.waypointClickMode) {
-                const handled = await this.routeHandler.handleWaypointClick(gridPos);
+            // Check if a panel-driven map interaction is active (route
+            // waypoint-add / train-assign). It owns the click when it returns
+            // true; otherwise the click falls through (e.g. a no-op tile).
+            if (this.mapInteraction) {
+                const handled = await this.mapInteraction.onClick({
+                    gridPos,
+                    screenX: e.clientX,
+                    screenY: e.clientY
+                });
                 if (handled) return;
             }
-            
+
             // Only handle selection with select tool
             if (this.selectedTool !== 'select') return;
             
@@ -838,10 +861,10 @@ class Editor {
                     return;
                 }
 
-                // Exit route editor waypoint click mode if active
-                if (this.routeHandler.waypointClickMode) {
-                    this.routeHandler.exitWaypointClickMode();
-                    window.showToast('Waypoint selection cancelled', 'info', 3000);
+                // Exit a panel-driven map interaction if active
+                if (this.mapInteraction) {
+                    this.exitMapInteraction();
+                    window.showToast('Cancelled', 'info', 3000);
                     return;
                 }
 
@@ -854,6 +877,36 @@ class Editor {
                 }
             }
         });
+    }
+
+    /**
+     * Activate a panel-driven map interaction (route waypoint-add /
+     * train-assign). Exits any prior interaction, drops a canvas tool back to
+     * select so the two don't both consume clicks, then stores and enters the
+     * new one. Interaction shape: { name, onClick(payload)->bool, onExit(),
+     * onEnter? }.
+     */
+    enterMapInteraction(interaction) {
+        if (this.mapInteraction) {
+            try { this.mapInteraction.onExit(); } catch (e) { /* best effort */ }
+            this.mapInteraction = null;
+        }
+        if (this.selectedTool !== 'select') {
+            // Triggers the tool-switch handler (which calls exitMapInteraction
+            // while the slot is still null, so it's harmless here).
+            document.querySelector('.tool-btn[data-tool="select"]')?.click();
+        }
+        this.mapInteraction = interaction;
+        if (interaction && typeof interaction.onEnter === 'function') {
+            interaction.onEnter();
+        }
+    }
+
+    exitMapInteraction() {
+        if (!this.mapInteraction) return;
+        const interaction = this.mapInteraction;
+        this.mapInteraction = null;
+        try { interaction.onExit(); } catch (e) { /* best effort */ }
     }
 
     setupBlockManager() {
@@ -1852,7 +1905,7 @@ class Editor {
 
             <!-- Switch Summary (Compact view with Edit button) -->
             ${track.switch_points && Object.keys(track.switch_points).length > 0 ? (() => {
-                const switchStateColor = track.switch_state === 0 ? '#04d361' : '#ffd93d';
+                const switchStateColor = track.switch_state === 0 ? 'var(--success-color)' : 'var(--warning-color)';
                 const switchStateText = track.switch_state === 0 ? 'MAIN' : 'DIVERGE';
                 const isLocked = track.is_locked || track.locked_by_path;
                 const hasSwitchId = track.switch_id && track.switch_id !== '';
@@ -1879,8 +1932,8 @@ class Editor {
             <div class="property-item-row">
                 <div class="signal-summary-row">
                     <div class="signal-status-dot" style="background-color: ${
-                        signal.signal_state === 'green' || signal.signal_state === 'GREEN' ? '#04d361' :
-                        (signal.signal_state === 'yellow' || signal.signal_state === 'YELLOW' ? '#ffd93d' : '#e83f5b')
+                        signal.signal_state === 'green' || signal.signal_state === 'GREEN' ? 'var(--success-color)' :
+                        (signal.signal_state === 'yellow' || signal.signal_state === 'YELLOW' ? 'var(--warning-color)' : 'var(--danger-color)')
                     }"></div>
                     <div class="signal-info">
                         <span class="signal-id">${signal.signal_id}</span>
@@ -1896,10 +1949,10 @@ class Editor {
             ${track.block_section_id ? (() => {
                 const block = this.cachedBlocks && this.cachedBlocks.find(b => b.block_id === track.block_section_id);
                 const blockColor = this.getBlockColor(track.block_section_id);
-                const stateColor = block && block.state === 'free' ? '#04d361' :
-                                   block && block.state === 'reserved' ? '#ffd93d' :
-                                   block && block.state === 'occupied' ? '#e83f5b' :
-                                   block && block.state === 'caution' ? '#ff9500' : '#888';
+                const stateColor = block && block.state === 'free' ? 'var(--success-color)' :
+                                   block && block.state === 'reserved' ? 'var(--accent-color)' :
+                                   block && block.state === 'occupied' ? 'var(--danger-color)' :
+                                   block && block.state === 'caution' ? 'var(--warning-color)' : 'var(--text-secondary)';
                 return `
                 <div class="property-group-header">Block</div>
                 <div class="property-item-row">
@@ -1937,19 +1990,13 @@ class Editor {
             ${(() => {
                 const trainsAtTile = this.cachedNetwork && this.cachedNetwork.trains
                     ? this.cachedNetwork.trains.filter(t => {
-                        // Check new TrainPosition format: occupied_tiles array
-                        const pos = t.position;
-                        if (pos && pos.occupied_tiles) {
-                            return pos.occupied_tiles.some(tile => 
+                        // Occupancy lives on the controller's span, not the train
+                        // config object.
+                        const span = window.stateManager.getController(t.id)?.span;
+                        if (span && span.occupied_tiles) {
+                            return span.occupied_tiles.some(tile =>
                                 tile[0] === track.x && tile[1] === track.y
                             );
-                        }
-                        // Fallback: check head tile from end_a/end_b
-                        if (pos && pos.end_a && pos.end_b) {
-                            const headEnd = pos.leading_end === 'a' ? pos.end_a : pos.end_b;
-                            if (headEnd.tile) {
-                                return headEnd.tile[0] === track.x && headEnd.tile[1] === track.y;
-                            }
                         }
                         return false;
                     })
@@ -1959,15 +2006,15 @@ class Editor {
                 <div class="property-group-header">Train</div>
                 ${trainsAtTile.map(train => {
                     const controller = window.stateManager.getController(train.id);
+                    const dotColor =
+                        controller?.control_mode === 'manual' ? 'var(--warning-color)' :
+                        controller?.state === 'running_moving' ? 'var(--success-color)' :
+                        controller?.state === 'running_at_station' ? 'var(--info-color)' :
+                        controller?.state === 'idle' ? 'var(--text-secondary)' : 'var(--danger-color)';
                     return `
                 <div class="property-item-row">
                     <div class="train-summary-row">
-                        <div class="train-status-dot" style="background-color: ${
-                            controller?.control_mode === 'manual' ? '#ff9500' :
-                            controller?.state === 'running_moving' ? '#04d361' :
-                            controller?.state === 'running_at_station' ? '#00bfff' :
-                            controller?.state === 'idle' ? '#888' : '#e83f5b'
-                        }"></div>
+                        <div class="train-status-dot" style="background-color: ${dotColor}"></div>
                         <div class="train-info">
                             <span class="train-id">${train.id}</span>
                             <span class="train-state">${controller?.state || 'unknown'}</span>
@@ -2087,19 +2134,13 @@ class Editor {
         // Find all trains at this tile
         const trainsAtTile = this.cachedNetwork && this.cachedNetwork.trains
             ? this.cachedNetwork.trains.filter(t => {
-                // Check new TrainPosition format: occupied_tiles array
-                const pos = t.position;
-                if (pos && pos.occupied_tiles) {
-                    return pos.occupied_tiles.some(tile => 
+                // Occupancy lives on the controller's span, not the train
+                // config object.
+                const span = window.stateManager.getController(t.id)?.span;
+                if (span && span.occupied_tiles) {
+                    return span.occupied_tiles.some(tile =>
                         tile[0] === track.x && tile[1] === track.y
                     );
-                }
-                // Fallback: check head tile from end_a/end_b
-                if (pos && pos.end_a && pos.end_b) {
-                    const headEnd = pos.leading_end === 'a' ? pos.end_a : pos.end_b;
-                    if (headEnd.tile) {
-                        return headEnd.tile[0] === track.x && headEnd.tile[1] === track.y;
-                    }
                 }
                 return false;
             })

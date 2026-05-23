@@ -93,13 +93,14 @@ Triggered via `POST /api/layouts` with a layout name:
 
 ### Auto-Save
 
-A background daemon thread in `runtime.py` runs auto-save every 5 minutes:
+A background daemon thread in `runtime.py` (`create_autosave_loop`) saves the network to `_autosave` every 5 minutes:
 
-1. Thread sleeps for 300 seconds
-2. Calls `PersistenceManager.save_layout(network, "_autosave")`
-3. Saves to `layouts/_autosave.json`
-4. Thread is a daemon -- dies when the main process exits
-5. Errors are caught and logged, never crash the server
+1. The loop wakes every 60 seconds and compares `time.time()` against `state.last_autosave_time` (on `AppState`). It fires only when the gap reaches `AUTOSAVE_INTERVAL` (300s).
+2. While holding `state.simulation_lock`, it calls `PersistenceManager.save_merged_layout(network, "_autosave", "Auto-saved")`, writing snapshot + steps to `layouts/_autosave.json`.
+3. On success it updates `state.last_autosave_time` so the next autosave is a full interval away.
+4. Manual saves and loads (`routes/misc.py`) also update `state.last_autosave_time`, so recent activity defers the next autosave instead of letting it fire on top of a fresh save.
+5. Thread is a daemon -- dies when the main process exits.
+6. Errors are caught and logged, never crash the server.
 
 ### Atomic Writes
 

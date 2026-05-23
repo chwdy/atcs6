@@ -41,7 +41,6 @@
     align-items: center;
     justify-content: space-between;
     padding: 8px 10px;
-    border-bottom: 1px solid var(--border-color);
     cursor: move;
     background-color: var(--bg-hover);
     border-top-left-radius: var(--control-radius-sm);

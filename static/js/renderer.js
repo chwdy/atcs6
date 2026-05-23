@@ -333,6 +333,23 @@ class Renderer {
         return { x, y };
     }
 
+    centerOnContent(tracks) {
+        if (!tracks || tracks.length === 0) return;
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const t of tracks) {
+            if (t.x < minX) minX = t.x;
+            if (t.x > maxX) maxX = t.x;
+            if (t.y < minY) minY = t.y;
+            if (t.y > maxY) maxY = t.y;
+        }
+        // Center of bounding box in continuous grid space (tile extent is +1)
+        const cx = (minX + maxX + 1) / 2;
+        const cy = (minY + maxY + 1) / 2;
+        const tileSize = this.gridSize * this.scale;
+        this.panX = -((cx + cy + 1) * tileSize / 2);
+        this.panY = -((cx - cy) * tileSize / 2);
+    }
+
     drawNetwork(network) {
         this.clear();
         this.drawGrid();

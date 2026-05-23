@@ -190,8 +190,8 @@ class RouteTargetResolver:
     # Direction resolution ("either" → forward / reverse)
     # ------------------------------------------------------------------
 
-    @staticmethod
     def resolve_task_direction(
+        self,
         train: "Train",
         block_id: str,
         task_direction: str,
@@ -202,11 +202,68 @@ class RouteTargetResolver:
 
         v1 contract: the dispatcher never receives `"either"`; this resolver
         must always eliminate it before any `create_path` / `extend_path`
-        call. Pure: depends only on the inputs.
+        call.
+
+        Per design_new.md line 1145, `"either"` on a block-relative target
+        means "pick whichever block-relative direction is reachable under the
+        same current-span comparison and allowed by
+        `Block.allowed_travel_directions`." The pathfinder's
+        `find_paths(...)` already encodes both constraints, so probe both
+        directions and pick the one that returns a candidate. When both
+        succeed, tie-break by the shortest candidate per the canonical
+        candidate comparison (design_new.md line 1158). The route-walk
+        fallback is used only when reachability cannot be evaluated
+        (no dispatcher, train has no resolvable start block).
         """
         if task_direction in ("forward", "reverse"):
             return task_direction
+
+        dispatcher = getattr(self._e, "path_dispatcher", None)
+        start_block_id = self._current_block_id(train)
+        if dispatcher is not None and start_block_id:
+            train_id = getattr(train, "train_id", None)
+            try:
+                fwd = dispatcher.find_paths(
+                    start_block_id,
+                    block_id,
+                    train_id=train_id,
+                    direction_constraint="forward",
+                )
+                rev = dispatcher.find_paths(
+                    start_block_id,
+                    block_id,
+                    train_id=train_id,
+                    direction_constraint="reverse",
+                )
+            except Exception:
+                fwd = []
+                rev = []
+            if fwd and not rev:
+                return "forward"
+            if rev and not fwd:
+                return "reverse"
+            if fwd and rev:
+                def _len(segment) -> int:
+                    return len(getattr(segment, "tiles", []) or [])
+                return "forward" if _len(fwd[0]) <= _len(rev[0]) else "reverse"
+
         return "forward" if signed_direction >= 0 else "reverse"
+
+    def _current_block_id(self, train: "Train") -> Optional[str]:
+        """Train's current block from its head tile, or None."""
+        position = getattr(train, "position", None)
+        if not position:
+            return None
+        head_tile = getattr(position, "head_tile", None)
+        if not head_tile:
+            return None
+        network = getattr(self._e, "network", None)
+        if network is None:
+            return None
+        track = network.get_track(*head_tile)
+        if not track:
+            return None
+        return getattr(track, "block_section_id", None)
 
     # ------------------------------------------------------------------
     # Next-task-index computation (pure)

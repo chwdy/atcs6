@@ -26,7 +26,6 @@ from track import (
     TRACK_NW,
     TRACK_SE,
     TRACK_SW,
-    FORBIDDEN_TRACK_BITS,
 )
 from path_dispatcher import PathDispatcher
 from railway_signal import SignalType
@@ -542,18 +541,25 @@ def setup_demo_train(
     path_dispatcher: PathDispatcher,
     sim_controller,
 ):
-    """Set up the demo train with a Route to East Terminal.
+    """Set up the demo train and register both demo routes.
 
-    Per design_new.md "Design Direction" (~line 157), initial live placement
-    must come through `SimulationController.add_train(...)`, which writes the
-    initial `TrainController.current_span` before the first simulation tick.
-    Per the "Route And RouteExecutor" section, paths are created on demand by
-    Phase 1 once a Route is assigned; bootstrap registers the Route and lets
-    Phase 1 do the path acquisition. Per the "Command queue + drain" section,
-    operator commands enter through the controller's command inbox and are
-    drained at the top of the next `TrainController.tick(...)`.
+    Two demo routes are registered:
+      * ``DEMO_ROUTE_V1`` — the original single-stop route from the origin
+        to East Terminal (kept for tests and ad-hoc reassignment).
+      * ``DEMO_ROUTE_V2`` — the extended journey through East Terminal,
+        East Branch Terminal, a (0,0)-side turnaround at BLOCK_MAIN_WEST,
+        and North Terminal, with 2 s dwells at each platform stop.
+
+    The demo train is assigned to V2 by default; V1 stays registered but
+    unassigned. Phase 1 acquires the V2 path on the first powered tick.
     """
-    from train_route import Route, RouteMode, RouteTask
+    from train_route import (
+        BlockTarget,
+        PlatformTarget,
+        Route,
+        RouteMode,
+        RouteTask,
+    )
     from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
 
     # 1. Resolve the start block at the demo origin tile (0, 0).
@@ -590,65 +596,97 @@ def setup_demo_train(
     network.speed_profiles[demo_profile.profile_id] = demo_profile
     demo_train.speed_profile_id = demo_profile.profile_id
 
-    # 4. Register a Route to East Terminal; Phase 1 will acquire its Path on
-    #    the first tick.
-    east_terminal = next(
-        station
-        for station in network.stations.values()
-        if station.name == "East Terminal"
-    )
-    demo_route = Route(
-        route_id="DEMO_ROUTE",
-        name="Demo: Origin to East Terminal",
-        mode=RouteMode.ONE_OFF,
-        is_active=True,
-    )
-    from train_route import PlatformTarget
+    # 4. Look up stations by name. The demo network builds them in
+    #    create_comprehensive_demo above; we re-resolve here so the route
+    #    definitions don't depend on construction order.
+    stations_by_name = {s.name: s for s in network.stations.values()}
+    east_terminal = stations_by_name["East Terminal"]
+    east_branch_terminal = stations_by_name["east branch Station"]
+    north_terminal = stations_by_name["North Station"]
 
-    demo_route.add_task(
+    east_terminal_target = PlatformTarget(platform_id=east_terminal.platform_id)
+    east_branch_target = PlatformTarget(
+        platform_id=east_branch_terminal.platform_id
+    )
+    north_terminal_target = PlatformTarget(platform_id=north_terminal.platform_id)
+    west_dock_target = BlockTarget(block_id="BLOCK_MAIN_WEST")
+
+    # 5. V1 route — preserved single-stop "origin → East Terminal" route.
+    #    Registered for tests and manual reassignment; left inactive by
+    #    default so the route panel shows it as INACTIVE (no train assigned).
+    demo_route_v1 = Route(
+        route_id="DEMO_ROUTE_V1",
+        name="Demo v1: Origin to East Terminal",
+        mode=RouteMode.ONE_OFF,
+        is_active=False,
+    )
+    demo_route_v1.add_task(
         RouteTask(
             task_kind="stop",
-            task_location=PlatformTarget(platform_id=east_terminal.platform_id),
+            task_location=east_terminal_target,
             task_direction="forward",
         )
     )
-    sim_controller.route_executor.register_route(demo_route)
-    demo_route.assign_train(demo_train.train_id)
+    sim_controller.route_executor.register_route(demo_route_v1)
 
-    # 5. Queue the power_on operator command. Phase 2's drain executes it on
+    # 6. V2 route — the new default extended journey.
+    demo_route_v2 = Route(
+        route_id="DEMO_ROUTE_V2",
+        name=(
+            "Demo v2: East Terminal → East Branch Terminal → "
+            "BLOCK_MAIN_WEST turnaround → North Terminal"
+        ),
+        mode=RouteMode.ONE_OFF,
+        is_active=True,
+    )
+    for task in (
+        RouteTask(
+            task_kind="stop",
+            task_location=east_terminal_target,
+            task_direction="either",
+        ),
+        RouteTask(
+            task_kind="dwell",
+            task_location=east_terminal_target,
+            task_time=2.0,
+        ),
+        RouteTask(
+            task_kind="stop",
+            task_location=east_branch_target,
+            task_direction="either",
+        ),
+        RouteTask(
+            task_kind="dwell",
+            task_location=east_branch_target,
+            task_time=2.0,
+        ),
+        # Block-target stop forces the dock turnaround at BLOCK_MAIN_WEST
+        # before the train heads back east toward the north branch.
+        RouteTask(
+            task_kind="stop",
+            task_location=west_dock_target,
+            task_direction="either",
+        ),
+        RouteTask(
+            task_kind="stop",
+            task_location=north_terminal_target,
+            task_direction="either",
+        ),
+        RouteTask(
+            task_kind="dwell",
+            task_location=north_terminal_target,
+            task_time=2.0,
+        ),
+    ):
+        demo_route_v2.add_task(task)
+    sim_controller.route_executor.register_route(demo_route_v2)
+    demo_route_v2.assign_train(demo_train.train_id)
+
+    # 7. Queue the power_on operator command. Phase 2's drain executes it on
     #    the first tick; from tick 2 onward Phase 1 sees a powered-on
-    #    controller, acquires the path for DEMO_ROUTE, and auto-departs
-    #    (Phase 1 always calls `controller.depart()` after a successful
-    #    create/extend per design_new.md line 1078).
+    #    controller, acquires the path for DEMO_ROUTE_V2, and auto-departs.
     controller = sim_controller.get_or_create_controller(demo_train.train_id)
     controller.enqueue_command("power_on")
-
-
-def create_track_showcase(network: RailwayNetwork):
-    """Create showcase of all valid track_bits configurations.
-
-    Places all 42 valid non-empty track_bits (0-63 excluding forbidden) in a grid
-    to the left of the main demo area. Each tile is isolated so dead-ends are
-    auto-detected on all edges, demonstrating the buffer stop rendering.
-    """
-    # Valid track_bits values (1-63 minus forbidden, excluding 0 which is empty)
-    valid_bits = [i for i in range(1, 64) if i not in FORBIDDEN_TRACK_BITS]
-
-    # Place in a grid starting at (-15, -5) to avoid overlap with main demo
-    start_x, start_y = -15, -5
-    cols = 7  # 7 columns
-
-    for idx, bits in enumerate(valid_bits):
-        x = start_x + (idx % cols) * 2  # 2-tile spacing
-        y = start_y - (idx // cols) * 2
-        print(f"Adding track_bits={bits:06b} at ({x}, {y})")
-        track = TrackSegment(x, y, track_bits=bits)
-        network.add_track(track)
-
-    print(f"✓ Track showcase created with {len(valid_bits)} valid configurations")
-    print(f"  Location: ({start_x}, {start_y}) in a {cols}-column grid")
-
-    return network
 
 
 def create_diagonal_siding(network: RailwayNetwork):
@@ -746,9 +784,6 @@ def run_comprehensive_demo():
 
     # Create network
     network = create_comprehensive_demo()
-
-    # Add showcase of all valid track configurations
-    network = create_track_showcase(network)
 
     # Add diagonal siding to test diagonal track rendering
     network = create_diagonal_siding(network)
