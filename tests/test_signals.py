@@ -301,7 +301,7 @@ class TestControllerSignalDirectionFiltering:
         # Direction set via position (refactored): train.set_cab("A")  # was: Direction.EAST
         sig_east.state = SignalState.RED
 
-        assert controller._is_signal_red_for_block("BLOCK_MID") is True
+        assert controller.atc.is_signal_red_for_block("BLOCK_MID") is True
 
     def test_red_signal_ignored_for_opposite_direction_train(self):
         """A RED signal for eastbound traffic should NOT block a westbound train."""
@@ -322,7 +322,7 @@ class TestControllerSignalDirectionFiltering:
         sig_west.state = SignalState.GREEN
 
         # Eastbound RED should be ignored for westbound train
-        assert controller._is_signal_red_for_block("BLOCK_MID") is False
+        assert controller.atc.is_signal_red_for_block("BLOCK_MID") is False
 
     def test_red_signal_both_directions_blocks_any_train(self):
         """If signals in both directions are RED, train is blocked regardless."""
@@ -337,7 +337,7 @@ class TestControllerSignalDirectionFiltering:
 
         # Eastbound train blocked by eastbound red signal
         # Train already facing EAST from setup
-        assert controller._is_signal_red_for_block("BLOCK_MID") is True
+        assert controller.atc.is_signal_red_for_block("BLOCK_MID") is True
 
         # Westbound train blocked by westbound red signal on BLOCK_WEST
         # Update position to face WEST
@@ -346,7 +346,7 @@ class TestControllerSignalDirectionFiltering:
             facing_direction=Direction.WEST,
             head_distance_cm=20.0,
         )
-        assert controller._is_signal_red_for_block("BLOCK_WEST") is True
+        assert controller.atc.is_signal_red_for_block("BLOCK_WEST") is True
 
 
     def test_yellow_signal_ignored_for_opposite_direction(self):
@@ -381,7 +381,7 @@ class TestControllerSignalDirectionFiltering:
         ]
 
         # The eastbound yellow signal should NOT affect westbound train
-        assert controller._is_approaching_yellow_signal() is False
+        assert controller.atc.is_approaching_yellow_signal() is False
 
     def test_no_facing_direction_falls_back_to_any_signal(self):
         """If train has no facing_direction, all signals should be considered (safe fallback)."""
@@ -396,7 +396,7 @@ class TestControllerSignalDirectionFiltering:
         sig_east.state = SignalState.RED
 
         # Should still detect RED since we can't determine direction
-        assert controller._is_signal_red_for_block("BLOCK_MID") is True
+        assert controller.atc.is_signal_red_for_block("BLOCK_MID") is True
 
     def test_block_with_no_signal_returns_false(self):
         """Block with no monitoring signal should not be flagged as red."""
@@ -409,7 +409,7 @@ class TestControllerSignalDirectionFiltering:
         # Direction set via position (refactored): train.set_cab("A")  # was: Direction.EAST
 
         # BLOCK_EAST has no signals monitoring it
-        assert controller._is_signal_red_for_block("BLOCK_EAST") is False
+        assert controller.atc.is_signal_red_for_block("BLOCK_EAST") is False
 
     def test_green_signal_does_not_block(self):
         """GREEN signals should never block regardless of direction."""
@@ -422,7 +422,7 @@ class TestControllerSignalDirectionFiltering:
         # Direction set via position (refactored): train.set_cab("A")  # was: Direction.EAST
         sig_east.state = SignalState.GREEN
 
-        assert controller._is_signal_red_for_block("BLOCK_MID") is False
+        assert controller.atc.is_signal_red_for_block("BLOCK_MID") is False
 
 
 class TestSimulationSignalUpdates:

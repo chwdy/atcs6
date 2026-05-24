@@ -104,7 +104,7 @@ def test_demo_block_main_east_1_not_released_while_train_inside():
     saw_head_at_5_0 = False
     for tick in range(1, 2001):
         sim_controller.update(dt)
-        span = controller.current_span
+        span = controller.physics_sync.current_span
         if span is None or span.head is None:
             continue
         head_tile = tuple(span.head.tile)
@@ -126,7 +126,7 @@ def test_demo_block_main_east_1_not_released_while_train_inside():
                 f"head={head_tile}, span={sorted(occupied_tiles)}"
             )
         # Stop once train has been at terminal for a while.
-        if tick > 200 and controller.current_speed_kmh <= 0.05:
+        if tick > 200 and controller.physics_sync.current_speed_kmh <= 0.05:
             break
 
     assert saw_head_at_5_0, (

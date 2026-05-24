@@ -1,12 +1,12 @@
 """Unit tests for `ato_navigator` pure helpers (sample / notch / rate-limit).
 
 These cover the static helpers that don't need a controller back-reference.
-End-to-end ATO behaviour (`ATONavigator.compute_handle`) is exercised by
+End-to-end ATO behaviour (`ATOComputer.compute_handle`) is exercised by
 `tests/test_trains_ato.py` via `TrainController.tick()`.
 """
 
 from enums import HandlePosition
-from ato_navigator import ATONavigator, rate_limit_handle
+from train_controller.ato import ATOComputer, rate_limit_handle
 
 
 # ---------------------------------------------------------------------------
@@ -15,7 +15,7 @@ from ato_navigator import ATONavigator, rate_limit_handle
 
 
 def test_sample_curve_at_empty_returns_zero():
-    assert ATONavigator.sample_curve_at([], 100.0) == 0.0
+    assert ATOComputer.sample_curve_at([], 100.0) == 0.0
 
 
 def test_sample_curve_at_before_first_returns_first():
@@ -23,7 +23,7 @@ def test_sample_curve_at_before_first_returns_first():
         {"distance_cm": 10, "operational_limit": 30},
         {"distance_cm": 100, "operational_limit": 60},
     ]
-    assert ATONavigator.sample_curve_at(curve, -5) == 30
+    assert ATOComputer.sample_curve_at(curve, -5) == 30
 
 
 def test_sample_curve_at_after_last_returns_last():
@@ -31,7 +31,7 @@ def test_sample_curve_at_after_last_returns_last():
         {"distance_cm": 10, "operational_limit": 30},
         {"distance_cm": 100, "operational_limit": 60},
     ]
-    assert ATONavigator.sample_curve_at(curve, 200) == 60
+    assert ATOComputer.sample_curve_at(curve, 200) == 60
 
 
 def test_sample_curve_at_interpolates_linearly():
@@ -40,7 +40,7 @@ def test_sample_curve_at_interpolates_linearly():
         {"distance_cm": 100, "operational_limit": 50},
     ]
     # Halfway between 0 and 100 → halfway between 0 and 50.
-    assert ATONavigator.sample_curve_at(curve, 50) == 25
+    assert ATOComputer.sample_curve_at(curve, 50) == 25
 
 
 def test_sample_curve_at_supports_atc_limit_key():
@@ -48,7 +48,7 @@ def test_sample_curve_at_supports_atc_limit_key():
         {"distance_cm": 0, "operational_limit": 30, "atc_limit": 60},
         {"distance_cm": 100, "operational_limit": 30, "atc_limit": 60},
     ]
-    assert ATONavigator.sample_curve_at(curve, 50, key="atc_limit") == 60
+    assert ATOComputer.sample_curve_at(curve, 50, key="atc_limit") == 60
 
 
 # ---------------------------------------------------------------------------
@@ -57,13 +57,13 @@ def test_sample_curve_at_supports_atc_limit_key():
 
 
 def test_pick_brake_notch_zero_or_negative_returns_neutral():
-    fn = ATONavigator.pick_brake_notch_for_multiplier
+    fn = ATOComputer.pick_brake_notch_for_multiplier
     assert fn(0.0) == HandlePosition.N
     assert fn(-0.5) == HandlePosition.N
 
 
 def test_pick_brake_notch_picks_smallest_sufficient():
-    fn = ATONavigator.pick_brake_notch_for_multiplier
+    fn = ATOComputer.pick_brake_notch_for_multiplier
     # Multipliers (op_decel-relative): B1=0.20, B2=0.40, B3=0.55, B4=0.70,
     # B5=0.85, B6=1.00, B7=1.30, B8=1.70.
     assert fn(0.10) == HandlePosition.B1
@@ -79,7 +79,7 @@ def test_pick_brake_notch_picks_smallest_sufficient():
 
 
 def test_pick_brake_notch_caps_at_b8():
-    fn = ATONavigator.pick_brake_notch_for_multiplier
+    fn = ATOComputer.pick_brake_notch_for_multiplier
     # If more decel than B8 provides is requested, cap at B8 (ATC EB will
     # catch the resulting overspeed if it persists).
     assert fn(2.0) == HandlePosition.B8
@@ -92,13 +92,13 @@ def test_pick_brake_notch_caps_at_b8():
 
 
 def test_calculate_braking_notch_for_speed_no_gap_returns_neutral():
-    fn = ATONavigator.calculate_braking_notch_for_speed
+    fn = ATOComputer.calculate_braking_notch_for_speed
     assert fn(20.0, 20.0) == HandlePosition.N
     assert fn(15.0, 20.0) == HandlePosition.N
 
 
 def test_calculate_braking_notch_for_speed_buckets():
-    fn = ATONavigator.calculate_braking_notch_for_speed
+    fn = ATOComputer.calculate_braking_notch_for_speed
     # Thresholds: >25=B8, >18=B7, >12=B6, >8=B5, >5=B4, >3=B3, >1=B2, else B1.
     assert fn(30.0, 0.0) == HandlePosition.B8
     assert fn(20.0, 0.0) == HandlePosition.B7
@@ -116,7 +116,7 @@ def test_calculate_braking_notch_for_speed_buckets():
 
 
 def test_calculate_power_notch_buckets():
-    fn = ATONavigator.calculate_power_notch
+    fn = ATOComputer.calculate_power_notch
     # Thresholds: >8=P5, >5=P4, >3=P3, >1.5=P2, else P1.
     assert fn(10.0, 60.0) == HandlePosition.P5
     assert fn(54.0, 60.0) == HandlePosition.P4

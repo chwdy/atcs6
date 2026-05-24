@@ -261,7 +261,7 @@ class TestSetCabDoubleFlipBugFix:
         controller.set_cab("A")
 
         assert train.facing_direction == Direction.EAST
-        assert controller.cab == "A"
+        assert controller.commands.cab == "A"
         assert train.position.end_a_tile != train.position.end_b_tile, (
             "Setup must produce a multi-tile train"
         )
@@ -283,7 +283,7 @@ class TestSetCabDoubleFlipBugFix:
         controller.set_cab("A")
 
         assert train.facing_direction == Direction.EAST
-        assert controller.cab == "A"
+        assert controller.commands.cab == "A"
         assert train.position.end_a_tile == train.position.end_b_tile, (
             "Setup must produce a single-tile train"
         )
@@ -355,7 +355,7 @@ class TestSetCabDoubleFlipBugFix:
         result = controller.set_cab("B")
         assert result.success is True
         assert train.facing_direction == Direction.WEST
-        assert controller.cab == "B"
+        assert controller.commands.cab == "B"
 
     def test_multi_tile_set_cab_opposite_twice_returns_original(self, network):
         """Two opposite-cab switches return to original direction."""
@@ -396,7 +396,7 @@ class TestSetCabDoubleFlipBugFix:
         result = controller.set_cab("B")
         assert result.success is True
         assert train.facing_direction == Direction.WEST
-        assert controller.cab == "B"
+        assert controller.commands.cab == "B"
 
     # ---- Edge cases ----
 
@@ -414,7 +414,7 @@ class TestSetCabDoubleFlipBugFix:
         controller.power_on = True
 
         # active_cab is None initially
-        assert controller.cab is None
+        assert controller.commands.cab is None
 
         # First cab selection should sync from computed, not flip
         controller.set_cab("A")
@@ -435,7 +435,7 @@ class TestSetCabDoubleFlipBugFix:
         """set_cab is rejected if train is moving."""
         train, controller = self._setup_multi_tile_train(network)
 
-        controller.current_speed_kmh = 10.0  # Moving
+        controller.physics_sync.current_speed_kmh = 10.0  # Moving
 
         result = controller.set_cab("B")
         assert result.success is False
@@ -455,14 +455,14 @@ class TestSetCabDoubleFlipBugFix:
 
         # Place the train in RUNNING_AT_STATION (dwell). is_stopped() is
         # true because current_speed_kmh defaults to 0.0.
-        controller.state = TrainState.RUNNING_AT_STATION
+        controller.ops.state = TrainState.RUNNING_AT_STATION
 
         result = controller.set_cab(None)
 
         assert result.success is False
         assert "dwell" in (result.message or "").lower()
-        assert controller.cab == "A", "cab must be preserved on rejection"
-        assert controller.state == TrainState.RUNNING_AT_STATION, (
+        assert controller.commands.cab == "A", "cab must be preserved on rejection"
+        assert controller.ops.state == TrainState.RUNNING_AT_STATION, (
             "state must be preserved on rejection"
         )
 
@@ -502,20 +502,20 @@ class TestSetCabDoubleFlipBugFix:
         train, controller = self._setup_multi_tile_train(network)
 
         # Simulate: train was running, ATO stopped, route cancelled -> READY
-        controller.state = TrainState.READY
-        controller.ato_running = False
-        controller.current_speed_kmh = 0.0
+        controller.ops.state = TrainState.READY
+        controller.ato.running = False
+        controller.physics_sync.current_speed_kmh = 0.0
 
         # Active cab is still A (route cancellation doesn't clear cab)
-        assert controller.cab == "A"
+        assert controller.commands.cab == "A"
 
         result = controller.set_cab("B")
         assert result.success is True, (
             f"set_cab(\"B\") should work from READY state with cab selected, "
-            f"controller.state={controller.state}"
+            f"controller.ops.state={controller.ops.state}"
         )
         assert train.facing_direction == Direction.WEST
-        assert controller.cab == "B"
+        assert controller.commands.cab == "B"
 
 
 

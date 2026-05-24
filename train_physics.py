@@ -130,7 +130,7 @@ class TrainPhysics:
     def _get_path_tiles(self) -> Optional[List[Tuple[int, int, "Direction"]]]:
         """Get path tiles from controller (reads from dispatcher)."""
         if self.controller:
-            return self.controller.get_path_tiles()
+            return self.controller.path_projection.get_path_tiles()
         return None
 
     def _get_speed_profile(self) -> "SpeedProfile":
@@ -499,9 +499,12 @@ class TrainPhysics:
     def _read_current_speed(self, train: "Train") -> float:
         """Return the canonical current speed.
 
-        Per design_new.md the controller owns ``current_speed_kmh``.
+        Per design_new.md the controller's PhysicsSync sub-module owns
+        ``current_speed_kmh``.
         """
-        return float(getattr(self.controller, "current_speed_kmh", 0.0) or 0.0)
+        return float(
+            getattr(self.controller.physics_sync, "current_speed_kmh", 0.0) or 0.0
+        )
 
     def _get_tail_locator(
         self, train: "Train"

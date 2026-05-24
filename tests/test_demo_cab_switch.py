@@ -103,15 +103,15 @@ def _assert_no_authority_curve(s) -> None:
     )
 
     # Mirror onto controller scalar fields.
-    assert controller.atc_speed_limit == 0.0, (
-        f"controller.atc_speed_limit expected 0.0, got {controller.atc_speed_limit}"
+    assert controller.atc.speed_limit == 0.0, (
+        f"controller.atc.speed_limit expected 0.0, got {controller.atc.speed_limit}"
     )
     assert controller.target_speed == 0.0, (
         f"controller.target_speed expected 0.0, got {controller.target_speed}"
     )
-    assert controller._last_atc_limit_reason_code == AtcLimitReasonCode.NO_AUTHORITY, (
+    assert controller.atc._last_limit_reason_code == AtcLimitReasonCode.NO_AUTHORITY, (
         f"_last_atc_limit_reason_code expected NO_AUTHORITY, "
-        f"got {controller._last_atc_limit_reason_code!r}"
+        f"got {controller.atc._last_limit_reason_code!r}"
     )
 
 

@@ -74,47 +74,47 @@ class TestAtoStopButtonBugFix:
             ),
         )
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.cab = "A"
-        controller.state = TrainState.RUNNING_MOVING
-        controller.ato_running = True
-        controller.handle_position = HandlePosition.P2
+        controller.commands.control_mode = "ato"
+        controller.commands.cab = "A"
+        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.ato.running = True
+        controller.ops.handle_position = HandlePosition.P2
 
-        controller.current_speed_kmh = 30.0
+        controller.physics_sync.current_speed_kmh = 30.0
         return train, controller
 
     def test_ato_stop_sets_ato_running_false(self, network):
         """ato_stop() sets ato_running=False. Braking is applied in tick()."""
         _, controller = self._setup_ato_train(network)
 
-        result = controller.ato_stop()
+        result = controller.ato.stop()
 
         assert result.success is True
-        assert controller.ato_running is False
+        assert controller.ato.running is False
 
     def test_ato_stop_tick_applies_braking(self, network):
         """After ato_stop(), tick() applies braking."""
         train, controller = self._setup_ato_train(network)
 
-        controller.ato_stop()
-        controller.current_speed_kmh = 30.0  # Still moving
+        controller.ato.stop()
+        controller.physics_sync.current_speed_kmh = 30.0  # Still moving
 
         controller.tick(0.1)
 
         # Handle should now be braking
-        assert controller.handle_position.value.startswith("B")
+        assert controller.ops.handle_position.value.startswith("B")
 
     def test_ato_stop_transitions_to_standby_when_stopped(self, network):
         train, controller = self._setup_ato_train(network)
 
-        controller.ato_stop()
-        controller.current_speed_kmh = 0.0
+        controller.ato.stop()
+        controller.physics_sync.current_speed_kmh = 0.0
 
         controller.tick(0.1)
 
-        assert controller.state == TrainState.READY
-        assert controller.state == TrainState.READY
-        assert controller.handle_position == HandlePosition.N
+        assert controller.ops.state == TrainState.READY
+        assert controller.ops.state == TrainState.READY
+        assert controller.ops.handle_position == HandlePosition.N
 
 
 class TestAtoAutoCabSelectionBugFix:
@@ -162,14 +162,14 @@ class TestAtoAutoCabSelectionBugFix:
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.state = TrainState.READY
-        controller.cab = None
+        controller.commands.control_mode = "ato"
+        controller.ops.state = TrainState.READY
+        controller.commands.cab = None
 
         controller.tick(0.1)
 
         # tick() should NOT auto-select cab - that's done in depart()
-        assert controller.cab is None
+        assert controller.commands.cab is None
 
 
 
@@ -199,13 +199,13 @@ class TestAtoDepartCallsAtoGo:
 
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.cab = "A"
-        controller.state = TrainState.RUNNING_MOVING
-        controller.ato_running = True
-        controller.handle_position = HandlePosition.P2
+        controller.commands.control_mode = "ato"
+        controller.commands.cab = "A"
+        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.ato.running = True
+        controller.ops.handle_position = HandlePosition.P2
 
-        controller.current_speed_kmh = 30.0
+        controller.physics_sync.current_speed_kmh = 30.0
         return train, controller
 
     def test_depart_calls_ato_go_in_ato_mode(self, network):
@@ -226,10 +226,10 @@ class TestAtoDepartCallsAtoGo:
 
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.cab = "A"
-        controller.state = TrainState.READY
-        controller.ato_running = False
+        controller.commands.control_mode = "ato"
+        controller.commands.cab = "A"
+        controller.ops.state = TrainState.READY
+        controller.ato.running = False
 
 
         # depart() is called by RouteExecutor
@@ -237,8 +237,8 @@ class TestAtoDepartCallsAtoGo:
         assert result is True
 
         # In ATO mode, depart() calls ato_go(), so ato_running should be True
-        assert controller.ato_running is True
-        assert controller.state == TrainState.RUNNING_MOVING
+        assert controller.ato.running is True
+        assert controller.ops.state == TrainState.RUNNING_MOVING
 
     def test_ato_stop_sets_ato_running_false(self, network):
         """
@@ -247,10 +247,10 @@ class TestAtoDepartCallsAtoGo:
         """
         train, controller = self._setup_ato_train(network)
 
-        result = controller.ato_stop()
+        result = controller.ato.stop()
 
         assert result.success is True
-        assert controller.ato_running is False
+        assert controller.ato.running is False
 
     def test_tick_brakes_and_transitions_to_standby_when_ato_stopped(self, network):
         """
@@ -260,23 +260,23 @@ class TestAtoDepartCallsAtoGo:
         train, controller = self._setup_ato_train(network)
 
         # User presses ATO Stop
-        controller.ato_stop()
-        assert controller.ato_running is False
+        controller.ato.stop()
+        assert controller.ato.running is False
 
         # Train is still moving
-        controller.current_speed_kmh = 10.0
+        controller.physics_sync.current_speed_kmh = 10.0
         controller.tick(0.1)
 
         # Should still be RUNNING_MOVING while braking
         # (handle should be braking)
-        assert controller.handle_position.value.startswith("B")
+        assert controller.ops.handle_position.value.startswith("B")
 
         # Simulate train stopped
-        controller.current_speed_kmh = 0.0
+        controller.physics_sync.current_speed_kmh = 0.0
         controller.tick(0.1)
 
         # Now should transition to STANDBY
-        assert controller.state == TrainState.READY
+        assert controller.ops.state == TrainState.READY
 
     def test_ato_go_starts_ato(self, network):
         """
@@ -295,17 +295,17 @@ class TestAtoDepartCallsAtoGo:
 
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.cab = "A"
-        controller.state = TrainState.READY
-        controller.ato_running = False
+        controller.commands.control_mode = "ato"
+        controller.commands.cab = "A"
+        controller.ops.state = TrainState.READY
+        controller.ato.running = False
 
 
         # User explicitly calls ato_go()
-        result = controller.ato_go()
+        result = controller.ato.go()
         assert result.success is True
-        assert controller.ato_running is True
-        assert controller.state == TrainState.RUNNING_MOVING
+        assert controller.ato.running is True
+        assert controller.ops.state == TrainState.RUNNING_MOVING
 
 
 
@@ -357,13 +357,13 @@ class TestAtoDistanceAwareControl:
             ),
         )
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.cab = "A"
-        controller.state = TrainState.RUNNING_MOVING
-        controller.ato_running = True
-        controller.clearance_ahead_cm = clearance_cm
-        controller.atc_speed_limit = 60.0
-        controller.current_block_speed_limit = 60.0
+        controller.commands.control_mode = "ato"
+        controller.commands.cab = "A"
+        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.ato.running = True
+        controller.atc.clearance_ahead_cm = clearance_cm
+        controller.atc.speed_limit = 60.0
+        controller.atc.current_block_speed_limit = 60.0
 
         return train, controller
 
@@ -377,17 +377,17 @@ class TestAtoDistanceAwareControl:
         3. EB is only allowed by ATC overspeed logic
         """
         train, controller = self._setup_ato_train_with_path(network)
-        controller.current_speed_kmh = 40.0  # Train moving at moderate speed
+        controller.physics_sync.current_speed_kmh = 40.0  # Train moving at moderate speed
 
         # ATO stop is pressed
-        controller.ato_stop()
-        assert controller.ato_running is False
+        controller.ato.stop()
+        assert controller.ato.running is False
 
         # Tick should apply aggressive service braking
         controller.tick(0.1)
 
         # Handle should be high B-notch (B4-B8) but NOT EB
-        handle = controller.handle_position
+        handle = controller.ops.handle_position
         assert handle != HandlePosition.EB, (
             f"ATO stop should never use EB, got {handle.value}"
         )
@@ -403,14 +403,14 @@ class TestAtoDistanceAwareControl:
     def test_ato_stop_at_high_speed_uses_b8(self, network):
         """ATO stop at high speed should use B8 (maximum service brake)."""
         train, controller = self._setup_ato_train_with_path(network)
-        controller.current_speed_kmh = 80.0  # High speed
+        controller.physics_sync.current_speed_kmh = 80.0  # High speed
 
-        controller.ato_stop()
+        controller.ato.stop()
         controller.tick(0.1)
 
         # Should use maximum service brake B8
-        assert controller.handle_position == HandlePosition.B8, (
-            f"ATO stop at high speed should use B8, got {controller.handle_position.value}"
+        assert controller.ops.handle_position == HandlePosition.B8, (
+            f"ATO stop at high speed should use B8, got {controller.ops.handle_position.value}"
         )
 
     def test_ato_distance_aware_braking_triggers_service_brake(self, network):
@@ -443,25 +443,25 @@ class TestAtoDistanceAwareControl:
 
         controller = create_controller_for_train(train.train_id, network)
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.cab = "A"
-        controller.state = TrainState.RUNNING_MOVING
-        controller.ato_running = True
+        controller.commands.control_mode = "ato"
+        controller.commands.cab = "A"
+        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.ato.running = True
 
-        controller.current_speed_kmh = 30.0  # Moving at 30 km/h
+        controller.physics_sync.current_speed_kmh = 30.0  # Moving at 30 km/h
 
         # Tick to calculate clearance and decide handle
         controller.tick(0.1)
 
         # Check clearance - should be around 40cm (remaining in block)
         # which is above safety margin (25cm), so ATC should allow some speed
-        clearance = controller.clearance_ahead_cm
-        atc_limit = controller.atc_speed_limit
-        handle = controller.handle_position
+        clearance = controller.atc.clearance_ahead_cm
+        atc_limit = controller.atc.speed_limit
+        handle = controller.ops.handle_position
 
         # With clearance > safety margin, should not trigger EB
         if clearance > 25.0:
-            assert handle != HandlePosition.EB or controller.eb_active, (
+            assert handle != HandlePosition.EB or controller.eb.active, (
                 f"With {clearance:.1f}cm clearance (> 25cm safety margin), "
                 f"should not trigger EB without overspeed. Handle={handle.value}, "
                 f"ATC limit={atc_limit:.1f} km/h"
@@ -476,19 +476,19 @@ class TestAtoDistanceAwareControl:
         - Should not flip between B and P
         """
         train, controller = self._setup_ato_train_with_path(network)
-        controller.current_speed_kmh = 5.0  # Low speed
-        controller.atc_speed_limit = 10.0  # Target is 10 km/h
-        controller.current_block_speed_limit = 10.0
-        controller.clearance_ahead_cm = 10000.0  # Plenty of clearance
+        controller.physics_sync.current_speed_kmh = 5.0  # Low speed
+        controller.atc.speed_limit = 10.0  # Target is 10 km/h
+        controller.atc.current_block_speed_limit = 10.0
+        controller.atc.clearance_ahead_cm = 10000.0  # Plenty of clearance
 
         # First tick
         controller.tick(0.1)
-        handle_1 = controller.handle_position
+        handle_1 = controller.ops.handle_position
 
         # Simulate speed slightly changing
-        controller.current_speed_kmh = 6.0
+        controller.physics_sync.current_speed_kmh = 6.0
         controller.tick(0.1)
-        handle_2 = controller.handle_position
+        handle_2 = controller.ops.handle_position
 
         # At low speed near target, should prefer coasting or gentle adjustment
         # rather than aggressive notch changes
@@ -509,12 +509,12 @@ class TestAtoDistanceAwareControl:
         The handle should be at least B5 (aggressive but not EB).
         """
         train, controller = self._setup_ato_train_with_path(network)
-        controller.current_speed_kmh = 25.0  # Moderate speed
+        controller.physics_sync.current_speed_kmh = 25.0  # Moderate speed
 
-        controller.ato_stop()
+        controller.ato.stop()
         controller.tick(0.1)
 
-        handle = controller.handle_position
+        handle = controller.ops.handle_position
         assert handle.value.startswith("B"), (
             f"ATO stop should use brake, got {handle.value}"
         )
@@ -614,23 +614,23 @@ class TestAtoDestinationStoppingAfterPathCompletes:
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.cab = "A"
-        controller.state = TrainState.READY
-        controller.ato_running = False
-        controller.current_speed_kmh = 0.0
+        controller.commands.control_mode = "ato"
+        controller.commands.cab = "A"
+        controller.ops.state = TrainState.READY
+        controller.ato.running = False
+        controller.physics_sync.current_speed_kmh = 0.0
 
         controller.tick(0.1)
 
-        assert controller.atc_speed_limit == 0.0, (
+        assert controller.atc.speed_limit == 0.0, (
             f"Post-completion ATC limit must be 0 under Option B, "
-            f"got {controller.atc_speed_limit}"
+            f"got {controller.atc.speed_limit}"
         )
         assert (
-            controller._last_atc_limit_reason_code == AtcLimitReasonCode.NO_AUTHORITY
+            controller.atc._last_limit_reason_code == AtcLimitReasonCode.NO_AUTHORITY
         ), (
             f"Post-completion reason must be NO_AUTHORITY, "
-            f"got {controller._last_atc_limit_reason_code!r}"
+            f"got {controller.atc._last_limit_reason_code!r}"
         )
         assert controller.target_speed == 0.0, (
             f"target_speed reads operational_limit at distance 0; "
@@ -671,12 +671,12 @@ class TestAtoDestinationStoppingAfterPathCompletes:
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.cab = "A"
-        controller.state = TrainState.RUNNING_MOVING
-        controller.ato_running = True
+        controller.commands.control_mode = "ato"
+        controller.commands.cab = "A"
+        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.ato.running = True
 
-        controller.current_speed_kmh = 0.0  # Train is stopped
+        controller.physics_sync.current_speed_kmh = 0.0  # Train is stopped
 
         # Tick should detect train is at station and stopped
         controller.tick(0.1)
@@ -685,11 +685,11 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         # (or transition to AT_STATION state should handle this)
         # At minimum, ATO should stop running
         assert (
-            controller.ato_running is False
-            or controller.state == TrainState.RUNNING_AT_STATION
+            controller.ato.running is False
+            or controller.ops.state == TrainState.RUNNING_AT_STATION
         ), (
             f"Train stopped at destination should stop ATO or be AT_STATION. "
-            f"ato_running={controller.ato_running}, state={controller.state}"
+            f"ato_running={controller.ato.running}, state={controller.ops.state}"
         )
 
 
@@ -772,14 +772,14 @@ class TestTrendAwareATOControl:
             ),
         )
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.cab = "A"
-        controller.state = TrainState.RUNNING_MOVING
-        controller.ato_running = True
-        controller._previous_speed = 0.0
-        controller.atc_speed_limit = 60.0
-        controller.current_block_speed_limit = 80.0
-        controller.clearance_ahead_cm = 100000.0
+        controller.commands.control_mode = "ato"
+        controller.commands.cab = "A"
+        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.ato.running = True
+        controller.ato._previous_speed = 0.0
+        controller.atc.speed_limit = 60.0
+        controller.atc.current_block_speed_limit = 80.0
+        controller.atc.clearance_ahead_cm = 100000.0
 
         return train, controller
 
@@ -787,11 +787,11 @@ class TestTrendAwareATOControl:
         """The evaluator should return a valid handle position for normal cruising."""
         train, controller = train_and_controller
 
-        controller.current_speed_kmh = 58.0
-        controller._previous_speed = 58.0
-        controller.handle_position = HandlePosition.P2
+        controller.physics_sync.current_speed_kmh = 58.0
+        controller.ato._previous_speed = 58.0
+        controller.ops.handle_position = HandlePosition.P2
 
-        handle = controller._ato_calculate_handle()
+        handle = controller.ato.compute_handle()
 
         # The evaluator should return some valid handle from the candidate set
         valid_handles = [
@@ -824,11 +824,11 @@ class TestTrendAwareATOControl:
         """
         train, controller = train_and_controller
 
-        controller.current_speed_kmh = 65.0
-        controller._previous_speed = 64.0
-        controller.handle_position = HandlePosition.P5
+        controller.physics_sync.current_speed_kmh = 65.0
+        controller.ato._previous_speed = 64.0
+        controller.ops.handle_position = HandlePosition.P5
 
-        handle = controller._ato_calculate_handle()
+        handle = controller.ato.compute_handle()
 
         # With rate limiting, from P5 the handle moves 1 step toward brake → P4
         # The key invariant: handle should move toward brake (lower power or brake)
@@ -845,11 +845,11 @@ class TestTrendAwareATOControl:
         """When speed is far below curve, evaluator should select power."""
         train, controller = train_and_controller
 
-        controller.current_speed_kmh = 30.0
-        controller._previous_speed = 29.0
-        controller.handle_position = HandlePosition.N
+        controller.physics_sync.current_speed_kmh = 30.0
+        controller.ato._previous_speed = 29.0
+        controller.ops.handle_position = HandlePosition.N
 
-        handle = controller._ato_calculate_handle()
+        handle = controller.ato.compute_handle()
 
         # With speed (30) far below curve limit (~55), evaluator should power up
         _POWER_HANDLES = {
@@ -867,11 +867,11 @@ class TestTrendAwareATOControl:
         """When near target, evaluator shouldn't use maximum power."""
         train, controller = train_and_controller
 
-        controller.current_speed_kmh = 54.0
-        controller._previous_speed = 54.5
-        controller.handle_position = HandlePosition.N
+        controller.physics_sync.current_speed_kmh = 54.0
+        controller.ato._previous_speed = 54.5
+        controller.ops.handle_position = HandlePosition.N
 
-        handle = controller._ato_calculate_handle()
+        handle = controller.ato.compute_handle()
 
         # Evaluator picks whatever best tracks the curve — should be power since
         # we're still below the operational limit
@@ -891,34 +891,34 @@ class TestTrendAwareATOControl:
         """The method should set handle_reason for diagnostics."""
         train, controller = train_and_controller
 
-        controller.current_speed_kmh = 55.0
-        controller._previous_speed = 55.0
-        controller.handle_position = HandlePosition.N
+        controller.physics_sync.current_speed_kmh = 55.0
+        controller.ato._previous_speed = 55.0
+        controller.ops.handle_position = HandlePosition.N
 
-        controller._ato_calculate_handle()
+        controller.ato.compute_handle()
 
-        assert controller.handle_reason, "handle_reason should be set"
+        assert controller.ops.handle_reason, "handle_reason should be set"
         # Reason strings produced by the kinematic compute_handle:
         # "Coast: ...", "Power up: ...", "Brake B?: ...", "Stopping: ...",
         # "Stopped", "No curves", "No train".
         assert any(
-            tag in controller.handle_reason
+            tag in controller.ops.handle_reason
             for tag in ("Coast", "Power up", "Brake", "Stopping", "Stopped", "No ")
         ), (
-            f"handle_reason should indicate the control mode. Got: {controller.handle_reason}"
+            f"handle_reason should indicate the control mode. Got: {controller.ops.handle_reason}"
         )
 
     def test_future_aware_sets_previous_speed(self, train_and_controller):
         """The method should update _previous_speed for trend detection."""
         train, controller = train_and_controller
 
-        controller.current_speed_kmh = 55.0
-        controller._previous_speed = 50.0
+        controller.physics_sync.current_speed_kmh = 55.0
+        controller.ato._previous_speed = 50.0
 
-        controller._ato_calculate_handle()
+        controller.ato.compute_handle()
 
-        assert controller._previous_speed == 55.0, (
-            f"_previous_speed should be updated to current speed. Got {controller._previous_speed}"
+        assert controller.ato._previous_speed == 55.0, (
+            f"_previous_speed should be updated to current speed. Got {controller.ato._previous_speed}"
         )
 
     def test_future_aware_atc_safety_cap(self, train_and_controller):
@@ -931,12 +931,12 @@ class TestTrendAwareATOControl:
         train, controller = train_and_controller
 
         # Set ATC limit very low so safety cap triggers
-        controller.atc_speed_limit = 20.0
-        controller.current_speed_kmh = 25.0
-        controller._previous_speed = 24.0
-        controller.handle_position = HandlePosition.P5
+        controller.atc.speed_limit = 20.0
+        controller.physics_sync.current_speed_kmh = 25.0
+        controller.ato._previous_speed = 24.0
+        controller.ops.handle_position = HandlePosition.P5
 
-        handle = controller._ato_calculate_handle()
+        handle = controller.ato.compute_handle()
 
         # With rate limiting, from P5 the handle moves 1 step toward brake → P4
         from enums import HANDLE_POSITION_INDEX
@@ -951,13 +951,13 @@ class TestTrendAwareATOControl:
     def test_priority_override_stopping_uses_full_brake(self, train_and_controller):
         """When ATC limit forces a stop (ceiling@0=0), ATO commands B8."""
         train, controller = train_and_controller
-        controller.atc_speed_limit = 0.0
+        controller.atc.speed_limit = 0.0
 
-        controller.current_speed_kmh = 15.0
-        controller._previous_speed = 20.0
-        controller.handle_position = HandlePosition.B2
+        controller.physics_sync.current_speed_kmh = 15.0
+        controller.ato._previous_speed = 20.0
+        controller.ops.handle_position = HandlePosition.B2
 
-        handle = controller._ato_calculate_handle()
+        handle = controller.ato.compute_handle()
 
         assert handle == HandlePosition.B8, (
             f"With ceiling@0=0 (forced stop), the stopping branch returns B8. "
@@ -996,8 +996,8 @@ class TestSpeedCurveCalculation:
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.state = TrainState.RUNNING_MOVING
+        controller.commands.control_mode = "ato"
+        controller.ops.state = TrainState.RUNNING_MOVING
 
         return train, controller
 
@@ -1109,13 +1109,13 @@ class TestForwardSimulation:
 
         controller = TrainController(train_id="sim_test", network=network)
         controller.power_on = True
-        controller.atc_speed_limit = 60.0
-        controller.current_block_speed_limit = 60.0
+        controller.atc.speed_limit = 60.0
+        controller.atc.current_block_speed_limit = 60.0
         return controller
 
     def test_simulate_forward_braking_reduces_speed(self, controller_with_profile):
         """B4 braking from 20 km/h should result in lower speed after 5cm."""
-        predicted_speed = controller_with_profile._simulate_forward(
+        predicted_speed = controller_with_profile.ato.simulate_forward(
             current_speed_kmh=20.0,
             handle=HandlePosition.B4,
             distance_cm=5.0,
@@ -1125,7 +1125,7 @@ class TestForwardSimulation:
 
     def test_simulate_forward_power_increases_speed(self, controller_with_profile):
         """P5 power from 10 km/h should result in higher speed after 5cm."""
-        predicted_speed = controller_with_profile._simulate_forward(
+        predicted_speed = controller_with_profile.ato.simulate_forward(
             current_speed_kmh=10.0,
             handle=HandlePosition.P5,
             distance_cm=5.0,
@@ -1134,7 +1134,7 @@ class TestForwardSimulation:
 
     def test_simulate_forward_neutral_slight_decrease(self, controller_with_profile):
         """Neutral handle should cause slight speed decrease from friction."""
-        predicted_speed = controller_with_profile._simulate_forward(
+        predicted_speed = controller_with_profile.ato.simulate_forward(
             current_speed_kmh=20.0,
             handle=HandlePosition.N,
             distance_cm=5.0,
@@ -1145,7 +1145,7 @@ class TestForwardSimulation:
 
     def test_simulate_forward_zero_distance(self, controller_with_profile):
         """Zero distance should return current speed unchanged."""
-        predicted_speed = controller_with_profile._simulate_forward(
+        predicted_speed = controller_with_profile.ato.simulate_forward(
             current_speed_kmh=30.0,
             handle=HandlePosition.B4,
             distance_cm=0.0,
@@ -1154,7 +1154,7 @@ class TestForwardSimulation:
 
     def test_simulate_forward_braking_to_zero(self, controller_with_profile):
         """Heavy braking from low speed over long distance should reach 0."""
-        predicted_speed = controller_with_profile._simulate_forward(
+        predicted_speed = controller_with_profile.ato.simulate_forward(
             current_speed_kmh=5.0,
             handle=HandlePosition.B8,
             distance_cm=50.0,
@@ -1163,12 +1163,12 @@ class TestForwardSimulation:
 
     def test_simulate_forward_higher_brake_stops_faster(self, controller_with_profile):
         """Higher brake notch should result in lower speed at same distance."""
-        speed_b2 = controller_with_profile._simulate_forward(
+        speed_b2 = controller_with_profile.ato.simulate_forward(
             current_speed_kmh=20.0,
             handle=HandlePosition.B2,
             distance_cm=3.0,
         )
-        speed_b6 = controller_with_profile._simulate_forward(
+        speed_b6 = controller_with_profile.ato.simulate_forward(
             current_speed_kmh=20.0,
             handle=HandlePosition.B6,
             distance_cm=3.0,
@@ -1182,10 +1182,10 @@ class TestHandleSmoothing:
 
     def test_rate_limit_prevents_jump(self):
         """Handle should not jump more than 1 notch per evaluation."""
-        from train_controller import _rate_limit_handle
+        from train_controller.ato import rate_limit_handle
 
         # Currently at P3, evaluator wants B4 → should only go to P2
-        result = _rate_limit_handle(
+        result = rate_limit_handle(
             current=HandlePosition.P3,
             target=HandlePosition.B4,
         )
@@ -1194,9 +1194,9 @@ class TestHandleSmoothing:
 
     def test_rate_limit_allows_same(self):
         """Same handle should pass through unchanged."""
-        from train_controller import _rate_limit_handle
+        from train_controller.ato import rate_limit_handle
 
-        result = _rate_limit_handle(
+        result = rate_limit_handle(
             current=HandlePosition.B3,
             target=HandlePosition.B3,
         )
@@ -1204,9 +1204,9 @@ class TestHandleSmoothing:
 
     def test_rate_limit_allows_adjacent(self):
         """Adjacent handle should pass through."""
-        from train_controller import _rate_limit_handle
+        from train_controller.ato import rate_limit_handle
 
-        result = _rate_limit_handle(
+        result = rate_limit_handle(
             current=HandlePosition.N,
             target=HandlePosition.B1,
         )
@@ -1214,10 +1214,10 @@ class TestHandleSmoothing:
 
     def test_rate_limit_exception_for_stopping(self):
         """Stopping zone should allow faster handle changes."""
-        from train_controller import _rate_limit_handle
+        from train_controller.ato import rate_limit_handle
 
         # When target is B6 in stopping, allow 2-step jump
-        result = _rate_limit_handle(
+        result = rate_limit_handle(
             current=HandlePosition.P3,
             target=HandlePosition.B6,
             allow_fast=True,

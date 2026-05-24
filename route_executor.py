@@ -541,7 +541,7 @@ class RouteExecutor:
             controller = self._get_controller(train)
 
         # If controller is OFF, Phase 1 is skipped entirely.
-        if controller.state == TrainState.OFF:
+        if controller.ops.state == TrainState.OFF:
             return
 
         route_id = self.assigned_route_id_for(train_id)
@@ -577,7 +577,7 @@ class RouteExecutor:
             exec_state.path_cancelled = False
 
         # ---------- 70c3: dwell-complete timer check -------------------------
-        if controller.state == TrainState.RUNNING_AT_STATION:
+        if controller.ops.state == TrainState.RUNNING_AT_STATION:
             self._dwell_complete_check(train, route, exec_state, controller, now)
 
         # ---------- c481: helper lookup via _find_next_task_target -----------
@@ -669,7 +669,7 @@ class RouteExecutor:
         if controller.active_conditions & _PENDING_CANCEL_CONDITIONS:
             return False
         try:
-            has_active_path = controller.received_path_plan is not None
+            has_active_path = controller.path_projection.received_path_plan is not None
         except Exception:
             has_active_path = False
         if has_active_path:
@@ -814,7 +814,7 @@ class RouteExecutor:
         populated by the predecessor's `finished_at` writer per the canonical
         first-write rule; this step does not write `started_at`.
         """
-        if controller.state == TrainState.RUNNING_AT_STATION:
+        if controller.ops.state == TrainState.RUNNING_AT_STATION:
             return
         # Per design_new.md, the dwell-entry gate is `is_recovery_clean`.
         if not getattr(controller, "is_recovery_clean", False):
@@ -1186,7 +1186,7 @@ class RouteExecutor:
         controller = self._controller_by_id(train_id)
         if (
             controller is not None
-            and controller.state == TrainState.RUNNING_AT_STATION
+            and controller.ops.state == TrainState.RUNNING_AT_STATION
         ):
             finish_dwell = getattr(controller, "finish_dwell", None)
             if callable(finish_dwell):

@@ -1,12 +1,17 @@
 """
-ATONavigator — owns the ATO speed-curve / handle-selection / destination-info
-computation pulled out of `TrainController`.
+ATO Computer sub-module of ``TrainController``.
 
-Per design_new.md "ATO Computer": ATO produces the next handle command in
-ATO mode by tracking the operational speed curve published in
-`controller.get_lookahead()`. The computation is mostly stateless once the
-curve and current speed are known; the few pieces of state it does touch
-on the controller (`handle_reason`, `_previous_speed`) are diagnostic.
+Per design_new.md "ATO Computer": ATO produces the next handle command
+in ATO mode by tracking the operational speed curve published in
+``controller.get_lookahead()``. The computation is mostly stateless
+once the curve and current speed are known; the few pieces of state
+the sub-module retains (`running`, `info`, `_previous_speed`, `debug`)
+live on this class rather than on the façade.
+
+This module absorbs the previous standalone ``ato_navigator.py``
+``ATONavigator`` helper. The compat shim
+``train_controller._rate_limit_handle`` has been retired; callers
+import ``rate_limit_handle`` from this module directly.
 
 Algorithm summary (kinematic, single pass):
 
@@ -17,16 +22,29 @@ Algorithm summary (kinematic, single pass):
    stopped.
 3. Otherwise, sample the operational curve at evenly-spaced points within a
    *planning horizon* (proportional to current speed × tick dt, capped at
-   `ATO_RESTRICTION_LOOKAHEAD_CM`). For each sample, compute the
+   ``ATO_RESTRICTION_LOOKAHEAD_CM``). For each sample, compute the
    deceleration we would need to be at-or-below the curve when we reach
    that point. Take the maximum required.
-4. Map `required_decel / op_decel` to a brake notch via `BRAKE_MULTIPLIERS`
-   (the table is now defined as multipliers of op_decel — B6 = 1.00×).
+4. Map ``required_decel / op_decel`` to a brake notch via
+   ``BRAKE_MULTIPLIERS`` (the table is now defined as multipliers of
+   op_decel — B6 = 1.00×).
 5. If no brake is needed, power up while below the ceiling, else coast.
 
-`TrainController` keeps the public entry points (`_calculate_ato_info`,
-`_ato_calculate_handle`, `_calculate_braking_notch_for_speed`,
-`_calculate_power_notch`) as thin forwarders that delegate here.
+External callers access ATO state and behavior as:
+
+  - ``controller.ato.running`` (bool — is an ATO run in progress?)
+  - ``controller.ato.info`` (Optional[ATOInfo] — destination snapshot)
+  - ``controller.ato.debug`` (Optional[dict] — per-tick debug snapshot
+    consumed by the debug inspector panel)
+  - ``controller.ato.go()`` (start a run)
+  - ``controller.ato.stop()`` (end a run; operator/admin)
+  - ``controller.ato.compute_handle(delta_seconds)`` (per-tick handle
+    selection)
+  - ``controller.ato.compute_info()`` (rebuild destination snapshot)
+  - ``controller.ato.sample_curve_at(curve, distance_cm, key)``
+  - ``controller.ato.simulate_forward(speed, handle, distance_cm, dt)``
+  - ``controller.ato.calculate_power_notch(...)`` /
+    ``controller.ato.calculate_braking_notch_for_speed(...)``
 """
 
 from __future__ import annotations
@@ -39,7 +57,9 @@ from enums import (
     HANDLE_POSITION_INDEX,
     INDEX_TO_HANDLE_POSITION,
     POWER_MULTIPLIERS,
+    CommandResult,
     HandlePosition,
+    TrainState,
 )
 from model_scale import get_speed_conversion_factor
 from train_controller_types import ATOInfo
@@ -47,6 +67,10 @@ from train_controller_types import ATOInfo
 if TYPE_CHECKING:
     from train_controller import TrainController
 
+
+# =============================================================================
+# Module-level tuning constants
+# =============================================================================
 
 # Speed-tracking deadband is scaled to the operating band rather than fixed
 # at one value. A 1-2 km/h gap is natural at 50 km/h cruise but huge at
@@ -87,13 +111,18 @@ BRAKE_DEADBAND_KMH = 0.3
 # handle-change rate stays consistent in sim-time rather than per-tick.
 NOMINAL_TICK_DT = 0.1
 
+# ATO speed margin used by the cab-resume / depart-acceptance branch on the
+# controller façade. The margin lets a previously commanded ATO run resume
+# without re-issuing depart when the train is still slightly above stopped.
+ATO_SPEED_MARGIN_KMH = 1.0
+
 
 def ato_speed_tolerance(reference_kmh: float) -> float:
     """Speed-tracking tolerance for ATO at the given reference speed.
 
-    `reference_kmh` is typically `max(current_speed_kmh, ceiling_at_zero)` —
-    the value the band is sized against. The result is clamped to
-    [ATO_SPEED_TOLERANCE_MIN, ATO_SPEED_TOLERANCE_MAX].
+    ``reference_kmh`` is typically ``max(current_speed_kmh, ceiling_at_zero)``
+    — the value the band is sized against. The result is clamped to
+    ``[ATO_SPEED_TOLERANCE_MIN, ATO_SPEED_TOLERANCE_MAX]``.
     """
     return max(
         ATO_SPEED_TOLERANCE_MIN,
@@ -114,12 +143,13 @@ def rate_limit_handle(
 ) -> HandlePosition:
     """Rate-limit handle changes to prevent jitter.
 
-    At the nominal tick rate (`delta_seconds == NOMINAL_TICK_DT`), limits
-    handle movement to ±1 notch per call (±2 if `allow_fast=True`). The
-    nominal step budget is scaled by `delta_seconds / NOMINAL_TICK_DT` so
-    the handle-change rate stays consistent in sim-time when the play
-    speed packs more sim-time into one tick. Emergency brake
-    (`HandlePosition.EB`) always bypasses rate limiting.
+    At the nominal tick rate (``delta_seconds == NOMINAL_TICK_DT``),
+    limits handle movement to ±1 notch per call (±2 if
+    ``allow_fast=True``). The nominal step budget is scaled by
+    ``delta_seconds / NOMINAL_TICK_DT`` so the handle-change rate stays
+    consistent in sim-time when the play speed packs more sim-time into
+    one tick. Emergency brake (``HandlePosition.EB``) always bypasses
+    rate limiting.
     """
     if target == HandlePosition.EB:
         return HandlePosition.EB
@@ -142,7 +172,7 @@ def rate_limit_handle(
 
 
 # =============================================================================
-# ATONavigator
+# ATOComputer
 # =============================================================================
 
 
@@ -158,30 +188,137 @@ _BRAKE_HANDLES_ASCENDING = (
 )
 
 
-class ATONavigator:
-    """Owns the ATO computations for one controller."""
+class ATOComputer:
+    """Owns the ATO computations and run-lifecycle state for one controller."""
 
     def __init__(self, controller: "TrainController") -> None:
         self._c = controller
+
+        # Run lifecycle and per-tick diagnostics.
+        self.running: bool = False
+        self.info: Optional[ATOInfo] = None
+        self.debug: Optional[Dict[str, Any]] = None
+        # Diagnostic: previous tick's speed; used to compute trend in compute_handle.
+        self._previous_speed: float = 0.0
+
+    # ------------------------------------------------------------------
+    # Run lifecycle: go / stop
+    # ------------------------------------------------------------------
+
+    def go(self) -> CommandResult:
+        """Canonical helper that arms an ATO run by setting ``running = True``.
+
+        Per design_new.md "ato_running meaning and lifecycle", both
+        transitions into ``RUNNING_MOVING`` (the depart-acceptance path
+        and the reactive speed-based evaluation path) converge on this
+        writer so callers do not duplicate the precondition check.
+
+        Accepted entry states:
+        - ``READY``: full depart-acceptance path with cab auto-selection
+          and state transition to ``RUNNING_MOVING``.
+        - ``RUNNING_MOVING``: idempotent success (the reactive
+          transition has already moved state forward); skip cab
+          auto-selection because the train is already moving with an
+          ATC-accepted cab.
+        """
+        c = self._c
+        train = c._get_train()
+        if train is None:
+            return CommandResult(False, "Train not found")
+
+        if c.commands.control_mode != "ato":
+            return CommandResult(False, "Not in ATO mode")
+
+        if not c.power_on:
+            return CommandResult(False, "Power is off")
+
+        if c.ops.state not in (TrainState.READY, TrainState.RUNNING_MOVING):
+            return CommandResult(
+                False, f"Train not in READY (is {c.ops.state.value})"
+            )
+
+        # Reactive-transition entry: train is already moving under live
+        # authority with an ATC-accepted cab. Just write `running`;
+        # path_backed_run_active is derived.
+        if c.ops.state == TrainState.RUNNING_MOVING:
+            self.running = True
+            return CommandResult(True, "ATO armed (already moving)")
+
+        # READY entry: full depart-acceptance path.
+        # Recalculate ATO info fresh to ensure cab direction matches
+        # the current path (path may have been assigned since last tick).
+        self.info = self.compute_info()
+
+        # ATO Auto-selection/correction: determine the required cab from path
+        # direction and select or switch if needed.
+        if self.info and self.info.required_cab:
+            required_cab = self.info.required_cab
+            if c.commands.cab != required_cab:
+                old_cab = c.commands.cab
+                # Ensure train is physically stopped before switching cab.
+                if c.physics_sync.current_speed_kmh > 0:
+                    c.physics_sync.current_speed_kmh = 0.0
+                result = c.set_cab(required_cab)
+                if not result.success:
+                    return CommandResult(
+                        False,
+                        f"ATO cannot start: cab auto-{'selection' if old_cab is None else 'correction'} failed - {result.message}",
+                    )
+                c.notifications.emit(
+                    f"ATO auto-{'selected' if old_cab is None else 'switched'} cab to {required_cab} for path direction"
+                )
+        elif c.commands.cab is None:
+            return CommandResult(
+                False,
+                "No cab selected and no path available to auto-select direction",
+            )
+
+        # After auto-selection, verify we're still in READY (set_cab keeps
+        # state == READY for non-dwelling controllers).
+        if c.ops.state != TrainState.READY:
+            return CommandResult(False, f"Train not in READY (is {c.ops.state.value})")
+        if c.commands.cab not in ("A", "B"):
+            return CommandResult(False, "ATO requires a cab to be selected")
+
+        c.ops.state = TrainState.RUNNING_MOVING
+        self.running = True
+        return CommandResult(True, "ATO started")
+
+    def stop(self) -> CommandResult:
+        """Stop ATO movement (service stop, not emergency).
+
+        Sets ``running = False``. The tick() will handle braking and
+        transitioning to ``READY`` when stopped.
+        """
+        c = self._c
+        train = c._get_train()
+        if train is None:
+            return CommandResult(False, "Train not found")
+
+        if not self.running:
+            return CommandResult(False, "ATO not running")
+
+        self.running = False
+        return CommandResult(True, "ATO stopping")
 
     # ------------------------------------------------------------------
     # Destination info (used by tick() for display)
     # ------------------------------------------------------------------
 
-    def compute_ato_info(self) -> Optional[ATOInfo]:
-        """Build the `ATOInfo` payload for the controller's current path
-        + destination, or return None when neither is known."""
+    def compute_info(self) -> Optional[ATOInfo]:
+        """Build the ``ATOInfo`` payload for the controller's current
+        path + destination, or return None when neither is known."""
         c = self._c
         train = c._get_train()
         if not train or not c.network:
             return None
 
-        # `path_tiles` is read for parity with the original implementation
+        # ``path_tiles`` is read for parity with the original implementation
         # (which fetched it before deciding whether to compute).
-        c.get_path_tiles()
+        c.path_projection.get_path_tiles()
 
-        path_id = c.assigned_path_id or c.ato_path_id
-        destination_block_id = c.ato_destination_block_id
+        path_id = c.path_projection.assigned_path_id or c.path_projection.ato_path_id
+        destination_block_id = c.path_projection.ato_destination_block_id
 
         if not path_id and not destination_block_id:
             return None
@@ -194,7 +331,7 @@ class ATONavigator:
             return ATOInfo(path_id=path_id)
 
         path_heading = "a"
-        required_cab = c.cab or "A"
+        required_cab = c.commands.cab or "A"
 
         connectivity_cab = c._required_cab_for_path()
         if connectivity_cab is not None:
@@ -228,10 +365,11 @@ class ATONavigator:
     def sample_curve_at(
         curve: List[Dict], distance_cm: float, key: str = "operational_limit"
     ) -> float:
-        """Linearly interpolate a speed-curve sample at `distance_cm`.
+        """Linearly interpolate a speed-curve sample at ``distance_cm``.
 
-        Pure: depends only on `curve` (a list of `{distance_cm, atc_limit,
-        operational_limit, ...}` entries) and the requested key.
+        Pure: depends only on ``curve`` (a list of ``{distance_cm,
+        atc_limit, operational_limit, ...}`` entries) and the requested
+        key.
         """
         if not curve:
             return 0.0
@@ -260,11 +398,12 @@ class ATONavigator:
         distance_cm: float,
         dt: float = 0.02,
     ) -> float:
-        """Predict the train's speed at `distance_cm` ahead under `handle`.
+        """Predict the train's speed at ``distance_cm`` ahead under
+        ``handle``.
 
-        Brake notches apply `op_decel × BRAKE_MULTIPLIERS[handle]`, matching
-        `train_physics`. Air resistance is intentionally omitted because
-        callers compare handles relative to each other.
+        Brake notches apply ``op_decel × BRAKE_MULTIPLIERS[handle]``,
+        matching ``train_physics``. Air resistance is intentionally
+        omitted because callers compare handles relative to each other.
         """
         if distance_cm <= 0:
             return current_speed_kmh
@@ -311,10 +450,12 @@ class ATONavigator:
 
     @staticmethod
     def pick_brake_notch_for_multiplier(multiplier: float) -> HandlePosition:
-        """Smallest brake notch whose `BRAKE_MULTIPLIERS` value ≥ `multiplier`.
+        """Smallest brake notch whose ``BRAKE_MULTIPLIERS`` value ≥
+        ``multiplier``.
 
-        Multipliers are relative to op_decel. Caps at B8 — if more decel is
-        required than B8 provides, ATC EB will catch the resulting overspeed.
+        Multipliers are relative to op_decel. Caps at B8 — if more
+        decel is required than B8 provides, ATC EB will catch the
+        resulting overspeed.
         """
         if multiplier <= 0:
             return HandlePosition.N
@@ -329,21 +470,16 @@ class ATONavigator:
         target_speed: float,
         speed_trend_kmh_s: float = 0.0,
     ) -> HandlePosition:
-        """Pick a power notch to accelerate toward `target_speed`.
+        """Pick a power notch to accelerate toward ``target_speed``.
 
-        `speed_trend_kmh_s` is the measured rate of speed change this tick
-        (positive = accelerating). When the trend is a small negative value
-        and the deficit is modest, the speed is declining due to friction
-        only — P1 is enough to counteract it. A steeper decline (grade or
-        active decel) passes through to the normal gap table so the
-        controller escalates appropriately.
+        ``speed_trend_kmh_s`` is the measured rate of speed change this
+        tick (positive = accelerating). When the trend is a small
+        negative value and the deficit is modest, the speed is declining
+        due to friction only — P1 is enough to counteract it. A steeper
+        decline (grade or active decel) passes through to the normal
+        gap table so the controller escalates appropriately.
         """
         diff = target_speed - current_speed
-        # Gentle-drift guard: if speed is declining slowly (friction-like,
-        # not grade-driven) and the gap is small, P1 suffices — a higher
-        # notch would overshoot the narrow cruise band and cause jitter.
-        # The 1.0 km/h/s threshold is ~2× the friction constant; anything
-        # faster indicates grade is also acting and the normal table applies.
         if speed_trend_kmh_s < 0.0 and abs(speed_trend_kmh_s) < 1.0 and diff < 3.0:
             return HandlePosition.P1
         if diff > 8:
@@ -362,10 +498,11 @@ class ATONavigator:
     ) -> HandlePosition:
         """Pick a brake notch from a raw speed gap (current → target).
 
-        Used by callers that need a notch independent of distance — e.g. the
-        ATO-not-running "brake to stop" branch in `TrainController.tick()`.
-        Picks more aggressively as the gap grows. Each notch's multiplier
-        is interpreted against op_decel (see `BRAKE_MULTIPLIERS`).
+        Used by callers that need a notch independent of distance — e.g.
+        the ATO-not-running "brake to stop" branch in
+        ``TrainController.tick()``. Picks more aggressively as the gap
+        grows. Each notch's multiplier is interpreted against op_decel
+        (see ``BRAKE_MULTIPLIERS``).
         """
         diff = current_speed - target_speed
         if diff <= 0:
@@ -393,10 +530,10 @@ class ATONavigator:
     def compute_handle(self, delta_seconds: float = 0.05) -> HandlePosition:
         """Pick the next ATO handle by tracking the operational speed curve.
 
-        Mutates three diagnostic fields on the controller (`handle_reason`,
-        `_previous_speed`, `ato_debug`); does not touch any other controller
-        state. `ato_debug` is consumed by `routes/inspector.py` "ATO Debug"
-        group.
+        Mutates three diagnostic fields: ``self._previous_speed``,
+        ``self.debug`` (consumed by ``routes/inspector.py`` "ATO Debug"
+        group), and ``self._c.handle_reason`` (still on the façade until
+        the ops sub-module lands).
 
         Args:
             delta_seconds: tick duration in seconds. Used to scale the
@@ -405,29 +542,33 @@ class ATONavigator:
         c = self._c
         debug: Dict[str, Any] = {
             "delta_seconds": float(delta_seconds),
-            "current_speed_kmh": float(c.current_speed_kmh),
+            "current_speed_kmh": float(c.physics_sync.current_speed_kmh),
         }
 
         train = c._get_train()
         if not train:
-            c.handle_reason = "No train"
+            c.ops.handle_reason = "No train"
             debug["mode"] = "no_train"
             debug["final_handle"] = HandlePosition.N.value
-            c.ato_debug = debug
+            self.debug = debug
             return HandlePosition.N
 
-        speed_kmh = c.current_speed_kmh
-        speed_trend_kmh_s = (speed_kmh - c._previous_speed) / delta_seconds if delta_seconds > 0 else 0.0
-        c._previous_speed = speed_kmh
+        speed_kmh = c.physics_sync.current_speed_kmh
+        speed_trend_kmh_s = (
+            (speed_kmh - self._previous_speed) / delta_seconds
+            if delta_seconds > 0
+            else 0.0
+        )
+        self._previous_speed = speed_kmh
 
         lookahead = c.get_lookahead()
         curves = lookahead.get("lookahead", {}).get("speed_curves", [])
 
         if not curves:
-            c.handle_reason = "No curves"
+            c.ops.handle_reason = "No curves"
             debug["mode"] = "no_curves"
             debug["final_handle"] = HandlePosition.N.value
-            c.ato_debug = debug
+            self.debug = debug
             return HandlePosition.N
 
         profile = c._get_speed_profile()
@@ -442,8 +583,8 @@ class ATONavigator:
         ceiling_at_zero = min(
             curve_at_zero,
             train.max_speed,
-            c.atc_speed_limit,
-            c.current_block_speed_limit,
+            c.atc.speed_limit,
+            c.atc.current_block_speed_limit,
         )
 
         debug.update(
@@ -453,10 +594,10 @@ class ATONavigator:
                 "operational_decel_ratio": float(profile.operational_decel_ratio),
                 "curve_at_zero_kmh": float(curve_at_zero),
                 "max_speed_kmh": float(train.max_speed),
-                "atc_speed_limit_kmh": float(c.atc_speed_limit),
+                "atc_speed_limit_kmh": float(c.atc.speed_limit),
                 "block_speed_limit_kmh": (
-                    float(c.current_block_speed_limit)
-                    if c.current_block_speed_limit != float("inf")
+                    float(c.atc.current_block_speed_limit)
+                    if c.atc.current_block_speed_limit != float("inf")
                     else None
                 ),
                 "ceiling_at_zero_kmh": float(ceiling_at_zero),
@@ -466,18 +607,18 @@ class ATONavigator:
         # Stopping zone: curve says stop right here.
         if ceiling_at_zero <= STOPPED_SPEED_THRESHOLD_KMH:
             if speed_kmh > STOPPED_SPEED_THRESHOLD_KMH:
-                c.handle_reason = (
+                c.ops.handle_reason = (
                     f"Stopping: ceiling@0={ceiling_at_zero:.2f} "
                     f"speed={speed_kmh:.1f}"
                 )
                 debug["mode"] = "stopping"
                 debug["final_handle"] = HandlePosition.B8.value
-                c.ato_debug = debug
+                self.debug = debug
                 return HandlePosition.B8
-            c.handle_reason = "Stopped"
+            c.ops.handle_reason = "Stopped"
             debug["mode"] = "stopped"
             debug["final_handle"] = HandlePosition.N.value
-            c.ato_debug = debug
+            self.debug = debug
             return HandlePosition.N
 
         # One-tick-ahead lookahead distance: at least the distance the train
@@ -497,26 +638,15 @@ class ATONavigator:
             }
         )
 
-        # For each sampled point in [0, look], compute the deceleration needed
-        # to be at-or-below the envelope there, and bind on the largest. On the
-        # op_decel envelope the chord (u²−v²)/(2d) evaluates to op_decel exactly
-        # (→ B6) at any look distance. A point where the train is already over
-        # the envelope (d≈0, target below current speed) needs op_decel plus the
-        # gap as catch-up — taking the max across samples is what keeps the
-        # final creep under a fast-collapsing authority-stop limit.
         required_decel_kmh_s = 0.0
         binding_dist_cm = 0.0
         binding_target_kmh = ceiling_at_zero
         samples: List[Dict[str, Any]] = []
-        # True when any sample was skipped solely because its gap fell within
-        # BRAKE_DEADBAND (gap > 0 but ≤ deadband).  Used below to suppress
-        # power-up: if a restriction is this close the train should coast, not
-        # accelerate into the limit.
         deadband_approached = False
         for i in range(LOOKAHEAD_SAMPLE_COUNT + 1):
             d_cm = look_cm * i / LOOKAHEAD_SAMPLE_COUNT
             target_at_d = self.sample_curve_at(curves, d_cm, "operational_limit")
-            target_at_d = min(target_at_d, train.max_speed, c.atc_speed_limit)
+            target_at_d = min(target_at_d, train.max_speed, c.atc.speed_limit)
             samples.append(
                 {"distance_cm": round(d_cm, 2), "target_kmh": round(target_at_d, 2)}
             )
@@ -528,8 +658,6 @@ class ATONavigator:
                 continue
 
             if d_cm <= 0:
-                # Already over the envelope at the head — close the gap on top
-                # of op_decel rather than letting a far target dilute it.
                 req = op_decel + gap_kmh
             else:
                 u_cm_s = speed_cm_s
@@ -547,12 +675,6 @@ class ATONavigator:
         debug["binding_target_kmh"] = round(binding_target_kmh, 2)
         debug["required_decel_kmh_s"] = round(required_decel_kmh_s, 3)
 
-        # No braking required — power up while below the ceiling, else coast.
-        # Power-up deadband scales with the reference speed via
-        # `ato_speed_tolerance(...)`. At cruise this is ~2 km/h so the train
-        # holds near the ceiling instead of bleeding off after coasting in;
-        # at very low ceilings (e.g. a 0.8 km/h authority-end creep band) it
-        # tightens automatically so the deadband does not eat the ceiling.
         if required_decel_kmh_s <= 0.0:
             debug["multiplier_needed"] = 0.0
             debug["deadband_approached"] = deadband_approached
@@ -562,11 +684,8 @@ class ATONavigator:
             debug["power_up_tolerance_kmh"] = power_up_tolerance
             debug["speed_trend_kmh_s"] = round(speed_trend_kmh_s, 3)
             if deadband_approached:
-                # A speed limit ahead is within the braking deadband — the
-                # train would brake if going slightly faster.  Don't accelerate
-                # into the restriction; coast and let friction close the gap.
                 target_handle = HandlePosition.N
-                c.handle_reason = (
+                c.ops.handle_reason = (
                     f"Coast (limit near): speed={speed_kmh:.1f} "
                     f"approaching restriction"
                 )
@@ -575,33 +694,27 @@ class ATONavigator:
                 target_handle = self.calculate_power_notch(
                     speed_kmh, ceiling_at_zero, speed_trend_kmh_s
                 )
-                c.handle_reason = (
+                c.ops.handle_reason = (
                     f"Power up: speed={speed_kmh:.1f} "
                     f"< ceiling={ceiling_at_zero:.1f}"
                 )
                 debug["mode"] = "power_up"
             else:
                 target_handle = HandlePosition.N
-                c.handle_reason = (
+                c.ops.handle_reason = (
                     f"Coast: speed={speed_kmh:.1f} ceiling={ceiling_at_zero:.1f}"
                 )
                 debug["mode"] = "coast"
             debug["target_handle"] = target_handle.value
-            # Power-up uses the same fast rate (±2 notches/tick) as braking,
-            # so re-accelerating after a slow zone matches the snap of a
-            # fresh start instead of crawling up one notch per tick. The
-            # rate limiter scales by `delta_seconds / NOMINAL_TICK_DT` so
-            # the handle-change rate stays sim-time-proportional at play
-            # speeds > 1×.
             final = rate_limit_handle(
-                current=c.handle_position,
+                current=c.ops.handle_position,
                 target=target_handle,
                 allow_fast=True,
                 delta_seconds=delta_seconds,
             )
             debug["rate_limited"] = final != target_handle
             debug["final_handle"] = final.value
-            c.ato_debug = debug
+            self.debug = debug
             return final
 
         # Brake notch from required deceleration as a multiple of op_decel.
@@ -620,7 +733,7 @@ class ATONavigator:
             }
         )
 
-        c.handle_reason = (
+        c.ops.handle_reason = (
             f"Brake {target_handle.value}: "
             f"need={required_decel_kmh_s:.2f}km/h/s "
             f"({multiplier_needed:.2f}× op_decel) "
@@ -628,12 +741,12 @@ class ATONavigator:
         )
 
         final = rate_limit_handle(
-            current=c.handle_position,
+            current=c.ops.handle_position,
             target=target_handle,
             allow_fast=True,
             delta_seconds=delta_seconds,
         )
         debug["rate_limited"] = final != target_handle
         debug["final_handle"] = final.value
-        c.ato_debug = debug
+        self.debug = debug
         return final

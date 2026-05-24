@@ -384,7 +384,7 @@ class Route:
 
         Per design_new.md inclusive-latch rule: when a ``simulation_controller``
         is supplied, walk every assigned train and call
-        ``controller.phase_latches.set_route_deactivate(...)``, which writes
+        ``controller.route_hooks.phase_latches.set_route_deactivate(...)``, which writes
         the deactivate latch and (when an active path exists) fans out to
         ``set_path_cancel_request(initiator="revoked")``. Phase 3 then commits
         the cancel and the route-run teardown.
@@ -403,9 +403,9 @@ class Route:
             controller = simulation_controller.get_controller(train_id)
             if controller is None:
                 continue
-            controller.phase_latches.set_route_deactivate(
+            controller.route_hooks.phase_latches.set_route_deactivate(
                 reason=diagnostic,
-                has_active_path=controller.received_path_plan is not None,
+                has_active_path=controller.path_projection.received_path_plan is not None,
             )
 
     # ── Assignment Methods ─────────────────────────────────────────

@@ -134,7 +134,7 @@ class LookaheadBuilder:
         if not train:
             return []
 
-        plan = c.received_path_plan
+        plan = c.path_projection.received_path_plan
         resource_sequence = (
             getattr(plan, "resource_sequence", None) if plan else None
         )

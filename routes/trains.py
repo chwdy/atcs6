@@ -370,7 +370,7 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Train not found"}), 404
 
         controller = _get_train_controller(train)
-        result = controller.ato_stop()
+        result = controller.ato.stop()
         if result.success:
             return jsonify(
                 {"status": "success", **_train_to_dict(train, state.network)}
@@ -449,7 +449,7 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Train not found"}), 404
 
         controller = _get_train_controller(train)
-        notifications = controller.get_and_clear_notifications()
+        notifications = controller.notifications.get_and_clear()
         return jsonify({"notifications": notifications})
 
     # ============================================================================
@@ -562,7 +562,7 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Train not found"}), 404
 
         controller = _get_train_controller(train)
-        result = controller.ato_go()
+        result = controller.ato.go()
         if result.success:
             return jsonify(
                 {"status": "success", **_train_to_dict(train, state.network)}
@@ -577,7 +577,7 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Train not found"}), 404
 
         controller = _get_train_controller(train)
-        result = controller.ato_stop()
+        result = controller.ato.stop()
         if result.success:
             return jsonify(
                 {"status": "success", **_train_to_dict(train, state.network)}
@@ -689,13 +689,13 @@ def register(app, state: AppState) -> None:
 
         Per `design_new.md` line 272 (Operator retargeting / route swap), the
         handler atomically:
-          (a) writes `controller.phase_latches.set_route_abort(...)` so Phase 3
+          (a) writes `controller.route_hooks.phase_latches.set_route_abort(...)` so Phase 3
               of the next eligible per-train transaction tears down the live
               authority and the existing `RouteRun`, and
           (b) calls `Route.unassign_train(old)` / `Route.assign_train(new)`.
 
         It does NOT mutate `RouteExecutor.execution_states` directly and does
-        NOT call `PathDispatcher.cancel_path(...)` or `controller.ato_stop()`
+        NOT call `PathDispatcher.cancel_path(...)` or `controller.ato.stop()`
         inline — those flow through Phase 3 cleanup. Phase 1 of the next
         eligible tick allocates a fresh `RouteRun` against the newly assigned
         route (per `design_new.md` line 1068).
@@ -725,14 +725,14 @@ def register(app, state: AppState) -> None:
         def _has_active_path() -> bool:
             return (
                 controller is not None
-                and controller.received_path_plan is not None
+                and controller.path_projection.received_path_plan is not None
             )
 
         # ── Branch 1: unassign (route_id is None) ────────────────────────────
         if route_id is None:
             if current_route_id:
                 if controller is not None:
-                    controller.phase_latches.set_route_abort(
+                    controller.route_hooks.phase_latches.set_route_abort(
                         reason="unassign",
                         has_active_path=_has_active_path(),
                     )
@@ -769,7 +769,7 @@ def register(app, state: AppState) -> None:
             # Retargeting: write the abort latch first so Phase 3 commits the
             # cancellation through the canonical workflow.
             if controller is not None:
-                controller.phase_latches.set_route_abort(
+                controller.route_hooks.phase_latches.set_route_abort(
                     reason="retarget",
                     has_active_path=_has_active_path(),
                 )

@@ -169,7 +169,7 @@ def register(app, state: AppState) -> None:
                 # shortcut that is incompatible with the derived
                 # `current_waypoint_index`. Operator/admin tooling that
                 # actually needs to retarget mid-flight should call
-                # `controller.phase_latches.set_route_abort(...)` for each
+                # `controller.route_hooks.phase_latches.set_route_abort(...)` for each
                 # affected train (see `PUT /api/trains/<id>/assign-route`).
 
             if "priority" in data:
@@ -282,7 +282,7 @@ def register(app, state: AppState) -> None:
                     controller = route_executor.controllers.get(train_id)
                     if controller is not None:
                         status["at_platform"] = (
-                            controller.state == TrainState.RUNNING_AT_STATION
+                            controller.ops.state == TrainState.RUNNING_AT_STATION
                         )
 
                     task = route.get_task_at(next_idx)

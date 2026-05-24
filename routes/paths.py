@@ -197,7 +197,7 @@ def register(app, state: AppState) -> None:
 
         v1 semantics (per `design_new.md` lines 270, 351-352, 1003): API
         callers must not invoke `PathDispatcher.cancel_path(...)` inline.
-        The handler writes `controller.phase_latches.path_cancel_request`
+        The handler writes `controller.route_hooks.phase_latches.path_cancel_request`
         and returns immediately with ``status: "queued"``. Phase 3 of the
         simulation tick consumes the latch and calls
         ``PathDispatcher.cancel_path(...)`` once the train is fully stopped.
@@ -248,7 +248,7 @@ def register(app, state: AppState) -> None:
                     }
                 ), 503
 
-            controller.phase_latches.set_path_cancel_request(
+            controller.route_hooks.phase_latches.set_path_cancel_request(
                 initiator="operator_cancelled",
                 reason="api cancel",
             )

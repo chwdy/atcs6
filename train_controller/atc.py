@@ -1,20 +1,35 @@
 """
-ATCCalculator — owns the ATC speed-limit / clearance computation pulled out
-of `TrainController`.
+ATC Computer sub-module of ``TrainController``.
 
-Per design_new.md "ATC Computer": ATC computes the maximum safe speed for
-the train given clearance ahead, block speed limits, signal state, and
-controller mode. The computation is structurally a pure derivation of
-controller + network + path state, but in v1 the helpers it relies on
-(`_get_current_block_id`, `_is_block_obstructed`, etc.) still live on
-`TrainController`. This module relocates the ATC bodies into a single
-class while leaving those helpers in place; full pure-function
-purification is deferred to a follow-up PR.
+Per design_new.md "TrainController" sub-module decomposition: the ATC
+Computer owns the live ATC speed-limit / clearance computation plus
+the cached fields the rest of the controller and the API surface read.
 
-`TrainController` keeps the public method names (`_calculate_atc_speed_limit`,
-`_calculate_clearance_ahead`, etc.) as thin forwarders that delegate
-here, so existing callers and `monkeypatch.setattr(controller, ...)`
-test fixtures continue to work without change.
+This module absorbs the previous standalone ``atc_calculator.py``
+``ATCCalculator`` helper. Under the v1 architecture, the ATC fields
+(``speed_limit``, ``clearance_ahead_cm``, ``current_block_speed_limit``,
+``safety_margin_cm``, ``signal_lookahead_blocks``,
+``_last_limit_reason_code``) live on this class rather than on the
+façade; cross-sub-module reads go through the parent controller
+back-reference ``self._c``.
+
+External callers access ATC state and behavior as:
+
+  - ``controller.atc.speed_limit`` (cached cap; refreshed each tick)
+  - ``controller.atc.clearance_ahead_cm`` (cached clearance)
+  - ``controller.atc.current_block_speed_limit`` (cached block cap)
+  - ``controller.atc.safety_margin_cm`` (tunable; default
+    ``TRACK_END_SAFETY_MARGIN_CM``)
+  - ``controller.atc.signal_lookahead_blocks`` (tunable scan depth)
+  - ``controller.atc.clearance_ahead()`` (recompute clearance now)
+  - ``controller.atc.speed_limit_now()`` (recompute speed cap now,
+    returns ``(speed, reason_string)``)
+  - ``controller.atc.speed_limit_with_code()`` (recompute, returns
+    ``(speed, reason, reason_code)``)
+  - ``controller.atc.is_caution_ahead()`` /
+    ``controller.atc.is_approaching_yellow_signal()`` /
+    ``controller.atc.is_signal_red_for_block(block_id)`` /
+    ``controller.atc.effective_safety_margin()``
 """
 
 from __future__ import annotations
@@ -25,24 +40,40 @@ from constants import (
     CAUTION_SPEED_LIMIT_KMH,
     PLATFORM_SAFETY_MARGIN_CM,
     STOPPED_SPEED_THRESHOLD_KMH,
+    TRACK_END_SAFETY_MARGIN_CM,
 )
-from enums import AtcLimitReasonCode, BlockState
+from enums import AtcLimitReasonCode, BlockState, SignalState
 
 if TYPE_CHECKING:
     from train_controller import TrainController
 
 
-# ATC tuning constants local to this module (not authored on `constants.py`
-# because they have no consumer outside ATCCalculator).
+# ATC tuning constants local to this module (not authored on
+# `constants.py` because they have no consumer outside ATCComputer).
 ATC_NO_BLOCK_FALLBACK_CM = 100000.0
 YELLOW_SIGNAL_SPEED_KMH = 40.0
+ATC_SIGNAL_LOOKAHEAD_BLOCKS = 3
 
 
-class ATCCalculator:
-    """Owns the ATC clearance + speed-limit computation for one controller."""
+class ATCComputer:
+    """Owns the ATC clearance + speed-limit computation and cached caps."""
 
     def __init__(self, controller: "TrainController") -> None:
         self._c = controller
+
+        # Cached caps — refreshed by `produce_physics_command()` (and on
+        # demand by the recompute helpers below).
+        self.clearance_ahead_cm: float = 0.0
+        self.speed_limit: float = 0.0
+        self.current_block_speed_limit: float = float("inf")
+        self._last_limit_reason_code: Optional[AtcLimitReasonCode] = None
+
+        # Tunables. ``safety_margin_cm`` is the track-end / authority-end
+        # buffer; the smaller ``PLATFORM_SAFETY_MARGIN_CM`` is layered in
+        # by ``effective_safety_margin()`` when the destination is a
+        # station.
+        self.safety_margin_cm: float = TRACK_END_SAFETY_MARGIN_CM
+        self.signal_lookahead_blocks: int = ATC_SIGNAL_LOOKAHEAD_BLOCKS
 
     # ------------------------------------------------------------------
     # Clearance ahead
@@ -51,11 +82,11 @@ class ATCCalculator:
     def clearance_ahead(self) -> float:
         """Available clearance in cm ahead of the train head.
 
-        Walks the train's current path forward, summing block lengths until
-        hitting an obstruction (other train, foreign reservation, red signal,
-        end of path). When the path has been completed but the train is still
-        approaching its destination station, derives clearance from
-        `_calculate_clearance_to_destination` instead.
+        Walks the train's current path forward, summing block lengths
+        until hitting an obstruction (other train, foreign reservation,
+        red signal, end of path). When the path has been completed but
+        the train is still approaching its destination station, derives
+        clearance from ``_calculate_clearance_to_destination`` instead.
         """
         c = self._c
         train = c._get_train()
@@ -80,12 +111,12 @@ class ATCCalculator:
             if c._is_block_obstructed(block, block_id):
                 break
 
-            if c._is_signal_red_for_block(block_id):
+            if self.is_signal_red_for_block(block_id):
                 break
 
             clearance += block.length_cm
 
-        if not blocks_ahead and c.ato_destination_block_id:
+        if not blocks_ahead and c.path_projection.ato_destination_block_id:
             clearance = c._calculate_clearance_to_destination(clearance)
 
         return clearance
@@ -94,29 +125,29 @@ class ATCCalculator:
     # ATC speed limit
     # ------------------------------------------------------------------
 
-    def speed_limit(self) -> Tuple[float, Optional[str]]:
+    def speed_limit_now(self) -> Tuple[float, Optional[str]]:
         """Return (speed_limit_kmh, reason_string).
 
-        Uses physics `v^2 = 2*a*d` with the effective safety margin to
+        Uses physics ``v^2 = 2*a*d`` with the effective safety margin to
         derive a safe speed for the current clearance. Layers in CAUTION,
         yellow-signal, and block-speed caps as separate concerns.
 
-        Per design_new.md step `22a9` (canonical lookahead), without a
+        Per design_new.md step ``22a9`` (canonical lookahead), without a
         received path plan the controller publishes no forward authority:
-        ATC limit is `0` and the reason is `no_authority`. There is no
-        block-bounded fallback — movement authority is binary on
-        `received_path_plan`.
+        ATC limit is ``0`` and the reason is ``no_authority``. There is
+        no block-bounded fallback — movement authority is binary on
+        ``received_path_plan``.
         """
         from train_controller import calculate_max_safe_speed
 
         c = self._c
-        if c.received_path_plan is None:
+        if c.path_projection.received_path_plan is None:
             return 0.0, "no_authority"
 
         profile = c._get_speed_profile()
         decel_rate = profile.deceleration_rate
 
-        clearance = c.clearance_ahead_cm
+        clearance = self.clearance_ahead_cm
         safety_margin = self.effective_safety_margin()
 
         safe_speed = calculate_max_safe_speed(clearance, decel_rate, safety_margin)
@@ -158,14 +189,10 @@ class ATCCalculator:
     def speed_limit_with_code(
         self,
     ) -> Tuple[float, Optional[str], Optional[AtcLimitReasonCode]]:
-        """`speed_limit()` plus the structured `AtcLimitReasonCode`.
-
-        Calls back through `controller._calculate_atc_speed_limit()` so that
-        tests monkey-patching the controller-side method still take effect.
-        """
+        """``speed_limit_now()`` plus the structured ``AtcLimitReasonCode``."""
         c = self._c
-        limiting_speed, limiting_reason = c._calculate_atc_speed_limit()
-        clearance = c.clearance_ahead_cm
+        limiting_speed, limiting_reason = self.speed_limit_now()
+        clearance = self.clearance_ahead_cm
         limiting_code: Optional[AtcLimitReasonCode] = None
 
         if clearance < float("inf"):
@@ -177,7 +204,7 @@ class ATCCalculator:
         if self.is_caution_ahead():
             limiting_code = AtcLimitReasonCode.CAUTION
 
-        if c.received_path_plan is None and limiting_code in (
+        if c.path_projection.received_path_plan is None and limiting_code in (
             None,
             AtcLimitReasonCode.AUTHORITY_STOP,
             AtcLimitReasonCode.OBSTRUCTION,
@@ -206,25 +233,23 @@ class ATCCalculator:
 
     def effective_safety_margin(self) -> float:
         """5cm when destination is a station, otherwise the controller's
-        configured `safety_margin_cm` (typically 25cm)."""
+        configured ``safety_margin_cm`` (typically 25cm)."""
         c = self._c
         train = c._get_train()
         if not train or not c.network:
-            return c.safety_margin_cm
+            return self.safety_margin_cm
 
-        if c.ato_destination_block_id:
-            station_id = c._get_station_in_block(c.ato_destination_block_id)
+        if c.path_projection.ato_destination_block_id:
+            station_id = c._get_station_in_block(c.path_projection.ato_destination_block_id)
             if station_id:
                 return PLATFORM_SAFETY_MARGIN_CM
 
-        return c.safety_margin_cm
+        return self.safety_margin_cm
 
     def is_approaching_yellow_signal(self) -> bool:
         """True when a yellow / double-yellow signal lies within
-        `signal_lookahead_blocks` blocks ahead in the train's travel
+        ``signal_lookahead_blocks`` blocks ahead in the train's travel
         direction."""
-        from enums import SignalState
-
         c = self._c
         if not c.network:
             return False
@@ -238,7 +263,7 @@ class ATCCalculator:
         blocks_ahead = c._get_blocks_ahead()
 
         for block_id in blocks_ahead:
-            if blocks_checked >= c.signal_lookahead_blocks:
+            if blocks_checked >= self.signal_lookahead_blocks:
                 break
 
             for _signal_id, signal in c.network.signals.items():
@@ -256,5 +281,36 @@ class ATCCalculator:
                         return True
 
             blocks_checked += 1
+
+        return False
+
+    def is_signal_red_for_block(self, block_id: str) -> bool:
+        """True when a red signal protects ``block_id`` against the
+        train's facing direction.
+
+        Only considers signals whose ``detection_direction`` matches the
+        train's facing direction. A signal with ``detection_direction =
+        "E"`` monitors eastbound traffic and should not block a
+        westbound train.
+        """
+        c = self._c
+        if not c.network:
+            return False
+
+        train = c._get_train()
+        travel_edge = None
+        if train and train.facing_direction:
+            travel_edge = c._direction_to_edge(train.facing_direction)
+
+        for _signal_id, signal in c.network.signals.items():
+            if (
+                hasattr(signal, "monitored_block_id")
+                and signal.monitored_block_id == block_id
+            ):
+                if signal.state == SignalState.RED:
+                    if travel_edge and hasattr(signal, "detection_direction"):
+                        if signal.detection_direction != travel_edge:
+                            continue
+                    return True
 
         return False
