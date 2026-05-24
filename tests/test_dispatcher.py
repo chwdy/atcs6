@@ -893,7 +893,7 @@ class TestATODirectionDetection:
     def _attach_live_path(self, controller, train, tiles, path_id="test_path", end_block_id=None):
         """Attach dispatcher-backed live path tiles to the controller.
 
-        v1: controller.received_path_plan reads from path_dispatcher.get_active_path(train_id).
+        v1: controller.path_projection.received_path_plan reads from path_dispatcher.get_active_path(train_id).
         Per design_new.md "Path field schema", `Path.path_tiles` is exposed as
         the function `Path.get_path_tiles()`; the stub matches that contract.
         """
@@ -983,7 +983,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.cab = "A"
+        controller.commands.cab = "A"
 
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
 
@@ -997,7 +997,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.cab = "A"
+        controller.commands.cab = "A"
 
         self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)])
 
@@ -1011,7 +1011,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.cab = "A"
+        controller.commands.cab = "A"
 
         # Path doesn't include head tile (5,0)
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
@@ -1026,7 +1026,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.cab = "A"
+        controller.commands.cab = "A"
 
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
 
@@ -1040,7 +1040,7 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.cab = "A"
+        controller.commands.cab = "A"
 
         # Head is the last tile — no next tile to compare
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
@@ -1058,13 +1058,13 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.cab = "A"
+        controller.commands.cab = "A"
         controller.power_on = True
 
         # Path goes EAST, train faces EAST -> same direction
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)], end_block_id="BLK_EAST")
 
-        info = controller._calculate_ato_info()
+        info = controller.ato.compute_info()
         assert info is not None
         assert info.required_cab == "A"  # keep current cab
 
@@ -1075,13 +1075,13 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.cab = "A"
+        controller.commands.cab = "A"
         controller.power_on = True
 
         # Path goes WEST, train faces EAST -> opposite
         self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)], end_block_id="BLK_WEST")
 
-        info = controller._calculate_ato_info()
+        info = controller.ato.compute_info()
         assert info is not None
         assert info.required_cab == "B"  # flip to opposite cab
 
@@ -1092,13 +1092,13 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.cab = "B"
+        controller.commands.cab = "B"
         controller.power_on = True
 
         # Path goes EAST, train faces WEST (cab B) -> opposite
         self._attach_live_path(controller, train, [(4, 0), (5, 0)], end_block_id="BLK_EAST")
 
-        info = controller._calculate_ato_info()
+        info = controller.ato.compute_info()
         assert info is not None
         assert info.required_cab == "A"
 
@@ -1111,13 +1111,13 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.cab = "A"
+        controller.commands.cab = "A"
         controller.power_on = True
 
         # Path goes NORTH, train faces EAST -> 90 degrees
         self._attach_live_path(controller, train, [(2, 0), (2, 1)], end_block_id="BLK_EAST")
 
-        info = controller._calculate_ato_info()
+        info = controller.ato.compute_info()
         assert info is not None
         assert info.required_cab == "A"  # keep current - ambiguous
 
@@ -1133,22 +1133,22 @@ class TestATODirectionDetection:
         controller.power_on_cmd()
         controller.set_cab("A")
 
-        assert controller.cab == "A"
-        assert controller.state == TrainState.READY
+        assert controller.commands.cab == "A"
+        assert controller.ops.state == TrainState.READY
 
         # Assign a path going WEST (opposite)
         self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)], end_block_id="BLK_WEST")
-        controller.control_mode = "ato"
+        controller.commands.control_mode = "ato"
 
         # Recalculate ato_info (normally done by tick)
-        controller.ato_info = controller._calculate_ato_info()
-        assert controller.ato_info.required_cab == "B"
+        controller.ato.info = controller.ato.compute_info()
+        assert controller.ato.info.required_cab == "B"
 
         # ato_go should auto-correct the cab
-        result = controller.ato_go()
+        result = controller.ato.go()
         assert result.success, f"ato_go failed: {result.message}"
-        assert controller.cab == "B"
-        assert controller.ato_running is True
+        assert controller.commands.cab == "B"
+        assert controller.ato.running is True
 
     def test_ato_go_no_correction_when_cab_matches(self):
         """ato_go() should NOT switch cab when path matches facing direction."""
@@ -1160,18 +1160,18 @@ class TestATODirectionDetection:
         controller.power_on_cmd()
         controller.set_cab("A")
 
-        assert controller.cab == "A"
+        assert controller.commands.cab == "A"
 
         # Path goes EAST (same as facing)
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)], end_block_id="BLK_EAST")
-        controller.control_mode = "ato"
+        controller.commands.control_mode = "ato"
 
-        controller.ato_info = controller._calculate_ato_info()
-        assert controller.ato_info.required_cab == "A"
+        controller.ato.info = controller.ato.compute_info()
+        assert controller.ato.info.required_cab == "A"
 
-        result = controller.ato_go()
+        result = controller.ato.go()
         assert result.success
-        assert controller.cab == "A"  # unchanged
+        assert controller.commands.cab == "A"  # unchanged
 
     # ===== Diagonal / real-world scenario tests =====
 
@@ -1186,14 +1186,14 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.cab = "A"
+        controller.commands.cab = "A"
         controller.power_on = True
 
         # Return path goes south through diagonal: (1,4) -> (1,3) -> (0,3) -> (0,2) -> (0,1)
         # Tile-coord direction from (1,4) -> (1,3) is dy=-1 = SOUTH
         self._attach_live_path(controller, train, [(1, 4), (1, 3), (0, 3), (0, 2), (0, 1)], "test_return", end_block_id="BLK_SOUTH")
 
-        info = controller._calculate_ato_info()
+        info = controller.ato.compute_info()
         assert info is not None
         # Train faces NORTH, path at head goes SOUTH -> opposite -> switch cab
         assert info.required_cab == "B"
@@ -1215,13 +1215,13 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.cab = "A"
+        controller.commands.cab = "A"
         controller.power_on = True
 
         # Return path: (1,4) -> (1,3) = SOUTH
         self._attach_live_path(controller, train, [(1, 4), (1, 3), (0, 3)], "test_return", end_block_id="BLK_SOUTH")
 
-        info = controller._calculate_ato_info()
+        info = controller.ato.compute_info()
         assert info is not None
         # Overall vector (1,4)->(0,3): dx=-1 -> WEST, opposite of EAST -> switch cab
         assert info.required_cab == "B"
@@ -1239,20 +1239,20 @@ class TestATODirectionDetection:
         controller = sim._get_or_create_controller(train)
         controller.power_on_cmd()
         controller.set_cab("A")
-        controller.control_mode = "ato"
+        controller.commands.control_mode = "ato"
 
-        assert controller.cab == "A"
+        assert controller.commands.cab == "A"
 
         # Assign a return path going WEST (no turn-around happens here anymore)
         self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)], end_block_id="BLK_WEST")
 
         # Cab should NOT have changed yet — path assignment no longer turns
-        assert controller.cab == "A"
+        assert controller.commands.cab == "A"
 
         # ato_go() should auto-correct the cab
-        result = controller.ato_go()
+        result = controller.ato.go()
         assert result.success, f"ato_go failed: {result.message}"
-        assert controller.cab == "B"
+        assert controller.commands.cab == "B"
         assert train.facing_direction == Direction.WEST
 
     def test_path_assignment_no_turn_when_same_direction(self):
@@ -1264,17 +1264,17 @@ class TestATODirectionDetection:
         controller = sim._get_or_create_controller(train)
         controller.power_on_cmd()
         controller.set_cab("A")
-        controller.control_mode = "ato"
+        controller.commands.control_mode = "ato"
 
-        assert controller.cab == "A"
+        assert controller.commands.cab == "A"
 
         # Assign forward path going EAST
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)], end_block_id="BLK_EAST")
 
         # ato_go() should NOT switch cab
-        result = controller.ato_go()
+        result = controller.ato.go()
         assert result.success
-        assert controller.cab == "A"
+        assert controller.commands.cab == "A"
         assert train.facing_direction == Direction.EAST
 
     def test_vertical_train_return_path_south(self):
@@ -1289,12 +1289,12 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.cab = "A"
+        controller.commands.cab = "A"
         controller.power_on = True
 
         self._attach_live_path(controller, train, [(0, 4), (0, 3), (0, 2)], end_block_id="BLK_SOUTH")
 
-        info = controller._calculate_ato_info()
+        info = controller.ato.compute_info()
         assert info is not None
         assert info.required_cab == "B"  # NORTH -> SOUTH = opposite
 
@@ -1305,12 +1305,12 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.cab = "A"
+        controller.commands.cab = "A"
 
         # No path, no destination
         train.assigned_path_id = None
 
-        info = controller._calculate_ato_info()
+        info = controller.ato.compute_info()
         assert info is None
 
     # v1: removed test_calculate_ato_info_short_path which wrote

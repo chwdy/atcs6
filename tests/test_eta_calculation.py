@@ -24,7 +24,7 @@ def _make_controller(current_speed_kmh: float = 0.0, power_on: bool = True) -> T
     network = RailwayNetwork()
     controller = TrainController(train_id="TRAIN_ETA", network=network)
     controller.power_on = power_on
-    controller.current_speed_kmh = current_speed_kmh
+    controller.physics_sync.current_speed_kmh = current_speed_kmh
     return controller
 
 

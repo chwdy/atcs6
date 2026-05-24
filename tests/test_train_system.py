@@ -45,16 +45,16 @@ def create_test_train_with_controller(
     # Per design_new.md ~line 1292, live runtime state lives on the
     # controller; tests configure it directly there instead of mirroring
     # through Train.
-    controller.current_speed_kmh = current_speed
+    controller.physics_sync.current_speed_kmh = current_speed
     if state == TrainState.OFF:
         controller.power_on = False
-        controller.state = TrainState.OFF
+        controller.ops.state = TrainState.OFF
     else:
         controller.power_on = True
-        controller.state = state
+        controller.ops.state = state
 
     # Sync controller speed (canonical per design_new.md)
-    controller.current_speed_kmh = float(current_speed)
+    controller.physics_sync.current_speed_kmh = float(current_speed)
 
     return train, controller, network
 
@@ -345,8 +345,8 @@ class TestTrainPhase1:
         # Power on
         result = controller.power_on_cmd()
         assert result.success is True
-        assert controller.state == TrainState.READY
-        assert controller.state == TrainState.READY
+        assert controller.ops.state == TrainState.READY
+        assert controller.ops.state == TrainState.READY
 
         # Can't power on again
         result = controller.power_on_cmd()
@@ -355,7 +355,7 @@ class TestTrainPhase1:
         # Power off — acceptance is immediate, OFF transition deferred.
         result = controller.power_off_cmd()
         assert result.success is True
-        assert controller.phase_latches.power_off is True
+        assert controller.route_hooks.phase_latches.power_off is True
 
     def test_power_off_while_moving_fails(self):
         """Test power_off_cmd fails when train is moving."""
@@ -365,7 +365,7 @@ class TestTrainPhase1:
 
         result = controller.power_off_cmd()
         assert result.success is False
-        assert controller.state == TrainState.RUNNING_MOVING
+        assert controller.ops.state == TrainState.RUNNING_MOVING
 
 
     def test_from_dict_restores_new_properties(self, basic_train: Train):
@@ -788,8 +788,8 @@ class TestTrainStateTransitions:
         )
         result = controller.power_on_cmd()
         assert result.success is True
-        assert controller.state == TrainState.READY
-        assert controller.state == TrainState.READY
+        assert controller.ops.state == TrainState.READY
+        assert controller.ops.state == TrainState.READY
 
     def test_power_on_fails_when_already_on(self):
         """Test power_on_cmd() fails when already powered."""
@@ -798,7 +798,7 @@ class TestTrainStateTransitions:
         )
         result = controller.power_on_cmd()
         assert result.success is False
-        assert controller.state == TrainState.READY
+        assert controller.ops.state == TrainState.READY
 
     def test_power_off_when_stopped(self):
         """Test power_off_cmd() works when stopped.
@@ -811,7 +811,7 @@ class TestTrainStateTransitions:
         )
         result = controller.power_off_cmd()
         assert result.success is True
-        assert controller.phase_latches.power_off is True
+        assert controller.route_hooks.phase_latches.power_off is True
 
     def test_power_off_fails_when_moving(self):
         """Test power_off_cmd() fails when moving."""
@@ -820,7 +820,7 @@ class TestTrainStateTransitions:
         )
         result = controller.power_off_cmd()
         assert result.success is False
-        assert controller.state == TrainState.RUNNING_MOVING
+        assert controller.ops.state == TrainState.RUNNING_MOVING
 
     def test_set_cab_transition(self):
         """set_cab(\"A\") leaves the controller in READY with cab selected."""
@@ -830,8 +830,8 @@ class TestTrainStateTransitions:
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
         result = controller.set_cab("A")
         assert result.success is True
-        assert controller.state == TrainState.READY
-        assert controller.cab == "A"
+        assert controller.ops.state == TrainState.READY
+        assert controller.commands.cab == "A"
 
     def test_depart_transition(self):
         """Test depart() transitions READY -> RUNNING_MOVING (manual mode)."""
@@ -841,11 +841,11 @@ class TestTrainStateTransitions:
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
         # Use manual mode to test depart transition (not ATO auto-cab logic).
         # Manual depart now requires a cab to be selected explicitly.
-        controller.control_mode = "manual"
-        controller.cab = "A"
+        controller.commands.control_mode = "manual"
+        controller.commands.cab = "A"
         result = controller.depart()
         assert result is True
-        assert controller.state == TrainState.RUNNING_MOVING
+        assert controller.ops.state == TrainState.RUNNING_MOVING
 
 
     def test_path_backed_manual_run_still_completes_to_standby(self):
@@ -853,22 +853,22 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING
         )
-        controller.current_speed_kmh = 0.0
+        controller.physics_sync.current_speed_kmh = 0.0
         train.state = TrainState.RUNNING_MOVING
-        controller.state = TrainState.RUNNING_MOVING
-        controller.control_mode = "manual"
-        controller.cab = "A"
+        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.commands.control_mode = "manual"
+        controller.commands.cab = "A"
         # `path_backed_run_active` is a derived projection (per design_new.md
         # ~line 161, no controller-owned setter); the assertion below confirms
         # the projection reads False when no path/route/destination context
         # exists for this stub controller.
-        controller.ato_running = False
+        controller.ato.running = False
 
         controller.tick(0.1)
 
-        assert controller.state == TrainState.READY
-        assert controller.state == TrainState.READY
-        assert controller.path_backed_run_active is False
+        assert controller.ops.state == TrainState.READY
+        assert controller.ops.state == TrainState.READY
+        assert controller.path_projection.path_backed_run_active is False
 
     def test_depart_fails_without_direction(self):
         """Test depart() fails without facing direction."""
@@ -896,7 +896,7 @@ class TestTrainStateTransitions:
             state=TrainState.RUNNING_MOVING
         )
         controller.enter_station_dwell()
-        assert controller.state == TrainState.RUNNING_AT_STATION
+        assert controller.ops.state == TrainState.RUNNING_AT_STATION
 
     def test_finish_dwell_transition(self):
         """finish_dwell() transitions RUNNING_AT_STATION -> READY."""
@@ -904,7 +904,7 @@ class TestTrainStateTransitions:
             state=TrainState.RUNNING_AT_STATION
         )
         controller.finish_dwell()
-        assert controller.state == TrainState.READY
+        assert controller.ops.state == TrainState.READY
 
     def test_emergency_stop_cmd_from_running(self):
         """Test activate_emergency_cmd() from RUNNING_MOVING."""
@@ -915,19 +915,19 @@ class TestTrainStateTransitions:
         # set the speed via the controller (live runtime field) and assert
         # against `eb_active` rather than a Train-side `emergency_brake`
         # mirror.
-        controller.current_speed_kmh = 80.0
-        result = controller.activate_emergency_cmd()
+        controller.physics_sync.current_speed_kmh = 80.0
+        result = controller.eb.activate()
         assert result.success is True
-        assert controller.eb_active is True
+        assert controller.eb.active is True
 
     def test_emergency_stop_cmd_always_allowed(self):
         """Test activate_emergency_cmd() works from any state."""
         train, controller, network = create_test_train_with_controller(
             state=TrainState.READY
         )
-        result = controller.activate_emergency_cmd()
+        result = controller.eb.activate()
         assert result.success is True
-        assert controller.eb_active is True
+        assert controller.eb.active is True
 
 
     def test_set_mode_manual_fails_when_moving(self):
@@ -1069,16 +1069,16 @@ class TestCompleteStateFlows:
         # Power on
         result = controller.power_on_cmd()
         assert result.success is True
-        assert controller.state == TrainState.READY
+        assert controller.ops.state == TrainState.READY
 
         # Select cab; controller stays in READY.
         assert controller.set_cab("A").success is True
-        assert controller.state == TrainState.READY
+        assert controller.ops.state == TrainState.READY
 
         # Depart (manual mode to bypass ATO auto-cab selection)
-        controller.control_mode = "manual"
+        controller.commands.control_mode = "manual"
         assert controller.depart() is True
-        assert controller.state == TrainState.RUNNING_MOVING
+        assert controller.ops.state == TrainState.RUNNING_MOVING
 
     def test_running_to_station_to_complete_flow(self):
         """Test complete flow through station arrival and route completion.
@@ -1093,29 +1093,29 @@ class TestCompleteStateFlows:
 
         # Phase-1 dwell entry transitions to RUNNING_AT_STATION.
         controller.enter_station_dwell()
-        assert controller.state == TrainState.RUNNING_AT_STATION
+        assert controller.ops.state == TrainState.RUNNING_AT_STATION
 
         # Phase-1 dwell complete transitions back to READY.
         controller.finish_dwell()
-        assert controller.state == TrainState.READY
+        assert controller.ops.state == TrainState.READY
 
         # Simulate moving and arriving at final station
         # Need to set controller state too for proper flow
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
         # Use manual mode to test depart (not ATO auto-cab logic). Manual
         # depart now requires a cab to be selected explicitly.
-        controller.control_mode = "manual"
-        controller.cab = "A"
+        controller.commands.control_mode = "manual"
+        controller.commands.cab = "A"
         controller.depart()
-        assert controller.state == TrainState.RUNNING_MOVING
+        assert controller.ops.state == TrainState.RUNNING_MOVING
 
         controller.enter_station_dwell()
-        assert controller.state == TrainState.RUNNING_AT_STATION
+        assert controller.ops.state == TrainState.RUNNING_AT_STATION
 
         # Route complete (controller-side state transition only; route
         # teardown is owned by RouteExecutor in v1).
         controller.finish_dwell()
-        assert controller.state == TrainState.READY
+        assert controller.ops.state == TrainState.READY
 
 
     def test_emergency_stop_flow(self):
@@ -1125,19 +1125,19 @@ class TestCompleteStateFlows:
         )
 
         # Emergency stop
-        result = controller.activate_emergency_cmd()
+        result = controller.eb.activate()
         assert result.success is True
-        assert controller.eb_active is True
+        assert controller.eb.active is True
         # Emergency stop sets handle to EB
-        assert controller.handle_position.value == "EB"
+        assert controller.ops.handle_position.value == "EB"
 
         # Cannot release emergency until stopped and handle in N/B
-        controller.current_speed_kmh = 0.0  # Simulate stopping
+        controller.physics_sync.current_speed_kmh = 0.0  # Simulate stopping
         # Handle is still EB, need to set to N first
-        controller.handle_position = HandlePosition.N
-        result = controller.release_emergency_cmd()
+        controller.ops.handle_position = HandlePosition.N
+        result = controller.eb.release()
         assert result.success is True
-        assert controller.eb_active is False
+        assert controller.eb.active is False
 
     def test_shutdown_flow(self):
         """Test complete shutdown flow.
@@ -1152,17 +1152,17 @@ class TestCompleteStateFlows:
         # Cannot power off while moving
         result = controller.power_off_cmd()
         assert result.success is False
-        assert controller.state == TrainState.RUNNING_MOVING
+        assert controller.ops.state == TrainState.RUNNING_MOVING
 
         # Stop first - simulate stopping
-        controller.current_speed_kmh = 0.0
-        controller.state = TrainState.READY
+        controller.physics_sync.current_speed_kmh = 0.0
+        controller.ops.state = TrainState.READY
         train.state = TrainState.READY
 
         # Now can power off — acceptance is immediate, OFF deferred to Phase 3.
         result = controller.power_off_cmd()
         assert result.success is True
-        assert controller.phase_latches.power_off is True
+        assert controller.route_hooks.phase_latches.power_off is True
 
 
 class TestEmergencyResetButtonBugFix:
@@ -1184,14 +1184,14 @@ class TestEmergencyResetButtonBugFix:
             state=TrainState.RUNNING_MOVING, current_speed=40.0
         )
 
-        result = controller.activate_emergency_cmd()
+        result = controller.eb.activate()
         assert result.success is True
 
-        controller.current_speed_kmh = 0.0
-        result = controller.release_emergency_cmd()
+        controller.physics_sync.current_speed_kmh = 0.0
+        result = controller.eb.release()
 
         assert result.success is True
-        assert controller.eb_active is False
+        assert controller.eb.active is False
 
     def test_set_handle_neutral_releases_emergency(self):
         """UI reset via handle neutral should release emergency stop."""
@@ -1199,14 +1199,14 @@ class TestEmergencyResetButtonBugFix:
             state=TrainState.RUNNING_MOVING, current_speed=30.0
         )
 
-        result = controller.activate_emergency_cmd()
+        result = controller.eb.activate()
         assert result.success is True
 
-        controller.current_speed_kmh = 0.0
+        controller.physics_sync.current_speed_kmh = 0.0
         result = controller.set_handle(HandlePosition.N)
 
         assert result.success is True
-        assert controller.eb_active is False
+        assert controller.eb.active is False
 
     def test_set_handle_release_fails_when_moving(self):
         """Release should still be blocked while the train is moving."""
@@ -1214,13 +1214,13 @@ class TestEmergencyResetButtonBugFix:
             state=TrainState.RUNNING_MOVING, current_speed=30.0
         )
 
-        result = controller.activate_emergency_cmd()
+        result = controller.eb.activate()
         assert result.success is True
 
         result = controller.set_handle(HandlePosition.N)
 
         assert result.success is False
-        assert controller.eb_active is True
+        assert controller.eb.active is True
 
     def test_set_handle_release_rejects_power_position(self):
         """Handle release should not accept power positions."""
@@ -1228,10 +1228,10 @@ class TestEmergencyResetButtonBugFix:
             state=TrainState.RUNNING_MOVING, current_speed=0.0
         )
 
-        result = controller.activate_emergency_cmd()
+        result = controller.eb.activate()
         assert result.success is True
 
         result = controller.set_handle(HandlePosition.P1)
 
         assert result.success is False
-        assert controller.eb_active is True
+        assert controller.eb.active is True

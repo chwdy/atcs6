@@ -258,8 +258,8 @@ class TestRouteExecutorThreeStationLoopSimulation:
                 simulation.path_dispatcher.cancel_path(path_id)
 
         train.state = TrainState.RUNNING_MOVING
-        controller.state = TrainState.RUNNING_MOVING
-        controller.ato_running = True
+        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.ato.running = True
 
         exec_state = simulation.route_executor.execution_states.get(train.train_id)
         if exec_state is None:
@@ -284,10 +284,10 @@ class TestRouteExecutorThreeStationLoopSimulation:
         train.state = TrainState.READY
         controller = simulation._get_or_create_controller(train)
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.state = TrainState.READY
+        controller.commands.control_mode = "ato"
+        controller.ops.state = TrainState.READY
         assert controller.set_cab("A").success is True
-        assert controller.cab == "A"
+        assert controller.commands.cab == "A"
 
         return network, dispatcher, simulation, train, controller
 
@@ -305,10 +305,10 @@ class TestRouteExecutorThreeStationLoopSimulation:
         train.state = TrainState.READY
         controller = simulation._get_or_create_controller(train)
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.state = TrainState.READY
+        controller.commands.control_mode = "ato"
+        controller.ops.state = TrainState.READY
         assert controller.set_cab("A").success is True
-        assert controller.cab == "A"
+        assert controller.commands.cab == "A"
 
         route = Route(
             route_id="ROUTE_ABC_LOOP", name="A-B-C Loop", mode=RouteMode.CIRCULAR
@@ -357,7 +357,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
                 and dispatcher.get_path(train.assigned_path_id).end_block_id
                 == "STA_A_BLOCK"
                 and train.facing_direction == Direction.WEST
-                and controller.cab == "B"
+                and controller.commands.cab == "B"
             ),
             "Train did not switch cab and dispatch from C back to A",
             max_steps=5000,
@@ -516,8 +516,8 @@ class TestRouteExecutorThreeStationLoopSimulation:
         train.position = make_train_position((6, 0), Direction.EAST)
         train.current_speed = 20.0
         train.state = TrainState.RUNNING_MOVING
-        controller.state = TrainState.RUNNING_MOVING
-        controller.ato_running = True
+        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.ato.running = True
 
         route.unassign_train(train.train_id)
         train.assigned_route_id = None
@@ -541,7 +541,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
         train.assigned_route_id = auto_park_route.route_id
         train.current_speed = 0.0
         train.state = TrainState.READY
-        controller.state = TrainState.READY
+        controller.ops.state = TrainState.READY
 
         self._run_until(
             simulation,
@@ -947,8 +947,8 @@ class TestManualPathAssignmentAfterArrival:
         train.state = TrainState.READY
         controller = simulation._get_or_create_controller(train)
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.state = TrainState.READY
+        controller.commands.control_mode = "ato"
+        controller.ops.state = TrainState.READY
         assert controller.set_cab("A").success is True
 
         # Step 1: Assign ONE_OFF route from A to B
@@ -976,8 +976,8 @@ class TestManualPathAssignmentAfterArrival:
         train.position = make_train_position((3, 0), Direction.EAST)
         train.current_speed = 0.0
         train.state = TrainState.READY
-        controller.state = TrainState.READY
-        controller.ato_running = False
+        controller.ops.state = TrainState.READY
+        controller.ato.running = False
 
         # Cancel the path from A to B
         if train.assigned_path_id:
@@ -1051,13 +1051,13 @@ class TestManualPathAssignmentAfterArrival:
 
         # Verify ATO is running or ready
         # Note: ATO may not be running yet if train is still in station state
-        assert controller.state in [
+        assert controller.ops.state in [
             TrainState.RUNNING_MOVING,
             TrainState.READY,
             TrainState.RUNNING_AT_STATION,
         ], (
             "BUG: Controller in unexpected state after path assignment. "
-            f"State: {controller.state}"
+            f"State: {controller.ops.state}"
         )
 
     def test_manual_path_b_to_c_train_actually_arrives_at_c(self):
@@ -1094,8 +1094,8 @@ class TestManualPathAssignmentAfterArrival:
         # Setup controller
         controller = simulation._get_or_create_controller(train)
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.state = TrainState.READY
+        controller.commands.control_mode = "ato"
+        controller.ops.state = TrainState.READY
         assert controller.set_cab("A").success is True
 
         # Assign B->C route (simulating UI action)
@@ -1118,17 +1118,17 @@ class TestManualPathAssignmentAfterArrival:
         # Wait for train to get path and start moving
         self._run_until(
             simulation,
-            lambda: train.state == TrainState.RUNNING_MOVING and controller.ato_running,
+            lambda: train.state == TrainState.RUNNING_MOVING and controller.ato.running,
             "BUG: Train did not start moving after path B->C assignment. "
-            f"State: {train.state}, ato_running: {controller.ato_running}, "
-            f"ato_destination_block_id: {controller.ato_destination_block_id}",
+            f"State: {train.state}, ato_running: {controller.ato.running}, "
+            f"ato_destination_block_id: {controller.path_projection.ato_destination_block_id}",
             max_steps=500,
         )
 
         # Verify ato_destination_block_id is set
-        assert controller.ato_destination_block_id == "STA_C_BLOCK", (
+        assert controller.path_projection.ato_destination_block_id == "STA_C_BLOCK", (
             f"ato_destination_block_id should be STA_C_BLOCK, "
-            f"got {controller.ato_destination_block_id}"
+            f"got {controller.path_projection.ato_destination_block_id}"
         )
 
         # Continue until train arrives at C
@@ -1167,8 +1167,8 @@ class TestManualPathAssignmentAfterArrival:
         # Setup controller
         controller = simulation._get_or_create_controller(train)
         controller.power_on = True
-        controller.control_mode = "ato"
-        controller.state = TrainState.READY
+        controller.commands.control_mode = "ato"
+        controller.ops.state = TrainState.READY
 
         # Manually assign B->C route
         route = Route(
@@ -1264,12 +1264,12 @@ class TestManualPathAssignmentAfterArrival:
         # Run until train is moving
         for _ in range(500):
             simulation.update(0.1)
-            if train.state == TrainState.RUNNING_MOVING and controller.ato_running:
+            if train.state == TrainState.RUNNING_MOVING and controller.ato.running:
                 break
 
-        assert controller.ato_running is True, "Train should be running with ATO"
+        assert controller.ato.running is True, "Train should be running with ATO"
         assert train.current_speed > 0, "Train should be moving"
-        old_destination = controller.ato_destination_block_id
+        old_destination = controller.path_projection.ato_destination_block_id
         assert old_destination is not None, "Train should have a destination"
 
         # Cancel route (simulate cancel button)
@@ -1281,8 +1281,8 @@ class TestManualPathAssignmentAfterArrival:
         train.assigned_route_id = None
 
         # Apply the fix: Stop ATO and clear destination
-        if controller.ato_running:
-            controller.ato_stop()
+        if controller.ato.running:
+            controller.ato.stop()
         train.ato_destination_block_id = None
 
         # Clear route executor state
@@ -1290,10 +1290,10 @@ class TestManualPathAssignmentAfterArrival:
             simulation.route_executor.execution_states.pop(train.train_id, None)
 
         # Verify fix
-        assert controller.ato_running is False, (
+        assert controller.ato.running is False, (
             "BUG: ATO should stop after route cancellation"
         )
-        assert controller.ato_destination_block_id is None, (
+        assert controller.path_projection.ato_destination_block_id is None, (
             "BUG: Destination should be cleared"
         )
         assert train.ato_destination_block_id is None, (
@@ -1345,12 +1345,12 @@ class TestManualPathAssignmentAfterArrival:
 
         # Train is at station A, cancel immediately
         train.assigned_route_id = None
-        if controller.ato_running:
-            controller.ato_stop()
+        if controller.ato.running:
+            controller.ato.stop()
         train.ato_destination_block_id = None
 
-        assert controller.ato_running is False
-        assert controller.ato_destination_block_id is None
+        assert controller.ato.running is False
+        assert controller.path_projection.ato_destination_block_id is None
 
     def test_route_cancellation_clears_path_id(self):
         """Ensure cancellation clears both destination AND path ID."""
@@ -1375,12 +1375,12 @@ class TestManualPathAssignmentAfterArrival:
         train.ato_destination_block_id = "BLK_C"
 
         # Cancel
-        if controller.ato_running:
-            controller.ato_stop()
+        if controller.ato.running:
+            controller.ato.stop()
         train.ato_destination_block_id = None
 
-        assert controller.ato_path_id is None, "Path ID should be cleared"
-        assert controller.ato_destination_block_id is None
+        assert controller.path_projection.ato_path_id is None, "Path ID should be cleared"
+        assert controller.path_projection.ato_destination_block_id is None
 
     def test_backward_path_assignment_auto_turns_train(self):
         """
@@ -1421,7 +1421,7 @@ class TestManualPathAssignmentAfterArrival:
         assert train.facing_direction == Direction.EAST, (
             "Train should face EAST initially"
         )
-        assert controller.cab == "A", "Cab A should be active"
+        assert controller.commands.cab == "A", "Cab A should be active"
 
         # Manually create backward path C->A (this simulates path tool usage)
         # Path should go from (6,0) to (0,0) - heading WEST
@@ -1466,12 +1466,12 @@ class TestManualPathAssignmentAfterArrival:
                 and path_direction == train.facing_direction.opposite()
                 and train.is_stopped()
             ):
-                opposite = "B" if controller.cab == "A" else "A"
+                opposite = "B" if controller.commands.cab == "A" else "A"
                 result = controller.set_cab(opposite)
                 assert result.success, (
                     f"set_cab({opposite}) failed! "
-                    f"train.state={train.state}, controller.state={controller.state}, "
-                    f"active_cab={controller.cab}, ato_running={controller.ato_running}, "
+                    f"train.state={train.state}, controller.ops.state={controller.ops.state}, "
+                    f"active_cab={controller.commands.cab}, ato_running={controller.ato.running}, "
                     f"speed={train.current_speed}"
                 )
 
@@ -1479,8 +1479,8 @@ class TestManualPathAssignmentAfterArrival:
         assert train.facing_direction == Direction.WEST, (
             f"BUG: Train should auto-turn to WEST for backward path, got {train.facing_direction}"
         )
-        assert controller.cab == "B", (
-            f"BUG: Cab should switch to B after turn, got {controller.cab}"
+        assert controller.commands.cab == "B", (
+            f"BUG: Cab should switch to B after turn, got {controller.commands.cab}"
         )
 
     def test_backward_path_no_turn_if_already_correct(self):
@@ -1533,14 +1533,14 @@ class TestManualPathAssignmentAfterArrival:
                 and path_direction == train.facing_direction.opposite()
                 and train.is_stopped()
             ):
-                opposite = "B" if controller.cab == "A" else "A"
+                opposite = "B" if controller.commands.cab == "A" else "A"
                 controller.set_cab(opposite)
 
         # Should still face EAST
         assert train.facing_direction == Direction.EAST, (
             "Train should not turn for forward path"
         )
-        assert controller.cab == "A", "Cab should remain A"
+        assert controller.commands.cab == "A", "Cab should remain A"
 
     def test_backward_path_real_world_scenario(self):
         """
@@ -1591,8 +1591,8 @@ class TestManualPathAssignmentAfterArrival:
 
         # 3. User cancels route and assigns return path
         train.assigned_route_id = None
-        if controller.ato_running:
-            controller.ato_stop()
+        if controller.ato.running:
+            controller.ato.stop()
         train.ato_destination_block_id = None
 
         # Wait for train to stop
@@ -1638,12 +1638,12 @@ class TestManualPathAssignmentAfterArrival:
                 and path_direction == train.facing_direction.opposite()
                 and train.is_stopped()
             ):
-                opposite = "B" if controller.cab == "A" else "A"
+                opposite = "B" if controller.commands.cab == "A" else "A"
                 result = controller.set_cab(opposite)
                 assert result.success, (
                     f"set_cab({opposite}) failed! "
-                    f"train.state={train.state}, controller.state={controller.state}, "
-                    f"active_cab={controller.cab}, ato_running={controller.ato_running}, "
+                    f"train.state={train.state}, controller.ops.state={controller.ops.state}, "
+                    f"active_cab={controller.commands.cab}, ato_running={controller.ato.running}, "
                     f"speed={train.current_speed}, facing={train.facing_direction}"
                 )
 
@@ -1656,7 +1656,7 @@ class TestManualPathAssignmentAfterArrival:
         controller.set_cab("A")
 
         # Start ATO
-        controller.ato_go()
+        controller.ato.go()
 
         # Run a bit - train should start moving
         for _ in range(500):
@@ -1665,7 +1665,7 @@ class TestManualPathAssignmentAfterArrival:
                 break
 
         assert train.current_speed > 0, "BUG: Train should be able to move after turn"
-        assert controller.ato_running is True, "BUG: ATO should be running"
+        assert controller.ato.running is True, "BUG: ATO should be running"
 
 
         # OLD: Button disabled (!active_cab) - BUG
@@ -1790,21 +1790,21 @@ class TestAutoReversalOnNewRouteAssignment:
 
         controller = simulation._get_or_create_controller(train)
         controller.power_on = True
-        controller.control_mode = "ato"
+        controller.commands.control_mode = "ato"
 
         # Simulate post-route-completion: IDLE, facing EAST, cab A.
         # depart_from_station(has_more_waypoints=False) sets state=IDLE
         # but does NOT clear active_cab or leading_end, so the train
         # retains its cab and facing direction.
-        controller.cab = "A"
+        controller.commands.cab = "A"
         train.active_cab = "A"
         train.state = TrainState.READY
-        controller.state = TrainState.READY
+        controller.ops.state = TrainState.READY
 
         # Verify preconditions
         assert train.facing_direction == Direction.EAST
         assert train.state == TrainState.READY
-        assert controller.cab == "A"
+        assert controller.commands.cab == "A"
 
         # Assign new backward route to A
         route = Route(route_id="ROUTE_CA", name="C to A", mode=RouteMode.ONE_OFF)
@@ -1823,14 +1823,14 @@ class TestAutoReversalOnNewRouteAssignment:
             ),
             f"BUG: Train did not auto-reverse and depart westbound from IDLE. "
             f"State={train.state}, facing={train.facing_direction}, "
-            f"cab={controller.cab}, path={train.assigned_path_id}",
+            f"cab={controller.commands.cab}, path={train.assigned_path_id}",
             max_steps=5000,
         )
 
-        assert controller.cab == "B", (
-            f"Expected cab B for westbound travel, got {controller.cab}"
+        assert controller.commands.cab == "B", (
+            f"Expected cab B for westbound travel, got {controller.commands.cab}"
         )
-        assert controller.ato_running is True, "ATO should be running"
+        assert controller.ato.running is True, "ATO should be running"
 
     def test_idle_train_no_cab_gets_forward_route_should_depart(self):
         """
@@ -1849,12 +1849,12 @@ class TestAutoReversalOnNewRouteAssignment:
 
         controller = simulation._get_or_create_controller(train)
         controller.power_on = True
-        controller.control_mode = "ato"
+        controller.commands.control_mode = "ato"
 
         # Simulate transition_to_idle(): clears cab and leading_end
         train.state = TrainState.READY
-        controller.state = TrainState.READY
-        controller.cab = None
+        controller.ops.state = TrainState.READY
+        controller.commands.cab = None
         train.active_cab = None
         if train.position:
             train.position.leading_end = None
@@ -1879,7 +1879,7 @@ class TestAutoReversalOnNewRouteAssignment:
             ),
             f"BUG: Train did not depart from IDLE with no cab. "
             f"State={train.state}, facing={train.facing_direction}, "
-            f"cab={controller.cab}",
+            f"cab={controller.commands.cab}",
             max_steps=5000,
         )
 
@@ -1905,12 +1905,12 @@ class TestAutoReversalOnNewRouteAssignment:
 
         controller = simulation._get_or_create_controller(train)
         controller.power_on = True
-        controller.control_mode = "ato"
+        controller.commands.control_mode = "ato"
 
         # Simulate transition_to_idle(): clears everything
         train.state = TrainState.READY
-        controller.state = TrainState.READY
-        controller.cab = None
+        controller.ops.state = TrainState.READY
+        controller.commands.cab = None
         train.active_cab = None
         if train.position:
             train.position.leading_end = None
@@ -1935,7 +1935,7 @@ class TestAutoReversalOnNewRouteAssignment:
             ),
             f"BUG: Train with no facing_direction did not depart. "
             f"State={train.state}, facing={train.facing_direction}, "
-            f"cab={controller.cab}",
+            f"cab={controller.commands.cab}",
             max_steps=5000,
         )
 

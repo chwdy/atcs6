@@ -167,7 +167,7 @@ class TestExtendPathBug:
         )
 
         # Store initial path info
-        initial_tiles = controller.get_path_tiles()
+        initial_tiles = controller.path_projection.get_path_tiles()
         initial_path_length = len(initial_tiles)
 
         # Extend path from C to E
@@ -185,7 +185,7 @@ class TestExtendPathBug:
         assert updated_path.get_authority_end_block_id() == "BLOCK_E"
 
         # Verify controller sees extended path immediately via get_path_tiles()
-        extended_tiles = controller.get_path_tiles()
+        extended_tiles = controller.path_projection.get_path_tiles()
         assert len(extended_tiles) > initial_path_length, (
             f"Controller should see extended path immediately.\n"
             f"  Initial: {initial_path_length} tiles\n"
@@ -247,8 +247,8 @@ class TestExtendPathBug:
         controller.depart()
 
         # Sync train state
-        demo_train.state = controller.state
-        demo_train.ato_running = controller.ato_running
+        demo_train.state = controller.ops.state
+        demo_train.ato_running = controller.ato.running
 
         # Get initial lookahead
         initial_lookahead = controller.get_lookahead()
@@ -351,7 +351,7 @@ class TestExtendPathBug:
         simple_network.block_manager.occupy_block("BLOCK_B", demo_train.train_id)
 
         # Get path tiles before extension
-        tiles_before = controller.get_path_tiles()
+        tiles_before = controller.path_projection.get_path_tiles()
         count_before = len(tiles_before)
 
         # Extend path to E
@@ -369,7 +369,7 @@ class TestExtendPathBug:
         assert updated_path.get_authority_end_block_id() == "BLOCK_E"
 
         # Controller should see extended path immediately
-        tiles_after = controller.get_path_tiles()
+        tiles_after = controller.path_projection.get_path_tiles()
         assert len(tiles_after) > count_before, (
             f"Controller should see extended path while train is in motion.\n"
             f"  Before: {count_before} tiles\n"
@@ -395,13 +395,13 @@ class TestExtendPathAtoSync:
 
     BUG: When extending a path via the API endpoint, the PathDispatcher
     updates the Path object correctly, but train.ato_destination_block_id,
-    train.current_path, and controller.ato_destination_block_id are never
+    train.current_path, and controller.path_projection.ato_destination_block_id are never
     updated. This causes the train to stop at the OLD terminal.
 
     FIX: After a successful extension in the endpoint, sync:
     - train.ato_destination_block_id = new_end_block_id
     - train.current_path = convert_tiles_to_train_path(path.get_path_tiles())
-    - controller.ato_destination_block_id = new_end_block_id
+    - controller.path_projection.ato_destination_block_id = new_end_block_id
     """
 
     @pytest.fixture
@@ -481,7 +481,7 @@ class TestExtendPathAtoSync:
     def test_controller_ato_destination_stale_then_synced(
         self, three_block_network, train_on_network, dispatcher_and_path
     ):
-        """v1: controller.ato_destination_block_id reads live from path.
+        """v1: controller.path_projection.ato_destination_block_id reads live from path.
 
         Original v0 BUG: the controller cached ato_destination_block_id
         which became stale after extend_path. v1 makes it a read-only
@@ -496,7 +496,7 @@ class TestExtendPathAtoSync:
             network=three_block_network,
             path_dispatcher=dispatcher,
         )
-        assert controller.ato_destination_block_id == "BLK_B"
+        assert controller.path_projection.ato_destination_block_id == "BLK_B"
 
         # Extend path via dispatcher
         ext_result = dispatcher.extend_path(path.path_id, new_end_block_id)
@@ -509,21 +509,21 @@ class TestExtendPathAtoSync:
         assert ext_result.success, f"Extension failed: {ext_result.reason}"
 
         # v1: live property reads new end_block_id immediately, no sync needed.
-        assert controller.ato_destination_block_id == "BLK_C", (
-            "v1: controller.ato_destination_block_id should read live from path"
+        assert controller.path_projection.ato_destination_block_id == "BLK_C", (
+            "v1: controller.path_projection.ato_destination_block_id should read live from path"
         )
 
     # v1: removed `test_train_ato_destination_stale_then_synced` — the test
     # was verifying that an ad-hoc `Train.ato_destination_block_id` attribute
     # (set inline by the test fixture) reflected the value the test wrote.
     # In v1 the canonical destination is derived from the live path and read
-    # via `controller.ato_destination_block_id` (covered by
+    # via `controller.path_projection.ato_destination_block_id` (covered by
     # `test_controller_ato_destination_stale_then_synced` above). Train no
     # longer carries its own destination shadow.
 
     # v1: removed `test_train_current_path_stale_then_synced` — referenced
     # `Train.current_path`, gone in v1. Canonical path geometry is
-    # `controller.received_path_plan.path_tiles`, read live.
+    # `controller.path_projection.received_path_plan.path_tiles`, read live.
 
     def test_extension_without_train_does_not_crash(self, three_block_network):
         """Extending a path with no train_id should not crash the sync logic."""
@@ -643,7 +643,7 @@ class TestGetPathTiles:
         )
 
         # get_path_tiles should return tiles from dispatcher
-        path_tiles = controller.get_path_tiles()
+        path_tiles = controller.path_projection.get_path_tiles()
         assert path_tiles is not None
         assert len(path_tiles) > 0
 
@@ -665,7 +665,7 @@ class TestGetPathTiles:
             path_dispatcher=dispatcher,
         )
 
-        assert controller.get_path_tiles() is None
+        assert controller.path_projection.get_path_tiles() is None
 
     def test_get_path_tiles_reflects_extension(self, simple_network):
         """After extend_path, get_path_tiles returns the extended path immediately."""
@@ -700,7 +700,7 @@ class TestGetPathTiles:
             path_dispatcher=dispatcher,
         )
 
-        tiles_before = controller.get_path_tiles()
+        tiles_before = controller.path_projection.get_path_tiles()
         count_before = len(tiles_before)
 
         # Extend the path
@@ -713,7 +713,7 @@ class TestGetPathTiles:
             )
         assert ext_result.success, f"Extension failed: {ext_result.reason}"
 
-        tiles_after = controller.get_path_tiles()
+        tiles_after = controller.path_projection.get_path_tiles()
         assert len(tiles_after) > count_before, (
             "get_path_tiles should reflect extension immediately"
         )
@@ -732,7 +732,7 @@ class TestGetPathTiles:
             network=network,
         )
 
-        result = controller.get_path_tiles()
+        result = controller.path_projection.get_path_tiles()
         assert result is None
 
 

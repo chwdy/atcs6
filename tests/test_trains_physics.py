@@ -245,16 +245,16 @@ class TestTrainPhysicsDebugLogging:
         physics = sim._get_or_create_physics(train)
 
         controller.power_on = True
-        controller.handle_position = HandlePosition.P2
-        # v1: write canonical speed onto the controller; controller.current_speed_kmh mirrors.
-        controller.current_speed_kmh = 12.0
-        controller.current_speed_kmh = 12.0
+        controller.ops.handle_position = HandlePosition.P2
+        # v1: write canonical speed onto the controller; controller.physics_sync.current_speed_kmh mirrors.
+        controller.physics_sync.current_speed_kmh = 12.0
+        controller.physics_sync.current_speed_kmh = 12.0
 
-        initial_speed = controller.current_speed_kmh
+        initial_speed = controller.physics_sync.current_speed_kmh
         physics.tick(0.1)
 
         # Speed should increase with P2 handle (power)
-        assert controller.current_speed_kmh > initial_speed
+        assert controller.physics_sync.current_speed_kmh > initial_speed
 
 
 class TestTrainPhysicsManualPowerPercent:
@@ -277,40 +277,40 @@ class TestTrainPhysicsManualPowerPercent:
         sim = SimulationController(network)
         controller = sim._get_or_create_controller(train)
         physics = sim._get_or_create_physics(train)
-        controller.state = TrainState.RUNNING_MOVING
-        controller.control_mode = "manual"
-        controller.manual_mode_type = "power_percent"
-        controller.atc_speed_limit = 120.0
-        controller.current_speed_kmh = 0.0
-        controller.current_speed_kmh = 0.0
+        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.commands.control_mode = "manual"
+        controller.manual.manual_mode_type = "power_percent"
+        controller.atc.speed_limit = 120.0
+        controller.physics_sync.current_speed_kmh = 0.0
+        controller.physics_sync.current_speed_kmh = 0.0
         return network, train, controller, physics
 
     def test_power_percent_50_immediate_curve_speed(self):
         """At 50% with default linear curve and no braking, speed jumps to 50 km/h."""
         network, train, controller, physics = self._build_train()
-        controller.manual_power_percent = 50.0
+        controller.manual.manual_power_percent = 50.0
         physics.tick(0.1)
         # Default power_speed_curve is [(0,0),(100,100)] -> 50% -> 50 km/h.
-        assert abs(controller.current_speed_kmh - 50.0) < 0.5
+        assert abs(controller.physics_sync.current_speed_kmh - 50.0) < 0.5
 
     def test_power_percent_eb_overrides_to_decel(self):
         """EB latched: percent ignored; emergency-brake decel applies."""
         network, train, controller, physics = self._build_train()
-        controller.manual_power_percent = 80.0
-        controller.current_speed_kmh = 60.0
-        controller.current_speed_kmh = 60.0
-        controller.eb_active = True
+        controller.manual.manual_power_percent = 80.0
+        controller.physics_sync.current_speed_kmh = 60.0
+        controller.physics_sync.current_speed_kmh = 60.0
+        controller.eb.active = True
         physics.tick(0.1)
         # Default emergency_brake_rate is 30 km/h/s, so 0.1s -> 60 - 3 = 57.
-        assert controller.current_speed_kmh < 60.0
-        assert controller.current_speed_kmh >= 0.0
+        assert controller.physics_sync.current_speed_kmh < 60.0
+        assert controller.physics_sync.current_speed_kmh >= 0.0
 
     def test_power_percent_atc_clamps_to_limit(self):
         """ATC ceiling caps the calibrated curve target."""
         network, train, controller, physics = self._build_train()
-        controller.manual_power_percent = 80.0
-        controller.atc_speed_limit = 30.0
+        controller.manual.manual_power_percent = 80.0
+        controller.atc.speed_limit = 30.0
         physics.tick(0.1)
         # Curve says 80, ATC says 30 -> speed clamped at 30.
-        assert abs(controller.current_speed_kmh - 30.0) < 0.5
+        assert abs(controller.physics_sync.current_speed_kmh - 30.0) < 0.5
 

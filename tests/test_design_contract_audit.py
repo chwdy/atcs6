@@ -87,7 +87,7 @@ def _run_demo_until_stopped(max_ticks: int = 2000, dt: float = 0.1):
     for tick in range(1, max_ticks + 1):
         sim_controller.update(dt)
         last_tick = tick
-        if tick > 200 and controller.current_speed_kmh <= 0.05:
+        if tick > 200 and controller.physics_sync.current_speed_kmh <= 0.05:
             stopped_streak += 1
             if stopped_streak >= 80:
                 break
@@ -131,9 +131,9 @@ def test_F3_phase2_does_not_write_running_at_station_state():
         f"After the train stopped at the East Terminal, the dispatcher "
         f"path {active.path_id!r} is still ACTIVE "
         f"({active.status.value!r}). Phase 3's post-physics stop check "
-        f"depends on `controller.state == RUNNING_MOVING` "
+        f"depends on `controller.ops.state == RUNNING_MOVING` "
         f"(train_controller.py:1756); Phase 2 already transitioned the "
-        f"state to {controller.state.value!r} before Phase 3 runs, so "
+        f"state to {controller.ops.state.value!r} before Phase 3 runs, so "
         f"`try_complete_active_path()` never fires. Fix site: remove the "
         f"`self.state = RUNNING_AT_STATION` write at "
         f"train_controller.py:826-835 and let Phase 1 "
@@ -168,10 +168,10 @@ def test_F4_path_completes_on_arrival_at_terminal():
         f"design_new.md step `09b0` requires `Path.status = COMPLETED` "
         f"after the post-physics stop check passes."
     )
-    assert controller.received_path_plan is None, (
-        f"Expected `controller.received_path_plan` to be None after path "
+    assert controller.path_projection.received_path_plan is None, (
+        f"Expected `controller.path_projection.received_path_plan` to be None after path "
         f"completion (design_new.md step `09b0`), got "
-        f"{controller.received_path_plan!r}."
+        f"{controller.path_projection.received_path_plan!r}."
     )
 
 
@@ -202,18 +202,18 @@ def test_F5_at_station_implies_no_active_path():
     violation = None
     for tick in range(1, 2001):
         sim_controller.update(dt)
-        if controller.state == TrainState.RUNNING_AT_STATION:
+        if controller.ops.state == TrainState.RUNNING_AT_STATION:
             active = dispatcher.get_active_path(train_id)
             if active is not None:
                 violation = (tick, active.path_id, active.status.value)
                 break
-        if tick > 200 and controller.current_speed_kmh <= 0.05 and controller.state == TrainState.READY:
+        if tick > 200 and controller.physics_sync.current_speed_kmh <= 0.05 and controller.ops.state == TrainState.READY:
             # Past the stop without ever observing the bug
             break
     if violation is not None:
         tick, pid, status = violation
         raise AssertionError(
-            f"tick={tick}: controller.state == RUNNING_AT_STATION while "
+            f"tick={tick}: controller.ops.state == RUNNING_AT_STATION while "
             f"active path {pid!r} is still {status!r}. Per design_new.md, "
             f"this combination must not be observable from outside a "
             f"single Phase-3 commit window."

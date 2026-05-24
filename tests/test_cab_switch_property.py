@@ -51,7 +51,7 @@ def test_travel_direction_none_when_no_cab():
     controller = create_controller_for_train(train.train_id, network)
 
     # No cab set yet.
-    controller.cab = None
+    controller.commands.cab = None
     assert controller.travel_direction is None
 
 
@@ -82,7 +82,7 @@ def test_travel_direction_flips_when_facing_flips():
     )
 
     controller = create_controller_for_train(train.train_id, network)
-    controller.cab = "A"
+    controller.commands.cab = "A"
 
     # First read: EAST.
     direction_a = controller.travel_direction
@@ -92,7 +92,7 @@ def test_travel_direction_flips_when_facing_flips():
     train.position.leading_end = LeadingEnd.B
     train.position.end_a_entry_edge = "E"
     train.position.end_b_entry_edge = "E"
-    controller.cab = "B"
+    controller.commands.cab = "B"
 
     # Next read recomputes; no setter, no cache to invalidate.
     direction_b = controller.travel_direction
@@ -108,14 +108,14 @@ def test_travel_direction_recomputes_per_read():
     network = _build_two_tile_network()
     train = _make_train(network)
     controller = create_controller_for_train(train.train_id, network)
-    controller.cab = "A"
+    controller.commands.cab = "A"
 
     a = controller.travel_direction
     b = controller.travel_direction
     assert a == b
 
     # Now invalidate by clearing active_cab.
-    controller.cab = None
+    controller.commands.cab = None
     c = controller.travel_direction
     assert c is None
     assert a is not None

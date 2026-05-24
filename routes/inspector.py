@@ -45,25 +45,25 @@ _TRAIN_CONFIG_FIELDS: List[str] = [
 ]
 
 _CONTROLLER_STORED_FIELDS: List[str] = [
-    "state",
-    "cab",
-    "current_span",
-    "current_speed_kmh",
-    "eb_active",
-    "ato_running",
-    "control_mode",
-    "manual_mode_type",
-    "handle_position",
-    "manual_power_percent",
+    "ops.state",
+    "commands.cab",
+    "physics_sync.current_span",
+    "physics_sync.current_speed_kmh",
+    "eb.active",
+    "ato.running",
+    "commands.control_mode",
+    "manual.manual_mode_type",
+    "ops.handle_position",
+    "manual.manual_power_percent",
     "power_on",
     "path_backed_run_active",
-    "clearance_ahead_cm",
-    "atc_speed_limit",
-    "current_block_speed_limit",
-    "safety_margin_cm",
-    "signal_lookahead_blocks",
-    "ato_info",
-    "handle_reason",
+    "atc.clearance_ahead_cm",
+    "atc.speed_limit",
+    "atc.current_block_speed_limit",
+    "atc.safety_margin_cm",
+    "atc.signal_lookahead_blocks",
+    "ato.info",
+    "ops.handle_reason",
 ]
 
 _CONTROLLER_DERIVED_FIELDS: List[str] = [
@@ -77,10 +77,11 @@ _CONTROLLER_DERIVED_FIELDS: List[str] = [
     "speed_limit_reason",
 ]
 
-# Direct controller fields (queued_progress_reports / pending_notifications)
-# remain attached to TrainController. The four Phase-3 latches live nested
-# under `controller.phase_latches`; their resolver path is set in
-# `_LATCH_META`'s `path` key.
+# Direct controller fields (queued_progress_reports) remain attached to
+# TrainController. The four Phase-3 latches live nested under
+# `controller.route_hooks.phase_latches`; the toast queue lives on the
+# `Notifications` sub-module at `controller.notifications.pending`. Each
+# resolver path is set in `_LATCH_META`'s `path` key.
 _CONTROLLER_LATCH_FIELDS: List[str] = [
     "queued_progress_reports",
     "pending_path_cancel_request",
@@ -142,7 +143,7 @@ _DERIVED_DOC: Dict[str, Dict[str, Any]] = {
             "network",
             "signals",
             "current_speed_kmh",
-            "eb_active",
+            "eb.active",
         ],
         "formula_doc": (
             "train_controller.py:498 / design_new.md §Lookahead — pure "
@@ -158,7 +159,7 @@ _DERIVED_DOC: Dict[str, Dict[str, Any]] = {
         ),
     },
     "speed_limit_reason": {
-        "computed_from": ["_last_speed_limit_reason (cached during _calculate_atc_speed_limit())"],
+        "computed_from": ["_last_speed_limit_reason (cached during atc.speed_limit_now())"],
         "formula_doc": (
             "train_controller.py:526 — last ATC speed-limit reason cached "
             "during this tick's ATC step; recomputed next tick."
@@ -168,30 +169,32 @@ _DERIVED_DOC: Dict[str, Dict[str, Any]] = {
 
 _LATCH_META: Dict[str, Dict[str, str]] = {
     "queued_progress_reports": {
+        "path": "physics_sync.queued_progress_reports",
         "writer": "Phase 2 — TrainController.on_physics_updated",
         "consumer": "Phase 3 — PathDispatcher.on_controller_progress (drains list)",
     },
     "pending_path_cancel_request": {
-        "path": "phase_latches.path_cancel_request",
+        "path": "route_hooks.phase_latches.path_cancel_request",
         "writer": "Phase 1 reconcile / Phase 2 cmd-drain or ATC / API handler",
         "consumer": "Phase 3 cancel step (gated by is_stopped() == True)",
     },
     "pending_route_abort": {
-        "path": "phase_latches.route_abort",
+        "path": "route_hooks.phase_latches.route_abort",
         "writer": "API / route executor",
         "consumer": "Phase 3 — RouteExecutor.on_train_progress (route abort step)",
     },
     "pending_power_off": {
-        "path": "phase_latches.power_off",
+        "path": "route_hooks.phase_latches.power_off",
         "writer": "Phase 2 — operator command drain",
         "consumer": "Phase 3 — power-off step (gated by is_stopped())",
     },
     "pending_route_deactivate": {
-        "path": "phase_latches.route_deactivate",
+        "path": "route_hooks.phase_latches.route_deactivate",
         "writer": "API / route executor",
         "consumer": "Phase 3 — route-deactivate step",
     },
     "pending_notifications": {
+        "path": "notifications.pending",
         "writer": "Any phase — controller helpers append diagnostic strings",
         "consumer": "Phase 3 — SimulationController collects + clears",
     },
@@ -201,10 +204,11 @@ _LATCH_META: Dict[str, Dict[str, str]] = {
 def _resolve_latch(controller: Any, name: str, meta: Dict[str, Any]) -> Any:
     """Resolve a latch value, walking the dotted `path` from meta when set.
 
-    Latches that live directly on TrainController (e.g. `pending_notifications`)
+    Latches that live directly on TrainController (e.g. `queued_progress_reports`)
     have no `path` and are read by attribute name. Latches that live nested
-    under `controller.phase_latches` carry a `path` like
-    `phase_latches.path_cancel_request`.
+    under `controller.route_hooks.phase_latches` or `controller.notifications` carry a
+    `path` like `phase_latches.path_cancel_request` or
+    `notifications.pending`.
     """
     path = meta.get("path", name)
     obj: Any = controller
@@ -377,8 +381,12 @@ def _build_controller_live_group(controller: Any) -> Dict[str, Any]:
     items = []
     for name in _CONTROLLER_STORED_FIELDS:
         try:
-            raw = getattr(controller, name)
-            items.append(_build_item(name, raw, "stored"))
+            # Names may be dotted paths after the sub-module split
+            # (e.g. ``eb.active``, ``atc.speed_limit``). Walk the dots.
+            obj: Any = controller
+            for part in name.split("."):
+                obj = getattr(obj, part)
+            items.append(_build_item(name, obj, "stored"))
         except Exception as exc:  # noqa: BLE001
             items.append(
                 _build_item(
@@ -450,18 +458,18 @@ def _build_controller_latches_group(controller: Any) -> Dict[str, Any]:
 
 
 # Field order + per-row docs for the ATO Debug group. Keys must match what
-# `ATONavigator.compute_handle` writes into `controller.ato_debug`.
+# `ATOComputer.compute_handle` writes into `controller.ato.debug`.
 _ATO_DEBUG_FIELDS: List[Dict[str, Any]] = [
     {"name": "mode", "doc": "branch taken: stopping / stopped / coast / power_up / brake / no_curves / no_train"},
     {"name": "delta_seconds", "doc": "tick duration (s) used to scale the planning horizon"},
-    {"name": "current_speed_kmh", "doc": "controller.current_speed_kmh at compute time"},
+    {"name": "current_speed_kmh", "doc": "controller.physics_sync.current_speed_kmh at compute time"},
     {"name": "op_decel_kmh_s", "doc": "operational deceleration = decel_rate × operational_decel_ratio (B6 = 1.00× this rate)"},
     {"name": "decel_rate_kmh_s", "doc": "raw service decel from speed_profile.deceleration_rate (ATC's curve uses this)"},
     {"name": "operational_decel_ratio", "doc": "speed_profile.operational_decel_ratio — fraction of decel_rate ATO plans against"},
     {"name": "curve_at_zero_kmh", "doc": "speed_curves[d=0].operational_limit"},
     {"name": "max_speed_kmh", "doc": "train.max_speed cap"},
-    {"name": "atc_speed_limit_kmh", "doc": "controller.atc_speed_limit at compute time"},
-    {"name": "block_speed_limit_kmh", "doc": "controller.current_block_speed_limit (None if uncapped)"},
+    {"name": "atc_speed_limit_kmh", "doc": "controller.atc.speed_limit at compute time"},
+    {"name": "block_speed_limit_kmh", "doc": "controller.atc.current_block_speed_limit (None if uncapped)"},
     {"name": "ceiling_at_zero_kmh", "doc": "min(curve@0, max_speed, atc, block) — train must not exceed"},
     {"name": "lookahead_travel_cm", "doc": "speed_cm_s × delta_seconds — distance travelled this tick"},
     {"name": "lookahead_distance_cm", "doc": "max(MIN_LOOKAHEAD_CM, travel × (1 + LOOKAHEAD_HEADROOM)), capped at max_curve_distance"},
@@ -480,10 +488,12 @@ _ATO_DEBUG_FIELDS: List[Dict[str, Any]] = [
 
 
 def _build_ato_debug_group(controller: Any) -> Dict[str, Any]:
-    """Surface `controller.ato_debug` (populated by ATONavigator.compute_handle)
+    """Surface `controller.ato.debug` (populated by ATOComputer.compute_handle)
     as a fixed-order group so the kinematic decel calc is inspectable per tick.
     """
-    debug: Optional[Dict[str, Any]] = getattr(controller, "ato_debug", None)
+    debug: Optional[Dict[str, Any]] = getattr(
+        getattr(controller, "ato", None), "debug", None
+    )
     items: List[Dict[str, Any]] = []
     if not debug:
         items.append(
@@ -492,7 +502,7 @@ def _build_ato_debug_group(controller: Any) -> Dict[str, Any]:
                 None,
                 "stored",
                 formula_doc=(
-                    "ato_debug is populated by ATONavigator.compute_handle; "
+                    "ato.debug is populated by ATOComputer.compute_handle; "
                     "appears after the first ATO tick on this controller."
                 ),
             )

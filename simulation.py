@@ -176,7 +176,7 @@ class SimulationController:
             # controller is OFF; the Phase-2 command drain must run first so
             # that power_on_cmd() can be accepted.
             controller = self._get_or_create_controller(train)
-            if controller.state != TrainState.OFF:
+            if controller.ops.state != TrainState.OFF:
                 self.route_executor.tick_train_phase1(train_id, delta_seconds)
 
             self._update_train(train, delta_seconds)
@@ -215,14 +215,14 @@ class SimulationController:
         # Phase 3 - Feedback / cleanup.
         # If the controller is still OFF after the command drain, Phase 3 is
         # skipped for this transaction even though Phase 2 physics ran.
-        if controller.state == TrainState.OFF:
+        if controller.ops.state == TrainState.OFF:
             self._sync_persistent_train_state(train, controller)
             return
 
         # 3a. Drain queued progress reports in FIFO order.
         if self.path_dispatcher is not None:
-            while controller.queued_progress_reports:
-                report = controller.queued_progress_reports.pop(0)
+            while controller.physics_sync.queued_progress_reports:
+                report = controller.physics_sync.queued_progress_reports.pop(0)
                 self.path_dispatcher.on_controller_progress(report)
 
         # 3b. Post-physics usable-authority stop check + path completion.
@@ -261,7 +261,7 @@ class SimulationController:
         PathDispatcher.cancel_path(...). If no active path exists the latch
         is still cleared on this pass with a single diagnostic.
         """
-        if controller.phase_latches.path_cancel_request is None:
+        if controller.route_hooks.phase_latches.path_cancel_request is None:
             return
 
         if not controller.is_stopped():
@@ -269,10 +269,10 @@ class SimulationController:
             return
 
         if self.path_dispatcher is None:
-            controller.phase_latches.consume_path_cancel_request()
+            controller.route_hooks.phase_latches.consume_path_cancel_request()
             return
 
-        payload = controller.phase_latches.consume_path_cancel_request()
+        payload = controller.route_hooks.phase_latches.consume_path_cancel_request()
 
         active_path_id = self.path_dispatcher.active_path_id_by_train(train.train_id)
         if active_path_id is not None:
@@ -301,15 +301,15 @@ class SimulationController:
         active-path-emptiness — that decision was already owned by the
         inclusive-cancel consumer.
         """
-        if not controller.phase_latches.route_abort:
+        if not controller.route_hooks.phase_latches.route_abort:
             return
 
-        if controller.phase_latches.path_cancel_request is not None:
+        if controller.route_hooks.phase_latches.path_cancel_request is not None:
             # Latch survives until the inclusive cancel has been consumed.
             return
 
         self.route_executor.remove_train_route_run(train.train_id)
-        controller.phase_latches.consume_route_abort()
+        controller.route_hooks.phase_latches.consume_route_abort()
 
     def _consume_pending_power_off(
         self, controller: TrainController, train: Train
@@ -324,7 +324,7 @@ class SimulationController:
         controller-local OFF cleanup. It does NOT call
         `PathDispatcher.cancel_path(...)`.
         """
-        if not controller.phase_latches.power_off:
+        if not controller.route_hooks.phase_latches.power_off:
             return
 
         # Per design_new.md Latch Table: gated by
@@ -333,18 +333,18 @@ class SimulationController:
         # earlier in this same Phase-3 pass or was never written (no live
         # path existed). If the inclusive cancel is still pending the train
         # was not stopped this tick — defer to a later one.
-        if controller.phase_latches.path_cancel_request is not None:
+        if controller.route_hooks.phase_latches.path_cancel_request is not None:
             return
 
         self.route_executor.remove_train_route_run(train.train_id)
 
         # Controller-local OFF cleanup.
-        controller.state = TrainState.OFF
-        controller.cab = None
-        controller.eb_active = False
-        controller.ato_running = False
+        controller.ops.state = TrainState.OFF
+        controller.commands.cab = None
+        controller.eb.active = False
+        controller.ato.running = False
         controller.power_on = False
-        controller.phase_latches.consume_power_off()
+        controller.route_hooks.phase_latches.consume_power_off()
 
     def _consume_pending_route_deactivate(
         self, controller: TrainController, train: Train
@@ -357,14 +357,14 @@ class SimulationController:
         active-path-emptiness — that decision was already owned by the
         inclusive-cancel consumer.
         """
-        if not controller.phase_latches.route_deactivate:
+        if not controller.route_hooks.phase_latches.route_deactivate:
             return
 
-        if controller.phase_latches.path_cancel_request is not None:
+        if controller.route_hooks.phase_latches.path_cancel_request is not None:
             return
 
         self.route_executor.remove_train_route_run(train.train_id)
-        controller.phase_latches.consume_route_deactivate()
+        controller.route_hooks.phase_latches.consume_route_deactivate()
 
     # =========================================================================
     # Persistent state sync (Train <- TrainController)
@@ -585,7 +585,7 @@ class SimulationController:
 
         if train.position is not None:
             try:
-                controller.current_span = TrainSpan.from_train_position(train.position)
+                controller.physics_sync.current_span = TrainSpan.from_train_position(train.position)
             except Exception:
                 self.network.remove_train(train_id)
                 raise
@@ -593,9 +593,9 @@ class SimulationController:
         # If an initial cab was requested, write it directly. add_train runs
         # before the first tick, so this bypasses the command queue by design.
         if initial_cab is not None:
-            controller.cab = initial_cab
-            if controller.current_span is not None:
-                controller.current_span.leading_end = (
+            controller.commands.cab = initial_cab
+            if controller.physics_sync.current_span is not None:
+                controller.physics_sync.current_span.leading_end = (
                     LeadingEnd.A if initial_cab == "A" else LeadingEnd.B
                 )
 

@@ -95,7 +95,7 @@ def run_startup_tests():
     print("-" * 70)
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", "tests/test_backend.py", "-v", "--tb=short"],
+            [sys.executable, "-m", "pytest", "tests/test_backend.py", "-v", "--tb=short", "-p", "no:cacheprovider"],
             capture_output=True,
             text=True,
             timeout=60,
@@ -108,12 +108,12 @@ def run_startup_tests():
                 print("   Install with: pip install pytest")
             else:
                 print("❌ Backend tests FAILED!")
-                print("\nTest output:")
-                print(
-                    result.stdout[-2000:]
-                    if len(result.stdout) > 2000
-                    else result.stdout
-                )
+                print("\n📋 Full Test Output:")
+                print(result.stdout if result.stdout else "(no stdout)")
+                if result.stderr:
+                    print("\n📋 Stderr:")
+                    print(result.stderr)
+                
                 print("\n🛑 BLOCKING: Cannot start server with failing tests.")
                 sys.exit(1)
         else:

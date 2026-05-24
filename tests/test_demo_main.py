@@ -71,32 +71,32 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
         head_track = network.get_track(*head_tile) if head_tile else None
         block_id = head_track.block_section_id if head_track else None
 
-        if controller.eb_active:
+        if controller.eb.active:
             eb_events.append(
                 {
                     "tick": tick,
                     "head_tile": head_tile,
                     "block_id": block_id,
-                    "speed": controller.current_speed_kmh,
-                    "atc_limit": controller.atc_speed_limit,
+                    "speed": controller.physics_sync.current_speed_kmh,
+                    "atc_limit": controller.atc.speed_limit,
                     "reason": controller.speed_limit_reason,
-                    "handle_reason": controller.handle_reason,
+                    "handle_reason": controller.ops.handle_reason,
                 }
             )
 
         if block_id in terminal_blocks:
             reached_terminal = True
-            max_terminal_speed = max(max_terminal_speed, controller.current_speed_kmh)
-            if controller.current_speed_kmh > terminal_limit + 0.5:
+            max_terminal_speed = max(max_terminal_speed, controller.physics_sync.current_speed_kmh)
+            if controller.physics_sync.current_speed_kmh > terminal_limit + 0.5:
                 terminal_overspeed_events.append(
                     {
                         "tick": tick,
                         "head_tile": head_tile,
-                        "speed": controller.current_speed_kmh,
+                        "speed": controller.physics_sync.current_speed_kmh,
                         "limit": terminal_limit,
-                        "atc_limit": controller.atc_speed_limit,
-                        "handle": controller.handle_position.value,
-                        "handle_reason": controller.handle_reason,
+                        "atc_limit": controller.atc.speed_limit,
+                        "handle": controller.ops.handle_position.value,
+                        "handle_reason": controller.ops.handle_reason,
                     }
                 )
 
@@ -104,8 +104,8 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
         # controller; check the controller's state machine directly.
         if (
             tick > 30
-            and controller.current_speed_kmh <= 0.5
-            and controller.state
+            and controller.physics_sync.current_speed_kmh <= 0.5
+            and controller.ops.state
             in (
                 TrainState.READY,
                 TrainState.RUNNING_AT_STATION,
@@ -119,7 +119,7 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
 
     assert reached_terminal, (
         f"Demo train should reach East Terminal; final block={final_block_id}, "
-        f"head={final_head_tile}, speed={controller.current_speed_kmh:.2f}"
+        f"head={final_head_tile}, speed={controller.physics_sync.current_speed_kmh:.2f}"
     )
     assert final_block_id in terminal_blocks, (
         f"Demo train should stop in East Terminal; final block={final_block_id}, "
@@ -149,7 +149,7 @@ def test_bootstrap_writes_current_span_before_first_tick():
         network, _, sim_controller, _ = bootstrap_runtime(demo=True, setup_train=True)
 
     controller = sim_controller.get_or_create_controller("DEMO_TRAIN")
-    assert controller.current_span is not None, (
+    assert controller.physics_sync.current_span is not None, (
         "current_span must be written by add_train(...) before any tick"
     )
 
@@ -164,18 +164,18 @@ def test_bootstrap_queues_power_on_for_first_tick_drain():
 
     # Before first tick: power_on queued, controller still OFF, cab pre-set by
     # add_train's `initial_cab="A"` placement input.
-    queued_kinds = [cmd.kind for cmd in controller.command_inbox]
+    queued_kinds = [cmd.kind for cmd in controller.commands.command_inbox]
     assert queued_kinds == ["power_on"], (
         f"Expected queued [power_on]; got {queued_kinds}"
     )
-    assert controller.state == TrainState.OFF
-    assert controller.cab == "A"
+    assert controller.ops.state == TrainState.OFF
+    assert controller.commands.cab == "A"
 
     # One tick should drain the queue and power the train on.
     sim_controller.update(0.0)
 
-    assert controller.command_inbox == []
-    assert controller.state != TrainState.OFF
+    assert controller.commands.command_inbox == []
+    assert controller.ops.state != TrainState.OFF
 
 
 def test_bootstrap_creates_path_during_phase1_after_power_on():

@@ -170,7 +170,7 @@ def _capture_snapshot(
 
     controller = sim.get_or_create_controller(train_id)
 
-    span = controller.current_span
+    span = controller.physics_sync.current_span
     head_tile: Optional[Tuple[int, int]] = None
     tail_tile: Optional[Tuple[int, int]] = None
     occupied_tiles: List[Tuple[int, int]] = []
@@ -185,8 +185,8 @@ def _capture_snapshot(
         occupied_tiles = [tuple(t) for t in (span.occupied_tiles or [])]
         occupied_blocks = list(span.occupied_blocks or [])
 
-    latches = controller.phase_latches
-    cmd_kinds = [getattr(c, "kind", None) for c in (controller.command_inbox or [])]
+    latches = controller.route_hooks.phase_latches
+    cmd_kinds = [getattr(c, "kind", None) for c in (controller.commands.command_inbox or [])]
 
     # Path
     active_path_id = None
@@ -216,21 +216,21 @@ def _capture_snapshot(
             assigned_route_id = None
 
     # ATC reason — prefer the structured enum cached on the controller
-    reason_code = getattr(controller, "_last_atc_limit_reason_code", None)
+    reason_code = getattr(controller.atc, "_last_limit_reason_code", None)
     reason_str = controller.speed_limit_reason
 
     return Snapshot(
         tick=tick,
         sim_time=sim.simulation_time,
         fixture=fixture,
-        state=controller.state,
-        cab=controller.cab,
-        speed_kmh=float(controller.current_speed_kmh),
-        eb_active=bool(controller.eb_active),
-        ato_running=bool(controller.ato_running),
-        handle_position=controller.handle_position,
-        handle_reason=controller.handle_reason or "",
-        atc_limit_kmh=float(controller.atc_speed_limit),
+        state=controller.ops.state,
+        cab=controller.commands.cab,
+        speed_kmh=float(controller.physics_sync.current_speed_kmh),
+        eb_active=bool(controller.eb.active),
+        ato_running=bool(controller.ato.running),
+        handle_position=controller.ops.handle_position,
+        handle_reason=controller.ops.handle_reason or "",
+        atc_limit_kmh=float(controller.atc.speed_limit),
         atc_reason_code=reason_code,
         atc_reason_str=reason_str,
         head_tile=head_tile,

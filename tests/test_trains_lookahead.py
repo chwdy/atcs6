@@ -236,8 +236,8 @@ class TestTrainControlPanelDataBugFix:
         sim_controller = SimulationController(network)
         controller = sim_controller._get_or_create_controller(train)
         controller.power_on = True
-        controller.handle_position = HandlePosition.P2
-        controller.control_mode = "ato"
+        controller.ops.handle_position = HandlePosition.P2
+        controller.commands.control_mode = "ato"
 
         payload = build_network_payload(network, sim_controller)
         controllers = payload["controllers_by_train_id"]
@@ -273,7 +273,7 @@ class TestEmergencyResetButtonDataBugFix:
 
         sim_controller = SimulationController(network)
         controller = sim_controller._get_or_create_controller(train)
-        controller.eb_active = True
+        controller.eb.active = True
 
         payload = build_network_payload(network, sim_controller)
         controller_data = payload["controllers_by_train_id"]["TRAIN_01"]
@@ -296,7 +296,7 @@ class TestTrainAssignedPathSerializationBugFix:
         """TrainPhysics.tick should not update speed when power is off.
 
         v1: controller owns canonical current_speed_kmh; physics reads from
-        controller.current_speed_kmh, not controller.current_speed_kmh.
+        controller.physics_sync.current_speed_kmh, not controller.physics_sync.current_speed_kmh.
         """
         network = RailwayNetwork()
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
@@ -307,16 +307,16 @@ class TestTrainAssignedPathSerializationBugFix:
         controller = sim._get_or_create_controller(train)
         physics = sim._get_or_create_physics(train)
         controller.power_on = False
-        # v1: write canonical speed onto the controller; controller.current_speed_kmh is mirrored.
-        controller.current_speed_kmh = 10.0
-        controller.current_speed_kmh = 10.0
+        # v1: write canonical speed onto the controller; controller.physics_sync.current_speed_kmh is mirrored.
+        controller.physics_sync.current_speed_kmh = 10.0
+        controller.physics_sync.current_speed_kmh = 10.0
 
-        initial_speed = controller.current_speed_kmh
+        initial_speed = controller.physics_sync.current_speed_kmh
         physics.tick(0.1)
 
         # Speed should remain unchanged when power is off
-        assert controller.current_speed_kmh == initial_speed
-        assert controller.current_speed_kmh == initial_speed
+        assert controller.physics_sync.current_speed_kmh == initial_speed
+        assert controller.physics_sync.current_speed_kmh == initial_speed
 
 
 
@@ -424,7 +424,7 @@ class TestNoPathProducesNoAuthorityPayload:
             head_distance_cm=25.0,
             occupied_tiles=[(0, 0)],
         )
-        controller.clearance_ahead_cm = 200.0  # stale leftover
+        controller.atc.clearance_ahead_cm = 200.0  # stale leftover
         self._assert_no_authority_payload(controller.get_lookahead())
 
 

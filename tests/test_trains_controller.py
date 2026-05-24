@@ -42,12 +42,12 @@ class TestTrainManualControlBugFixes:
         network.add_train(train)
         controller = create_controller_for_train("TRAIN_01", network)
         controller.power_on = True
-        controller.state = TrainState.READY
-        controller.cab = "A"
+        controller.ops.state = TrainState.READY
+        controller.commands.cab = "A"
 
         assert controller.set_cab(None).success is True
-        assert controller.state == TrainState.READY
-        assert controller.cab is None
+        assert controller.ops.state == TrainState.READY
+        assert controller.commands.cab is None
         assert train.facing_direction is None
 
     def test_set_cab_rejects_moving(self):
@@ -57,12 +57,12 @@ class TestTrainManualControlBugFixes:
         network.add_train(train)
         controller = create_controller_for_train("TRAIN_02", network)
         controller.power_on = True
-        controller.state = TrainState.READY
-        controller.cab = "A"
-        controller.current_speed_kmh = 5.0
+        controller.ops.state = TrainState.READY
+        controller.commands.cab = "A"
+        controller.physics_sync.current_speed_kmh = 5.0
 
         assert controller.set_cab(None).success is False
-        assert controller.state == TrainState.READY
+        assert controller.ops.state == TrainState.READY
 
 
 
@@ -119,15 +119,15 @@ class TestRaceConditionFix:
         sim = SimulationController(network)
         controller = sim._get_or_create_controller(train)
         controller.power_on = True
-        controller.state = TrainState.RUNNING_MOVING
-        controller.cab = "A"
-        controller.current_speed_kmh = 42.0  # 12 km/h over limit (EB zone)
+        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.commands.cab = "A"
+        controller.physics_sync.current_speed_kmh = 42.0  # 12 km/h over limit (EB zone)
 
         # Tick controller
         sim.update(0.1)
 
         # Should trigger EB
-        assert controller.eb_active == True, "EB should trigger at 12 km/h overspeed"
+        assert controller.eb.active == True, "EB should trigger at 12 km/h overspeed"
         # Per design_new.md ~line 161, "speed-limit reason" comes from the
         # canonical lookahead at distance 0; for EB-active state that reads
         # "Emergency brake active". The trigger context (overspeed) is
@@ -136,8 +136,8 @@ class TestRaceConditionFix:
         assert (controller.speed_limit_reason or "").lower() == "emergency brake active", (
             f"Lookahead should report EB active, got: {controller.speed_limit_reason}"
         )
-        assert any("overspeed" in note.lower() for note in controller.pending_notifications), (
-            f"Should have an overspeed EB notification, got: {controller.pending_notifications}"
+        assert any("overspeed" in note.lower() for note in controller.notifications.pending), (
+            f"Should have an overspeed EB notification, got: {controller.notifications.pending}"
         )
 
 
@@ -157,15 +157,15 @@ class TestRaceConditionFix:
         sim = SimulationController(network)
         controller = sim._get_or_create_controller(train)
         controller.power_on = True
-        controller.state = TrainState.RUNNING_MOVING
-        controller.cab = None  # No cab selected
-        controller.current_speed_kmh = 0.0
+        controller.ops.state = TrainState.RUNNING_MOVING
+        controller.commands.cab = None  # No cab selected
+        controller.physics_sync.current_speed_kmh = 0.0
 
         # Tick controller
         sim.update(0.1)
 
         # ATC speed should be 0
-        assert controller.atc_speed_limit == 0.0, (
+        assert controller.atc.speed_limit == 0.0, (
             "ATC speed should be 0 when no cab selected"
         )
         assert controller.speed_limit_reason == "No cab selected", (
@@ -190,34 +190,34 @@ class TestTrainControllerBrakingNotches:
         controller = TrainController(train_id=train.train_id, network=network)
 
         assert (
-            controller._calculate_braking_notch_for_speed(60.0, 25.0)
+            controller.ato.calculate_braking_notch_for_speed(60.0, 25.0)
             == HandlePosition.B8
         )
         assert (
-            controller._calculate_braking_notch_for_speed(40.0, 18.0)
+            controller.ato.calculate_braking_notch_for_speed(40.0, 18.0)
             == HandlePosition.B7
         )
         assert (
-            controller._calculate_braking_notch_for_speed(30.0, 14.0)
+            controller.ato.calculate_braking_notch_for_speed(30.0, 14.0)
             == HandlePosition.B6
         )
         assert (
-            controller._calculate_braking_notch_for_speed(22.0, 12.0)
+            controller.ato.calculate_braking_notch_for_speed(22.0, 12.0)
             == HandlePosition.B5
         )
         assert (
-            controller._calculate_braking_notch_for_speed(18.0, 12.0)
+            controller.ato.calculate_braking_notch_for_speed(18.0, 12.0)
             == HandlePosition.B4
         )
         assert (
-            controller._calculate_braking_notch_for_speed(12.0, 7.0)
+            controller.ato.calculate_braking_notch_for_speed(12.0, 7.0)
             == HandlePosition.B3
         )
         assert (
-            controller._calculate_braking_notch_for_speed(9.0, 6.0) == HandlePosition.B2
+            controller.ato.calculate_braking_notch_for_speed(9.0, 6.0) == HandlePosition.B2
         )
         assert (
-            controller._calculate_braking_notch_for_speed(7.0, 6.0) == HandlePosition.B1
+            controller.ato.calculate_braking_notch_for_speed(7.0, 6.0) == HandlePosition.B1
         )
 
     def test_manual_mode_uses_atc_speed_braking(self, monkeypatch):
@@ -227,22 +227,22 @@ class TestTrainControllerBrakingNotches:
         network.add_train(train)
 
         controller = TrainController(train_id=train.train_id, network=network)
-        controller.control_mode = "manual"
+        controller.commands.control_mode = "manual"
         controller.power_on = True
-        controller.cab = "A"
-        controller.current_speed_kmh = 16.0
+        controller.commands.cab = "A"
+        controller.physics_sync.current_speed_kmh = 16.0
 
-        monkeypatch.setattr(controller, "_calculate_clearance_ahead", lambda: 200.0)
+        monkeypatch.setattr(controller.atc, "clearance_ahead", lambda: 200.0)
         monkeypatch.setattr(
-            controller,
-            "_calculate_atc_speed_limit",
+            controller.atc,
+            "speed_limit_now",
             lambda: (10.0, "test"),
         )
 
         controller.tick(0.1)
 
         # current=16, target=10, diff=6 → bucket >5 → B4 (new buckets).
-        assert controller.handle_position == HandlePosition.B4
+        assert controller.ops.handle_position == HandlePosition.B4
 
     def test_no_duplicate_controller_instances(self):
         """
