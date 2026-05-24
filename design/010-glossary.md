@@ -14,12 +14,12 @@ Three discipline rules govern this glossary:
 
 | Verb | Entity / initiator / resulting state |
 | --- | --- |
-| `cancel` | `Path` (`status: ACTIVE -> CANCELLED`); initiated by `PathDispatcher.cancel_path(...)` driven by an explicit Phase-3 latch (`pending_path_cancel_request`) or by movement-derived deviation handled inline in Phase 3 |
+| `cancel` | `Path` (`status: ACTIVE -> CANCELLED`); initiated by `PathDispatcher.cancel_path(...)` driven by an explicit Phase-3 latch (`phase_latches.path_cancel_request`) or by movement-derived deviation handled inline in Phase 3 |
 | `complete` | `Path` (`status: ACTIVE -> COMPLETED`); initiated by `PathDispatcher.try_complete_active_path(...)` after the post-physics usable-authority stop check passes |
 | `finish` | `RouteRun` (`current_route_status.state -> FINISHED`); initiated by `RouteExecutor.finish_route_run(train_id)` when Phase 1 detects the terminal walk |
 | `deactivate` | `RouteRun` (`current_route_status.state -> DEACTIVATED`); initiated by `RouteExecutor.remove_train_route_run(...)` from the Phase-3 abort/power-off/deactivate consumers |
-| `abort` | `RouteRun`; operator-driven teardown via the `pending_route_abort` latch plus inclusive `pending_path_cancel_request(operator_cancelled)` |
-| `revoke` | `Path`; system-driven cancel via `pending_path_cancel_request(revoked)` from route reconciliation or admin route deactivation |
+| `abort` | `RouteRun`; operator-driven teardown via the `phase_latches.route_abort` latch plus inclusive `phase_latches.path_cancel_request(operator_cancelled)` |
+| `revoke` | `Path`; system-driven cancel via `phase_latches.path_cancel_request(revoked)` from route reconciliation or admin route deactivation |
 | `deviate` | `RouteRun.path_cancelled = True` (derived `display_state == "DEVIATED"`); set by `RouteExecutor.handle_path_cancellation(...)` after any path cancel |
 | `depart` | `TrainController.ops.state -> RUNNING_MOVING`; initiated by `TrainController.depart()` called by `RouteExecutor.tick_train_phase1(...)` when live authority exists |
 | `dwell` | `TrainController.ops.state -> RUNNING_AT_STATION`; initiated by `TrainController.enter_station_dwell()` called by `RouteExecutor` Phase-1 dwell-entry step |

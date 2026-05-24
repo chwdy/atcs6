@@ -612,8 +612,13 @@ class Editor {
             }
         });
 
-        // Mouse up - commit drag build
-        canvas.addEventListener('mouseup', async (e) => {
+        // Mouse up - commit drag build. Listen on document (not canvas) so a
+        // release outside the canvas (e.g. over a side panel) still resets
+        // the drag/pan state; otherwise isPanning/isDraggingBuild stays true
+        // and the layout keeps panning when the cursor returns.
+        document.addEventListener('mouseup', async (e) => {
+            const onCanvas = (e.target === canvas);
+
             if (this.isPanning) {
                 this.isPanning = false;
             }
@@ -621,23 +626,33 @@ class Editor {
                 // Stop dragging state immediately to prevent updates during async operations
                 this.isDraggingBuild = false;
 
-                // Check if this is a single click (no drag movement) for eraser
-                const isSingleClick = this.dragStart.x === this.dragEnd.x && this.dragStart.y === this.dragEnd.y;
+                // Only commit if the release happened on the canvas; an
+                // off-canvas release is treated as a cancel.
+                if (onCanvas) {
+                    // Check if this is a single click (no drag movement) for eraser
+                    const isSingleClick = this.dragStart.x === this.dragEnd.x && this.dragStart.y === this.dragEnd.y;
 
-                if (this.selectedTool === 'eraser' && isSingleClick) {
-                    // Single click eraser: two-stage deletion
-                    await this.handleErase(this.dragStart);
-                } else if (['remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool) && isSingleClick) {
-                    // Single click removal tools
-                    await this.handleRemovalClick(this.dragStart);
-                } else if (['eraser', 'block', 'track', 'extend-block', 'extend-platform', 'remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool)) {
-                    // Drag operation: commit the build/erase/block/removal path
-                    await this.commitDragBuild();
+                    if (this.selectedTool === 'eraser' && isSingleClick) {
+                        // Single click eraser: two-stage deletion
+                        await this.handleErase(this.dragStart);
+                    } else if (['remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool) && isSingleClick) {
+                        // Single click removal tools
+                        await this.handleRemovalClick(this.dragStart);
+                    } else if (['eraser', 'block', 'track', 'extend-block', 'extend-platform', 'remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool)) {
+                        // Drag operation: commit the build/erase/block/removal path
+                        await this.commitDragBuild();
+                    }
                 }
 
                 this.dragStart = null;
                 this.dragEnd = null;
+                const hadPreview = this.previewPath !== null;
                 this.previewPath = null;
+
+                // Cancelled with a stale preview still on screen — redraw to clear it.
+                if (!onCanvas && hadPreview && this.cachedNetwork) {
+                    this.renderer.drawNetwork(this.cachedNetwork);
+                }
             }
         });
 

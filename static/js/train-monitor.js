@@ -309,7 +309,8 @@ class TrainMonitor {
             clearance_cm: clearanceCm,
             safety_margin_cm: safetyMarginCm,
             target_stop_cm: targetStopCm,
-            speed_curves: lookahead?.speed_curves || []
+            speed_curves: lookahead?.speed_curves || [],
+            current_block_speed_limit: payload?.current_block_speed_limit ?? null,
         };
 
         this.currentSpeedEl.textContent = Math.round(this.lookaheadData.current_speed_kmh || 0);
@@ -327,26 +328,29 @@ class TrainMonitor {
             this.speedCmsEl.textContent = speedCms;
         }
         if (this.clearanceEl) {
-            const clearanceM = ((this.lookaheadData.clearance_cm || 0) / 100).toFixed(1);
-            this.clearanceEl.textContent = clearanceM;
+            const { val, unit } = this._fmtDist(this.lookaheadData.clearance_cm || 0);
+            this.clearanceEl.textContent = val;
+            const unitEl = this.clearanceEl.nextElementSibling;
+            if (unitEl) unitEl.textContent = unit;
         }
         
         // Update distance to next destination (target stop point)
         const nextDestContainer = document.getElementById('monitor-next-dest-container');
         const nextDestEl = document.getElementById('monitor-next-dest-dist');
         if (nextDestContainer && nextDestEl && this.lookaheadData.target_stop_cm > 0) {
-            const targetStopM = (this.lookaheadData.target_stop_cm / 100).toFixed(1);
-            nextDestEl.textContent = targetStopM;
+            const { val, unit } = this._fmtDist(this.lookaheadData.target_stop_cm);
+            nextDestEl.textContent = val;
+            const unitEl = nextDestEl.nextElementSibling;
+            if (unitEl) unitEl.textContent = unit;
             nextDestContainer.classList.remove('hidden');
         } else if (nextDestContainer) {
             nextDestContainer.classList.add('hidden');
         }
 
         if (this.speedLimitReasonEl) {
-            const speedLimitReason = this.lookaheadData.speed_limit_reason;
-            if (speedLimitReason) {
-                const limitKmh = Math.round(atcSpeed);
-                this.speedLimitReasonEl.textContent = `ATC ${limitKmh} km/h — ${speedLimitReason}`;
+            const blockLimit = this.lookaheadData.current_block_speed_limit;
+            if (blockLimit != null && blockLimit > 0) {
+                this.speedLimitReasonEl.textContent = `Block limit: ${Math.round(blockLimit)} km/h`;
                 this.speedLimitReasonEl.classList.remove('hidden');
             } else {
                 this.speedLimitReasonEl.classList.add('hidden');
@@ -503,9 +507,9 @@ class TrainMonitor {
             const distToEnd = (el.distance + el.length) - trainDist;
             const totalLength = el.length;
 
-            const startM = (distToStart / 100).toFixed(1);
-            const endM = (distToEnd / 100).toFixed(1);
-            const lengthM = (totalLength / 100).toFixed(1);
+            const fmtStart = this._fmtDist(distToStart);
+            const fmtEnd = this._fmtDist(distToEnd);
+            const fmtLength = this._fmtDist(totalLength);
 
             let icon = '▣';
             let kindClass = '';
@@ -514,7 +518,7 @@ class TrainMonitor {
             if (el.type === 'station') {
                 icon = '🚉';
                 kindClass = 'kind-station';
-                typeLabel = totalLength > 0 ? `station · ${lengthM}m` : 'station';
+                typeLabel = totalLength > 0 ? `station · ${fmtLength.val}${fmtLength.unit}` : 'station';
             } else if (el.type === 'switch') {
                 icon = '⇋';
                 kindClass = 'kind-switch';
@@ -527,12 +531,12 @@ class TrainMonitor {
                 icon = '▣';
                 kindClass = `state-${el.state || 'unknown'}`;
                 typeLabel = totalLength > 0
-                    ? `block${el.state ? ' · ' + el.state : ''} · ${lengthM}m`
+                    ? `block${el.state ? ' · ' + el.state : ''} · ${fmtLength.val}${fmtLength.unit}`
                     : `block${el.state ? ' · ' + el.state : ''}`;
             }
 
             const distEnd = totalLength > 0
-                ? `<span class="tm-up-row-dist-end" title="Distance to end">→ ${endM}m</span>`
+                ? `<span class="tm-up-row-dist-end" title="Distance to end">→ ${fmtEnd.val}${fmtEnd.unit}</span>`
                 : '';
 
             return `<div class="tm-up-row ${kindClass}" data-type="${escapeHtml(el.type)}">
@@ -542,11 +546,16 @@ class TrainMonitor {
                     <span class="tm-up-row-type">${escapeHtml(typeLabel)}</span>
                 </div>
                 <div class="tm-up-row-dist">
-                    <span class="tm-up-row-dist-primary" title="Distance to start">${startM}m</span>
+                    <span class="tm-up-row-dist-primary" title="Distance to start">${fmtStart.val}${fmtStart.unit}</span>
                     ${distEnd}
                 </div>
             </div>`;
         }).join('');
+    }
+
+    _fmtDist(cm) {
+        if (cm < 100) return { val: cm.toFixed(2), unit: 'cm' };
+        return { val: (cm / 100).toFixed(2), unit: 'm' };
     }
 
     fitTextToWidth(text, maxWidth) {

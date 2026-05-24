@@ -1335,30 +1335,3 @@
     }
 }
 
-
-/* Recording indicator dot. Sizing and the .recording active state live with
-   the header rules in layout/shell.css and rely on these animation keyframes. */
-.record-dot {
-    display: inline-block;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background-color: var(--text-tertiary);
-    transition: background-color 0.15s;
-    flex-shrink: 0;
-}
-
-.btn-record.recording {
-    color: var(--danger-color);
-    border-color: var(--danger-color);
-}
-
-.btn-record.recording .record-dot {
-    background-color: var(--danger-color);
-    animation: record-pulse 1.2s ease-in-out infinite;
-}
-
-@keyframes record-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.35; }
-}

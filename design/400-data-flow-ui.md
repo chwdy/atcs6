@@ -28,4 +28,4 @@
 **UI data-flow anchor**
 
 - Treat controller payload as the source of truth for live operational/manual/physical state, and train payload as the source for persistent/configuration state.
-- A UI asking "what is the train's target speed right now?" should call `controller.get_lookahead()` and sample at distance `0`.
+- A UI asking "what is the train's target speed right now?" reads the canonical lookahead payload from `TrainController.to_dict()` (which already embeds the live lookahead per the controller's exported v1 payload shape) and samples at distance `0`. Request handlers must not call `controller.get_lookahead()` or other controller internals directly per the "Request handlers must not read controller internals" rule in **SimulationController runtime surface**.
