@@ -286,7 +286,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
         controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.ops.state = TrainState.READY
-        assert controller.set_cab("A").success is True
+        assert controller.commands.set_cab("A").success is True
         assert controller.commands.cab == "A"
 
         return network, dispatcher, simulation, train, controller
@@ -307,7 +307,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
         controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.ops.state = TrainState.READY
-        assert controller.set_cab("A").success is True
+        assert controller.commands.set_cab("A").success is True
         assert controller.commands.cab == "A"
 
         route = Route(
@@ -949,7 +949,7 @@ class TestManualPathAssignmentAfterArrival:
         controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.ops.state = TrainState.READY
-        assert controller.set_cab("A").success is True
+        assert controller.commands.set_cab("A").success is True
 
         # Step 1: Assign ONE_OFF route from A to B
         route = Route(route_id="ROUTE_A_TO_B", name="A to B", mode=RouteMode.ONE_OFF)
@@ -1096,7 +1096,7 @@ class TestManualPathAssignmentAfterArrival:
         controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.ops.state = TrainState.READY
-        assert controller.set_cab("A").success is True
+        assert controller.commands.set_cab("A").success is True
 
         # Assign B->C route (simulating UI action)
         route = Route(
@@ -1250,8 +1250,8 @@ class TestManualPathAssignmentAfterArrival:
         network.place_train(train, 0, 0, Direction.EAST)
 
         controller = simulation._get_or_create_controller(train)
-        controller.power_on_cmd()
-        controller.set_cab("A")
+        controller.commands.power_on_cmd()
+        controller.commands.set_cab("A")
 
         # Create and activate route A->C
         route = Route(route_id="ROUTE_AC", name="A to C", mode=RouteMode.ONE_OFF)
@@ -1332,8 +1332,8 @@ class TestManualPathAssignmentAfterArrival:
         network.place_train(train, 0, 0, Direction.EAST)
 
         controller = simulation._get_or_create_controller(train)
-        controller.power_on_cmd()
-        controller.set_cab("A")
+        controller.commands.power_on_cmd()
+        controller.commands.set_cab("A")
 
         # Create route
         route = Route(route_id="ROUTE_AC", name="A to C", mode=RouteMode.ONE_OFF)
@@ -1368,8 +1368,8 @@ class TestManualPathAssignmentAfterArrival:
         network.place_train(train, 0, 0, Direction.EAST)
 
         controller = simulation._get_or_create_controller(train)
-        controller.power_on_cmd()
-        controller.set_cab("A")
+        controller.commands.power_on_cmd()
+        controller.commands.set_cab("A")
 
         # Set some path state
         train.ato_destination_block_id = "BLK_C"
@@ -1414,9 +1414,9 @@ class TestManualPathAssignmentAfterArrival:
         network.place_train(train, 5, 0, Direction.EAST)
 
         controller = simulation._get_or_create_controller(train)
-        controller.power_on_cmd()
-        controller.set_cab("A")
-        controller.set_cab("A")
+        controller.commands.power_on_cmd()
+        controller.commands.set_cab("A")
+        controller.commands.set_cab("A")
 
         assert train.facing_direction == Direction.EAST, (
             "Train should face EAST initially"
@@ -1467,7 +1467,7 @@ class TestManualPathAssignmentAfterArrival:
                 and train.is_stopped()
             ):
                 opposite = "B" if controller.commands.cab == "A" else "A"
-                result = controller.set_cab(opposite)
+                result = controller.commands.set_cab(opposite)
                 assert result.success, (
                     f"set_cab({opposite}) failed! "
                     f"train.state={train.state}, controller.ops.state={controller.ops.state}, "
@@ -1500,9 +1500,9 @@ class TestManualPathAssignmentAfterArrival:
         network.place_train(train, 0, 0, Direction.EAST)
 
         controller = simulation._get_or_create_controller(train)
-        controller.power_on_cmd()
-        controller.set_cab("A")
-        controller.set_cab("A")
+        controller.commands.power_on_cmd()
+        controller.commands.set_cab("A")
+        controller.commands.set_cab("A")
 
         # Create forward path A->C
         path_result = dispatcher.create_path(
@@ -1534,7 +1534,7 @@ class TestManualPathAssignmentAfterArrival:
                 and train.is_stopped()
             ):
                 opposite = "B" if controller.commands.cab == "A" else "A"
-                controller.set_cab(opposite)
+                controller.commands.set_cab(opposite)
 
         # Should still face EAST
         assert train.facing_direction == Direction.EAST, (
@@ -1566,8 +1566,8 @@ class TestManualPathAssignmentAfterArrival:
         network.place_train(train, 0, 0, Direction.EAST)
 
         controller = simulation._get_or_create_controller(train)
-        controller.power_on_cmd()
-        controller.set_cab("A")
+        controller.commands.power_on_cmd()
+        controller.commands.set_cab("A")
 
         route = Route(route_id="ROUTE_AC", name="A to C", mode=RouteMode.ONE_OFF)
         route.add_waypoint(Waypoint(platform_id="STA_C", dwell_time_sec=0.5))
@@ -1639,7 +1639,7 @@ class TestManualPathAssignmentAfterArrival:
                 and train.is_stopped()
             ):
                 opposite = "B" if controller.commands.cab == "A" else "A"
-                result = controller.set_cab(opposite)
+                result = controller.commands.set_cab(opposite)
                 assert result.success, (
                     f"set_cab({opposite}) failed! "
                     f"train.state={train.state}, controller.ops.state={controller.ops.state}, "
@@ -1653,7 +1653,7 @@ class TestManualPathAssignmentAfterArrival:
         )
 
         # After turning, ensure cab A is selected to match the new facing.
-        controller.set_cab("A")
+        controller.commands.set_cab("A")
 
         # Start ATO
         controller.ato.go()

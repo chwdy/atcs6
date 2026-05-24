@@ -242,8 +242,8 @@ class TestExtendPathBug:
             path_dispatcher=dispatcher,
         )
 
-        controller.power_on_cmd()
-        controller.set_cab("A")
+        controller.commands.power_on_cmd()
+        controller.commands.set_cab("A")
         controller.depart()
 
         # Sync train state
@@ -327,8 +327,8 @@ class TestExtendPathBug:
             path_dispatcher=dispatcher,
         )
 
-        controller.power_on_cmd()
-        controller.set_cab("A")
+        controller.commands.power_on_cmd()
+        controller.commands.set_cab("A")
         controller.depart()
 
         # Simulate train moving to BLOCK_B (middle of route)

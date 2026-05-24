@@ -284,7 +284,7 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Train not found"}), 404
 
         controller = _get_train_controller(train)
-        result = controller.power_on_cmd()
+        result = controller.commands.power_on_cmd()
         if result.success:
             return jsonify(
                 {"status": "success", **_train_to_dict(train, state.network)}
@@ -299,7 +299,7 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Train not found"}), 404
 
         controller = _get_train_controller(train)
-        result = controller.power_off_cmd()
+        result = controller.commands.power_off_cmd()
         if result.success:
             return jsonify(
                 {"status": "success", **_train_to_dict(train, state.network)}
@@ -331,7 +331,7 @@ def register(app, state: AppState) -> None:
             cab = None
 
         controller = _get_train_controller(train)
-        result = controller.set_cab(cab)
+        result = controller.commands.set_cab(cab)
         if result.success:
             return jsonify(
                 {"status": "success", **_train_to_dict(train, state.network)}
@@ -480,7 +480,7 @@ def register(app, state: AppState) -> None:
             ), 400
 
         controller = _get_train_controller(train)
-        result = controller.set_handle(position)
+        result = controller.commands.set_handle(position)
         if result.success:
             return jsonify(
                 {"status": "success", **_train_to_dict(train, state.network)}
@@ -502,7 +502,7 @@ def register(app, state: AppState) -> None:
             ), 400
 
         controller = _get_train_controller(train)
-        result = controller.set_mode(mode)
+        result = controller.commands.set_mode(mode)
         if result.success:
             return jsonify(
                 {"status": "success", **_train_to_dict(train, state.network)}
@@ -524,7 +524,7 @@ def register(app, state: AppState) -> None:
             ), 400
 
         controller = _get_train_controller(train)
-        result = controller.set_manual_mode_type(mode_type)
+        result = controller.commands.set_manual_mode_type(mode_type)
         if result.success:
             return jsonify(
                 {"status": "success", **_train_to_dict(train, state.network)}
@@ -543,7 +543,7 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Missing 'percent' field"}), 400
 
         controller = _get_train_controller(train)
-        result = controller.set_manual_power_percent(data.get("percent"))
+        result = controller.commands.set_manual_power_percent(data.get("percent"))
         if result.success:
             return jsonify(
                 {"status": "success", **_train_to_dict(train, state.network)}

@@ -343,17 +343,17 @@ class TestTrainPhase1:
         )
 
         # Power on
-        result = controller.power_on_cmd()
+        result = controller.commands.power_on_cmd()
         assert result.success is True
         assert controller.ops.state == TrainState.READY
         assert controller.ops.state == TrainState.READY
 
         # Can't power on again
-        result = controller.power_on_cmd()
+        result = controller.commands.power_on_cmd()
         assert result.success is False
 
         # Power off — acceptance is immediate, OFF transition deferred.
-        result = controller.power_off_cmd()
+        result = controller.commands.power_off_cmd()
         assert result.success is True
         assert controller.route_hooks.phase_latches.power_off is True
 
@@ -363,7 +363,7 @@ class TestTrainPhase1:
             state=TrainState.RUNNING_MOVING, current_speed=50.0
         )
 
-        result = controller.power_off_cmd()
+        result = controller.commands.power_off_cmd()
         assert result.success is False
         assert controller.ops.state == TrainState.RUNNING_MOVING
 
@@ -786,7 +786,7 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.OFF
         )
-        result = controller.power_on_cmd()
+        result = controller.commands.power_on_cmd()
         assert result.success is True
         assert controller.ops.state == TrainState.READY
         assert controller.ops.state == TrainState.READY
@@ -796,7 +796,7 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.READY
         )
-        result = controller.power_on_cmd()
+        result = controller.commands.power_on_cmd()
         assert result.success is False
         assert controller.ops.state == TrainState.READY
 
@@ -809,7 +809,7 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.READY
         )
-        result = controller.power_off_cmd()
+        result = controller.commands.power_off_cmd()
         assert result.success is True
         assert controller.route_hooks.phase_latches.power_off is True
 
@@ -818,7 +818,7 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING, current_speed=50.0
         )
-        result = controller.power_off_cmd()
+        result = controller.commands.power_off_cmd()
         assert result.success is False
         assert controller.ops.state == TrainState.RUNNING_MOVING
 
@@ -828,7 +828,7 @@ class TestTrainStateTransitions:
             state=TrainState.READY
         )
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
-        result = controller.set_cab("A")
+        result = controller.commands.set_cab("A")
         assert result.success is True
         assert controller.ops.state == TrainState.READY
         assert controller.commands.cab == "A"
@@ -935,7 +935,7 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.READY, current_speed=30.0
         )
-        result = controller.set_mode("manual")
+        result = controller.commands.set_mode("manual")
         assert result.success is False
 
 
@@ -1067,12 +1067,12 @@ class TestCompleteStateFlows:
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
 
         # Power on
-        result = controller.power_on_cmd()
+        result = controller.commands.power_on_cmd()
         assert result.success is True
         assert controller.ops.state == TrainState.READY
 
         # Select cab; controller stays in READY.
-        assert controller.set_cab("A").success is True
+        assert controller.commands.set_cab("A").success is True
         assert controller.ops.state == TrainState.READY
 
         # Depart (manual mode to bypass ATO auto-cab selection)
@@ -1150,7 +1150,7 @@ class TestCompleteStateFlows:
         )
 
         # Cannot power off while moving
-        result = controller.power_off_cmd()
+        result = controller.commands.power_off_cmd()
         assert result.success is False
         assert controller.ops.state == TrainState.RUNNING_MOVING
 
@@ -1160,7 +1160,7 @@ class TestCompleteStateFlows:
         train.state = TrainState.READY
 
         # Now can power off — acceptance is immediate, OFF deferred to Phase 3.
-        result = controller.power_off_cmd()
+        result = controller.commands.power_off_cmd()
         assert result.success is True
         assert controller.route_hooks.phase_latches.power_off is True
 
@@ -1203,7 +1203,7 @@ class TestEmergencyResetButtonBugFix:
         assert result.success is True
 
         controller.physics_sync.current_speed_kmh = 0.0
-        result = controller.set_handle(HandlePosition.N)
+        result = controller.commands.set_handle(HandlePosition.N)
 
         assert result.success is True
         assert controller.eb.active is False
@@ -1217,7 +1217,7 @@ class TestEmergencyResetButtonBugFix:
         result = controller.eb.activate()
         assert result.success is True
 
-        result = controller.set_handle(HandlePosition.N)
+        result = controller.commands.set_handle(HandlePosition.N)
 
         assert result.success is False
         assert controller.eb.active is True
@@ -1231,7 +1231,7 @@ class TestEmergencyResetButtonBugFix:
         result = controller.eb.activate()
         assert result.success is True
 
-        result = controller.set_handle(HandlePosition.P1)
+        result = controller.commands.set_handle(HandlePosition.P1)
 
         assert result.success is False
         assert controller.eb.active is True

@@ -258,7 +258,7 @@ class ATOComputer:
                 # Ensure train is physically stopped before switching cab.
                 if c.physics_sync.current_speed_kmh > 0:
                     c.physics_sync.current_speed_kmh = 0.0
-                result = c.set_cab(required_cab)
+                result = c.commands.set_cab(required_cab)
                 if not result.success:
                     return CommandResult(
                         False,

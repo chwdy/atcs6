@@ -67,12 +67,12 @@ class TestTrainControllerMonitorLookahead:
 
         controller = TrainController(train_id=train.train_id, network=network)
 
-        controller.set_cab("A")
+        controller.commands.set_cab("A")
         payload_a = controller.get_lookahead()
         # With Cab A active, head is at end_a which is (0, 0)
         assert payload_a["head_tile"] == [0, 0]
 
-        controller.set_cab("B")
+        controller.commands.set_cab("B")
         payload_b = controller.get_lookahead()
         # After switching to Cab B, tiles don't swap - physical train doesn't move
         # end_a stays at (0, 0) and end_b stays at (2, 0)
@@ -99,7 +99,7 @@ class TestTrainControllerMonitorLookahead:
         network.add_train(train)
 
         controller = TrainController(train_id=train.train_id, network=network)
-        controller.set_cab(None)
+        controller.commands.set_cab(None)
 
         payload = controller.get_lookahead()
 
@@ -187,8 +187,8 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
         network.get_track(1, 0).switch_state = 1
 
         controller = TrainController(train_id=train.train_id, network=network)
-        controller.set_cab("A")
-        controller.set_cab("B")
+        controller.commands.set_cab("A")
+        controller.commands.set_cab("B")
 
         self._assert_no_authority(controller.get_lookahead())
 
@@ -207,7 +207,7 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
         )
 
         controller = TrainController(train_id=train.train_id, network=network)
-        controller.set_cab("A")
+        controller.commands.set_cab("A")
 
         self._assert_no_authority(controller.get_lookahead())
 
@@ -358,7 +358,7 @@ class TestNoPathProducesNoAuthorityPayload:
         train.position.occupied_blocks = ["TERMINAL"]
         network.add_train(train)
         controller = TrainController(train_id=train.train_id, network=network)
-        controller.set_cab("A")
+        controller.commands.set_cab("A")
         return controller
 
     def _assert_no_authority_payload(self, lookahead):

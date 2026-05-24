@@ -48,7 +48,7 @@ def _enqueue_set_cab(cab: str):
 
     def action(s) -> None:
         controller = s.sim_controller.get_or_create_controller(s.fixture.train_id)
-        controller.enqueue_command("set_cab", {"cab": cab})
+        controller.commands.enqueue_command("set_cab", {"cab": cab})
 
     return action
 

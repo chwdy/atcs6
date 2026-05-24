@@ -451,7 +451,7 @@ class Train:
         Get train's facing direction (calculated from position).
 
         Read-only — derived from `position.leading_end` and train geometry.
-        To change direction use `TrainController.set_cab(...)`.
+        To change direction use `TrainController.commands.set_cab(...)`.
         """
         if not self.position:
             return None
@@ -476,7 +476,7 @@ class Train:
     def update_position_for_cab(self, cab: Optional[Literal["A", "B"]]) -> None:
         """Update `position.leading_end` based on the active cab.
 
-        Called by `TrainController.set_cab(...)` after it has authorized the
+        Called by `TrainController.commands.set_cab(...)` after it has authorized the
         cab change. The state-machine transitions live entirely on the
         controller per design_new.md ~line 1292; this helper exists only to
         keep position/leading_end in sync with cab selection.

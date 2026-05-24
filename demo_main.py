@@ -701,7 +701,7 @@ def setup_demo_train(
     #    the first tick; from tick 2 onward Phase 1 sees a powered-on
     #    controller, acquires the path for DEMO_ROUTE_V2, and auto-departs.
     controller = sim_controller.get_or_create_controller(demo_train.train_id)
-    controller.enqueue_command("power_on")
+    controller.commands.enqueue_command("power_on")
 
 
 def create_diagonal_siding(network: RailwayNetwork):

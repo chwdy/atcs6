@@ -2,7 +2,7 @@
 
 Per design_new.md, travel_direction is computed from
 (self.active_cab, self.current_span) on every read. There is no setter.
-Calling controller.set_cab(...) must flip travel_direction immediately on
+Calling controller.commands.set_cab(...) must flip travel_direction immediately on
 the next read — no stale field, no cache.
 
 Note: this test exercises the read-only property contract. It does not
@@ -58,7 +58,7 @@ def test_travel_direction_none_when_no_cab():
 def test_travel_direction_flips_when_facing_flips():
     """Reversing the train's facing direction flips travel_direction on next read.
 
-    We bypass the controller.set_cab() machinery (Bucket C regression in
+    We bypass the controller.commands.set_cab() machinery (Bucket C regression in
     production train.py) and directly flip TrainPosition.leading_end + entry
     edges, which is what the cab swap is supposed to do at the geometry level.
     The point of this test is to verify the property is *derived*, not stored.

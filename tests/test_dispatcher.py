@@ -1130,8 +1130,8 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.power_on_cmd()
-        controller.set_cab("A")
+        controller.commands.power_on_cmd()
+        controller.commands.set_cab("A")
 
         assert controller.commands.cab == "A"
         assert controller.ops.state == TrainState.READY
@@ -1157,8 +1157,8 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.power_on_cmd()
-        controller.set_cab("A")
+        controller.commands.power_on_cmd()
+        controller.commands.set_cab("A")
 
         assert controller.commands.cab == "A"
 
@@ -1237,8 +1237,8 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.power_on_cmd()
-        controller.set_cab("A")
+        controller.commands.power_on_cmd()
+        controller.commands.set_cab("A")
         controller.commands.control_mode = "ato"
 
         assert controller.commands.cab == "A"
@@ -1262,8 +1262,8 @@ class TestATODirectionDetection:
 
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
-        controller.power_on_cmd()
-        controller.set_cab("A")
+        controller.commands.power_on_cmd()
+        controller.commands.set_cab("A")
         controller.commands.control_mode = "ato"
 
         assert controller.commands.cab == "A"

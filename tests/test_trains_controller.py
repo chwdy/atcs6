@@ -45,7 +45,7 @@ class TestTrainManualControlBugFixes:
         controller.ops.state = TrainState.READY
         controller.commands.cab = "A"
 
-        assert controller.set_cab(None).success is True
+        assert controller.commands.set_cab(None).success is True
         assert controller.ops.state == TrainState.READY
         assert controller.commands.cab is None
         assert train.facing_direction is None
@@ -61,7 +61,7 @@ class TestTrainManualControlBugFixes:
         controller.commands.cab = "A"
         controller.physics_sync.current_speed_kmh = 5.0
 
-        assert controller.set_cab(None).success is False
+        assert controller.commands.set_cab(None).success is False
         assert controller.ops.state == TrainState.READY
 
 
