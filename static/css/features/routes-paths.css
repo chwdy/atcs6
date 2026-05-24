@@ -293,6 +293,518 @@
 .route-delay-chip.on_time { color: var(--success-color); background: rgba(4, 211, 97, 0.12); }
 .route-delay-chip.late { color: var(--warning-color); background: rgba(255, 205, 30, 0.12); }
 
+/* ============================================================================
+   Route Runs panel + single-run editor
+
+   Built strictly on the primitives in docs/DESIGN_LANGUAGE.md:
+     §5A stacked label/value rows   → .rr-fields / .rr-field
+     §6 3px left-border row accents → .rr-card / .rr-task / .rr-accent-*
+     §7 pill counts and status chips → .rr-chip / .rr-chip-state
+     §11 status header block        → .rr-status-header
+     §11 standard card, action       → .rr-card
+         buttons inside go flat       → .rr-flat-btn
+   All accent colors come from tokens — no new hues. Long auto-generated
+   route names are clamped to one line; the full string lives in the
+   title attribute as a tooltip.
+   ============================================================================ */
+
+.rr-panel { padding: 0; }
+
+.rr-empty {
+    padding: 16px 12px;
+    text-align: center;
+    font-style: italic;
+    font-size: 11px;
+    color: var(--text-secondary);
+    border: 1px dashed var(--border-color);
+    border-radius: var(--control-radius-sm);
+}
+
+/* ---- List ---- */
+
+.rr-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* §11 Standard card + §6 3px left-border row accent. */
+.rr-card {
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.rr-card-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+}
+
+.rr-card-title-col {
+    min-width: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+/* Train id is the primary identifier (mono, weight 600, primary text). */
+.rr-card-train {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+/* Route name (often auto-generated and long) — one-line ellipsised
+   secondary caption; full string surfaces via title=. */
+.rr-card-route {
+    font-size: 11px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.rr-card-foot {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    letter-spacing: 0.02em;
+}
+
+/* ---- Flat ghost action inside the card (§11). ---- */
+.secondary-sidebar-content .rr-flat-btn,
+.rr-flat-btn {
+    height: var(--control-height-xs);
+    padding: 0 10px;
+    background-color: transparent;
+    color: var(--text-primary);
+    border: none;
+    border-radius: var(--control-radius-sm);
+    font-size: 11px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: color 0.15s, background-color 0.15s;
+}
+.rr-flat-btn:hover {
+    background-color: var(--bg-hover);
+    color: var(--accent-hover);
+}
+
+/* ---- Chip row (§7). ---- */
+
+.rr-chip-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+}
+
+/* §7 base pill — small mono numeric/short-text chips for header/toolbar. */
+.rr-chip {
+    background-color: var(--bg-dark);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    padding: 1px 8px;
+    font-size: 10px;
+    font-family: var(--font-mono);
+    line-height: 1.4;
+    white-space: nowrap;
+}
+
+/* §7 state badge — accent text on 15%-opacity accent bg, no border. */
+.rr-chip-state {
+    border-color: transparent;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-family: var(--font-main);
+    font-size: 9px;
+}
+
+.rr-chip-success { color: var(--success-color); background-color: rgba(4, 211, 97, 0.15); }
+.rr-chip-info    { color: var(--info-color);    background-color: rgba(0, 212, 255, 0.15); }
+.rr-chip-warn    { color: var(--warning-color); background-color: rgba(255, 205, 30, 0.15); }
+.rr-chip-danger  { color: var(--danger-color);  background-color: rgba(232, 63, 91, 0.15); border-color: transparent; }
+.rr-chip-muted   { color: var(--text-tertiary); background-color: var(--bg-hover); }
+
+/* Status left-border accent classes — used by .rr-card and .rr-status-header. */
+.rr-accent-success { border-left-color: var(--success-color); }
+.rr-accent-info    { border-left-color: var(--info-color); }
+.rr-accent-warn    { border-left-color: var(--warning-color); }
+.rr-accent-danger  { border-left-color: var(--danger-color); }
+.rr-accent-muted   { border-left-color: var(--border-color); }
+
+/* ---- Single-run editor ---- */
+
+.rr-editor { padding: 0; }
+
+/* §11 Status header block — `--bg-hover` bg, dynamic 3px left accent. */
+.rr-status-header {
+    background-color: var(--bg-hover);
+    border-left: 3px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.rr-status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+}
+
+.rr-status-train {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.rr-status-route {
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.45;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+/* Identity line — Run #N + route_id. The run number is the unique identity
+   of this run instance, so it gets a labelled prominent treatment (the
+   view-level equivalent of the `#` ordinal in the task list). */
+.rr-status-ident {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.rr-status-runid {
+    color: var(--text-primary);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+.rr-status-sep {
+    color: var(--text-tertiary);
+}
+
+/* Kept for back-compat — used by the route-runs list (.rr-card foot). */
+.rr-status-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+}
+
+/* ---- Banners (§10 error row + §6 banner) ---- */
+
+.rr-banner {
+    padding: 8px 10px;
+    margin-bottom: 12px;
+    font-size: 11px;
+    border-radius: var(--control-radius-sm);
+    border-left: 3px solid var(--border-color);
+    background-color: var(--bg-dark);
+}
+
+.rr-banner-warn {
+    border-left-color: var(--warning-color);
+    background-color: rgba(255, 205, 30, 0.08);
+    color: var(--warning-color);
+}
+
+.rr-banner-danger {
+    border-left-color: var(--danger-color);
+    background-color: rgba(232, 63, 91, 0.06);
+    color: var(--text-primary);
+}
+
+.rr-banner-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+    font-weight: 500;
+    margin-bottom: 2px;
+}
+
+.rr-banner-text { color: var(--danger-color); }
+
+.rr-banner-time {
+    margin-top: 2px;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+}
+
+/* ---- Section header (above each subsection in the editor). ---- */
+
+.rr-section {
+    margin-bottom: 16px;
+}
+
+.rr-section-title {
+    margin: 0 0 8px 0;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.rr-section-count {
+    background-color: var(--bg-dark);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    padding: 0 7px;
+    font-size: 10px;
+    font-family: var(--font-mono);
+    font-weight: 500;
+    letter-spacing: 0;
+    text-transform: none;
+}
+
+/* ---- Run summary block ----
+ * Compact hero stat (X/Y tasks) + inline metadata strip + planning
+ * indices. No edge-pinned labels (proximity). No section title — the
+ * stats block speaks for itself.
+ */
+
+.rr-summary {
+    padding: 10px 12px;
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.rr-summary-hero {
+    display: flex;
+    align-items: baseline;
+    gap: 0;
+    line-height: 1;
+}
+
+.rr-summary-num {
+    font-family: var(--font-mono);
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+.rr-summary-num-success { color: var(--success-color); }
+.rr-summary-num-info    { color: var(--info-color); }
+.rr-summary-num-warn    { color: var(--warning-color); }
+.rr-summary-num-muted   { color: var(--text-secondary); }
+
+.rr-summary-sep {
+    font-family: var(--font-mono);
+    font-size: 20px;
+    color: var(--text-tertiary);
+    margin: 0 3px;
+}
+
+.rr-summary-total {
+    font-family: var(--font-mono);
+    font-size: 16px;
+    color: var(--text-secondary);
+}
+
+.rr-summary-unit {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-left: 8px;
+}
+
+.rr-summary-meta {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-family: var(--font-main);
+    line-height: 1.5;
+}
+
+.rr-summary-idx {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+/* ---- Tasks list ----
+ * Row-shaped list, not cards. Sequential, comparable records → rows.
+ * Two color channels coexist:
+ *   - Hue (status dot at left edge): correctness — danger / warn / ok.
+ *   - Brightness (row text + bg tint): liveness — pending / finished / live.
+ */
+
+.rr-tasks {
+    display: grid;
+    grid-template-columns: 8px 16px auto auto minmax(60px, 1fr) auto;
+    row-gap: 0;
+}
+
+.rr-tasks-header,
+.rr-task {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    column-gap: 8px;
+    align-items: center;
+    padding: 4px 6px;
+    border-radius: 4px;
+    min-width: 0;
+}
+
+.rr-tasks-header {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+    font-weight: 500;
+    padding: 4px 6px 2px;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 2px;
+}
+
+.rr-task {
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.4;
+    cursor: default;
+}
+
+.rr-task:hover {
+    background-color: var(--bg-hover);
+}
+
+/* Liveness channel — brightness. */
+.rr-task-pending { opacity: 0.55; }
+
+.rr-task-next {
+    background-color: rgba(0, 212, 255, 0.08);
+    color: var(--text-primary);
+}
+.rr-task-next .rr-task-mod,
+.rr-task-next .rr-task-time,
+.rr-task-next .rr-task-dur,
+.rr-task-next .rr-task-arrow {
+    color: var(--text-primary);
+}
+
+/* Hue channel — status dot (left edge). */
+.rr-task-status {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: transparent;
+    justify-self: center;
+}
+.rr-task-status-warn   { background-color: var(--warning-color); }
+.rr-task-status-danger { background-color: var(--danger-color); }
+
+/* Ordinal — narrow mono anchor, recedes. */
+.rr-task-ord {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+    text-align: right;
+}
+
+/* Verb chip — the categorical filter (STOP / DWELL / WAYPOINT).
+   Bold, colored, scanned first. */
+.rr-task-verb {
+    font-family: var(--font-main);
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 1px 6px;
+    border-radius: 3px;
+    text-align: center;
+    line-height: 1.4;
+    justify-self: start;
+}
+.rr-task-verb-info  { color: var(--info-color);    background-color: rgba(0, 212, 255, 0.15); }
+.rr-task-verb-warn  { color: var(--warning-color); background-color: rgba(255, 205, 30, 0.15); }
+.rr-task-verb-muted { color: var(--text-secondary); background-color: var(--bg-hover); }
+
+/* Noun — the place identifier. Bright mono, the row's identity.
+   Never shrinks: identity must always be readable. */
+.rr-task-noun {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+
+/* Modifier — target kind + direction, muted secondary detail.
+   The flex column: shrinks first when the row is tight, ellipsises
+   on overflow. The row tooltip carries the full resolved info. */
+.rr-task-mod {
+    font-family: var(--font-main);
+    font-size: 10px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+/* Time column — two-line stack for finished tasks (started on top,
+   finished + duration on bottom). Single line for running or pending.
+   Vertical stacking implies sequence; no arrow needed. */
+.rr-task-time {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    line-height: 1.35;
+}
+.rr-task-time-line {
+    display: inline-block;
+}
+.rr-task-dur {
+    color: var(--text-secondary);
+    font-weight: 600;
+    margin-left: 8px;
+}
+.rr-task-time-muted {
+    color: var(--text-tertiary);
+    opacity: 0.5;
+}
+
 .route-empty-dashed {
     padding: 24px 16px;
     border: 2px dashed var(--border-color);
@@ -301,6 +813,67 @@
 
 .waypoint-card {
     border: 1px solid var(--border-color);
+}
+
+/* ----------------------------------------------------------------------------
+   Segmented control overrides for the route editor.
+
+   Per DESIGN_LANGUAGE.md §3 "Segmented control": a bordered cluster of flat
+   ghosts with NO internal dividers and a 15%-opacity accent-tint bg on the
+   active cell (not a solid accent fill). The global `.switch-group` rule in
+   `components/design-system.css` predates that and uses solid fills + vertical
+   dividers; these `.route-seg` rules realign the route editor with the doc
+   without disturbing other call-sites.
+   ---------------------------------------------------------------------------- */
+
+.route-seg {
+    max-width: none;          /* the global rule caps at 50% — too narrow here */
+    width: 100%;
+}
+
+.route-seg .switch-btn {
+    border-right: none;       /* no internal dividers per §3 */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    height: var(--control-height-xs);
+    padding: 0 8px;
+}
+
+.route-seg .switch-btn:hover:not(:disabled) {
+    background-color: var(--bg-hover);
+    color: var(--accent-hover);
+}
+
+.route-seg .switch-btn.active {
+    background-color: rgba(130, 87, 229, 0.18);
+    color: var(--accent-hover);
+}
+
+.route-seg-glyph {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1;
+    color: inherit;
+}
+
+.route-seg-label {
+    font-size: 11px;
+    letter-spacing: 0.02em;
+}
+
+/* Compact variant — for the direction control inside a waypoint card row,
+   the glyph alone is enough; label is hidden via not rendering it. */
+
+/* Stack the target type + target dropdown vertically since the segmented
+   control consumes the full row width. */
+.waypoint-target-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
 }
 
 /* Compact form controls inside the route editor sidebar.
@@ -423,8 +996,233 @@
     flex-shrink: 0;
 }
 
-/* Stacked waypoint controls — a 2-column grid so each control gets room
-   instead of fighting in one cramped horizontal row. */
+/* ----------------------------------------------------------------------------
+   Task card — collapsed summary + expanded body.
+
+   Collapsed state: one row of chips (ordinal · kind · target · direction · time)
+   that the user can scan without reading labels — every chip carries both a
+   glyph and a word so direction in particular reads as language, not arrows.
+   Tap the row to expand.
+
+   Expanded state: two stacked tiers below the summary. Tier-1 is the task
+   identity (kind picker + target type/name) at full --text-primary weight.
+   Tier-2 is the required-but-defaultable controls (direction, travel/dwell,
+   depart-at), set to --text-secondary so the section reads visually quieter
+   per DESIGN_LANGUAGE.md §1.
+   ---------------------------------------------------------------------------- */
+
+.waypoint-card {
+    padding: 0;
+    overflow: hidden;
+}
+
+.task-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 10px;
+    background: transparent;
+    border: none;
+    text-align: left;
+    color: var(--text-primary);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.task-summary:hover {
+    background-color: var(--bg-hover);
+}
+
+.task-summary[aria-expanded="true"] {
+    background-color: var(--bg-hover);
+}
+
+/* Shared chip shell — per DESIGN_LANGUAGE.md §7. All chips share the
+   same dimensions (1px 8px padding, 999px radius, 11px). Kind variants
+   override color + bg only. */
+.task-summary-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 8px;
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    min-width: 0;
+    flex-shrink: 0;
+}
+
+.task-summary-chip .ti {
+    font-size: 13px;
+    line-height: 1;
+}
+
+/* Kind chip is the categorical "what does this task DO" filter — gets
+   a status-tinted fill per the §1 token table mapping:
+   info=movement (waypoint), accent=primary action (stop), warning=dwell.
+   Per §7, tinted state chips drop the border (the tint is the affordance). */
+.task-summary-chip.kind-waypoint {
+    color: var(--info-color);
+    background: rgba(0, 212, 255, 0.15);
+    border-color: transparent;
+}
+.task-summary-chip.kind-stop {
+    color: var(--accent-hover);
+    background: rgba(130, 87, 229, 0.18);
+    border-color: transparent;
+}
+.task-summary-chip.kind-dwell {
+    color: var(--warning-color);
+    background: rgba(255, 205, 30, 0.15);
+    border-color: transparent;
+}
+
+.task-summary-target {
+    overflow: hidden;
+    flex-shrink: 1;
+}
+
+.task-summary-target-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.task-summary-time {
+    margin-left: auto;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    flex-shrink: 0;
+}
+
+.task-summary-viability {
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
+.task-summary-toggle {
+    color: var(--text-tertiary);
+    flex-shrink: 0;
+    margin-left: 2px;
+    display: inline-flex;
+}
+
+.task-summary-toggle .ti {
+    font-size: 14px;
+}
+
+/* Expanded body — Tier 1 / Tier 2 / actions. */
+.task-body {
+    padding: 10px;
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* Each tier stacks its field rows vertically. The user's complaint was
+   that three segmented buttons taking a full row each wasted space —
+   .task-field-row puts label and control inline so the row sizes to
+   content, not to the panel width. */
+.task-tier {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.task-field-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.task-field-row > label {
+    flex: 0 0 64px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    margin: 0;
+}
+
+.task-field-row > .task-sublabel {
+    flex: 0 0 auto;
+    margin-left: 4px;
+}
+
+.task-field-row > .route-seg {
+    flex: 0 1 auto;
+    width: auto;
+    max-width: none;
+}
+
+.task-field-row > .task-target-id-select {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.task-field-row > input[type="number"] {
+    flex: 1 1 0;
+    min-width: 0;
+    text-align: left;
+}
+
+.task-field-row > .btn-icon-only {
+    flex: 0 0 auto;
+}
+
+/* Tier 2 — the "quieter color" tier. Visually receding from Tier 1 via
+   --text-secondary on its values and a dashed separator above. */
+.task-tier-secondary {
+    padding-top: 10px;
+    border-top: 1px dashed var(--border-color);
+    color: var(--text-secondary);
+}
+
+.task-tier-secondary .property-input {
+    color: var(--text-secondary);
+}
+
+.task-tier-secondary .route-seg .switch-btn {
+    color: var(--text-secondary);
+}
+
+.task-tier-secondary .route-seg .switch-btn.active {
+    color: var(--accent-hover);
+}
+
+.task-dwell-target-note {
+    padding: 4px 0 4px 72px;
+    color: var(--text-tertiary);
+    font-size: 11px;
+    font-style: italic;
+}
+
+/* Actions sit at the bottom of the expanded body, separated by a hairline. */
+.task-actions-row {
+    display: flex;
+    gap: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-color);
+    align-items: center;
+}
+
+.task-actions-row .delete-task {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* Legacy 2-col field grid kept around for any callers that still rely on
+   .waypoint-fields. New code uses .task-tier instead. */
 .waypoint-fields {
     display: grid;
     grid-template-columns: 1fr 1fr;

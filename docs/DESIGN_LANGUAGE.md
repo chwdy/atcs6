@@ -112,6 +112,37 @@ canonical example.
 All buttons in the panel language are 28px tall (`--control-height-xs`),
 radius 6px, and follow the **ghost** pattern by default.
 
+### Icons
+
+The icon system is **Tabler Icons**, vendored at
+[`vendor/tabler/tabler-icons.min.css`](../static/vendor/tabler/tabler-icons.min.css)
+and used as a font glyph:
+
+```html
+<i class="ti ti-arrow-narrow-right"></i>
+```
+
+Because Tabler is a font, each icon inherits its container's `color` and
+`font-size` — it respects the token palette and scales with the
+surrounding text the same way Unicode glyphs did, just with a much larger
+named vocabulary.
+
+- **Look up the action before picking a glyph.**
+  [`static/icon-selections.json`](../static/icon-selections.json) is the
+  running roster of which Tabler icon backs which use case
+  (`select → pointer`, `extend → arrows-horizontal`, etc.). Re-use the
+  existing entry before introducing a new one; if the use case isn't
+  listed, add it in the same patch so the next caller can find it.
+  Cross-panel consistency matters more than picking the perfect glyph
+  for one screen.
+- **Tabler is the default; Unicode is for tiny structural chrome.** Reach
+  for `▸ ▾ ×` carets only where adding an `<i>` would be overhead — a
+  disclosure caret, a select-arrow decoration, the close `×` on a tab.
+  Otherwise prefer Tabler so the vocabulary stays consistent.
+- **No inline `<svg>` in new components.** If Tabler is missing the icon
+  you need, that's a roster question — propose adding it to
+  `icon-selections.json` rather than pasting raw SVG into a component file.
+
 ### Ghost button (the default)
 
 ```css
@@ -126,7 +157,7 @@ border-color: var(--accent-color);
 color: var(--accent-hover);
 ```
 
-Use a single Unicode glyph for icon buttons (`↻` refresh, `⊞` expand, `⊟` collapse, `×` close). When there is no single-codepoint glyph for the action, use a short mono label instead (≤ 4 characters, e.g. `JSON`).
+Icon-only buttons (refresh, close, expand) take an icon as their only child — see [Icons](#icons) above for the icon system. When no icon fits the action, use a short mono label instead (≤ 4 characters, e.g. `JSON`).
 
 ### Flat ghost (in-container button)
 
@@ -162,6 +193,9 @@ Rule of thumb: **the container is bordered, or the buttons are bordered —
 never both.** When a button stands alone on the panel body (no container
 row around it), use the regular ghost above. When it lives inside a
 `--bg-dark` grouped cluster or `--bg-panel` toolbar, use the flat ghost.
+
+When the button sits inside a bordered card or list item, use this flat
+ghost too — see §11 "Action buttons inside a card go flat."
 
 ### Tool button (icon grid tile)
 
@@ -320,6 +354,11 @@ Two patterns, picked by data type:
 - Unit: 10px Inter, `--text-secondary`
 - Rows separated by `1px dotted var(--border-color)`
 
+The **meaningful** identifier is the value. Opaque internal ids
+(`run_number`, `path_id`, internal hashes) go in chips (§7) or foot
+captions, not in the title slot — the user's eye is looking for the
+entity, not the database key.
+
 ### B. Three-column row (inspector body)
 
 ```
@@ -330,6 +369,50 @@ Used for tabular data where each row has a categorical badge. Color-code
 the badge background using the accent palette. Reference:
 [`.inspector-row`](../static/css/features/inspector.css).
 
+### Overflow: identifiers vs names
+
+Two different problems with two different answers — the doc used to
+collapse them, but they need different handling.
+
+**Opaque identifiers** (`route_id`, `run_number`, internal hashes,
+target ids): clamp to one line with ellipsis and surface the full
+string in a `title` tooltip. The user uses these for cross-reference,
+not for reading; the differentiating tail is recoverable on hover.
+
+```css
+overflow: hidden;
+text-overflow: ellipsis;
+white-space: nowrap;
+min-width: 0;   /* required on flex children — without it the cell ignores overflow */
+```
+
+Pair with `title="${full string}"` so the value stays reachable.
+
+**Human-readable display names** (route names, station names, anything
+written for humans to *read*): wrap to multiple lines instead. The
+reader is meant to read the full string, and ellipsis truncates exactly
+the part that differentiates one from another — "Demo v2: East Terminal
+→ East Branch Term…" hides the destination, which is the whole point of
+the name.
+
+```css
+word-break: break-word;
+overflow-wrap: anywhere;
+/* no white-space: nowrap, no overflow: hidden */
+```
+
+Do **not** clamp numbers, time-of-day, short status labels, or units —
+those are sized to fit and should never get an ellipsis. If a numeric
+value won't fit, the column is too narrow, not the value.
+
+The `min-width: 0` line is the rule most often missed when clamping.
+Flex children default to `min-width: auto`, which lets their content
+expand the cell and silently defeats `overflow: hidden`. Set it
+explicitly on every flex child whose content is supposed to truncate.
+Reference: `.rr-card-route` (clamp, opaque id) and `.rr-status-route`
+(wrap, display name) in
+[features/routes-paths.css](../static/css/features/routes-paths.css).
+
 ---
 
 ## 6. Status accents
@@ -338,7 +421,11 @@ Three patterns for showing a row's status:
 
 1. **3px left-border** on the row (most common). Color matches the accent
    palette: green=ok, purple=selected/reserved, red=fault, yellow=warn,
-   info=informational.
+   info=informational. This is the canonical status accent for new dense
+   list rows. The older status-column pattern (a leading ~50px column with
+   a colored dot + label, used by `.route-row` and `.path-row`) predates
+   this rule and is not the template for new work — when those rows are
+   reworked, they should migrate to the left-border accent.
 
 2. **Banner**: full-width strip with a 3px left-border accent + ~10% opacity
    background tint of the same color. Use for one-line diagnostics
@@ -368,6 +455,18 @@ font-family: var(--font-mono);
 
 For state badges (`▶ ATO RUNNING`, `EB ACTIVE`), tint the background at
 ~15% opacity of the relevant accent and use the accent as the text color.
+
+**All chips in a row share the same shell.** `--bg-dark` bg, 1px
+`--border-color` border, 999px radius, 10px mono, 1px 8px padding. Only
+`color` and `background-color` differ between variants — accent-tinted
+state chips drop the border (the tinted fill is the affordance) but keep
+every other dimension. Don't mint per-feature chip classes (no
+`.foo-direction-pill`, `.foo-error-chip`); add modifier classes
+(`-success`, `-warn`, `-danger`, `-muted`) on a single base class
+instead. A row of mismatched chip shapes reads as cluttered even when
+each one is individually correct. Reference: `.rr-chip` /
+`.rr-chip-state` / `.rr-chip-{success,info,warn,danger,muted}` in
+[features/routes-paths.css](../static/css/features/routes-paths.css).
 
 ---
 
@@ -496,9 +595,223 @@ field descriptor, so it sits one brightness tier higher.)
 Reference: `.tc-disclosure` in
 [features/train-control.css](../static/css/features/train-control.css).
 
+### Composing a dense row
+
+When a card surfaces a long identifier plus multiple chips plus an
+action, the parts go in this vertical order so the user's eye lands on
+the meaningful entity before the metadata:
+
+1. **Title row** — primary text (mono identifier of the entity, per §5A)
+   on the left, flat-ghost action right-aligned. The action is flat
+   because the card already carries the border (no box-in-a-box).
+2. **Subtitle line** — secondary text (the long display name, ellipsised
+   per §5 Overflow) on its own line.
+3. **Chip row** — small mono pills (§7) in fixed order: state chip first
+   (accent-tinted), then identifier / direction / progress / error chips.
+4. **Foot caption** — single 10px `--text-tertiary` line for the row's
+   timestamp or relationship metadata (`started 1:23 PM`, `assigned to
+   …`). Optional.
+
+When the card is the detail page rather than a list row, the
+composition is different enough to deserve its own subsection — see
+"Composing a detail page top" below.
+
+Reference: `.rr-card` in
+[features/routes-paths.css](../static/css/features/routes-paths.css).
+
+### Composing a detail page top
+
+When the page is a single record (a route run, a train, a path) rather
+than a list of records, the top section pairs a Status header block
+(this section, above) with a stats block directly below it.
+
+**1. Status header block** — the §11 chrome (`--bg-hover` bg + dynamic
+3px accent), populated with:
+
+- **Title row** — primary identifier of the record (mono, 14px, weight
+  700) on the left, state pill (§7 accent-tinted) on the right.
+- **Identity line** — `Role #N · related_id` in inline mono, one tier
+  smaller than the title. Names what the record IS so the reader doesn't
+  have to guess — `Run #1000001` is unambiguous; bare `#1000001` is not
+  (see §12 principle 7).
+- **Display name** — the human-readable name. Wraps freely, never
+  ellipsis (see §5 "Overflow: identifiers vs names").
+
+**2. Stats block** — a Standard card directly below the header, with:
+
+- **Hero stat** (§9 hero number) at top — `X / Y unit` for progress
+  counts, or a single big number for a single metric. Color by record
+  state (success / info / warn / muted from §1 Accents).
+- **Metadata rows** — 1–3 short rows of compact prose with `·`
+  separators. Group related fields per row (timing on one, mode &
+  direction on another, planning indices on a third). Spell words out
+  when there's room — `forward · east` over `F·E` (§12 principle 3). The
+  compact form lives in the `title` tooltip for power users who want it.
+
+This pattern replaces the older §5A field-row dl for detail pages.
+Edge-pinned label/value pairs (`STARTED ........... 2:42:37 PM`) violate
+proximity (§12 principle 1) and waste vertical real estate — the hero +
+metadata-strip variant carries the same information in roughly half the
+height with no dotted leaders.
+
+Reference: `.rr-status-header` (header block) and `.rr-summary` (stats
+block) in
+[features/routes-paths.css](../static/css/features/routes-paths.css).
+
 ---
 
-## 12. Overlays
+## 12. Composing list rows (rows vs cards)
+
+When the list is dense, sequential, comparable records — log entries,
+journey steps, run history — the right container is a row, not a card.
+Reach for this section *before* picking chrome; the wrong container can't
+be fixed by polishing the cards inside it. The §11 "Composing a dense
+row" subsection covers what goes inside a card-as-list-row when cards
+genuinely are the right shape; this section covers when they aren't and
+how to lay out the row-shaped alternative.
+
+1. **Respect proximity.** Labels and their values must touch, not pin to
+   opposite edges of a wide container. The "STARTED" label and its
+   timestamp belong next to each other, not at left and right margins of
+   a 600px row. If you need leader dots to span the gap, the layout
+   itself is wrong — leader dots are a confession that the gap should
+   not exist.
+
+2. **Match container to data shape.** Cards are for objects you act on
+   as a whole (a contact, a message, a route in the route list). Rows
+   are for homogeneous comparable records (log entries, journey steps,
+   run history). Lists are for sequences. Picking the wrong container is
+   structural — no amount of color, spacing, or chip polish saves a list
+   of forty cards when the user wanted to scan one column down the page.
+
+3. **Density follows task.** Scanning-heavy views need high density.
+   Detail / profile views can be airier. Decide once based on what the
+   user is doing on this surface, not on what looks tasteful in a single
+   row viewed alone. A spacious row that reads clean by itself is
+   miserable when there are forty of them stacked — but the inverse
+   trap is real too: don't cram a detail view onto one cryptic line just
+   because you *can*. Multi-row metadata is fine when space allows;
+   `forward · east` across two readable rows beats `F·E` on one
+   compressed row. Density serves readability, not the other way around.
+
+4. **Pick a hero per row; for mixed-task views, split the hero.** The
+   hero is whatever answers the user's primary question on this row. For
+   mixed views — debug, monitor, and post-hoc review all on one screen —
+   the hero splits into two layers: a stable row identity (same shape on
+   every row, recognizable at a glance) plus per-task scan signals as
+   columns (a duration column for the debugger, a status dot column for
+   the monitor). The user picks their task by picking which column to
+   scan, not by switching modes.
+
+5. **Visual hero is not the same as row name.** The eye scans a list in
+   two passes: a categorical filter ("show me only the DWELLs"), then a
+   specific lookup ("which place is this STOP at?"). Visual weight
+   should follow scan order — the verb (action type) often deserves more
+   weight than the noun (place / identifier), even though the noun is
+   what you'd call the row's "name." Same logic as log viewers bolding
+   ERROR / WARN / INFO over the message text.
+
+6. **Position carries semantic weight.** Left edge = state filter /
+   status. Right edge = numbers (right-alignable). Middle = identity.
+   Top-right corner = primary action territory. Don't put low-stakes
+   metadata in high-stakes positions — a "minor" pill floated top-right
+   miscommunicates importance before a single pixel is colored.
+
+7. **Format is the label.** A timestamp doesn't need "STARTED" written
+   next to it. A colored dot doesn't need "STATE" written next to it. An
+   arrow `→` between two times replaces "STARTED" and "FINISHED." But
+   format tells you the *type*, not always the *role* — `#1000001` is
+   unambiguously a number, but a reader can't tell *which* number
+   (run? route? task index?) without a `Run` prefix. Drop labels where
+   format makes the role obvious; keep them where it doesn't.
+
+8. **Repetition trains the eye to skip.** Anything that repeats
+   identically on every row becomes invisible after the second instance.
+   So either promote it to a single column header at the top, or remove
+   it. Repeating it inline on every row is *worse* than nothing — it
+   costs space and gets ignored anyway.
+
+9. **Show derived values, not just inputs.** If the user has to do math
+   from your data — duration from two timestamps, percentage from two
+   numbers, delta from two states — you've shipped half the feature.
+   Compute the answer; the inputs become supporting evidence.
+
+10. **Align comparable values into a column.** Whatever field users
+    compare across rows must live in the same x-position on every row.
+    Cards-of-rows defeats this; row-shaped lists honor it. Comparison
+    should be the easy case, not the hard one.
+
+11. **Bandages reveal structural bugs.** Leader dots to span a gap.
+    Decorative dividers added to fill awkward whitespace. Pills floated
+    to balance an empty corner. Whenever you reach for a visual
+    band-aid, stop — the layout underneath is the bug. Fix the
+    structure, don't paper over it.
+
+### Putting it together
+
+A list of route-run steps, refactored from edge-pinned cards into
+compact rows. The header carries the column names once; the rows below
+share the same x-positions so a downward scan reads as a single column.
+
+```
+#    type    target          detail              time
+●  3 STOP    STA_DDB6BE      platform · F-(9,4)-N    1:33:59 PM
+                                                     1:34:15 PM   16s
+•  4 DWELL   STA_DDB6BE      platform · either       1:34:15 PM
+                                                     1:34:17 PM    2s
+●  5 STOP    MAIN_WEST       block · R-(6,2)-W       1:34:17 PM    ← currently running
+```
+
+When both start and finish exist, the time cell stacks them on two lines — vertical sequence implies "and then." The duration sits next to the finish on line 2 because that's the moment the duration becomes known. While a task is still running, the cell collapses to one line (just the start time); the row's brightness signals ongoing. Finished rows are taller than running/pending rows by design — finished history earns the extra vertical room.
+
+- **Status dot** (leftmost, ~6px) — hue channel. Red = fail, amber =
+  anomaly, dim = ok. The color is the label (principle 7); the column
+  is scannable down the left edge (principle 10).
+- **Ordinal** (`3`, `4`, `5`) — muted mono, narrow, `--text-tertiary`.
+  A stable reference anchor for "the third step," not the hero.
+- **Verb** (`STOP` / `DWELL`) — bold accent-tinted chip, the
+  categorical filter the eye scans first (principle 5). Sized for the
+  filter pass, not the identity pass.
+- **Noun** (`STA_DDB6BE` / `MAIN_WEST`) — bright mono, medium-large,
+  `--text-primary`. The identity — what the row IS.
+- **Modifiers** (`platform · fwd`) — small, muted `--text-secondary`.
+  Useful when present, invisible when not. Never repeated when empty
+  (principle 8).
+- **Timestamps + derived duration** — when both start and finish exist,
+  stack them on two lines (start on top, finish + duration on bottom);
+  vertical sequence is the label (principle 7). The duration is the
+  brighter element next to the finish because that's the answer the
+  debugger is scanning for (principle 9), and the moment the duration
+  becomes known. Right-aligned so durations align down a column
+  (principle 10). Running tasks collapse to a single line (start time
+  only) — the row's brightness signals ongoing, so no arrow is needed.
+- **Current row** — brightness channel only. No marker column —
+  instead, the running row's text goes full-bright and the row picks up
+  a subtle `--bg-hover` background tint. In a post-hoc replay no row is
+  "live" and the whole list reads muted; status dots carry the story.
+- **Header row** — carries `#`, `type`, `target`, `detail`, `time` once
+  at the top in `--text-tertiary` 10px uppercase. Never repeated inline
+  (principle 8).
+
+### Color channels
+
+Two color channels can coexist on one row without confusing each other
+because they operate on different parts at different intensities:
+
+- **Hue channel** — small saturated mark at the row edge (the status
+  dot). Red = fail, amber = anomaly, dim / none = ok. Encodes
+  *correctness*.
+- **Brightness channel** — ambient row-wide level (text foreground +
+  subtle background tint). Bright = currently active, muted = past /
+  completed. Encodes *liveness*.
+
+A row can carry a red status dot AND a bright row treatment without the
+two reading as one thing, because hue lives in a tiny saturated mark and
+brightness lives in the ambient surface.
+
+---
+
+## 13. Overlays
 
 Floating UI that sits above the panel layer.
 
@@ -571,9 +884,9 @@ Reference: `.route-resource-picker` in
 
 ---
 
-## 13. Don'ts
+## 14. Don'ts
 
-- **No color emoji anywhere in the UI.** Monochrome Unicode symbols (`↻ ⊞ ⊟ × ▸ ▣ ⇋`) render in the CSS `color` property and are fine. Color emoji (`🚦 🚉 📋 📊 🚨`) render as color pictographs regardless of `color:` and fight with the token palette — never use them in buttons, headers, labels, or any panel chrome. Quick test: if setting `color: red` on the character turns it red, it's a monochrome symbol and is OK; if it stays a colorful picture, it's an emoji and is not.
+- **No color emoji anywhere in the UI.** The icon system is Tabler (see §3 Icons); monochrome Unicode glyphs (`▸ ▾ × ↻`) remain fine for tiny structural chrome. Both render in the CSS `color` property and respect the token palette. Color emoji (`🚦 🚉 📋 📊 🚨`) render as color pictographs regardless of `color:` and fight with the palette — never use them in buttons, headers, labels, or any panel chrome. Quick test: if setting `color: red` on the character turns it red, it's a monochrome symbol and is OK; if it stays a colorful picture, it's an emoji and is not.
 - **No new colors.** If you can't reach for a token, the design doesn't have a slot for it yet — pause and discuss instead of inventing.
 - **No solid filled buttons in panels.** Use the ghost + accent-tint pattern.
 - **Don't border the container *and* every child.** If the container has a border (segmented cluster, tool grid, tab strip, card), the children inside are flat ghosts. If the children need their own borders (standalone buttons on the panel body), the container is unbordered. Doubling the borders reads as fenced-off boxes inside fenced-off boxes — the rendered weight is double what the structure needs.
@@ -583,7 +896,7 @@ Reference: `.route-resource-picker` in
 
 ---
 
-## 14. Reference panels
+## 15. Reference panels
 
 When in doubt, copy the structure of one of these:
 

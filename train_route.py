@@ -17,6 +17,7 @@ The module provides:
 - RouteMode: ONE_OFF, CIRCULAR, ROUND_TRIP.
 """
 
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
@@ -333,6 +334,18 @@ class Route:
     priority: int = 5
     acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT
 
+    # Edit timestamps (per design_new.md "Route edit timestamps"). `created_at`
+    # is sampled once in `__post_init__`; `last_edited_at` is written by the
+    # POST/PUT route-definition handlers when name/tasks/mode/priority/
+    # acquisition_mode is mutated. Neither field is touched by assign/unassign
+    # or activate/deactivate.
+    created_at: float = 0.0
+    last_edited_at: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if not self.created_at:
+            self.created_at = time.time()
+
     # ── Definition Methods ─────────────────────────────────────────
 
     def add_task(self, task: RouteTask) -> None:
@@ -439,6 +452,8 @@ class Route:
             "assigned_train_ids": list(self.assigned_train_ids),
             "is_active": self.is_active,
             "started_at": self.started_at,
+            "created_at": self.created_at,
+            "last_edited_at": self.last_edited_at,
             "priority": self.priority,
             "acquisition_mode": self.acquisition_mode.value,
         }
@@ -473,4 +488,6 @@ class Route:
             started_at=data.get("started_at"),
             priority=int(data.get("priority", 5)),
             acquisition_mode=acquisition_mode,  # type: ignore[arg-type]
+            created_at=float(data.get("created_at") or 0.0),
+            last_edited_at=data.get("last_edited_at"),
         )

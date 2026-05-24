@@ -40,6 +40,9 @@ class RouteEditorHandler {
         // Collapsible run-history section.
         this._historyExpanded = false;
         this._historyData = null;
+        // Per-task expansion state. Tracked by task object reference (not
+        // index) so add/move/delete doesn't shift which cards are open.
+        this._taskExpanded = new WeakMap();
     }
 
     get api() { return this.editor.api; }
@@ -106,11 +109,18 @@ class RouteEditorHandler {
     renderRouteListItem(route) {
         const isActive = route.is_active;
         const statusText = isActive ? 'ACTIVE' : 'INACTIVE';
-        const trainCount = route.assigned_train_ids?.length || 0;
+        const trainIds = Array.isArray(route.assigned_train_ids) ? route.assigned_train_ids : [];
+        const trainCount = trainIds.length;
         const taskCount = route.tasks?.length || 0;
         const statusClass = isActive ? 'is-active' : 'is-inactive';
         const modeText = (route.mode || 'one_off').replaceAll('_', ' ');
         const routeName = route.name || route.route_id;
+
+        const trainsLabel = trainCount === 0
+            ? 'No trains'
+            : (trainCount <= 3
+                ? trainIds.join(', ')
+                : `${trainIds.slice(0, 2).join(', ')} +${trainCount - 2}`);
 
         return `
             <div class="route-row" data-route-id="${route.route_id}">
@@ -122,7 +132,7 @@ class RouteEditorHandler {
                     <div class="route-row-content">
                         <div class="route-row-name font-mono">${routeName}</div>
                         <div class="route-row-meta text-xs text-muted info-meta">
-                            <span>${trainCount} train${trainCount !== 1 ? 's' : ''}</span>
+                            <span title="${trainIds.join(', ') || 'no trains assigned'}" class="font-mono">${trainsLabel}</span>
                             <span>${taskCount} task${taskCount !== 1 ? 's' : ''}</span>
                             <span class="route-mode-pill uppercase">${modeText}</span>
                         </div>
@@ -367,15 +377,28 @@ class RouteEditorHandler {
     renderHistoryBody() {
         const data = this._historyData;
         if (!data) return '<div class="route-history-empty">Loading…</div>';
-        const activatedText = data.activated_at != null
-            ? `Activated ${this._formatTime(data.activated_at)}`
-            : 'Never activated';
+
+        // Route-level metadata: created, last edited, last activated. Per
+        // design_new.md "Route data" + "Route edit timestamps", these are the
+        // only route-level timestamps in v1 — per-stop progress is per-run
+        // and rendered inside each run block below.
+        const metaRows = [];
+        if (data.created_at != null) {
+            metaRows.push(`<div>Created ${this._formatTime(data.created_at)}</div>`);
+        }
+        if (data.last_edited_at != null) {
+            metaRows.push(`<div>Last edited ${this._formatTime(data.last_edited_at)}</div>`);
+        }
+        metaRows.push(`<div>${data.activated_at != null
+            ? `Last activated ${this._formatTime(data.activated_at)}`
+            : 'Never activated'}</div>`);
+
         const runs = (data.runs || []).slice().reverse(); // newest first
         const runsHtml = runs.length === 0
             ? '<div class="route-history-empty">No runs yet</div>'
             : runs.map(run => this.renderHistoryRun(run)).join('');
         return `
-            <div class="route-history-activated">${activatedText}</div>
+            <div class="route-history-activated">${metaRows.join('')}</div>
             ${runsHtml}
         `;
     }
@@ -431,14 +454,20 @@ class RouteEditorHandler {
 
     renderRouteHeader(route) {
         const modeOptions = [
-            { value: 'one_off', label: 'One-off Run' },
-            { value: 'circular', label: 'Circular Loop' },
-            { value: 'round_trip', label: 'Round-trip Shuttle' }
+            { value: 'one_off',    label: 'One-off',    glyph: '→' },
+            { value: 'circular',   label: 'Circular',   glyph: '↻' },
+            { value: 'round_trip', label: 'Round-trip', glyph: '⇋' }
         ];
 
-        const modeSelect = modeOptions.map(opt =>
-            `<option value="${opt.value}" ${route.mode === opt.value ? 'selected' : ''}>${opt.label}</option>`
-        ).join('');
+        // Segmented control per DESIGN_LANGUAGE.md §3.
+        const modeSeg = modeOptions.map(opt => `
+            <button type="button"
+                    class="switch-btn ${route.mode === opt.value ? 'active' : ''}"
+                    data-mode="${opt.value}" title="${opt.label}">
+                <span class="route-seg-glyph">${opt.glyph}</span>
+                <span class="route-seg-label">${opt.label}</span>
+            </button>
+        `).join('');
 
         const taskCount = route.tasks?.length || 0;
         const assignedCount = route.assigned_train_ids?.length || 0;
@@ -456,9 +485,9 @@ class RouteEditorHandler {
                 <div class="route-header-row">
                     <div class="route-header-col">
                         <label class="property-label">Mode</label>
-                        <select id="route-mode-select" class="property-input">
-                            ${modeSelect}
-                        </select>
+                        <div id="route-mode-seg" class="switch-group compact route-seg">
+                            ${modeSeg}
+                        </div>
                     </div>
                     <div class="route-header-col narrow info-display-small">
                          <label class="property-label info-label">Statistics</label>
@@ -472,39 +501,31 @@ class RouteEditorHandler {
     }
 
     /**
-     * A compact live-status readout for the Controls section: the route's
-     * active state plus a per-train progress line when running. Reads the
-     * status already fetched into `currentRouteStatus`.
+     * Compact active/inactive chip for the Controls section. Per-train
+     * progress is shown in the Assigned Trains rows above — keeping it out
+     * of here avoids two parallel renderings of the same data.
      */
     renderRouteStatusPill() {
         if (!this.currentRoute?.is_active) {
             return `<div class="route-status-pill is-inactive"><span class="route-status-dot"></span>Inactive</div>`;
         }
-        const trains = this.currentRouteStatus?.trains || [];
-        if (trains.length === 0) {
+        const trainCount = (this.currentRouteStatus?.trains || []).length;
+        if (trainCount === 0) {
             return `<div class="route-status-pill is-info"><span class="route-status-dot"></span>Active · no trains</div>`;
         }
-        const lines = trains.map(ts => {
-            const idx = ts.current_waypoint_index;
-            const taskLabel = (idx === null || idx === undefined) ? 'queued' : `task ${idx + 1}`;
-            const extras = [];
-            if (ts.at_platform) extras.push('at platform');
-            if (ts.dwell_remaining_sec != null) extras.push(`dwell ${Math.round(ts.dwell_remaining_sec)}s`);
-            const extraText = extras.length ? ` · ${extras.join(' · ')}` : '';
-            return `
-                <div class="route-status-train">
-                    <span class="font-mono">${ts.train_id}</span>
-                    <span class="text-muted">${taskLabel}${extraText}</span>
-                </div>`;
-        }).join('');
-        return `
-            <div class="route-status-pill is-active"><span class="route-status-dot"></span>Active</div>
-            <div class="route-status-trains">${lines}</div>
-        `;
+        return `<div class="route-status-pill is-active"><span class="route-status-dot"></span>Active · ${trainCount} train${trainCount !== 1 ? 's' : ''}</div>`;
     }
 
     /**
      * Render one task row (1:1 with a RouteTask).
+     *
+     * Two states:
+     *   • Collapsed — single summary row (ordinal · kind · target · direction · time)
+     *   • Expanded — summary row plus two-tier edit body (identity controls,
+     *     then a quieter row of direction + travel/dwell + depart-at) and
+     *     an action strip.
+     * Expansion is tracked per-task in `_taskExpanded` (WeakMap keyed by
+     * task object, so reorders don't shift open cards).
      */
     renderTaskRow(task, index) {
         const kind = task.task_kind || 'waypoint';
@@ -514,112 +535,143 @@ class RouteEditorHandler {
         const targetId = loc.block_id || loc.platform_id || loc.station_id || '';
         const direction = task.task_direction || 'either';
         const isDwell = kind === 'dwell';
+        const isExpanded = this._taskExpanded.has(task);
+        const lastIndex = (this.currentRoute.tasks?.length || 1) - 1;
 
-        // Viability badge (only for movement tasks that are the 2nd+ movement).
+        // Icons match the tool panel (Tabler — see icon-selections.json and
+        // commit 3957a09). DESIGN_LANGUAGE.md still describes the older
+        // Unicode-glyph convention; we follow the in-code precedent for
+        // consistency with the rest of the editor.
+        const KIND_ICON  = { waypoint: 'arrow-narrow-right', stop: 'map-pin', dwell: 'clock' };
+        const TYPE_ICON  = { block: 'rectangle', platform: 'train', station: 'home' };
+        const DIR_ICON   = { forward: 'arrow-narrow-right', reverse: 'arrow-narrow-left', either: 'arrows-horizontal' };
+        const KIND_LABEL = { waypoint: 'Waypoint', stop: 'Stop', dwell: 'Dwell' };
+        const TYPE_LABEL = { block: 'Block', platform: 'Platform', station: 'Station' };
+        const DIR_LABEL  = { forward: 'Forward', reverse: 'Reverse', either: 'Either' };
+
+        const ti = (name) => `<i class="ti ti-${name}"></i>`;
+
+        const renderSeg = (segClass, choices, current, dataKey, iconMap, labelMap) => {
+            const items = choices.map(v => {
+                const icon = iconMap[v] ? ti(iconMap[v]) : '';
+                const label = labelMap ? `<span class="route-seg-label">${labelMap[v]}</span>` : '';
+                return `<button type="button" class="switch-btn ${current === v ? 'active' : ''}"
+                                 data-index="${index}" data-${dataKey}="${v}" title="${labelMap?.[v] || v}">
+                            ${icon}${label}
+                        </button>`;
+            }).join('');
+            return `<div class="switch-group compact route-seg ${segClass}" data-index="${index}">${items}</div>`;
+        };
+
+        const kindSeg = renderSeg('task-kind-seg', ['waypoint', 'stop', 'dwell'],
+            kind, 'kind', KIND_ICON, KIND_LABEL);
+        const typeSeg = renderSeg('task-target-type-seg', ['block', 'platform', 'station'],
+            targetType, 'type', TYPE_ICON, TYPE_LABEL);
+        const dirSeg  = renderSeg('task-direction-seg', ['forward', 'reverse', 'either'],
+            direction, 'direction', DIR_ICON, DIR_LABEL);
+
+        // Viability badge — surfaced on the summary line for movement tasks.
         let viabilityHtml = '';
         if (!isDwell) {
             const viability = this.viabilityResults.get(index);
             if (viability !== undefined) {
                 if (viability.viable) {
-                    viabilityHtml = `<span class="text-success" title="Path viable: ${viability.hop_count} blocks">✓ ${viability.hop_count} blk</span>`;
+                    viabilityHtml = `<span class="task-summary-viability text-success" title="Path viable: ${viability.hop_count} blocks">✓ ${viability.hop_count}</span>`;
                 } else {
-                    viabilityHtml = `<span class="text-danger" title="${viability.error || 'No path'}">✗ ${viability.error || 'No path'}</span>`;
+                    viabilityHtml = `<span class="task-summary-viability text-danger" title="${viability.error || 'No path'}">✗</span>`;
                 }
             }
         }
 
-        const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
-        const kindOptions = ['waypoint', 'stop', 'dwell'].map(k =>
-            `<option value="${k}" ${kind === k ? 'selected' : ''}>${cap(k)}</option>`).join('');
-        const typeOptions = ['block', 'platform', 'station'].map(t =>
-            `<option value="${t}" ${targetType === t ? 'selected' : ''}>${cap(t)}</option>`).join('');
-        const dirOptions = ['forward', 'reverse', 'either'].map(d =>
-            `<option value="${d}" ${direction === d ? 'selected' : ''}>${cap(d)}</option>`).join('');
+        // Summary line — calm resting state. The kind chip is tinted by
+        // status accent (info/accent/warning per the token table) so
+        // Stop / Waypoint / Dwell read at a glance.
+        const targetName = isDwell
+            ? 'Dwell'
+            : (this.getTargetDisplayName(targetType, targetId) || targetId || 'No target');
+        const hasTime = (task.task_time !== null && task.task_time !== undefined && task.task_time !== '');
+        const timeText = hasTime ? `${task.task_time}s ${isDwell ? 'dwell' : 'travel'}` : '';
 
-        const targetHtml = isDwell
-            ? `
-                <div class="waypoint-field waypoint-field-wide">
-                    <label>Target</label>
-                    <div class="text-xs text-muted">Holds at previous task's target</div>
-                </div>`
-            : `
-                <div class="waypoint-field waypoint-field-wide">
-                    <label>Target</label>
-                    <div class="waypoint-target-row">
-                        <select class="property-input input-compact task-target-type-select" data-index="${index}">${typeOptions}</select>
-                        <select class="property-input input-compact task-target-id-select" data-index="${index}">${this.renderTargetOptions(targetType, targetId)}</select>
-                    </div>
-                </div>`;
+        const summaryHtml = `
+            <button type="button" class="task-summary" data-index="${index}" aria-expanded="${isExpanded}">
+                <span class="waypoint-ordinal">${index + 1}</span>
+                <span class="task-summary-chip task-summary-kind kind-${kind}">
+                    ${ti(KIND_ICON[kind])}
+                    <span>${KIND_LABEL[kind]}</span>
+                </span>
+                ${isDwell ? '' : `
+                    <span class="task-summary-chip task-summary-target" title="${targetName}">
+                        ${ti(TYPE_ICON[targetType])}
+                        <span class="task-summary-target-name">${targetName}</span>
+                    </span>
+                    <span class="task-summary-chip task-summary-direction">
+                        ${ti(DIR_ICON[direction])}
+                        <span>${DIR_LABEL[direction]}</span>
+                    </span>
+                `}
+                ${timeText ? `<span class="task-summary-time">${timeText}</span>` : ''}
+                ${viabilityHtml}
+                <span class="task-summary-toggle">${ti(isExpanded ? 'chevron-down' : 'chevron-right')}</span>
+            </button>
+        `;
 
-        let timingHtml = '';
-        if (isDwell) {
-            timingHtml = `
-                <div class="waypoint-field">
-                    <label>Hold (s)</label>
-                    <input type="number" min="0" step="1"
-                           class="property-input input-compact task-time-input"
-                           data-index="${index}" value="${task.task_time ?? ''}">
-                </div>`;
-        } else if (kind === 'stop') {
-            timingHtml = `
-                <div class="waypoint-field">
-                    <label>Travel (s)</label>
-                    <input type="number" min="0" step="1"
-                           class="property-input input-compact task-time-input"
-                           data-index="${index}" value="${task.task_time ?? ''}">
-                </div>
-                <div class="waypoint-field">
-                    <label>Depart at (epoch s)</label>
-                    <input type="number" min="0" step="1"
-                           class="property-input input-compact task-target-time-input"
-                           data-index="${index}" value="${task.target_time ?? ''}">
-                </div>`;
-        } else {
-            timingHtml = `
-                <div class="waypoint-field">
-                    <label>Travel (s)</label>
-                    <input type="number" min="0" step="1"
-                           class="property-input input-compact task-time-input"
-                           data-index="${index}" value="${task.task_time ?? ''}">
-                </div>`;
+        if (!isExpanded) {
+            return `<div class="waypoint-item waypoint-card" data-index="${index}">${summaryHtml}</div>`;
         }
 
-        const title = isDwell ? 'Dwell' : (this.getTargetDisplayName(targetType, targetId) || targetId || 'No target');
-        const lastIndex = (this.currentRoute.tasks?.length || 1) - 1;
-        const metaText = viabilityHtml ? `${cap(kind)} · ${viabilityHtml}` : cap(kind);
+        // Expanded body — Tier 1 (identity) + Tier 2 (quieter) + actions.
+        const targetRow = isDwell
+            ? `<div class="task-dwell-target-note">Holds at previous task's target</div>`
+            : `
+                <div class="task-field-row">
+                    <label>Type</label>
+                    ${typeSeg}
+                </div>
+                <div class="task-field-row">
+                    <label>Target</label>
+                    <select class="property-input input-compact task-target-id-select" data-index="${index}">${this.renderTargetOptions(targetType, targetId)}</select>
+                    <button class="btn btn-sm btn-secondary btn-icon-only locate-task-btn" data-index="${index}" title="Locate on map" aria-label="Locate on map">${ti('target')}</button>
+                    <button class="btn btn-sm btn-secondary btn-icon-only task-target-pick-btn" data-index="${index}" title="Pick element from map" aria-label="Pick element from map">${ti('pointer')}</button>
+                </div>`;
+
+        const timeLabel = isDwell ? 'Dwell' : 'Travel';
 
         return `
-            <div class="waypoint-item waypoint-card mb-8 p-8 bg-input rounded-lg" data-index="${index}">
-                <div class="waypoint-item-header">
-                    <div class="flex flex-col">
-                        <div class="flex items-center gap-8">
-                            <span class="waypoint-ordinal">${index + 1}</span>
-                            <span class="waypoint-title">${title}</span>
+            <div class="waypoint-item waypoint-card" data-index="${index}">
+                ${summaryHtml}
+                <div class="task-body">
+                    <div class="task-tier task-tier-primary">
+                        <div class="task-field-row">
+                            <label>Kind</label>
+                            ${kindSeg}
                         </div>
-                        <div class="text-xs text-muted mt-2">${metaText}</div>
-                    </div>
-                    <div class="waypoint-actions flex gap-4">
-                        <button class="btn btn-sm btn-secondary btn-icon-only locate-task-btn" data-index="${index}" title="Locate on map" aria-label="Locate on map">◎</button>
-                        <button class="btn btn-sm btn-secondary btn-icon-only move-task-up" data-index="${index}" ${index === 0 ? 'disabled' : ''} title="Move up" aria-label="Move up">↑</button>
-                        <button class="btn btn-sm btn-secondary btn-icon-only move-task-down" data-index="${index}" ${index >= lastIndex ? 'disabled' : ''} title="Move down" aria-label="Move down">↓</button>
-                        <button class="btn btn-sm btn-danger btn-icon-only delete-task" data-index="${index}" title="Remove task" aria-label="Remove task">×</button>
-                    </div>
-                </div>
-
-                <div class="waypoint-fields">
-                    <div class="waypoint-field">
-                        <label>Kind</label>
-                        <select class="property-input input-compact task-kind-select" data-index="${index}">${kindOptions}</select>
+                        ${targetRow}
                     </div>
 
-                    <div class="waypoint-field">
-                        <label>Direction</label>
-                        <select class="property-input input-compact task-direction-select" data-index="${index}">${dirOptions}</select>
+                    <div class="task-tier task-tier-secondary">
+                        <div class="task-field-row">
+                            <label>Direction</label>
+                            ${dirSeg}
+                        </div>
+                        <div class="task-field-row task-field-row-times">
+                            <label>${timeLabel}</label>
+                            <input type="number" min="0" step="1"
+                                   class="property-input input-compact task-time-input"
+                                   data-index="${index}" value="${task.task_time ?? ''}"
+                                   placeholder="seconds">
+                            <label class="task-sublabel">Depart</label>
+                            <input type="number" min="0" step="1"
+                                   class="property-input input-compact task-target-time-input"
+                                   data-index="${index}" value="${task.target_time ?? ''}"
+                                   placeholder="sim time">
+                        </div>
                     </div>
 
-                    ${targetHtml}
-
-                    ${timingHtml}
+                    <div class="task-actions-row">
+                        <button class="btn btn-sm btn-secondary btn-icon-only move-task-up" data-index="${index}" ${index === 0 ? 'disabled' : ''} title="Move up" aria-label="Move up">${ti('arrow-up')}</button>
+                        <button class="btn btn-sm btn-secondary btn-icon-only move-task-down" data-index="${index}" ${index >= lastIndex ? 'disabled' : ''} title="Move down" aria-label="Move down">${ti('arrow-down')}</button>
+                        <button class="btn btn-sm btn-danger delete-task" data-index="${index}" title="Remove task">${ti('trash')} Delete</button>
+                    </div>
                 </div>
             </div>
         `;
@@ -806,6 +858,70 @@ class RouteEditorHandler {
             `Route Editor: Highlighting task ${index + 1} (${label})`;
     }
 
+    /**
+     * Render one assigned-train row. Uses the rich `/status` payload (which
+     * the editor already fetched into `currentRouteStatus`) so we surface
+     * direction, current task kind, target, dwell remaining, and at-platform
+     * status instead of just a "Task N" label.
+     */
+    renderAssignedTrainRow(trainId, trainStatus) {
+        const tasks = this.currentRoute?.tasks || [];
+        const finishedIdx = trainStatus?.current_waypoint_index;
+        // current_waypoint_index per design is the largest *finished* walk
+        // position (or null). The next task being worked on is +1; clamp to
+        // the task count so circular/round-trip wrap reads sanely.
+        const nextIdx = trainStatus
+            ? ((finishedIdx ?? -1) + 1)
+            : null;
+
+        const cap = (s) => (typeof s === 'string' && s.length)
+            ? s.charAt(0).toUpperCase() + s.slice(1)
+            : '';
+
+        let taskLabel;
+        if (!trainStatus) {
+            taskLabel = '<span class="text-muted">Status unknown</span>';
+        } else if (nextIdx === null || tasks.length === 0) {
+            taskLabel = '<span class="text-muted">Queued</span>';
+        } else {
+            const taskNumber = (nextIdx % Math.max(tasks.length, 1)) + 1;
+            const kind = trainStatus.current_task_kind
+                ? cap(trainStatus.current_task_kind)
+                : 'Task';
+            // Resolve target name from the live task definition.
+            let targetName = '';
+            const loc = trainStatus.current_task_location || {};
+            if (loc.block_id) targetName = this.getTargetDisplayName('block', loc.block_id);
+            else if (loc.station_id) targetName = this.getTargetDisplayName('station', loc.station_id);
+            else if (loc.platform_id) targetName = this.getTargetDisplayName('platform', loc.platform_id);
+            const targetSuffix = targetName ? ` → ${targetName}` : '';
+            taskLabel = `<span>${kind} ${taskNumber}${targetSuffix}</span>`;
+        }
+
+        const extras = [];
+        if (trainStatus?.direction) extras.push(cap(trainStatus.direction));
+        if (trainStatus?.at_platform) extras.push('at platform');
+        if (trainStatus?.dwell_remaining_sec != null) {
+            extras.push(`dwell ${Math.round(trainStatus.dwell_remaining_sec)}s`);
+        }
+        const extrasHtml = extras.length
+            ? `<span class="text-muted">· ${extras.join(' · ')}</span>`
+            : '';
+
+        return `
+            <div class="p-8 bg-input rounded-lg mb-4">
+                <div class="flex justify-between items-center mb-6">
+                    <span class="font-mono text-white">${trainId}</span>
+                    <button class="btn btn-sm btn-danger unassign-train-btn" data-train-id="${trainId}">Unassign</button>
+                </div>
+                <div class="flex items-center gap-8 text-xs flex-wrap">
+                    ${taskLabel}
+                    ${extrasHtml}
+                </div>
+            </div>
+        `;
+    }
+
     renderTrainAssignmentSection() {
         const route = this.currentRoute;
         const assignedTrains = route.assigned_train_ids || [];
@@ -818,21 +934,7 @@ class RouteEditorHandler {
         if (assignedTrains.length > 0) {
             assignedHtml = '<div class="assigned-trains-list mb-12">';
             assignedTrains.forEach(trainId => {
-                const trainStatus = statusByTrainId.get(trainId);
-                const taskText = trainStatus
-                    ? `Task ${(trainStatus.current_waypoint_index ?? -1) + 1}`
-                    : 'Task ?';
-                assignedHtml += `
-                    <div class="p-8 bg-input rounded-lg mb-4">
-                        <div class="flex justify-between items-center mb-6">
-                            <span class="font-mono text-white">${trainId}</span>
-                            <button class="btn btn-sm btn-danger unassign-train-btn" data-train-id="${trainId}">Unassign</button>
-                        </div>
-                        <div class="flex items-center gap-8 text-xs">
-                            <span class="text-muted">${taskText}</span>
-                        </div>
-                    </div>
-                `;
+                assignedHtml += this.renderAssignedTrainRow(trainId, statusByTrainId.get(trainId));
             });
             assignedHtml += '</div>';
         } else {
@@ -937,6 +1039,16 @@ class RouteEditorHandler {
             toggleHistoryBtn.onclick = () => this.toggleHistory();
         }
 
+        // Route-mode segmented control — click toggles the active button.
+        // The value is read back at save() time from the .active button.
+        document.querySelectorAll('#route-mode-seg .switch-btn').forEach(btn => {
+            btn.onclick = (e) => {
+                const seg = e.currentTarget.parentElement;
+                seg.querySelectorAll('.switch-btn').forEach(b =>
+                    b.classList.toggle('active', b === e.currentTarget));
+            };
+        });
+
         // Task reorder/delete/locate buttons
         document.querySelectorAll('.move-task-up').forEach(btn => {
             btn.onclick = (e) => {
@@ -966,24 +1078,45 @@ class RouteEditorHandler {
             };
         });
 
-        // Task field handlers
-        document.querySelectorAll('.task-kind-select').forEach(select => {
-            select.onchange = (e) => {
-                const index = parseInt(e.target.dataset.index, 10);
+        // Tap the summary row to toggle expansion. Tracked on the task
+        // object via _taskExpanded so reorders don't shuffle which cards
+        // are open.
+        document.querySelectorAll('.task-summary').forEach(btn => {
+            btn.onclick = (e) => {
+                const index = parseInt(e.currentTarget.dataset.index, 10);
                 const task = this.currentRoute.tasks[index];
                 if (!task) return;
-                task.task_kind = e.target.value;
+                if (this._taskExpanded.has(task)) {
+                    this._taskExpanded.delete(task);
+                } else {
+                    this._taskExpanded.set(task, true);
+                }
+                this.rerenderRouteEditor();
+            };
+        });
+
+        // Task field handlers — kind / direction / target-type are
+        // segmented controls (per DESIGN_LANGUAGE.md §3); each .switch-btn
+        // click selects the value carried on its data-* attribute.
+        document.querySelectorAll('.task-kind-seg .switch-btn').forEach(btn => {
+            btn.onclick = (e) => {
+                const seg = e.currentTarget.closest('.task-kind-seg');
+                const index = parseInt(seg.dataset.index, 10);
+                const task = this.currentRoute.tasks[index];
+                if (!task) return;
+                task.task_kind = e.currentTarget.dataset.kind;
                 // kind change toggles target/timing controls — re-render.
                 this.rerenderRouteEditor();
             };
         });
 
-        document.querySelectorAll('.task-target-type-select').forEach(select => {
-            select.onchange = (e) => {
-                const index = parseInt(e.target.dataset.index, 10);
+        document.querySelectorAll('.task-target-type-seg .switch-btn').forEach(btn => {
+            btn.onclick = (e) => {
+                const seg = e.currentTarget.closest('.task-target-type-seg');
+                const index = parseInt(seg.dataset.index, 10);
                 const task = this.currentRoute.tasks[index];
                 if (!task) return;
-                const type = e.target.value;
+                const type = e.currentTarget.dataset.type;
                 const key = type === 'block' ? 'block_id'
                     : type === 'station' ? 'station_id' : 'platform_id';
                 task.task_location = { [key]: '' };
@@ -1006,11 +1139,15 @@ class RouteEditorHandler {
             };
         });
 
-        document.querySelectorAll('.task-direction-select').forEach(select => {
-            select.onchange = (e) => {
-                const index = parseInt(e.target.dataset.index, 10);
+        document.querySelectorAll('.task-direction-seg .switch-btn').forEach(btn => {
+            btn.onclick = (e) => {
+                const seg = e.currentTarget.closest('.task-direction-seg');
+                const index = parseInt(seg.dataset.index, 10);
                 const task = this.currentRoute.tasks[index];
-                if (task) task.task_direction = e.target.value;
+                if (!task) return;
+                task.task_direction = e.currentTarget.dataset.direction;
+                // Re-render so the summary line picks up the new direction.
+                this.rerenderRouteEditor();
             };
         });
 
@@ -1018,7 +1155,10 @@ class RouteEditorHandler {
             input.onchange = (e) => {
                 const index = parseInt(e.target.dataset.index, 10);
                 const task = this.currentRoute.tasks[index];
-                if (task) task.task_time = this._parseOptionalNumber(e.target.value);
+                if (!task) return;
+                task.task_time = this._parseOptionalNumber(e.target.value);
+                // Re-render so the summary line reflects the new duration.
+                this.rerenderRouteEditor();
             };
         });
 
@@ -1072,13 +1212,17 @@ class RouteEditorHandler {
      */
     addTask() {
         if (!Array.isArray(this.currentRoute.tasks)) this.currentRoute.tasks = [];
-        this.currentRoute.tasks.push({
+        const newTask = {
             task_kind: 'waypoint',
             task_location: { platform_id: '' },
             task_direction: 'either',
             task_time: null,
             target_time: null
-        });
+        };
+        this.currentRoute.tasks.push(newTask);
+        // Newly-added tasks open in the editing state so the user can fill
+        // them out immediately; everything else stays at rest.
+        this._taskExpanded.set(newTask, true);
         this.rerenderRouteEditor();
     }
 
@@ -1466,14 +1610,18 @@ class RouteEditorHandler {
         tasks.forEach((task, idx) => {
             if (task.task_kind === 'dwell') return;
             const loc = this._taskLocationOrNull(task);
-            if (loc) movement.push({ idx, loc });
+            if (loc) movement.push({ idx, loc, direction: task.task_direction || 'either' });
         });
 
         if (movement.length < 2) return;
 
         const pairs = [];
         for (let i = 1; i < movement.length; i++) {
-            pairs.push([movement[i - 1].loc, movement[i].loc]);
+            pairs.push({
+                from: movement[i - 1].loc,
+                to: movement[i].loc,
+                direction: movement[i].direction,
+            });
         }
 
         try {
@@ -1492,13 +1640,14 @@ class RouteEditorHandler {
      */
     async saveRoute() {
         const nameInput = document.getElementById('route-name-input');
-        const modeSelect = document.getElementById('route-mode-select');
+        const modeSeg = document.getElementById('route-mode-seg');
 
         if (nameInput) {
             this.currentRoute.name = nameInput.value;
         }
-        if (modeSelect) {
-            this.currentRoute.mode = modeSelect.value;
+        if (modeSeg) {
+            const active = modeSeg.querySelector('.switch-btn.active');
+            if (active) this.currentRoute.mode = active.dataset.mode;
         }
 
         const src = this.currentRoute.tasks || [];

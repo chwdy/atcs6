@@ -9,6 +9,70 @@
  */
 
 // ============================================================================
+// BLOCK-RELATIVE DIRECTION FORMATTING
+// ============================================================================
+
+/**
+ * Format a block-relative direction ("forward" / "reverse" / "either") as a
+ * decorated label that also surfaces the concrete map heading.
+ *
+ * `direction` values come from the backend per `design_new.md`:
+ *   - "forward" / "reverse" — block-relative tokens, resolved via
+ *     `Block.ordered_tiles` adjacency (`BlockManager.direction_info(...)`).
+ *   - "either" — author-level preference; carries no concrete geometry.
+ *
+ * Forms produced (per the choice in this UI pass):
+ *   - `compact` ("F·E", "R·N", "↔")        — for tight chips
+ *   - `full`    ("F-(5,3)-E", "R-(2,0)-N") — for tooltips and detail rows
+ *
+ * When geometry isn't available (no block picked yet, "either" preference,
+ * or backend couldn't resolve), the helper falls back to a single-letter
+ * prefix ("F" / "R" / "↔") so the UI never shows a bare "forward".
+ *
+ * Inputs:
+ *   - direction: "forward" | "reverse" | "either" | null
+ *   - terminalTile: [x, y] | null         — last-traversed tile in that direction
+ *   - terminalHeading: "N"|"E"|"S"|"W"|null — compass exit edge
+ *   - opts:
+ *       - form: "compact" | "full" (default: "compact")
+ *       - emDash: string used when direction is null (default: "—")
+ *
+ * Examples:
+ *   formatBlockDirection("forward", [5,3], "E")            -> "F·E"
+ *   formatBlockDirection("forward", [5,3], "E", {form:"full"}) -> "F-(5,3)-E"
+ *   formatBlockDirection("reverse", null, null)            -> "R"
+ *   formatBlockDirection("either")                          -> "↔"
+ *   formatBlockDirection(null)                              -> "—"
+ */
+function formatBlockDirection(direction, terminalTile, terminalHeading, opts) {
+    const form = (opts && opts.form) || 'compact';
+    const emDash = (opts && opts.emDash) || '—';
+
+    if (!direction) return emDash;
+    const lower = String(direction).toLowerCase();
+
+    if (lower === 'either') return '↔';
+
+    const prefix = lower === 'forward' ? 'F'
+                 : lower === 'reverse' ? 'R'
+                 : null;
+    if (prefix === null) return String(direction);
+
+    const hasGeom = Array.isArray(terminalTile)
+        && terminalTile.length === 2
+        && terminalHeading;
+    if (!hasGeom) return prefix;
+
+    const [tx, ty] = terminalTile;
+    const heading = String(terminalHeading).toUpperCase();
+
+    if (form === 'full') {
+        return `${prefix}-(${tx},${ty})-${heading}`;
+    }
+    return `${prefix}·${heading}`;
+}
+
+// ============================================================================
 // INTERNAL HELPERS
 // ============================================================================
 

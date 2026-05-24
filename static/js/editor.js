@@ -77,6 +77,7 @@ class Editor {
         this.trainHandler = new TrainEditorHandler(this);
         this.pathHandler = new PathEditorHandler(this);
         this.routeHandler = new RouteEditorHandler(this);
+        this.routeRunHandler = new RouteRunEditorHandler(this);
         this.switchHandler = new SwitchEditorHandler(this);
         this.uiHandler = new EditorUIHandler(this);
         
@@ -195,6 +196,13 @@ class Editor {
                 if (!id) return false;
                 await this.routeHandler.showRouteEditor(id);
                 return true;
+            case 'route-runs-list':
+                await this.routeRunHandler.showRouteRunsPanel();
+                return true;
+            case 'route-run-editor':
+                if (!id) return false;
+                await this.routeRunHandler.showRouteRunEditor(parseInt(id, 10));
+                return true;
             default:
                 return false;
         }
@@ -257,6 +265,13 @@ class Editor {
                 return [
                     { label: 'Routes', editorType: 'routes-list', editorId: null },
                     { label: id || 'Route', editorType: 'route-editor', editorId: id },
+                ];
+            case 'route-runs-list':
+                return [{ label: 'Route Runs', editorType: 'route-runs-list', editorId: null }];
+            case 'route-run-editor':
+                return [
+                    { label: 'Route Runs', editorType: 'route-runs-list', editorId: null },
+                    { label: id ? `#${id}` : 'Run', editorType: 'route-run-editor', editorId: id },
                 ];
             case 'station-group-list':
             case 'station-group':
@@ -329,11 +344,13 @@ class Editor {
             case 'extend-path-setup':
             case 'paths-list':
             case 'routes-list':
+            case 'route-runs-list':
                 // List and transient panels don't need IDs - always valid
                 itemExists = true;
                 break;
             case 'path':
             case 'route-editor':
+            case 'route-run-editor':
                 // These editor types need IDs but we'll mark as always valid for now
                 // (proper validation would require checking if path/route still exists)
                 if (!id) return;
@@ -463,6 +480,7 @@ class Editor {
             'train-panel':     () => this.showTrainsPanel(),
             'schedules-panel': () => this.showSchedulesPanel(),
             'routes-panel':    () => this.showRoutesPanel(),
+            'route-runs-panel':() => this.routeRunHandler.showRouteRunsPanel(),
             'new-route':       () => this.routeHandler.createNewRoute(),
             'stations-panel':  () => this.showStationsPanel(),
         };

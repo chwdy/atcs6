@@ -130,6 +130,28 @@ def register(app, state: AppState) -> None:
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+    def _enrich_path_with_direction(payload: dict) -> dict:
+        """Add `terminal_tile` + `terminal_heading` to a path payload.
+
+        The block-relative `requested_destination_direction` is resolved
+        through `BlockManager.direction_info` (per `design_new.md`
+        "Block model" — `Block.ordered_tiles` is the canonical geometry)
+        so the UI can render the decorated `F-(x,y)-E` label without a
+        second fetch. Read-only enrichment.
+        """
+        block_id = payload.get("authority_end_block_id") or payload.get(
+            "requested_destination_block_id"
+        )
+        direction = payload.get("requested_destination_direction")
+        if not block_id or not direction:
+            payload["terminal_tile"] = None
+            payload["terminal_heading"] = None
+            return payload
+        info = state.network.block_manager.direction_info(block_id, direction)
+        payload["terminal_tile"] = info["terminal_tile"] if info else None
+        payload["terminal_heading"] = info["terminal_heading"] if info else None
+        return payload
+
     @app.route("/api/paths", methods=["GET"])
     def list_paths():
         """List all active paths.
@@ -157,9 +179,8 @@ def register(app, state: AppState) -> None:
         if status:
             paths = [p for p in paths if p.status.value == status]
 
-        return jsonify(
-            {"paths": [p.to_dict() for p in paths], "count": len(paths)}
-        )
+        out = [_enrich_path_with_direction(p.to_dict()) for p in paths]
+        return jsonify({"paths": out, "count": len(out)})
 
     @app.route("/api/paths/<path_id>", methods=["GET"])
     def get_path(path_id):
@@ -168,7 +189,7 @@ def register(app, state: AppState) -> None:
             path = state.path_dispatcher.get_path(path_id)
         if not path:
             return jsonify({"error": f"Path {path_id} not found"}), 404
-        return jsonify(path.to_dict())
+        return jsonify(_enrich_path_with_direction(path.to_dict()))
 
     @app.route("/api/paths/<path_id>", methods=["DELETE"])
     def cancel_path(path_id):

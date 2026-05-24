@@ -260,9 +260,20 @@ def test_history_shape_for_fresh_route(client, connected_network):
     resp = client.get("/api/train-routes/RT_HIST/history")
     assert resp.status_code == 200
     body = resp.get_json()
-    assert set(body.keys()) == {"route_id", "activated_at", "is_active", "runs"}
-    # A route that has never run nor activated: no timestamp, no runs.
+    assert set(body.keys()) == {
+        "route_id",
+        "activated_at",
+        "created_at",
+        "last_edited_at",
+        "is_active",
+        "runs",
+    }
+    # A route that has never run nor activated: no activation timestamp,
+    # no runs. created_at is set at construction; last_edited_at is set
+    # because the POST request supplied definition fields (name/mode/tasks).
     assert body["activated_at"] is None
+    assert body["created_at"] is not None and body["created_at"] > 0
+    assert body["last_edited_at"] is not None and body["last_edited_at"] > 0
     assert body["is_active"] is False
     assert body["runs"] == []
 

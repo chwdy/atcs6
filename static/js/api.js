@@ -1066,10 +1066,14 @@ class API {
 
     /**
      * Check viability between consecutive route-task target pairs.
-     * @param {Array} pairs - Array of [fromTarget, toTarget] pairs, where each
-     *   target is a canonical location dict ({block_id}/{platform_id}/{station_id})
-     *   or a bare platform-id string.
-     * @returns {Promise<object>} Viability results ({results: [{from,to,viable,hop_count?,error?}]})
+     * @param {Array} pairs - Array of pair objects. Each pair is either
+     *   ``{from, to, direction}`` (preferred) or the legacy ``[from, to]``
+     *   list form (server treats that as direction="either"). Targets are
+     *   canonical location dicts ({block_id}/{platform_id}/{station_id}).
+     *   ``direction`` is the destination task's terminal direction:
+     *   "forward" | "reverse" | "either".
+     * @returns {Promise<object>} Viability results
+     *   ({results: [{from,to,viable,hop_count?,distance_cm?,direction?,error?}]}).
      */
     async checkViability(pairs) {
         return this._request('/train-routes/check-viability', {
@@ -1102,6 +1106,28 @@ class API {
      */
     async getRouteHistory(routeId) {
         return this._request(`/train-routes/${encodeURIComponent(routeId)}/history`, {}, 'getRouteHistory');
+    }
+
+    /**
+     * List every `RouteRun` across every route — live and historical.
+     * Returns one summary per run (run_number, train, route, state,
+     * direction, started_at, task counts, last_error).
+     * @returns {Promise<Array>} List of route-run summaries
+     */
+    async getRouteRuns() {
+        const result = await this._request('/route-runs', {}, 'getRouteRuns');
+        return result?.route_runs || [];
+    }
+
+    /**
+     * Get a single `RouteRun` by `run_number`, with per-task detail
+     * (task_index, kind, target, resolved target, started/finished, delay
+     * class, last_error).
+     * @param {number} runNumber - The composite RouteRun.run_number id.
+     * @returns {Promise<object>} Full RouteRun payload with `tasks`.
+     */
+    async getRouteRun(runNumber) {
+        return this._request(`/route-runs/${runNumber}`, {}, 'getRouteRun');
     }
 
     /**

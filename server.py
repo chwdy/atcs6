@@ -95,7 +95,7 @@ def run_startup_tests():
     print("-" * 70)
     try:
         result = subprocess.run(
-            ["python3", "-m", "pytest", "tests/test_backend.py", "-v", "--tb=short"],
+            [sys.executable, "-m", "pytest", "tests/test_backend.py", "-v", "--tb=short"],
             capture_output=True,
             text=True,
             timeout=60,

@@ -382,10 +382,17 @@ class PathEditorHandler {
             : 0;
         const statusText = path.status.toUpperCase();
         const direction = path.requested_destination_direction || 'forward';
-        const directionLabel = direction === 'reverse' ? '◀' : '▶';
         const destination = path.authority_end_block_id
             || path.requested_destination_block_id
             || '—';
+        // Decorated direction label per design_new.md "Block model": the
+        // block-relative `forward`/`reverse` tokens are paired with the
+        // concrete terminal-tile + cardinal heading so operators can read
+        // the actual map heading at a glance.
+        const dirTile = path.terminal_tile || null;
+        const dirHeading = path.terminal_heading || null;
+        const directionLabel = formatBlockDirection(direction, dirTile, dirHeading);
+        const directionFull = formatBlockDirection(direction, dirTile, dirHeading, { form: 'full' });
 
         return `
             <div class="path-row ${statusClass} mb-8">
@@ -395,7 +402,7 @@ class PathEditorHandler {
                         <div class="text-xxs font-bold uppercase tracking-wider path-status-label">
                             ${statusText}
                         </div>
-                        <div class="text-xxs font-bold text-muted path-priority-tag" title="Direction">${directionLabel}</div>
+                        <div class="text-xxs font-bold text-muted path-priority-tag font-mono" title="Direction: ${directionFull} · raw=${direction}">${directionLabel}</div>
                     </div>
                     <div class="train-info flex-1 path-row-content">
                         <div class="flex flex-col gap-1 mb-6">
@@ -540,6 +547,12 @@ class PathEditorHandler {
         const destination = path.authority_end_block_id
             || path.requested_destination_block_id
             || '—';
+        // Decorated direction (see formatBlockDirection): the block-relative
+        // token is paired with the concrete terminal-tile + cardinal heading.
+        const detailDirTile = path.terminal_tile || null;
+        const detailDirHeading = path.terminal_heading || null;
+        const detailDirCompact = formatBlockDirection(direction, detailDirTile, detailDirHeading);
+        const detailDirFull = formatBlockDirection(direction, detailDirTile, detailDirHeading, { form: 'full' });
 
         const resourceListHtml = resources.map((resource, i) => {
             const isCurrent = i === currentIndex;
@@ -564,7 +577,7 @@ class PathEditorHandler {
                 <div class="info-box-track mb-12 info-display-large">
                     <div class="flex justify-between items-start mb-4">
                         <span class="info-label text-muted">Status</span>
-                        <span class="info-meta">${direction === 'reverse' ? '◀ Reverse' : '▶ Forward'}</span>
+                        <span class="info-meta font-mono" title="Direction: ${detailDirFull} · raw=${direction}">${detailDirCompact}</span>
                     </div>
 
                     <div class="text-2xl font-bold mb-6 font-mono path-status-title ${statusClass}">

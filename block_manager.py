@@ -21,7 +21,7 @@ State Descriptions:
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Dict, List, Mapping, Set, Tuple, TYPE_CHECKING
+from typing import Any, Optional, Dict, List, Mapping, Set, Tuple, TYPE_CHECKING
 
 from block import Block, BlockState, CautionState
 from runtime_payloads import (
@@ -341,6 +341,51 @@ class BlockManager:
         """Return the computed state for a block, or `None` if unknown."""
         block = self._block_registry.get(block_id)
         return block.state if block else None
+
+    def direction_info(
+        self, block_id: str, direction: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve a block-relative `"forward"`/`"reverse"` direction to the
+        concrete terminal tile and cardinal exit heading.
+
+        Per design_new.md "Block model" — `Block.ordered_tiles` is the
+        canonical traversal order; the forward terminal is the last entry
+        and the reverse terminal is the first entry. The compass exit edge
+        for that traversal is computed by `Block._resolve_reservation_direction`,
+        which uses the adjacency between the last two (or first two) entries.
+
+        Returns ``None`` when:
+          - the block is unknown
+          - the direction token is missing / unrecognized
+          - the block lacks geometry to disambiguate (no `ordered_tiles`)
+
+        Otherwise returns a dict with:
+          - ``terminal_tile``: ``[x, y]`` of the terminal tile in that direction
+          - ``terminal_heading``: ``"N"|"E"|"S"|"W"`` — the compass exit edge
+
+        Used by the UI to render decorated direction labels (`F-(x,y)-E`)
+        so operators can see the concrete map heading next to the
+        block-relative token.
+        """
+        block = self._block_registry.get(block_id)
+        if block is None or not block.ordered_tiles:
+            return None
+        if direction is None:
+            return None
+
+        token = str(direction).strip().lower()
+        if token not in ("forward", "reverse"):
+            return None
+
+        heading = block._resolve_reservation_direction(token)
+        if heading is None:
+            return None
+
+        terminal = block.ordered_tiles[-1] if token == "forward" else block.ordered_tiles[0]
+        return {
+            "terminal_tile": [int(terminal[0]), int(terminal[1])],
+            "terminal_heading": str(heading).upper(),
+        }
 
     def get_block_occupant(self, block_id: str) -> Optional[str]:
         """Return the train ID currently in a block, or `None`."""

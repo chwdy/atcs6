@@ -123,6 +123,74 @@ class RailwayPathfinder:
             candidates = candidates[:max_candidates]
         return candidates
 
+    def get_reachable_endpoints(
+        self, start_block_id: str, include_stations: bool = True
+    ) -> List[str]:
+        """All blocks (and optionally stations) topologically reachable
+        from ``start_block_id`` via tile-by-tile BFS.
+
+        Walks through switch tiles (which have ``block_section_id = None``)
+        instead of treating them as barriers. Does not consult current
+        switch state and does not apply ``Block.allowed_travel_directions``;
+        use ``find_ordered_walk`` when direction filtering matters.
+        """
+        if start_block_id not in self.network.blocks:
+            return []
+
+        start_positions = self.network.get_block_positions(start_block_id)
+        if not start_positions:
+            return []
+
+        reachable_blocks: Set[str] = set()
+        visited: Set[Tuple[int, int, str]] = set()
+
+        for pos in start_positions:
+            track = self.network.get_track(*pos)
+            if not track:
+                continue
+            for edge in track.edges:
+                neighbor = self.network.get_neighbor(*pos, edge)
+                if neighbor and neighbor.block_section_id != start_block_id:
+                    queue: deque = deque([(pos[0], pos[1], edge)])
+                    while queue:
+                        curr_x, curr_y, exit_edge = queue.popleft()
+                        step = (curr_x, curr_y, exit_edge)
+                        if step in visited:
+                            continue
+                        visited.add(step)
+                        if len(visited) > 1000:
+                            break
+                        offset = EDGE_OFFSETS.get(exit_edge)
+                        if not offset:
+                            continue
+                        dx, dy = offset
+                        next_x, next_y = curr_x + dx, curr_y + dy
+                        next_track = self.network.get_track(next_x, next_y)
+                        if not next_track:
+                            continue
+                        next_block_id = next_track.block_section_id
+                        if next_block_id and next_block_id != start_block_id:
+                            reachable_blocks.add(next_block_id)
+                        entry_edge = OPPOSITE_EDGE.get(exit_edge)
+                        if not entry_edge or entry_edge not in next_track.edges:
+                            continue
+                        all_exits = next_track.get_exits(
+                            entry_edge, use_switch_state=False
+                        )
+                        for next_exit in all_exits:
+                            queue.append((next_x, next_y, next_exit))
+
+        result = list(reachable_blocks)
+        if include_stations:
+            for station_id, station in self.network.stations.items():
+                for pos in station.positions:
+                    track = self.network.get_track(*pos)
+                    if track and track.block_section_id in reachable_blocks:
+                        if station_id not in result:
+                            result.append(station_id)
+                        break
+        return result
+
     # ------------------------------------------------------------------ private
 
     def _bfs_walks(

@@ -164,6 +164,9 @@
                             <button class="tool-btn" data-tool="routes-panel" title="Train Route Editor">
                                 <i class="ti ti-map-route tool-icon"></i> Routes
                             </button>
+                            <button class="tool-btn" data-tool="route-runs-panel" title="View Route Runs">
+                                <i class="ti ti-list-details tool-icon"></i> Runs
+                            </button>
                             <button class="tool-btn" data-tool="schedules-panel" title="View Schedules">
                                 <i class="ti ti-calendar tool-icon"></i> Schedules
                             </button>
@@ -392,11 +395,58 @@
         </div>
     </div>
 
+    <!-- Save Layout Modal -->
+    <div id="save-layout-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Save Layout</h3>
+                <button class="close-btn" data-close-modal>&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="layout-name">Layout Name</label>
+                    <input type="text" id="layout-name" placeholder="Enter layout name..." />
+                </div>
+                <div class="form-group">
+                    <label for="layout-description">Description (optional)</label>
+                    <textarea id="layout-description" placeholder="Enter description..." rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Or overwrite existing layout:</label>
+                    <div id="save-layouts-list" class="layouts-list layouts-list-compact">
+                        <p class="loading-text">Loading...</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-close-modal>Cancel</button>
+                <button class="btn btn-primary" id="btn-confirm-save">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Load Layout Modal -->
+    <div id="load-layout-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Load Layout</h3>
+                <button class="close-btn" data-close-modal>&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="layouts-list" class="layouts-list">
+                    <p class="loading-text">Loading layouts...</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-close-modal>Cancel</button>
+            </div>
+        </div>
+    </div>
 
     <script src="js/constants.js?v=15"></script>
-    <script src="js/api.js?v=16"></script>
+    <script src="js/api.js?v=17"></script>
     <script src="js/state-manager.js?v=15"></script>
-    <script src="js/helpers.js?v=15"></script>
+    <script src="js/helpers.js?v=17"></script>
     <script src="js/pathfinders.js?v=15"></script>
     <script src="js/renderer-tracks.js?v=15"></script>
     <script src="js/renderer-signals.js?v=15"></script>
@@ -411,10 +461,11 @@
     <script src="js/editor-signals.js?v=15"></script>
     <script src="js/editor-switches.js?v=15"></script>
     <script src="js/editor-trains.js?v=20"></script>
-    <script src="js/editor-paths.js?v=15"></script>
-    <script src="js/editor-routes.js?v=16"></script>
+    <script src="js/editor-paths.js?v=17"></script>
+    <script src="js/editor-routes.js?v=18"></script>
+    <script src="js/editor-route-runs.js?v=3"></script>
     <script src="js/editor-ui.js?v=15"></script>
-    <script src="js/editor.js?v=16"></script>
+    <script src="js/editor.js?v=17"></script>
     <script src="js/train-monitor.js?v=20"></script>
     <script src="js/scenario-recorder.js?v=15"></script>
     <script src="js/app.js?v=15"></script>

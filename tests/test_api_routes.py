@@ -802,6 +802,111 @@ class TestRouteRedesignApis:
         assert data["results"][0]["from"] == "PLT_A"
         assert data["results"][0]["to"] == "PLT_B"
 
+    def test_viability_dict_payload_with_direction(self, client, app_state):
+        """New payload shape {from, to, direction} resolves correctly and
+        response carries hop_count, distance_cm, and resolved direction."""
+        self._setup_connected_platforms(app_state, client)
+        resp = client.post(
+            "/api/train-routes/check-viability",
+            json={"pairs": [
+                {"from": "PLT_A", "to": "PLT_B", "direction": "either"}
+            ]},
+        )
+        assert resp.status_code == 200
+        result = resp.get_json()["results"][0]
+        assert result["viable"] is True
+        assert result["hop_count"] >= 1
+        assert result["distance_cm"] > 0
+        assert result["direction"] in ("forward", "reverse")
+
+    def test_viability_traverses_switch_tile(self, client, app_state):
+        """Switch-barrier regression: blocks separated by a tile whose
+        ``block_section_id`` is None (the way switches are modeled in v1)
+        must still be reachable. The legacy ``build_block_graph``
+        treated such tiles as graph barriers and chopped the network into
+        disconnected components, marking valid pairs unviable."""
+        network = app_state.network
+        for x in range(5):
+            network.add_track(TrackSegment(x=x, y=0, track_bits=2))
+        # (2,0) is intentionally left out of both blocks; it has track
+        # geometry but no block_section_id — the same shape a switch tile
+        # has in v1.
+        network.create_block_with_tracks(
+            block_id="BLK_LEFT",
+            positions=[(0, 0), (1, 0)],
+            name="Left",
+        )
+        network.create_block_with_tracks(
+            block_id="BLK_RIGHT",
+            positions=[(3, 0), (4, 0)],
+            name="Right",
+        )
+
+        resp = client.post(
+            "/api/train-routes/check-viability",
+            json={"pairs": [{
+                "from": {"block_id": "BLK_LEFT"},
+                "to": {"block_id": "BLK_RIGHT"},
+                "direction": "either",
+            }]},
+        )
+        assert resp.status_code == 200
+        result = resp.get_json()["results"][0]
+        assert result["viable"] is True, (
+            f"BLK_LEFT → BLK_RIGHT should traverse the unblocked tile; "
+            f"got {result}"
+        )
+        assert result["hop_count"] >= 1
+        assert result["distance_cm"] > 0
+        assert result["direction"] in ("forward", "reverse")
+
+    def test_viability_unreachable_blocks(self, client, app_state):
+        """Truly disconnected blocks return viable=False with a No-path
+        error and the requested direction is echoed back."""
+        network = app_state.network
+        network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        network.add_track(TrackSegment(x=10, y=0, track_bits=2))
+        network.create_block_with_tracks(
+            block_id="BLK_X",
+            positions=[(0, 0)],
+            name="X",
+        )
+        network.create_block_with_tracks(
+            block_id="BLK_Y",
+            positions=[(10, 0)],
+            name="Y",
+        )
+
+        resp = client.post(
+            "/api/train-routes/check-viability",
+            json={"pairs": [{
+                "from": {"block_id": "BLK_X"},
+                "to": {"block_id": "BLK_Y"},
+                "direction": "forward",
+            }]},
+        )
+        assert resp.status_code == 200
+        result = resp.get_json()["results"][0]
+        assert result["viable"] is False
+        assert "No path found" in (result.get("error") or "")
+        assert result.get("requested_direction") == "forward"
+
+    def test_viability_self_pair_is_trivially_viable(self, client, app_state):
+        """A pair whose from-block and to-block resolve to the same
+        block is viable with zero hops and zero distance."""
+        self._setup_connected_platforms(app_state, client)
+        resp = client.post(
+            "/api/train-routes/check-viability",
+            json={"pairs": [{
+                "from": "PLT_A", "to": "PLT_A", "direction": "either"
+            }]},
+        )
+        assert resp.status_code == 200
+        result = resp.get_json()["results"][0]
+        assert result["viable"] is True
+        assert result["hop_count"] == 0
+        assert result["distance_cm"] == 0.0
+
 # ============================================================================
 # Summary
 # ============================================================================

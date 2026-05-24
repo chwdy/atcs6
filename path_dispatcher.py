@@ -266,63 +266,17 @@ class PathDispatcher:
     def get_reachable_endpoints(
         self, start_block_id: str, include_stations: bool = True
     ) -> List[str]:
-        """All blocks/stations reachable from a starting block via BFS."""
-        if start_block_id not in self.network.blocks:
-            return []
+        """Topological reachable-endpoints from ``start_block_id``.
 
-        start_positions = self.network.get_block_positions(start_block_id)
-        if not start_positions:
-            return []
-
-        reachable_blocks: Set[str] = set()
-        visited: Set[Tuple[int, int, str]] = set()
-
-        for pos in start_positions:
-            track = self.network.get_track(*pos)
-            if not track:
-                continue
-            for edge in track.edges:
-                neighbor = self.network.get_neighbor(*pos, edge)
-                if neighbor and neighbor.block_section_id != start_block_id:
-                    queue = deque([(pos[0], pos[1], edge)])
-                    while queue:
-                        curr_x, curr_y, exit_edge = queue.popleft()
-                        state = (curr_x, curr_y, exit_edge)
-                        if state in visited:
-                            continue
-                        visited.add(state)
-                        if len(visited) > 1000:
-                            break
-                        offset = EDGE_OFFSETS.get(exit_edge)
-                        if not offset:
-                            continue
-                        dx, dy = offset
-                        next_x, next_y = curr_x + dx, curr_y + dy
-                        next_track = self.network.get_track(next_x, next_y)
-                        if not next_track:
-                            continue
-                        next_block_id = next_track.block_section_id
-                        if next_block_id and next_block_id != start_block_id:
-                            reachable_blocks.add(next_block_id)
-                        entry_edge = OPPOSITE_EDGE.get(exit_edge)
-                        if not entry_edge or entry_edge not in next_track.edges:
-                            continue
-                        all_exits = next_track.get_exits(
-                            entry_edge, use_switch_state=False
-                        )
-                        for next_exit in all_exits:
-                            queue.append((next_x, next_y, next_exit))
-
-        result = list(reachable_blocks)
-        if include_stations:
-            for station_id, station in self.network.stations.items():
-                for pos in station.positions:
-                    track = self.network.get_track(*pos)
-                    if track and track.block_section_id in reachable_blocks:
-                        if station_id not in result:
-                            result.append(station_id)
-                        break
-        return result
+        Thin wrapper over the canonical
+        ``RailwayPathfinder.get_reachable_endpoints`` — the dispatcher
+        keeps this entry point for existing callers; the traversal
+        itself lives in the pathfinder home (design_new.md
+        "Pathfinding-home migration").
+        """
+        return self._pathfinder.get_reachable_endpoints(
+            start_block_id, include_stations
+        )
 
     def get_reachable_endpoints_for_extension(
         self, path_id: str, include_stations: bool = True
