@@ -2,31 +2,24 @@
 Train-Route Routes - CRUD on Route definitions, activation/deactivation,
 per-train status, run history, and target-pair viability checks.
 
-Route *runs* (the live RouteRun list) live in `route_runs.py` — this module
+Route *runs* (the live RouteRun list) live in `route_runs.py` -- this module
 deals with the route *definitions* and their immediate lifecycle.
+
+The CRUD endpoints delegate to `services.train_route_service`; this module
+parses JSON, calls the service, and formats the response. Service
+exceptions are translated to HTTP status codes here (ValidationError -> 400,
+NotFoundError -> 404).
 """
 
-import time
-import uuid
 from typing import Optional
 
 from flask import jsonify, request
 
 from app_state import AppState
 from enums import TrainState
-from train_route import Route, RouteTask
-
-
-def _coerce_route_task(item: dict) -> RouteTask:
-    """Build a RouteTask from a JSON request item.
-
-    Requires the v1 shape: ``task_kind`` (``"waypoint"|"stop"|"dwell"``) and
-    ``task_location`` as the structured dict form
-    ``{"block_id"|"platform_id"|"station_id": "..."}``. Other fields
-    (``task_direction``, ``task_time``, ``target_time``) follow the
-    ``RouteTask`` schema.
-    """
-    return RouteTask.from_dict(dict(item or {}))
+from services import NotFoundError, ValidationError
+from services import train_route_service
+from train_route import RouteTask
 
 
 def register(app, state: AppState) -> None:
@@ -34,57 +27,38 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/train-routes", methods=["GET"])
     def list_train_routes():
-        routes = []
-        for route in state.sim_controller.route_executor.route_registry.values():
-            routes.append(route.to_dict())
+        routes = [r.to_dict() for r in train_route_service.list_routes(state)]
         return jsonify({"routes": routes})
 
     @app.route("/api/train-routes", methods=["POST"])
     def create_train_route():
-        from train_route import RouteMode
-
         data = request.get_json() or {}
-
-        route_id = data.get("route_id") or f"ROUTE-{uuid.uuid4().hex[:6].upper()}"
-        name = data.get("name", "")
-        mode_str = data.get("mode", "one_off")
-
-        try:
-            mode = RouteMode(mode_str)
-        except ValueError:
-            mode_map = {
-                "one_way": RouteMode.ONE_OFF,
-                "loop": RouteMode.CIRCULAR,
-            }
-            mode = mode_map.get(mode_str, RouteMode.ONE_OFF)
-
-        route = Route(route_id=route_id, name=name, mode=mode)
 
         # Per design_new.md "Route edit timestamps": bump last_edited_at if any
         # of the five edit fields (name/tasks/mode/priority/acquisition_mode)
         # was actually supplied. A bare create with only route_id leaves it None.
         edit_fields_present = any(
-            k in data for k in ("name", "tasks", "mode", "priority", "acquisition_mode")
+            k in data for k in train_route_service.EDIT_FIELDS
         )
 
-        for task_data in data.get("tasks", []):
-            route.add_task(_coerce_route_task(task_data))
-
-        assigned_train_ids = data.get("assigned_train_ids", [])
-        for train_id in assigned_train_ids:
-            if train_id in state.network.trains:
-                route.assign_train(train_id)
-
-        if edit_fields_present:
-            route.last_edited_at = time.time()
-
-        state.sim_controller.route_executor.register_route(route)
+        try:
+            route = train_route_service.create_route(
+                state,
+                route_id=data.get("route_id"),
+                name=data.get("name", ""),
+                mode=data.get("mode", "one_off"),
+                tasks=data.get("tasks", []),
+                assigned_train_ids=data.get("assigned_train_ids", []),
+                edit_fields_present=edit_fields_present,
+            )
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
 
         return jsonify({"status": "success", "route": route.to_dict()})
 
     @app.route("/api/train-routes/<route_id>", methods=["GET"])
     def get_train_route(route_id):
-        route = state.sim_controller.route_executor.route_registry.get(route_id)
+        route = train_route_service.get_route(state, route_id)
         if not route:
             return jsonify({"error": "Route not found"}), 404
         return jsonify(route.to_dict())
@@ -114,137 +88,72 @@ def register(app, state: AppState) -> None:
             400 Bad Request if validation fails
             404 Not Found if route doesn't exist
         """
-        from train_route import RouteMode
+        data = request.json or {}
 
         with state.simulation_lock:
-            route = state.sim_controller.route_executor.route_registry.get(route_id)
-            if not route:
-                return jsonify({"error": f"Route '{route_id}' not found"}), 404
+            try:
+                route = train_route_service.update_route(
+                    state,
+                    route_id,
+                    name=data["name"] if "name" in data else None,
+                    mode=data["mode"] if "mode" in data else None,
+                    tasks=data["tasks"] if "tasks" in data else None,
+                    priority=data["priority"] if "priority" in data else None,
+                    acquisition_mode=(
+                        data["acquisition_mode"]
+                        if "acquisition_mode" in data
+                        else None
+                    ),
+                    assigned_train_ids=(
+                        data["assigned_train_ids"]
+                        if "assigned_train_ids" in data
+                        else None
+                    ),
+                )
+            except NotFoundError as exc:
+                return jsonify({"error": str(exc)}), 404
+            except ValidationError as exc:
+                return jsonify({"error": str(exc)}), 400
 
-            data = request.json or {}
-
-            # Per design_new.md "Route edit timestamps": bump last_edited_at iff
-            # at least one of the five definition-edit fields is actually
-            # written. assigned_train_ids changes are explicitly excluded.
-            definition_edit_touched = False
-
-            if "name" in data:
-                route.name = data["name"]
-                definition_edit_touched = True
-
-            if "mode" in data:
-                mode_str = data["mode"]
-                try:
-                    route.mode = RouteMode(mode_str)
-                except ValueError:
-                    mode_map = {
-                        "one_way": RouteMode.ONE_OFF,
-                        "loop": RouteMode.CIRCULAR,
-                    }
-                    if mode_str in mode_map:
-                        route.mode = mode_map[mode_str]
-                    else:
-                        return jsonify({"error": f"Invalid mode '{mode_str}'"}), 400
-                definition_edit_touched = True
-
-            if "tasks" in data:
-                new_tasks = []
-                for task_data in data["tasks"]:
-                    if not isinstance(task_data, dict):
-                        return jsonify({"error": "task entry must be an object"}), 400
-                    if not task_data.get("task_location"):
-                        return jsonify(
-                            {"error": "task_location required for each task"}
-                        ), 400
-                    new_tasks.append(_coerce_route_task(task_data))
-
-                route.tasks.clear()
-                for task in new_tasks:
-                    route.add_task(task)
-                definition_edit_touched = True
-
-                # Per design_new.md line 1074, structural route edits should
-                # tear down active `RouteRun`s and let Phase 1 allocate fresh
-                # runs. The legacy in-place cursor clamp here was an admin
-                # shortcut that is incompatible with the derived
-                # `current_waypoint_index`. Operator/admin tooling that
-                # actually needs to retarget mid-flight should call
-                # `controller.route_hooks.phase_latches.set_route_abort(...)` for each
-                # affected train (see `PUT /api/trains/<id>/assign-route`).
-
-            if "priority" in data:
-                try:
-                    route.priority = int(data["priority"])
-                except (TypeError, ValueError):
-                    return jsonify({"error": "priority must be an integer"}), 400
-                definition_edit_touched = True
-
-            if "acquisition_mode" in data:
-                from runtime_payloads import AcquisitionMode
-                try:
-                    route.acquisition_mode = AcquisitionMode(data["acquisition_mode"])
-                except ValueError:
-                    return jsonify(
-                        {"error": f"Invalid acquisition_mode '{data['acquisition_mode']}'"}
-                    ), 400
-                definition_edit_touched = True
-
-            if "assigned_train_ids" in data:
-                requested_train_ids = set(data.get("assigned_train_ids", []))
-                current_train_ids = set(route.assigned_train_ids)
-
-                for train_id in current_train_ids - requested_train_ids:
-                    route.unassign_train(train_id)
-
-                for train_id in requested_train_ids - current_train_ids:
-                    if train_id in state.network.trains:
-                        route.assign_train(train_id)
-
-            if definition_edit_touched:
-                route.last_edited_at = time.time()
+        # Per design_new.md line 1074, structural route edits should
+        # tear down active `RouteRun`s and let Phase 1 allocate fresh
+        # runs. The legacy in-place cursor clamp here was an admin
+        # shortcut that is incompatible with the derived
+        # `current_waypoint_index`. Operator/admin tooling that
+        # actually needs to retarget mid-flight should call
+        # `controller.route_hooks.phase_latches.set_route_abort(...)` for each
+        # affected train (see `PUT /api/trains/<id>/assign-route`).
 
         return jsonify(route.to_dict())
 
     @app.route("/api/train-routes/<route_id>", methods=["DELETE"])
     def delete_train_route(route_id):
-        registry = state.sim_controller.route_executor.route_registry
-        if route_id not in registry:
+        try:
+            train_route_service.delete_route(state, route_id)
+        except NotFoundError:
             return jsonify({"error": "Route not found"}), 404
-
-        route = registry[route_id]
-        previously_assigned = list(route.assigned_train_ids)
-        for train_id in previously_assigned:
-            route.unassign_train(train_id)
-
-        if state.sim_controller and state.sim_controller.route_executor:
-            for train_id in previously_assigned:
-                state.sim_controller.route_executor.execution_states.pop(train_id, None)
-
-        state.sim_controller.route_executor.unregister_route(route_id)
         return jsonify({"status": "success", "message": f"Route {route_id} deleted"})
 
     @app.route("/api/train-routes/<route_id>/activate", methods=["POST"])
     def activate_train_route(route_id):
-        route = state.sim_controller.route_executor.route_registry.get(route_id)
-        if not route:
+        try:
+            route = train_route_service.activate_route(state, route_id)
+        except NotFoundError:
             return jsonify({"error": "Route not found"}), 404
-
-        route.activate(state.sim_controller.simulation_time)
         return jsonify({"status": "success", "route": route.to_dict()})
 
     @app.route("/api/train-routes/<route_id>/deactivate", methods=["POST"])
     def deactivate_train_route(route_id):
-        route = state.sim_controller.route_executor.route_registry.get(route_id)
-        if not route:
+        try:
+            route = train_route_service.deactivate_route(state, route_id)
+        except NotFoundError:
             return jsonify({"error": "Route not found"}), 404
-
-        route.deactivate(state.sim_controller)
         return jsonify({"status": "success", "route": route.to_dict()})
 
     @app.route("/api/train-routes/<route_id>/status", methods=["GET"])
     def get_train_route_status(route_id):
         """Get per-train execution status for a route."""
-        route = state.sim_controller.route_executor.route_registry.get(route_id)
+        route = train_route_service.get_route(state, route_id)
         if not route:
             return jsonify({"error": "Route not found"}), 404
 
@@ -325,10 +234,10 @@ def register(app, state: AppState) -> None:
 
         Aggregates every `RouteRun` for the route (running + archived, across
         all trains) into a flat timeline of run-start and per-task completion
-        timestamps. Reads existing run state only — no new persisted log, no
+        timestamps. Reads existing run state only -- no new persisted log, no
         mutation.
         """
-        route = state.sim_controller.route_executor.route_registry.get(route_id)
+        route = train_route_service.get_route(state, route_id)
         if not route:
             return jsonify({"error": "Route not found"}), 404
 
@@ -425,9 +334,9 @@ def register(app, state: AppState) -> None:
 
         Each pair element is one of:
 
-          - ``[from_target, to_target]`` — legacy list form. Treated as
+          - ``[from_target, to_target]`` -- legacy list form. Treated as
             ``direction == "either"``.
-          - ``{"from": ..., "to": ..., "direction": ...}`` — dict form.
+          - ``{"from": ..., "to": ..., "direction": ...}`` -- dict form.
             ``direction`` is one of ``"forward" | "reverse" | "either"``;
             it constrains the *terminal* traversal at ``to``. Default
             ``"either"``.
