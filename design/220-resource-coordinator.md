@@ -1,0 +1,12 @@
+> Part of the [ATCS6 design spec](README.md). Cross-cutting: [Core loop & latches](030-core-loop.md) · [Units & time](040-units.md) · [Glossary](010-glossary.md).
+
+## ResourceCoordinator
+
+**Resource-coordinator model**
+
+- `ResourceCoordinator` is the unified facade `PathDispatcher` calls to reserve, release, and route physical-entry / tail-vacate events for an entire `PathSegment`. It owns no state — it is a pure composition layer over `BlockManager` and `SwitchManager`. The single remaining `resource_type` string branch lives inside `ResourceCoordinator.release_tail_vacated(...)` and `ResourceCoordinator.on_physical_entry(...)`; `PathDispatcher` does not branch on `resource_type` for reserve / release / rollback / tail-vacate / physical-entry.
+- `ResourceCoordinator.reserve_segment(future_block_ids, block_traversals, switch_requests, path_id, train_id)` runs the block reservation phase first, then the switch-lock phase. On switch failure it rolls back the just-reserved blocks before returning. Returns `SegmentReserveResult(success: bool, failed_resource_type: Optional[str], failed_resource_id: Optional[str], reason: Optional[str], reserved_block_ids: List[str], locked_switch_ids: List[str])`.
+- `ResourceCoordinator.rollback_segment(block_ids, switch_ids, path_id)` releases any partial holds placed on a segment that failed mid-flight. Used by `PathDispatcher._rollback_segment(...)`.
+- `ResourceCoordinator.release_path_resources(path_id, block_ids, completed)` composes `BlockManager.release_path_block_reservations(...)` and `SwitchManager.release_path_locks(path_id)`. Returns `(released_block_ids, released_switch_ids)`.
+- `ResourceCoordinator.release_tail_vacated(resource_type, resource_id, train_id, direction)` is the single entry called by `PathDispatcher.on_controller_progress(report)` for each `tail_vacated_resources` event. It routes to `BlockManager.on_block_tail_vacated(...)` for blocks and `SwitchManager.on_switch_tail_vacated(...)` for switches.
+- `ResourceCoordinator.on_physical_entry(resource_type, resource_id, train_id, path_id)` is the single entry called by `PathDispatcher.on_controller_progress(report)` for each `entered_resources` event. It routes to `BlockManager.occupy_block(...)` for blocks and `SwitchManager.on_physical_entry(...)` for switches; the helper `_convert_switch_locks_on_entry` no longer lives on `PathDispatcher`.
