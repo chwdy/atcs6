@@ -29,6 +29,52 @@ def register(app, state: AppState) -> None:
         if not isinstance(data, dict):
             return jsonify({"error": "Invalid JSON body"}), 400
 
+        force = bool(data.get("force", False))
+
+        # Impact pre-check for bit/dead-end changes. If the proposed change
+        # would orphan a switch/signal/platform, return 409 so the editor
+        # can confirm with the user. The caller retries with `force=true`
+        # once confirmed; the cleanup then happens below.
+        if "track_bits" in data or "dead_end_ports" in data:
+            new_bits = (
+                int(data["track_bits"]) if "track_bits" in data else track.track_bits
+            )
+            if "dead_end_ports" in data:
+                try:
+                    raw = set(data["dead_end_ports"])
+                    new_dead_ends = {p for p in raw if p in {"N", "E", "S", "W"}}
+                except Exception:
+                    return jsonify(
+                        {"error": "dead_end_ports must be a list of N/E/S/W"}
+                    ), 400
+            else:
+                new_dead_ends = track.dead_end_ports
+
+            impact = state.network.compute_bit_change_impact(
+                x, y, new_bits, new_dead_ends
+            )
+            has_impact = (
+                impact["removes_switch"] is not None
+                or bool(impact["removes_signals"])
+                or impact["removes_platform"] is not None
+            )
+            if has_impact and not force:
+                return jsonify(
+                    {
+                        "requires_confirmation": True,
+                        "impact": impact,
+                    }
+                ), 409
+
+            # Confirmed (or no orphans). Clean up entities that would otherwise
+            # be left dangling once the tile keeps its bits. When the tile is
+            # being fully removed we leave cleanup to remove_track at the end.
+            if not impact["tile_will_be_removed"]:
+                for sid in impact["removes_signals"]:
+                    state.network.remove_signal(sid)
+                if impact["removes_switch"]:
+                    state.network.remove_switch(impact["removes_switch"])
+
         if "track_bits" in data:
             new_bits = data["track_bits"]
             if not track.set_track_bits(int(new_bits)):

@@ -123,6 +123,72 @@ class RailwayPathfinder:
             candidates = candidates[:max_candidates]
         return candidates
 
+    def measure_distance(self, a, b) -> Optional[int]:
+        """Tile-hop distance between two endpoints, ignoring switch state.
+
+        Each endpoint is one of:
+            - ``(x, y)`` tuple — a single tile;
+            - block_id string — every tile in that block (multi-source);
+            - platform_id string — every tile in that platform;
+            - signal_id string — the signal's tile.
+
+        Returns the minimum number of track-adjacent hops between any
+        source tile and any target tile, ``0`` if the footprints overlap,
+        or ``None`` if no track-connected path exists. Walks the layout
+        as an undirected graph (switch positions ignored).
+        """
+        src_tiles = self._resolve_to_tiles(a)
+        dst_tiles = set(self._resolve_to_tiles(b))
+        if not src_tiles or not dst_tiles:
+            return None
+        src_set = set(src_tiles)
+        if src_set & dst_tiles:
+            return 0
+
+        visited: Set[Tuple[int, int]] = set(src_set)
+        queue: deque = deque((pos, 0) for pos in src_set)
+        while queue:
+            (cx, cy), dist = queue.popleft()
+            track = self.network.get_track(cx, cy)
+            if not track:
+                continue
+            for edge in track.edges:
+                offset = EDGE_OFFSETS.get(edge)
+                if not offset:
+                    continue
+                dx, dy = offset
+                npos = (cx + dx, cy + dy)
+                if npos in visited:
+                    continue
+                neighbor = self.network.get_track(*npos)
+                if not neighbor:
+                    continue
+                opposite = OPPOSITE_EDGE.get(edge)
+                if not opposite or opposite not in neighbor.edges:
+                    continue
+                if npos in dst_tiles:
+                    return dist + 1
+                visited.add(npos)
+                queue.append((npos, dist + 1))
+        return None
+
+    def _resolve_to_tiles(self, target) -> List[Tuple[int, int]]:
+        """Turn a measure_distance endpoint into the list of tiles it
+        covers. Raises ``ValueError`` for an unknown string id."""
+        if isinstance(target, tuple) and len(target) == 2:
+            return [(int(target[0]), int(target[1]))]
+        if isinstance(target, str):
+            if target in self.network.blocks:
+                return list(self.network.get_block_positions(target))
+            if target in self.network.platforms:
+                return list(self.network.platforms[target].positions)
+            if target in self.network.signals:
+                return [self.network.signals[target].position]
+            raise ValueError(f"Unknown id for measure_distance: {target!r}")
+        raise TypeError(
+            f"measure_distance endpoint must be (x,y) or str id, got {type(target).__name__}"
+        )
+
     def get_reachable_endpoints(
         self, start_block_id: str, include_stations: bool = True
     ) -> List[str]:

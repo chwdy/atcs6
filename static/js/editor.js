@@ -29,9 +29,18 @@ class Editor {
         this.previewSignalDirection = null;  // Current preview direction for signal tool (cycles on right-click)
         this.previewSignalDirectionIndex = 0;  // Index into valid directions array
         
-        // Diagonal track building mode (shift key)
-        this.shiftKeyHeld = false;
-        this.diagonalBuildMode = false;  // True when building diagonal/short-path tracks
+        // Shift-key avoid-connect mode: while held, the track pathfinder
+        // prefers crossovers over creating switches on existing-track tiles.
+        this.avoidConnectMode = false;
+
+        // R/T-key forced-segment override for track drag: when set, the
+        // start (R) or end (T) tile is rendered with the chosen segment
+        // instead of being inferred from the path. Cycles through
+        // null -> NS -> EW -> NW -> SW -> SE -> NE -> null. Resets to null
+        // when a drag commits or is cancelled.
+        this.forcedStartSegment = null;
+        this.forcedEndSegment = null;
+
 
         // Route tool state
         this.pathToolState = {
@@ -646,6 +655,8 @@ class Editor {
 
                 this.dragStart = null;
                 this.dragEnd = null;
+                this.forcedStartSegment = null;
+                this.forcedEndSegment = null;
                 const hadPreview = this.previewPath !== null;
                 this.previewPath = null;
 
@@ -656,9 +667,27 @@ class Editor {
             }
         });
 
-        // Right click - context actions (rotate signal, toggle switch)
+        // Right click - cancel active drag, or context actions (rotate signal, toggle switch)
         canvas.addEventListener('contextmenu', async (e) => {
             e.preventDefault();
+
+            // Cancel an in-progress drag-build without committing anything.
+            if (this.isDraggingBuild) {
+                this.isDraggingBuild = false;
+                this.dragStart = null;
+                this.dragEnd = null;
+                this.forcedStartSegment = null;
+                this.forcedEndSegment = null;
+                this.previewPath = null;
+                this.previewTracks = null;
+                this.lastValidPreviewPath = null;
+                this.lastValidPreviewTracks = null;
+                if (this.cachedNetwork) {
+                    this.renderer.drawNetwork(this.cachedNetwork);
+                }
+                return;
+            }
+
             const rect = canvas.getBoundingClientRect();
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
@@ -747,12 +776,12 @@ class Editor {
             this.selectElement(gridPos);
         });
 
-        // Global keyboard events for shift key (diagonal build mode)
+        // Shift key toggles avoid-connect mode for the track pathfinder.
+        // While held, dragging a new track over existing tiles prefers
+        // crossovers (non-connecting segments) over switches.
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Shift' && !this.shiftKeyHeld) {
-                this.shiftKeyHeld = true;
-                this.diagonalBuildMode = true;
-                // Update preview if currently dragging
+            if (e.key === 'Shift' && !this.avoidConnectMode) {
+                this.avoidConnectMode = true;
                 if (this.isDraggingBuild) {
                     this.updatePreviewPath();
                 }
@@ -760,13 +789,39 @@ class Editor {
         });
 
         document.addEventListener('keyup', (e) => {
-            if (e.key === 'Shift') {
-                this.shiftKeyHeld = false;
-                this.diagonalBuildMode = false;
-                // Update preview if currently dragging
+            if (e.key === 'Shift' && this.avoidConnectMode) {
+                this.avoidConnectMode = false;
                 if (this.isDraggingBuild) {
                     this.updatePreviewPath();
                 }
+            }
+        });
+
+        // R / T cycle the forced segment for the start (R) and end (T) tile
+        // of an active track drag. Cycle: off -> NS -> EW -> NW -> SW -> SE
+        // -> NE -> off. The override holds for the rest of the current drag
+        // and is cleared when the drag commits, is right-click-cancelled, or
+        // is released off-canvas.
+        const SEGMENT_CYCLE = ['NS', 'EW', 'NW', 'SW', 'SE', 'NE'];
+        const cycleSegment = (current) => {
+            if (current === null) return SEGMENT_CYCLE[0];
+            const i = SEGMENT_CYCLE.indexOf(current);
+            return i === SEGMENT_CYCLE.length - 1 ? null : SEGMENT_CYCLE[i + 1];
+        };
+        document.addEventListener('keydown', (e) => {
+            if (this.selectedTool !== 'track') return;
+            const active = document.activeElement;
+            if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) return;
+            if (e.metaKey || e.ctrlKey || e.altKey) return;
+            const key = e.key.toLowerCase();
+            if (key === 'r') {
+                this.forcedStartSegment = cycleSegment(this.forcedStartSegment);
+                window.showToast?.(`Start segment: ${this.forcedStartSegment || 'auto'}`, 'info', 800);
+                if (this.isDraggingBuild) this.updatePreviewPath();
+            } else if (key === 't') {
+                this.forcedEndSegment = cycleSegment(this.forcedEndSegment);
+                window.showToast?.(`End segment: ${this.forcedEndSegment || 'auto'}`, 'info', 800);
+                if (this.isDraggingBuild) this.updatePreviewPath();
             }
         });
 
@@ -905,16 +960,22 @@ class Editor {
             const foundPath = this.pathfinder.findPath(
                 this.dragStart.x, this.dragStart.y,
                 this.dragEnd.x, this.dragEnd.y,
-                existingTracks
+                existingTracks,
+                {
+                    avoidConnect: this.avoidConnectMode,
+                    forcedStartSegment: this.forcedStartSegment,
+                    forcedEndSegment: this.forcedEndSegment,
+                }
             );
 
             // If path found, use it and cache it; otherwise use last valid path
             if (foundPath) {
                 this.previewPath = foundPath;
-                // Use diagonal tracks if shift key is held
-                this.previewTracks = this.diagonalBuildMode
-                    ? pathToDiagonalTracks(this.previewPath, this.cachedNetwork)
-                    : pathToTracks(this.previewPath, this.cachedNetwork);
+                this.previewTracks = pathToTracks(this.previewPath, this.cachedNetwork, {
+                    avoidConnect: this.avoidConnectMode,
+                    forcedStartSegment: this.forcedStartSegment,
+                    forcedEndSegment: this.forcedEndSegment,
+                });
                 // Cache this valid path
                 this.lastValidPreviewPath = this.previewPath;
                 this.lastValidPreviewTracks = this.previewTracks;
@@ -975,10 +1036,11 @@ class Editor {
 
         try {
             if (this.selectedTool === 'track') {
-                // Use diagonal tracks if shift key is held
-                const tracks = this.diagonalBuildMode
-                    ? pathToDiagonalTracks(this.previewPath, this.cachedNetwork)
-                    : pathToTracks(this.previewPath, this.cachedNetwork);
+                const tracks = pathToTracks(this.previewPath, this.cachedNetwork, {
+                    avoidConnect: this.avoidConnectMode,
+                    forcedStartSegment: this.forcedStartSegment,
+                    forcedEndSegment: this.forcedEndSegment,
+                });
                 await this.api.addTracksBulk(tracks);
             }
             else if (this.selectedTool === 'block') {
@@ -1995,42 +2057,17 @@ class Editor {
             </div>
             ` : ''}
 
-            <!-- Combined Bit Editor (33%) and Visual Editor (67%) Side-by-Side -->
-            <div class="combined-editor">
-                <!-- Bit Editor (Left - 33%) -->
-                <div id="bit-editor" class="bg-section p-8 rounded">
-                    <h4 class="text-track text-xs mb-8">Bit Editor</h4>
-                    <div class="flex flex-col gap-4">
-                        ${renderBitToggle(1, 'NS', trackBits)}
-                        ${renderBitToggle(2, 'EW', trackBits)}
-                        ${renderBitToggle(4, 'NE', trackBits)}
-                        ${renderBitToggle(8, 'NW', trackBits)}
-                        ${renderBitToggle(16, 'SE', trackBits)}
-                        ${renderBitToggle(32, 'SW', trackBits)}
-                    </div>
-                    <div class="bit-info bg-hover rounded-sm text-tiny">
-                        <p><span id="bit-total" class="font-bold text-track">${trackBits}</span> <span class="text-muted">(0b${binaryHTML})</span></p>
-                        <p class="bit-warning font-bold text-danger mt-2" style="display: ${isForbidden ? 'block' : 'none'};">
-                            ⚠ Forbidden
-                        </p>
-                    </div>
-                    <button id="apply-bits" class="btn btn-primary btn-full text-xxs mt-6">Apply</button>
-                </div>
-                
-                <!-- Visual Editor (Right - 67%) -->
-                <div class="visual-editor bg-section p-8 rounded">
-                    <label class="text-track font-bold text-xs mb-6 block">Visual Editor</label>
-                    <canvas id="${editorId}" width="200" height="200" class="block w-full rounded"></canvas>
-                    <div class="helper-text text-center">Click segments to toggle</div>
-                </div>
-            </div>
-            
+            <!-- Bit Editor + Visual Editor live in the dedicated "Track Bits" sidebar section (see #track-bits-panel) -->
+
             <!-- View Full JSON Button -->
             <button id="view-full-json-btn" class="btn btn-primary btn-full text-sm mt-12">
                 📄 View Full JSON
             </button>
         `;
-        
+
+        // Render bit editor into its dedicated sidebar section
+        this.updateTrackBitsPanel(track, editorId, trackBits, binaryHTML, isForbidden);
+
         // Initialize track bits editor after panel is rendered
         setTimeout(() => this.initBitEditor(track), 0);
         setTimeout(() => this.initVisualTrackEditor(editorId, track), 0);
@@ -2080,6 +2117,55 @@ class Editor {
             editBtn.onclick = () => {
                 this.showSwitchEditor(track.switch_id);
             };
+        }
+    }
+
+    // Populate the dedicated Track Bits sidebar section (lives in the fixed
+    // tools area so it does NOT get pushed around when properties content
+    // changes). Folded by default; preserves its expanded/collapsed state
+    // across selections because only the body is re-rendered.
+    updateTrackBitsPanel(track, editorId, trackBits, binaryHTML, isForbidden) {
+        const body = document.getElementById('track-bits-panel-body');
+        if (!body) return;
+
+        body.innerHTML = `
+            <div class="combined-editor">
+                <!-- Bit Editor (Left - 33%) -->
+                <div id="bit-editor" class="bg-section p-8 rounded">
+                    <h4 class="text-track text-xs mb-8">Bit Editor</h4>
+                    <div class="flex flex-col gap-4">
+                        ${renderBitToggle(1, 'NS', trackBits)}
+                        ${renderBitToggle(2, 'EW', trackBits)}
+                        ${renderBitToggle(4, 'NE', trackBits)}
+                        ${renderBitToggle(8, 'NW', trackBits)}
+                        ${renderBitToggle(16, 'SE', trackBits)}
+                        ${renderBitToggle(32, 'SW', trackBits)}
+                    </div>
+                    <div class="bit-info bg-hover rounded-sm text-tiny">
+                        <p><span id="bit-total" class="font-bold text-track">${trackBits}</span> <span class="text-muted">(0b${binaryHTML})</span></p>
+                        <p class="bit-warning font-bold text-danger mt-2" style="display: ${isForbidden ? 'block' : 'none'};">
+                            ⚠ Forbidden
+                        </p>
+                    </div>
+                    <button id="apply-bits" class="btn btn-primary btn-full text-xxs mt-6">Apply</button>
+                </div>
+
+                <!-- Visual Editor (Right - 67%) -->
+                <div class="visual-editor bg-section p-8 rounded">
+                    <label class="text-track font-bold text-xs mb-6 block">Visual Editor</label>
+                    <canvas id="${editorId}" width="200" height="200" class="block w-full rounded"></canvas>
+                    <div class="helper-text text-center">Click segments to toggle</div>
+                </div>
+            </div>
+        `;
+    }
+
+    // Reset the Track Bits sidebar section to the empty placeholder.
+    // Called when no track is selected.
+    clearTrackBitsPanel() {
+        const body = document.getElementById('track-bits-panel-body');
+        if (body) {
+            body.innerHTML = `<p class="properties-empty">Select a track to edit bits</p>`;
         }
     }
 

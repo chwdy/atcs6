@@ -1,7 +1,10 @@
 /* Tools panel header — header strip matching the train editor (secondary
    sidebar): mixed-case title on a subtle purple gradient, flush to the
-   section edges. See docs/DESIGN_LANGUAGE.md §2. */
-.sidebar-tools-section h3 {
+   section edges. See docs/DESIGN_LANGUAGE.md §2.
+   Scoped to the direct child h3 so nested collapsible-section headers
+   (e.g. #track-bits-panel) fall through to standard .sidebar-section h3
+   styling and match other sidebar section titles. */
+.sidebar-tools-section > h3 {
     margin: -6px -8px 8px;
     padding: 8px 10px;
     background: linear-gradient(135deg, rgba(130, 87, 229, 0.12), rgba(130, 87, 229, 0.04));

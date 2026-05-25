@@ -292,11 +292,13 @@ class StationRegistry:
             self._n.delete_block(block_id)
             print(f"[Station Delete] Deleted block {block_id}")
 
-        # Clear station_id from all tracks in this station
+        # Clear station_id from all tracks in this station and drop
+        # the tile -> platform reverse index for each owned tile.
         for x, y in station.positions:
             track = self._n.get_track(x, y)
             if track and track.station_id == station_id:
                 track.station_id = None
+            self._set_tile_platform(x, y, None)
 
         # Delete from storage
         del self._n.platforms[station_id]

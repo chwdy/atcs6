@@ -8,9 +8,10 @@ coordinator for all railway system components.
 """
 
 from collections import deque
+import logging
 from typing import Dict, List, Optional, Tuple, Any, Union
 import uuid
-from track import TrackSegment
+from track import TrackSegment, EDGE_MASKS, BIT_TO_EDGES
 from train import Train, TrainSchedule
 from block import Block
 from block_manager import BlockManager
@@ -34,8 +35,24 @@ from signal_validation import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 DEFAULT_TILE_LENGTH_CM = 50.0
 DEFAULT_TRAIN_LENGTH_CM = 50.0
+
+
+def _bits_form_switch(bits: int) -> bool:
+    """True if the bit pattern alone would make a tile a switch (any port
+    with 2+ exits). Mirrors `TrackSegment.switch_points` without needing
+    a live segment instance."""
+    edge_exits = {"N": 0, "E": 0, "S": 0, "W": 0}
+    for bit in range(6):
+        if bits & (1 << bit):
+            e1, e2 = BIT_TO_EDGES[bit]
+            edge_exits[e1] += 1
+            edge_exits[e2] += 1
+    return any(c >= 2 for c in edge_exits.values())
 
 
 class RailwayNetwork:
@@ -274,11 +291,73 @@ class RailwayNetwork:
                 if neighbor and (neighbor.x, neighbor.y) not in visited:
                     queue.append((neighbor.x, neighbor.y))
 
+    def compute_bit_change_impact(
+        self, x: int, y: int, new_bits: int, new_dead_ends: Optional[set] = None
+    ) -> Dict[str, Any]:
+        """Predict which entities on tile (x, y) would be orphaned if its
+        track_bits were changed to `new_bits`.
+
+        Rules:
+            - The tile is fully removed when `new_bits == 0` and there are
+              no dead-end ports. In that case any platform owning the tile
+              is invalidated.
+            - A signal is orphaned when no segment in `new_bits` touches
+              its `detection_direction` port.
+            - A switch entity is orphaned when the tile is no longer a
+              switch under `new_bits`.
+
+        The caller decides whether to apply the change (cleanup) or surface
+        a confirmation dialog.
+        """
+        track = self.get_track(x, y)
+        if not track:
+            return {
+                "tile_will_be_removed": False,
+                "removes_switch": None,
+                "removes_signals": [],
+                "removes_platform": None,
+            }
+
+        dead_ends = (
+            new_dead_ends if new_dead_ends is not None else track.dead_end_ports
+        )
+        tile_will_be_removed = (new_bits == 0) and not dead_ends
+
+        removes_switch: Optional[str] = None
+        if track.switch_id and not _bits_form_switch(new_bits):
+            removes_switch = track.switch_id
+
+        removes_signals: List[str] = []
+        for sid in list(track.signal_ids):
+            signal = self.signals.get(sid)
+            if signal is None:
+                continue
+            edge = signal.detection_direction
+            mask = EDGE_MASKS.get(edge, 0)
+            if not (new_bits & mask):
+                removes_signals.append(sid)
+
+        removes_platform: Optional[str] = None
+        if tile_will_be_removed:
+            plat_id = self._tile_to_platform.get((x, y))
+            if plat_id:
+                removes_platform = plat_id
+
+        return {
+            "tile_will_be_removed": tile_will_be_removed,
+            "removes_switch": removes_switch,
+            "removes_signals": removes_signals,
+            "removes_platform": removes_platform,
+        }
+
     def remove_track(self, x: int, y: int) -> bool:
         """Remove track segment and propagate updates to neighbors.
 
-        Also handles block lifecycle - if track was part of a block,
-        checks connectivity and splits if needed.
+        Cleans up entities anchored to this tile so the layout stays
+        consistent: any signals listed in `track.signal_ids`, the owning
+        switch entity (if `track.switch_id` is set), and the owning
+        platform (if `_tile_to_platform` has an entry) are removed first.
+        Block membership is reconciled via `remove_tile_from_block`.
         """
         key = (x, y)
         if key not in self.tracks:
@@ -286,14 +365,33 @@ class RailwayNetwork:
 
         track = self.tracks[key]
 
-        # Handle block lifecycle before deletion
+        for sid in list(track.signal_ids):
+            self.remove_signal(sid)
+
+        if track.switch_id:
+            self.remove_switch(track.switch_id)
+
+        plat_id = self._tile_to_platform.get(key)
+        if plat_id:
+            self.delete_station(plat_id)
+
         if track.block_section_id:
-            # This will check connectivity and split if needed
-            self.remove_tile_from_block(x, y)
+            # Block reconciliation can touch signals on OTHER tiles in the
+            # block (split + remap). If that work fails, we still want the
+            # tile itself to be removed so the caller doesn't end up with
+            # an orphan entry in self.tracks.
+            try:
+                self.remove_tile_from_block(x, y)
+            except Exception:
+                logger.exception(
+                    "Block reconciliation failed while removing track (%d, %d); "
+                    "the tile will still be removed.",
+                    x,
+                    y,
+                )
 
         del self.tracks[key]
 
-        # Propagate to neighbors (this tile is gone, so check each neighbor)
         # N=Y+, E=X+, S=Y-, W=X-
         offsets = {"N": (0, 1), "E": (1, 0), "S": (0, -1), "W": (-1, 0)}
         for edge, (dx, dy) in offsets.items():

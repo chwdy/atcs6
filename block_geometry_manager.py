@@ -17,7 +17,7 @@ from collections import deque
 from typing import TYPE_CHECKING, List, Optional, Set, Tuple
 
 from block import Block
-from railway_signal import SignalState
+from railway_signal import SignalState, SignalType
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -935,28 +935,29 @@ class BlockGeometryManager:
     def _remap_orphaned_signals(
         self, orphaned_signals: List[Signal], new_block_ids: List[str]
     ) -> None:
-        """
-        Remap signals that monitored a deleted block to nearest reachable child block.
+        """Reassign signals from a split block to the closest of the new
+        child blocks.
 
-        For each orphaned signal, uses _can_reach_block to find which new block
-        is reachable, and updates monitored_block_id accordingly.
-
-        Args:
-            orphaned_signals: List of signals that need remapping
-            new_block_ids: List of child block IDs to consider
+        Distance is measured by ``RailwayPathfinder.measure_distance`` in
+        tile hops, ignoring switch state. A signal that can't reach any
+        of the new blocks has its ``monitored_block_id`` cleared.
         """
+        from railway_pathfinder import RailwayPathfinder
+
+        pathfinder = RailwayPathfinder(self._n)
         for signal in orphaned_signals:
-            # Try to find a reachable block among the new child blocks
-            found_block = None
+            best_block: Optional[str] = None
+            best_dist: Optional[int] = None
             for block_id in new_block_ids:
-                if self._n._can_reach_block(signal, block_id):
-                    found_block = block_id
-                    break
+                dist = pathfinder.measure_distance(signal.position, block_id)
+                if dist is None:
+                    continue
+                if best_dist is None or dist < best_dist:
+                    best_dist = dist
+                    best_block = block_id
 
-            # Update signal
-            signal.monitored_block_id = found_block
+            signal.monitored_block_id = best_block
 
-            # Recalculate signal state based on new monitored block
             if signal.signal_type == SignalType.BLOCK:
                 if signal.monitored_block_id:
                     signal.state = self._n._calculate_signal_state(signal)

@@ -871,6 +871,40 @@ class EditorUIHandler {
 
         const applyButton = document.getElementById('apply-bits');
         if (applyButton) {
+            const applyBits = async (newBits, force) => {
+                if (track.isVirtual) {
+                    const newTrack = {
+                        x: track.x,
+                        y: track.y,
+                        track_bits: newBits,
+                        directed_paths: []
+                    };
+                    await window.api.addTracksBulk([newTrack]);
+                } else {
+                    const body = { track_bits: newBits };
+                    if (force) body.force = true;
+                    await window.api.updateTrack(track.x, track.y, body);
+                }
+
+                const updatedTrack = await window.api.getTrack(track.x, track.y);
+                if (updatedTrack && updatedTrack.is_switch && !updatedTrack.switch_id) {
+                    try {
+                        await window.api.createSwitchAt(track.x, track.y, {
+                            main_length_cm: 0,
+                            diverge_length_cm: 0,
+                            main_radius_cm: null,
+                            diverge_radius_cm: null
+                        });
+                        console.log(`[Editor] Auto-created switch entity at (${track.x}, ${track.y})`);
+                    } catch (switchErr) {
+                        console.warn('[Editor] Failed to auto-create switch:', switchErr);
+                    }
+                }
+
+                await window.app.refreshNetwork();
+                await this.editor.selectElement({x: track.x, y: track.y});
+            };
+
             applyButton.onclick = async () => {
                 const newBits = calculateBitsFromCheckboxes();
 
@@ -880,45 +914,49 @@ class EditorUIHandler {
                 }
 
                 try {
-                    if (track.isVirtual) {
-                        const newTrack = {
-                            x: track.x,
-                            y: track.y,
-                            track_bits: newBits,
-                            directed_paths: []
-                        };
-                        await window.api.addTracksBulk([newTrack]);
-                    } else {
-                        await window.api.updateTrack(track.x, track.y, { track_bits: newBits });
-                    }
-
-                    // Auto-create switch entity if track is now a switch
-                    // Get the updated track to check if it's a switch
-                    const updatedTrack = await window.api.getTrack(track.x, track.y);
-                    if (updatedTrack && updatedTrack.is_switch && !updatedTrack.switch_id) {
-                        // Create switch entity with default values (0 for lengths)
-                        try {
-                            await window.api.createSwitchAt(track.x, track.y, {
-                                main_length_cm: 0,
-                                diverge_length_cm: 0,
-                                main_radius_cm: null,
-                                diverge_radius_cm: null
-                            });
-                            console.log(`[Editor] Auto-created switch entity at (${track.x}, ${track.y})`);
-                        } catch (switchErr) {
-                            console.warn('[Editor] Failed to auto-create switch:', switchErr);
-                            // Don't fail the whole operation if switch creation fails
-                        }
-                    }
-
-                    await window.app.refreshNetwork();
-                    await this.editor.selectElement({x: track.x, y: track.y});
+                    await applyBits(newBits, false);
                 } catch (err) {
+                    const data = err && err.data;
+                    if (data && data.requires_confirmation) {
+                        const proceed = await this._confirmBitChangeImpact(data.impact);
+                        if (!proceed) return;
+                        try {
+                            await applyBits(newBits, true);
+                        } catch (err2) {
+                            console.error('Failed to update track bits (forced):', err2);
+                            window.showToast('Failed to update track bits: ' + err2.message, 'error', 5000);
+                        }
+                        return;
+                    }
                     console.error('Failed to update track bits:', err);
                     window.showToast('Failed to update track bits: ' + err.message, 'error', 5000);
                 }
             };
         }
+    }
+
+    async _confirmBitChangeImpact(impact) {
+        const lines = [];
+        if (impact.removes_switch) {
+            lines.push(`• Switch ${impact.removes_switch} (this tile is no longer a switch)`);
+        }
+        for (const sid of impact.removes_signals || []) {
+            lines.push(`• Signal ${sid} (its detection direction loses its segment)`);
+        }
+        if (impact.removes_platform) {
+            lines.push(`• Platform ${impact.removes_platform} (tile would be removed)`);
+        }
+        const message = impact.tile_will_be_removed
+            ? 'This change removes all segments and will delete the tile. The entities below will also be removed:'
+            : 'This change will remove the following entities so the layout stays consistent:';
+        return await showConfirmModal({
+            title: 'Remove dependent entities?',
+            message,
+            detail: lines.join('\n'),
+            confirmText: 'Remove and apply',
+            cancelText: 'Cancel',
+            confirmVariant: 'danger'
+        });
     }
 
     initVisualTrackEditor(canvasId, track) {
@@ -1068,8 +1106,10 @@ class EditorUIHandler {
 
         canvas.addEventListener('click', async (e) => {
             const rect = canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
 
             let closestBit = null;
             let minDist = 12;
@@ -1124,5 +1164,7 @@ class EditorUIHandler {
                 <p class="properties-empty">Select an element to view properties</p>
             `;
         }
+        // Also reset the dedicated Track Bits sidebar section.
+        this.editor.clearTrackBitsPanel?.();
     }
 }

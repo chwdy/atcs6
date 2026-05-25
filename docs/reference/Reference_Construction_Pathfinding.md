@@ -113,11 +113,6 @@ The system calls `propagate_from_tile` to update neighbor connectivity:
 
 The actual implementation in `static/js/editor.js` differs slightly from Simutrans:
 
-### Diagonal Build Mode (Shift Key)
-- **Shift + Drag**: Activates `diagonalBuildMode`
-- Creates stair-stepped diagonal segments (NW/SE or NE/SW)
-- Uses `pathToDiagonalTracks()` instead of standard `pathToTracks()`
-
 ### Cost Factors in JavaScript
 ```javascript
 costs = {

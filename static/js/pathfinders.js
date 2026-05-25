@@ -37,6 +37,25 @@ class ConstructionPathfinder {
             reverse: 100
         };
 
+        // Avoid-connect mode (shift key): flip the incentives so the path
+        // routes through existing tiles as a crossover instead of merging
+        // into a switch. createSwitch becomes prohibitive, reusing an
+        // existing edge is heavily penalised, and createCrossover gets a
+        // negative cost so A* actively prefers cutting through over
+        // sidestepping. The -2 value is tuned so A* crosses when the path
+        // naturally would pass through existing track, but does not detour
+        // to chase a crossing when none is needed.
+        this.avoidConnectCosts = {
+            useExisting: 50,
+            extend: 50,
+            diagonal: 1,
+            straight: 2,
+            sameTurn: 3,
+            createSwitch: 200,
+            createCrossover: -2,
+            reverse: 100
+        };
+
         this.TRACK_NS = 1;
         this.TRACK_EW = 2;
         this.TRACK_NE = 4;
@@ -45,8 +64,15 @@ class ConstructionPathfinder {
         this.TRACK_SW = 32;
     }
 
-    getTrackBitForPath(port1, port2) {
-        const key = [port1, port2].sort().join('');
+    getTrackBitForPath(fromDir, toDir) {
+        // fromDir = movement direction by which we arrived at the tile;
+        //   the entry edge is the opposite of that direction.
+        // toDir = movement direction by which we leave the tile;
+        //   the exit edge equals that direction.
+        const entryEdge = this.getOppositeDir(fromDir);
+        const exitEdge = toDir;
+
+        const key = [entryEdge, exitEdge].sort().join('');
         const pathMap = {
             'NORTHSOUTH': this.TRACK_NS,
             'EASTWEST': this.TRACK_EW,
@@ -110,9 +136,27 @@ class ConstructionPathfinder {
         return [...new Set(directions)];
     }
 
-    findPath(startX, startY, endX, endY, existingTracks) {
+    findPath(startX, startY, endX, endY, existingTracks, options = {}) {
+        const costs = options.avoidConnect ? this.avoidConnectCosts : this.costs;
         const start = { x: startX, y: startY };
         const end = { x: endX, y: endY };
+
+        // Forced-segment constraints: if the user pressed R/T to lock the
+        // start/end tile to a specific 2-edge segment, A* must pick a path
+        // whose first move leaves through one of the start segment's edges
+        // and whose last move enters through one of the end segment's
+        // edges. Otherwise the start/end tile would be laid disconnected
+        // from the rest of the path.
+        const SEGMENT_EDGES = {
+            NS: ['NORTH', 'SOUTH'],
+            EW: ['EAST', 'WEST'],
+            NE: ['NORTH', 'EAST'],
+            NW: ['NORTH', 'WEST'],
+            SE: ['SOUTH', 'EAST'],
+            SW: ['SOUTH', 'WEST'],
+        };
+        const startEdges = SEGMENT_EDGES[options.forcedStartSegment] || null;
+        const endEdges   = SEGMENT_EDGES[options.forcedEndSegment]   || null;
 
         if (startX === endX && startY === endY) {
             return [start];
@@ -161,6 +205,11 @@ class ConstructionPathfinder {
             
             if (current.pos.x === end.x && current.pos.y === end.y) {
                 const path = this.reconstructPath(current);
+                // alignZigzagTails inserts a tile adjacent to the end to make
+                // zigzag endings look smooth; that insertion ignores R/T
+                // constraints and can also break adjacency, so skip it when
+                // either endpoint is locked.
+                if (startEdges || endEdges) return path;
                 return this.alignZigzagTails(path, end);
             }
             
@@ -179,6 +228,19 @@ class ConstructionPathfinder {
 
                 const existingTrack = trackMap.get(nKey);
                 const entryDir = this.getOppositeDir(neighbor.dir);
+
+                // Forced start segment: the first move out of the start
+                // tile must exit through one of the forced segment's edges.
+                if (startEdges && current.fromDir === null && !startEdges.includes(neighbor.dir)) {
+                    continue;
+                }
+
+                // Forced end segment: the move that lands on the end tile
+                // must enter through one of the forced end segment's edges
+                // (i.e., the entry edge of the end tile must be in endEdges).
+                if (endEdges && neighbor.x === end.x && neighbor.y === end.y && !endEdges.includes(entryDir)) {
+                    continue;
+                }
                 
                 if (existingTrack && (existingTrack.type === 'signal' || existingTrack.signal_state)) {
                     const signalPorts = this.getExistingTrackDirections(existingTrack.track_bits || 0);
@@ -194,27 +256,27 @@ class ConstructionPathfinder {
                     }
                 }
 
-                let moveCost = this.costs.straight;
+                let moveCost = costs.straight;
                 let turnDir = null;
 
                 if (existingTrack && existingTrack.track_bits) {
                     const trackDirs = this.getExistingTrackDirections(existingTrack.track_bits);
                     const entryDir = this.getOppositeDir(neighbor.dir);
                     if (trackDirs.includes(entryDir)) {
-                        moveCost = this.costs.useExisting;
+                        moveCost = costs.useExisting;
                     }
                 } else if (!current.fromDir) {
                     if (preferredDirs.length > 0 && preferredDirs.includes(neighbor.dir)) {
-                        moveCost = this.costs.extend;
+                        moveCost = costs.extend;
                     }
                 } else if (this.isReverse(current.fromDir, neighbor.dir)) {
-                    moveCost = this.costs.reverse;
+                    moveCost = costs.reverse;
                 } else if (current.fromDir !== neighbor.dir) {
                     turnDir = this.getTurnDirection(current.fromDir, neighbor.dir);
                     if (current.prevTurnDir && turnDir === current.prevTurnDir) {
-                        moveCost = this.costs.sameTurn;
+                        moveCost = costs.sameTurn;
                     } else {
-                        moveCost = this.costs.diagonal;
+                        moveCost = costs.diagonal;
                     }
                 }
 
@@ -224,9 +286,9 @@ class ConstructionPathfinder {
                     const newPathBit = this.getTrackBitForPath(current.fromDir, neighbor.dir);
                     const switchType = this.detectSwitchType(currentBits, newPathBit);
                     if (switchType === 'crossover') {
-                        moveCost += this.costs.createCrossover;
+                        moveCost += costs.createCrossover;
                     } else if (switchType === 'switch') {
-                        moveCost += this.costs.createSwitch;
+                        moveCost += costs.createSwitch;
                     }
                 }
 
@@ -454,9 +516,25 @@ class ConstructionPathfinder {
     }
 }
 
-function pathToTracks(path, cachedNetwork) {
+// Forced-segment shape -> (port1, port2). When R/T are used during a drag,
+// the editor passes the chosen name in options.forcedStartSegment /
+// forcedEndSegment and we lay exactly that segment on the start/end tile.
+const FORCED_SEGMENT_PORTS = {
+    NS: ['NORTH', 'SOUTH'],
+    EW: ['EAST', 'WEST'],
+    NE: ['NORTH', 'EAST'],
+    NW: ['NORTH', 'WEST'],
+    SE: ['SOUTH', 'EAST'],
+    SW: ['SOUTH', 'WEST'],
+};
+
+function pathToTracks(path, cachedNetwork, options = {}) {
     if (!path || path.length === 0) return [];
-    
+
+    const avoidConnect = options.avoidConnect === true;
+    const forcedStart = options.forcedStartSegment || null;
+    const forcedEnd = options.forcedEndSegment || null;
+
     const tracksToUpdate = new Map();
     const existingTracks = new Map();
     
@@ -529,6 +607,12 @@ function pathToTracks(path, cachedNetwork) {
         }
 
         if (!prev && next) {
+            if (forcedStart && FORCED_SEGMENT_PORTS[forcedStart]) {
+                const [p1, p2] = FORCED_SEGMENT_PORTS[forcedStart];
+                addPath(current.x, current.y, p1, p2, 'both');
+                continue;
+            }
+
             const exitDir = getDirection(current, next);
             const entryDir = getOpposite(exitDir);
 
@@ -578,26 +662,43 @@ function pathToTracks(path, cachedNetwork) {
         }
         
         if (prev && !next) {
+            if (forcedEnd && FORCED_SEGMENT_PORTS[forcedEnd]) {
+                const [p1, p2] = FORCED_SEGMENT_PORTS[forcedEnd];
+                addPath(current.x, current.y, p1, p2, 'both');
+                continue;
+            }
+
             const entryDir = getDirection(current, prev);
             const exitDir = getOpposite(entryDir);
-            
+
+            if (avoidConnect) {
+                // Don't extend toward neighbors; pick an exit edge that does
+                // not share with any existing segment on this tile so the
+                // result is a crossover (or a clean stub) instead of a switch.
+                const endTrack = existingTracks.get(`${current.x},${current.y}`);
+                const endBits = endTrack ? (endTrack.track_bits || 0) : 0;
+                const avoidExit = computeNonConflictingExit(endBits, entryDir);
+                addPath(current.x, current.y, entryDir, avoidExit, 'both');
+                continue;
+            }
+
             const neighbors = [
                 { dx: 0, dy: 1, myPort: 'NORTH', theirPort: 'SOUTH' },
                 { dx: 0, dy: -1, myPort: 'SOUTH', theirPort: 'NORTH' },
                 { dx: 1, dy: 0, myPort: 'EAST', theirPort: 'WEST' },
                 { dx: -1, dy: 0, myPort: 'WEST', theirPort: 'EAST' }
             ];
-            
+
             let foundConnection = false;
             for (const n of neighbors) {
                 if (n.myPort === entryDir) continue;
-                
+
                 if (neighborHasPortTo(current.x + n.dx, current.y + n.dy, n.theirPort)) {
                     addPath(current.x, current.y, entryDir, n.myPort, 'both');
                     foundConnection = true;
                 }
             }
-            
+
             if (!foundConnection) {
                 addPath(current.x, current.y, entryDir, exitDir, 'both');
             }
@@ -605,7 +706,20 @@ function pathToTracks(path, cachedNetwork) {
         }
         
         if (!prev && !next) {
-            addPath(current.x, current.y, 'WEST', 'EAST', 'both');
+            // Single-tile drag (mousedown == mouseup): honor either or both
+            // forced segments so the user can place a crossover on one tile.
+            // Falls back to the default EW stub when neither is set.
+            if (forcedStart && FORCED_SEGMENT_PORTS[forcedStart]) {
+                const [p1, p2] = FORCED_SEGMENT_PORTS[forcedStart];
+                addPath(current.x, current.y, p1, p2, 'both');
+            }
+            if (forcedEnd && forcedEnd !== forcedStart && FORCED_SEGMENT_PORTS[forcedEnd]) {
+                const [p1, p2] = FORCED_SEGMENT_PORTS[forcedEnd];
+                addPath(current.x, current.y, p1, p2, 'both');
+            }
+            if (!forcedStart && !forcedEnd) {
+                addPath(current.x, current.y, 'WEST', 'EAST', 'both');
+            }
         }
     }
     
@@ -628,75 +742,28 @@ function pathToTracks(path, cachedNetwork) {
     return tracks;
 }
 
-function pathToDiagonalTracks(path, cachedNetwork) {
-    if (!path || path.length < 2) return [];
-    
-    const tracks = [];
-    const existingTracks = new Map();
-    
-    if (cachedNetwork && cachedNetwork.tracks) {
-        for (const track of cachedNetwork.tracks) {
-            existingTracks.set(`${track.x},${track.y}`, track);
-        }
+// For avoid-connect mode: given existing track bits on a tile and the edge
+// the path arrives on, return an exit edge that does not share an edge with
+// any existing segment when possible. Falls back to the opposite edge so the
+// caller always gets a usable port.
+function computeNonConflictingExit(existingBits, entryDir) {
+    const opposite = getOpposite(entryDir);
+    if (!existingBits) return opposite;
+
+    const used = new Set();
+    if (existingBits & 1)  { used.add('NORTH'); used.add('SOUTH'); }
+    if (existingBits & 2)  { used.add('EAST');  used.add('WEST'); }
+    if (existingBits & 4)  { used.add('NORTH'); used.add('EAST'); }
+    if (existingBits & 8)  { used.add('NORTH'); used.add('WEST'); }
+    if (existingBits & 16) { used.add('SOUTH'); used.add('EAST'); }
+    if (existingBits & 32) { used.add('SOUTH'); used.add('WEST'); }
+
+    if (used.has(entryDir)) return opposite;
+
+    for (const dir of ['NORTH', 'EAST', 'SOUTH', 'WEST']) {
+        if (dir !== entryDir && !used.has(dir)) return dir;
     }
-    
-    const start = path[0];
-    const end = path[path.length - 1];
-    const dx = end.x - start.x;
-    const dy = end.y - start.y;
-    
-    let diagonalPair;
-    if ((dx >= 0 && dy <= 0) || (dx <= 0 && dy >= 0)) {
-        diagonalPair = ['NW', 'SE'];
-    } else {
-        diagonalPair = ['NE', 'SW'];
-    }
-
-    const diagonalBits = {
-        'NE': 4,
-        'NW': 8,
-        'SE': 16,
-        'SW': 32
-    };
-    
-    const diagonalPorts = {
-        'NE': { port1: 'NORTH', port2: 'EAST' },
-        'NW': { port1: 'NORTH', port2: 'WEST' },
-        'SE': { port1: 'SOUTH', port2: 'EAST' },
-        'SW': { port1: 'SOUTH', port2: 'WEST' }
-    };
-    
-    for (let i = 0; i < path.length; i++) {
-        const pos = path[i];
-        const key = `${pos.x},${pos.y}`;
-        const existing = existingTracks.get(key);
-
-        if (existing && (existing.type === 'station' || existing.station_id)) {
-            continue;
-        }
-
-        const diagonalType = diagonalPair[i % 2];
-        const ports = diagonalPorts[diagonalType];
-        let trackBits = diagonalBits[diagonalType];
-        
-        if (existing && existing.track_bits) {
-            trackBits = existing.track_bits | trackBits;
-        }
-        
-        if (FORBIDDEN_TRACK_BITS.has(trackBits)) {
-            console.warn(`[pathToDiagonalTracks] Skipping forbidden configuration (${trackBits}) at (${pos.x}, ${pos.y})`);
-            continue;
-        }
-        
-        tracks.push({
-            x: pos.x,
-            y: pos.y,
-            track_bits: trackBits,
-            directed_paths: [{ port1: ports.port1, port2: ports.port2, direction: 'both' }]
-        });
-    }
-
-    return tracks;
+    return opposite;
 }
 
 function getDirection(from, to) {

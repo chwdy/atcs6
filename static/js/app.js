@@ -7,6 +7,7 @@ class App {
         this.simulationInterval = null;
         this.currentNetwork = null;
         this.hasInitiallyCentered = false;
+        this.hasInitiallySelected = false;
         this.isSimulationRunning = false;
         this.selectedTrainId = null;
         this.lastLookaheadFetch = 0;
@@ -485,6 +486,16 @@ class App {
             this.renderer.drawNetwork(network);
             // Validate that the current editor still exists (close if deleted)
             this.editor.validateCurrentEditor();
+
+            // On first successful load, pre-select tile (0,0) so the Track Bits
+            // sidebar section has a track to show by default. selectElement
+            // handles the missing-tile case by creating a virtual empty tile.
+            if (!this.hasInitiallySelected && network.tracks) {
+                this.hasInitiallySelected = true;
+                this.editor.selectElement({ x: 0, y: 0 }).catch(e =>
+                    console.warn('[App] Initial select(0,0) failed:', e)
+                );
+            }
 
             // Sync play/pause button with server state
             if (typeof network.simulation_running === 'boolean') {

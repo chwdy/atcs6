@@ -161,19 +161,6 @@ class RendererTrackHandler {
             }
         }
 
-        if (trackBits === 0 && deadEndPorts.length === 0) {
-            this.ctx.fillStyle = color;
-            this.ctx.beginPath();
-            this.ctx.arc(0, 0, 5 * this.scale, 0, Math.PI * 2);
-            this.ctx.fill();
-
-            this.ctx.strokeStyle = '#222';
-            this.ctx.lineWidth = 2 * this.scale;
-            this.ctx.beginPath();
-            this.ctx.arc(0, 0, 3 * this.scale, 0, Math.PI * 2);
-            this.ctx.stroke();
-        }
-
         if (isCrossing(trackBits)) {
             this.ctx.fillStyle = '#8257e5';
             this.ctx.beginPath();
