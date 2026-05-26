@@ -85,13 +85,23 @@ class RouteTargetResolver:
         if task_count == 0:
             return None
 
-        next_index = self.compute_next_task_index(route, exec_state, task_count)
-        if next_index is None:
+        next_task_index = self.compute_next_task_index(
+            route, exec_state, task_count
+        )
+        if next_task_index is None:
             return None
 
-        task = route.get_task_at(next_index)
+        task = route.get_task_at(next_task_index)
         if task is None:
             return None
+
+        # `walk_position` in the projection is the list index into
+        # `exec_state.task_runs`, not the `Route.tasks` index — these
+        # decouple after CIRCULAR / ROUND_TRIP wraparound (design_new.md
+        # line 1104 + line 1267). The two values match only for the first
+        # walk and for ONE_OFF routes. Canonical helper lives on
+        # `RouteExecutionState.next_planning_walk_position`.
+        walk_position = exec_state.next_planning_walk_position
 
         # Canonical direction store on RouteRun is the literal string;
         # compute a local signed-int form for callers that still need it.
@@ -100,16 +110,16 @@ class RouteTargetResolver:
 
         if task.task_kind == "dwell":
             return ResolvedNextTaskProjection(
-                walk_position=next_index,
+                walk_position=walk_position,
                 task_kind="dwell",
                 direction=direction_str,
                 resolved_target=None,
             )
 
-        target_block = self.resolve_task_target_block(task)
+        target_block = self.resolve_task_target_block(task, train=train)
         if target_block is None:
             return ResolvedNextTaskProjection(
-                walk_position=next_index,
+                walk_position=walk_position,
                 task_kind=task.task_kind,
                 direction=direction_str,
                 resolved_target=None,
@@ -132,10 +142,19 @@ class RouteTargetResolver:
                     and ex.requested_destination_direction
                     == resolved.requested_destination_direction
                 ):
-                    return None
+                    # Per design_new.md (fix #14, part b): return a sentinel
+                    # projection with resolved_target=None so Phase 1 knows
+                    # "no more candidates this tick" without claiming a
+                    # terminal walk (which would finalize the run prematurely).
+                    return ResolvedNextTaskProjection(
+                        walk_position=walk_position,
+                        task_kind=task.task_kind,
+                        direction=direction_str,
+                        resolved_target=None,
+                    )
 
         return ResolvedNextTaskProjection(
-            walk_position=next_index,
+            walk_position=walk_position,
             task_kind=task.task_kind,
             direction=direction_str,
             resolved_target=resolved,
@@ -145,12 +164,24 @@ class RouteTargetResolver:
     # Task-location → block resolution
     # ------------------------------------------------------------------
 
-    def resolve_task_target_block(self, task: "RouteTask") -> Optional[str]:
+    def resolve_task_target_block(
+        self,
+        task: "RouteTask",
+        train: Optional["Train"] = None,
+    ) -> Optional[str]:
         """Resolve `task.task_location` to a concrete `block_id`.
 
         Per design_new.md line 1125, `task_location` is a tagged union of
         `BlockTarget | PlatformTarget | StationTarget`; this method
         dispatches on the variant rather than probing in order.
+
+        For `StationTarget`, when `train` is supplied, prefer a platform
+        whose block is not currently occupied by *another* train — this
+        keeps multi-platform stations from funneling every train onto the
+        first platform in the group. Falls back to the first resolvable
+        platform when every candidate is occupied (the dispatcher will then
+        report the conflict via `PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET`,
+        same as today).
         """
         e = self._e
         loc = getattr(task, "task_location", None)
@@ -172,11 +203,24 @@ class RouteTargetResolver:
             if station is None:
                 return None
             platform_ids = getattr(station, "platform_ids", []) or []
+            blocks = getattr(e.network, "blocks", {}) or {}
+            this_train_id = getattr(train, "train_id", None) if train is not None else None
+
+            fallback: Optional[str] = None
             for pid in platform_ids:
                 bid = self.platform_block_id(pid)
-                if bid:
-                    return bid
-            return None
+                if not bid:
+                    continue
+                if fallback is None:
+                    fallback = bid
+                block = blocks.get(bid)
+                if block is None:
+                    continue
+                occupant = getattr(block, "occupied_by", None)
+                if occupant and occupant != this_train_id:
+                    continue  # held by another train; try the next platform
+                return bid
+            return fallback
 
         # `task_location` is guaranteed to be one of the three tagged-union
         # variants by `RouteTask.__post_init__` -> `_coerce_task_location`;

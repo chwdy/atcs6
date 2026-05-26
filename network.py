@@ -258,6 +258,54 @@ class RailwayNetwork:
         dx, dy = offsets[edge]
         return (x + dx, y + dy)
 
+    def get_connection_edges(
+        self, tile_a: Tuple[int, int], tile_b: Tuple[int, int]
+    ) -> Optional[Tuple[str, str]]:
+        """Return the connecting edge pair for two orthogonally adjacent tiles.
+
+        Per design_new.md "Pathfinding home" (line 1864, 1948): answers two
+        questions at once — are the two tiles track-connected neighbors, and if
+        so, which edge on each tile connects to the other?
+
+        Args:
+            tile_a: (x, y) of the first tile.
+            tile_b: (x, y) of the second tile.
+
+        Returns:
+            ``(edge_on_a, edge_on_b)`` when the tiles are orthogonally adjacent
+            AND both have track segments whose edge sets include the connecting
+            edges. Returns ``None`` for non-adjacent tiles, diagonal neighbors,
+            or when either tile has no track or lacks the connecting edge.
+        """
+        _EDGE_OFFSETS: Dict[str, Tuple[int, int]] = {
+            "N": (0, 1),
+            "E": (1, 0),
+            "S": (0, -1),
+            "W": (-1, 0),
+        }
+        _OPPOSITE: Dict[str, str] = {"N": "S", "S": "N", "E": "W", "W": "E"}
+
+        ax, ay = tile_a
+        bx, by = tile_b
+        dx, dy = bx - ax, by - ay
+
+        # Build a reverse map from (dx, dy) -> edge name on tile_a.
+        _OFFSET_TO_EDGE = {v: k for k, v in _EDGE_OFFSETS.items()}
+        edge_a = _OFFSET_TO_EDGE.get((dx, dy))
+        if edge_a is None:
+            return None  # Not orthogonally adjacent (or same tile)
+
+        edge_b = _OPPOSITE[edge_a]
+
+        track_a = self.get_track(ax, ay)
+        track_b = self.get_track(bx, by)
+        if track_a is None or track_b is None:
+            return None
+        if edge_a not in track_a.edges or edge_b not in track_b.edges:
+            return None
+
+        return (edge_a, edge_b)
+
     def propagate_from_tile(self, x: int, y: int) -> None:
         """Propagate updates from a tile using BFS wave.
 
@@ -876,7 +924,6 @@ class RailwayNetwork:
             direction = DIR_FROM_EDGE[edge]
 
         DIR_TO_EDGE = {"NORTH": "N", "SOUTH": "S", "EAST": "E", "WEST": "W"}
-        OPPOSITE_EDGE = {"N": "S", "S": "N", "E": "W", "W": "E"}
         exit_edge = DIR_TO_EDGE.get(direction.name, "E")
 
         if exit_edge not in track.edges:
@@ -895,7 +942,19 @@ class RailwayNetwork:
         train_length_cm = self._get_train_length_cm(train)
         tile_length_cm = self._get_tile_length_cm(tile_x, tile_y)
 
-        entry_edge = OPPOSITE_EDGE[exit_edge]
+        # The entry edge is the OTHER end of the rail segment that has
+        # `exit_edge` as its exit — NOT the strict cardinal opposite. For a
+        # NW corner tile (N+W edges), exit=N means the train is sitting on
+        # the N→W rail and the body extends through the W edge; using
+        # OPPOSITE_EDGE[N]=S here would point at an edge the tile does not
+        # actually have. `get_entry_for_exit` respects rail topology and
+        # switch state.
+        entry_edge = track.get_entry_for_exit(exit_edge, use_switch_state=True)
+        if entry_edge is None:
+            raise ValueError(
+                f"Track at ({tile_x}, {tile_y}) has no rail segment that exits via {exit_edge}; "
+                f"cannot place train facing {direction.name}."
+            )
 
         # Head is at exit edge, so head_distance = tile_length
         head_tile = (tile_x, tile_y)
@@ -1122,15 +1181,19 @@ class RailwayNetwork:
             remaining_length = train_length_cm - accumulated_length
 
             if remaining_length <= prev_tile_length:
-                # Tail is in this tile
-                # Entry edge is where the train entered this tile when moving forward.
-                # We traced backward from head through backward_edge to reach prev_tile.
-                # So the train entered prev_tile from the same direction as backward_edge
-                # (e.g., if we went back through W, train entered prev_tile from W)
-                tail_entry_edge = backward_edge
+                # Tail is in this tile. The train exited prev_tile through
+                # opposite_edge to reach current_tile, so the entry edge is
+                # whichever edge has opposite_edge as its exit per the tile's
+                # rail topology — NOT the cardinal opposite, which is wrong
+                # for corner tiles (NW/SE/NE/SW).
+                if prev_coords in path_lookup:
+                    tail_entry_edge = path_lookup[prev_coords]
+                else:
+                    tail_entry_edge = prev_track.get_entry_for_exit(
+                        opposite_edge, use_switch_state=True
+                    ) or opposite_edge
                 tail_distance = prev_tile_length - remaining_length
 
-                # Insert at beginning (we're building tail-to-head list)
                 occupied.insert(0, prev_coords)
 
                 return (occupied, prev_coords, tail_distance, tail_entry_edge)

@@ -50,8 +50,15 @@ import io
 
 import pytest
 
-from bootstrap import bootstrap_runtime
+from bootstrap import bootstrap_runtime, get_current_scene_id
 from enums import TrainState
+
+if get_current_scene_id() != "demo_main":
+    pytest.skip(
+        f"Test built for scene 'demo_main'; active scene is "
+        f"{get_current_scene_id()!r}.",
+        allow_module_level=True,
+    )
 
 
 # --------------------------------------------------------------------------- #

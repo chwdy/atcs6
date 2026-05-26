@@ -227,6 +227,9 @@ class AtcLimitReasonCode(Enum):
     NO_CAB = "no_cab"
     WRONG_DIRECTION_CAB = "wrong_direction_cab"
     EB = "eb"
+    # Per design_new.md line 1728: used when the train or network object is
+    # not yet wired, so the empty anchor reports a structured reason code.
+    NO_TRAIN = "no_train"
 
 
 class HandlePosition(Enum):

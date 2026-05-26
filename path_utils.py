@@ -14,10 +14,130 @@ Key Concepts:
 - The dispatcher's `Path` is the source of truth; these helpers only validate.
 """
 
-from typing import List, Literal, Optional, Tuple, Dict, Any, Union
+from typing import List, Literal, Optional, Set, Tuple, Dict, Any, Union
 from dataclasses import dataclass, field
 
 from enums import Direction
+
+
+# =============================================================================
+# Graph walk types (canonical home per design_new.md lines 1864–1942)
+# =============================================================================
+
+
+@dataclass
+class GraphLocator:
+    """Tile-precise locator used by the operational graph query API.
+
+    Canonical home: design_new.md "Pathfinding home" subsection.
+
+    Fields:
+        tile: Tile coordinate anchoring the locator.
+        resource_type: Resource type containing the locator, when known.
+        resource_id: Resource ID containing the locator, when known.
+        block_id: Convenience block ID when the locator is inside a block;
+            None for switch-only locators.
+        edge: Tile edge when the locator is anchored at a graph boundary or
+            the caller knows the relevant edge.
+        distance_cm: In-tile distance from `edge` along the directed traversal
+            when the caller has a precise position; None for tile-only searches.
+        physical_end: Set only for current-train-span start locators so the
+            caller can apply the final `end_a` dead-heat tie-break outside the
+            graph query.
+    """
+
+    tile: Tuple[int, int]
+    resource_type: Optional[Literal["block", "switch"]] = None
+    resource_id: Optional[str] = None
+    block_id: Optional[str] = None
+    edge: Optional[Literal["N", "E", "S", "W"]] = None
+    distance_cm: Optional[float] = None
+    physical_end: Optional[Literal["end_a", "end_b"]] = None
+
+
+@dataclass
+class DirectedBlockFrame:
+    """Terminal directed block frame returned inside GraphWalkCandidate.
+
+    Canonical home: design_new.md "Pathfinding home" subsection.
+
+    Fields:
+        block_id: Block whose directed traversal is represented.
+        block_direction: Direction relative to Block.ordered_tiles.
+        path_tiles: Ordered tile slice through the block as (x, y, Direction)
+            tuples.
+        entry_edge: Edge by which the traversal enters the block frame.
+        exit_edge: Edge by which the traversal exits the block frame.
+    """
+
+    block_id: str
+    block_direction: Literal["forward", "reverse"]
+    path_tiles: List[Tuple[int, int, Direction]]
+    entry_edge: Literal["N", "E", "S", "W"]
+    exit_edge: Literal["N", "E", "S", "W"]
+
+
+@dataclass
+class GraphWalkStep:
+    """One resource step inside an ordered_walk list.
+
+    Canonical home: design_new.md "Pathfinding home" subsection.
+
+    Fields:
+        step_index: Zero-based step index inside ordered_walk.
+        resource_type: Resource traversed by this step.
+        resource_id: Block or switch ID for the traversed resource.
+        tile: Tile coordinate for this graph step.
+        entry_edge: Edge used to enter this tile/resource step.
+        exit_edge: Edge used to exit this tile/resource step.
+        block_id: Block ID when resource_type == "block".
+        block_direction: Block-relative traversal direction when the step is
+            inside a block.
+        switch_required_state: Required switch state for switch traversal when
+            topology search determines one.
+        length_cm: Physical length contribution of this step.
+    """
+
+    step_index: int
+    resource_type: Literal["block", "switch"]
+    resource_id: str
+    tile: Tuple[int, int]
+    entry_edge: Literal["N", "E", "S", "W"]
+    exit_edge: Literal["N", "E", "S", "W"]
+    block_id: Optional[str] = None
+    block_direction: Optional[Literal["forward", "reverse"]] = None
+    switch_required_state: Optional[int] = None
+    length_cm: float = 0.0
+
+
+@dataclass
+class GraphWalkQuery:
+    """Request payload for RailwayPathfinder.query_graph_walks(...).
+
+    Canonical home: design_new.md "Pathfinding home" subsection.
+
+    Fields:
+        start_locator: Tile-precise start locator.
+        end_locator: Tile-precise end locator.
+        switch_handling: Whether the search respects current Switch.position
+            or searches topology-only for later acquisition.
+        requested_destination_direction: Optional terminal direction filter;
+            candidates whose terminal traversal does not match are rejected.
+        exclude_resources: Optional set of resource IDs to exclude from the
+            search (used by retry / extension logic).
+        return_tiles: Whether to populate GraphWalkCandidate.ordered_tiles.
+        return_blocks: Whether to populate GraphWalkCandidate.ordered_blocks.
+    """
+
+    start_locator: GraphLocator
+    end_locator: GraphLocator
+    switch_handling: Literal["respect_current_state", "topology_only"] = (
+        "topology_only"
+    )
+    requested_destination_direction: Optional[Literal["forward", "reverse"]] = None
+    exclude_resources: Optional[Set[str]] = None
+    return_tiles: bool = True
+    return_blocks: bool = True
 
 
 @dataclass(order=False)
@@ -58,6 +178,30 @@ class GraphWalkCandidate:
     # `Path.resource_sequence` and `metadata` for diagnostics.
     walk: Optional[Any] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # --- New fields added by #25 canonical API (design_new.md 1868-1880) ---
+
+    # Canonical directed walk over graph steps in traversal order. Each step
+    # contains enough resource/tile/frame data for dispatcher acquisition,
+    # route target comparison, and later distance projection.
+    ordered_walk: Optional[List[GraphWalkStep]] = None
+    # Ordered tile IDs for callers that requested tile payload. None when
+    # return_tiles=False in the originating GraphWalkQuery.
+    ordered_tiles: Optional[List[Tuple[int, int]]] = None
+    # Ordered block IDs visited by the walk. None when return_blocks=False.
+    ordered_blocks: Optional[List[str]] = None
+    # The resolved tile-precise start locator used by the graph search.
+    start_locator: Optional[GraphLocator] = None
+    # The resolved tile-precise terminal locator reached by the candidate.
+    terminal_locator: Optional[GraphLocator] = None
+    # Block ID of the terminal block reached by the candidate.
+    terminal_block_id: Optional[str] = None
+    # Terminal block-relative traversal direction derived from the candidate's
+    # directed frame against Block.ordered_tiles.
+    terminal_block_direction: Optional[Literal["forward", "reverse"]] = None
+    # Terminal directed block frame, including path tiles plus entry_edge /
+    # exit_edge metadata needed by dispatcher/controller projection helpers.
+    terminal_frame: Optional[DirectedBlockFrame] = None
 
     def comparison_key(self) -> Tuple[int, float, int, int]:
         """Return the sortable tuple for canonical candidate comparison.

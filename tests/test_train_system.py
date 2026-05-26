@@ -835,6 +835,7 @@ class TestTrainStateTransitions:
 
     def test_depart_transition(self):
         """Test depart() transitions READY -> RUNNING_MOVING (manual mode)."""
+        from unittest.mock import MagicMock
         train, controller, network = create_test_train_with_controller(
             state=TrainState.READY
         )
@@ -843,8 +844,15 @@ class TestTrainStateTransitions:
         # Manual depart now requires a cab to be selected explicitly.
         controller.commands.control_mode = "manual"
         controller.commands.cab = "A"
-        result = controller.depart()
-        assert result is True
+        # Per design_new.md line 1812: depart() requires an active path plan.
+        # Stub the path dispatcher to satisfy the received_path_plan precondition.
+        mock_plan = MagicMock()
+        mock_dispatcher = MagicMock()
+        mock_dispatcher.get_active_path.return_value = mock_plan
+        controller.path_dispatcher = mock_dispatcher
+        success, reason = controller.depart()
+        assert success is True
+        assert reason is None
         assert controller.ops.state == TrainState.RUNNING_MOVING
 
 
@@ -872,21 +880,38 @@ class TestTrainStateTransitions:
 
     def test_depart_fails_without_direction(self):
         """Test depart() fails without facing direction."""
+        from unittest.mock import MagicMock
         train, controller, network = create_test_train_with_controller(
             state=TrainState.READY
         )
+        # Per design_new.md line 1812: depart() requires an active path plan
+        # before checking other preconditions (direction, state).
+        mock_plan = MagicMock()
+        mock_dispatcher = MagicMock()
+        mock_dispatcher.get_active_path.return_value = mock_plan
+        controller.path_dispatcher = mock_dispatcher
+        controller.commands.control_mode = "manual"
+        controller.commands.cab = "A"
         train.position = None
-        result = controller.depart()
-        assert result is False
+        success, reason = controller.depart()
+        assert success is False
+        assert reason is not None
 
     def test_depart_fails_from_wrong_state(self):
-        """Test depart() fails from non-STANDBY state."""
+        """Test depart() fails from non-READY/RUNNING_MOVING state (e.g. AT_STATION)."""
+        from unittest.mock import MagicMock
         train, controller, network = create_test_train_with_controller(
-            state=TrainState.READY
+            state=TrainState.RUNNING_AT_STATION
         )
+        # Per design_new.md line 1812: depart() requires an active path plan.
+        mock_plan = MagicMock()
+        mock_dispatcher = MagicMock()
+        mock_dispatcher.get_active_path.return_value = mock_plan
+        controller.path_dispatcher = mock_dispatcher
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
-        result = controller.depart()
-        assert result is False
+        success, reason = controller.depart()
+        assert success is False
+        assert reason is not None
 
 
 
@@ -1075,9 +1100,16 @@ class TestCompleteStateFlows:
         assert controller.commands.set_cab("A").success is True
         assert controller.ops.state == TrainState.READY
 
-        # Depart (manual mode to bypass ATO auto-cab selection)
+        # Depart (manual mode to bypass ATO auto-cab selection).
+        # Per design_new.md line 1812: depart() now returns (bool, Optional[str]).
+        from unittest.mock import MagicMock
         controller.commands.control_mode = "manual"
-        assert controller.depart() is True
+        mock_plan = MagicMock()
+        mock_dispatcher = MagicMock()
+        mock_dispatcher.get_active_path.return_value = mock_plan
+        controller.path_dispatcher = mock_dispatcher
+        success, _ = controller.depart()
+        assert success is True
         assert controller.ops.state == TrainState.RUNNING_MOVING
 
     def test_running_to_station_to_complete_flow(self):
@@ -1101,11 +1133,17 @@ class TestCompleteStateFlows:
 
         # Simulate moving and arriving at final station
         # Need to set controller state too for proper flow
+        from unittest.mock import MagicMock
         train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
         # Use manual mode to test depart (not ATO auto-cab logic). Manual
         # depart now requires a cab to be selected explicitly.
         controller.commands.control_mode = "manual"
         controller.commands.cab = "A"
+        # Per design_new.md line 1812: depart() requires an active path plan.
+        mock_plan = MagicMock()
+        mock_dispatcher = MagicMock()
+        mock_dispatcher.get_active_path.return_value = mock_plan
+        controller.path_dispatcher = mock_dispatcher
         controller.depart()
         assert controller.ops.state == TrainState.RUNNING_MOVING
 

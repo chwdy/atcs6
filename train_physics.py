@@ -104,7 +104,6 @@ class TrainPhysics:
 
     # Track last occupied blocks for delta calculations
     _last_occupied_blocks: Set[str] = field(default_factory=set)
-    _caution_blocks: Set[str] = field(default_factory=set)
     last_block_transitions: Dict[str, Set[str]] = field(
         default_factory=lambda: {"entered": set(), "vacated": set()}
     )
@@ -257,10 +256,9 @@ class TrainPhysics:
         # `BlockManager.on_block_tail_vacated(...)` / `occupy_blocks(...)`.
         self._update_block_occupancy(train)
         logger.debug(
-            "[TrainPhysics %s] occupied_blocks=%s caution_blocks=%s",
+            "[TrainPhysics %s] occupied_blocks=%s",
             self.train_id,
             sorted(self._get_blocks_for_train(train)),
-            sorted(self._caution_blocks),
         )
 
         # 12. Build and emit per-boundary PhysicsSpanUpdate callbacks plus
@@ -613,27 +611,59 @@ class TrainPhysics:
         new_occupied_tiles: List[Tuple[int, int]],
     ) -> List[TileTraversal]:
         """Compute per-tile traversal frames for tiles newly covered by the
-        post-move span. Walk forward from the post-move tail through the new
-        occupied tile chain so every added tile gets a directed entry/exit
-        edge in physical traversal order."""
+        post-move span.
+
+        Per the design contract ("when the train head enters a resource,
+        that future reservation/lock is consumed"), every tile the head
+        traversed during this tick must produce an `entered_resources`
+        event, even when the body's `occupied_tiles` diff misses it.
+        Zero-length resources, and tiles the head fully passes through in
+        a single tick, are the two cases that need this guarantee.
+
+        Emission order (physical traversal order):
+          1. Head-swept tiles that the body never came to cover — emitted
+             in the order `_advance_end` walked them, so the controller
+             sees them in physical head-traversal order.
+          2. Tiles the body settled into (new − prev) — walked from the
+             post-move tail forward along the rail.
+        """
         prev_set = set(prev_occupied_tiles)
         new_set = set(new_occupied_tiles)
-        added_set = new_set - prev_set
-        if not added_set:
-            return []
+        body_added = new_set - prev_set
 
         train = self._get_train()
         if not train or not train.position:
             return []
 
-        # Walk from the post-move tail forward; this covers every tile in the
-        # new span, including the new head-side additions.
-        tail_locator = self._get_tail_locator(train)
-        if tail_locator is None:
-            return []
+        # 1. Head-swept tiles missed by the body diff. Emitted in
+        # walk order so the controller observes them in the physical
+        # sequence the head crossed.
+        swept = getattr(self, "_head_swept_traversals", []) or []
+        seen: Set[Tuple[int, int]] = set()
+        head_swept_frames: List[TileTraversal] = []
+        for tile, entry_edge, exit_edge in swept:
+            if tile in prev_set or tile in new_set:
+                continue
+            if tile in seen:
+                continue
+            seen.add(tile)
+            head_swept_frames.append(
+                self._make_tile_traversal(tile, entry_edge, exit_edge)
+            )
 
-        tail_tile, tail_entry = tail_locator
-        return self._walk_tile_frames(tail_tile, tail_entry, added_set)
+        # 2. Body-diff additions — walk from the post-move tail. This
+        # covers tiles the body settled into and any tile the head
+        # crossed that the body now covers.
+        body_frames: List[TileTraversal] = []
+        if body_added:
+            tail_locator = self._get_tail_locator(train)
+            if tail_locator is not None:
+                tail_tile, tail_entry = tail_locator
+                body_frames = self._walk_tile_frames(
+                    tail_tile, tail_entry, body_added
+                )
+
+        return head_swept_frames + body_frames
 
     def _build_removed_tile_traversals(
         self,
@@ -642,19 +672,48 @@ class TrainPhysics:
         prev_tail_locator: Optional[Tuple[Tuple[int, int], str]],
     ) -> List[TileTraversal]:
         """Compute per-tile traversal frames for tiles vacated since the
-        previous tick. Walk forward from the pre-move tail; the vacated tiles
-        emerge in tail-vacate order (closest to old tail first)."""
+        previous tick.
+
+        Same zero-length-resource and fast-sweep cases as
+        `_build_added_tile_traversals`: tiles the tail traversed during
+        this tick but the body never straddled at a tick boundary must
+        still produce a `tail_vacated_resources` event so the resource's
+        physical `occupied_by` clears. `_move_train` records those in
+        ``_tail_swept_traversals``.
+
+        Emission order (physical tail-vacate order):
+          1. Body-diff vacated tiles (prev − new) — walked from the
+             pre-move tail forward; tiles emerge closest-to-old-tail first.
+          2. Tail-swept tiles the body never covered at a tick boundary
+             — emitted in the order `_move_train` recorded them.
+        """
         prev_set = set(prev_occupied_tiles)
         new_set = set(new_occupied_tiles)
-        removed_set = prev_set - new_set
-        if not removed_set:
-            return []
+        body_removed = prev_set - new_set
 
-        if prev_tail_locator is None:
-            return []
+        # 1. Body-diff vacated frames.
+        body_frames: List[TileTraversal] = []
+        if body_removed and prev_tail_locator is not None:
+            prev_tail_tile, prev_tail_entry = prev_tail_locator
+            body_frames = self._walk_tile_frames(
+                prev_tail_tile, prev_tail_entry, body_removed
+            )
 
-        prev_tail_tile, prev_tail_entry = prev_tail_locator
-        return self._walk_tile_frames(prev_tail_tile, prev_tail_entry, removed_set)
+        # 2. Tail-swept tiles the body diff missed. Emit in walk order.
+        swept = getattr(self, "_tail_swept_traversals", []) or []
+        seen: Set[Tuple[int, int]] = set()
+        tail_swept_frames: List[TileTraversal] = []
+        for tile, entry_edge, exit_edge in swept:
+            if tile in new_set or tile in prev_set:
+                continue
+            if tile in seen:
+                continue
+            seen.add(tile)
+            tail_swept_frames.append(
+                self._make_tile_traversal(tile, entry_edge, exit_edge)
+            )
+
+        return body_frames + tail_swept_frames
 
     def _group_traversals_by_resource(
         self, traversals: List[TileTraversal]
@@ -812,6 +871,26 @@ class TrainPhysics:
 
         position = train.position
 
+        # Reset head-swept traversal log for this move. `_advance_end`
+        # appends to this list every tile the head crosses, including
+        # zero-length resources and tiles the head fully passes within a
+        # single tick. Consumed below by `_build_added_tile_traversals` so
+        # those tiles still produce `entered_resources` events even though
+        # the body's `occupied_tiles` diff misses them.
+        self._head_swept_traversals: List[Tuple[Tuple[int, int], str, str]] = []
+
+        # Capture the pre-move tail location so we can derive tail-swept
+        # tiles (the tail counterpart to head-swept) below. Same rationale
+        # as head-swept — the body diff misses zero-length tiles that the
+        # tail clears within a single tick, and without an entry on
+        # `tail_vacated_resources` the switch's `occupied_by` never clears.
+        if position.leading_end == LeadingEnd.A:
+            prev_tail_tile = position.end_b_tile
+            prev_tail_entry = position.end_b_entry_edge
+        else:
+            prev_tail_tile = position.end_a_tile
+            prev_tail_entry = position.end_a_entry_edge
+
         # Determine which end is head based on leading_end
         if position.leading_end == LeadingEnd.A:
             # end_a is head
@@ -838,6 +917,73 @@ class TrainPhysics:
         self._update_tail_position(train)
 
         self._update_occupied_tiles(train)
+
+        # Compute tail-swept tiles for this tick by walking forward from
+        # the pre-move tail by `distance_cm` along the rail. The tail
+        # always advances by the same physical distance as the head, so
+        # this walk covers every tile the tail crossed during the tick
+        # (including zero-length tiles the body never straddled at a
+        # tick boundary). Used by `_build_removed_tile_traversals`.
+        self._tail_swept_traversals = self._collect_swept_tiles_forward(
+            prev_tail_tile, prev_tail_entry, distance_cm
+        )
+
+    def _collect_swept_tiles_forward(
+        self,
+        start_tile: Tuple[int, int],
+        start_entry_edge: str,
+        distance_cm: float,
+    ) -> List[Tuple[Tuple[int, int], str, str]]:
+        """Walk forward from `start_tile` (entered via `start_entry_edge`)
+        for `distance_cm` along the rail, returning each tile the walker
+        leaves behind (i.e., every tile passed through except the final
+        one the walker stops in). Used to derive tail-swept tiles —
+        zero-length tiles in particular need this because they never enter
+        the body's `occupied_tiles` set.
+        """
+        swept: List[Tuple[Tuple[int, int], str, str]] = []
+        if distance_cm <= 0:
+            return swept
+
+        current_tile = start_tile
+        current_entry = start_entry_edge
+        remaining = distance_cm
+
+        max_iterations = 100
+        for _ in range(max_iterations):
+            tile_length = self._get_tile_length_cm(current_tile)
+
+            # Zero-length tile: the walker passes straight through. Record
+            # the tile as swept and continue. Bail if rail topology can't
+            # resolve an exit.
+            if tile_length <= 0:
+                exit_edge = self._calculate_exit_edge(current_tile, current_entry)
+                if not exit_edge:
+                    break
+                next_tile = self._get_neighbor_tile(current_tile, exit_edge)
+                if next_tile is None:
+                    break
+                swept.append((current_tile, current_entry, exit_edge))
+                current_tile = next_tile
+                current_entry = OPPOSITE_EDGES[exit_edge]
+                continue
+
+            if remaining < tile_length:
+                # Walker stops inside this tile; don't record it as swept.
+                break
+
+            remaining -= tile_length
+            exit_edge = self._calculate_exit_edge(current_tile, current_entry)
+            if not exit_edge:
+                break
+            next_tile = self._get_neighbor_tile(current_tile, exit_edge)
+            if next_tile is None:
+                break
+            swept.append((current_tile, current_entry, exit_edge))
+            current_tile = next_tile
+            current_entry = OPPOSITE_EDGES[exit_edge]
+
+        return swept
 
     def _advance_end(
         self,
@@ -879,6 +1025,18 @@ class TrainPhysics:
                     self._force_stop = True
                     break
 
+                # Record this zero-length tile as a tile the head traversed
+                # this tick. Without this, zero-length switches/blocks would
+                # never produce an `entered_resources` event — the body
+                # diff (`new_occupied_tiles - prev_occupied_tiles`) skips
+                # them because no body tile ever covers them at a tick
+                # boundary, and the design contract ("when the train head
+                # enters a resource, that future reservation/lock is
+                # consumed") would be violated.
+                self._head_swept_traversals.append(
+                    (new_tile, new_entry_edge, exit_edge)
+                )
+
                 new_tile = next_tile
                 new_entry_edge = OPPOSITE_EDGES[exit_edge]
                 continue
@@ -903,6 +1061,15 @@ class TrainPhysics:
                 new_distance = tile_length
                 self._force_stop = True
                 break
+
+            # Record this fully-traversed tile as one the head crossed
+            # during the tick. Non-zero-length tiles that the head sweeps
+            # entirely past in a single tick (high-speed / short-tile case)
+            # would otherwise be skipped by the body-diff added_set the
+            # same way zero-length tiles are.
+            self._head_swept_traversals.append(
+                (new_tile, new_entry_edge, exit_edge)
+            )
 
             # Move to next tile
             new_tile = next_tile

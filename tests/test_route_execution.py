@@ -11,13 +11,16 @@ This module tests:
 
 import pytest
 from train_route import (
+    BlockTarget,
     PlatformTarget,
     Route,
     RouteMode,
     RouteRunStatus,
     RouteTask,
+    RouteTaskRun,
 )
 from route_executor import RouteExecutor, RouteExecutionState
+from runtime_payloads import ResolvedRouteTarget, ResourceEvent
 from train import Train
 from tests.train_test_helpers import make_train_position
 from network import RailwayNetwork
@@ -283,3 +286,214 @@ class TestRouteExecutorCompatibilityBugFixes:
 
         assert ("T_A", "ROUTE_A") in pair_ids
         assert ("T_B", "ROUTE_B") in pair_ids
+
+
+class TestRouteCallbacksWrapAround:
+    """Regression tests for the `task_runs` list-index vs `Route.tasks`
+    index conflation in Phase-3 callbacks.
+
+    Per design_new.md line 1104 + line 1267, `walk_position` (the list
+    index in `RouteRun.task_runs`) and `task_index` (the index into
+    `Route.tasks`) decouple after `CIRCULAR` / `ROUND_TRIP` wrap-around
+    once `len(task_runs) > len(Route.tasks)`. The callbacks must index
+    `task_runs` by list position, never by `task_index`, or they will
+    silently target an already-finished early row from a prior walk.
+    """
+
+    @pytest.fixture
+    def wrap_around_scenario(self):
+        """Build a 2-stop CIRCULAR route mid-second-wrap.
+
+        Route.tasks: [stop_A (BLK_A), stop_B (BLK_B)], CIRCULAR.
+        exec_state.task_runs after the first wrap and starting the second:
+          [0] task_index=0 finished (visit 1 to A) — already done
+          [1] task_index=1 finished (visit 1 to B) — already done
+          [2] task_index=0 in-flight (visit 2 to A) — current target
+
+        The currently in-flight stop_A is at list position 2 but shares
+        `task_index = 0` with the already-finished row at list position 0.
+        """
+        network = RailwayNetwork()
+        network.blocks = {"BLK_A": object(), "BLK_B": object()}
+
+        route = Route(
+            route_id="ROUTE_WRAP",
+            name="Wrap-around",
+            mode=RouteMode.CIRCULAR,
+            tasks=[
+                RouteTask(
+                    task_kind="stop",
+                    task_location=BlockTarget(block_id="BLK_A"),
+                    task_direction="forward",
+                ),
+                RouteTask(
+                    task_kind="stop",
+                    task_location=BlockTarget(block_id="BLK_B"),
+                    task_direction="forward",
+                ),
+            ],
+        )
+        route.activate(0.0)
+        route.assign_train("T_WRAP")
+
+        train = Train(train_id="T_WRAP")
+        train.position = make_train_position((0, 0), Direction.EAST)
+        network.trains[train.train_id] = train
+
+        executor = RouteExecutor(network)
+        executor.register_route(route)
+
+        exec_state = RouteExecutionState(
+            train_id=train.train_id,
+            route_id=route.route_id,
+            started_at=0.0,
+            task_runs=[
+                RouteTaskRun(
+                    task_index=0,
+                    finished_at=10.0,
+                    resolved_target=ResolvedRouteTarget(
+                        requested_destination_block_id="BLK_A",
+                        requested_destination_direction="forward",
+                    ),
+                ),
+                RouteTaskRun(
+                    task_index=1,
+                    finished_at=20.0,
+                    resolved_target=ResolvedRouteTarget(
+                        requested_destination_block_id="BLK_B",
+                        requested_destination_direction="forward",
+                    ),
+                ),
+                RouteTaskRun(
+                    task_index=0,
+                    finished_at=None,
+                    resolved_target=ResolvedRouteTarget(
+                        requested_destination_block_id="BLK_A",
+                        requested_destination_direction="forward",
+                    ),
+                ),
+            ],
+        )
+        executor.execution_states[train.train_id] = exec_state
+
+        return executor, exec_state, train, route
+
+    def test_next_planning_walk_position_decouples_after_wrap(
+        self, wrap_around_scenario
+    ):
+        """The list-index and task-index cursors decouple after wrap."""
+        _executor, exec_state, _train, _route = wrap_around_scenario
+        assert exec_state.next_planning_index == 0
+        assert exec_state.next_planning_walk_position == 2
+
+    def test_handle_path_completion_writes_to_current_walk_row(
+        self, wrap_around_scenario
+    ):
+        """Path completion must update list position 2 (the current
+        in-flight stop_A), not list position 0 (the already-finished
+        first-wrap visit that shares `task_index = 0`)."""
+        executor, exec_state, train, _route = wrap_around_scenario
+
+        ok = executor.handle_path_completion(
+            train_id=train.train_id,
+            path_id="P_X",
+            authority_end_block_id="BLK_A",
+            requested_destination_direction="forward",
+            event_time=30.0,
+        )
+
+        assert ok is True
+        assert exec_state.task_runs[2].finished_at == 30.0
+        # Already-finished rows must NOT have been touched.
+        assert exec_state.task_runs[0].finished_at == 10.0
+        assert exec_state.task_runs[1].finished_at == 20.0
+        # Wrap-append: the next walk-position for CIRCULAR is appended
+        # at list position 3 with task_index=1 (back to stop_B).
+        assert len(exec_state.task_runs) == 4
+        assert exec_state.task_runs[3].task_index == 1
+        assert exec_state.task_runs[3].finished_at is None
+
+    def test_handle_train_advanced_writes_to_current_walk_row(self):
+        """The head-advance callback also indexes `task_runs` by list
+        position via `projection.walk_position`. Lock that in with a
+        wrap-around exec_state whose in-flight waypoint shares
+        `task_index` with an already-finished early row."""
+        network = RailwayNetwork()
+        network.blocks = {"BLK_A": object(), "BLK_B": object()}
+
+        route = Route(
+            route_id="ROUTE_WRAP_WP",
+            name="Wrap-around waypoint",
+            mode=RouteMode.CIRCULAR,
+            tasks=[
+                RouteTask(
+                    task_kind="waypoint",
+                    task_location=BlockTarget(block_id="BLK_A"),
+                    task_direction="forward",
+                ),
+                RouteTask(
+                    task_kind="stop",
+                    task_location=BlockTarget(block_id="BLK_B"),
+                    task_direction="forward",
+                ),
+            ],
+        )
+        route.activate(0.0)
+        route.assign_train("T_WP")
+
+        train = Train(train_id="T_WP")
+        train.position = make_train_position((0, 0), Direction.EAST)
+        network.trains[train.train_id] = train
+
+        executor = RouteExecutor(network)
+        executor.register_route(route)
+
+        exec_state = RouteExecutionState(
+            train_id=train.train_id,
+            route_id=route.route_id,
+            started_at=0.0,
+            task_runs=[
+                RouteTaskRun(
+                    task_index=0,
+                    finished_at=10.0,
+                    resolved_target=ResolvedRouteTarget(
+                        requested_destination_block_id="BLK_A",
+                        requested_destination_direction="forward",
+                    ),
+                ),
+                RouteTaskRun(
+                    task_index=1,
+                    finished_at=20.0,
+                    resolved_target=ResolvedRouteTarget(
+                        requested_destination_block_id="BLK_B",
+                        requested_destination_direction="forward",
+                    ),
+                ),
+                RouteTaskRun(
+                    task_index=0,
+                    finished_at=None,
+                    resolved_target=ResolvedRouteTarget(
+                        requested_destination_block_id="BLK_A",
+                        requested_destination_direction="forward",
+                    ),
+                ),
+            ],
+        )
+        executor.execution_states[train.train_id] = exec_state
+
+        assert exec_state.next_planning_walk_position == 2
+
+        executor.handle_train_advanced(
+            train_id=train.train_id,
+            path_id="P_X",
+            resource_event=ResourceEvent(
+                sequence_index=None,
+                resource_type="block",
+                resource_id="BLK_A",
+                exit_edge="forward",
+            ),
+        )
+
+        assert exec_state.task_runs[2].finished_at is not None
+        assert exec_state.task_runs[0].finished_at == 10.0
+        assert exec_state.task_runs[1].finished_at == 20.0

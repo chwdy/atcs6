@@ -232,9 +232,16 @@ class TestAtoDepartCallsAtoGo:
         controller.ato.running = False
 
 
-        # depart() is called by RouteExecutor
-        result = controller.depart()
-        assert result is True
+        # depart() is called by RouteExecutor.
+        # Per design_new.md line 1812: depart() requires an active path plan.
+        from unittest.mock import MagicMock
+        mock_plan = MagicMock()
+        mock_dispatcher = MagicMock()
+        mock_dispatcher.get_active_path.return_value = mock_plan
+        controller.path_dispatcher = mock_dispatcher
+        # depart() now returns (bool, Optional[str]) per design_new.md line 1812.
+        success, reason = controller.depart()
+        assert success is True
 
         # In ATO mode, depart() calls ato_go(), so ato_running should be True
         assert controller.ato.running is True

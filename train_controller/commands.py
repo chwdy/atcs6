@@ -13,11 +13,12 @@ External callers access operator-command state and behavior as:
   - ``controller.commands.control_mode`` (``'ato'`` / ``'manual'``)
   - ``controller.commands.command_inbox`` (list of pending ``Command``s)
   - ``controller.commands.drain_order`` (canonical FIFO drain order)
-  - ``controller.commands.power_on_cmd()`` / ``power_off_cmd()``
+  - ``controller.commands.power_on_cmd()``
   - ``controller.commands.set_cab(cab)`` / ``set_mode(mode)``
-  - ``controller.commands.set_handle(position)``
   - ``controller.commands.set_manual_mode_type(mode_type)``
+  - ``controller.commands.set_handle(position)``
   - ``controller.commands.set_manual_power_percent(percent)``
+  - ``controller.commands.power_off_cmd()``
   - ``controller.commands.enqueue_command(kind, payload)``
 
 The setters orchestrate writes across multiple sub-modules

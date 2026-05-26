@@ -1,0 +1,438 @@
+"""
+Demo 3: Three-Station NE-Zigzag Double-Track Loop
+
+Layout (rendered horizontally on the rotated screen):
+
+  ┌── S1-N ──┐   ┌── S2-N ──┐   ┌── S3-N ──┐
+  ├──────────┤───X1───├──────────┤───X2───├──────────┤   ← N track (NW-side)
+  │          │        │          │        │          │
+  ├──────────┤───X1───├──────────┤───X2───├──────────┤   ← S track (SE-side)
+  └── S1-S ──┘        └── S2-S ──┘        └── S3-S ──┘
+
+  Each platform spans 3 zigzag tiles (60 cm). Between stations:
+    30 cm plain block (per track) → 1-tile scissors crossover (shared) → 30 cm plain block.
+
+  S1, S3 = island-style platforms (each track's platform faces the other track).
+  S2     = side platforms (each track's platform faces outward).
+
+Route (CIRCULAR, all 4 trains share it):
+  STN_1 → dwell 2s → PLT_S2_S → dwell 2s → STN_3 → dwell 2s → PLT_S2_N → dwell 2s → loop.
+
+Initial placement:
+  T1 at S1-S (facing N, next stop S2-S)
+  T2 at S2-S (facing N, next stop S3)
+  T3 at S3-N (facing W, next stop S2-N)
+  T4 at S2-N (facing W, next stop S1)
+"""
+
+from network import RailwayNetwork
+from track import (
+    TrackSegment,
+    TRACK_NS,
+    TRACK_EW,
+    TRACK_NE,
+    TRACK_NW,
+    TRACK_SE,
+    TRACK_SW,
+)
+from path_dispatcher import PathDispatcher
+from railway_signal import SignalType
+from switch import Switch
+
+
+# Identifier read by bootstrap.py and by scene-gated tests to recognise this
+# scene. Each scene module declares its own ID; tests compare against the
+# active scene (see bootstrap.get_current_scene_id) to decide whether to run.
+SCENE_ID = "demo_3"
+
+
+# Scissors crossover bit pattern (NS + EW straights + NW + SE diagonals).
+# At the crossover tile this lets:
+#   S track  go S→E (SE bit, stay on S)
+#   N track  go W→N (NW bit, stay on N)
+#   S→N swap S→N (NS bit, straight through)
+#   N→S swap W→E (EW bit, straight through)
+SCISSORS_BITS = TRACK_NS | TRACK_EW | TRACK_NW | TRACK_SE  # = 27
+
+
+# ============= Demo Functions =============
+
+
+def test_block_validation():
+    """Test that block validation rules are working correctly.
+
+    Same checks as demo_main.test_block_validation — kept verbatim so the
+    server's startup tests still pass after `import demo_3 as demo_main`.
+    """
+    print("\n" + "=" * 70)
+    print("Testing Block Validation Rules...")
+    print("=" * 70)
+
+    test_network = RailwayNetwork()
+
+    for x in range(8):
+        test_network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+
+    print("\n[TEST 1] Verifying disconnected tracks are rejected...")
+    try:
+        test_network.create_block_with_tracks(
+            block_id="TEST_DISCONNECTED",
+            positions=[(0, 0), (4, 0)],
+            name="Test",
+        )
+        assert False, "Should have raised ValueError for disconnected tracks"
+    except ValueError as e:
+        assert "not continuous" in str(e).lower(), f"Wrong error message: {e}"
+        print(f"  ✓ Correctly rejected: {e}")
+
+    print("\n[TEST 2] Verifying switches cannot be in blocks...")
+    switch_track = TrackSegment(5, 0, track_bits=TRACK_EW | TRACK_NE)
+    test_network.add_track(switch_track)
+    switch = Switch(switch_id="SW_5_0", x=5, y=0)
+    test_network.add_switch(switch)
+    switch_track.switch_id = switch.switch_id
+    try:
+        test_network.create_block_with_tracks(
+            block_id="TEST_WITH_SWITCH",
+            positions=[(3, 0), (4, 0), (5, 0)],
+            name="Test",
+        )
+        assert False, "Should have raised ValueError for switch in block"
+    except ValueError as e:
+        assert "switch" in str(e).lower(), f"Wrong error message: {e}"
+        print(f"  ✓ Correctly rejected: {e}")
+
+    print("\n[TEST 3] Verifying duplicate block IDs are rejected...")
+    test_network.create_block_with_tracks(
+        block_id="TEST_BLOCK_1", positions=[(0, 0), (1, 0)], name="Test Block 1"
+    )
+    try:
+        test_network.create_block_with_tracks(
+            block_id="TEST_BLOCK_1",
+            positions=[(6, 0)],
+            name="Test",
+        )
+        assert False, "Should have raised ValueError for duplicate block ID"
+    except ValueError as e:
+        assert "already exists" in str(e).lower(), f"Wrong error message: {e}"
+        print(f"  ✓ Correctly rejected: {e}")
+
+    print("\n" + "=" * 70)
+    print("✓ Block Validation Tests Passed")
+    print("=" * 70)
+
+
+# Track-tile layout. Each entry: (x, y, bits, role).
+# S track runs SE-side of the corridor; N track runs NW-side.
+# Both tracks zig-zag NE overall (the y=x line — appears horizontal on the
+# rotated isometric screen).
+
+S_TRACK_TILES = [
+    (1, 0, TRACK_NW, "S1_S_t1"),
+    (1, 1, TRACK_SE, "S1_S_t2"),
+    (2, 1, TRACK_NW, "S1_S_t3"),
+    (2, 2, TRACK_NS, "BLK_S1_S_TO_X1"),   # NS detour up to crossover X1
+    # (2, 3) is crossover X1 — added separately below.
+    (3, 3, TRACK_EW, "BLK_X1_TO_S2_S"),   # EW detour out of X1 toward S2-S
+    (4, 3, TRACK_NW, "S2_S_t1"),
+    (4, 4, TRACK_SE, "S2_S_t2"),
+    (5, 4, TRACK_NW, "S2_S_t3"),
+    (5, 5, TRACK_NS, "BLK_S2_S_TO_X2"),   # NS detour up to crossover X2
+    # (5, 6) is crossover X2.
+    (6, 6, TRACK_EW, "BLK_X2_TO_S3_S"),   # EW detour out of X2 toward S3-S
+    (7, 6, TRACK_NW, "S3_S_t1"),
+    (7, 7, TRACK_SE, "S3_S_t2"),
+    (8, 7, TRACK_NW, "S3_S_t3"),
+]
+
+# N track is offset (-1, +1) from S track on every tile (NW direction).
+N_TRACK_TILES = [
+    (0, 1, TRACK_NW, "S1_N_t1"),
+    (0, 2, TRACK_SE, "S1_N_t2"),
+    (1, 2, TRACK_NW, "S1_N_t3"),
+    (1, 3, TRACK_SE, "BLK_S1_N_TO_X1"),   # natural SE zigzag — enters X1 from W
+    # (2, 3) is crossover X1 — N track passes through via NW bit.
+    (2, 4, TRACK_SE, "BLK_X1_TO_S2_N"),   # natural SE zigzag — exits X1 to N
+    (3, 4, TRACK_NW, "S2_N_t1"),
+    (3, 5, TRACK_SE, "S2_N_t2"),
+    (4, 5, TRACK_NW, "S2_N_t3"),
+    (4, 6, TRACK_SE, "BLK_S2_N_TO_X2"),
+    # (5, 6) is crossover X2.
+    (5, 7, TRACK_SE, "BLK_X2_TO_S3_N"),
+    (6, 7, TRACK_NW, "S3_N_t1"),
+    (6, 8, TRACK_SE, "S3_N_t2"),
+    (7, 8, TRACK_NW, "S3_N_t3"),
+]
+
+
+def _add_plain_tracks(network: RailwayNetwork) -> None:
+    """Place all non-switch tiles for both tracks."""
+    for tiles in (S_TRACK_TILES, N_TRACK_TILES):
+        for (x, y, bits, _role) in tiles:
+            network.add_track(TrackSegment(x, y, track_bits=bits))
+
+
+def _add_crossovers(network: RailwayNetwork) -> None:
+    """Place the two scissors crossover tiles plus their Switch entities.
+
+    Each crossover is a single tile whose bits encode both tracks' natural
+    routes through the tile, AND the swap routes (NS for S→N, EW for N→S).
+    The crossover tile is a switch boundary — it does NOT belong to any
+    block.
+    """
+    for (sx, sy, sid) in ((2, 3, "SW_X1"), (5, 6, "SW_X2")):
+        tile = TrackSegment(sx, sy, track_bits=SCISSORS_BITS)
+        tile.switch_state = 0  # 0 = stay-on-track (main); 1 = swap (diverge)
+        network.add_track(tile)
+        switch = Switch(switch_id=sid, x=sx, y=sy)
+        network.add_switch(switch)
+        tile.switch_id = switch.switch_id
+
+
+# Each block: (block_id, positions, name, length_cm, speed_limit_kmh or None).
+# Station blocks are created automatically by add_station (named
+# `{platform_id}_BLOCK`) so they are NOT pre-created here. Pre-creating them
+# would split the block per-tile and end up with the wrong length (the
+# station's input length_cm is only honored when the tile is not already in
+# a block; see station_registry.add_station).
+BLOCKS = [
+    # Plain blocks bracketing X1
+    ("BLK_S1_S_TO_X1", [(2, 2)], "S1-S → X1", 30.0, 50.0),
+    ("BLK_S1_N_TO_X1", [(1, 3)], "S1-N → X1", 30.0, 50.0),
+    ("BLK_X1_TO_S2_S", [(3, 3)], "X1 → S2-S", 30.0, 50.0),
+    ("BLK_X1_TO_S2_N", [(2, 4)], "X1 → S2-N", 30.0, 50.0),
+    # Plain blocks bracketing X2
+    ("BLK_S2_S_TO_X2", [(5, 5)], "S2-S → X2", 30.0, 50.0),
+    ("BLK_S2_N_TO_X2", [(4, 6)], "S2-N → X2", 30.0, 50.0),
+    ("BLK_X2_TO_S3_S", [(6, 6)], "X2 → S3-S", 30.0, 50.0),
+    ("BLK_X2_TO_S3_N", [(5, 7)], "X2 → S3-N", 30.0, 50.0),
+]
+
+
+def _add_blocks(network: RailwayNetwork) -> None:
+    """Register every block in BLOCKS via create_block_with_tracks."""
+    for (block_id, positions, name, length_cm, speed) in BLOCKS:
+        kwargs = {
+            "block_id": block_id,
+            "positions": positions,
+            "name": name,
+            "length_cm": length_cm,
+        }
+        if speed is not None:
+            kwargs["speed_limit_kmh"] = speed
+        network.create_block_with_tracks(**kwargs)
+
+
+# Each station entry: (station_id, name, first_tile, extra_tiles, platform_side)
+# platform_side values are interpreted by the renderer relative to the tile's
+# orientation group; for NW_SE-bit tiles, "left" → SW visual side, "right" → NE.
+# Island stations (S1, S3): N-track platform on its SW side, S-track on its NE
+#   side — both platforms face inward toward the other track.
+# Side-platform station (S2): N-track platform on NE side, S-track on SW side —
+#   both face outward.
+STATIONS = [
+    # (group_id, group_name, [(platform_id, name, first_xy, extra_xys, side), ...])
+    ("STN_1", "Station 1", [
+        ("PLT_S1_S", "S1 South", (1, 0), [(1, 1), (2, 1)], "right"),
+        ("PLT_S1_N", "S1 North", (0, 1), [(0, 2), (1, 2)], "left"),
+    ]),
+    ("STN_2", "Station 2", [
+        ("PLT_S2_S", "S2 South", (4, 3), [(4, 4), (5, 4)], "left"),
+        ("PLT_S2_N", "S2 North", (3, 4), [(3, 5), (4, 5)], "right"),
+    ]),
+    ("STN_3", "Station 3", [
+        ("PLT_S3_S", "S3 South", (7, 6), [(7, 7), (8, 7)], "right"),
+        ("PLT_S3_N", "S3 North", (6, 7), [(6, 8), (7, 8)], "left"),
+    ]),
+]
+
+
+def _add_stations(network: RailwayNetwork) -> None:
+    for (group_id, group_name, platforms) in STATIONS:
+        platform_ids = []
+        for (pid, name, first_xy, extra_xys, side) in platforms:
+            platform = network.add_station(
+                x=first_xy[0],
+                y=first_xy[1],
+                station_id=pid,
+                name=name,
+                length_cm=60.0,
+                platform_side=side,
+                top_speed_kmh=40.0,
+            )
+            for extra in extra_xys:
+                network.extend_station(platform.platform_id, [extra])
+            platform_ids.append(platform.platform_id)
+        network.create_station_group(
+            station_id=group_id,
+            name=group_name,
+            platform_ids=platform_ids,
+        )
+
+
+def create_comprehensive_demo() -> RailwayNetwork:
+    """Build the Demo 3 network from scratch and return it.
+
+    Mirrors the name of demo_main.create_comprehensive_demo so server.py's
+    `import demo_3 as demo_main` works without other edits.
+    """
+    print("\n" + "=" * 70)
+    print("Demo 3: Three-Station NE-Zigzag Double-Track Loop")
+    print("=" * 70)
+
+    network = RailwayNetwork()
+
+    _add_plain_tracks(network)
+    _add_crossovers(network)
+    _add_blocks(network)
+    _add_stations(network)
+
+    print(
+        f"  ✓ tracks={len(network.tracks)}  "
+        f"blocks={len(network.blocks)}  "
+        f"platforms={len(network.platforms)}  "
+        f"switches={len(network.switches)}"
+    )
+
+    return network
+
+
+def setup_demo_train(
+    network: RailwayNetwork,
+    path_dispatcher: PathDispatcher,
+    sim_controller,
+):
+    """Place the four demo trains and register the shared CIRCULAR route.
+
+    Mirrors the name of demo_main.setup_demo_train so server.py's alias keeps
+    working. Returns nothing — side-effects: adds trains, registers the route,
+    queues power_on commands.
+    """
+    from train_route import (
+        Route,
+        RouteMode,
+        RouteTask,
+        PlatformTarget,
+        StationTarget,
+    )
+    from runtime_payloads import AcquisitionMode
+    from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
+
+    # ---- Shared route (CIRCULAR, 8 tasks: stop+dwell × 4) ----
+    route = Route(
+        route_id="R_DEMO3_LOOP",
+        name="Demo 3: Three-Station Loop",
+        mode=RouteMode.CIRCULAR,
+        acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
+        is_active=True,
+    )
+    tasks = [
+        # S1 (any platform) — terminus, train reverses here
+        RouteTask(task_kind="stop",  task_location=StationTarget("STN_1"),
+                  task_direction="either"),
+        RouteTask(task_kind="dwell", task_location=StationTarget("STN_1"),
+                  task_time=2.0),
+        # S2-S platform (outbound leg)
+        RouteTask(task_kind="stop",  task_location=PlatformTarget("PLT_S2_S"),
+                  task_direction="either"),
+        RouteTask(task_kind="dwell", task_location=PlatformTarget("PLT_S2_S"),
+                  task_time=2.0),
+        # S3 (any platform) — terminus
+        RouteTask(task_kind="stop",  task_location=StationTarget("STN_3"),
+                  task_direction="either"),
+        RouteTask(task_kind="dwell", task_location=StationTarget("STN_3"),
+                  task_time=2.0),
+        # S2-N platform (return leg)
+        RouteTask(task_kind="stop",  task_location=PlatformTarget("PLT_S2_N"),
+                  task_direction="either"),
+        RouteTask(task_kind="dwell", task_location=PlatformTarget("PLT_S2_N"),
+                  task_time=2.0),
+    ]
+    for t in tasks:
+        route.add_task(t)
+    sim_controller.route_executor.register_route(route)
+
+    # ---- Shared speed profile ----
+    demo_profile = SpeedProfile(
+        profile_id="demo3_profile",
+        name="Demo 3 Profile",
+        speed_voltage_curve=list(DEFAULT_SPEED_PROFILE.speed_voltage_curve),
+        startup_voltage=DEFAULT_SPEED_PROFILE.startup_voltage,
+        lighting_voltage=DEFAULT_SPEED_PROFILE.lighting_voltage,
+        acceleration_rate=3.0,
+        deceleration_rate=4.2,
+        emergency_brake_rate=5,
+        friction_rate=DEFAULT_SPEED_PROFILE.friction_rate,
+        operational_decel_ratio=DEFAULT_SPEED_PROFILE.operational_decel_ratio,
+        air_resistance_enabled=True,
+        drag_coefficient=0.001,
+        reference_speed_kmh=100.0,
+    )
+    network.speed_profiles[demo_profile.profile_id] = demo_profile
+
+    # ---- Place the four trains, each phase-shifted one stop apart ----
+    # (train_id, starting_block, initial_direction, route-phase-task-index, start_tile)
+    # Direction reasoning: starting tiles all have NW bits (N-W edges). A
+    # train placed facing N exits N edge; facing W exits W edge. The 50 cm
+    # body extends backward along the rail (not strict cardinal), so for
+    # NORTH-facing trains at S1-S / S2-S we pin the head to the NE-end
+    # tile of the platform so the body extends INTO the platform along
+    # the W→S→W zigzag rather than off the layout edge. WEST-facing trains
+    # at S2-N / S3-N use the block's default SW-end tile because the body
+    # naturally extends N+E into the platform.
+    #
+    # `phase_idx` is the index of the dwell task that should be in flight
+    # when the train spawns — task_runs[0..phase_idx-1] get marked finished
+    # so the executor starts each train at its own station instead of
+    # racing them all to STN_1.
+    train_specs = [
+        ("T1", "PLT_S1_S_BLOCK", "NORTH", 1, (2, 1)),  # NE-end of S1-S
+        ("T2", "PLT_S2_S_BLOCK", "NORTH", 3, (5, 4)),  # NE-end of S2-S
+        ("T3", "PLT_S3_N_BLOCK", "WEST",  5, None),    # SW-end (default)
+        ("T4", "PLT_S2_N_BLOCK", "WEST",  7, None),    # SW-end (default)
+    ]
+
+    import time as _time
+    from route_executor import RouteExecutionState, RouteRunStatus
+    from train_route import RouteTaskRun
+
+    now = _time.time()
+    for (train_id, block_id, direction, phase_idx, start_tile) in train_specs:
+        train = sim_controller.add_train(
+            train_id=train_id,
+            starting_block_id=block_id,
+            initial_direction=direction,
+            max_speed_kmh=40.0,
+            length_cm=50.0,
+            train_type="LOCOMOTIVE",
+            initial_cab="A",
+            start_tile=start_tile,
+        )
+        train.speed_profile_id = demo_profile.profile_id
+        route.assign_train(train.train_id)
+
+        # Pre-create the per-train RouteExecutionState with task_runs
+        # phase-shifted so this train's next planning task lands on the
+        # dwell at its current station. `_sync_task_runs` will append the
+        # remaining task rows on the first Phase-1 tick, leaving the
+        # phase-shifted prefix alone.
+        executor = sim_controller.route_executor
+        run_count = executor._run_count_for_route.get(route.route_id, 0) + 1
+        executor._run_count_for_route[route.route_id] = run_count
+        exec_state = RouteExecutionState(
+            train_id=train_id,
+            route_id=route.route_id,
+            started_at=now,
+            run_number=executor._compose_run_number(route.route_id, run_count),
+            current_route_status=RouteRunStatus.RUNNING,
+        )
+        for i in range(phase_idx):
+            exec_state.task_runs.append(RouteTaskRun(task_index=i, finished_at=now))
+        exec_state.task_runs.append(RouteTaskRun(task_index=phase_idx))
+        executor.execution_states[train_id] = exec_state
+
+        controller = sim_controller.get_or_create_controller(train.train_id)
+        controller.commands.enqueue_command("power_on")
+
+    print(f"  ✓ Registered route {route.route_id!r} with {len(route.tasks)} tasks")
+    print(f"  ✓ Placed 4 trains (phase-shifted): {[s[0] for s in train_specs]}")

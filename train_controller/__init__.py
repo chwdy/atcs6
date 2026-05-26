@@ -770,6 +770,12 @@ class TrainController:
         self.ato.info = self.ato.compute_info()
 
         # ===== 6. ATO ACTION (skip if manual) =====
+        # Per design_new.md line 1637: if ato_running is True but the path
+        # authority has been revoked mid-motion, clear ato_running before the
+        # ATO/manual branch so the branch uses the correct run state.
+        if self.ato.running and self.path_projection.received_path_plan is None:
+            self.ato.running = False
+
         # Compute the effective_limit locally; consumers read this via the
         # `target_speed` property when needed.
         effective_limit = min(
@@ -883,12 +889,17 @@ class TrainController:
                                      or zero voltage and ignore this field)
         """
         if not self.power_on:
+            # Per design_new.md line 1755: clear manual_power_percent on
+            # power-off so the set-and-forget contract holds.
+            self.manual.manual_power_percent = 0.0
             return PhysicsCommand(
                 kind=PHYSICS_KIND_HANDLE,
                 handle=HandlePosition.N,
                 voltage_source_speed_kmh=0.0,
             )
         if self.eb.active:
+            # Per design_new.md line 1755: clear manual_power_percent on EB.
+            self.manual.manual_power_percent = 0.0
             return PhysicsCommand(
                 kind=PHYSICS_KIND_EMERGENCY_BRAKE,
                 handle=HandlePosition.EB,
@@ -903,7 +914,10 @@ class TrainController:
             target = profile.power_percent_to_speed(pct) if profile else 0.0
             atc = float(self.atc.speed_limit or 0.0)
             if atc > 0 and target > atc:
+                # Per design_new.md line 1755: ATC override clamps target and
+                # writes manual_power_percent = 0 (set-and-forget).
                 target = atc
+                self.manual.manual_power_percent = 0.0
             target = max(0.0, target)
             return PhysicsCommand(
                 kind=PHYSICS_KIND_TARGET_SPEED,
@@ -1615,17 +1629,17 @@ class TrainController:
 
     @power_on.setter
     def power_on(self, value: bool) -> None:
-        """Convenience setter that maps to the canonical `state` field.
+        """No-op compatibility shim.
 
-        ``True`` selects READY (cab selection is orthogonal per design_new.md).
-        ``False`` forces OFF. Production code should write `self.ops.state`
-        directly (or call `power_on_cmd()` / `power_off_cmd()`).
+        Per design_new.md there are no writers of `power_on` — the field is a
+        derived read-only property. This setter is intentionally a no-op so
+        legacy call sites (e.g. simulation.py:350) do not raise AttributeError
+        while the simulation agent removes the stale write.
+        # TODO(simulation agent): delete `controller.power_on = False` at
+        # simulation.py:350 — state is already set by `controller.ops.state =
+        # TrainState.OFF` one line earlier.
         """
-        if value:
-            if self.ops.state == TrainState.OFF:
-                self.ops.state = TrainState.READY
-        else:
-            self.ops.state = TrainState.OFF
+        pass
 
     def is_stopped(self) -> bool:
         """Canonical stopped predicate per design_new.md.
@@ -1865,14 +1879,56 @@ class TrainController:
                 )
             )
 
+        # Per design_new.md lines 448–450: compute deviation fields from the
+        # live path plan and head position.
+        deviation = False
+        deviation_kind = None
+        current_head_sequence_index: Optional[int] = None
+
+        if plan is not None:
+            # Look up the head tile in the sequence index map.
+            new_span = span_update.new_span
+            head_tile_xy: Optional[Tuple[int, int]] = None
+            if new_span is not None:
+                # The head is the end of the span that matches the leading_end.
+                from enums import LeadingEnd
+                le = getattr(new_span, "leading_end", None)
+                if le is not None:
+                    if le == LeadingEnd.A:
+                        end = getattr(new_span, "end_a", None)
+                    else:
+                        end = getattr(new_span, "end_b", None)
+                    if end is not None:
+                        tile = getattr(end, "tile", None)
+                        if tile is not None:
+                            head_tile_xy = (tile[0], tile[1])
+
+            if head_tile_xy is not None:
+                seq_idx = tile_xy_to_seq_index.get(head_tile_xy)
+                if seq_idx is None:
+                    # Head tile is not in the resource_sequence — out of sequence.
+                    deviation = True
+                    deviation_kind = "out_of_sequence"
+                    current_head_sequence_index = None
+                else:
+                    current_head_sequence_index = seq_idx
+                    # Check if the head has crossed beyond the authorized target.
+                    max_seq = max(
+                        (e.sequence_index for e in plan.resource_sequence),
+                        default=0,
+                    )
+                    if seq_idx > max_seq:
+                        deviation = True
+                        deviation_kind = "beyond_authorized_target"
+
         report = ControllerProgressReport(
             train_id=self.train_id,
             event_time=float(event_time),
             entered_resources=entered_resources,
             tail_vacated_resources=tail_vacated_resources,
-            current_head_sequence_index=None,
-            deviation=False,
-            deviation_kind=None,
+            current_head_sequence_index=current_head_sequence_index,
+            deviation=deviation,
+            deviation_kind=deviation_kind,
             deviation_reason=None,
         )
         self.physics_sync.queued_progress_reports.append(report)
@@ -2682,67 +2738,86 @@ class TrainController:
     # Route Executor Commands (for RouteExecutor integration)
     # -------------------------------------------------------------------------
 
-    def depart(self) -> bool:
+    def depart(self) -> Tuple[bool, Optional[str]]:
         """
         Depart-acceptance entry point called by `RouteExecutor` when live
         authority exists.
 
-        Per design_new.md "TrainController.depart() canonical contract", the
-        accepted entry states are `{READY, RUNNING_MOVING}`: the second case
-        admits the reactive speed-based evaluation having already advanced
-        state ahead of this call. From RUNNING_MOVING the call is an
-        idempotent success that does not change state but still applies side
-        effects (in ATO, invokes `ato_go()` so `ato_running = True` is
-        written if the reactive transition has not already done so).
+        Per design_new.md line 1812 "TrainController.depart() canonical
+        contract", the accepted entry states are `{READY, RUNNING_MOVING}`:
+        the second case admits the reactive speed-based evaluation having
+        already advanced state ahead of this call. From RUNNING_MOVING the
+        call is an idempotent success that does not change state but still
+        applies side effects (in ATO, invokes `ato_go()` so `ato_running = True`
+        is written if the reactive transition has not already done so).
 
         Returns:
-            True if successful, False if preconditions not met
+            Tuple[bool, Optional[str]]: (success, diagnostic_reason).
+            On success: (True, None). On rejection: (False, "<reason>").
         """
+        # Per design_new.md line 1812: precondition checks before state guards.
+        if self.path_projection.received_path_plan is None:
+            return (False, "no active path")
+        if self.eb.active:
+            return (False, "EB active")
+        if self.route_hooks.phase_latches.power_off:
+            return (False, "pending power-off")
+
         train = self._get_train()
         if train is None:
-            return False
+            return (False, "train not found")
 
         if self.ops.state not in (TrainState.READY, TrainState.RUNNING_MOVING):
-            return False
+            return (False, f"invalid state: {self.ops.state.value}")
 
         # ATO mode: delegate to ato_go() which is the canonical writer of
         # ato_running and handles both READY (full path) and RUNNING_MOVING
         # (idempotent) entries.
         if self.commands.control_mode == "ato":
             result = self.ato.go()
-            return result.success
+            if result.success:
+                return (True, None)
+            return (False, result.reason if hasattr(result, "reason") else "ato_go rejected")
 
         # Manual mode: requires a cab and facing direction. From
         # RUNNING_MOVING the call is an idempotent success.
         # path_backed_run_active is now derived from path/route/destination
         # context; no field write needed here.
         if self.commands.cab not in ("A", "B"):
-            return False
+            return (False, "no cab selected")
         if train.facing_direction is None:
-            return False
+            return (False, "facing direction not set")
         if self.ops.state == TrainState.READY:
             self.ops.state = TrainState.RUNNING_MOVING
-        return True
+        return (True, None)
 
-    def enter_station_dwell(self) -> None:
+    def enter_station_dwell(self) -> Tuple[bool, Optional[str]]:
         """Dwell-entry transition called by Phase 1 dwell-entry step.
 
-        Per design_new.md, RouteExecutor invokes this directly when its
-        preconditions are met. Transitions controller state to
+        Per design_new.md lines 1817–1818, RouteExecutor invokes this directly
+        when its preconditions are met. Transitions controller state to
         RUNNING_AT_STATION; clears ato_running because dwell entry is a
         run-ending event.
+
+        Returns:
+            Tuple[bool, Optional[str]]: (True, None) on success.
         """
         self.ops.state = TrainState.RUNNING_AT_STATION
         self.ato.running = False
+        return (True, None)
 
-    def finish_dwell(self) -> None:
+    def finish_dwell(self) -> Tuple[bool, Optional[str]]:
         """Dwell-end transition called by Phase 1 dwell-complete step.
 
-        Per design_new.md: lands in READY (powered, stopped, not dwelling —
-        cab selection is preserved as an orthogonal field). Does not clear
-        received_path_plan and does not start movement.
+        Per design_new.md lines 1817–1818: lands in READY (powered, stopped,
+        not dwelling — cab selection is preserved as an orthogonal field). Does
+        not clear received_path_plan and does not start movement.
+
+        Returns:
+            Tuple[bool, Optional[str]]: (True, None) on success.
         """
         self.ops.state = TrainState.READY
+        return (True, None)
 
     def on_path_complete(self) -> None:
         """Called by PathDispatcher.try_complete_active_path on accepted completion.
@@ -2794,6 +2869,13 @@ class TrainController:
             "ato_path_id": self.path_projection.ato_path_id,
             "assigned_path_id": self.path_projection.assigned_path_id,
             "path_backed_run_active": self.path_projection.path_backed_run_active,
+            # Per design_new.md line 2088: serialize the live received_path_plan
+            # so callers see the full authority snapshot in one payload.
+            "received_path_plan": (
+                (lambda plan: plan.to_dict() if hasattr(plan, "to_dict") else None)(
+                    self.path_projection.received_path_plan
+                )
+            ),
             "clearance_ahead_cm": safe_float(self.atc.clearance_ahead_cm),
             "atc_speed_limit": safe_float(self.atc.speed_limit),
             "current_block_speed_limit": safe_float(self.atc.current_block_speed_limit),
@@ -3006,9 +3088,13 @@ class TrainController:
     def _compute_canonical_lookahead(self) -> Dict[str, Any]:
         train = self._get_train()
         if not train or not self.network:
-            # No reason to publish — the lookahead is empty because the train
-            # / network haven't been wired yet, not because of any ATC state.
-            return self._build_empty_monitor_lookahead(speed_limit_reason=None)
+            # Per design_new.md line 1728: emit the distance-0 anchor with a
+            # structured reason code so consumers always see `speed_curves`
+            # with at least one entry rather than an empty list.
+            return self._build_empty_monitor_lookahead(
+                speed_limit_reason="no_train",
+                reason_code=AtcLimitReasonCode.NO_TRAIN,
+            )
 
         if self.commands.cab not in ("A", "B"):
             return self._build_empty_monitor_lookahead(

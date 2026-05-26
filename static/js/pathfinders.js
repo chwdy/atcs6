@@ -136,6 +136,35 @@ class ConstructionPathfinder {
         return [...new Set(directions)];
     }
 
+    // Given an entry edge into a tile, return the valid exit edges
+    // respecting segment binding. Each track_bits segment is one of 6 fixed
+    // edge pairs; entering through one edge of a segment yields the OTHER
+    // edge of THAT segment as the exit. For a switch tile (multiple
+    // segments set) the entry edge may belong to more than one segment,
+    // and each contributing segment yields its paired edge.
+    //
+    // Use this — not getExistingTrackDirections — when routing through
+    // switches. getExistingTrackDirections flattens all segments into one
+    // set, which lets a path "cheat" between disconnected segments of a
+    // switch (e.g. enter SOUTH on NS-straight, exit EAST on NE-curve).
+    getExitsForEntry(trackBits, entry) {
+        const SEGMENTS = [
+            [1,  'NORTH', 'SOUTH'],
+            [2,  'EAST',  'WEST'],
+            [4,  'NORTH', 'EAST'],
+            [8,  'NORTH', 'WEST'],
+            [16, 'SOUTH', 'EAST'],
+            [32, 'SOUTH', 'WEST'],
+        ];
+        const exits = new Set();
+        for (const [bit, a, b] of SEGMENTS) {
+            if ((trackBits & bit) === 0) continue;
+            if (a === entry) exits.add(b);
+            else if (b === entry) exits.add(a);
+        }
+        return [...exits];
+    }
+
     findPath(startX, startY, endX, endY, existingTracks, options = {}) {
         const costs = options.avoidConnect ? this.avoidConnectCosts : this.costs;
         const start = { x: startX, y: startY };
@@ -895,66 +924,3 @@ function validateBlockPath(path, tracks, mode = 'create') {
     };
 }
 
-class ExistingTrackPathfinder {
-    constructor() {
-        this.pathfinder = new ConstructionPathfinder();
-    }
-
-    findPathOnExistingTracks(startX, startY, endX, endY, existingTracks) {
-        const trackMap = new Map();
-        existingTracks.forEach(t => trackMap.set(`${t.x},${t.y}`, t));
-
-        if (!trackMap.has(`${startX},${startY}`)) return null;
-        if (!trackMap.has(`${endX},${endY}`)) return null;
-
-        const start = { x: startX, y: startY };
-        const end = { x: endX, y: endY };
-        const queue = [{ pos: start, path: [start] }];
-        const visited = new Set();
-
-        while (queue.length > 0) {
-            const { pos, path } = queue.shift();
-            const key = `${pos.x},${pos.y}`;
-
-            if (pos.x === end.x && pos.y === end.y) {
-                return path;
-            }
-
-            if (visited.has(key)) continue;
-            visited.add(key);
-
-            const track = trackMap.get(key);
-            if (!track) continue;
-
-            const trackBits = track.track_bits || 0;
-            const connectedEdges = this.pathfinder.getExistingTrackDirections(trackBits);
-
-            const neighbors = [
-                { x: pos.x, y: pos.y + 1, dir: 'NORTH', entry: 'SOUTH' },
-                { x: pos.x + 1, y: pos.y, dir: 'EAST', entry: 'WEST' },
-                { x: pos.x, y: pos.y - 1, dir: 'SOUTH', entry: 'NORTH' },
-                { x: pos.x - 1, y: pos.y, dir: 'WEST', entry: 'EAST' }
-            ];
-
-            for (const n of neighbors) {
-                if (!connectedEdges.includes(n.dir)) continue;
-
-                const neighborKey = `${n.x},${n.y}`;
-                if (visited.has(neighborKey)) continue;
-
-                const neighborTrack = trackMap.get(neighborKey);
-                if (!neighborTrack) continue;
-
-                const neighborEdges = this.pathfinder.getExistingTrackDirections(neighborTrack.track_bits || 0);
-                if (!neighborEdges.includes(n.entry)) continue;
-
-                queue.push({
-                    pos: { x: n.x, y: n.y },
-                    path: [...path, { x: n.x, y: n.y }]
-                });
-            }
-        }
-
-        return null;
-    }
-}

@@ -99,6 +99,13 @@ class Renderer {
         // Store current network for redraws
         this.currentNetwork = null;
 
+        // Box-select overlay state (driven by the box-select editor tool)
+        this.boxSelection = new Set();   // Set of "x,y" keys for highlighted tracks
+        this.boxSelectRect = null;       // {startX, startY, endX, endY} screen coords, or null
+        // Lasso-select overlay state (driven by the lasso-select editor tool).
+        // Array of {x, y} screen-space points being drawn, or null when idle.
+        this.lassoPath = null;
+
         this.trackHandler = new RendererTrackHandler(this);
         this.signalHandler = new RendererSignalHandler(this);
         this.platformHandler = new RendererPlatformHandler(this);
@@ -434,6 +441,96 @@ class Renderer {
                 this.trainHandler.drawTrain(train);
             });
         }
+
+        // Box/lasso-select overlay (highlight + in-progress shape) sits on top
+        this.drawBoxSelection();
+        this.drawBoxSelectRect();
+        this.drawLassoPath();
+    }
+
+    setBoxSelection(keysSet) {
+        this.boxSelection = keysSet || new Set();
+    }
+
+    setBoxSelectRect(rect) {
+        this.boxSelectRect = rect;
+    }
+
+    setLassoPath(points) {
+        this.lassoPath = points;
+    }
+
+    drawBoxSelection() {
+        if (!this.boxSelection || this.boxSelection.size === 0) return;
+        const cellSize = this.gridSize * this.scale;
+        const halfTile = cellSize / 2;
+        this.ctx.save();
+        this.ctx.fillStyle = 'rgba(255, 205, 30, 0.30)';
+        this.ctx.strokeStyle = 'rgba(255, 165, 0, 0.95)';
+        this.ctx.lineWidth = 2 * this.scale;
+        for (const key of this.boxSelection) {
+            const [xs, ys] = key.split(',');
+            const x = Number(xs), y = Number(ys);
+            const cx = this.gridToScreenX(x, y);
+            const cy = this.gridToScreenY(x, y);
+            this.ctx.beginPath();
+            this.ctx.moveTo(cx, cy - halfTile);
+            this.ctx.lineTo(cx + halfTile, cy);
+            this.ctx.lineTo(cx, cy + halfTile);
+            this.ctx.lineTo(cx - halfTile, cy);
+            this.ctx.closePath();
+            this.ctx.fill();
+            this.ctx.stroke();
+        }
+        this.ctx.restore();
+    }
+
+    drawBoxSelectRect() {
+        if (!this.boxSelectRect) return;
+        const { startX, startY, endX, endY } = this.boxSelectRect;
+        const x = Math.min(startX, endX);
+        const y = Math.min(startY, endY);
+        const w = Math.abs(endX - startX);
+        const h = Math.abs(endY - startY);
+        if (w === 0 && h === 0) return;
+        this.ctx.save();
+        this.ctx.fillStyle = 'rgba(255, 205, 30, 0.10)';
+        this.ctx.strokeStyle = 'rgba(255, 165, 0, 0.90)';
+        this.ctx.lineWidth = 1.5;
+        this.ctx.setLineDash([5, 4]);
+        this.ctx.fillRect(x, y, w, h);
+        this.ctx.strokeRect(x, y, w, h);
+        this.ctx.setLineDash([]);
+        this.ctx.restore();
+    }
+
+    drawLassoPath() {
+        const pts = this.lassoPath;
+        if (!pts || pts.length < 2) return;
+        this.ctx.save();
+        // Filled interior of the in-progress polygon, lightly shaded.
+        this.ctx.fillStyle = 'rgba(255, 205, 30, 0.10)';
+        this.ctx.beginPath();
+        this.ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) this.ctx.lineTo(pts[i].x, pts[i].y);
+        this.ctx.closePath();
+        this.ctx.fill();
+        // Outline of the drawn path.
+        this.ctx.strokeStyle = 'rgba(255, 165, 0, 0.90)';
+        this.ctx.lineWidth = 1.5;
+        this.ctx.beginPath();
+        this.ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) this.ctx.lineTo(pts[i].x, pts[i].y);
+        this.ctx.stroke();
+        // Dashed closure line from last point back to the start so the user
+        // sees what the polygon will be on release.
+        this.ctx.setLineDash([5, 4]);
+        this.ctx.beginPath();
+        this.ctx.moveTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+        this.ctx.lineTo(pts[0].x, pts[0].y);
+        this.ctx.stroke();
+        this.ctx.setLineDash([]);
+        this.ctx.restore();
     }
 
     setReachableHighlights(positionsSet) {

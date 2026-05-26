@@ -282,10 +282,14 @@ class SimulationController:
                 reason=payload.reason,
             )
         else:
-            logger.debug(
-                "latched cancel for %s initiator=%s skipped: no active path",
-                train.train_id,
-                payload.initiator,
+            # design_new.md fix #18: emit INFO notification instead of logger.debug.
+            self.notification_center.emit(
+                source="SimulationController",
+                kind="latched_cancel_skipped",
+                severity=Severity.INFO,
+                event_time=self.simulation_time,
+                train_id=train.train_id,
+                payload={"initiator": payload.initiator},
             )
 
     def _consume_pending_route_abort(
@@ -482,6 +486,7 @@ class SimulationController:
         train_type: Optional[str] = None,
         name: Optional[str] = None,
         initial_cab: Optional[Literal["A", "B"]] = None,
+        start_tile: Optional[Tuple[int, int]] = None,
     ) -> Train:
         """Sole entry point for adding a train at runtime.
 
@@ -501,6 +506,12 @@ class SimulationController:
             name: Optional display name (also used for the locomotive id).
             initial_cab: Optional initial cab ("A" or "B"); set as a direct
                 write before the first tick.
+            start_tile: Optional explicit (x, y) within ``starting_block_id``
+                to place the train head on. When None (default), uses the
+                block's first canonical position. Used by demos that need
+                to spawn a long train whose body extends along the rail in
+                a direction that requires choosing a specific tile in a
+                multi-tile platform block.
 
         Returns:
             The freshly created and registered ``Train``.
@@ -520,7 +531,15 @@ class SimulationController:
             raise ValueError(
                 f"Block {starting_block_id!r} has no tiles to place a train on"
             )
-        start_tile = start_positions[0]
+        if start_tile is not None:
+            if tuple(start_tile) not in {tuple(p) for p in start_positions}:
+                raise ValueError(
+                    f"start_tile {start_tile!r} is not a tile of block "
+                    f"{starting_block_id!r}"
+                )
+            start_tile = tuple(start_tile)
+        else:
+            start_tile = start_positions[0]
 
         # Resolve direction enum.
         try:

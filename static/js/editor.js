@@ -54,6 +54,25 @@ class Editor {
         };
         this.cachedPaths = [];            // List of active routes
 
+        // Box-select tool state. selectedKeys accumulates "x,y" strings across
+        // successive rectangle drags; cleared by Delete (after success), Esc
+        // (when non-empty), or mode exit. Drag coords are screen-space so the
+        // rubber-band stays pixel-accurate during zooming.
+        //
+        // The lasso-select tool shares the same selectedKeys set so Delete /
+        // Esc semantics apply to both tools; only the in-progress drag shape
+        // differs (rectangle vs. free-drawn polyline).
+        this.boxSelectState = {
+            selectedKeys: new Set(),
+            dragScreenStart: null,
+            dragScreenEnd: null,
+            isDragging: false,
+        };
+        this.lassoSelectState = {
+            screenPoints: [],
+            isDrawing: false,
+        };
+
         // === Active editor mode ===
         //
         // An EditorMode is the unified abstraction for any multi-step
@@ -78,7 +97,6 @@ class Editor {
         this.activeMode = null;
 
         this.pathfinder = new ConstructionPathfinder();
-        this.existingOnlyPathfinder = new ExistingTrackPathfinder();
         this.blockHandler = new BlockEditorHandler(this);
         this.signalHandler = new SignalEditorHandler(this);
         this.platformHandler = new PlatformEditorHandler(this);
@@ -476,6 +494,81 @@ class Editor {
             'path':        () => this.pathHandler.buildRouteToolMode(),
             'extend-path': () => this.pathHandler.buildExtendRouteMode(),
             'cancel-path': () => this.pathHandler.buildCancelRouteMode(),
+            'box-select':  () => this._buildBoxSelectMode(),
+            'lasso-select':() => this._buildLassoSelectMode(),
+        };
+    }
+
+    _buildBoxSelectMode() {
+        const resetState = () => {
+            this.boxSelectState.selectedKeys = new Set();
+            this.boxSelectState.dragScreenStart = null;
+            this.boxSelectState.dragScreenEnd = null;
+            this.boxSelectState.isDragging = false;
+            this.renderer.setBoxSelection(new Set());
+            this.renderer.setBoxSelectRect(null);
+        };
+        return {
+            name: 'Box select',
+            toolName: 'box-select',
+            cancelMessage: 'Box select cancelled',
+            onEnter: () => {
+                resetState();
+                const status = document.getElementById('status-state');
+                if (status) status.textContent = 'Box: drag to add, Delete to remove, Esc to clear';
+            },
+            // Mouse interactions are handled by the mousedown/move/up branches
+            // below; the click hook is a no-op so clicks don't fall through to
+            // selectElement on stray taps.
+            onClick: () => true,
+            onExit: () => {
+                resetState();
+                const status = document.getElementById('status-state');
+                if (status) status.textContent = 'Ready';
+                if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+            },
+        };
+    }
+
+    // Even-odd ray cast: returns true when (px, py) is inside the polygon
+    // defined by `polygon` (array of {x, y} screen points). The polygon is
+    // treated as closed (last vertex connects back to the first).
+    _pointInPolygon(px, py, polygon) {
+        let inside = false;
+        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+            const xi = polygon[i].x, yi = polygon[i].y;
+            const xj = polygon[j].x, yj = polygon[j].y;
+            const intersects = ((yi > py) !== (yj > py)) &&
+                (px < (xj - xi) * (py - yi) / ((yj - yi) || 1e-9) + xi);
+            if (intersects) inside = !inside;
+        }
+        return inside;
+    }
+
+    _buildLassoSelectMode() {
+        const resetState = () => {
+            this.boxSelectState.selectedKeys = new Set();
+            this.lassoSelectState.screenPoints = [];
+            this.lassoSelectState.isDrawing = false;
+            this.renderer.setBoxSelection(new Set());
+            this.renderer.setLassoPath(null);
+        };
+        return {
+            name: 'Lasso select',
+            toolName: 'lasso-select',
+            cancelMessage: 'Lasso select cancelled',
+            onEnter: () => {
+                resetState();
+                const status = document.getElementById('status-state');
+                if (status) status.textContent = 'Lasso: draw a shape to add, Delete to remove, Esc to clear';
+            },
+            onClick: () => true,
+            onExit: () => {
+                resetState();
+                const status = document.getElementById('status-state');
+                if (status) status.textContent = 'Ready';
+                if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+            },
         };
     }
 
@@ -576,6 +669,19 @@ class Editor {
                 this.lastValidPreviewPath = null;
                 this.lastValidPreviewTracks = null;
             }
+            // Left mouse + box-select = start screen-space rubber-band rectangle
+            else if (e.button === 0 && this.selectedTool === 'box-select') {
+                this.boxSelectState.isDragging = true;
+                this.boxSelectState.dragScreenStart = { x, y };
+                this.boxSelectState.dragScreenEnd = { x, y };
+                this.renderer.setBoxSelectRect({ startX: x, startY: y, endX: x, endY: y });
+            }
+            // Left mouse + lasso-select = start free-form polyline
+            else if (e.button === 0 && this.selectedTool === 'lasso-select') {
+                this.lassoSelectState.isDrawing = true;
+                this.lassoSelectState.screenPoints = [{ x, y }];
+                this.renderer.setLassoPath(this.lassoSelectState.screenPoints);
+            }
             // Left click with signal/platform = single click placement
             else if (e.button === 0 && ['signal', 'platform'].includes(this.selectedTool)) {
                 this.handleSingleClickPlace(gridPos);
@@ -615,6 +721,27 @@ class Editor {
                 this.dragEnd = gridPos;
                 this.updatePreviewPath();
             }
+            else if (this.boxSelectState.isDragging) {
+                this.boxSelectState.dragScreenEnd = { x, y };
+                this.renderer.setBoxSelectRect({
+                    startX: this.boxSelectState.dragScreenStart.x,
+                    startY: this.boxSelectState.dragScreenStart.y,
+                    endX: x,
+                    endY: y,
+                });
+                if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+            }
+            else if (this.lassoSelectState.isDrawing) {
+                // Append a new vertex only if it moved at least 2px from the
+                // previous one — keeps the polygon manageable on slow drags.
+                const pts = this.lassoSelectState.screenPoints;
+                const last = pts[pts.length - 1];
+                if (!last || Math.abs(last.x - x) > 2 || Math.abs(last.y - y) > 2) {
+                    pts.push({ x, y });
+                    this.renderer.setLassoPath(pts);
+                    if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+                }
+            }
             // Hover preview for signal/platform tools
             else if (['signal', 'platform'].includes(this.selectedTool)) {
                 this.updateHoverPreview(gridPos);
@@ -630,6 +757,68 @@ class Editor {
 
             if (this.isPanning) {
                 this.isPanning = false;
+            }
+            else if (this.boxSelectState.isDragging) {
+                this.boxSelectState.isDragging = false;
+                const start = this.boxSelectState.dragScreenStart;
+                const end = this.boxSelectState.dragScreenEnd;
+                this.boxSelectState.dragScreenStart = null;
+                this.boxSelectState.dragScreenEnd = null;
+                this.renderer.setBoxSelectRect(null);
+
+                if (onCanvas && start && end) {
+                    const tracks = this.cachedNetwork?.tracks || [];
+                    // No-movement click (within 2px slop): toggle the track at the click
+                    const isClick = Math.abs(start.x - end.x) <= 2 && Math.abs(start.y - end.y) <= 2;
+                    if (isClick) {
+                        const gp = this.renderer.screenToGrid(start.x, start.y);
+                        const track = tracks.find(t => t.x === gp.x && t.y === gp.y);
+                        if (track) {
+                            const key = `${gp.x},${gp.y}`;
+                            if (this.boxSelectState.selectedKeys.has(key)) {
+                                this.boxSelectState.selectedKeys.delete(key);
+                            } else {
+                                this.boxSelectState.selectedKeys.add(key);
+                            }
+                        }
+                    } else {
+                        // Drag: union any track whose screen center falls inside the rect
+                        const minX = Math.min(start.x, end.x);
+                        const maxX = Math.max(start.x, end.x);
+                        const minY = Math.min(start.y, end.y);
+                        const maxY = Math.max(start.y, end.y);
+                        for (const t of tracks) {
+                            const sx = this.renderer.gridToScreenX(t.x, t.y);
+                            const sy = this.renderer.gridToScreenY(t.x, t.y);
+                            if (sx >= minX && sx <= maxX && sy >= minY && sy <= maxY) {
+                                this.boxSelectState.selectedKeys.add(`${t.x},${t.y}`);
+                            }
+                        }
+                    }
+                }
+
+                this.renderer.setBoxSelection(this.boxSelectState.selectedKeys);
+                if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+            }
+            else if (this.lassoSelectState.isDrawing) {
+                this.lassoSelectState.isDrawing = false;
+                const pts = this.lassoSelectState.screenPoints;
+                this.lassoSelectState.screenPoints = [];
+                this.renderer.setLassoPath(null);
+
+                if (onCanvas && pts.length >= 3) {
+                    const tracks = this.cachedNetwork?.tracks || [];
+                    for (const t of tracks) {
+                        const sx = this.renderer.gridToScreenX(t.x, t.y);
+                        const sy = this.renderer.gridToScreenY(t.x, t.y);
+                        if (this._pointInPolygon(sx, sy, pts)) {
+                            this.boxSelectState.selectedKeys.add(`${t.x},${t.y}`);
+                        }
+                    }
+                }
+
+                this.renderer.setBoxSelection(this.boxSelectState.selectedKeys);
+                if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
             }
             else if (this.isDraggingBuild && this.dragStart && this.dragEnd) {
                 // Stop dragging state immediately to prevent updates during async operations
@@ -868,6 +1057,16 @@ class Editor {
                     return; // Let modal/input handlers deal with it
                 }
 
+                // Box/lasso select: first Esc clears any selection; second Esc
+                // (empty selection) falls through to exit the mode.
+                const isMarkSelectTool = this.selectedTool === 'box-select' || this.selectedTool === 'lasso-select';
+                if (isMarkSelectTool && this.boxSelectState.selectedKeys.size > 0) {
+                    this.boxSelectState.selectedKeys = new Set();
+                    this.renderer.setBoxSelection(new Set());
+                    if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+                    return;
+                }
+
                 // Exit the active EditorMode if any, then revert to select.
                 if (this.activeMode) {
                     const m = this.activeMode;
@@ -882,6 +1081,42 @@ class Editor {
                 if (this.selectedTool !== 'select') {
                     this._setSelectedTool('select');
                 }
+            }
+        });
+
+        // Delete / Backspace key - remove the box/lasso-select selection.
+        document.addEventListener('keydown', async (e) => {
+            if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+            if (this.selectedTool !== 'box-select' && this.selectedTool !== 'lasso-select') return;
+            const inInput = document.activeElement && (
+                document.activeElement.tagName === 'INPUT' ||
+                document.activeElement.tagName === 'TEXTAREA' ||
+                document.activeElement.tagName === 'SELECT'
+            );
+            const inModal = document.querySelector('.block-modal-overlay, .modal-overlay') !== null;
+            if (inInput || inModal) return;
+            e.preventDefault();
+
+            if (this.boxSelectState.selectedKeys.size === 0) {
+                window.showToast('Nothing selected', 'info', 2000);
+                return;
+            }
+
+            const positions = [...this.boxSelectState.selectedKeys].map(k => {
+                const [xs, ys] = k.split(',');
+                return [Number(xs), Number(ys)];
+            });
+
+            try {
+                const result = await this._bulkDeleteWithConfirm(positions);
+                if (result) {
+                    this.boxSelectState.selectedKeys = new Set();
+                    this.renderer.setBoxSelection(new Set());
+                    await this.refreshAndSelect(null);
+                }
+            } catch (err) {
+                console.error('[Editor] Box-select delete failed:', err);
+                window.showToast('Failed to delete: ' + err.message, 'error', 5000);
             }
         });
     }
@@ -954,53 +1189,44 @@ class Editor {
     updatePreviewPath() {
         if (!this.dragStart || !this.dragEnd) return;
 
-        if (this.selectedTool === 'track') {
-            // Use pathfinder for track placement only
+        // All drag tools share the construction pathfinder so the preview
+        // shape is consistent across track / eraser / block / extend / remove
+        // tools. The track tool layers its R/T/Shift overrides on top; other
+        // tools accept the default path. Commit-time logic on non-track tools
+        // already short-circuits cells without an existing track.
+        const dragToolSet = [
+            'track', 'block', 'extend-block', 'extend-platform',
+            'eraser', 'remove-platform-tile', 'remove-block-tile'
+        ];
+        if (dragToolSet.includes(this.selectedTool)) {
             const existingTracks = this.cachedNetwork ? this.cachedNetwork.tracks : [];
+            const isTrackTool = this.selectedTool === 'track';
             const foundPath = this.pathfinder.findPath(
                 this.dragStart.x, this.dragStart.y,
                 this.dragEnd.x, this.dragEnd.y,
                 existingTracks,
-                {
+                isTrackTool ? {
                     avoidConnect: this.avoidConnectMode,
                     forcedStartSegment: this.forcedStartSegment,
                     forcedEndSegment: this.forcedEndSegment,
-                }
+                } : {}
             );
 
-            // If path found, use it and cache it; otherwise use last valid path
             if (foundPath) {
                 this.previewPath = foundPath;
-                this.previewTracks = pathToTracks(this.previewPath, this.cachedNetwork, {
-                    avoidConnect: this.avoidConnectMode,
-                    forcedStartSegment: this.forcedStartSegment,
-                    forcedEndSegment: this.forcedEndSegment,
-                });
-                // Cache this valid path
+                this.previewTracks = isTrackTool
+                    ? pathToTracks(this.previewPath, this.cachedNetwork, {
+                        avoidConnect: this.avoidConnectMode,
+                        forcedStartSegment: this.forcedStartSegment,
+                        forcedEndSegment: this.forcedEndSegment,
+                    })
+                    : null;
                 this.lastValidPreviewPath = this.previewPath;
                 this.lastValidPreviewTracks = this.previewTracks;
             } else {
-                // Destination blocked - use last valid path
                 this.previewPath = this.lastValidPreviewPath;
-                this.previewTracks = this.lastValidPreviewTracks;
+                this.previewTracks = isTrackTool ? this.lastValidPreviewTracks : null;
             }
-        }
-        else if (['block', 'extend-block', 'extend-platform', 'eraser', 'remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool)) {
-            // Use existing-only pathfinder for block assignment, extend-block, extend-platform, eraser, and removal tools
-            const existingTracks = this.cachedNetwork ? this.cachedNetwork.tracks : [];
-            const foundPath = this.existingOnlyPathfinder.findPathOnExistingTracks(
-                this.dragStart.x, this.dragStart.y,
-                this.dragEnd.x, this.dragEnd.y,
-                existingTracks
-            );
-
-            if (foundPath) {
-                this.previewPath = foundPath;
-                this.lastValidPreviewPath = foundPath;
-            } else {
-                this.previewPath = this.lastValidPreviewPath;
-            }
-            this.previewTracks = null;
         }
         else {
             // Single placement for other tools
@@ -1015,9 +1241,14 @@ class Editor {
             if (this.previewTracks && this.previewTracks.length > 0) {
                 this.renderer.trackHandler.drawPreviewTracks(this.previewTracks);
             }
-            // Draw eraser and removal tools preview in red
+            // Draw eraser and removal tools preview in red. Filter the
+            // construction-pathfinder path to cells that actually have tracks
+            // so the red diamonds don't leak into empty grid.
             else if (['eraser', 'remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool) && this.previewPath) {
-                this.renderer.trackHandler.drawEraserPreviewPath(this.previewPath);
+                const tracks = this.cachedNetwork?.tracks || [];
+                const trackKeys = new Set(tracks.map(t => `${t.x},${t.y}`));
+                const filtered = this.previewPath.filter(p => trackKeys.has(`${p.x},${p.y}`));
+                this.renderer.trackHandler.drawEraserPreviewPath(filtered);
             }
             // Draw block preview in purple (for block, extend-block, and extend-platform tools)
             else if (['block', 'extend-block', 'extend-platform'].includes(this.selectedTool) && this.previewPath) {
@@ -1238,11 +1469,17 @@ class Editor {
                 }
             }
             else if (this.selectedTool === 'eraser') {
-                // Batch delete all tracks in the path
+                // Batch delete tracks along the planned path. The construction
+                // pathfinder may include cells without an existing track; filter
+                // them so the confirmation count and modal reflect actual work.
                 if (!this.previewPath || this.previewPath.length === 0) return;
-
-                const positions = this.previewPath.map(p => [p.x, p.y]);
-                await this.api.deleteTracksBulk(positions);
+                const tracks = this.cachedNetwork?.tracks || [];
+                const trackKeys = new Set(tracks.map(t => `${t.x},${t.y}`));
+                const positions = this.previewPath
+                    .filter(p => trackKeys.has(`${p.x},${p.y}`))
+                    .map(p => [p.x, p.y]);
+                if (positions.length === 0) return;
+                await this._bulkDeleteWithConfirm(positions);
             }
             else if (this.selectedTool === 'remove-platform-tile') {
                 // Remove platform tiles along the path
@@ -1340,6 +1577,39 @@ class Editor {
         await window.app.refreshNetwork();
         if (gridPos) {
             await this.selectElement(gridPos);
+        }
+    }
+
+    // Wraps deleteTracksBulk with the server's impact pre-check / confirmation
+    // flow. On HTTP 409 ({requires_confirmation, impact}), shows a modal listing
+    // the orphans and retries with force=true. Returns the final API response,
+    // or null if the user cancelled the confirmation.
+    async _bulkDeleteWithConfirm(positions) {
+        if (!positions || positions.length === 0) return null;
+        try {
+            return await this.api.deleteTracksBulk(positions, { force: false });
+        } catch (err) {
+            if (err.status !== 409 || !err.requires_confirmation) throw err;
+            const impact = err.impact || {};
+            const switches = (impact.removes_switches || []).length;
+            const signals = (impact.removes_signals || []).length;
+            const platforms = (impact.removes_platforms || []).length;
+            const parts = [];
+            if (switches)  parts.push(`${switches} switch${switches !== 1 ? 'es' : ''}`);
+            if (signals)   parts.push(`${signals} signal${signals !== 1 ? 's' : ''}`);
+            if (platforms) parts.push(`${platforms} platform${platforms !== 1 ? 's' : ''}`);
+            const detail = parts.length
+                ? `This will also remove ${parts.join(', ')}.`
+                : '';
+            const confirmed = await showConfirmModal({
+                title: 'Confirm bulk delete',
+                message: `Delete ${positions.length} track${positions.length !== 1 ? 's' : ''}?`,
+                detail,
+                confirmText: 'Delete',
+                confirmVariant: 'danger',
+            });
+            if (!confirmed) return null;
+            return await this.api.deleteTracksBulk(positions, { force: true });
         }
     }
 

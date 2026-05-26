@@ -66,43 +66,49 @@ class ResourceCoordinator:
     ) -> SegmentReserveResult:
         """Atomically reserve a segment's blocks AND switches.
 
-        Order: blocks first (BlockManager's own all-or-nothing applies), then
-        switches (SwitchManager's own all-or-nothing applies). On switch
-        failure, release the just-reserved blocks before returning.
+        Fix #11 (design_new.md line 938): order is switches first, then blocks,
+        so switch conflicts are discovered before any blocks are reserved. On
+        block failure, release the just-acquired switch locks before returning.
         """
-        if future_block_ids:
-            try:
-                br = self.block_manager.reserve_blocks_for_path(
-                    future_block_ids, path_id, train_id, block_traversals
-                )
-            except Exception as exc:
-                return SegmentReserveResult(
-                    success=False,
-                    failed_resource_type="block",
-                    reason=str(exc),
-                )
-            if not br.success:
-                return SegmentReserveResult(
-                    success=False,
-                    failed_resource_type="block",
-                    failed_resource_id=br.failed_block_id,
-                    reason=br.failure_reason or "reserve_failed",
-                )
-
+        # Phase 1: acquire switch locks first.
         sr: LockAcquireResult = self.switch_manager.acquire_locks_for_segment(
             switch_requests, path_id, train_id
         )
         if not sr.success:
-            if future_block_ids:
-                self.block_manager.release_path_block_reservations(
-                    future_block_ids, path_id, completed=False
-                )
             return SegmentReserveResult(
                 success=False,
                 failed_resource_type="switch",
                 failed_resource_id=sr.failed_switch_id,
                 reason=sr.reason or "switch_locked",
             )
+
+        # Phase 2: reserve blocks only after switches succeeded.
+        if future_block_ids:
+            try:
+                br = self.block_manager.reserve_blocks_for_path(
+                    future_block_ids, path_id, train_id, block_traversals
+                )
+            except Exception as exc:
+                # Roll back switch locks acquired in phase 1.
+                self.switch_manager.release_path_locks_for_switches(
+                    list(sr.locked_switch_ids), path_id
+                )
+                return SegmentReserveResult(
+                    success=False,
+                    failed_resource_type="block",
+                    reason=str(exc),
+                )
+            if not br.success:
+                # Roll back switch locks acquired in phase 1.
+                self.switch_manager.release_path_locks_for_switches(
+                    list(sr.locked_switch_ids), path_id
+                )
+                return SegmentReserveResult(
+                    success=False,
+                    failed_resource_type="block",
+                    failed_resource_id=br.failed_block_id,
+                    reason=br.failure_reason or "reserve_failed",
+                )
 
         return SegmentReserveResult(
             success=True,
@@ -180,7 +186,10 @@ class ResourceCoordinator:
     ) -> bool:
         """Route a clean-physical-entry event to the correct manager."""
         if resource_type == "block":
-            return self.block_manager.occupy_block(resource_id, train_id)
+            # Fix #30 (design_new.md): `occupy_blocks` (plural) is the
+            # design's sole physical-entry writer. Route runtime through it.
+            result = self.block_manager.occupy_blocks([resource_id], train_id)
+            return bool(result)
         if resource_type == "switch":
             return self.switch_manager.on_physical_entry(
                 resource_id, train_id, path_id

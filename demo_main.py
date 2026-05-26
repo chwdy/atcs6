@@ -31,6 +31,11 @@ from path_dispatcher import PathDispatcher
 from railway_signal import SignalType
 from switch import Switch
 
+# Identifier read by bootstrap.py and by scene-gated tests to recognise this
+# scene. Each scene module declares its own ID; tests compare against the
+# active scene (see bootstrap.get_current_scene_id) to decide whether to run.
+SCENE_ID = "demo_main"
+
 # ============= Demo Functions =============
 
 

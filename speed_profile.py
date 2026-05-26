@@ -27,8 +27,13 @@ class SpeedProfile:
         profile_id: Unique identifier for this profile
         name: Display name (e.g., "HO Generic", "N Scale Slow")
         speed_voltage_curve: List of (speed_kmh, voltage) calibration points
+            (direct single-stage mapping, kept for backward compatibility).
         power_speed_curve: List of (power_percent, speed_kmh) calibration points
             for manual `power_percent` mode. Default is linear 0-100% -> 0-100 km/h.
+        voltage_power_curve: List of (voltage, power_percent) calibration points
+            for the two-stage mapping (design stage 1: track_voltage <-> power_percent).
+            Voltage ascending, power_percent ascending. Default covers 0 V -> 0%,
+            4 V -> 50%, 12 V -> 100%.
         startup_voltage: Minimum voltage to overcome static friction
         lighting_voltage: Voltage for lights without movement (READY state)
         acceleration_rate: Speed increase rate (km/h per second)
@@ -42,6 +47,9 @@ class SpeedProfile:
     speed_voltage_curve: List[Tuple[float, float]] = field(default_factory=list)
     power_speed_curve: List[Tuple[float, float]] = field(
         default_factory=lambda: [(0.0, 0.0), (100.0, 100.0)]
+    )
+    voltage_power_curve: List[Tuple[float, float]] = field(
+        default_factory=lambda: [(0.0, 0.0), (4.0, 50.0), (12.0, 100.0)]
     )
 
     startup_voltage: float = 2.0  # Voltage to overcome static friction
@@ -57,9 +65,11 @@ class SpeedProfile:
     air_resistance_enabled: bool = True  # Master switch
     drag_coefficient: float = 0.001  # Quadratic drag coefficient
     reference_speed_kmh: float = 100.0  # Speed at which drag = drag_coefficient km/h/s
+    # Top of the usable track_voltage range for the first mapping stage (design line 2028)
+    max_voltage: float = 12.0
 
     def __post_init__(self) -> None:
-        """Ensure both calibration curves are sorted by their independent axis."""
+        """Ensure all calibration curves are sorted by their independent axis."""
         if self.speed_voltage_curve:
             self.speed_voltage_curve = sorted(
                 self.speed_voltage_curve, key=lambda x: x[0]
@@ -67,6 +77,10 @@ class SpeedProfile:
         if self.power_speed_curve:
             self.power_speed_curve = sorted(
                 self.power_speed_curve, key=lambda x: x[0]
+            )
+        if self.voltage_power_curve:
+            self.voltage_power_curve = sorted(
+                self.voltage_power_curve, key=lambda x: x[0]
             )
 
     def disable_air_resistance(self) -> None:
@@ -155,6 +169,108 @@ class SpeedProfile:
 
         return curve[-1][1]
 
+    def voltage_to_power(self, voltage: float) -> float:
+        """Convert track voltage to power percent using voltage_power_curve (stage 1).
+
+        Linear interpolation through the curve; clamped at endpoints.
+
+        Args:
+            voltage: Track voltage (V).
+
+        Returns:
+            Power percent (0–100).
+        """
+        curve = self.voltage_power_curve
+        if not curve:
+            return 0.0
+        if voltage <= curve[0][0]:
+            return curve[0][1]
+        if voltage >= curve[-1][0]:
+            return curve[-1][1]
+        for i in range(len(curve) - 1):
+            v1, p1 = curve[i]
+            v2, p2 = curve[i + 1]
+            if v1 <= voltage <= v2:
+                return self._interpolate(v1, p1, v2, p2, voltage)
+        return curve[-1][1]
+
+    def power_to_voltage(self, power_percent: float) -> float:
+        """Convert power percent to track voltage using voltage_power_curve (stage 1).
+
+        Linear interpolation through the curve (inverted axis); clamped at endpoints.
+
+        Args:
+            power_percent: Power percent (0–100).
+
+        Returns:
+            Track voltage (V).
+        """
+        curve = self.voltage_power_curve
+        if not curve:
+            return 0.0
+        if power_percent <= curve[0][1]:
+            return curve[0][0]
+        if power_percent >= curve[-1][1]:
+            return curve[-1][0]
+        for i in range(len(curve) - 1):
+            v1, p1 = curve[i]
+            v2, p2 = curve[i + 1]
+            if p1 <= power_percent <= p2:
+                return self._interpolate(p1, v1, p2, v2, power_percent)
+        return curve[-1][0]
+
+    def speed_to_voltage_two_stage(self, speed_kmh: float) -> float:
+        """Convert target speed to voltage via the two-stage pipeline.
+
+        Stage 2: speed_kmh -> power_percent (power_speed_curve inverted).
+        Stage 1: power_percent -> voltage (voltage_power_curve inverted).
+
+        Args:
+            speed_kmh: Target speed in km/h.
+
+        Returns:
+            Track voltage (V).
+        """
+        # Invert power_speed_curve: speed -> power_percent
+        power_percent = self._speed_to_power(speed_kmh)
+        return self.power_to_voltage(power_percent)
+
+    def voltage_to_speed_two_stage(self, voltage: float) -> float:
+        """Convert track voltage to speed via the two-stage pipeline.
+
+        Stage 1: voltage -> power_percent (voltage_power_curve).
+        Stage 2: power_percent -> speed_kmh (power_speed_curve).
+
+        Args:
+            voltage: Track voltage (V).
+
+        Returns:
+            Speed in km/h.
+        """
+        power_percent = self.voltage_to_power(voltage)
+        return self.power_percent_to_speed(power_percent)
+
+    def _speed_to_power(self, speed_kmh: float) -> float:
+        """Invert power_speed_curve to get power_percent from speed_kmh.
+
+        Linear interpolation; clamped at endpoints.
+        """
+        curve = self.power_speed_curve
+        if not curve:
+            return 0.0
+        if speed_kmh <= 0:
+            return 0.0
+        if speed_kmh <= curve[0][1]:
+            return curve[0][0]
+        if speed_kmh >= curve[-1][1]:
+            return curve[-1][0]
+        for i in range(len(curve) - 1):
+            p1, s1 = curve[i]
+            p2, s2 = curve[i + 1]
+            if s1 <= speed_kmh <= s2:
+                return self._interpolate(s1, p1, s2, p2, speed_kmh)
+        return curve[-1][0]
+
     def _interpolate(
         self, x1: float, y1: float, x2: float, y2: float, x: float
     ) -> float:
@@ -171,6 +287,7 @@ class SpeedProfile:
             "name": self.name,
             "speed_voltage_curve": [[s, v] for s, v in self.speed_voltage_curve],
             "power_speed_curve": [[p, s] for p, s in self.power_speed_curve],
+            "voltage_power_curve": [[v, p] for v, p in self.voltage_power_curve],
             "startup_voltage": self.startup_voltage,
             "lighting_voltage": self.lighting_voltage,
             "acceleration_rate": self.acceleration_rate,
@@ -196,11 +313,20 @@ class SpeedProfile:
         else:
             power_tuples = [(float(p), float(s)) for p, s in power_curve]
 
+        voltage_power_raw = data.get("voltage_power_curve")
+        if voltage_power_raw is None:
+            voltage_power_tuples: List[Tuple[float, float]] = [
+                (0.0, 0.0), (4.0, 50.0), (12.0, 100.0)
+            ]
+        else:
+            voltage_power_tuples = [(float(v), float(p)) for v, p in voltage_power_raw]
+
         return cls(
             profile_id=data.get("profile_id", ""),
             name=data.get("name", ""),
             speed_voltage_curve=curve_tuples,
             power_speed_curve=power_tuples,
+            voltage_power_curve=voltage_power_tuples,
             startup_voltage=float(data.get("startup_voltage", 2.0)),
             lighting_voltage=float(data.get("lighting_voltage", 2.5)),
             acceleration_rate=float(data.get("acceleration_rate", 10.0)),
@@ -211,6 +337,7 @@ class SpeedProfile:
             air_resistance_enabled=bool(data.get("air_resistance_enabled", True)),
             drag_coefficient=float(data.get("drag_coefficient", 0.001)),
             reference_speed_kmh=float(data.get("reference_speed_kmh", 100.0)),
+            max_voltage=float(data.get("max_voltage", 12.0)),
         )
 
 

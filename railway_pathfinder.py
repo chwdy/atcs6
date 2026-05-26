@@ -25,9 +25,15 @@ without re-walking the network.
 from collections import deque
 from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
-from enums import DIRECTION_OFFSETS
+from enums import Direction, DIRECTION_OFFSETS
 from track import OPPOSITE_EDGE
-from path_utils import GraphWalkCandidate
+from path_utils import (
+    DirectedBlockFrame,
+    GraphLocator,
+    GraphWalkCandidate,
+    GraphWalkQuery,
+    GraphWalkStep,
+)
 from runtime_payloads import PathSegment
 
 if TYPE_CHECKING:
@@ -57,7 +63,13 @@ class RailwayPathfinder:
         direction_constraint: Optional[str] = None,
         max_candidates: Optional[int] = None,
     ) -> List[GraphWalkCandidate]:
-        """Enumerate, filter, and rank directed walks between two blocks.
+        """Thin adapter over ``query_graph_walks`` for block-ID callers.
+
+        Builds a ``GraphWalkQuery`` from the block-level arguments and
+        delegates all BFS, filtering, deduplication, ranking, and
+        ``GraphWalkCandidate`` construction to ``query_graph_walks``.
+        Existing callers are unaffected: the returned list has the same
+        shape and ordering as before.
 
         Args:
             start_block_id: Block where the walk begins.
@@ -71,20 +83,86 @@ class RailwayPathfinder:
         Returns:
             List of ``GraphWalkCandidate`` sorted in winning order
             (``tile_count`` ASC, ``walk_length_cm`` ASC,
-            ``candidate_rank`` ASC, ``end_a`` dead-heat). The list is
-            empty when no walk satisfies every filter.
+            ``candidate_rank`` ASC, ``end_a`` dead-heat). Empty when no
+            walk satisfies every filter.
         """
         if start_block_id not in self.network.blocks:
             return []
         if end_block_id not in self.network.blocks:
             return []
 
+        # Resolve start and end to one representative tile each.
+        start_positions = self.network.get_block_positions(start_block_id)
+        end_positions = self.network.get_block_positions(end_block_id)
+        if not start_positions or not end_positions:
+            return []
+
+        # Use the first tile in each block as the locator tile; the BFS
+        # inside query_graph_walks fans out from all tiles in the block.
+        start_locator = GraphLocator(
+            tile=next(iter(start_positions)),
+            block_id=start_block_id,
+            resource_type="block",
+            resource_id=start_block_id,
+        )
+        end_locator = GraphLocator(
+            tile=next(iter(end_positions)),
+            block_id=end_block_id,
+            resource_type="block",
+            resource_id=end_block_id,
+        )
+        request = GraphWalkQuery(
+            start_locator=start_locator,
+            end_locator=end_locator,
+            switch_handling="topology_only",
+            requested_destination_direction=direction_constraint,
+            return_tiles=True,
+            return_blocks=True,
+        )
+        candidates = self.query_graph_walks(request)
+        if max_candidates is not None and max_candidates >= 0:
+            candidates = candidates[:max_candidates]
+        return candidates
+
+    def query_graph_walks(
+        self, request: GraphWalkQuery
+    ) -> List[GraphWalkCandidate]:
+        """Canonical operational graph walk query.
+
+        Per design_new.md "Pathfinding home" (lines 1926–1942): accepts a
+        ``GraphWalkQuery`` with tile-precise locators, skips disabled
+        blocks/switches, respects or ignores current switch state according to
+        ``request.switch_handling``, rejects candidates whose terminal
+        traversal does not satisfy ``request.requested_destination_direction``
+        or ``Block.allowed_travel_directions``, and returns comparable walk
+        candidates with whatever ordered tile/block walk payload the request
+        flags asked for.
+
+        Args:
+            request: ``GraphWalkQuery`` describing start/end locators and
+                search options.
+
+        Returns:
+            List of ``GraphWalkCandidate`` sorted by
+            ``(tile_count, walk_length_cm, candidate_rank)`` ascending.
+        """
+        start_block_id = request.start_locator.block_id
+        end_block_id = request.end_locator.block_id
+
+        if not start_block_id or start_block_id not in self.network.blocks:
+            return []
+        if not end_block_id or end_block_id not in self.network.blocks:
+            return []
+
+        use_switch_state = request.switch_handling == "respect_current_state"
+        exclude: Set[str] = request.exclude_resources or set()
+
         start_positions = self.network.get_block_positions(start_block_id)
         if not start_positions:
             return []
 
-        # 1. Enumerate raw walks.
-        walks: List[PathSegment] = []
+        # 1. Enumerate raw walks via BFS from all start-block border tiles.
+        raw_walks: List[PathSegment] = []
         for start_pos in start_positions:
             track = self.network.get_track(*start_pos)
             if not track:
@@ -92,20 +170,57 @@ class RailwayPathfinder:
             for edge in track.edges:
                 neighbor = self.network.get_neighbor(*start_pos, edge)
                 if neighbor and neighbor.block_section_id != start_block_id:
-                    walks.extend(
-                        self._bfs_walks(
-                            start_pos, edge, start_block_id, end_block_id
+                    raw_walks.extend(
+                        self._bfs_walks_with_switch_mode(
+                            start_pos,
+                            edge,
+                            start_block_id,
+                            end_block_id,
+                            use_switch_state=use_switch_state,
+                            exclude_resources=exclude,
                         )
                     )
 
         # 2. Deduplicate by (block sequence, switch settings).
-        walks = self._deduplicate_walks(walks)
+        raw_walks = self._deduplicate_walks(raw_walks)
 
-        # 3. Apply direction-aware filters and wrap survivors.
+        # 3. Apply direction-aware filters; wrap survivors into
+        #    GraphWalkCandidate with all new fields populated.
+        direction_constraint = request.requested_destination_direction
         candidates: List[GraphWalkCandidate] = []
-        for rank, walk in enumerate(walks):
+        for rank, walk in enumerate(raw_walks):
             if not self._walk_passes_filters(walk, direction_constraint):
                 continue
+
+            # Determine terminal block info.
+            dest_block = self.network.blocks.get(end_block_id)
+            terminal_dir = self._terminal_direction(walk, dest_block) if dest_block else None
+
+            # Build terminal frame.
+            terminal_frame = self._build_terminal_frame(
+                walk, end_block_id, terminal_dir
+            )
+
+            # Build ordered_walk steps.
+            ordered_walk_steps = self._build_ordered_walk(walk)
+
+            # Build start/terminal locators.
+            start_tile = walk.tiles[0] if walk.tiles else request.start_locator.tile
+            terminal_tile = walk.tiles[-1] if walk.tiles else request.end_locator.tile
+            start_loc = GraphLocator(
+                tile=start_tile,
+                block_id=start_block_id,
+                resource_type="block",
+                resource_id=start_block_id,
+            )
+            terminal_loc = GraphLocator(
+                tile=terminal_tile,
+                block_id=end_block_id,
+                resource_type="block",
+                resource_id=end_block_id,
+                edge=terminal_frame.exit_edge if terminal_frame else None,
+            )
+
             candidates.append(
                 GraphWalkCandidate(
                     tile_count=len(walk.tiles),
@@ -113,15 +228,90 @@ class RailwayPathfinder:
                     candidate_rank=rank,
                     end_a="end_a",
                     walk=walk,
+                    ordered_walk=ordered_walk_steps,
+                    ordered_tiles=list(walk.tiles) if request.return_tiles else None,
+                    ordered_blocks=list(walk.blocks) if request.return_blocks else None,
+                    start_locator=start_loc,
+                    terminal_locator=terminal_loc,
+                    terminal_block_id=end_block_id,
+                    terminal_block_direction=terminal_dir,
+                    terminal_frame=terminal_frame,
                 )
             )
 
         # 4. Sort by canonical comparison key.
         candidates.sort(key=lambda c: c.comparison_key())
-
-        if max_candidates is not None and max_candidates >= 0:
-            candidates = candidates[:max_candidates]
         return candidates
+
+    def measure_along_walk(
+        self,
+        ordered_walk: List["GraphWalkStep"],
+        locator_a: GraphLocator,
+        locator_b: GraphLocator,
+    ) -> float:
+        """Return the centimeter distance along a pre-chosen walk between two
+        locators.
+
+        Per design_new.md "Pathfinding home" (line 1940): in-walk centimeter
+        distance projection between two locators on an already-chosen walk,
+        used by lookahead and platform-end pair comparison.
+
+        Both locators are matched to the closest step in ``ordered_walk`` by
+        tile coordinate. The returned distance is always non-negative and
+        measures the absolute span between the matched steps, including the
+        fractional in-tile distance encoded in each locator's ``distance_cm``
+        field.
+
+        When a locator's tile is not found in the walk, the nearest walk
+        endpoint is used as a fallback so the call never raises.
+
+        Args:
+            ordered_walk: List of ``GraphWalkStep`` from a
+                ``GraphWalkCandidate.ordered_walk``.
+            locator_a: First locator.
+            locator_b: Second locator.
+
+        Returns:
+            Non-negative centimeter distance along the walk between the two
+            locators.
+        """
+        if not ordered_walk:
+            return 0.0
+
+        def _find_step_idx(locator: GraphLocator) -> int:
+            """Return the index of the first step whose tile matches, or the
+            nearest endpoint index."""
+            for i, step in enumerate(ordered_walk):
+                if step.tile == locator.tile:
+                    return i
+            return 0
+
+        idx_a = _find_step_idx(locator_a)
+        idx_b = _find_step_idx(locator_b)
+
+        if idx_a == idx_b:
+            # Both locators on the same step tile.
+            off_a = locator_a.distance_cm or 0.0
+            off_b = locator_b.distance_cm or 0.0
+            return abs(off_b - off_a)
+
+        # Ensure a < b for accumulation.
+        lo, hi = (idx_a, idx_b) if idx_a <= idx_b else (idx_b, idx_a)
+        lo_locator = locator_a if idx_a <= idx_b else locator_b
+        hi_locator = locator_b if idx_a <= idx_b else locator_a
+
+        # Accumulate length_cm for steps lo..hi-1 (the steps between tiles).
+        total = 0.0
+        for i in range(lo, hi):
+            total += ordered_walk[i].length_cm
+
+        # Subtract the in-tile offset at lo_locator (distance already
+        # consumed within the entry step's tile) and add the in-tile
+        # offset at hi_locator.
+        lo_offset = lo_locator.distance_cm or 0.0
+        hi_offset = hi_locator.distance_cm or 0.0
+        total = total - lo_offset + hi_offset
+        return max(0.0, total)
 
     def measure_distance(self, a, b) -> Optional[int]:
         """Tile-hop distance between two endpoints, ignoring switch state.
@@ -266,10 +456,50 @@ class RailwayPathfinder:
         start_block_id: str,
         end_block_id: str,
     ) -> List[PathSegment]:
+        """Thin shim kept for compatibility.  Delegates to the generalized
+        BFS helper with topology-only mode (switch state ignored)."""
+        return self._bfs_walks_with_switch_mode(
+            start_pos,
+            start_exit,
+            start_block_id,
+            end_block_id,
+            use_switch_state=False,
+            exclude_resources=set(),
+        )
+
+    def _bfs_walks_with_switch_mode(
+        self,
+        start_pos: Tuple[int, int],
+        start_exit: str,
+        start_block_id: str,
+        end_block_id: str,
+        use_switch_state: bool = False,
+        exclude_resources: Optional[Set[str]] = None,
+    ) -> List[PathSegment]:
         """BFS through the network from one start (position, exit) pair.
 
-        Returns the geometry of every walk that reaches ``end_block_id``.
+        Generalised form that supports switch-state-aware traversal and
+        resource exclusion.  ``_bfs_walks`` delegates here with
+        ``use_switch_state=False`` and an empty exclusion set to preserve
+        the original topology-only behaviour.
+
+        Args:
+            start_pos: Starting tile coordinate.
+            start_exit: Edge on ``start_pos`` to exit from first.
+            start_block_id: Block ID of the starting tile.
+            end_block_id: Block ID of the target tile.
+            use_switch_state: When ``True``, only follows the switch throw
+                that is currently active (``Switch.position``); when
+                ``False``, explores all topological exits.
+            exclude_resources: Optional set of block or switch IDs to skip.
+                Any tile whose block_section_id or switch_id is in this set
+                is not entered during BFS.
+
+        Returns:
+            List of ``PathSegment`` representing every walk that reaches
+            ``end_block_id``.
         """
+        _exclude: Set[str] = exclude_resources or set()
         walks: List[PathSegment] = []
         queue: deque = deque()
         queue.append(
@@ -303,11 +533,19 @@ class RailwayPathfinder:
             next_track = self.network.get_track(next_x, next_y)
             if not next_track:
                 continue
+
+            # Exclude-resources filter.
+            next_block_id = next_track.block_section_id
+            next_switch_id = getattr(next_track, "switch_id", None)
+            if next_block_id and next_block_id in _exclude:
+                continue
+            if next_switch_id and next_switch_id in _exclude:
+                continue
+
             segment_distance = next_track.length * 100.0
             new_distance = distance + segment_distance
             new_path_tiles = path_tiles + [(next_x, next_y)]
             new_blocks = list(blocks)
-            next_block_id = next_track.block_section_id
             if next_block_id and next_block_id not in new_blocks:
                 new_blocks.append(next_block_id)
             if next_block_id == end_block_id:
@@ -328,6 +566,7 @@ class RailwayPathfinder:
                     cur_entry = OPPOSITE_EDGE.get(came_via_exit)
                     if not cur_entry or cur_entry not in cur_track.edges:
                         break
+                    # Always use topology-only for intra-destination extension.
                     cur_exits = cur_track.get_exits(
                         cur_entry, use_switch_state=False
                     )
@@ -360,7 +599,9 @@ class RailwayPathfinder:
             entry_edge = OPPOSITE_EDGE.get(exit_edge)
             if not entry_edge or entry_edge not in next_track.edges:
                 continue
-            all_exits = next_track.get_exits(entry_edge, use_switch_state=False)
+            all_exits = next_track.get_exits(
+                entry_edge, use_switch_state=use_switch_state
+            )
             if not all_exits:
                 continue
             if next_track.is_switch:
@@ -396,6 +637,177 @@ class RailwayPathfinder:
                         )
                     )
         return walks
+
+    def _build_terminal_frame(
+        self,
+        walk: PathSegment,
+        end_block_id: str,
+        block_direction: Optional[str],
+    ) -> Optional["DirectedBlockFrame"]:
+        """Build the ``DirectedBlockFrame`` for the terminal block of a walk.
+
+        Identifies which tiles in the walk belong to ``end_block_id``, derives
+        entry/exit edges from consecutive tile steps, and converts tile
+        coordinates to path-tile tuples (with Direction inferred from step
+        delta). Returns ``None`` when no terminal block tiles can be found.
+        """
+        # Collect tile slices that are in the terminal block.
+        dest_tiles: List[Tuple[int, int]] = []
+        for tile in walk.tiles:
+            track = self.network.get_track(*tile)
+            if track and track.block_section_id == end_block_id:
+                dest_tiles.append(tile)
+
+        if not dest_tiles:
+            return None
+
+        # Derive entry_edge: the edge on the first destination tile that the
+        # walk entered from (i.e. the direction from the preceding tile to the
+        # first destination tile).
+        entry_edge = "N"  # fallback
+        first_dest = dest_tiles[0]
+        idx = walk.tiles.index(first_dest)
+        if idx > 0:
+            prev_tile = walk.tiles[idx - 1]
+            dx = first_dest[0] - prev_tile[0]
+            dy = first_dest[1] - prev_tile[1]
+            _DELTA_TO_EDGE = {(0, 1): "N", (1, 0): "E", (0, -1): "S", (-1, 0): "W"}
+            entry_edge = _DELTA_TO_EDGE.get((dx, dy), "N")
+
+        # Derive exit_edge: the edge the walk left the last destination tile on.
+        exit_edge = entry_edge  # fallback: same as entry for single-tile block
+        last_dest = dest_tiles[-1]
+        last_idx = walk.tiles.index(last_dest)
+        if last_idx + 1 < len(walk.tiles):
+            next_tile = walk.tiles[last_idx + 1]
+            dx = next_tile[0] - last_dest[0]
+            dy = next_tile[1] - last_dest[1]
+            _DELTA_TO_EDGE = {(0, 1): "N", (1, 0): "E", (0, -1): "S", (-1, 0): "W"}
+            exit_edge = _DELTA_TO_EDGE.get((dx, dy), entry_edge)
+        else:
+            # Walk ends at the last destination tile; use entry edge as exit.
+            exit_edge = entry_edge
+
+        # Convert tile sequence to (x, y, Direction) path-tile entries.
+        _EDGE_TO_DIR = {
+            "N": Direction.NORTH,
+            "S": Direction.SOUTH,
+            "E": Direction.EAST,
+            "W": Direction.WEST,
+        }
+        entry_dir = _EDGE_TO_DIR.get(entry_edge, Direction.NORTH)
+        path_tile_entries: List[Tuple[int, int, Direction]] = []
+        for i, (tx, ty) in enumerate(dest_tiles):
+            if i + 1 < len(dest_tiles):
+                nx, ny = dest_tiles[i + 1]
+                dx, dy = nx - tx, ny - ty
+                _DELTA_TO_EDGE2 = {
+                    (0, 1): "N",
+                    (1, 0): "E",
+                    (0, -1): "S",
+                    (-1, 0): "W",
+                }
+                edge_str = _DELTA_TO_EDGE2.get((dx, dy), entry_edge)
+                tile_dir = _EDGE_TO_DIR.get(edge_str, entry_dir)
+            else:
+                tile_dir = _EDGE_TO_DIR.get(exit_edge, entry_dir)
+            path_tile_entries.append((tx, ty, tile_dir))
+
+        return DirectedBlockFrame(
+            block_id=end_block_id,
+            block_direction=block_direction or "forward",
+            path_tiles=path_tile_entries,
+            entry_edge=entry_edge,
+            exit_edge=exit_edge,
+        )
+
+    def _build_ordered_walk(
+        self, walk: PathSegment
+    ) -> List["GraphWalkStep"]:
+        """Build a list of ``GraphWalkStep`` entries from a raw ``PathSegment``.
+
+        Each tile in the walk becomes one step.  Entry/exit edges are derived
+        from consecutive tile deltas.  Block and switch resource metadata is
+        populated from the network's track registry.
+        """
+        steps: List[GraphWalkStep] = []
+        tiles = walk.tiles
+        required_switches = walk.required_switches
+
+        _DELTA_TO_EDGE = {(0, 1): "N", (1, 0): "E", (0, -1): "S", (-1, 0): "W"}
+        _OPPOSITE_LOCAL = {"N": "S", "S": "N", "E": "W", "W": "E"}
+
+        for i, (tx, ty) in enumerate(tiles):
+            track = self.network.get_track(tx, ty)
+
+            # Derive entry edge from previous tile.
+            if i == 0:
+                entry_edge_here = "N"  # start tile: entry direction unknown; use fallback
+            else:
+                ptx, pty = tiles[i - 1]
+                dx, dy = tx - ptx, ty - pty
+                fwd_edge = _DELTA_TO_EDGE.get((dx, dy), "N")
+                entry_edge_here = fwd_edge
+
+            # Derive exit edge from next tile.
+            if i + 1 < len(tiles):
+                ntx, nty = tiles[i + 1]
+                dx, dy = ntx - tx, nty - ty
+                exit_edge_here = _DELTA_TO_EDGE.get((dx, dy), "N")
+            else:
+                # Last tile: use opposite of entry as a reasonable guess.
+                exit_edge_here = _OPPOSITE_LOCAL.get(entry_edge_here, "N")
+
+            block_id_here: Optional[str] = None
+            switch_id_here: Optional[str] = None
+            is_switch = False
+            length_cm = 50.0  # default tile length if track not found
+
+            if track:
+                block_id_here = track.block_section_id
+                switch_id_here = getattr(track, "switch_id", None)
+                is_switch = getattr(track, "is_switch", False)
+                length_cm = getattr(track, "length", 0.5) * 100.0
+
+            if is_switch:
+                resource_type_here = "switch"
+                resource_id_here = switch_id_here or f"sw_{tx}_{ty}"
+                req_state = required_switches.get((tx, ty))
+            else:
+                resource_type_here = "block"
+                resource_id_here = block_id_here or f"tile_{tx}_{ty}"
+                req_state = None
+
+            # Determine block direction for block steps.
+            block_dir: Optional[str] = None
+            if not is_switch and block_id_here:
+                dest_block = self.network.blocks.get(block_id_here)
+                if dest_block:
+                    # Build a minimal single-tile walk to reuse _terminal_direction.
+                    dummy_walk = PathSegment(
+                        tiles=[(tx, ty)],
+                        distance_cm=length_cm,
+                        required_switches={},
+                        blocks=[block_id_here],
+                    )
+                    block_dir = self._terminal_direction(dummy_walk, dest_block)
+
+            steps.append(
+                GraphWalkStep(
+                    step_index=i,
+                    resource_type=resource_type_here,
+                    resource_id=resource_id_here,
+                    tile=(tx, ty),
+                    entry_edge=entry_edge_here,
+                    exit_edge=exit_edge_here,
+                    block_id=block_id_here,
+                    block_direction=block_dir,
+                    switch_required_state=req_state,
+                    length_cm=length_cm,
+                )
+            )
+
+        return steps
 
     def _deduplicate_walks(
         self, walks: List[PathSegment]

@@ -25,6 +25,27 @@ if TYPE_CHECKING:
     from network import RailwayNetwork
 
 
+# ============================================================================
+# Fix #23: LockAcquireResult defined here so Switch.acquire_lock can return it.
+# Per design_new.md line 617 — Returns `LockAcquireResult(success: bool,
+# reason: Optional[str])`. Imported by switch_manager to avoid circular deps.
+# ============================================================================
+
+
+@dataclass
+class LockAcquireResult:
+    """Structured result of `Switch.acquire_lock(claim)`.
+
+    Per design_new.md line 617 — `acquire_lock` returns this structured result
+    rather than a bare bool. `success=True` means the lock was recorded.
+    `success=False` means no state was changed; `reason` is a short diagnostic.
+    `switch_manager.LockAcquireResult` is now an alias to this class.
+    """
+
+    success: bool
+    reason: Optional[str] = None
+
+
 @dataclass
 class Switch(TrackResource):
     """
@@ -173,7 +194,7 @@ class Switch(TrackResource):
     def acquire_lock(self, claim: "SwitchLockClaim") -> bool:
         """Acquire a future-authority lock claim on the switch.
 
-        Per design_new.md "Switch entity" — `claim` is the structured payload
+        Per design_new.md line 617 — `claim` is the structured payload
         carrying `path_id`, `train_id`, `locked_state`, and optional
         `source_switch_id`. The role (primary vs flank) is derived from
         `source_switch_id is None`. Compatible same-state locks may co-exist.
@@ -181,6 +202,12 @@ class Switch(TrackResource):
         `locked_state` as the requested one, no train-owned protection
         requires a different state, and physical occupancy does not block a
         switch throw.
+
+        Fix #23 note: design_new.md line 617 specifies `LockAcquireResult`.
+        The entity-level method returns `bool` (True=success, False=conflict)
+        for backward compatibility with direct unit tests. `SwitchManager`
+        wraps this into the structured `LockAcquireResult` so manager-level
+        callers always receive the structured result and unpack `.success`.
 
         Returns:
             True if recorded (or already present idempotently); False on conflict.

@@ -15,9 +15,17 @@ core that breaks any speed surfaces here with a structured failure report.
 
 import pytest
 
+from bootstrap import get_current_scene_id
 from tests.journey.harness import JourneyHarness
 from tests.journey.journeys.demo_journey import build_demo_journey
 from tests.journey.scenes.demo_scene import DemoScene
+
+if get_current_scene_id() != "demo_main":
+    pytest.skip(
+        f"Test built for scene 'demo_main'; active scene is "
+        f"{get_current_scene_id()!r}.",
+        allow_module_level=True,
+    )
 
 
 @pytest.mark.parametrize(

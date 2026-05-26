@@ -21,9 +21,15 @@ CM_PER_SECOND_PER_KMH = get_speed_conversion_factor()  # model cm/s per prototyp
 
 
 def _make_controller(current_speed_kmh: float = 0.0, power_on: bool = True) -> TrainController:
+    from enums import TrainState
     network = RailwayNetwork()
     controller = TrainController(train_id="TRAIN_ETA", network=network)
-    controller.power_on = power_on
+    # Per design_new.md: power_on is a read-only derived property; use
+    # controller.ops.state to power on/off.
+    if power_on:
+        controller.ops.state = TrainState.READY
+    else:
+        controller.ops.state = TrainState.OFF
     controller.physics_sync.current_speed_kmh = current_speed_kmh
     return controller
 

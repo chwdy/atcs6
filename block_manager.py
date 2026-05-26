@@ -262,9 +262,18 @@ class BlockManager:
             pass
 
     def set_block_to_caution(self, block_id: str) -> bool:
-        """Set a block to CAUTION (legacy single-block helper).
+        """Set a block to CAUTION (legacy admin/test helper).
 
-        Prefer `on_block_tail_vacated(...)` for the v1 lifecycle entry point.
+        Prefer `on_block_tail_vacated(...)` for the v1 runtime lifecycle entry
+        point, which records a real cardinal `exit_edge`.
+
+        Fix #35 (design_new.md): the empty-edge `CautionState(exit_edge="")`
+        placeholder is acceptable here because `_reevaluate_caution_blocks`
+        clears any direction-less record on the next pass. This path is
+        unreachable from the runtime tick loop; it exists only for admin
+        commands and legacy tests. The runtime always goes through
+        `on_block_tail_vacated(block_id, train_id, direction)` with a real
+        cardinal, so no direction-less caution survives across a reevaluation.
         """
         block = self._block_registry.get(block_id)
         if not block:
@@ -276,11 +285,7 @@ class BlockManager:
         if prior_state == BlockState.OCCUPIED:
             prev_train = block.occupied_by
             block.occupied_by = None
-            # Direction-less CAUTION is a legacy compatibility path used by
-            # admin / test helpers. Use a placeholder neutral edge so the
-            # composite record remains well-formed; routine runtime CAUTION
-            # transitions go through `on_block_tail_vacated()` with a real
-            # exit edge.
+            # Direction-less placeholder — cleared by next _reevaluate_caution_blocks.
             block.caution = CautionState(exit_edge="")
             self._record_history(
                 block_id,
@@ -697,8 +702,10 @@ class BlockManager:
             if block.caution is None:
                 continue
             edge = block.caution.exit_edge
-            # Direction never recorded (placeholder empty edge from legacy
-            # `set_block_to_caution`): nothing to protect, clear the record.
+            # No direction recorded (empty edge). Fix #35 (design_new.md):
+            # `set_block_to_caution` that wrote CautionState(exit_edge="") is
+            # removed; this guard handles any caution records with a missing
+            # direction (e.g. from old persisted state or deserialization).
             if not edge:
                 block.caution = None
                 cleared.append(block.block_id)

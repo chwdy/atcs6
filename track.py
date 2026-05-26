@@ -805,6 +805,19 @@ class TrackSegment:
         sourced from the canonical `Switch.position`, not the legacy
         `TrackSegment._switch_state` cache.
         """
+        # Fix #10 (design_new.md line 617): disabled switches have no
+        # traversable exits; check before delegating to get_exits.
+        if (
+            self.is_switch
+            and self.network is not None
+            and self.switch_id is not None
+            and hasattr(self.network, "switches")
+        ):
+            switch = self.network.switches.get(self.switch_id)
+            if switch is not None and switch.disabled:
+                del resolver
+                return []
+
         # The live-state filter still uses the same code path as `get_exits`
         # for the moment (which reads `self.switch_state`). After the
         # switch-state migration completes, this helper resolves through
@@ -861,6 +874,18 @@ class TrackSegment:
         # (which checks for switch_points, not just edge count)
         if not self.is_switch:
             return sorted(all_exits)
+
+        # Fix #10 (design_new.md line 617): disabled switches have no
+        # traversable exits. Resolve the owning Switch entity from the network
+        # registry; if `switch.disabled` is True return [] immediately.
+        if (
+            self.network is not None
+            and self.switch_id is not None
+            and hasattr(self.network, "switches")
+        ):
+            switch = self.network.switches.get(self.switch_id)
+            if switch is not None and switch.disabled:
+                return []
 
         # For switches: categorize exits by segment type (main vs diverge)
         # AND verify the entry edge is part of an active segment
@@ -1243,7 +1268,23 @@ class TrackSegment:
     # ========================================================================
 
     def is_locked_by_path(self) -> bool:
-        """Check if this switch is locked by any path."""
+        """Check if this switch is locked by any future-authority lock or
+        train-owned physical protection.
+
+        Fix #9 (design_new.md line 617): the old impl checked only `locks`
+        (via `locked_by_path`). Using `switch.is_locked()` covers both
+        `switch.locks` and `switch.train_protection_claims` as the design
+        requires.
+        """
+        if (
+            self.network is not None
+            and self.switch_id is not None
+            and hasattr(self.network, "switches")
+        ):
+            switch = self.network.switches.get(self.switch_id)
+            if switch is not None:
+                return switch.is_locked()
+        # Detached mode: fall back to checking the local locked_by_path shim.
         return self.locked_by_path is not None
 
     def is_locked_by(self, path_id: str) -> bool:

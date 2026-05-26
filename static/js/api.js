@@ -119,10 +119,10 @@ class API {
         }, 'addTracksBulk');
     }
 
-    async deleteTracksBulk(positions) {
+    async deleteTracksBulk(positions, { force = false } = {}) {
         return this._request('/tracks/bulk-delete', {
             method: 'POST',
-            body: { positions }
+            body: { positions, force }
         }, 'deleteTracksBulk');
     }
 

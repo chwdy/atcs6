@@ -35,6 +35,8 @@ from train_route import (
 from runtime_payloads import (
     AcquisitionMode,
     ErrorRecord,
+    FatalConflictKind,
+    FatalPhysicalEntryConflict,
     PendingPathCancelRequest,
     ResolvedRouteTarget,
     ResourceEvent,
@@ -198,6 +200,28 @@ class RouteExecutionState:
                 return run.task_index
         return self.task_runs[-1].task_index
 
+    @property
+    def next_planning_walk_position(self) -> int:
+        """Derived: list position in `task_runs` of the next non-finished
+        entry — the walk-position counterpart of `next_planning_index`.
+
+        Per design_new.md line 1104 + line 1267, `walk_position` (the list
+        index in `task_runs`) and `task_index` (the index into
+        `Route.tasks`) decouple after `CIRCULAR` / `ROUND_TRIP` wrap-around
+        when `len(task_runs) > len(Route.tasks)`. Callers that need to
+        index `task_runs` directly must use this property, not
+        `next_planning_index`.
+
+        Returns `0` for an empty walk. Returns `len(task_runs) - 1` for a
+        terminal walk (every entry finished).
+        """
+        if not self.task_runs:
+            return 0
+        for i, run in enumerate(self.task_runs):
+            if run.finished_at is None:
+                return i
+        return len(self.task_runs) - 1
+
     def _append_next_walk_task(self, route: "Route") -> None:
         """Grow `task_runs` for the next walk-position when applicable.
 
@@ -275,8 +299,14 @@ class RouteExecutor:
         # via `history_for_train(train_id)`.
         self.execution_states: Dict[str, RouteExecutionState] = {}
         self._historical_runs: List[RouteExecutionState] = []
-        self.controllers = shared_controllers if shared_controllers is not None else {}
-        self._owns_controllers = shared_controllers is None
+        # Per design_new.md (fix #28): RouteExecutor no longer maintains its
+        # own controller registry. All lookups go through
+        # self.simulation_controller.get_or_create_controller(train_id). The
+        # shared_controllers arg is accepted for backward compatibility with
+        # tests that construct RouteExecutor in isolation; it is stored but
+        # not used for lookups — those always go through simulation_controller
+        # when one is present.
+        self._shared_controllers = shared_controllers  # kept for test compat
         # Per-route run-instance counter (1-based). diagnostic only.
         self._run_count_for_route: Dict[str, int] = {}
 
@@ -386,19 +416,46 @@ class RouteExecutor:
 
     # ------------------------------------------------------------------ helpers
     def _get_controller(self, train: "Train") -> TrainController:
-        """Get or create TrainController for a train."""
-        if train.train_id not in self.controllers:
-            self.controllers[train.train_id] = create_controller_for_train(
+        """Get or create TrainController for a train.
+
+        Per design_new.md (fix #28): delegates to
+        ``simulation_controller.get_or_create_controller(train_id)`` when a
+        back-reference is available, so the controller registry is always
+        owned by SimulationController. Falls back to creating a standalone
+        controller (for test contexts without a SimulationController).
+        """
+        sc = getattr(self, "simulation_controller", None)
+        if sc is not None:
+            try:
+                return sc.get_or_create_controller(train.train_id)
+            except KeyError:
+                pass
+        # Fallback for test contexts with no SimulationController.
+        fallback = self._shared_controllers
+        if fallback is None:
+            fallback = {}
+            self._shared_controllers = fallback
+        if train.train_id not in fallback:
+            fallback[train.train_id] = create_controller_for_train(
                 train_id=train.train_id,
                 network=self.network,
                 path_dispatcher=self.path_dispatcher,
                 route_executor=self,
             )
-        return self.controllers[train.train_id]
+        return fallback[train.train_id]
 
     def _controller_by_id(self, train_id: str) -> Optional[TrainController]:
-        """Look up controller by train_id without creating it."""
-        return self.controllers.get(train_id)
+        """Look up controller by train_id without creating it.
+
+        Per design_new.md (fix #28): delegates to SimulationController's
+        registry when present; falls back to the shared_controllers dict for
+        test contexts.
+        """
+        sc = getattr(self, "simulation_controller", None)
+        if sc is not None:
+            return getattr(sc, "controllers", {}).get(train_id)
+        fallback = self._shared_controllers or {}
+        return fallback.get(train_id)
 
     def _now(self) -> float:
         """System-time Unix seconds; canonical timestamp source for v1."""
@@ -577,7 +634,8 @@ class RouteExecutor:
             exec_state.path_cancelled = False
 
         # ---------- 70c3: dwell-complete timer check -------------------------
-        if controller.ops.state == TrainState.RUNNING_AT_STATION:
+        # Per design_new.md line 2133: EB freezes the dwell timer (fix #8).
+        if controller.ops.state == TrainState.RUNNING_AT_STATION and not controller.eb.active:
             self._dwell_complete_check(train, route, exec_state, controller, now)
 
         # ---------- c481: helper lookup via _find_next_task_target -----------
@@ -617,13 +675,38 @@ class RouteExecutor:
         if not self._eligible_for_authority_acquisition(controller, exec_state):
             return
 
-        # Phase 1 step `66aa`: dispatch via PathDispatcher.create_path or
-        # extend_path (v1 signature). Both methods take train_id +
-        # requested_destination_block_id + requested_destination_direction +
-        # acquisition_mode and return a PathAcquisitionResult.
-        self._authority_acquisition_step(
-            train, route, exec_state, controller, projection
-        )
+        # Per design_new.md (fix #14, part a): wrap authority acquisition in a
+        # retry loop that accumulates previously-failed resolved_target values
+        # into an `exclude` set and re-calls `_find_next_task_target(train_id,
+        # exclude=exclude)` so StationTarget tasks can try alternate platforms
+        # within the same tick. Cap iterations at the number of platforms in
+        # the resolved station group (or a conservative maximum of 8) to
+        # prevent an infinite loop when every candidate is blocked.
+        exclude: List[ResolvedRouteTarget] = []
+        _max_iterations = 8
+        for _attempt in range(_max_iterations):
+            if projection is None or projection.task_kind == "dwell":
+                break
+            # Phase 1 step `66aa`: dispatch via PathDispatcher.create_path or
+            # extend_path (v1 signature). Both methods take train_id +
+            # requested_destination_block_id + requested_destination_direction +
+            # acquisition_mode and return a PathAcquisitionResult.
+            success = self._authority_acquisition_step(
+                train, route, exec_state, controller, projection
+            )
+            if success:
+                break
+            # Acquisition failed for this resolved_target. If the projection
+            # carried a concrete resolved_target, add it to the exclude set and
+            # try the next candidate platform (fix #14a).
+            if projection.resolved_target is not None:
+                exclude.append(projection.resolved_target)
+            else:
+                break  # sentinel projection — no more candidates this tick
+            projection = self._find_next_task_target(train_id, exclude=exclude)
+            if projection is None or projection.resolved_target is None:
+                # Terminal walk or no-more-candidates sentinel (fix #14b).
+                break
 
     # ----- Phase 1 sub-steps ------------------------------------------------
     def _deviation_cleanup_eligible(self, controller: TrainController) -> bool:
@@ -690,6 +773,9 @@ class RouteExecutor:
     ) -> None:
         """Phase 1 step 2: finish a dwell whose timer has elapsed.
 
+        Per design_new.md line 2133: if EB is active, the dwell timer is
+        frozen — return immediately (fix #8).
+
         Per design_new.md, on completion this step writes
         `task_runs[task_index].finished_at = now`, advances
         `current_waypoint_index`, and calls `controller.finish_dwell()`.
@@ -698,6 +784,10 @@ class RouteExecutor:
         finished_at write per the canonical rule, so there is no separate
         write step.
         """
+        # EB freezes dwell timer (design_new.md line 2133, fix #8).
+        if controller.eb.active:
+            return
+
         # Per design, `current_waypoint_index` is the largest finished
         # walk-position; the dwell task currently in flight is the next
         # planning index.
@@ -708,10 +798,30 @@ class RouteExecutor:
 
         # Lazy-allocate task_runs row.
         self._sync_task_runs(route, exec_state)
-        if task_index >= len(exec_state.task_runs):
+        # Locate the in-flight row for this `task_index`. For initial
+        # walk-positions the list index matches the task_index, but after
+        # CIRCULAR / ROUND_TRIP wraparound multiple list positions can
+        # share the same task_index — the in-flight one is the latest
+        # entry whose finished_at is still None. Walk from the trailing
+        # entry backward and pick the first match.
+        row = None
+        row_pos = -1
+        for pos in range(len(exec_state.task_runs) - 1, -1, -1):
+            r = exec_state.task_runs[pos]
+            if r.task_index == task_index and r.finished_at is None:
+                row = r
+                row_pos = pos
+                break
+        if row is None:
             return
-        row = exec_state.task_runs[task_index]
-        dwell_started_at = exec_state.task_started_at(task_index)
+        # `started_at` for this walk-position is the previous
+        # task_runs entry's finished_at (or RouteRun.started_at for the
+        # first entry). Use the row's list position, not its task_index,
+        # so wraparound entries anchor on the correct predecessor.
+        if row_pos == 0:
+            dwell_started_at = exec_state.started_at
+        else:
+            dwell_started_at = exec_state.task_runs[row_pos - 1].finished_at
 
         if not task.should_depart(now, dwell_started_at):
             return
@@ -723,7 +833,8 @@ class RouteExecutor:
         # Advance the per-run cursor based on the route mode.
         self._advance_to_next_task(route, exec_state)
 
-        controller.finish_dwell()
+        # Unpack (success, reason) tuple per train_controller agent signature.
+        _fd_success, _fd_reason = controller.finish_dwell()
 
     def _covered_task_index_advance(
         self,
@@ -763,7 +874,7 @@ class RouteExecutor:
             if task.task_kind == "dwell":
                 break
 
-            target_block = self._resolve_task_target_block(task)
+            target_block = self._resolve_task_target_block(task, train=train)
             if not target_block:
                 break
 
@@ -788,12 +899,19 @@ class RouteExecutor:
             # `current_waypoint_index` then naturally advances on the next
             # loop iteration; `_append_next_walk_task` appends the next
             # walk-position entry for CIRCULAR/ROUND_TRIP routes.
-            if idx >= len(exec_state.task_runs):
-                break
-            row = exec_state.task_runs[idx]
-            if row.finished_at is not None:
-                # Already finished — cursor would not advance, so guard
-                # against an infinite loop by breaking explicitly.
+            #
+            # For CIRCULAR / ROUND_TRIP routes, multiple `task_runs` list
+            # positions can share the same `task_index` value once
+            # `_append_next_walk_task` has wrapped around. Walk from the
+            # trailing entry backward and pick the first row matching
+            # this `idx` (task_index) with finished_at still None.
+            row = None
+            for pos in range(len(exec_state.task_runs) - 1, -1, -1):
+                r = exec_state.task_runs[pos]
+                if r.task_index == idx and r.finished_at is None:
+                    row = r
+                    break
+            if row is None:
                 break
             row.finished_at = now
             exec_state._append_next_walk_task(route)
@@ -820,7 +938,8 @@ class RouteExecutor:
         if not getattr(controller, "is_recovery_clean", False):
             return
 
-        controller.enter_station_dwell()
+        # Unpack (success, reason) tuple per train_controller agent signature.
+        _esd_success, _esd_reason = controller.enter_station_dwell()
 
     def _authority_acquisition_step(
         self,
@@ -829,8 +948,12 @@ class RouteExecutor:
         exec_state: RouteExecutionState,
         controller: TrainController,
         projection: ResolvedNextTaskProjection,
-    ) -> None:
+    ) -> bool:
         """Phase 1 step 7: create or extend authority for the resolved target.
+
+        Returns True when authority was successfully acquired (create/extend
+        succeeded and depart() was called), False otherwise. The return value
+        is used by the fix #14 retry loop in tick_train_phase1.
 
         On a successful create/extend, write
         ``task_runs[projection.walk_position].resolved_target`` (Phase-1-only
@@ -840,9 +963,9 @@ class RouteExecutor:
         There is no ``departure_requested`` latch.
         """
         if self.path_dispatcher is None:
-            return
+            return False
         if projection.resolved_target is None:
-            return
+            return False
 
         target_block = projection.resolved_target.requested_destination_block_id
         target_dir = projection.resolved_target.requested_destination_direction
@@ -863,6 +986,7 @@ class RouteExecutor:
             acquisition_mode = AcquisitionMode.BEST_EFFORT
 
         success = False
+        result = None
         try:
             if active_path_id is not None:
                 result = self.path_dispatcher.extend_path(
@@ -887,7 +1011,143 @@ class RouteExecutor:
             success = False
 
         if not success:
-            return
+            # Per design_new.md (fix #17): write last_error on failed
+            # create_path/extend_path so operators can inspect the reason.
+            now = self._now()
+            reason_text = (
+                getattr(result, "reason", None) or "create_path/extend_path failed"
+            )
+            err = ErrorRecord(text=reason_text, time=now)
+            row_idx = projection.walk_position
+            self._sync_task_runs(route, exec_state)
+            if 0 <= row_idx < len(exec_state.task_runs):
+                exec_state.task_runs[row_idx].last_error = err
+            exec_state.last_error = err
+            return False
+
+        # Fix (deviation guard): insert any start-block tiles that lie between
+        # the train's current head tile and the path segment's first tile into
+        # the first resource entry's path_tiles, in the correct traversal
+        # order.
+        #
+        # The pathfinder builds tile sequences starting from the block's
+        # canonical exit tile (one end of the block).  For both forward and
+        # reverse traversals, the segment may omit tiles that lie between the
+        # train's head and the segment's first listed tile.  Those omitted
+        # tiles are absent from tile_xy_to_seq_index, so the deviation check
+        # in TrainController.on_physics_span_update flags them as
+        # out_of_sequence and immediately cancels the freshly-created path.
+        #
+        # Strategy: locate the train's head tile and the segment's first tile
+        # in Block.ordered_tiles, then insert tiles in the traversal direction
+        # (head → first-seg-tile) so ATC direction logic is not confused.
+        #
+        # Applies only to create_path (active_path_id is None); extend_path
+        # continues an existing path whose tiles already cover the current
+        # position.
+        if active_path_id is None and result is not None:
+            created_path_id = getattr(result, "path_id", None)
+            if created_path_id and self.path_dispatcher is not None:
+                _created_path = self.path_dispatcher.paths.get(created_path_id)
+                if (
+                    _created_path is not None
+                    and _created_path.resource_sequence
+                ):
+                    _first_entry = _created_path.resource_sequence[0]
+                    if (
+                        _first_entry.resource_type == "block"
+                        and _first_entry.path_tiles
+                    ):
+                        _covered_xys = {
+                            (t.x, t.y) for t in _first_entry.path_tiles
+                        }
+                        _train_pos = getattr(train, "position", None)
+                        _head_tile = getattr(_train_pos, "head_tile", None)
+                        if (
+                            _head_tile is not None
+                            and _head_tile not in _covered_xys
+                        ):
+                            _block_obj = self.network.blocks.get(
+                                _first_entry.resource_id
+                            )
+                            _ordered_raw = (
+                                getattr(_block_obj, "ordered_tiles", []) or []
+                                if _block_obj is not None
+                                else []
+                            )
+
+                            def _xy(bt) -> Tuple[int, int]:
+                                if hasattr(bt, "x"):
+                                    return (bt.x, bt.y)
+                                return (int(bt[0]), int(bt[1]))
+
+                            _ordered_xys: List[Tuple[int, int]] = [
+                                _xy(bt) for bt in _ordered_raw
+                            ]
+                            _first_seg_xy = (
+                                _first_entry.path_tiles[0].x,
+                                _first_entry.path_tiles[0].y,
+                            )
+                            try:
+                                _h_idx = _ordered_xys.index(_head_tile)
+                                _s_idx = _ordered_xys.index(_first_seg_xy)
+                            except ValueError:
+                                _h_idx = None
+                                _s_idx = None
+
+                            from path import PathTileEntry as _PathTileEntry
+                            _insert: List[_PathTileEntry] = []
+                            if _h_idx is not None and _s_idx is not None:
+                                if _h_idx < _s_idx:
+                                    # Forward traversal: insert tiles in
+                                    # ascending index order from head up to
+                                    # (not including) the first-seg tile.
+                                    for _i in range(_h_idx, _s_idx):
+                                        _bxy = _ordered_xys[_i]
+                                        if _bxy not in _covered_xys:
+                                            _insert.append(
+                                                _PathTileEntry(
+                                                    x=_bxy[0],
+                                                    y=_bxy[1],
+                                                    entry_edge="",
+                                                    exit_edge="",
+                                                    resource_sequence_index=(
+                                                        _first_entry.sequence_index
+                                                    ),
+                                                )
+                                            )
+                                            _covered_xys.add(_bxy)
+                                elif _h_idx > _s_idx:
+                                    # Reverse traversal: insert tiles in
+                                    # descending index order from head down to
+                                    # (not including) the first-seg tile.
+                                    for _i in range(_h_idx, _s_idx, -1):
+                                        _bxy = _ordered_xys[_i]
+                                        if _bxy not in _covered_xys:
+                                            _insert.append(
+                                                _PathTileEntry(
+                                                    x=_bxy[0],
+                                                    y=_bxy[1],
+                                                    entry_edge="",
+                                                    exit_edge="",
+                                                    resource_sequence_index=(
+                                                        _first_entry.sequence_index
+                                                    ),
+                                                )
+                                            )
+                                            _covered_xys.add(_bxy)
+                            if _insert:
+                                _first_entry.path_tiles[0:0] = _insert
+                                logger.debug(
+                                    "[RouteExecutor] inserted %d start-block "
+                                    "tile(s) %s before seg-first %s in path %s"
+                                    " entry %s (deviation guard)",
+                                    len(_insert),
+                                    [(_t.x, _t.y) for _t in _insert],
+                                    _first_seg_xy,
+                                    created_path_id,
+                                    _first_entry.resource_id,
+                                )
 
         # Successful create/extend: write
         # task_runs[walk_position].resolved_target.
@@ -909,7 +1169,10 @@ class RouteExecutor:
         depart = getattr(controller, "depart", None)
         if callable(depart):
             try:
-                depart()
+                # Unpack (success, reason) tuple per train_controller agent.
+                _dep_result = depart()
+                if isinstance(_dep_result, tuple):
+                    pass  # (success, reason) — no action needed on success
             except Exception as exc:
                 # Phase 1 retries depart() on a later tick; surface the
                 # raised reason via NotificationCenter so operators see
@@ -944,6 +1207,7 @@ class RouteExecutor:
                         train_id,
                         exc_info=True,
                     )
+        return True
 
     def finish_route_run(self, train_id: str) -> None:
         """Phase 1 terminal-walk handler.
@@ -1067,6 +1331,12 @@ class RouteExecutor:
         # plus the derived `display_state` projection. The stored
         # `current_route_status.state` does not transition to DEVIATED.
         exec_state.path_cancelled = True
+        # Per design_new.md (fix #17): record cancellation reason on last_error.
+        now = self._now()
+        exec_state.last_error = ErrorRecord(
+            text=f"cancelled: {initiator}" if initiator else "cancelled",
+            time=now,
+        )
 
     def handle_path_completion(
         self,
@@ -1079,7 +1349,7 @@ class RouteExecutor:
         """Phase-3 completion callback.
 
         Per design_new.md "Active-path completion procedure":
-          * walk task_runs from current_waypoint_index + 1
+          * walk task_runs from the next non-finished list position
           * pick first non-finished `task_kind == "stop"` whose stored
             resolved_target matches authority_end_block_id +
             requested_destination_direction
@@ -1094,14 +1364,19 @@ class RouteExecutor:
         if train is None or route is None or exec_state is None:
             return False
 
-        # Walk task_runs from the next-planning index looking for a stop.
-        # `current_waypoint_index` is the largest finished walk-position
-        # (or None); the next planning index is the cursor we want here.
+        # Walk `task_runs` by list position starting from the next
+        # non-finished entry. Per design_new.md line 1104 + line 1267,
+        # `walk_position` (list index) and `task_index` (Route.tasks index)
+        # decouple after `CIRCULAR` / `ROUND_TRIP` wrap-around, so the
+        # iteration must be over the un-finished list suffix — not over
+        # `range(next_planning_index, task_count)`, which would land on
+        # already-finished early rows once the walk has wrapped.
         self._sync_task_runs(route, exec_state)
-        task_count = route.get_task_count()
-        match_index: Optional[int] = None
-        for i in range(exec_state.next_planning_index, task_count):
-            task = route.get_task_at(i)
+        start_pos = exec_state.next_planning_walk_position
+        match_pos: Optional[int] = None
+        for pos in range(start_pos, len(exec_state.task_runs)):
+            row = exec_state.task_runs[pos]
+            task = route.get_task_at(row.task_index)
             if task is None:
                 continue
             if task.task_kind != "stop":
@@ -1114,17 +1389,21 @@ class RouteExecutor:
                 # dwell — definitely break (must be served via finish_dwell).
                 break
             # Match by resolved_target.
-            row = exec_state.task_runs[i]
             target = row.resolved_target
             if target is None:
-                # Fall back to live-resolution match.
-                target_block = self._resolve_task_target_block(task)
-                if not target_block:
-                    continue
-                if authority_end_block_id and target_block != authority_end_block_id:
-                    continue
-                match_index = i
-                break
+                # Per design_new.md line 1479: task_runs[i].resolved_target is
+                # the authoritative match key.  Re-resolving at completion time
+                # is forbidden — log a diagnostic and skip this walk-position
+                # (fix #5).
+                logger.warning(
+                    "handle_path_completion: task_runs[%d] for train %s has "
+                    "resolved_target=None; skipping (authority_end=%s). "
+                    "Phase 1 must write resolved_target before path completes.",
+                    pos,
+                    train_id,
+                    authority_end_block_id,
+                )
+                continue
             if (
                 authority_end_block_id
                 and target.requested_destination_block_id != authority_end_block_id
@@ -1136,28 +1415,71 @@ class RouteExecutor:
                 != requested_destination_direction
             ):
                 continue
-            match_index = i
+            match_pos = pos
             break
 
-        if match_index is None:
+        if match_pos is None:
+            # Per design_new.md line 1479: no matching stop task is a contract
+            # violation; raise a fatal diagnostic (fix #6).
+            sc = getattr(self, "simulation_controller", None)
+            if sc is not None:
+                sc.enter_failed_runtime(
+                    FatalPhysicalEntryConflict(
+                        resource_type="route_completion_mismatch",
+                        resource_id=authority_end_block_id or "unknown",
+                        incoming_train_id=train_id,
+                        prior_owner_train_id=None,
+                        conflict_kind=FatalConflictKind.RESERVED_FOR_OTHER_TRAIN,
+                        incoming_path_id=path_id,
+                    )
+                )
+            else:
+                logger.error(
+                    "handle_path_completion: no matching stop task for train %s "
+                    "(authority_end=%s, dir=%s); SimulationController unavailable "
+                    "so fatal diagnostic could not be raised.",
+                    train_id,
+                    authority_end_block_id,
+                    requested_destination_direction,
+                )
             return False
 
-        # Record finished_at on the matched stop row plus any intermediate
-        # task_runs rows so the derived `current_waypoint_index` advances past
-        # the matched stop. (Per design_new.md the cursor is derived; we move
-        # it by writing finished_at, never by direct assignment.) The loop
-        # starts at the next planning index (first un-finished row).
-        cursor = exec_state.next_planning_index
-        for i in range(cursor, match_index + 1):
-            if not (0 <= i < len(exec_state.task_runs)):
+        # Record finished_at on the matched stop row via _enter_task_arrival
+        # (fix #27: extracted helper; per design_new.md line ~1479). Both the
+        # cursor and the match index are list positions in `task_runs`, not
+        # `Route.tasks` indices, so this loop correctly targets the current
+        # walk's rows even after CIRCULAR / ROUND_TRIP wrap-around.
+        for pos in range(start_pos, match_pos + 1):
+            if not (0 <= pos < len(exec_state.task_runs)):
                 continue
-            row = exec_state.task_runs[i]
+            row = exec_state.task_runs[pos]
             if row.finished_at is None:
-                row.finished_at = event_time
-                exec_state._append_next_walk_task(route)
+                self._enter_task_arrival(exec_state, route, pos, event_time)
         # Phase 3 must NOT call enter_station_dwell — that fires from the next
         # eligible Phase 1 dwell-entry step.
         return True
+
+    def _enter_task_arrival(
+        self,
+        exec_state: RouteExecutionState,
+        route: "Route",
+        walk_position: int,
+        now: float,
+    ) -> None:
+        """Record task arrival: write `task_runs[walk_position].finished_at = now`.
+
+        Per design_new.md line ~1479 (`_enter_task_arrival` helper): this is the
+        canonical and only writer of `task_runs[i].finished_at` for the
+        stop-completion path (fix #27). Also triggers `_append_next_walk_task`
+        so CIRCULAR/ROUND_TRIP routes grow the walk-position list correctly.
+        """
+        if not (0 <= walk_position < len(exec_state.task_runs)):
+            return
+        row = exec_state.task_runs[walk_position]
+        if row.finished_at is not None:
+            return
+        row.finished_at = now
+        exec_state._append_next_walk_task(route)
 
     # ------------------------------------------------------------------ removal
     def remove_train_route_run(self, train_id: str) -> None:
@@ -1191,7 +1513,10 @@ class RouteExecutor:
             finish_dwell = getattr(controller, "finish_dwell", None)
             if callable(finish_dwell):
                 try:
-                    finish_dwell()
+                    # Unpack (success, reason) tuple per train_controller agent.
+                    _fd_result = finish_dwell()
+                    if isinstance(_fd_result, tuple):
+                        pass  # (success, reason) — no action needed on success
                 except Exception as exc:
                     sc = self.simulation_controller
                     nc = (
@@ -1247,9 +1572,20 @@ class RouteExecutor:
             train_id, exclude=exclude
         )
 
-    def _resolve_task_target_block(self, task: RouteTask) -> Optional[str]:
-        """Forward to `RouteTargetResolver.resolve_task_target_block(task)`."""
-        return self._get_route_target_resolver().resolve_task_target_block(task)
+    def _resolve_task_target_block(
+        self,
+        task: RouteTask,
+        train: Optional["Train"] = None,
+    ) -> Optional[str]:
+        """Forward to `RouteTargetResolver.resolve_task_target_block(task)`.
+
+        When `train` is supplied, the resolver uses it to prefer a platform
+        of a `StationTarget` that this train already occupies (or any
+        non-occupied platform) over a platform held by another train.
+        """
+        return self._get_route_target_resolver().resolve_task_target_block(
+            task, train=train
+        )
 
     def _resolve_task_direction(
         self,

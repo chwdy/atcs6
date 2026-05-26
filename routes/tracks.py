@@ -225,10 +225,50 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/tracks/bulk-delete", methods=["POST"])
     def delete_tracks_bulk():
-        data = request.json
+        data = request.json or {}
         positions = data.get("positions", [])
-        deleted = []
+        force = bool(data.get("force", False))
 
+        # Impact pre-check: aggregate the orphans across every tile being
+        # removed. Mirrors the single-tile PATCH at /api/track/<x>/<y> so
+        # the editor can confirm with the user before the destructive op.
+        switches_set = []
+        signals_set = []
+        platforms_set = []
+        seen_switches = set()
+        seen_signals = set()
+        seen_platforms = set()
+        for pos in positions:
+            if not isinstance(pos, (list, tuple)) or len(pos) < 2:
+                continue
+            x, y = pos[0], pos[1]
+            track = state.network.get_track(x, y)
+            if not track:
+                continue
+            impact = state.network.compute_bit_change_impact(x, y, 0, set())
+            if impact["removes_switch"] and impact["removes_switch"] not in seen_switches:
+                seen_switches.add(impact["removes_switch"])
+                switches_set.append(impact["removes_switch"])
+            for sid in impact["removes_signals"]:
+                if sid not in seen_signals:
+                    seen_signals.add(sid)
+                    signals_set.append(sid)
+            if impact["removes_platform"] and impact["removes_platform"] not in seen_platforms:
+                seen_platforms.add(impact["removes_platform"])
+                platforms_set.append(impact["removes_platform"])
+
+        aggregated = {
+            "removes_switches": switches_set,
+            "removes_signals": signals_set,
+            "removes_platforms": platforms_set,
+        }
+        has_impact = bool(switches_set or signals_set or platforms_set)
+        if has_impact and not force:
+            return jsonify(
+                {"requires_confirmation": True, "impact": aggregated}
+            ), 409
+
+        deleted = []
         for pos in positions:
             if not isinstance(pos, (list, tuple)) or len(pos) < 2:
                 continue

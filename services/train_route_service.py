@@ -239,8 +239,11 @@ def delete_route(state: AppState, route_id: str) -> bool:
         route.unassign_train(train_id)
 
     executor = state.sim_controller.route_executor
+    # Per design_new.md canonical teardown: each assigned train's RouteRun
+    # must go through finish_dwell() + DEACTIVATED + archive rather than a
+    # raw dict pop (fix #4).
     for train_id in previously_assigned:
-        executor.execution_states.pop(train_id, None)
+        executor.remove_train_route_run(train_id)
 
     executor.unregister_route(route_id)
     return True

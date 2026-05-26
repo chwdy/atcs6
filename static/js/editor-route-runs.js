@@ -29,6 +29,16 @@ class RouteRunEditorHandler {
         this.editor = editor;
         this.runs = [];
         this.currentRun = null;
+
+        // Poll lifecycle — the list and per-run editor both reflect live
+        // executor state (run_count growing, new tasks appended on
+        // CIRCULAR/ROUND_TRIP wrap, resolved_target landing once
+        // create/extend succeeds). 1.5s matches the simulation Phase 1
+        // cadence well enough without hammering the API.
+        this._pollHandle = null;
+        this._pollIntervalMs = 1500;
+        this._pollMode = null;  // 'list' | 'editor' | null
+        this._inflight = false;
     }
 
     get api() { return this.editor.api; }
@@ -46,6 +56,14 @@ class RouteRunEditorHandler {
             this.runs = [];
         }
 
+        this._renderRunsListSidebar();
+        this._startPolling('list');
+    }
+
+    /** Re-render the runs list panel without re-fetching. Used by the
+     *  background poller so a one-shot refresh doesn't reset focus or
+     *  scroll. */
+    _renderRunsListSidebar() {
         let content = `
             <div class="rr-panel">
                 <div class="routes-toolbar mb-12">
@@ -142,6 +160,7 @@ class RouteRunEditorHandler {
         }
 
         this.rerenderRunEditor();
+        this._startPolling('editor');
     }
 
     rerenderRunEditor() {
@@ -424,6 +443,77 @@ class RouteRunEditorHandler {
                     window.showToast('Failed to unassign: ' + err.message, 'error', 5000);
                 }
             };
+        }
+    }
+
+    // ---- polling lifecycle ----
+
+    /** Called by `editor-ui.cleanupSecondaryPanelSubscriptions`
+     *  when the secondary sidebar hides or switches to a different panel. */
+    _cleanup() {
+        this._stopPolling();
+    }
+
+    _startPolling(mode) {
+        this._stopPolling();
+        this._pollMode = mode;
+        this._pollHandle = setInterval(
+            () => this._pollOnce(),
+            this._pollIntervalMs,
+        );
+    }
+
+    _stopPolling() {
+        if (this._pollHandle) {
+            clearInterval(this._pollHandle);
+            this._pollHandle = null;
+        }
+        this._pollMode = null;
+        this._inflight = false;
+    }
+
+    async _pollOnce() {
+        if (this._inflight) return;
+        // Tab-hidden visibility — pause polling but keep the timer alive
+        // so we resume promptly when the tab is foregrounded again.
+        if (typeof document !== 'undefined' && document.hidden) return;
+        // Re-confirm panel identity each tick: if the user has navigated
+        // to a different secondary panel we should not be issuing fetches
+        // here. `_cleanup()` normally handles this, but the visibility
+        // guard is cheap and protects against missed cleanup events.
+        const editorType = this.editor?._currentEditorType;
+        if (this._pollMode === 'list' && editorType !== 'route-runs-list') return;
+        if (this._pollMode === 'editor' && editorType !== 'route-run-editor') return;
+
+        this._inflight = true;
+        try {
+            if (this._pollMode === 'list') {
+                const runs = await this.api.getRouteRuns();
+                this.runs = runs || [];
+                this._renderRunsListSidebar();
+            } else if (this._pollMode === 'editor' && this.currentRun) {
+                const runNumber = this.currentRun.run_number;
+                const next = await this.api.getRouteRun(runNumber);
+                if (next) {
+                    this.currentRun = next;
+                    this.rerenderRunEditor();
+                }
+            }
+        } catch (err) {
+            // The run we were watching is gone (server restart, route
+            // unregistered, etc.). Stop the editor poll and fall back to
+            // the list, which will refresh the user's view to whatever
+            // does exist now.
+            if (err && err.status === 404 && this._pollMode === 'editor') {
+                this._stopPolling();
+                this.showRouteRunsPanel();
+                return;
+            }
+            // Best-effort refresh: a transient API error should not kill
+            // the panel. Surface to console for debugging; keep polling.
+            console.debug('[RouteRunEditor] poll error:', err);
+        } finally {
+            this._inflight = false;
         }
     }
 

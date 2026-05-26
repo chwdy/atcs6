@@ -3,6 +3,8 @@ Switch Routes - CRUD on Switch records and state changes routed through
 SwitchManager so BlockManager notifications stay paired with position writes.
 """
 
+import uuid
+
 from flask import jsonify, request
 
 from app_state import AppState
@@ -109,17 +111,19 @@ def register(app, state: AppState) -> None:
         """
         Change switch state (MAIN=0, DIVERGE=1).
 
-        Fails with 409 Conflict if switch is locked by a path.
-        Use lock field to check if switch is locked before calling.
+        Validation errors (unknown switch, invalid state) return 400/404
+        synchronously. The actual command result surfaces through
+        NotificationCenter as a `command_result` event with
+        source="Switch".
 
         Request body:
-            {"state": 0 or 1}
+            {"state": 0 or 1, "command_id": "<optional uuid>"}
 
         Returns:
-            200: {"success": true, "message": "..."}
+            202: {"command_id": "...", "status": "queued"}
             404: {"error": "Switch not found"}
-            409: {"error": "Switch locked by path ..."}
-            400: {"error": "Invalid state value"}
+            400: {"error": "..."}
+            503: {"error": "SwitchManager not available"}
         """
         try:
             data = request.json
@@ -145,23 +149,41 @@ def register(app, state: AppState) -> None:
                     503,
                 )
 
+            command_id = data.get("command_id") or str(uuid.uuid4())
+
             # Route through SwitchManager so the BlockManager notification is
             # paired with the position write.
             success, message = switch_manager.request_position_change(
                 switch_id, new_state
             )
 
-            if success:
-                return jsonify(
-                    {
-                        "success": True,
-                        "message": message,
-                        "switch": switch.to_dict(state.network),
-                    }
-                )
-            else:
-                # Switch is locked - return 409 Conflict
-                return jsonify({"error": message}), 409
+            # Emit command_result through NotificationCenter so callers observe
+            # the outcome via the event stream rather than a sync HTTP payload.
+            try:
+                from notification_center import Severity as _Severity
+
+                sc = getattr(state, "sim_controller", None)
+                nc = getattr(sc, "notification_center", None)
+                event_time = getattr(sc, "simulation_time", 0.0) or 0.0
+                if nc is not None:
+                    severity = _Severity.INFO if success else _Severity.WARNING
+                    nc.emit(
+                        source="Switch",
+                        kind="command_result",
+                        severity=severity,
+                        event_time=event_time,
+                        payload={
+                            "command_id": command_id,
+                            "command_name": "change_state",
+                            "switch_id": switch_id,
+                            "success": success,
+                            "reason": message,
+                        },
+                    )
+            except Exception:
+                pass  # notification failure must not affect the HTTP response
+
+            return jsonify({"command_id": command_id, "status": "queued"}), 202
 
         except Exception as e:
             return jsonify({"error": str(e)}), 500

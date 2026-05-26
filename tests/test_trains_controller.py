@@ -228,7 +228,9 @@ class TestTrainControllerBrakingNotches:
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.commands.control_mode = "manual"
-        controller.power_on = True
+        # Per design_new.md: power_on is a read-only derived property; use
+        # controller.ops.state to power on.
+        controller.ops.state = TrainState.RUNNING_MOVING
         controller.commands.cab = "A"
         controller.physics_sync.current_speed_kmh = 16.0
 

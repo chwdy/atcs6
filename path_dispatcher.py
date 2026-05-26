@@ -843,11 +843,27 @@ class PathDispatcher:
             reason=ext_reason,
         )
 
+    @staticmethod
+    def _severity_for_initiator(initiator: Optional[str]):
+        """Map cancel initiator to notification severity.
+
+        Per design_new.md: "eb" is ERROR (safety-critical); "deviation" is
+        WARNING (off-path); all other initiators ("operator_cancelled",
+        "power_off", "revoked", None) are INFO.
+        """
+        from notification_center import Severity as _Sev
+        if initiator == "eb":
+            return _Sev.ERROR
+        if initiator == "deviation":
+            return _Sev.WARNING
+        return _Sev.INFO
+
     def cancel_path(
         self,
         path_id: str,
         initiator: Optional[str] = None,
         reason: Optional[str] = None,
+        deviation_kind: Optional[str] = None,
     ) -> CancellationResult:
         """v1 cancel_path: release reservations, mark path CANCELLED.
 
@@ -913,15 +929,20 @@ class PathDispatcher:
         nc = getattr(sc, "notification_center", None) if sc is not None else None
         if nc is not None:
             try:
-                from notification_center import Severity as _Severity
+                # design_new.md fix #15: severity driven by initiator, not hardcoded WARNING.
+                # design_new.md fix #16: forward deviation_kind through to notification payload.
                 nc.emit(
                     source="PathDispatcher",
                     kind="path_cancellation",
-                    severity=_Severity.WARNING,
+                    severity=self._severity_for_initiator(initiator),
                     event_time=now,
                     train_id=train_id,
                     path_id=path_id,
-                    payload={"initiator": initiator, "reason": reason or ""},
+                    payload={
+                        "initiator": initiator,
+                        "reason": reason or "",
+                        "deviation_kind": deviation_kind,
+                    },
                 )
             except Exception:
                 logger.warning(
@@ -1366,50 +1387,67 @@ class PathDispatcher:
 
         active_path = self.get_active_path(train_id)
 
+        # design_new.md fix #3: stop processing entered_resources on first fatal conflict.
+        fatal_in_this_report = False
         for event in list(report.entered_resources or []):
-            self._record_clean_physical_entry(event, train_id)
+            clean = self._record_clean_physical_entry(event, train_id)
+            if not clean:
+                fatal_in_this_report = True
+                break
 
         if report.deviation:
             if active_path is not None:
+                # design_new.md fix #16: forward deviation_kind from report to cancel_path.
                 self.cancel_path(
                     active_path.path_id,
                     initiator="deviation",
                     reason=report.deviation_reason or "",
+                    deviation_kind=report.deviation_kind,
                 )
-            return
+            # design_new.md fix #2: do NOT return here — fall through so that
+            # tail_vacated_resources for already-occupied resources still fire.
 
-        if active_path is not None:
-            for event in list(report.entered_resources or []):
-                if event.sequence_index is not None:
-                    if event.sequence_index > active_path.current_resource_index:
-                        active_path.current_resource_index = event.sequence_index
-                self._fire_route_advanced_callback(
-                    train_id=train_id,
-                    path_id=active_path.path_id,
-                    event=event,
-                )
+        # design_new.md fix #3: skip callbacks on fatal; fix #2: always run tail-vacates.
+        if not fatal_in_this_report and not report.deviation:
+            if active_path is not None:
+                for event in list(report.entered_resources or []):
+                    if event.sequence_index is not None:
+                        if event.sequence_index > active_path.current_resource_index:
+                            active_path.current_resource_index = event.sequence_index
+                    self._fire_route_advanced_callback(
+                        train_id=train_id,
+                        path_id=active_path.path_id,
+                        event=event,
+                    )
 
-        for event in list(report.tail_vacated_resources or []):
-            self._release_tail_vacated_resource(event, train_id)
+        # design_new.md fix #3: skip tail-vacates on fatal conflict.
+        if not fatal_in_this_report:
+            for event in list(report.tail_vacated_resources or []):
+                self._release_tail_vacated_resource(event, train_id)
 
     def _record_clean_physical_entry(
         self, event: ResourceEvent, train_id: str
-    ) -> None:
+    ) -> bool:
         """Route a clean-physical-entry event to ResourceCoordinator.
+
+        Returns True on clean entry, False on fatal conflict.
 
         The coordinator dispatches to BlockManager.occupy_block for blocks and
         to SwitchManager.on_physical_entry for switches; the latter owns the
         flank-lock conversion and fatal-conflict reporting that previously
         lived inline here.
+
+        Per design_new.md fix #3: callers must break on False and skip
+        subsequent callback/tail-vacate processing for the same report.
         """
         if event is None or not event.resource_id:
-            return
+            return True  # no-op is not fatal
         coordinator = getattr(self.network, "resource_coordinator", None)
         if coordinator is None:
-            return
+            return True  # no coordinator = no conflict detection
         active_path = self.get_active_path(train_id)
         path_id = active_path.path_id if active_path is not None else None
-        coordinator.on_physical_entry(
+        return coordinator.on_physical_entry(
             resource_type=event.resource_type,
             resource_id=event.resource_id,
             train_id=train_id,
@@ -1568,7 +1606,7 @@ class PathDispatcher:
                     "train_id": train_id,
                     "path_id": path_id,
                     "end_tile": end_tile,
-                    "time": datetime.now(),
+                    "time": event_time,  # design_new.md: use sampled event_time, not wall-clock
                 }
             )
 

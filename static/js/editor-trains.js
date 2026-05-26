@@ -710,6 +710,7 @@ class TrainEditorHandler {
                             <button type="button" id="train-cab-b-btn" class="tc-seg-btn switch-btn ${controller?.cab === 'B' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>B</button>
                         </div>
                         <button id="train-monitor-btn" type="button" class="tc-btn tc-btn-ghost tc-monitor-btn">Monitor →</button>
+                        ${fullRunId ? `<button id="train-route-run-btn" type="button" class="tc-btn tc-btn-ghost tc-monitor-btn" title="Open route run #${fullRunId.split('#')[1] || ''}">Route Run →</button>` : ''}
                     </div>
 
                     <!-- ATO Go/Stop (visible when control_mode==='ato') -->
@@ -1209,6 +1210,24 @@ class TrainEditorHandler {
         if (monitorBtn) {
             monitorBtn.onclick = () => {
                 window.app.selectTrain(trainId);
+            };
+        }
+
+        const routeRunBtn = document.getElementById('train-route-run-btn');
+        if (routeRunBtn) {
+            routeRunBtn.onclick = () => {
+                const ctrl = window.stateManager.getController(trainId);
+                const rrid = ctrl?.route_run_id;
+                if (!rrid) {
+                    window.showToast('No active route run for this train', 'warning', 3000);
+                    return;
+                }
+                const runNumber = parseInt(rrid.split('#')[1], 10);
+                if (!Number.isFinite(runNumber)) {
+                    window.showToast('Invalid route run id', 'error', 3000);
+                    return;
+                }
+                this.editor.routeRunHandler.showRouteRunEditor(runNumber);
             };
         }
 

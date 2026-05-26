@@ -9,11 +9,20 @@ first tick, operator commands queued, Path created on first Phase 1 tick).
 import contextlib
 import io
 
-from bootstrap import bootstrap_runtime
+import pytest
+
+from bootstrap import bootstrap_runtime, get_current_scene_id
 from demo_main import create_comprehensive_demo, setup_demo_train
 from enums import TrainState
 from path_dispatcher import PathDispatcher
 from train_controller import ATO_SPEED_MARGIN_KMH
+
+if get_current_scene_id() != "demo_main":
+    pytest.skip(
+        f"Test built for scene 'demo_main'; active scene is "
+        f"{get_current_scene_id()!r}.",
+        allow_module_level=True,
+    )
 
 
 def test_demo_train_speed_profile_setup():

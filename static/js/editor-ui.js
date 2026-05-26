@@ -625,6 +625,7 @@ class EditorUIHandler {
         if (this.editor.blockHandler?._cleanup) this.editor.blockHandler._cleanup();
         if (this.editor.platformHandler?._cleanup) this.editor.platformHandler._cleanup();
         if (this.editor.stationGroupHandler?._cleanup) this.editor.stationGroupHandler._cleanup();
+        if (this.editor.routeRunHandler?._cleanup) this.editor.routeRunHandler._cleanup();
     }
 
     renderSecondaryBreadcrumb() {

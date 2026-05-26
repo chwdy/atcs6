@@ -244,7 +244,9 @@ class TestTrainPhysicsDebugLogging:
         controller = sim._get_or_create_controller(train)
         physics = sim._get_or_create_physics(train)
 
-        controller.power_on = True
+        # Per design_new.md: power_on is a read-only derived property; use
+        # controller.ops.state to power on.
+        controller.ops.state = TrainState.READY
         controller.ops.handle_position = HandlePosition.P2
         # v1: write canonical speed onto the controller; controller.physics_sync.current_speed_kmh mirrors.
         controller.physics_sync.current_speed_kmh = 12.0

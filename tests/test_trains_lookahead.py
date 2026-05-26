@@ -235,7 +235,9 @@ class TestTrainControlPanelDataBugFix:
 
         sim_controller = SimulationController(network)
         controller = sim_controller._get_or_create_controller(train)
-        controller.power_on = True
+        # Per design_new.md: power_on is a read-only derived property; use
+        # controller.ops.state to power on.
+        controller.ops.state = TrainState.READY
         controller.ops.handle_position = HandlePosition.P2
         controller.commands.control_mode = "ato"
 

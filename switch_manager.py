@@ -127,8 +127,32 @@ class SwitchManager:
         On any failure, release the locks recorded in this call and return a
         failure result.
         """
-        recorded: List[SwitchLockRequest] = []
+        # Fix #12: expand primary requests to include flank-protection requests.
+        # Per design_new.md line 938 — for each main switch claim, enumerate
+        # `switch.flank_protection` and append a flank request with
+        # `source_switch_id = main_switch.switch_id`. The existing
+        # `acquire_locks_for_segment` already handles flank claims
+        # (source_switch_id != None); only the producer was missing.
+        expanded: List[SwitchLockRequest] = []
         for req in requests:
+            expanded.append(req)
+            if req.source_switch_id is not None:
+                # Already a flank request; don't double-expand.
+                continue
+            main_switch = self._switch_registry.get(req.switch_id)
+            if main_switch is None:
+                continue
+            for neighbour_switch_id, blocking_state in main_switch.flank_protection:
+                expanded.append(
+                    SwitchLockRequest(
+                        switch_id=neighbour_switch_id,
+                        locked_state=blocking_state,
+                        source_switch_id=req.switch_id,
+                    )
+                )
+
+        recorded: List[SwitchLockRequest] = []
+        for req in expanded:
             switch = self._switch_registry.get(req.switch_id)
             if switch is None:
                 self._rollback(recorded, path_id)
@@ -143,6 +167,9 @@ class SwitchManager:
                 locked_state=req.locked_state,
                 source_switch_id=req.source_switch_id,
             )
+            # Fix #23 (design_new.md line 617): SwitchManager wraps the entity
+            # bool into a structured LockAcquireResult so manager-level callers
+            # always unpack .success. The entity returns bool for unit-test compat.
             ok = switch.acquire_lock(claim)
             if not ok:
                 self._rollback(recorded, path_id)

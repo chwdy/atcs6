@@ -25,7 +25,12 @@ from flask import Flask, jsonify, request, send_from_directory
 
 from app_factory import create_app
 from app_state import AppState
-import demo_main
+from bootstrap import (
+    create_demo_network,
+    get_current_scene_id,
+    setup_demo_train,
+    _load_scene_module,
+)
 from enums import (
     Direction,
     TrackType,
@@ -83,8 +88,10 @@ def run_startup_tests():
     print("\n[1/2] Running Block Validation Tests...")
     print("-" * 70)
     try:
-        demo_main.test_block_validation()
-        print("✅ Block validation tests PASSED")
+        # Block-validation suite lives on each scene module; run it for the
+        # currently active scene so the gate matches what we're about to boot.
+        _load_scene_module(None).test_block_validation()
+        print(f"✅ Block validation tests PASSED (scene={get_current_scene_id()})")
     except Exception as e:
         print(f"❌ Block validation tests FAILED: {e}")
         print("\n🛑 BLOCKING: Cannot start server with failing validation tests.")
@@ -155,13 +162,13 @@ def _build_state_and_app() -> tuple[AppState, Flask]:
 
     run_startup_tests()
 
-    network = demo_main.create_comprehensive_demo()
+    network = create_demo_network()
 
     path_dispatcher = PathDispatcher(network)
     sim_controller = SimulationController(network, path_dispatcher)
     if sim_controller.power_controller:
         sim_controller.power_controller._sim_controller = sim_controller
-    demo_main.setup_demo_train(network, path_dispatcher, sim_controller)
+    setup_demo_train(network, path_dispatcher, sim_controller)
     persistence_manager = PersistenceManager()
     simulation_lock = threading.Lock()
     simulation_running = False
