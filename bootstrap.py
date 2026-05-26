@@ -33,12 +33,13 @@ from simulation import SimulationController
 # The active scene. Edit this single line to swap which demo the server,
 # CLI entry points, and unparameterised tests build by default. Per-call
 # overrides via the `scene=` argument take precedence.
-CURRENT_SCENE: str = "demo_3"
+CURRENT_SCENE: str = "demo_3_best_effort"
 
 # Registry of known scene IDs to their importable module names.
 _SCENE_MODULES: dict[str, str] = {
     "demo_main": "demo_main",
     "demo_3": "demo_3",
+    "demo_3_best_effort": "demo_3_best_effort",
 }
 
 

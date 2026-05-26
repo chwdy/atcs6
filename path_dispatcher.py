@@ -570,15 +570,64 @@ class PathDispatcher:
         # Try each candidate (shortest first).
         last_failed_resource_id: Optional[str] = None
         last_reason: str = ""
+        had_structural_failure = False
         for segment in candidates:
             validation = self.validate_path(segment, path_id, train_id)
             if not validation.valid:
-                # Track first conflicting block for diagnostic.
+                structural = [
+                    e for e in validation.errors
+                    if not e.type.is_occupancy_class()
+                ]
+                occupancy = [
+                    e for e in validation.errors
+                    if e.type.is_occupancy_class()
+                ]
+
+                # Track first conflicting block for diagnostic, regardless
+                # of category — the failure tail uses it for messaging.
                 for err in validation.errors:
                     if err.block_id and not last_failed_resource_id:
                         last_failed_resource_id = err.block_id
                         last_reason = err.message
-                continue
+
+                if structural:
+                    # Structural failures (disabled block, missing track)
+                    # always hard-reject per design_new.md ":890".
+                    had_structural_failure = True
+                    continue
+
+                if acquisition_mode == AcquisitionMode.ALL_OR_NOTHING:
+                    continue
+
+                # BEST_EFFORT + occupancy-only: truncate to the prefix
+                # before the first failing block, per design_new.md ":938".
+                hint = self._compute_truncate_hint(segment, occupancy)
+                truncated = self._best_effort_truncate(
+                    segment, path_id, train_id,
+                    requested_destination_direction,
+                    start_at_block_count=hint,
+                )
+                if truncated is None:
+                    continue
+                path = self._build_path_from_segment(
+                    path_id=path_id,
+                    train_id=train_id,
+                    segment=truncated,
+                    requested_destination_block_id=requested_destination_block_id,
+                    requested_destination_direction=requested_destination_direction,
+                    now=now,
+                )
+                self.paths[path_id] = path
+                return PathAcquisitionResult(
+                    success=True,
+                    result_kind=PathAcquisitionResultKind.TRUNCATED_GREW,
+                    path_id=path_id,
+                    requested_destination_block_id=requested_destination_block_id,
+                    requested_destination_direction=requested_destination_direction,
+                    authority_end_block_id=path.get_authority_end_block_id(),
+                    resource_sequence=list(path.resource_sequence),
+                    reason="best_effort partial acquisition",
+                )
 
             # Acquire resources.
             acquire_ok, fail_reason, fail_resource = self._acquire_segment_resources(
@@ -642,10 +691,13 @@ class PathDispatcher:
         # All candidates failed. In best_effort mode, when the train head
         # currently sits on a switch resource we cannot store a block-
         # terminated holding authority, so surface the head-on-switch case
-        # explicitly per design_new.md "create_path() / extend_path() return
-        # contract".
+        # explicitly per design_new.md ":894". This only fires when the
+        # loop exhausted because of occupancy conflicts — a structural
+        # failure (e.g. disabled downstream block) is reported through the
+        # BLOCKED_BEFORE_TARGET tail instead.
         if (
             acquisition_mode == AcquisitionMode.BEST_EFFORT
+            and not had_structural_failure
             and self._train_head_is_on_switch(train)
         ):
             head_switch_reason = "cannot create best-effort authority while head is on a switch"
@@ -778,26 +830,69 @@ class PathDispatcher:
         for segment in candidates:
             # Validate (pretend the extension uses the same path_id).
             validation = self.validate_path(segment, path_id, train_id)
+            applied_segment: Optional[PathSegment] = None
             if not validation.valid:
+                structural = [
+                    e for e in validation.errors
+                    if not e.type.is_occupancy_class()
+                ]
+                occupancy = [
+                    e for e in validation.errors
+                    if e.type.is_occupancy_class()
+                ]
                 for err in validation.errors:
                     if err.block_id and last_resource is None:
                         last_resource = err.block_id
                         last_reason = err.message
-                continue
-            ok, fail_reason, fail_resource = self._acquire_segment_resources(
-                segment, path_id, train_id, requested_destination_direction
-            )
-            if not ok:
-                last_resource = fail_resource
-                last_reason = fail_reason
-                self._rollback_segment(segment, path_id)
-                continue
+
+                if structural:
+                    continue
+                if acquisition_mode == AcquisitionMode.ALL_OR_NOTHING:
+                    continue
+
+                # BEST_EFFORT + occupancy-only: truncate to the longest
+                # acquirable prefix of the extension segment, per
+                # design_new.md ":938" / ":994". The first block of an
+                # extension segment is the current authority-end block, so
+                # the minimum 2-block prefix yields one new appended block.
+                # BLOCKED_NO_GROWTH (extend_path-only outcome when the
+                # existing path is still a valid prefix but no new resource
+                # can be appended) is out of scope here; truncate returning
+                # None falls through to the BLOCKED_BEFORE_TARGET tail.
+                hint = self._compute_truncate_hint(segment, occupancy)
+                truncated = self._best_effort_truncate(
+                    segment, path_id, train_id,
+                    requested_destination_direction,
+                    start_at_block_count=hint,
+                )
+                if truncated is None:
+                    continue
+                applied_segment = truncated
+            else:
+                ok, fail_reason, fail_resource = self._acquire_segment_resources(
+                    segment, path_id, train_id, requested_destination_direction
+                )
+                if not ok:
+                    last_resource = fail_resource
+                    last_reason = fail_reason
+                    self._rollback_segment(segment, path_id)
+                    if acquisition_mode == AcquisitionMode.ALL_OR_NOTHING:
+                        continue
+                    truncated = self._best_effort_truncate(
+                        segment, path_id, train_id,
+                        requested_destination_direction,
+                    )
+                    if truncated is None:
+                        continue
+                    applied_segment = truncated
+                else:
+                    applied_segment = segment
 
             # Append to existing path.resource_sequence (skipping the first
             # entry which is already present as authority_end).
             base_index = len(path.resource_sequence)
             new_entries = self._segment_to_resource_sequence(
-                segment, base_index, skip_first_block=True
+                applied_segment, base_index, skip_first_block=True
             )
             path.resource_sequence.extend(new_entries)
             # path_tiles is a derived `@property` over resource_sequence; no
@@ -1059,16 +1154,53 @@ class PathDispatcher:
             path_id=path_id,
         )
 
+    def _compute_truncate_hint(
+        self,
+        segment: PathSegment,
+        errors: List[ValidationError],
+    ) -> Optional[int]:
+        """Return the prefix length at which BEST_EFFORT should start the
+        backward walk, per design_new.md ":938".
+
+        The index of the first failing occupancy-class block in
+        `segment.blocks` is the count of blocks that are still acquirable
+        (validation would have flagged any earlier conflict in the same
+        pass). For switch-only conflicts that carry no `block_id`, return
+        None so the caller falls back to the full backward walk.
+        """
+        candidate_indices: List[int] = []
+        for err in errors:
+            if not err.type.is_occupancy_class():
+                continue
+            if err.block_id and err.block_id in segment.blocks:
+                candidate_indices.append(segment.blocks.index(err.block_id))
+        if not candidate_indices:
+            return None
+        return min(candidate_indices)
+
     def _best_effort_truncate(
         self,
         segment: PathSegment,
         path_id: str,
         train_id: str,
         direction: str,
+        start_at_block_count: Optional[int] = None,
     ) -> Optional[PathSegment]:
-        """Try to acquire a strictly shorter prefix of `segment`."""
-        # Walk backwards from the full segment and try shorter prefixes.
-        for prefix_block_count in range(len(segment.blocks) - 1, 1, -1):
+        """Try to acquire a strictly shorter prefix of `segment`.
+
+        When `start_at_block_count` is provided, start the backward walk at
+        that prefix length (capped to `len(segment.blocks) - 1`). Callers
+        compute it from the first occupancy-class validation error's index
+        per design_new.md ":938" ("use the first failing block/switch as
+        the truncation point"). Default `None` preserves the full backward
+        walk for callers that have no hint.
+        """
+        max_prefix = len(segment.blocks) - 1
+        if start_at_block_count is None:
+            start = max_prefix
+        else:
+            start = max(2, min(start_at_block_count, max_prefix))
+        for prefix_block_count in range(start, 1, -1):
             prefix_blocks = segment.blocks[:prefix_block_count]
             # Compute prefix tile cutoff: include all tiles whose track
             # belongs to one of `prefix_blocks` (or to a switch on the way).

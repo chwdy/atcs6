@@ -49,11 +49,18 @@ SCENE_ID = "demo_3"
 
 
 # Scissors crossover bit pattern (NS + EW straights + NW + SE diagonals).
-# At the crossover tile this lets:
-#   S track  go S→E (SE bit, stay on S)
-#   N track  go W→N (NW bit, stay on N)
-#   S→N swap S→N (NS bit, straight through)
-#   N→S swap W→E (EW bit, straight through)
+# Per design_new.md "Switch.position": 0 = MAIN, 1 = DIVERGE. The dispatcher
+# derives the required switch state from track.enumerate_traversals
+# (track.py:766-784): NS/EW straight bits → state 0 (MAIN), NW/SE diagonal
+# bits → state 1 (DIVERGE). The route geometries below map as follows:
+#
+#   State 0 (MAIN) — swap routes via straight bits:
+#     S→N swap uses NS (bit 0)
+#     N→S swap uses EW (bit 1)  (entry W, exit E)
+#
+#   State 1 (DIVERGE) — stay-on-track routes via diagonal bits:
+#     S track  go S→E uses SE (bit 4) — stays on S track
+#     N track  go W→N uses NW (bit 3) — stays on N track
 SCISSORS_BITS = TRACK_NS | TRACK_EW | TRACK_NW | TRACK_SE  # = 27
 
 
@@ -196,11 +203,14 @@ def _add_crossovers(network: RailwayNetwork) -> None:
     The crossover tile is a switch boundary — it does NOT belong to any
     block.
     """
+    from enums import SwitchState
     for (sx, sy, sid) in ((2, 3, "SW_X1"), (8, 9, "SW_X2")):
         tile = TrackSegment(sx, sy, track_bits=SCISSORS_BITS)
-        tile.switch_state = 0  # 0 = stay-on-track (main); 1 = swap (diverge)
         network.add_track(tile)
         switch = Switch(switch_id=sid, x=sx, y=sy)
+        # DIVERGE (1) = stay-on-track via NW/SE diagonals — the demo's
+        # nominal alignment. MAIN (0) = swap via NS/EW straights.
+        switch.position = SwitchState.DIVERGE
         network.add_switch(switch)
         tile.switch_id = switch.switch_id
 

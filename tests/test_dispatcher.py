@@ -28,6 +28,7 @@ from runtime_payloads import (
     AcquisitionMode,
     PathAcquisitionResult,
     PathAcquisitionFailureKind,
+    PathAcquisitionResultKind,
     SwitchLockClaim,
 )
 from enums import PathStatus
@@ -1318,6 +1319,151 @@ class TestATODirectionDetection:
     # Per design_new.md ~line 1292 those fields are forbidden — the
     # dispatcher's Path is the source of truth and ato_info should be
     # tested via a real `PathDispatcher.create_path(...)` setup.
+
+
+class TestBestEffortAcquisitionContract:
+    """create_path / extend_path BEST_EFFORT contract per design_new.md.
+
+    Cites:
+      * :884-:911 — BEST_EFFORT must truncate to the longest acquirable
+        block-terminated prefix and return `result_kind=TRUNCATED_GREW`.
+      * :890     — structural failures (disabled blocks, missing tracks)
+        still hard-reject.
+      * :938     — the first failing block/switch is the truncation point.
+      * :894     — `head_on_switch_no_block_authority` exception case.
+    """
+
+    def _make_probe_train(self, network):
+        car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
+        train = Train(train_id="T_PROBE", consist=[car], max_speed=60.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+        return train
+
+    def test_create_path_best_effort_truncates_on_occupied_block(
+        self, simple_linear_network, dispatcher,
+    ):
+        """An OCCUPIED future block in BEST_EFFORT mode is a truncation
+        point — create_path must succeed with TRUNCATED_GREW. Without the
+        fix, this asserts success=False with BLOCKED_BEFORE_TARGET.
+        """
+        dispatcher.network = simple_linear_network
+        self._make_probe_train(simple_linear_network)
+        simple_linear_network.blocks["BLOCK_C"].occupy("T_OTHER")
+
+        result = dispatcher.create_path(
+            train_id="T_PROBE",
+            requested_destination_block_id="BLOCK_C",
+            requested_destination_direction="forward",
+            acquisition_mode=AcquisitionMode.BEST_EFFORT,
+        )
+
+        assert result.success, (
+            f"BEST_EFFORT create_path must truncate on an occupied future "
+            f"block per design_new.md:884-911. Got failure_kind="
+            f"{result.failure_kind!r}, reason={result.reason!r}"
+        )
+        assert result.result_kind == PathAcquisitionResultKind.TRUNCATED_GREW
+        assert result.authority_end_block_id == "BLOCK_B", (
+            f"Expected truncation to BLOCK_B (longest acquirable prefix "
+            f"toward occupied BLOCK_C). Got: {result.authority_end_block_id!r}"
+        )
+        assert result.path_id is not None
+        assert result.resource_sequence is not None
+        assert len(result.resource_sequence) >= 1
+
+    def test_create_path_all_or_nothing_still_hard_rejects_on_occupied(
+        self, simple_linear_network, dispatcher,
+    ):
+        """The fix must NOT change ALL_OR_NOTHING semantics — an occupied
+        future block is still a hard reject in that mode.
+        """
+        dispatcher.network = simple_linear_network
+        self._make_probe_train(simple_linear_network)
+        simple_linear_network.blocks["BLOCK_C"].occupy("T_OTHER")
+
+        result = dispatcher.create_path(
+            train_id="T_PROBE",
+            requested_destination_block_id="BLOCK_C",
+            requested_destination_direction="forward",
+            acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
+        )
+
+        assert not result.success
+        assert result.failure_kind == PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET
+
+    def test_create_path_best_effort_hard_rejects_on_disabled_block(
+        self, simple_linear_network, dispatcher,
+    ):
+        """Structural failures (BLOCK_DISABLED) must still hard-reject
+        even in BEST_EFFORT mode, per design_new.md:890.
+        """
+        dispatcher.network = simple_linear_network
+        self._make_probe_train(simple_linear_network)
+        simple_linear_network.blocks["BLOCK_B"].disabled = True
+
+        result = dispatcher.create_path(
+            train_id="T_PROBE",
+            requested_destination_block_id="BLOCK_C",
+            requested_destination_direction="forward",
+            acquisition_mode=AcquisitionMode.BEST_EFFORT,
+        )
+
+        assert not result.success, (
+            "A disabled future block is structural and must hard-reject "
+            "regardless of acquisition_mode (design_new.md:890)."
+        )
+        # The disabled block can be filtered by the pathfinder upstream
+        # (NO_VIABLE_PATH) or caught by validate_path (BLOCKED_BEFORE_TARGET).
+        # Either is acceptable per the design.
+        assert result.failure_kind in (
+            PathAcquisitionFailureKind.NO_VIABLE_PATH,
+            PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
+        )
+
+    def test_extend_path_best_effort_truncates_on_occupied_future_block(
+        self, simple_linear_network, dispatcher,
+    ):
+        """extend_path BEST_EFFORT must also truncate (symmetric with
+        create_path) per design_new.md:994. First create a successful
+        path to BLOCK_B, then try to extend to BLOCK_C with BLOCK_C
+        occupied — the extension cannot grow but the existing path
+        remains intact.
+        """
+        dispatcher.network = simple_linear_network
+        self._make_probe_train(simple_linear_network)
+
+        first = dispatcher.create_path(
+            train_id="T_PROBE",
+            requested_destination_block_id="BLOCK_B",
+            requested_destination_direction="forward",
+            acquisition_mode=AcquisitionMode.BEST_EFFORT,
+        )
+        assert first.success, f"setup failed: {first.reason}"
+        path_id = first.path_id
+
+        # Occupy BLOCK_C — extension must hit it as a conflict.
+        simple_linear_network.blocks["BLOCK_C"].occupy("T_OTHER")
+
+        result = dispatcher.extend_path(
+            path_id=path_id,
+            requested_destination_block_id="BLOCK_C",
+            requested_destination_direction="forward",
+            acquisition_mode=AcquisitionMode.BEST_EFFORT,
+        )
+
+        # With BLOCK_C the only new block in the extension segment
+        # ([BLOCK_B, BLOCK_C]) and it occupied, the truncate helper
+        # cannot find a 2-block prefix that adds any new resource. The
+        # extension reports failure (BLOCKED_NO_GROWTH semantics is out
+        # of scope per the plan; BLOCKED_BEFORE_TARGET is the v1 outcome).
+        assert not result.success
+        assert result.failure_kind == PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET
+        # Existing path must still be ACTIVE and unchanged.
+        live_path = dispatcher.paths.get(path_id)
+        assert live_path is not None
+        assert live_path.status == PathStatus.ACTIVE
+        assert live_path.get_authority_end_block_id() == "BLOCK_B"
 
 
 

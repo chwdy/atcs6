@@ -590,6 +590,24 @@ class ValidationErrorType(Enum):
     SWITCH_LOCKED = "switch_locked"
     FLANK_SWITCH_CONFLICT = "flank_switch_conflict"
 
+    def is_occupancy_class(self) -> bool:
+        # Live-state conflicts on a future BLOCK are truncation points in
+        # BEST_EFFORT mode per design_new.md "create_path() / extend_path()
+        # return contract" — the dispatcher cuts authority to the longest
+        # acquirable block-terminated prefix BEFORE the conflict.
+        #
+        # SWITCH_LOCKED / FLANK_SWITCH_CONFLICT are intentionally NOT in
+        # this set under v1: the truncate helper's prefix-acquire path
+        # goes through `Switch.acquire_lock`, which allows same-state
+        # co-locking by design but the physical `Switch.occupied_by`
+        # field is single-owner, so co-locked truncations can deadlock
+        # when both trains' bodies meet at the switch tile. Switch
+        # conflicts fall through to the BLOCKED_BEFORE_TARGET tail.
+        return self in (
+            ValidationErrorType.BLOCK_OCCUPIED,
+            ValidationErrorType.BLOCK_RESERVED,
+        )
+
 
 @dataclass
 class ValidationError:
