@@ -1,27 +1,29 @@
 """
-Demo 3: Three-Station NE-Zigzag Double-Track Loop
+Demo 3: Four-Station NE-Zigzag Double-Track Loop
 
 Layout (rendered horizontally on the rotated screen):
 
-  ┌── S1-N ──┐   ┌── S2-N ──┐   ┌── S3-N ──┐
-  ├──────────┤───X1───├──────────┤───X2───├──────────┤   ← N track (NW-side)
-  │          │        │          │        │          │
-  ├──────────┤───X1───├──────────┤───X2───├──────────┤   ← S track (SE-side)
-  └── S1-S ──┘        └── S2-S ──┘        └── S3-S ──┘
+  ┌── S1-N ──┐        ┌── S2-N ──┐        ┌── S3-N ──┐        ┌── S4-N ──┐
+  ├──────────┤───X1───├──────────┤── plain ─├──────────┤───X2───├──────────┤   ← N track (NW-side)
+  │          │        │          │          │          │        │          │
+  ├──────────┤───X1───├──────────┤── plain ─├──────────┤───X2───├──────────┤   ← S track (SE-side)
+  └── S1-S ──┘        └── S2-S ──┘        └── S3-S ──┘        └── S4-S ──┘
 
   Each platform spans 3 zigzag tiles (60 cm). Between stations:
-    30 cm plain block (per track) → 1-tile scissors crossover (shared) → 30 cm plain block.
+    S1↔S2 and S3↔S4: 30 cm plain block (per track) → 1-tile scissors crossover (shared) → 30 cm plain block.
+    S2↔S3: two 40 cm plain blocks per track (zigzag, no crossover) — block A is 2 tiles, block B is 1 tile.
 
-  S1, S3 = island-style platforms (each track's platform faces the other track).
-  S2     = side platforms (each track's platform faces outward).
+  S1, S4 = island-style platforms (each track's platform faces the other track).
+  S2, S3 = side platforms (each track's platform faces outward).
 
 Route (CIRCULAR, all 4 trains share it):
-  STN_1 → dwell 2s → PLT_S2_S → dwell 2s → STN_3 → dwell 2s → PLT_S2_N → dwell 2s → loop.
+  STN_1 → dwell 2s → PLT_S2_S → dwell 2s → PLT_S3_S → dwell 2s → STN_4
+    → dwell 2s → PLT_S3_N → dwell 2s → PLT_S2_N → dwell 2s → loop.
 
 Initial placement:
   T1 at S1-S (facing N, next stop S2-S)
-  T2 at S2-S (facing N, next stop S3)
-  T3 at S3-N (facing W, next stop S2-N)
+  T2 at S2-S (facing N, next stop S3-S)
+  T3 at S4-N (facing W, next stop S3-N)
   T4 at S2-N (facing W, next stop S1)
 """
 
@@ -137,12 +139,19 @@ S_TRACK_TILES = [
     (4, 3, TRACK_NW, "S2_S_t1"),
     (4, 4, TRACK_SE, "S2_S_t2"),
     (5, 4, TRACK_NW, "S2_S_t3"),
-    (5, 5, TRACK_NS, "BLK_S2_S_TO_X2"),   # NS detour up to crossover X2
-    # (5, 6) is crossover X2.
-    (6, 6, TRACK_EW, "BLK_X2_TO_S3_S"),   # EW detour out of X2 toward S3-S
+    # Plain zigzag between S2 and new S3 — 2 blocks (40 cm each), no crossover.
+    (5, 5, TRACK_SE, "BLK_S2_S_TO_S3_S_A_t1"),
+    (6, 5, TRACK_NW, "BLK_S2_S_TO_S3_S_A_t2"),
+    (6, 6, TRACK_SE, "BLK_S2_S_TO_S3_S_B_t1"),
     (7, 6, TRACK_NW, "S3_S_t1"),
     (7, 7, TRACK_SE, "S3_S_t2"),
     (8, 7, TRACK_NW, "S3_S_t3"),
+    (8, 8, TRACK_NS, "BLK_S3_S_TO_X2"),   # NS detour up to crossover X2
+    # (8, 9) is crossover X2.
+    (9, 9, TRACK_EW, "BLK_X2_TO_S4_S"),   # EW detour out of X2 toward S4-S
+    (10, 9, TRACK_NW, "S4_S_t1"),
+    (10, 10, TRACK_SE, "S4_S_t2"),
+    (11, 10, TRACK_NW, "S4_S_t3"),
 ]
 
 # N track is offset (-1, +1) from S track on every tile (NW direction).
@@ -156,12 +165,19 @@ N_TRACK_TILES = [
     (3, 4, TRACK_NW, "S2_N_t1"),
     (3, 5, TRACK_SE, "S2_N_t2"),
     (4, 5, TRACK_NW, "S2_N_t3"),
-    (4, 6, TRACK_SE, "BLK_S2_N_TO_X2"),
-    # (5, 6) is crossover X2.
-    (5, 7, TRACK_SE, "BLK_X2_TO_S3_N"),
+    # Plain zigzag between S2 and new S3 — 2 blocks (40 cm each), no crossover.
+    (4, 6, TRACK_SE, "BLK_S2_N_TO_S3_N_A_t1"),
+    (5, 6, TRACK_NW, "BLK_S2_N_TO_S3_N_A_t2"),
+    (5, 7, TRACK_SE, "BLK_S2_N_TO_S3_N_B_t1"),
     (6, 7, TRACK_NW, "S3_N_t1"),
     (6, 8, TRACK_SE, "S3_N_t2"),
     (7, 8, TRACK_NW, "S3_N_t3"),
+    (7, 9, TRACK_SE, "BLK_S3_N_TO_X2"),
+    # (8, 9) is crossover X2.
+    (8, 10, TRACK_SE, "BLK_X2_TO_S4_N"),
+    (9, 10, TRACK_NW, "S4_N_t1"),
+    (9, 11, TRACK_SE, "S4_N_t2"),
+    (10, 11, TRACK_NW, "S4_N_t3"),
 ]
 
 
@@ -180,7 +196,7 @@ def _add_crossovers(network: RailwayNetwork) -> None:
     The crossover tile is a switch boundary — it does NOT belong to any
     block.
     """
-    for (sx, sy, sid) in ((2, 3, "SW_X1"), (5, 6, "SW_X2")):
+    for (sx, sy, sid) in ((2, 3, "SW_X1"), (8, 9, "SW_X2")):
         tile = TrackSegment(sx, sy, track_bits=SCISSORS_BITS)
         tile.switch_state = 0  # 0 = stay-on-track (main); 1 = swap (diverge)
         network.add_track(tile)
@@ -201,11 +217,18 @@ BLOCKS = [
     ("BLK_S1_N_TO_X1", [(1, 3)], "S1-N → X1", 30.0, 50.0),
     ("BLK_X1_TO_S2_S", [(3, 3)], "X1 → S2-S", 30.0, 50.0),
     ("BLK_X1_TO_S2_N", [(2, 4)], "X1 → S2-N", 30.0, 50.0),
+    # Plain zigzag between S2 and new S3 (no crossover; 2 blocks of 40 cm per track).
+    # Block A holds 2 tiles, block B holds 1 tile — 3 tiles is the smallest
+    # zigzag run that keeps the new S3 anchor on the same y-x=-1 line as S2 and S4.
+    ("BLK_S2_S_TO_S3_S_A", [(5, 5), (6, 5)], "S2-S → S3-S (A)", 40.0, 50.0),
+    ("BLK_S2_S_TO_S3_S_B", [(6, 6)],         "S2-S → S3-S (B)", 40.0, 50.0),
+    ("BLK_S2_N_TO_S3_N_A", [(4, 6), (5, 6)], "S2-N → S3-N (A)", 40.0, 50.0),
+    ("BLK_S2_N_TO_S3_N_B", [(5, 7)],         "S2-N → S3-N (B)", 40.0, 50.0),
     # Plain blocks bracketing X2
-    ("BLK_S2_S_TO_X2", [(5, 5)], "S2-S → X2", 30.0, 50.0),
-    ("BLK_S2_N_TO_X2", [(4, 6)], "S2-N → X2", 30.0, 50.0),
-    ("BLK_X2_TO_S3_S", [(6, 6)], "X2 → S3-S", 30.0, 50.0),
-    ("BLK_X2_TO_S3_N", [(5, 7)], "X2 → S3-N", 30.0, 50.0),
+    ("BLK_S3_S_TO_X2", [(8, 8)], "S3-S → X2", 30.0, 50.0),
+    ("BLK_S3_N_TO_X2", [(7, 9)], "S3-N → X2", 30.0, 50.0),
+    ("BLK_X2_TO_S4_S", [(9, 9)], "X2 → S4-S", 30.0, 50.0),
+    ("BLK_X2_TO_S4_N", [(8, 10)], "X2 → S4-N", 30.0, 50.0),
 ]
 
 
@@ -226,10 +249,10 @@ def _add_blocks(network: RailwayNetwork) -> None:
 # Each station entry: (station_id, name, first_tile, extra_tiles, platform_side)
 # platform_side values are interpreted by the renderer relative to the tile's
 # orientation group; for NW_SE-bit tiles, "left" → SW visual side, "right" → NE.
-# Island stations (S1, S3): N-track platform on its SW side, S-track on its NE
+# Island stations (S1, S4): N-track platform on its SW side, S-track on its NE
 #   side — both platforms face inward toward the other track.
-# Side-platform station (S2): N-track platform on NE side, S-track on SW side —
-#   both face outward.
+# Side-platform stations (S2, S3): N-track platform on NE side, S-track on SW
+#   side — both face outward.
 STATIONS = [
     # (group_id, group_name, [(platform_id, name, first_xy, extra_xys, side), ...])
     ("STN_1", "Station 1", [
@@ -241,8 +264,12 @@ STATIONS = [
         ("PLT_S2_N", "S2 North", (3, 4), [(3, 5), (4, 5)], "right"),
     ]),
     ("STN_3", "Station 3", [
-        ("PLT_S3_S", "S3 South", (7, 6), [(7, 7), (8, 7)], "right"),
-        ("PLT_S3_N", "S3 North", (6, 7), [(6, 8), (7, 8)], "left"),
+        ("PLT_S3_S", "S3 South", (7, 6), [(7, 7), (8, 7)], "left"),
+        ("PLT_S3_N", "S3 North", (6, 7), [(6, 8), (7, 8)], "right"),
+    ]),
+    ("STN_4", "Station 4", [
+        ("PLT_S4_S", "S4 South", (10, 9), [(10, 10), (11, 10)], "right"),
+        ("PLT_S4_N", "S4 North", (9, 10), [(9, 11), (10, 11)], "left"),
     ]),
 ]
 
@@ -277,7 +304,7 @@ def create_comprehensive_demo() -> RailwayNetwork:
     `import demo_3 as demo_main` works without other edits.
     """
     print("\n" + "=" * 70)
-    print("Demo 3: Three-Station NE-Zigzag Double-Track Loop")
+    print("Demo 3: Four-Station NE-Zigzag Double-Track Loop")
     print("=" * 70)
 
     network = RailwayNetwork()
@@ -318,10 +345,10 @@ def setup_demo_train(
     from runtime_payloads import AcquisitionMode
     from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
 
-    # ---- Shared route (CIRCULAR, 8 tasks: stop+dwell × 4) ----
+    # ---- Shared route (CIRCULAR, 12 tasks: stop+dwell × 6) ----
     route = Route(
         route_id="R_DEMO3_LOOP",
-        name="Demo 3: Three-Station Loop",
+        name="Demo 3: Four-Station Loop",
         mode=RouteMode.CIRCULAR,
         acquisition_mode=AcquisitionMode.ALL_OR_NOTHING,
         is_active=True,
@@ -337,10 +364,20 @@ def setup_demo_train(
                   task_direction="either"),
         RouteTask(task_kind="dwell", task_location=PlatformTarget("PLT_S2_S"),
                   task_time=2.0),
-        # S3 (any platform) — terminus
-        RouteTask(task_kind="stop",  task_location=StationTarget("STN_3"),
+        # S3-S platform (outbound leg)
+        RouteTask(task_kind="stop",  task_location=PlatformTarget("PLT_S3_S"),
                   task_direction="either"),
-        RouteTask(task_kind="dwell", task_location=StationTarget("STN_3"),
+        RouteTask(task_kind="dwell", task_location=PlatformTarget("PLT_S3_S"),
+                  task_time=2.0),
+        # S4 (any platform) — terminus
+        RouteTask(task_kind="stop",  task_location=StationTarget("STN_4"),
+                  task_direction="either"),
+        RouteTask(task_kind="dwell", task_location=StationTarget("STN_4"),
+                  task_time=2.0),
+        # S3-N platform (return leg)
+        RouteTask(task_kind="stop",  task_location=PlatformTarget("PLT_S3_N"),
+                  task_direction="either"),
+        RouteTask(task_kind="dwell", task_location=PlatformTarget("PLT_S3_N"),
                   task_time=2.0),
         # S2-N platform (return leg)
         RouteTask(task_kind="stop",  task_location=PlatformTarget("PLT_S2_N"),
@@ -386,10 +423,10 @@ def setup_demo_train(
     # so the executor starts each train at its own station instead of
     # racing them all to STN_1.
     train_specs = [
-        ("T1", "PLT_S1_S_BLOCK", "NORTH", 1, (2, 1)),  # NE-end of S1-S
-        ("T2", "PLT_S2_S_BLOCK", "NORTH", 3, (5, 4)),  # NE-end of S2-S
-        ("T3", "PLT_S3_N_BLOCK", "WEST",  5, None),    # SW-end (default)
-        ("T4", "PLT_S2_N_BLOCK", "WEST",  7, None),    # SW-end (default)
+        ("T1", "PLT_S1_S_BLOCK", "NORTH", 1,  (2, 1)),  # NE-end of S1-S
+        ("T2", "PLT_S2_S_BLOCK", "NORTH", 3,  (5, 4)),  # NE-end of S2-S
+        ("T3", "PLT_S4_N_BLOCK", "WEST",  7,  None),    # SW-end (default)
+        ("T4", "PLT_S2_N_BLOCK", "WEST",  11, None),    # SW-end (default)
     ]
 
     import time as _time
