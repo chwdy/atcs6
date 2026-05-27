@@ -988,3 +988,156 @@ When in doubt, copy the structure of one of these:
 - **Bottom dock** → [train-monitor.css](../static/css/features/train-monitor.css) — header + multi-column body + status footer, full-width, fixed height. Header has no border; the segmented view-distance control inside the header is a bordered container of flat ghosts (no internal dividers).
 - **Sidebar form** → [train-control.css](../static/css/features/train-control.css) — sectioned vertical stack inside a secondary sidebar. Status rows use the 3px left-border accent only, no surrounding 1px box.
 - **Tab strip** → [layout/shell.css](../static/css/layout/shell.css) `.secondary-sidebar-tabs` — the row has one `border-bottom`; tabs themselves are flat with an accent underline on active.
+
+---
+
+## 16. Canvas labels
+
+Labels rendered directly on the canvas (station, platform, train) — distinct
+from the inline field labels in §5. These labels coexist with track chassis,
+block state colors, signals, and moving trains, so they need rules the
+panel-chrome vocabulary doesn't cover: zoom-aware borders, z-order under
+moving things, opaque fills that survive overlap.
+
+### Tier hierarchy
+
+Pick the tier by liveness:
+
+- **Static identity** (platform, station) — quietest. Opaque dark fill +
+  thin neutral outline + white text. Size carries hierarchy within the tier
+  (station 9px / platform 7px). The two share chrome so they read as one
+  family at different scales.
+- **Live identity** (train ID) — one tier up. Opaque dark base mixed with
+  ~15% accent + thin accent border + white text. The train's motion is what
+  reads as "alive"; the label just carries the categorical color, restrained.
+- **Hover / user attention** — top tier. Opaque dark base mixed with ~15%
+  accent + saturated accent border + full name at one font tier larger.
+  Earns the louder treatment because it's one label at a time and the user
+  is actively pointing.
+
+State indicators (block colors, signal aspects, route overlays) sit in a
+separate visual channel — saturated hue marks at the entity's location, no
+label box. They coexist with these labels via the brightness vs. hue split
+in §12 "Color channels".
+
+### Fills are opaque; color lives in the border
+
+**Permanent canvas labels use a near-opaque dark base** (alpha ≥ 0.85) so an
+overlapping label doesn't bleed through and read as visual mush. The
+categorical color comes from:
+
+1. The **border** — saturated accent (`rgba(R, G, B, 0.9)`).
+2. A **subtle mix into the dark base** — e.g., the train label fill is
+   `rgba(32, 26, 50, 0.92)`, a dark base with ~15% purple mixed in; opaque
+   enough to block what's behind, tinted enough to read as categorically
+   purple.
+
+The rule rules out §7's state-badge pattern of a saturated solid fill
+(yellow / purple / amber). That treatment is reserved for transient state
+badges, not permanent labels — when a label uses solid saturation, it
+"steals" a state hue from the canvas alert palette and identity ends up
+shouting louder than the actual changing state.
+
+Concrete fills currently in use:
+
+| Label             | Fill                          |
+|-------------------|-------------------------------|
+| Platform default  | `rgba(15, 15, 18, 0.85)`      |
+| Platform hover    | `rgba(15, 15, 18, 0.92)`      |
+| Station default   | `rgba(15, 15, 18, 0.92)`      |
+| Station hover     | `rgba(50, 35, 5, 0.92)`       |
+| Train             | `rgba(32, 26, 50, 0.92)`      |
+
+References: `_drawLabel` in
+[renderer-stations.js](../static/js/renderer-stations.js); `drawTrainLabel`
+in [renderer-trains.js](../static/js/renderer-trains.js); `drawPlatformLabel`
+in [renderer-platforms.js](../static/js/renderer-platforms.js).
+
+### Borders are screen-pixel-capped
+
+Border widths use a screen-pixel cap, not `lineWidth = n * scale`. The naive
+form looks fine at default zoom but at scale 6+ explodes into a 12–15 px
+wall that overwhelms the chassis underneath. The cap formula:
+
+```js
+// Static identity (default)
+Math.min(Math.max(0.8, s * 0.25), 1.5);
+// Live identity (train)
+Math.min(Math.max(1.0, s * 0.35), 2.0);
+// Hover / emphasised
+Math.min(Math.max(1.2, s * 0.4), 2.5);
+```
+
+Pick the cap by tier — live and hover are slightly thicker so the visual
+hierarchy survives at every zoom. The same formula shape applies to
+highlight strokes (below).
+
+### Z-order is liveness-based
+
+Draw order in [renderer.js](../static/js/renderer.js) `drawNetwork`:
+
+1. Track chassis + block colors (bottom)
+2. Platform bodies + platform labels (identity tier)
+3. **Station labels — default, non-hovered** (identity tier)
+4. Signals, debug overlays, block detail labels (state)
+5. Route overlays
+6. Trains + train labels (live)
+7. **Station label — hover overlay** (user attention, top)
+8. Box / lasso select overlay
+
+The rule: **static identity sits under anything live or state-bearing.** A
+train passing through a station paints *over* the station's name — the
+station's identity is permanent context, the train is the thing the user is
+watching.
+
+The exception is the hover state. When the user is actively pointing at a
+station label, that one label gets a second pass at the very top of the
+stack so it wins over the moving train. `drawStations()` runs at step 3 for
+all non-hovered labels; `drawHoverOverlay()` runs at step 7 for just the
+hovered one.
+
+### Highlight strokes
+
+When a hovered label points to member entities (station label → platform
+bodies), the members get a "highlight stroke" outlining their shape. Rules:
+
+- **Same accent color as the hovered label's border.** The label and its
+  members read as one connected gesture (one focus).
+- **Lower opacity than the label** (~0.7 vs 0.9). Highlights are *context*,
+  not the focus.
+- **Screen-pixel-capped stroke width** — same cap pattern as label borders:
+  `Math.min(Math.max(1.5, s * 0.5), 2.5)`.
+- **Closed paths with round joins and caps**, not per-segment strokes. The
+  naive per-segment form caps each line's endpoint independently and the
+  corners come out chunky.
+- **No fill tint over entity bodies that carry their own state** (trains,
+  blocks). A tint over a train would visually steal the train's state
+  color — the §12 hue-fights-hue problem.
+
+Reference: `_drawPlatformHighlights` in
+[renderer-stations.js](../static/js/renderer-stations.js).
+
+### Overlap
+
+Two labels at the same screen position is acceptable when the higher-tier
+label wins via z-order + opaque fill: the lower-tier label is partially
+hidden but the foreground label stays fully legible. The opacity rule above
+(no bleed-through) is what makes this work — without opaque fills, two
+overlapping labels mix into illegible mush instead of one winning cleanly.
+
+Physical collision avoidance — repositioning lower-tier labels around
+higher-tier ones — is out of scope for the current system. If overlap
+proves genuinely confusing in a real layout, raise it as a doc question;
+don't freelance a one-off nudge.
+
+### Don'ts
+
+- **No saturated solid fills** on permanent canvas labels. That's the §7
+  state-badge pattern; it belongs to transient alerts.
+- **No `lineWidth = n * scale`** without a screen-pixel cap. At any zoom
+  above ~3 the border becomes a wall.
+- **No fill-tint highlight** over an entity that carries its own state
+  (train, block). Hue-fights-hue, §12.
+- **No new label tier** for a single new use case. If a fourth tier seems
+  necessary, pause and raise the doc question. Three tiers cover everything
+  the canvas currently has.

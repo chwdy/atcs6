@@ -295,8 +295,28 @@
                     </aside>
 
                     <div class="canvas-container">
+                        <!--
+                          Phase 5: world canvas (static / map-shape layer) sits
+                          below; live canvas (trains, route overlays, hover,
+                          selection) sits on top. The live canvas keeps the
+                          legacy #rail-canvas id so existing JS that reads
+                          mouse events / bounding rect off that element still
+                          works (mouse events fire on the topmost canvas).
+                        -->
+                        <canvas id="rail-world-canvas"></canvas>
                         <canvas id="rail-canvas"></canvas>
                         <div class="canvas-overlay">
+                            <div class="canvas-view-controls">
+                                <button type="button" class="canvas-view-btn" id="btn-zoom-out" title="Zoom out">−</button>
+                                <button type="button" class="canvas-view-btn" id="btn-zoom-reset" title="Reset to 100% and fit">1:1</button>
+                                <button type="button" class="canvas-view-btn" id="btn-zoom-in" title="Zoom in">+</button>
+                                <span class="canvas-view-sep" aria-hidden="true"></span>
+                                <button type="button" class="canvas-view-btn" id="btn-fit-view" title="Fit all tracks in view">Fit</button>
+                                <label class="canvas-view-toggle" title="Keep the selected train centred as it moves">
+                                    <input type="checkbox" id="toggle-follow-train">
+                                    <span>Follow train</span>
+                                </label>
+                            </div>
                             <div class="status-bar">
                                 <span id="status-coords">0, 0</span>
                                 <span id="status-zoom">100%</span>
@@ -457,6 +477,8 @@
     <script src="js/state-manager.js?v=15"></script>
     <script src="js/helpers.js?v=17"></script>
     <script src="js/pathfinders.js?v=15"></script>
+    <script src="js/camera.js?v=1"></script>
+    <script src="js/render-snapshot.js?v=1"></script>
     <script src="js/renderer-tracks.js?v=15"></script>
     <script src="js/renderer-signals.js?v=15"></script>
     <script src="js/renderer-platforms.js?v=16"></script>

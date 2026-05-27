@@ -206,8 +206,10 @@ class RendererPlatformHandler {
         const textWidth = this.ctx.measureText(displayText).width;
         const labelHeight = (isHovered ? 12 : 10) * this.scale;
 
-        const bgAlpha = isHovered ? 0.8 : 0.5;
-        this.ctx.fillStyle = `rgba(0, 0, 0, ${bgAlpha})`;
+        // Opaque enough that an overlapping label doesn't bleed through.
+        // See the same fill rule on station and train labels.
+        const bgAlpha = isHovered ? 0.92 : 0.85;
+        this.ctx.fillStyle = `rgba(15, 15, 18, ${bgAlpha})`;
         this.ctx.fillRect(
             labelX - textWidth / 2 - labelPadding,
             labelY - labelHeight / 2,

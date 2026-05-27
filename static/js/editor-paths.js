@@ -73,7 +73,7 @@ class PathEditorHandler {
             }
         }
         if (this.cachedNetwork) {
-            this.renderer.drawNetwork(this.cachedNetwork);
+            this.renderer.requestRedraw();
         }
         document.getElementById('status-state').textContent = 'Path: Click start block';
     }
@@ -130,7 +130,7 @@ class PathEditorHandler {
             this.showRoutePrioritySelector();
 
             if (this.cachedNetwork) {
-                this.renderer.drawNetwork(this.cachedNetwork);
+                this.renderer.requestRedraw();
             }
         } catch (err) {
             console.error('[Editor] Failed to get reachable destinations:', err);
@@ -773,7 +773,7 @@ class PathEditorHandler {
             }
         }
         if (this.cachedNetwork) {
-            this.renderer.drawNetwork(this.cachedNetwork);
+            this.renderer.requestRedraw();
         }
     }
 
@@ -862,7 +862,7 @@ class PathEditorHandler {
             this.showExtendRoutePanel();
 
             if (this.cachedNetwork) {
-                this.renderer.drawNetwork(this.cachedNetwork);
+                this.renderer.requestRedraw();
             }
         } catch (err) {
             console.error('[Editor] Failed to get paths for extend:', err);

@@ -852,7 +852,7 @@ class RouteEditorHandler {
             this.renderer.setReachableHighlights(positions);
         }
         if (this.cachedNetwork) {
-            this.renderer.drawNetwork(this.cachedNetwork);
+            this.renderer.requestRedraw();
         }
         if (this.locationHighlightTimeout) {
             clearTimeout(this.locationHighlightTimeout);
@@ -874,7 +874,7 @@ class RouteEditorHandler {
             this.renderer.setReachableHighlights(new Set());
         }
         if (this.cachedNetwork) {
-            this.renderer.drawNetwork(this.cachedNetwork);
+            this.renderer.requestRedraw();
         }
     }
 

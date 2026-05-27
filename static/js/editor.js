@@ -537,7 +537,7 @@ class Editor {
                 resetState();
                 const status = document.getElementById('status-state');
                 if (status) status.textContent = 'Ready';
-                if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+                this.renderer.requestRedraw();
             },
         };
     }
@@ -580,7 +580,7 @@ class Editor {
                 resetState();
                 const status = document.getElementById('status-state');
                 if (status) status.textContent = 'Ready';
-                if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+                this.renderer.requestRedraw();
             },
         };
     }
@@ -611,7 +611,7 @@ class Editor {
                 resetState();
                 const status = document.getElementById('status-state');
                 if (status) status.textContent = 'Ready';
-                if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+                this.renderer.requestRedraw();
             },
         };
     }
@@ -647,6 +647,38 @@ class Editor {
             'new-route':       () => this.routeHandler.createNewRoute(),
             'stations-panel':  () => this.showStationsPanel(),
         };
+    }
+
+    /**
+     * Zoom toward a target absolute scale, keeping the world point under
+     * (screenX, screenY) anchored under that same screen position. Shared
+     * path used by the wheel handler and the +/- toolbar buttons.
+     *
+     * Math: gridToScreenX(g) = centerX + panX + (gx+gy+1) * tileSize/2 with
+     * tileSize = gridSize * scale. Holding the world point at (sx, sy)
+     * means re-solving panX, panY after scale changes so the same world
+     * point lands at the same screen coordinate.
+     */
+    _zoomAt(screenX, screenY, targetScale) {
+        // Math lives on Camera (static/js/camera.js) — see Camera.zoomAt for
+        // the cursor-anchor derivation. Tests in tests/test_camera_math.py.
+        this.renderer.camera.zoomAt(screenX, screenY, targetScale);
+        this.renderer.requestRedraw({ reason: 'zoom' });
+        const zoomLabel = document.getElementById('status-zoom');
+        if (zoomLabel) zoomLabel.textContent = `${Math.round(this.renderer.camera.scale * 100)}%`;
+    }
+
+    /**
+     * Reset zoom to 1.0 and re-fit all tracks if available.
+     */
+    _resetZoom() {
+        this.renderer.camera.scale = 1.0;
+        if (this.cachedNetwork?.tracks?.length) {
+            this.renderer.camera.centerOnContent(this.cachedNetwork.tracks);
+        }
+        this.renderer.requestRedraw({ reason: 'reset-zoom' });
+        const zoomLabel = document.getElementById('status-zoom');
+        if (zoomLabel) zoomLabel.textContent = '100%';
     }
 
     setupEventListeners() {
@@ -755,7 +787,7 @@ class Editor {
                 if (this._applyPaintTile(gridPos, removing)) {
                     this.paintSelectState.lastKey = `${gridPos.x},${gridPos.y}`;
                     this.renderer.setBoxSelection(this.boxSelectState.selectedKeys);
-                    if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+                    this.renderer.requestRedraw();
                 }
             }
             // Left click with signal/platform = single click placement
@@ -782,14 +814,10 @@ class Editor {
                     this.hasPanned = true;
                 }
                 
-                this.renderer.panX += dx;
-                this.renderer.panY += dy;
-                // Redraw the full network, not just the grid
-                if (this.renderer.currentNetwork) {
-                    this.renderer.drawNetwork(this.renderer.currentNetwork);
-                } else {
-                    this.renderer.draw();
-                }
+                // Pan-drag fires per mousemove; rAF coalescing keeps this to
+                // one paint per frame.
+                this.renderer.camera.panBy(dx, dy);
+                this.renderer.requestRedraw({ reason: 'pan' });
                 this.lastMouseX = e.clientX;
                 this.lastMouseY = e.clientY;
             }
@@ -805,7 +833,7 @@ class Editor {
                     endX: x,
                     endY: y,
                 });
-                if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+                this.renderer.requestRedraw();
             }
             else if (this.lassoSelectState.isDrawing) {
                 // Append a new vertex only if it moved at least 2px from the
@@ -815,7 +843,7 @@ class Editor {
                 if (!last || Math.abs(last.x - x) > 2 || Math.abs(last.y - y) > 2) {
                     pts.push({ x, y });
                     this.renderer.setLassoPath(pts);
-                    if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+                    this.renderer.requestRedraw();
                 }
             }
             else if (this.paintSelectState.isPainting) {
@@ -824,7 +852,7 @@ class Editor {
                     const removing = this.paintSelectState.shiftRemoving;
                     if (this._applyPaintTile(gridPos, removing)) {
                         this.renderer.setBoxSelection(this.boxSelectState.selectedKeys);
-                        if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+                        this.renderer.requestRedraw();
                     }
                     this.paintSelectState.lastKey = key;
                 }
@@ -889,7 +917,7 @@ class Editor {
                 }
 
                 this.renderer.setBoxSelection(this.boxSelectState.selectedKeys);
-                if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+                this.renderer.requestRedraw();
             }
             else if (this.lassoSelectState.isDrawing) {
                 this.lassoSelectState.isDrawing = false;
@@ -913,7 +941,7 @@ class Editor {
                 }
 
                 this.renderer.setBoxSelection(this.boxSelectState.selectedKeys);
-                if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+                this.renderer.requestRedraw();
             }
             else if (this.paintSelectState.isPainting) {
                 // Tiles were applied incrementally during mousedown/mousemove;
@@ -953,7 +981,7 @@ class Editor {
 
                 // Cancelled with a stale preview still on screen — redraw to clear it.
                 if (!onCanvas && hadPreview && this.cachedNetwork) {
-                    this.renderer.drawNetwork(this.cachedNetwork);
+                    this.renderer.requestRedraw();
                 }
             }
         });
@@ -974,7 +1002,7 @@ class Editor {
                 this.lastValidPreviewPath = null;
                 this.lastValidPreviewTracks = null;
                 if (this.cachedNetwork) {
-                    this.renderer.drawNetwork(this.cachedNetwork);
+                    this.renderer.requestRedraw();
                 }
                 return;
             }
@@ -987,53 +1015,15 @@ class Editor {
             await this.handleRightClick(gridPos);
         });
 
-        // Zoom with mouse-centered zooming and pan compensation
+        // Zoom with mouse-centered zooming and pan compensation.
+        // Body is in _zoomAt so the +/- and 1:1 buttons share the same path.
         canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
-
-            // Get mouse position in screen coordinates
             const rect = canvas.getBoundingClientRect();
             const mouseScreenX = e.clientX - rect.left;
             const mouseScreenY = e.clientY - rect.top;
-
-            // Calculate mouse position in world coordinates BEFORE zoom
-            const worldPosBeforeZoom = this.renderer.screenToGrid(mouseScreenX, mouseScreenY);
-
-            // Apply zoom
-            const zoomIntensity = 0.1;
-            const delta = e.deltaY < 0 ? 1 : -1;
-            const oldScale = this.renderer.scale;
-            const newScale = oldScale + (delta * zoomIntensity);
-
-            // Clamp zoom level
-            if (newScale <= 0.1 || newScale >= 5) return;
-
-            // Update scale
-            this.renderer.scale = newScale;
-
-            // Calculate where the mouse world position would appear on screen with new scale
-            // (without adjusting pan)
-            const newTileSize = this.renderer.gridSize * newScale;
-            const screenXWithoutPanAdjust = this.renderer.centerX + this.renderer.panX +
-                ((worldPosBeforeZoom.x + worldPosBeforeZoom.y + 1) * newTileSize / 2);
-            const screenYWithoutPanAdjust = this.renderer.centerY + this.renderer.panY +
-                ((worldPosBeforeZoom.x - worldPosBeforeZoom.y) * newTileSize / 2);
-
-            // Calculate pan adjustment to keep mouse world position under cursor
-            const panAdjustX = mouseScreenX - screenXWithoutPanAdjust;
-            const panAdjustY = mouseScreenY - screenYWithoutPanAdjust;
-
-            // Apply pan adjustment
-            this.renderer.panX += panAdjustX;
-            this.renderer.panY += panAdjustY;
-
-            // Redraw with cached network
-            if (this.cachedNetwork) {
-                this.renderer.drawNetwork(this.cachedNetwork);
-            } else {
-                this.renderer.draw();
-            }
-            document.getElementById('status-zoom').textContent = `${Math.round(newScale * 100)}%`;
+            const delta = e.deltaY < 0 ? 0.1 : -0.1;
+            this._zoomAt(mouseScreenX, mouseScreenY, this.renderer.scale + delta);
         });
 
         // Click to select element for properties panel
@@ -1176,7 +1166,7 @@ class Editor {
                 if (isMarkSelectTool && this.boxSelectState.selectedKeys.size > 0) {
                     this.boxSelectState.selectedKeys = new Set();
                     this.renderer.setBoxSelection(new Set());
-                    if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+                    this.renderer.requestRedraw();
                     return;
                 }
 
@@ -1255,7 +1245,7 @@ class Editor {
             if (this.boxSelectState.selectedKeys.size === 0) return;
             this.boxSelectState.selectedKeys = new Set();
             this.renderer.setBoxSelection(new Set());
-            if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+            this.renderer.requestRedraw();
         });
     }
 
@@ -1374,7 +1364,7 @@ class Editor {
 
         // Redraw with preview
         if (this.cachedNetwork) {
-            this.renderer.drawNetwork(this.cachedNetwork);
+            this.renderer.requestRedraw();
             // Draw actual track geometry preview if available
             if (this.previewTracks && this.previewTracks.length > 0) {
                 this.renderer.trackHandler.drawPreviewTracks(this.previewTracks);
@@ -2105,7 +2095,7 @@ class Editor {
     // Redraw network with hover preview overlay
     drawWithHoverPreview() {
         if (!this.cachedNetwork) return;
-        this.renderer.drawNetwork(this.cachedNetwork);
+        this.renderer.requestRedraw();
 
         if (this.hoverPosition) {
             // Get track bits for proper signal positioning in preview

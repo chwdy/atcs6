@@ -7,12 +7,24 @@
     min-height: 400px;
 }
 
+/* Both canvases occupy the full container; live sits above world. The
+   live canvas keeps cursor + pointer events; world is purely visual. */
+#rail-world-canvas,
 #rail-canvas {
     display: block;
-    cursor: crosshair;
     position: absolute;
     top: 0;
     left: 0;
+}
+
+#rail-world-canvas {
+    z-index: 1;
+    pointer-events: none;
+}
+
+#rail-canvas {
+    z-index: 2;
+    cursor: crosshair;
 }
 
 .canvas-overlay {
@@ -22,6 +34,13 @@
     right: 0;
     padding: 10px;
     pointer-events: none;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
+    /* Above both canvases (z-index 1 = world, 2 = live). Without this the
+       canvases stack over the overlay and hide the Fit / Follow / status bar. */
+    z-index: 3;
 }
 
 .status-bar {
@@ -34,4 +53,67 @@
     font-size: 0.8rem;
     color: var(--text-secondary);
     backdrop-filter: blur(4px);
+}
+
+/* Floating viewport controls (Fit, Follow train).
+   Tokens per docs/DESIGN_LANGUAGE.md §1 — surfaces, text, accents. */
+.canvas-view-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background-color: rgba(30, 30, 36, 0.8);
+    border: 1px solid var(--border-color);
+    padding: 4px 8px;
+    border-radius: 4px;
+    backdrop-filter: blur(4px);
+    pointer-events: auto;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.canvas-view-btn {
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    padding: 3px 10px;
+    border-radius: 3px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.canvas-view-btn:hover {
+    background-color: var(--bg-hover);
+    border-color: var(--accent-color);
+}
+
+.canvas-view-btn:active {
+    background-color: var(--accent-color);
+    color: var(--text-primary);
+    border-color: var(--accent-color);
+}
+
+.canvas-view-sep {
+    width: 1px;
+    height: 18px;
+    background-color: var(--border-color);
+    margin: 0 4px;
+}
+
+.canvas-view-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.canvas-view-toggle input[type="checkbox"] {
+    accent-color: var(--accent-color);
+    cursor: pointer;
+}
+
+.canvas-view-toggle:hover {
+    color: var(--text-primary);
 }

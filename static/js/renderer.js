@@ -52,22 +52,32 @@ const IsometricGeometry = {
 
 class Renderer {
     constructor(canvasId) {
-        this.canvas = document.getElementById(canvasId);
-        if (!this.canvas) {
-            console.error('[Renderer] Canvas element not found!');
+        // Phase 5: two stacked canvases — world (static map shape) below,
+        // live (trains, routes, hover, selection) above. The legacy
+        // canvasId (#rail-canvas) is the live canvas because mouse events
+        // fire on the topmost element. The world canvas is paired by id.
+        this.liveCanvas = document.getElementById(canvasId);
+        this.worldCanvas = document.getElementById('rail-world-canvas');
+        if (!this.liveCanvas || !this.worldCanvas) {
+            console.error('[Renderer] Required canvas elements not found!');
             return;
         }
-        this.ctx = this.canvas.getContext('2d');
-        this.gridSize = 40;
+        // `this.canvas` historically points to the single canvas. Keep it
+        // pointing at the live canvas so existing code (mouse handlers,
+        // getBoundingClientRect, dimensions) keeps working without changes.
+        this.canvas = this.liveCanvas;
+        this.liveCtx = this.liveCanvas.getContext('2d');
+        this.worldCtx = this.worldCanvas.getContext('2d');
+        // `this.ctx` is the *active* context — handler files draw to it.
+        // _drawWorld and _drawLive switch this before calling handlers so
+        // handler code (renderer-tracks.js, renderer-trains.js, …) stays
+        // ignorant of which layer it's painting to.
+        this.ctx = this.worldCtx;
 
-        // Pan offset (user dragging)
-        this.panX = 0;
-        this.panY = 0;
-        this.scale = 1.0;
-
-        // Center of canvas (where grid 0,0 is displayed)
-        this.centerX = 0;
-        this.centerY = 0;
+        // Viewport (pan, zoom, projection) lives on Camera so editor / app /
+        // handler files all read & write through one canonical object. See
+        // static/js/camera.js for the math.
+        this.camera = new Camera(this.canvas);
 
         // Mouse position for hover detection
         this.mouseX = -1;
@@ -117,14 +127,15 @@ class Renderer {
 
             // Redraw if mouse moved and we have a network
             // Need redraw for: block hover, platform name hover, train label dodge.
-            const showBlocksElement = document.getElementById('debug-show-blocks');
-            const showBlocks = showBlocksElement ? showBlocksElement.checked : false;
+            // debugFlags is refreshed every flush; reading here is safe even if
+            // it lags by at most one frame after a debug-checkbox toggle.
+            const showBlocks = this.debugFlags?.showBlocks || false;
             const hasPlatforms = this.currentPlatforms && this.currentPlatforms.length > 0;
             const hasTrains = this.currentNetwork?.trains?.length > 0;
 
             if (this.currentNetwork && (prevMouseX !== this.mouseX || prevMouseY !== this.mouseY)) {
                 if (showBlocks || this.showBlockColorsOnly || hasPlatforms || hasTrains) {
-                    this.drawNetwork(this.currentNetwork);
+                    this.requestRedraw({ live: true, world: false, reason: 'hover' });
                 }
             }
         });
@@ -135,20 +146,48 @@ class Renderer {
             this.mouseY = -1;
 
             // Redraw when mouse leaves to clear hover state
-            const showBlocksElement = document.getElementById('debug-show-blocks');
-            const showBlocks = showBlocksElement ? showBlocksElement.checked : false;
+            const showBlocks = this.debugFlags?.showBlocks || false;
             const hasPlatforms = this.currentPlatforms && this.currentPlatforms.length > 0;
             const hasTrains = this.currentNetwork?.trains?.length > 0;
 
             if (this.currentNetwork && (prevMouseX !== -1 || prevMouseY !== -1)) {
                 if (showBlocks || this.showBlockColorsOnly || hasPlatforms || hasTrains) {
-                    this.drawNetwork(this.currentNetwork);
+                    this.requestRedraw({ live: true, world: false, reason: 'mouseleave' });
                 }
             }
         });
 
+        // rAF-debounced resize so a stream of ResizeObserver callbacks (e.g.,
+        // during a CSS transition on the sidebar) collapse to one resize pass.
+        this._pendingResizeFrame = null;
+        // rAF-coalesced redraw scheduling. Many synchronous requestRedraw
+        // calls in one tick collapse to one paint. _pendingFlush carries
+        // the OR of all requested layer flags until the next animation frame.
+        this._pendingFlush = null;
+        this._flushFrame = null;
+        this._lastFlushReason = '';
+        // Refreshed once per flush from DOM debug checkboxes; hot paths
+        // read this instead of querying the DOM per draw.
+        this.debugFlags = { showBlocks: false, showSignals: false };
         this.resize();
-        window.addEventListener('resize', () => this.resize());
+        window.addEventListener('resize', () => this._scheduleResize());
+
+        // Watch the canvas's parent for size changes that don't fire a window
+        // resize — e.g., the secondary sidebar opening/closing changes
+        // .canvas-container's clientWidth via flex reflow without dispatching
+        // a window resize event.
+        if (typeof ResizeObserver !== 'undefined' && this.canvas.parentElement) {
+            this._resizeObserver = new ResizeObserver(() => this._scheduleResize());
+            this._resizeObserver.observe(this.canvas.parentElement);
+        }
+    }
+
+    _scheduleResize() {
+        if (this._pendingResizeFrame !== null) return;
+        this._pendingResizeFrame = requestAnimationFrame(() => {
+            this._pendingResizeFrame = null;
+            this.resize();
+        });
     }
 
     resize() {
@@ -162,25 +201,127 @@ class Renderer {
         width = Math.max(width, 100);
         height = Math.max(height, 100);
 
-        // Save old center before resize to preserve viewport
-        const oldCenterX = this.centerX;
-        const oldCenterY = this.centerY;
-
-        this.canvas.width = width;
-        this.canvas.height = height;
-
-        // Center point of the canvas (where grid 0,0 appears)
-        this.centerX = Math.floor(width / 2);
-        this.centerY = Math.floor(height / 2);
-
-        // Adjust pan to preserve the same viewport center after resize
-        // This prevents the canvas from "jumping" when the sidebar opens/closes
-        if (oldCenterX !== 0 || oldCenterY !== 0) {
-            this.panX += (oldCenterX - this.centerX);
-            this.panY += (oldCenterY - this.centerY);
+        // Short-circuit if dimensions haven't actually changed (ResizeObserver
+        // can fire spuriously during layout settle).
+        if (this.canvas.width === width && this.canvas.height === height) {
+            return;
         }
 
-        this.draw();
+        // Resize BOTH canvases so they stay aligned.
+        this.liveCanvas.width = width;
+        this.liveCanvas.height = height;
+        this.worldCanvas.width = width;
+        this.worldCanvas.height = height;
+
+        // Camera updates centerX / centerY from the new canvas dimensions.
+        // It does NOT touch panX / panY — see camera.js resizeToCanvas for
+        // the rationale (preserves the world coord at the visual center).
+        this.camera.resizeToCanvas();
+
+        // Resize is treated as a world+live invalidation; route through the
+        // rAF coalescer so other state changes in the same frame share the
+        // paint pass.
+        this.requestRedraw({ world: true, live: true, reason: 'resize' });
+    }
+
+    /**
+     * Schedule a redraw on the next animation frame. Synchronous callers
+     * in the same frame OR their layer flags together; the actual paint
+     * happens once per rAF tick.
+     *
+     * Options:
+     *   world   — repaint the static world layer (tracks, blocks, stations,
+     *             platforms, signal positions). Phase 5 will make this
+     *             skip-able; in Phase 3 it collapses with `live`.
+     *   live    — repaint the dynamic live layer (trains, signal aspects,
+     *             route overlays, hover). Same Phase-5 caveat.
+     *   reason  — optional dev label for _lastFlushReason; aids profiling.
+     *   network — if provided, update this.currentNetwork before flush.
+     *             Used by App.refreshNetwork for the fresh-network case.
+     */
+    requestRedraw(opts = {}) {
+        const { world = true, live = true, reason = '', network } = opts;
+        if (network !== undefined) {
+            this.currentNetwork = network;
+        }
+        if (this._pendingFlush === null) {
+            this._pendingFlush = { world: false, live: false, reason: '' };
+        }
+        if (world) this._pendingFlush.world = true;
+        if (live) this._pendingFlush.live = true;
+        if (reason) this._pendingFlush.reason = reason;
+
+        if (this._flushFrame !== null) return;
+        this._flushFrame = requestAnimationFrame(() => this._flushRedraw());
+    }
+
+    _flushRedraw() {
+        this._flushFrame = null;
+        const pending = this._pendingFlush;
+        this._pendingFlush = null;
+        if (pending === null) return;
+        this._lastFlushReason = pending.reason || '';
+        // Phase 5: honor world/live flags by routing to _drawWorld / _drawLive.
+        // World layer only repaints when its flag is set, so hover and other
+        // live-only updates skip the static map repaint.
+        if (!this.currentNetwork) {
+            // No network: blank both canvases with just the grid on world.
+            this.ctx = this.worldCtx;
+            this.draw();
+            this._clearLiveCanvas();
+            return;
+        }
+        this._updateNetworkState(this.currentNetwork);
+        // Build the per-frame snapshot once so both layers see the same view
+        // of sim state. Renderers read from this instead of reaching into
+        // window.stateManager directly (Phase 6).
+        this.currentSnapshot = (typeof buildRenderSnapshot === 'function')
+            ? buildRenderSnapshot(this.currentNetwork, window.stateManager)
+            : { trains: {} };
+        // Refresh debug-checkbox state once per flush. Hot paths read
+        // `this.debugFlags.X` instead of querying the DOM on every draw call.
+        this._refreshDebugFlags();
+        if (pending.world) this._drawWorld(this.currentNetwork);
+        if (pending.live) this._drawLive(this.currentNetwork);
+    }
+
+    _refreshDebugFlags() {
+        const showBlocks = document.getElementById('debug-show-blocks');
+        const showSignals = document.getElementById('debug-show-signals');
+        this.debugFlags = {
+            showBlocks: showBlocks ? !!showBlocks.checked : false,
+            showSignals: showSignals ? !!showSignals.checked : false,
+        };
+    }
+
+    /**
+     * Set the derived per-network state (currentBlocks, currentPlatforms,
+     * trackMap) so handlers in both world and live passes see consistent
+     * data. Called once per flush by _flushRedraw before either layer
+     * paints, and by the public drawNetwork(network) entry point.
+     */
+    _updateNetworkState(network) {
+        if (!network || !network.tracks) {
+            this.currentNetwork = null;
+            this.currentBlocks = {};
+            this.currentPlatforms = [];
+            this.trackMap = {};
+            return false;
+        }
+        this.currentNetwork = network;
+        this.currentBlocks = network.blocks || {};
+        this.currentPlatforms = network.platforms || [];
+        this.trackMap = {};
+        network.tracks.forEach(t => {
+            this.trackMap[`${t.x},${t.y}`] = t;
+        });
+        return true;
+    }
+
+    _clearLiveCanvas() {
+        // Live canvas uses clearRect (transparent) so the world canvas
+        // shows through. Background fill belongs only on the world canvas.
+        this.liveCtx.clearRect(0, 0, this.liveCanvas.width, this.liveCanvas.height);
     }
 
     draw() {
@@ -291,123 +432,93 @@ class Renderer {
         this.ctx.restore();
     }
 
-    // Convert grid coordinates to screen X/Y (isometric/diamond projection)
-    // Updated convention: X+ goes down-right, Y+ goes up-right.
-    // Corner-based: tile (x,y) has corners at (x,y), (x+1,y), (x+1,y+1), (x,y+1)
-    // Tile center is at (x+0.5, y+0.5), so we add 1 to (gridX + gridY)
-    gridToScreenX(gridX, gridY = 0) {
-        const tileSize = this.gridSize * this.scale;
-        return this.centerX + this.panX + ((gridX + gridY + 1) * tileSize / 2);
-    }
+    // Projection and viewport math live on Camera (static/js/camera.js).
+    // The thin delegators below let internal Renderer methods and handler
+    // getters (e.g. `renderer-trains.js` get scale, gridToScreenX) keep
+    // their existing call sites while the canonical state moves to Camera.
+    // Any new code should call `this.camera.<method>` directly.
 
-    gridToScreenY(gridX, gridY = 0) {
-        const tileSize = this.gridSize * this.scale;
-        // screenY = (gridX - gridY) * halfTile
-        return this.centerY + this.panY + ((gridX - gridY) * tileSize / 2);
-    }
+    get panX() { return this.camera.panX; }
+    set panX(v) { this.camera.panX = v; }
+    get panY() { return this.camera.panY; }
+    set panY(v) { this.camera.panY = v; }
+    get scale() { return this.camera.scale; }
+    set scale(v) { this.camera.scale = v; }
+    get centerX() { return this.camera.centerX; }
+    get centerY() { return this.camera.centerY; }
+    get gridSize() { return this.camera.gridSize; }
 
-    // Convert screen coordinates to grid X (inverse isometric projection)
-    // Corner-based: tile (gx, gy) owns the diamond from grid point (gx,gy) to (gx+1,gy+1)
-    screenToGridX(screenX, screenY) {
-        const sx = screenX - this.centerX - this.panX;
-        const sy = screenY - this.centerY - this.panY;
-        const tileSize = this.gridSize * this.scale;
-        // Grid point formula: sx = (gx + gy) * tileSize/2, sy = (gx - gy) * tileSize/2
-        // So: gx = (sx + sy) / tileSize, gy = (sx - sy) / tileSize
-        // Floor to get the tile that owns this region
-        return Math.floor((sx + sy) / tileSize);
-    }
+    gridToScreenX(gridX, gridY = 0) { return this.camera.gridToScreenX(gridX, gridY); }
+    gridToScreenY(gridX, gridY = 0) { return this.camera.gridToScreenY(gridX, gridY); }
+    screenToGridX(screenX, screenY) { return this.camera.screenToGridX(screenX, screenY); }
+    screenToGridY(screenX, screenY) { return this.camera.screenToGridY(screenX, screenY); }
+    screenToGrid(screenX, screenY) { return this.camera.screenToGrid(screenX, screenY); }
+    centerOnContent(tracks) { this.camera.centerOnContent(tracks); }
 
-    // Convert screen coordinates to grid Y (inverse isometric projection)
-    // Corner-based: tile (gx, gy) owns the diamond from grid point (gx,gy) to (gx+1,gy+1)
-    screenToGridY(screenX, screenY) {
-        const sx = screenX - this.centerX - this.panX;
-        const sy = screenY - this.centerY - this.panY;
-        const tileSize = this.gridSize * this.scale;
-        return Math.floor((sx - sy) / tileSize);
-    }
-
-    screenToGrid(screenX, screenY) {
-        const x = this.screenToGridX(screenX, screenY);
-        const y = this.screenToGridY(screenX, screenY);
-        return { x, y };
-    }
-
-    centerOnContent(tracks) {
-        if (!tracks || tracks.length === 0) return;
-        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        for (const t of tracks) {
-            if (t.x < minX) minX = t.x;
-            if (t.x > maxX) maxX = t.x;
-            if (t.y < minY) minY = t.y;
-            if (t.y > maxY) maxY = t.y;
-        }
-        // Center of bounding box in continuous grid space (tile extent is +1)
-        const cx = (minX + maxX + 1) / 2;
-        const cy = (minY + maxY + 1) / 2;
-        const tileSize = this.gridSize * this.scale;
-        this.panX = -((cx + cy + 1) * tileSize / 2);
-        this.panY = -((cx - cy) * tileSize / 2);
-    }
-
+    /**
+     * Public entry point for a full repaint (both layers). Used by callers
+     * that need synchronous immediate paint — most code should go through
+     * requestRedraw() so paints coalesce on rAF.
+     */
     drawNetwork(network) {
+        if (!this._updateNetworkState(network)) {
+            this.ctx = this.worldCtx;
+            this.clear();
+            this.drawGrid();
+            this._clearLiveCanvas();
+            return;
+        }
+        this._drawWorld(network);
+        this._drawLive(network);
+    }
+
+    /**
+     * Paint the static world layer: background, grid, tracks, blocks,
+     * platforms, signals, station labels, debug overlays. Repainted only
+     * when the world flag is set (map shape / state changes / viewport).
+     */
+    _drawWorld(network) {
+        this.ctx = this.worldCtx;
         this.clear();
         this.drawGrid();
 
-        if (!network || !network.tracks) {
-            this.currentNetwork = null;
-            return;
-        }
-
-        // Store network for hover redraws
-        this.currentNetwork = network;
-
-        // Store blocks and platforms for rendering
-        this.currentBlocks = network.blocks || {};
-        this.currentPlatforms = network.platforms || [];
-        // Create track lookup map for station rendering
-        this.trackMap = {};
-        network.tracks.forEach(track => {
-            this.trackMap[`${track.x},${track.y}`] = track;
-        });
-
-        // Draw block ID colors BEFORE tracks (so they appear underneath)
-        // Show if: debug checkbox is checked OR showBlockColorsOnly is set (block tool mode)
-        const showBlockDebugElement = document.getElementById('debug-show-blocks');
-        const showBlockDebug = showBlockDebugElement ? showBlockDebugElement.checked : false;
+        // Draw block ID colors BEFORE tracks (so they appear underneath).
+        // Show if: debug checkbox is checked OR showBlockColorsOnly is set.
+        const showBlockDebug = this.debugFlags?.showBlocks || false;
         if (showBlockDebug || this.showBlockColorsOnly) {
             this.blockHandler.drawBlockIdColors(network.tracks);
         }
 
-        // Draw tracks (without signals first)
+        // Tracks (with state-driven coloring).
         network.tracks.forEach(track => {
             this.trackHandler.drawTrack(track, false);
         });
 
-        // Draw grey dots at block boundaries AFTER tracks, so they appear on top
-        // This creates visible gaps between different blocks
+        // Grey dots at block boundaries (gaps between different blocks).
         if (network.blocks) {
             this.blockHandler.drawBlockBoundaryMarkers(network.tracks);
         }
 
-        // Draw platforms (after tracks, so platforms appear on top)
-        this.platformHandler.drawPlatforms();
+        // Note: platforms AND stations live on the LIVE layer, not world.
+        // Both handlers run an inline hover hit-test (`isHovered = mouseX in
+        // bounds`) inside their draw method, so the hover effect needs to
+        // refresh on every mousemove — which is a live-only redraw. Keeping
+        // them on world would freeze the hover state between world flushes
+        // (i.e., until the user drag-pans or the network refreshes).
 
-        // Draw signal-to-block connection lines (before signals, so they appear underneath)
-        const showSignalDebugElement = document.getElementById('debug-show-signals');
-        const showSignalDebug = showSignalDebugElement ? showSignalDebugElement.checked : false;
+        // Signal-to-block connection lines (debug).
+        const showSignalDebug = this.debugFlags?.showSignals || false;
         if (showSignalDebug) {
             this.signalHandler.drawSignalBlockConnections(network.tracks);
         }
 
-        // Draw signals on top of connection lines
+        // Signals on top of connection lines.
         network.tracks.forEach(track => {
             if (track.signals && track.signals.length > 0) {
                 const cx = this.gridToScreenX(track.x, track.y);
                 const cy = this.gridToScreenY(track.x, track.y);
                 const cellSize = this.gridSize * this.scale;
                 const half = cellSize / 2;
-
                 this.ctx.save();
                 this.ctx.translate(cx, cy);
                 for (const signal of track.signals) {
@@ -417,29 +528,50 @@ class Renderer {
             }
         });
 
-        // Draw other debug overlays (after signals, before trains)
+        // Other debug overlays.
         this.debugHandler.drawDebugOverlays(network.tracks);
 
-        // Draw block info labels and signal lines ONLY if debug checkbox is checked (not in block-tool-only mode)
+        // Block info labels (full debug only).
         if (showBlockDebug && !this.showBlockColorsOnly) {
             this.blockHandler.drawBlockDetailLabels(network.tracks);
         }
+    }
 
-        // Draw route overlays (reachable highlights, active routes, conflicts)
+    /**
+     * Paint the dynamic live layer: route overlays, trains, station hover
+     * highlight, box/lasso selection. Cleared with clearRect (transparent)
+     * so the world canvas shows through. Repainted on every flush that has
+     * the live flag set — i.e., hover, train movement, route changes.
+     */
+    _drawLive(network) {
+        this.ctx = this.liveCtx;
+        this._clearLiveCanvas();
+
+        // Platforms first (bodies + labels). Inline hover hit-test inside
+        // drawPlatformLabel needs to re-evaluate on every mousemove, so
+        // this stays on live. Also populates this._platformBodySegments
+        // which the train handler reads.
+        this.platformHandler.drawPlatforms();
+
+        // Station base labels (identity tier). Runs hover hit-test, draws
+        // non-hovered labels. drawHoverOverlay then layers the hovered
+        // label + platform highlights on top.
+        this.stationHandler.drawStations();
+
+        // Route overlays (reachable highlights, active routes, conflict flash).
         this.routeHandler.drawRouteOverlays();
 
-        // Draw trains
+        // Trains.
         if (network.trains) {
             network.trains.forEach(train => {
                 this.trainHandler.drawTrain(train);
             });
         }
 
-        // Station labels go on top of everything so the high-level grouping
-        // marker is always visible.
-        this.stationHandler.drawStations();
+        // Hovered station overlay (full name + platform highlights).
+        this.stationHandler.drawHoverOverlay();
 
-        // Box/lasso-select overlay (highlight + in-progress shape) sits on top
+        // Box/lasso-select overlay.
         this.drawBoxSelection();
         this.drawBoxSelectRect();
         this.drawLassoPath();

@@ -24,14 +24,14 @@ class RendererRouteHandler {
     highlightRoute(route) {
         this.highlightedRouteId = route ? route.route_id : null;
         if (this.currentNetwork) {
-            this.renderer.drawNetwork(this.currentNetwork);
+            this.renderer.requestRedraw({ live: true, world: false, reason: 'route-overlay' });
         }
     }
 
     clearRouteHighlight() {
         this.highlightedRouteId = null;
         if (this.currentNetwork) {
-            this.renderer.drawNetwork(this.currentNetwork);
+            this.renderer.requestRedraw({ live: true, world: false, reason: 'route-overlay' });
         }
     }
 
@@ -52,13 +52,13 @@ class RendererRouteHandler {
         if (Date.now() >= this.conflictFlashEnd) {
             this.conflictFlashTiles = [];
             if (this.currentNetwork) {
-                this.renderer.drawNetwork(this.currentNetwork);
+                this.renderer.requestRedraw({ live: true, world: false, reason: 'route-overlay' });
             }
             return;
         }
 
         if (this.currentNetwork) {
-            this.renderer.drawNetwork(this.currentNetwork);
+            this.renderer.requestRedraw({ live: true, world: false, reason: 'route-overlay' });
         }
 
         requestAnimationFrame(() => this._animateConflictFlash());

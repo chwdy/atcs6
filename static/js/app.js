@@ -15,11 +15,15 @@ class App {
         this.lastLookaheadData = null;  // Store last lookahead for panel rebuilds
         this.lastLookaheadPayload = null;
         this.trainMonitorUnsub = null;
+        // Viewport follow toggle. Off by default — clicking a train no longer
+        // pans the canvas. Users opt in via the Follow Train checkbox.
+        this.followTrainEnabled = false;
 
         this.setupControls();
 
         this.setupDebugPanel();
         this.setupSettingsPanel();
+        this.setupViewControls();
         this.refreshNetwork();
     }
 
@@ -494,7 +498,11 @@ class App {
                 this.renderer.centerOnContent(network.tracks);
                 this.hasInitiallyCentered = true;
             }
-            this.renderer.drawNetwork(network);
+            // Fresh network arrived: hand it to the renderer and let the
+            // rAF coalescer flush the paint. _maybeFollowSelectedTrain (if
+            // enabled) also calls requestRedraw — both collapse to one paint.
+            this.renderer.requestRedraw({ network, reason: 'network-refresh' });
+            this._maybeFollowSelectedTrain();
             // Validate that the current editor still exists (close if deleted)
             this.editor.validateCurrentEditor();
 
@@ -527,25 +535,93 @@ class App {
         if (!this.currentNetwork || !this.currentNetwork.trains) {
             return;
         }
-        
+
         const train = this.currentNetwork.trains.find(t => t.id === trainId);
         if (train) {
             this.selectedTrainId = trainId;
             this.lastLookaheadData = null;
             this.lastLookaheadPayload = null;
-            // Pan to train position using controller span
-            const controller = window.stateManager.getController(trainId);
-            if (controller?.span?.end_a) {
-                const headEnd = controller.span.leading_end === 'a' ? controller.span.end_a : controller.span.end_b;
-                this.renderer.panX = -headEnd.tile[0] * this.renderer.gridSize * this.renderer.scale;
-                this.renderer.panY = headEnd.tile[1] * this.renderer.gridSize * this.renderer.scale;
-                this.renderer.draw();
+            // No auto-pan on selection. The Follow Train toggle opts in to
+            // centring on the selected train at each refresh tick via
+            // _maybeFollowSelectedTrain.
+            if (this.followTrainEnabled) {
+                this._maybeFollowSelectedTrain();
             }
             this.editor.showTrainControlPanel(trainId);
             this.trainMonitor.show(trainId, train.name || trainId);
             this._subscribeTrainMonitor(trainId);
             this.fetchTrainLookahead(trainId, train);
             this.updateTrainDebugPanel(train);
+        }
+    }
+
+    _maybeFollowSelectedTrain() {
+        if (!this.followTrainEnabled) return;
+        if (!this.selectedTrainId) return;
+        const controller = window.stateManager?.getController(this.selectedTrainId);
+        const span = controller?.span;
+        if (!span?.end_a || !span?.end_b) return;
+        const headEnd = span.leading_end === 'a' ? span.end_a : span.end_b;
+        if (!headEnd?.tile) return;
+        const [gx, gy] = headEnd.tile;
+        // Camera.panToWorld handles the isometric math. The previous in-line
+        // formula (panX = -gx * tileSize) was flat-cartesian and landed the
+        // train off-center.
+        this.renderer.camera.panToWorld(gx, gy);
+        this.renderer.requestRedraw({ reason: 'follow-train' });
+    }
+
+    setupViewControls() {
+        // Multiplicative zoom step for + / − buttons. Wheel zoom keeps its
+        // existing additive feel; the buttons want even relative steps.
+        const ZOOM_STEP = 1.25;
+        const canvasCenter = () => {
+            const canvas = document.getElementById('rail-canvas');
+            if (!canvas) return { x: 0, y: 0 };
+            return { x: canvas.width / 2, y: canvas.height / 2 };
+        };
+
+        const zoomInBtn = document.getElementById('btn-zoom-in');
+        if (zoomInBtn) {
+            zoomInBtn.addEventListener('click', () => {
+                const { x, y } = canvasCenter();
+                this.editor._zoomAt(x, y, this.renderer.camera.scale * ZOOM_STEP);
+            });
+        }
+
+        const zoomOutBtn = document.getElementById('btn-zoom-out');
+        if (zoomOutBtn) {
+            zoomOutBtn.addEventListener('click', () => {
+                const { x, y } = canvasCenter();
+                this.editor._zoomAt(x, y, this.renderer.camera.scale / ZOOM_STEP);
+            });
+        }
+
+        const zoomResetBtn = document.getElementById('btn-zoom-reset');
+        if (zoomResetBtn) {
+            zoomResetBtn.addEventListener('click', () => {
+                this.editor._resetZoom();
+            });
+        }
+
+        const fitBtn = document.getElementById('btn-fit-view');
+        if (fitBtn) {
+            fitBtn.addEventListener('click', () => {
+                if (!this.currentNetwork?.tracks?.length) return;
+                this.renderer.centerOnContent(this.currentNetwork.tracks);
+                this.renderer.requestRedraw({ reason: 'fit-view' });
+            });
+        }
+
+        const followToggle = document.getElementById('toggle-follow-train');
+        if (followToggle) {
+            followToggle.checked = this.followTrainEnabled;
+            followToggle.addEventListener('change', (e) => {
+                this.followTrainEnabled = !!e.target.checked;
+                if (this.followTrainEnabled) {
+                    this._maybeFollowSelectedTrain();
+                }
+            });
         }
     }
     
@@ -853,9 +929,7 @@ class App {
             if (checkbox) {
                 checkbox.addEventListener('change', () => {
                     // Re-render network with debug overlays
-                    if (this.currentNetwork) {
-                        this.renderer.drawNetwork(this.currentNetwork);
-                    }
+                    this.renderer.requestRedraw({ reason: 'debug-toggle' });
                 });
             }
         });

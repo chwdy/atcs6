@@ -52,19 +52,29 @@ class RendererTrackHandler {
         if (isSwitch) {
             this.drawTrackWithSwitches(trackBits, half, trackColor, switchState, isDiagonalOnly, switchPoints);
 
-            // Draw orange circle if switch is locked by a path
-            if (track.locked_by_path) {
-                this.ctx.strokeStyle = '#ff8c00'; // Orange
+            // Two distinct lock states per design/120-switch.md:32 — path-owned
+            // future authority (Switch.locks) vs train-owned physical hold
+            // (Switch.occupied_by / train_protection_claims) after head-entry
+            // consumes the primary lock. Train-owned wins when both present.
+            const switchEntity = (track.switch_id && this.currentNetwork && this.currentNetwork.switches)
+                ? this.currentNetwork.switches[track.switch_id]
+                : null;
+            const trainOwned = !!(switchEntity && (
+                switchEntity.occupied_by ||
+                (Array.isArray(switchEntity.train_protection_claims) && switchEntity.train_protection_claims.length > 0)
+            ));
+
+            if (trainOwned) {
+                this.ctx.strokeStyle = '#8B4513'; // Brown — train-owned hold
                 this.ctx.lineWidth = 2 * this.scale;
                 this.ctx.beginPath();
                 this.ctx.arc(0, 0, 6 * this.scale, 0, Math.PI * 2);
                 this.ctx.stroke();
-            } else if (track.locked_by_route) {
-                // Legacy: brown circle for route lock
-                this.ctx.strokeStyle = '#8B4513';
+            } else if (track.locked_by_path) {
+                this.ctx.strokeStyle = '#ff8c00'; // Orange — path-owned future lock
                 this.ctx.lineWidth = 2 * this.scale;
                 this.ctx.beginPath();
-                this.ctx.arc(0, 0, 7 * this.scale, 0, Math.PI * 2);
+                this.ctx.arc(0, 0, 6 * this.scale, 0, Math.PI * 2);
                 this.ctx.stroke();
             }
         } else {

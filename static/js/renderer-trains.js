@@ -16,12 +16,29 @@ class RendererTrainHandler {
     // ========================================================================
 
     drawTrain(train) {
-        const controller = window.stateManager?.getController(train.id);
-        if (!controller?.span?.occupied_tiles?.length) {
+        // Read from the per-frame snapshot built by Renderer._flushRedraw
+        // (static/js/render-snapshot.js). Falls back to stateManager only
+        // when no snapshot is available — e.g., the public drawNetwork()
+        // entry called outside the rAF flush path.
+        const trainSnap = this.renderer.currentSnapshot?.trains?.[train.id];
+        if (trainSnap) {
+            this.drawTrainFromSnapshot(train, trainSnap);
             return;
         }
-
-        this.drawTrainFromSpan(train, controller);
+        const controller = window.stateManager?.getController(train.id);
+        if (!controller?.span?.occupied_tiles?.length) return;
+        // Adapt the controller into a snapshot-shaped object so the
+        // downstream renderer code only has one shape to consume.
+        this.drawTrainFromSnapshot(train, {
+            id: train.id,
+            cab: controller.cab ?? null,
+            span: {
+                occupiedTiles: controller.span.occupied_tiles,
+                leadingEnd: controller.span.leading_end,
+                endA: controller.span.end_a,
+                endB: controller.span.end_b,
+            },
+        });
     }
 
     /**
@@ -180,30 +197,30 @@ class RendererTrainHandler {
     // ========================================================================
 
     /**
-     * Draw a train using its TrainController span.
+     * Draw a train from a snapshot entry (see render-snapshot.js).
      *
-     * Per design_new.md "Data Flow To UI", live position lives on
-     * `controller.span` (occupied_tiles ordered end_a → end_b plus end_a/end_b
-     * geometry). Per-tile length is not in the network payload for v1; we
-     * use a 50cm-per-tile constant for body interpolation (visually
-     * approximate but acceptable for v1).
+     * The snapshot's span shape mirrors the controller's: occupied_tiles
+     * ordered end_a → end_b, plus end_a / end_b geometry, plus
+     * leading_end ∈ {'a','b'}. Per-tile length is not in the network
+     * payload for v1; we use a 50cm-per-tile constant for body
+     * interpolation (visually approximate but acceptable for v1).
      */
-    drawTrainFromSpan(train, controller) {
-        const span = controller.span;
-        const occupiedTiles = span.occupied_tiles || [];
+    drawTrainFromSnapshot(train, trainSnap) {
+        const span = trainSnap.span;
+        const occupiedTiles = span.occupiedTiles || [];
         if (occupiedTiles.length === 0) return;
 
-        // controller.cab is null when the train has no cab selected; we
-        // still draw both endpoints, but as squares rather than head triangle.
-        const hasLeadingEnd = controller.cab === 'A' || controller.cab === 'B';
+        // cab is null when the train has no cab selected; we still draw
+        // both endpoints, but as squares rather than head triangle.
+        const hasLeadingEnd = trainSnap.cab === 'A' || trainSnap.cab === 'B';
 
-        // Resolve which end is head vs tail. occupied_tiles is ordered
-        // end_a → end_b (see network.py). leading_end ('a' or 'b') tells us
+        // Resolve which end is head vs tail. occupiedTiles is ordered
+        // end_a → end_b (see network.py). leadingEnd ('a' or 'b') tells us
         // which endpoint is the head.
-        const leadingEnd = span.leading_end;
+        const leadingEnd = span.leadingEnd;
         const headFromA = leadingEnd === 'a';
-        const headEndpoint = headFromA ? span.end_a : span.end_b;
-        const tailEndpoint = headFromA ? span.end_b : span.end_a;
+        const headEndpoint = headFromA ? span.endA : span.endB;
+        const tailEndpoint = headFromA ? span.endB : span.endA;
         const headTile = headEndpoint.tile;
         const tailTile = tailEndpoint.tile;
         const headDistanceCm = headEndpoint.distance_cm;
@@ -565,7 +582,7 @@ class RendererTrainHandler {
         const textDependentOffset = Math.SQRT2 * boxWidth;
 
         const { labelX, labelY } = this._pickLabelPosition(
-            cx, cy, direction, boxWidth, boxHeight,
+            train, cx, cy, direction, boxWidth, boxHeight,
             tileSize, spacingMultiplier, textDependentOffset, tracks,
         );
         
@@ -579,15 +596,18 @@ class RendererTrainHandler {
         this.ctx.stroke();
         this.ctx.restore();
         
-        // Draw label box
+        // Draw label box — trains are live identity, so they sit one tier
+        // above the station label vocabulary: same dark base, but a dim
+        // purple fill (~18%) + purple border carry the categorical color
+        // without saturating into an alert pill. The motion of the train
+        // chassis below is what should read as "live," not the label.
         this.ctx.save();
         this.ctx.font = `bold ${9 * s}px sans-serif`;
-        
-        this.ctx.fillStyle = 'rgba(130, 87, 229, 0.9)';
+
         const cornerRadius = 3 * s;
         const boxX = labelX - boxWidth / 2;
         const boxY = labelY - boxHeight / 2;
-        
+
         this.ctx.beginPath();
         this.ctx.moveTo(boxX + cornerRadius, boxY);
         this.ctx.lineTo(boxX + boxWidth - cornerRadius, boxY);
@@ -599,8 +619,19 @@ class RendererTrainHandler {
         this.ctx.lineTo(boxX, boxY + cornerRadius);
         this.ctx.quadraticCurveTo(boxX, boxY, boxX + cornerRadius, boxY);
         this.ctx.closePath();
+
+        // Opaque dark base mixed with ~15% purple — the categorical cast is
+        // perceptible without saturating into an alert pill, and the label
+        // stays legible when it overlaps a station/platform behind it.
+        this.ctx.fillStyle = 'rgba(32, 26, 50, 0.92)';
         this.ctx.fill();
-        
+
+        this.ctx.strokeStyle = 'rgba(130, 87, 229, 0.9)';
+        // Cap stroke at ~2px screen width — same screen-pixel cap as platform
+        // highlights so canvas-label borders stay hairline at any zoom.
+        this.ctx.lineWidth = Math.min(Math.max(1.0, s * 0.35), 2.0);
+        this.ctx.stroke();
+
         this.ctx.fillStyle = '#ffffff';
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
@@ -608,7 +639,7 @@ class RendererTrainHandler {
         this.ctx.restore();
     }
 
-    _pickLabelPosition(cx, cy, direction, boxW, boxH, tileSize, spacing, textOffset, tracks) {
+    _pickLabelPosition(train, cx, cy, direction, boxW, boxH, tileSize, spacing, textOffset, tracks) {
         const dir = direction || 'EAST';
         const preferred = (typeof DIRECTION_PREFERRED_QUADRANTS !== 'undefined'
             && DIRECTION_PREFERRED_QUADRANTS[dir])
@@ -646,20 +677,28 @@ class RendererTrainHandler {
             }
         }
 
-        // Dodge the cursor: if the mouse is over the chosen label box, mirror
-        // the position across the train center so the label moves to the
-        // opposite side and gets out of the way.
+        // Dodge the cursor with hysteresis: only re-evaluate when the mouse
+        // actually moves. Otherwise zoom/pan would slide the natural label
+        // position under a stationary cursor and flip-flop the dodge state.
+        if (!this._labelDodge) this._labelDodge = new Map();
         const mx = this.renderer.mouseX;
         const my = this.renderer.mouseY;
-        if (mx >= 0 && my >= 0) {
-            const halfW = boxW / 2;
-            const halfH = boxH / 2;
-            if (mx >= bestLX - halfW && mx <= bestLX + halfW
-                && my >= bestLY - halfH && my <= bestLY + halfH) {
-                return { labelX: 2 * cx - bestLX, labelY: 2 * cy - bestLY };
+        const prev = this._labelDodge.get(train.id);
+        let dodged = prev?.dodged || false;
+        if (!prev || prev.mx !== mx || prev.my !== my) {
+            if (mx < 0 || my < 0) {
+                dodged = false;
+            } else {
+                const halfW = boxW / 2;
+                const halfH = boxH / 2;
+                dodged = mx >= bestLX - halfW && mx <= bestLX + halfW
+                      && my >= bestLY - halfH && my <= bestLY + halfH;
             }
         }
+        this._labelDodge.set(train.id, { dodged, mx, my });
 
-        return { labelX: bestLX, labelY: bestLY };
+        return dodged
+            ? { labelX: 2 * cx - bestLX, labelY: 2 * cy - bestLY }
+            : { labelX: bestLX, labelY: bestLY };
     }
 }

@@ -22,6 +22,10 @@ class RendererStationHandler {
     gridToScreenX(x, y) { return this.renderer.gridToScreenX(x, y); }
     gridToScreenY(x, y) { return this.renderer.gridToScreenY(x, y); }
 
+    // Identity tier: place labels, run hover hit-test, draw the non-hovered
+    // labels. Called early in the render loop so anything live (trains, route
+    // overlays) renders on top — a static station label must not occlude a
+    // moving train. The hovered label is deferred to drawHoverOverlay().
     drawStations() {
         const stations = this.renderer.currentNetwork?.stations;
         if (!stations || !stations.length) {
@@ -30,10 +34,8 @@ class RendererStationHandler {
             return;
         }
 
-        // Step 1: place every station's label.
         this._placements = stations.map(s => this._placeLabel(s)).filter(Boolean);
 
-        // Step 2: hover hit-test against the placed (collapsed) rects.
         this.hoveredStationId = null;
         for (const p of this._placements) {
             if (this._mouseInRect(p.labelX, p.labelY, p.boxW, p.boxH)) {
@@ -42,18 +44,21 @@ class RendererStationHandler {
             }
         }
 
-        // Step 3: if a station is hovered, draw highlights for its platforms
-        // (drawn BEFORE labels so the label sits on top).
-        if (this.hoveredStationId) {
-            const hovered = this._placements.find(p => p.stationId === this.hoveredStationId);
-            if (hovered) this._drawPlatformHighlights(hovered.platformIds);
-        }
-
-        // Step 4: draw every label.
         for (const p of this._placements) {
-            const isHovered = p.stationId === this.hoveredStationId;
-            this._drawLabel(p, isHovered);
+            if (p.stationId === this.hoveredStationId) continue;
+            this._drawLabel(p, false);
         }
+    }
+
+    // Hover tier: the hovered label + its platform highlights, drawn at the
+    // top of the canvas stack so user attention always wins over liveness.
+    // Called at the end of the render loop.
+    drawHoverOverlay() {
+        if (!this.hoveredStationId) return;
+        const hovered = this._placements.find(p => p.stationId === this.hoveredStationId);
+        if (!hovered) return;
+        this._drawPlatformHighlights(hovered.platformIds);
+        this._drawLabel(hovered, true);
     }
 
     abbreviate(name) {
@@ -97,7 +102,7 @@ class RendererStationHandler {
         // Measure the collapsed label so placement is stable across hover.
         this.ctx.save();
         const s = this.scale;
-        const fontSize = 8 * s;
+        const fontSize = 9 * s;
         this.ctx.font = `bold ${fontSize}px sans-serif`;
         const textWidth = this.ctx.measureText(abbrev).width;
         const padding = 4 * s;
@@ -161,7 +166,10 @@ class RendererStationHandler {
         const s = this.scale;
         const { labelX, labelY, abbrev, fullName } = placement;
         const displayText = isHovered ? fullName : abbrev;
-        const fontSize = isHovered ? 10 * s : 8 * s;
+        // Stations sit one tier above platform labels (platforms are 7px / 9px
+        // hover). Size carries the hierarchy; chrome stays neutral so identity
+        // doesn't compete with state.
+        const fontSize = isHovered ? 11 * s : 9 * s;
         const padding = 4 * s;
 
         this.ctx.save();
@@ -173,19 +181,31 @@ class RendererStationHandler {
         const by = labelY - boxH / 2;
         const radius = 4 * s;
 
-        // Body: amber-tinted to distinguish from platform labels.
-        this.ctx.fillStyle = isHovered ? 'rgba(255, 184, 28, 0.95)' : 'rgba(255, 184, 28, 0.85)';
+        // Fills are opaque (≥85%) so an overlapping label doesn't show
+        // through and read as visual mush. Categorical color lives in the
+        // border + a small mix into the dark base, not in a saturated fill.
+        // Default: near-opaque neutral dark. Hover: dark base mixed with
+        // ~15% amber so the warning hue is perceptible without becoming an
+        // alert pill.
+        const fillColor = isHovered ? 'rgba(50, 35, 5, 0.92)' : 'rgba(15, 15, 18, 0.92)';
+        const borderColor = isHovered ? 'rgba(255, 205, 30, 0.9)' : 'rgba(255, 255, 255, 0.45)';
+        // Borders are screen-pixel capped so they read as hairlines at any
+        // zoom — see the same pattern in _drawPlatformHighlights and the
+        // train label.
+        const borderWidth = isHovered
+            ? Math.min(Math.max(1.2, s * 0.4), 2.5)
+            : Math.min(Math.max(0.8, s * 0.25), 1.5);
+
+        this.ctx.fillStyle = fillColor;
         this._roundRect(bx, by, boxW, boxH, radius);
         this.ctx.fill();
 
-        // Border
-        this.ctx.strokeStyle = isHovered ? 'rgba(255, 255, 255, 0.9)' : 'rgba(0, 0, 0, 0.4)';
-        this.ctx.lineWidth = isHovered ? 1.5 * s : 1 * s;
+        this.ctx.strokeStyle = borderColor;
+        this.ctx.lineWidth = borderWidth;
         this._roundRect(bx, by, boxW, boxH, radius);
         this.ctx.stroke();
 
-        // Text
-        this.ctx.fillStyle = '#1a1a1a';
+        this.ctx.fillStyle = '#ffffff';
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
         this.ctx.fillText(displayText, labelX, labelY);
@@ -197,16 +217,33 @@ class RendererStationHandler {
         const ph = this.renderer.platformHandler;
         if (!ph?._platformBodySegments) return;
         const s = this.scale;
+        // Highlights are context for the hovered label, not the focus. Cap the
+        // stroke at ~2.5px screen width so it doesn't grow into a wall of amber
+        // at high zoom, and match the label's border color exactly so the eye
+        // reads them as one connected gesture.
+        const strokeW = Math.min(Math.max(1.5, s * 0.5), 2.5);
+
         this.ctx.save();
-        this.ctx.strokeStyle = 'rgba(255, 184, 28, 0.95)';
-        this.ctx.lineWidth = 2.5 * s;
+        this.ctx.strokeStyle = 'rgba(255, 205, 30, 0.7)';
+        this.ctx.lineWidth = strokeW;
         this.ctx.lineJoin = 'round';
+        this.ctx.lineCap = 'round';
+
         for (const body of ph._platformBodySegments) {
             if (!platformIds.includes(body.id)) continue;
-            for (const seg of body.segments) {
+            // The body's segments come in groups of 4 per platform side
+            // (parallelogram perimeter: innerS->outerS->outerE->innerE->innerS).
+            // Draw each group as one closed path so corners join cleanly.
+            for (let i = 0; i + 3 < body.segments.length; i += 4) {
+                const seg0 = body.segments[i];
+                const seg1 = body.segments[i + 1];
+                const seg2 = body.segments[i + 2];
                 this.ctx.beginPath();
-                this.ctx.moveTo(seg.x1, seg.y1);
-                this.ctx.lineTo(seg.x2, seg.y2);
+                this.ctx.moveTo(seg0.x1, seg0.y1);
+                this.ctx.lineTo(seg0.x2, seg0.y2);
+                this.ctx.lineTo(seg1.x2, seg1.y2);
+                this.ctx.lineTo(seg2.x2, seg2.y2);
+                this.ctx.closePath();
                 this.ctx.stroke();
             }
         }

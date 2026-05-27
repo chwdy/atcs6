@@ -12,9 +12,8 @@ This folder is intentionally small. The project's design discipline is to keep o
 | REST endpoint reference | `docs/API.md` |
 | API design patterns (naming, response shape) | `docs/API_CONVENTIONS.md` |
 | Save/load file format | `docs/PERSISTENCE_DESIGN.md` |
-| Code style and patterns | `docs/STYLE_GUIDE.md` |
-| Train state machine cheat sheet | `docs/TRAIN_STATE_MACHINE.md` |
-| Detailed v1 reference specs (track encoding, signals, train system, etc.) | `docs/reference/` |
+| Frontend design language (panel chrome, tokens, components) | `docs/DESIGN_LANGUAGE.md` |
+| Detailed v1 reference specs (track encoding, signals, etc.) | `docs/reference/` |
 | Open bugs (one file per bug) | `docs/bugs/` |
 | Forward plans for unbuilt work (dated filenames) | `docs/plans/` |
 
