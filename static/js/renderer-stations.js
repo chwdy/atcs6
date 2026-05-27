@@ -47,6 +47,17 @@ class RendererStationHandler {
         for (const p of this._placements) {
             if (p.stationId === this.hoveredStationId) continue;
             this._drawLabel(p, false);
+            // Register the station rect into the shared label registry so
+            // train labels can avoid overlap. The hovered station is excluded
+            // because its expanded overlay paints AFTER trains (drawHoverOverlay)
+            // — its bounds shouldn't constrain train placement.
+            this.renderer.labelBounds.push({
+                x: p.labelX - p.boxW / 2,
+                y: p.labelY - p.boxH / 2,
+                w: p.boxW,
+                h: p.boxH,
+                tier: 'station',
+            });
         }
     }
 

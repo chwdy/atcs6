@@ -655,6 +655,11 @@ class RendererTrainHandler {
         const platformSegs = this.renderer.platformHandler?.getPlatformBodySegments?.() || [];
         const obstacles = segments.concat(platformSegs);
 
+        // Labels already placed earlier this frame (platforms and stations,
+        // plus any earlier trains in the iteration). Used below to penalise
+        // candidates that would cover an existing label.
+        const labelBounds = this.renderer.labelBounds || [];
+
         let bestLX = cx, bestLY = cy, bestScore = -Infinity;
         for (let i = 0; i < preferred.length; i++) {
             const { ox, oy } = quadOffsets[preferred[i]] || quadOffsets['SE'];
@@ -668,7 +673,21 @@ class RendererTrainHandler {
             // direction preference wins as a tiebreaker.
             const distScore = Math.min(dist, 30);
             const preferenceBonus = (preferred.length - i) * 2;
-            const score = distScore + preferenceBonus;
+
+            // Label-overlap penalty: sum of intersection areas with every
+            // previously-placed label, normalised to "fraction of the train
+            // label's own area" so the penalty is unit-agnostic. Weight 60
+            // is enough that a single full overlap (-60) dominates the max
+            // distScore (30) + preferenceBonus (8) combined.
+            let labelOverlap = 0;
+            for (const lb of labelBounds) {
+                labelOverlap += this.renderer.aabbOverlapArea(
+                    bx, by, boxW, boxH, lb.x, lb.y, lb.w, lb.h,
+                );
+            }
+            const overlapPenalty = (labelOverlap / (boxW * boxH)) * 60;
+
+            const score = distScore + preferenceBonus - overlapPenalty;
 
             if (score > bestScore) {
                 bestScore = score;
@@ -676,6 +695,19 @@ class RendererTrainHandler {
                 bestLY = ly;
             }
         }
+
+        // Register this train's chosen rect so the next train placed this
+        // frame avoids it too. The cursor-dodge step below may reflect
+        // bestLX/bestLY across the train center; we register the picker's
+        // chosen position (pre-dodge) because the dodge is a transient,
+        // cursor-driven shift, not the label's "natural" home.
+        this.renderer.labelBounds.push({
+            x: bestLX - boxW / 2,
+            y: bestLY - boxH / 2,
+            w: boxW,
+            h: boxH,
+            tier: 'train',
+        });
 
         // Dodge the cursor with hysteresis: only re-evaluate when the mouse
         // actually moves. Otherwise zoom/pan would slide the natural label

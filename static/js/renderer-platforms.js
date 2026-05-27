@@ -238,6 +238,18 @@ class RendererPlatformHandler {
             name: fullName,
             abbrev,
         });
+
+        // Register the collapsed (non-hover) rect into the shared label
+        // registry so train labels can avoid overlapping. Use collapsed
+        // dimensions for stability — hover expansion is transient and
+        // shouldn't shift train placement.
+        this.renderer.labelBounds.push({
+            x: labelX - collapsedW / 2,
+            y: labelY - collapsedH / 2,
+            w: collapsedW,
+            h: collapsedH,
+            tier: 'platform',
+        });
     }
 
     _pickPlatformLabelPosition(cx, cy, perpX, perpY, dirX, dirY, length, defaultSm, off, boxW, boxH, selfId) {

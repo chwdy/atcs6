@@ -1117,7 +1117,7 @@ bodies), the members get a "highlight stroke" outlining their shape. Rules:
 Reference: `_drawPlatformHighlights` in
 [renderer-stations.js](../static/js/renderer-stations.js).
 
-### Overlap
+### Overlap and collision avoidance
 
 Two labels at the same screen position is acceptable when the higher-tier
 label wins via z-order + opaque fill: the lower-tier label is partially
@@ -1125,10 +1125,59 @@ hidden but the foreground label stays fully legible. The opacity rule above
 (no bleed-through) is what makes this work — without opaque fills, two
 overlapping labels mix into illegible mush instead of one winning cleanly.
 
-Physical collision avoidance — repositioning lower-tier labels around
-higher-tier ones — is out of scope for the current system. If overlap
-proves genuinely confusing in a real layout, raise it as a doc question;
-don't freelance a one-off nudge.
+That fallback alone isn't enough though. A train label parked permanently
+on top of a station label still hides the station — even when fully
+legible, the user can't read what they can't see. So labels with positional
+freedom actively reposition to avoid overlap, on top of the z-order rule.
+
+**The mechanism: shared per-frame label-rect registry.**
+`renderer.labelBounds` is reset at the top of `_drawLive` each frame and
+populated in draw order. Each handler pushes its label's axis-aligned rect
+into the registry right after placement:
+
+| Pushed by | Reads registry? | Tier label |
+|-----------|-----------------|------------|
+| Platform labels (first) | no | `'platform'` |
+| Station labels (second, non-hovered only) | no | `'station'` |
+| Train labels (third) | **yes** | `'train'` |
+
+Only the train label currently has positional freedom (4 quadrant
+candidates around the train head, picked by `_pickLabelPosition`), so only
+the train label reads the registry. The picker's existing score adds a
+fourth factor — overlap area with each entry in `labelBounds`, normalised
+to the train label's own area and weighted so a single full overlap (-60)
+outranks the saturated track distance (+30) and direction preference
+(+8 max) combined.
+
+Iteration order matters: trains push their chosen rect into the registry
+*after* picking, so the next train placed this frame sees and avoids it
+too. `network.trains.forEach` is deterministic, so behaviour is stable
+across frames.
+
+**What this rule does NOT cover:**
+
+- **All-quadrants-blocked.** The picker picks the least-bad candidate.
+  Partial overlap remains acceptable; if a layout regularly produces full
+  overlap on every candidate, the next iteration is to expand the
+  candidate set (8 quadrants or candidates further along the leader
+  line). Don't add another candidate set without an actual collision a
+  layout can produce.
+- **Hovered station overlay.** Drawn at the very top of the stack after
+  trains and isn't pushed into the registry — its expanded rect would
+  shift train placement on every cursor move, which is the wrong
+  trade. The hover state is meant to win z-order; that's the documented
+  exception.
+- **Station / platform label collision with each other.** Neither has
+  positional freedom (stations sit at platform centroid, platforms hug
+  their side), and their default positions rarely collide in current
+  layouts. If they did, the answer would be to give one of them
+  candidates, not to invent a fourth tier.
+
+References: `_drawLive` reset in [renderer.js](../static/js/renderer.js);
+`aabbOverlapArea` utility in the same file;
+`_pickLabelPosition` in [renderer-trains.js](../static/js/renderer-trains.js);
+the push calls in [renderer-platforms.js](../static/js/renderer-platforms.js)
+and [renderer-stations.js](../static/js/renderer-stations.js).
 
 ### Don'ts
 

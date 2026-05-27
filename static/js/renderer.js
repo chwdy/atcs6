@@ -83,6 +83,11 @@ class Renderer {
         this.mouseX = -1;
         this.mouseY = -1;
         this.platformBounds = []; // Array of {bounds, name, abbrev} for hover detection
+        // Per-frame registry of label rects on the live canvas, used by the
+        // train label picker to avoid overlapping already-placed station /
+        // platform labels. See §16 "Overlap" in docs/DESIGN_LANGUAGE.md.
+        // Items: { x, y, w, h, tier }. Reset at the top of _drawLive.
+        this.labelBounds = [];
 
         // Block display mode:
         // - false: only show when debug checkbox is checked (full debug info)
@@ -547,6 +552,11 @@ class Renderer {
         this.ctx = this.liveCtx;
         this._clearLiveCanvas();
 
+        // Rebuild the label-rect registry every live repaint. Platforms push
+        // first, then stations, then trains read the accumulated bounds and
+        // push their own — order matches the draw sequence below.
+        this.labelBounds = [];
+
         // Platforms first (bodies + labels). Inline hover hit-test inside
         // drawPlatformLabel needs to re-evaluate on every mousemove, so
         // this stays on live. Also populates this._platformBodySegments
@@ -741,5 +751,14 @@ class Renderer {
             }
         }
         return minDist;
+    }
+
+    // Axis-aligned bounding-box intersection area in pixels^2. Used by the
+    // train label picker to penalise candidates that overlap previously
+    // placed labels (see renderer-trains.js _pickLabelPosition).
+    aabbOverlapArea(ax, ay, aw, ah, bx, by, bw, bh) {
+        const xo = Math.max(0, Math.min(ax + aw, bx + bw) - Math.max(ax, bx));
+        const yo = Math.max(0, Math.min(ay + ah, by + bh) - Math.max(ay, by));
+        return xo * yo;
     }
 }
