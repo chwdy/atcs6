@@ -543,13 +543,13 @@ class RendererTrainHandler {
 
     /**
      * Draw train label (purple box with train ID).
-     * Label is placed perpendicular to the train's heading direction.
+     * Picks one of 4 quadrants around the train, biased by heading direction
+     * and scored against nearby track segments so the label dodges tracks.
      */
     drawTrainLabel(train, cx, cy, trackBits, direction, tileX, tileY, tracks) {
         const s = this.scale;
         const tileSize = this.gridSize * s;
-        
-        // Measure text first to calculate text-dependent offset
+
         const labelText = train.id;
         this.ctx.save();
         this.ctx.font = `bold ${9 * s}px sans-serif`;
@@ -560,29 +560,14 @@ class RendererTrainHandler {
         const boxWidth = textWidth + padding * 2;
         const boxHeight = textHeight + padding * 1.5;
         this.ctx.restore();
-        
-        // Calculate offset perpendicular to train heading
-        // If train is facing E/W, offset N/S; if facing N/S, offset E/W
-        const dir = direction || 'EAST';
-        let offsetX, offsetY;
-        
-        if (dir === 'EAST' || dir === 'WEST') {
-            // Train facing horizontally, offset vertically (to the south in isometric view)
-            offsetX = -0.5;  // South direction in isometric
-            offsetY = 0.5;
-        } else {
-            // Train facing vertically (N/S), offset horizontally (to the east in isometric view)
-            offsetX = 0.5;   // East direction in isometric
-            offsetY = 0.5;
-        }
 
         const spacingMultiplier = getLabelSpacingMultiplier();
-        
-        // Add text-dependent offset (sqrt(2) * textWidth for isometric space)
         const textDependentOffset = Math.SQRT2 * boxWidth;
-        
-        const labelX = cx + offsetX * tileSize * spacingMultiplier + offsetX * textDependentOffset;
-        const labelY = cy + offsetY * tileSize * spacingMultiplier + offsetY * textDependentOffset;
+
+        const { labelX, labelY } = this._pickLabelPosition(
+            cx, cy, direction, boxWidth, boxHeight,
+            tileSize, spacingMultiplier, textDependentOffset, tracks,
+        );
         
         // Draw leader line
         this.ctx.save();
@@ -621,5 +606,60 @@ class RendererTrainHandler {
         this.ctx.textBaseline = 'middle';
         this.ctx.fillText(labelText, labelX, labelY);
         this.ctx.restore();
+    }
+
+    _pickLabelPosition(cx, cy, direction, boxW, boxH, tileSize, spacing, textOffset, tracks) {
+        const dir = direction || 'EAST';
+        const preferred = (typeof DIRECTION_PREFERRED_QUADRANTS !== 'undefined'
+            && DIRECTION_PREFERRED_QUADRANTS[dir])
+            || ['SE', 'SW', 'NE', 'NW'];
+        const quadOffsets = {
+            'NW': { ox: -0.5, oy: -0.5 },
+            'NE': { ox:  0.5, oy: -0.5 },
+            'SW': { ox: -0.5, oy:  0.5 },
+            'SE': { ox:  0.5, oy:  0.5 },
+        };
+
+        const segments = this.renderer.getNearbyTrackSegments(cx, cy, tileSize * 3);
+        const platformSegs = this.renderer.platformHandler?.getPlatformBodySegments?.() || [];
+        const obstacles = segments.concat(platformSegs);
+
+        let bestLX = cx, bestLY = cy, bestScore = -Infinity;
+        for (let i = 0; i < preferred.length; i++) {
+            const { ox, oy } = quadOffsets[preferred[i]] || quadOffsets['SE'];
+            const lx = cx + ox * tileSize * spacing + ox * textOffset;
+            const ly = cy + oy * tileSize * spacing + oy * textOffset;
+            const bx = lx - boxW / 2;
+            const by = ly - boxH / 2;
+
+            const dist = this.renderer.distRectToSegments(bx, by, boxW, boxH, obstacles);
+            // Saturate so far-from-tracks options become equivalent and the
+            // direction preference wins as a tiebreaker.
+            const distScore = Math.min(dist, 30);
+            const preferenceBonus = (preferred.length - i) * 2;
+            const score = distScore + preferenceBonus;
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestLX = lx;
+                bestLY = ly;
+            }
+        }
+
+        // Dodge the cursor: if the mouse is over the chosen label box, mirror
+        // the position across the train center so the label moves to the
+        // opposite side and gets out of the way.
+        const mx = this.renderer.mouseX;
+        const my = this.renderer.mouseY;
+        if (mx >= 0 && my >= 0) {
+            const halfW = boxW / 2;
+            const halfH = boxH / 2;
+            if (mx >= bestLX - halfW && mx <= bestLX + halfW
+                && my >= bestLY - halfH && my <= bestLY + halfH) {
+                return { labelX: 2 * cx - bestLX, labelY: 2 * cy - bestLY };
+            }
+        }
+
+        return { labelX: bestLX, labelY: bestLY };
     }
 }

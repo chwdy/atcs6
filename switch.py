@@ -15,7 +15,7 @@ Design Notes:
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
+from typing import Dict, FrozenSet, List, Any, Optional, Tuple, TYPE_CHECKING
 
 from enums import SwitchState
 from runtime_payloads import SwitchLockClaim
@@ -23,6 +23,60 @@ from track_resource import TrackResource
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
+
+
+# ============================================================================
+# Route-keyed switch occupancy
+# ============================================================================
+#
+# A "route" through a switch tile is the unordered pair of edges the train
+# uses (entry edge + exit edge), e.g. `frozenset({"N", "W"})` for an NW arc.
+# Two routes physically conflict on the same tile iff they share any point
+# in the tile interior or any edge midpoint. Per the geometry encoded in
+# `track.BIT_TO_EDGES`:
+#   - NS and EW pass through tile center (vertical/horizontal straights)
+#   - NE, NW, SE, SW are 90° arcs in one quadrant each
+# Conflict matrix derivation:
+#   - Two routes sharing any edge (frozenset intersection non-empty) →
+#     they meet at that edge's midpoint → conflict.
+#   - NS (frozenset{N,S}) and EW (frozenset{E,W}) share no edge but both
+#     pass through tile center → conflict.
+#   - The only pairs that share no edge AND don't both pass through center
+#     are NW+SE (opposite quadrants, no contact) and NE+SW (likewise) →
+#     non-conflict.
+# For a scissors crossover (SCISSORS_BITS = NS+EW+NW+SE) in DIVERGE state,
+# the active routes are NW and SE — non-conflict, so two trains can
+# physically co-occupy the tile in different routes.
+
+_STRAIGHTS_THROUGH_CENTER: FrozenSet[FrozenSet[str]] = frozenset({
+    frozenset({"N", "S"}),
+    frozenset({"E", "W"}),
+})
+
+
+def routes_conflict(r1: FrozenSet[str], r2: FrozenSet[str]) -> bool:
+    """Return True iff routes ``r1`` and ``r2`` physically conflict on a
+    single switch tile.
+
+    Two routes conflict when they share any point: either an edge midpoint
+    (their edge sets intersect) or the tile center (both are NS/EW straights).
+    Same-route comparison (r1 == r2) returns True — a route conflicts with
+    itself, so the route_owners map allows at most one train per route key.
+    """
+    if r1 & r2:
+        return True
+    if r1 in _STRAIGHTS_THROUGH_CENTER and r2 in _STRAIGHTS_THROUGH_CENTER:
+        return True
+    return False
+
+
+def make_route_key(entry_edge: str, exit_edge: str) -> FrozenSet[str]:
+    """Build the canonical route key from a directed (entry, exit) pair.
+
+    Routes are unordered for occupancy purposes — a train traversing N→W
+    occupies the same physical NW arc as a train traversing W→N.
+    """
+    return frozenset({entry_edge, exit_edge})
 
 
 # ============================================================================
@@ -90,10 +144,30 @@ class Switch(TrackResource):
     """Authoritative physical alignment of the switch (MAIN=0, DIVERGE=1)."""
 
     occupied_by: Optional[str] = None
-    """train_id of the train physically straddling the switch tile, or None."""
+    """Legacy single-train occupancy field; equals any train currently in
+    ``route_owners`` (or None if empty). Maintained by
+    ``add_route_occupant`` / ``remove_route_occupant`` for diagnostic /
+    legacy reads. New consumers should query ``route_owners`` directly so
+    they can distinguish two trains co-occupying non-conflicting routes
+    (e.g. NW and SE on a scissors crossover in DIVERGE state)."""
+
+    route_owners: Dict[FrozenSet[str], str] = field(default_factory=dict)
+    """Route-keyed physical occupancy: maps each route currently in use
+    (frozenset of two edges, e.g. ``frozenset({"N","W"})``) to the
+    ``train_id`` traversing it. A new route may be added iff it does not
+    conflict (per :func:`routes_conflict`) with any existing entry."""
 
     disabled: bool = False
-    """When True, the switch is treated as missing track / open circuit."""
+    """When True, the switch is treated as missing track / open circuit. No
+    operator override bypasses this; physical entry is a fatal conflict."""
+
+    manual: bool = False
+    """When True, automatic systems treat the switch as if disabled (pathfinding
+    skips it, lock acquisition fails, manual/API switch-state commands fail),
+    but an operator command carrying `manual_override=True` bypasses the filter.
+    Physical entry into a manual (but not disabled) switch is ordinary clean
+    entry. See the `disabled` and `manual` availability flags canonical home
+    in design_new.md (under TrackResource)."""
 
     flank_protection: List[Tuple[str, int]] = field(default_factory=list)
     """List of (neighbour_switch_id, blocking_state) tuples computed at network
@@ -118,6 +192,18 @@ class Switch(TrackResource):
         is derived from this field, not stored separately.
     Value: (train_id, locked_state)
     """
+
+    lock_routes: Dict[Tuple[str, Optional[str]], FrozenSet[str]] = field(
+        default_factory=dict
+    )
+    """Parallel route-info map for ``locks`` (same composite key).
+
+    Stores the `frozenset({entry_edge, exit_edge})` that each path uses
+    through this switch. Lives alongside ``locks`` (not inside its value
+    tuple) so that legacy 2-tuple unpacks of ``locks.values()`` keep
+    working; route-aware callers consult both. A missing entry means the
+    holding claim did not carry route info; cross-claim compatibility
+    then falls back to the cross-train primary rule."""
 
     # ========================================================================
     # TrackResource identity
@@ -165,6 +251,66 @@ class Switch(TrackResource):
         return int(self.position)
 
     # ========================================================================
+    # ROUTE-KEYED OCCUPANCY (v1)
+    # ========================================================================
+
+    def has_conflicting_route(
+        self,
+        route: FrozenSet[str],
+        train_id: Optional[str] = None,
+    ) -> bool:
+        """Return True iff any current ``route_owners`` entry physically
+        conflicts with ``route``. When ``train_id`` is supplied, ownership
+        by that same train counts as compatible (the train is already on
+        the conflicting route, e.g. an idempotent re-entry report); a
+        different ``train_id`` always counts as a conflict.
+        """
+        for existing_route, existing_train in self.route_owners.items():
+            if train_id is not None and existing_train == train_id:
+                continue
+            if routes_conflict(existing_route, route):
+                return True
+        return False
+
+    def add_route_occupant(
+        self, route: FrozenSet[str], train_id: str
+    ) -> bool:
+        """Record that ``train_id`` physically occupies ``route`` on this
+        switch tile. Returns True on success; False if another train holds
+        a conflicting route (caller treats this as the fatal
+        `SWITCH_OCCUPIED_BY_OTHER_TRAIN` conflict per design_new.md:471).
+
+        Also mirrors the new owner into the legacy ``occupied_by`` field
+        for diagnostic / legacy reads.
+        """
+        if self.has_conflicting_route(route, train_id=train_id):
+            return False
+        self.route_owners[route] = train_id
+        # Legacy mirror: occupied_by reflects any current occupant.
+        self.occupied_by = train_id
+        return True
+
+    def remove_route_occupant(
+        self, route: FrozenSet[str], train_id: str
+    ) -> bool:
+        """Clear a single route entry owned by ``train_id``. Returns True
+        if the entry existed and was owned by ``train_id``; False
+        otherwise. Updates the legacy ``occupied_by`` mirror to reflect
+        any remaining occupant.
+        """
+        existing_train = self.route_owners.get(route)
+        if existing_train is None or existing_train != train_id:
+            return False
+        del self.route_owners[route]
+        # Legacy mirror: occupied_by reflects any remaining occupant
+        # (any one is fine — the field is diagnostic, not authoritative).
+        if self.route_owners:
+            self.occupied_by = next(iter(self.route_owners.values()))
+        else:
+            self.occupied_by = None
+        return True
+
+    # ========================================================================
     # MULTI-OWNER LOCK METHODS (v1)
     # ========================================================================
 
@@ -173,15 +319,20 @@ class Switch(TrackResource):
         physical protection."""
         return bool(self.locks) or bool(self.train_protection_claims)
 
-    def can_lock(self, state: int) -> bool:
+    def can_lock(self, state: int, manual_override: bool = False) -> bool:
         """Read-only predicate: can a future lock be acquired for `state`?
 
         Returns True iff:
         - the switch is not disabled,
+        - `self.manual` is False OR `manual_override` is True (per the
+          `disabled` and `manual` availability flags canonical home in
+          design_new.md under TrackResource),
         - no existing future lock requires a different state, and
         - no train-owned protection requires a different state.
         """
         if self.disabled:
+            return False
+        if self.manual and not manual_override:
             return False
         for _existing_train_id, existing_state in self.locks.values():
             if existing_state != state:
@@ -212,8 +363,15 @@ class Switch(TrackResource):
         Returns:
             True if recorded (or already present idempotently); False on conflict.
         """
-        # Disabled switches cannot be locked.
+        # Disabled switches cannot be locked. No override bypasses this.
         if self.disabled:
+            return False
+
+        # Manual switches are filtered for every automatic caller; only an
+        # operator-initiated call carrying claim.manual_override == True may
+        # acquire a lock on them. See the `disabled` and `manual` availability
+        # flags canonical home in design_new.md (under TrackResource).
+        if self.manual and not getattr(claim, "manual_override", False):
             return False
 
         path_id = claim.path_id
@@ -234,22 +392,57 @@ class Switch(TrackResource):
             if existing_state != locked_state:
                 return False
 
+        # Cross-train primary co-locking is gated by route geometry. Two
+        # paths from different trains may both hold primary locks on the
+        # same switch ONLY when their routes (entry/exit edge pairs)
+        # don't physically conflict — e.g. NW+SE on a scissors crossover
+        # in DIVERGE state. When either claim is missing route info
+        # (legacy callers / pre-route tests), fall back to the
+        # conservative "no cross-train primary" rule because we can't
+        # prove non-conflict without geometry.
+        claim_route = getattr(claim, "route", None)
+        if source_switch_id is None:
+            for (other_path_id, other_source), (other_train_id, _state) in (
+                self.locks.items()
+            ):
+                if other_source is not None:
+                    continue
+                if other_train_id == train_id:
+                    continue
+                other_route = self.lock_routes.get((other_path_id, other_source))
+                if claim_route is None or other_route is None:
+                    # Geometry unknown on at least one side → conservative
+                    # cross-train primary reject.
+                    return False
+                if routes_conflict(claim_route, other_route):
+                    return False
+
         # Reject if any train-owned protection requires a different state.
         for _claim_train_id, _claim_source_id, claim_state in self.train_protection_claims:
             if claim_state != locked_state:
                 return False
 
-        # Physical occupancy by a different train blocks new locks.
-        if self.occupied_by is not None and self.occupied_by != train_id:
-            return False
+        # Physical occupancy by a conflicting route blocks new locks. With
+        # route-keyed occupancy a different train can be on the switch
+        # provided its route doesn't conflict with the claim's route.
+        if claim_route is not None:
+            if self.has_conflicting_route(claim_route, train_id=train_id):
+                return False
+        else:
+            # No route on the claim → fall back to the old whole-switch
+            # rule: any other train's physical occupancy blocks.
+            if self.occupied_by is not None and self.occupied_by != train_id:
+                return False
 
         # If the requested state differs from the current physical state, a
         # switch throw is required; that is forbidden while the switch is
-        # physically occupied (even by the same train).
-        if int(self.position) != locked_state and self.occupied_by is not None:
+        # physically occupied by any train (including the same train).
+        if int(self.position) != locked_state and bool(self.route_owners):
             return False
 
         self.locks[key] = (train_id, locked_state)
+        if claim_route is not None:
+            self.lock_routes[key] = claim_route
         return True
 
     def release_lock(
@@ -267,6 +460,7 @@ class Switch(TrackResource):
         key = (path_id, source_switch_id)
         if key in self.locks:
             del self.locks[key]
+            self.lock_routes.pop(key, None)
             return True
         return False
 
@@ -290,29 +484,79 @@ class Switch(TrackResource):
         return len(self.train_protection_claims) < before
 
     def on_train_tail_vacated(
-        self, train_id: str, network: Optional["RailwayNetwork"] = None
+        self,
+        train_id: str,
+        network: Optional["RailwayNetwork"] = None,
+        route: Optional[FrozenSet[str]] = None,
     ) -> None:
         """Handle a tail-vacate event for `train_id` on this switch.
 
-        If `self.occupied_by` matches the releasing `train_id`, clear it and
-        walk every neighbour switch that lists this switch as a flank-protection
-        source, releasing the train-owned protection sourced from this switch.
-        If `self.occupied_by` is set to a different train, leave state unchanged
-        and emit a diagnostic.
+        Per design_new.md "Tail-vacate release" canonical home: when the
+        supplied ``route`` matches a current ``route_owners`` entry owned by
+        ``train_id``, that entry is removed; when ``route`` is supplied but
+        does not match any entry yet ``train_id`` still owns one or more
+        entries on this switch (controller emitted a stale or geometrically
+        derived key that drifted from the recorded entry), emit a
+        ``NotificationCenter`` diagnostic and recover by removing the single
+        entry owned by ``train_id``. When no entry is owned by ``train_id``
+        at all, emit a diagnostic and leave state unchanged.
+
+        ``route`` may legitimately be ``None`` only for tests / editor
+        callers that don't have route geometry; production tail-vacate
+        flows always supply it.
 
         `network` is required to walk neighbours; production callers
         (`SwitchManager.on_switch_tail_vacated`) inject it. In editor / unit
         contexts where no neighbour walk is needed it may be omitted.
         """
-        if self.occupied_by != train_id:
-            other = self.occupied_by
+        cleared = False
+
+        if route is not None and route in self.route_owners:
+            if self.route_owners[route] == train_id:
+                self.remove_route_occupant(route, train_id)
+                cleared = True
+
+        if not cleared:
+            # Either route is None, or the supplied key didn't match. Look
+            # for any entry owned by train_id and clear that. This is the
+            # defensive recovery path for controller-side route-key drift.
+            owned_routes = [
+                r for r, owner in self.route_owners.items()
+                if owner == train_id
+            ]
+            if owned_routes:
+                if route is not None:
+                    print(
+                        f"switch {self.switch_id} tail-vacate route key mismatch "
+                        f"for train {train_id}: supplied {sorted(route) if route else route}, "
+                        f"owned routes {[sorted(r) for r in owned_routes]}; "
+                        f"recovering by clearing owned entry"
+                    )
+                # Clear exactly one owned entry. When the train owns
+                # multiple entries on this tile (rare but possible during
+                # certain scissors-crossover flows), this single tail-vacate
+                # only releases one; the next tail-vacate release will pick
+                # up the remaining entry on its own pass.
+                self.remove_route_occupant(owned_routes[0], train_id)
+                cleared = True
+
+        if not cleared:
+            # No ownership at all by this train on this switch — diagnose.
+            other = self.occupied_by if self.occupied_by != train_id else None
             print(
                 f"switch {self.switch_id} release for train {train_id} skipped: "
-                f"currently occupied by {other}"
+                f"no route_owners entry held by this train"
+                + (f" (occupied_by={other})" if other is not None else "")
             )
             return
 
-        self.occupied_by = None
+        # If this train still owns another route on the switch, don't
+        # release its flank protection yet — it hasn't fully cleared.
+        any_routes_remaining_for_train = any(
+            owner == train_id for owner in self.route_owners.values()
+        )
+        if any_routes_remaining_for_train:
+            return
 
         # Walk neighbour switches and release train-owned protection sourced
         # from this switch. Without a network reference we cannot discover
@@ -332,16 +576,23 @@ class Switch(TrackResource):
                     )
                     break
 
-    def apply_position_change(self, new_position: int) -> Tuple[bool, str]:
+    def apply_position_change(
+        self, new_position: int, manual_override: bool = False
+    ) -> Tuple[bool, str]:
         """Validate and apply a position change to `self.position`.
 
-        Pure data operation: checks disabled / occupied / lock conflicts /
-        train-protection conflicts, and on success mutates `self.position`.
-        Does NOT notify any external entity. The cross-resource notification
-        to `BlockManager` is owned by `SwitchManager.request_position_change`.
+        Pure data operation: checks availability (disabled, manual) /
+        occupied / lock conflicts / train-protection conflicts, and on
+        success mutates `self.position`. Does NOT notify any external
+        entity. The cross-resource notification to `BlockManager` is owned
+        by `SwitchManager.request_position_change`.
 
         Args:
             new_position: Desired switch position (0=MAIN, 1=DIVERGE).
+            manual_override: When True (operator opt-in), allow position
+                changes on a manual switch. The disabled filter always
+                applies regardless. Per the `disabled` and `manual`
+                availability flags canonical home in design_new.md.
 
         Returns:
             (success, message) tuple.
@@ -349,6 +600,13 @@ class Switch(TrackResource):
         # Disabled switches cannot be targeted by manual/API position-change commands.
         if self.disabled:
             return (False, f"Switch {self.switch_id} is disabled")
+
+        # Manual switches require an explicit operator override.
+        if self.manual and not manual_override:
+            return (
+                False,
+                f"Switch {self.switch_id} is set to manual (manual_override required)",
+            )
 
         # Physical occupancy blocks any position mutation.
         if self.occupied_by is not None:
@@ -402,6 +660,7 @@ class Switch(TrackResource):
             "position": int(self.position),
             "occupied_by": self.occupied_by,
             "disabled": self.disabled,
+            "manual": self.manual,
             "flank_protection": [
                 [neighbour_id, blocking_state]
                 for (neighbour_id, blocking_state) in self.flank_protection
@@ -449,6 +708,7 @@ class Switch(TrackResource):
             "name": self.name,
             "notes": self.notes,
             "disabled": self.disabled,
+            "manual": self.manual,
         }
 
     @classmethod
@@ -473,6 +733,7 @@ class Switch(TrackResource):
             notes=data.get("notes", ""),
         )
         switch.disabled = bool(data.get("disabled", False))
+        switch.manual = bool(data.get("manual", False))
         return switch
 
     def __repr__(self) -> str:

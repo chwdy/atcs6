@@ -102,7 +102,7 @@ class RouteRunEditorHandler {
         const progress = `${run.finished_task_count}/${run.task_count}`;
         const startedText = this._formatTime(run.started_at);
         const errorChip = run.last_error
-            ? `<span class="rr-chip rr-chip-danger" title="${this._esc(run.last_error.text)}">err</span>`
+            ? `<span class="chip chip-danger" title="${this._esc(run.last_error.text)}">err</span>`
             : '';
 
         // Direction chip — no per-run geometry in the list payload, so the
@@ -110,7 +110,7 @@ class RouteRunEditorHandler {
         // (x,y)-heading detail once it has the resolved_target geometry.
         const dirCompact = formatBlockDirection(run.direction, null, null);
         return `
-            <div class="rr-card rr-accent-${accent}" data-run-number="${run.run_number}">
+            <div class="rr-card accent-${accent}" data-run-number="${run.run_number}">
                 <div class="rr-card-head">
                     <div class="rr-card-title-col">
                         <div class="rr-card-train font-mono" title="${this._esc(run.train_id)}">${this._esc(run.train_id)}</div>
@@ -118,11 +118,11 @@ class RouteRunEditorHandler {
                     </div>
                     <button class="rr-flat-btn view-run-btn" data-run-number="${run.run_number}">View</button>
                 </div>
-                <div class="rr-chip-row">
-                    <span class="rr-chip rr-chip-state rr-chip-${accent}">${this._esc(display)}</span>
-                    <span class="rr-chip" title="run_number">#${run.run_number}</span>
-                    <span class="rr-chip" title="direction (${this._esc(run.direction)})">${this._esc(dirCompact)}</span>
-                    <span class="rr-chip" title="task progress">${progress} task${run.task_count === 1 ? '' : 's'}</span>
+                <div class="chip-row">
+                    <span class="chip chip-state chip-${accent}">${this._esc(display)}</span>
+                    <span class="chip" title="run_number">#${run.run_number}</span>
+                    <span class="chip" title="direction (${this._esc(run.direction)})">${this._esc(dirCompact)}</span>
+                    <span class="chip" title="task progress">${progress} task${run.task_count === 1 ? '' : 's'}</span>
                     ${errorChip}
                 </div>
                 <div class="rr-card-foot">started ${this._esc(startedText)}</div>
@@ -185,17 +185,17 @@ class RouteRunEditorHandler {
         // but at the view level). Route name wraps freely below — it's often
         // long and worth seeing in full.
         const headerHtml = `
-            <div class="rr-status-header rr-accent-${accent}">
-                <div class="rr-status-row">
-                    <div class="rr-status-train font-mono" title="${this._esc(run.train_id)}">${this._esc(run.train_id)}</div>
-                    <span class="rr-chip rr-chip-state rr-chip-${accent}">${this._esc(display)}</span>
+            <div class="status-header accent-${accent}">
+                <div class="status-header-row">
+                    <div class="status-header-id font-mono" title="${this._esc(run.train_id)}">${this._esc(run.train_id)}</div>
+                    <span class="chip chip-state chip-${accent}">${this._esc(display)}</span>
                 </div>
-                <div class="rr-status-ident">
-                    <span class="rr-status-runid">Run <span class="font-mono">#${run.run_number}</span></span>
-                    <span class="rr-status-sep">·</span>
+                <div class="status-header-ident">
+                    <span class="status-header-role">Run <span class="font-mono">#${run.run_number}</span></span>
+                    <span class="status-sep">·</span>
                     <span class="font-mono">${this._esc(run.route_id)}</span>
                 </div>
-                <div class="rr-status-route" title="${this._esc(routeName)}">${this._esc(routeName)}</div>
+                <div class="status-header-name" title="${this._esc(routeName)}">${this._esc(routeName)}</div>
             </div>
         `;
 
@@ -262,18 +262,20 @@ class RouteRunEditorHandler {
         `;
 
         const deviatedBanner = deviated ? `
-            <div class="rr-banner rr-banner-warn">
+            <div class="banner banner-warn">
                 Path cancelled — display state is DEVIATED until controller cleanup runs.
             </div>` : '';
 
         const errorBanner = run.last_error ? `
-            <div class="rr-banner rr-banner-danger">
-                <div class="rr-banner-label">Last error</div>
-                <div class="rr-banner-text">${this._esc(run.last_error.text)}</div>
+            <div class="banner banner-danger">
+                <div class="banner-label">Last error</div>
+                <div class="banner-text">${this._esc(run.last_error.text)}</div>
                 <div class="rr-banner-time">at ${this._esc(this._formatTime(run.last_error.time))}</div>
             </div>` : '';
 
         const tasksHtml = this.renderTasksList(run.tasks || [], run.next_planning_index);
+
+        const overridesHtml = isRunning ? this.renderOverridesSection(run) : '';
 
         return `
             <div class="rr-editor route-editor" data-run-number="${run.run_number}">
@@ -281,6 +283,8 @@ class RouteRunEditorHandler {
                 ${deviatedBanner}
                 ${errorBanner}
                 ${summaryHtml}
+
+                ${overridesHtml}
 
                 <section class="rr-section">
                     <h4 class="rr-section-title">Task runs <span class="rr-section-count">${run.task_count}</span></h4>
@@ -301,6 +305,78 @@ class RouteRunEditorHandler {
                     <button id="back-to-route-runs-btn" class="btn btn-secondary btn-sm btn-full mt-8">Back</button>
                 </section>
             </div>
+        `;
+    }
+
+    /**
+     * Per design_new.md "RouteRun overrides": the three allowlisted policy
+     * fields (priority, acquisition_mode, action_on_waypoint_unreachable)
+     * may be overridden per-run. Each row shows the effective value and a
+     * "reset to route" button when an override is active.
+     */
+    renderOverridesSection(run) {
+        const overrides = run.overrides || {};
+        const has = (k) => Object.prototype.hasOwnProperty.call(overrides, k);
+        const seg = (id, options, current) => `
+            <div id="${id}" class="switch-group compact route-seg" role="radiogroup">
+                ${options.map(o => `
+                    <button type="button" class="switch-btn ${o.value === current ? 'active' : ''}"
+                            data-value="${o.value}" data-seg="${id}">${o.label}</button>
+                `).join('')}
+            </div>
+        `;
+        const acqEff = run.effective_acquisition_mode || 'best_effort';
+        const actEff = run.effective_action_on_waypoint_unreachable || 'WAIT';
+        const priEff = Number.isInteger(run.effective_priority) ? run.effective_priority : 5;
+        const resetBtn = (field) => `
+            <button type="button" class="btn btn-xs btn-secondary rr-override-reset-btn"
+                    data-field="${field}" title="Restore the shared route value for this field.">
+                Reset to route
+            </button>
+        `;
+        return `
+            <section class="rr-section" data-run-overrides>
+                <h4 class="rr-section-title">Per-run overrides
+                    <span class="rr-section-count">${Object.keys(overrides).length}</span>
+                </h4>
+                <div class="text-xxs text-muted mb-8">
+                    Overrides win over the shared route until cleared. Each Save below applies one field.
+                </div>
+
+                <div class="route-header-row">
+                    <div class="route-header-col">
+                        <label class="property-label">Acquisition</label>
+                        ${seg('rr-acq-seg', [
+                            { value: 'best_effort', label: 'Best effort' },
+                            { value: 'all_or_nothing', label: 'All or nothing' },
+                        ], acqEff)}
+                        <div class="flex gap-8 mt-4">
+                            <button id="rr-acq-save-btn" class="btn btn-xs btn-primary">Save override</button>
+                            ${has('acquisition_mode') ? resetBtn('acquisition_mode') : ''}
+                        </div>
+                    </div>
+                    <div class="route-header-col">
+                        <label class="property-label">On waypoint unreachable</label>
+                        ${seg('rr-action-seg', [
+                            { value: 'WAIT', label: 'Wait' },
+                            { value: 'SKIP', label: 'Skip' },
+                        ], actEff)}
+                        <div class="flex gap-8 mt-4">
+                            <button id="rr-action-save-btn" class="btn btn-xs btn-primary">Save override</button>
+                            ${has('action_on_waypoint_unreachable') ? resetBtn('action_on_waypoint_unreachable') : ''}
+                        </div>
+                    </div>
+                    <div class="route-header-col narrow">
+                        <label class="property-label">Priority (0-9)</label>
+                        <input type="number" id="rr-priority-input" class="property-input"
+                               min="0" max="9" step="1" value="${priEff}">
+                        <div class="flex gap-8 mt-4">
+                            <button id="rr-priority-save-btn" class="btn btn-xs btn-primary">Save override</button>
+                            ${has('priority') ? resetBtn('priority') : ''}
+                        </div>
+                    </div>
+                </div>
+            </section>
         `;
     }
 
@@ -412,6 +488,108 @@ class RouteRunEditorHandler {
 
         const refresh = document.getElementById('refresh-route-run-btn');
         if (refresh) refresh.onclick = () => this.showRouteRunEditor(this.currentRun.run_number);
+
+        // Per design_new.md "RouteRun overrides": three save buttons + per-row
+        // reset buttons wire to PATCH /api/route-runs/<run>/overrides and
+        // DELETE /api/route-runs/<run>/overrides/<field> respectively.
+        const runNumber = this.currentRun?.run_number;
+        if (runNumber != null) {
+            ['rr-acq-seg', 'rr-action-seg'].forEach(segId => {
+                document.querySelectorAll(`#${segId} .switch-btn`).forEach(btn => {
+                    btn.onclick = (e) => {
+                        const seg = e.currentTarget.parentElement;
+                        seg.querySelectorAll('.switch-btn').forEach(b =>
+                            b.classList.toggle('active', b === e.currentTarget));
+                    };
+                });
+            });
+
+            const segValue = (segId) => {
+                const seg = document.getElementById(segId);
+                const active = seg?.querySelector('.switch-btn.active');
+                return active ? active.dataset.value : null;
+            };
+
+            // wireSave's getValue may return either a bare value or an
+            // object {kind, value, message} (priority uses the shared
+            // validatePriorityInput helper). Three terminating shapes:
+            //   - null / {kind:'empty'}    -> silent no-op (user didn't input)
+            //   - {kind:'error', message}  -> show toast, no API call
+            //   - non-null primitive       -> send to /api/route-runs/.../overrides
+            const wireSave = (btnId, field, getValue) => {
+                const btn = document.getElementById(btnId);
+                if (!btn) return;
+                btn.onclick = async () => {
+                    const raw = getValue();
+                    if (raw == null) return;
+                    let value = raw;
+                    if (typeof raw === 'object') {
+                        if (raw.kind === 'empty') return;
+                        if (raw.kind === 'error') {
+                            window.showToast(raw.message, 'error', 4000);
+                            return;
+                        }
+                        value = raw.value;
+                    }
+                    try {
+                        const result = await this.api.patchRouteRunOverrides(
+                            runNumber, { [field]: value }
+                        );
+                        if (result && result.error) {
+                            window.showToast(
+                                `Override rejected: ${result.error}`,
+                                'error',
+                                4000
+                            );
+                        } else {
+                            window.showToast(`Override saved: ${field}`, 'success', 2000);
+                            await this.showRouteRunEditor(runNumber);
+                        }
+                    } catch (err) {
+                        window.showToast(
+                            `Override failed: ${err.message || err}`,
+                            'error',
+                            4000
+                        );
+                    }
+                };
+            };
+
+            wireSave('rr-acq-save-btn', 'acquisition_mode',
+                () => segValue('rr-acq-seg'));
+            wireSave('rr-action-save-btn', 'action_on_waypoint_unreachable',
+                () => segValue('rr-action-seg'));
+            wireSave('rr-priority-save-btn', 'priority', () => {
+                const raw = document.getElementById('rr-priority-input')?.value;
+                return validatePriorityInput(raw);
+            });
+
+            document.querySelectorAll('.rr-override-reset-btn').forEach(btn => {
+                btn.onclick = async () => {
+                    const field = btn.dataset.field;
+                    if (!field) return;
+                    try {
+                        const result = await this.api.clearRouteRunOverride(runNumber, field);
+                        if (result && result.error) {
+                            window.showToast(
+                                `Reset rejected: ${result.error}`,
+                                'error',
+                                4000
+                            );
+                        } else {
+                            window.showToast(`Override cleared: ${field}`, 'success', 2000);
+                            await this.showRouteRunEditor(runNumber);
+                        }
+                    } catch (err) {
+                        window.showToast(
+                            `Reset failed: ${err.message || err}`,
+                            'error',
+                            4000
+                        );
+                    }
+                };
+            });
+        }
 
         const openRoute = document.getElementById('open-route-from-run-btn');
         if (openRoute) {

@@ -1,0 +1,192 @@
+/* ============================================================================
+   components/status-blocks.css
+
+   Generic implementations of the shared compositional primitives from
+   docs/DESIGN_LANGUAGE.md:
+
+     §6  Status accents     — .accent-{success,info,warn,danger,muted}
+     §6  Banner             — .banner / .banner-{warn,danger} / .banner-label
+                               / .banner-text
+     §7  Pill / chip        — .chip / .chip-state / .chip-row
+                               / .chip-{success,info,warn,danger,muted}
+     §11 Status header block — .status-header / .status-header-row
+                               / .status-header-id / .status-header-name
+                               / .status-header-ident / .status-header-role
+                               / .status-sep
+
+   These are panel-language primitives — they are NOT feature-specific. Any
+   editor or detail panel that needs a §11 status header, a §7 chip, or a
+   §6 banner consumes these classes directly. Feature CSS files
+   (routes-paths.css, train-control.css, etc.) layer their own classes on
+   top for feature-specific bits but do not redefine these shapes.
+
+   All colors come from tokens — no literals.
+   ============================================================================ */
+
+/* ---- §7 Chip row + base pill + state variants. ----
+   "All chips in a row share the same shell" — the base .chip defines the
+   shell; variants only override color/background. Don't mint per-feature
+   chip classes; reuse this base. */
+
+.chip-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+}
+
+/* §7 base pill — small mono numeric/short-text chips for header/toolbar. */
+.chip {
+    background-color: var(--bg-dark);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    padding: 1px 8px;
+    font-size: 10px;
+    font-family: var(--font-mono);
+    line-height: 1.4;
+    white-space: nowrap;
+}
+
+/* §7 state badge — accent text on 15%-opacity accent bg, no border. */
+.chip-state {
+    border-color: transparent;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-family: var(--font-main);
+    font-size: 9px;
+}
+
+.chip-success { color: var(--success-color); background-color: rgba(4, 211, 97, 0.15); }
+.chip-info    { color: var(--info-color);    background-color: rgba(0, 212, 255, 0.15); }
+.chip-warn    { color: var(--warning-color); background-color: rgba(255, 205, 30, 0.15); }
+.chip-danger  { color: var(--danger-color);  background-color: rgba(232, 63, 91, 0.15); border-color: transparent; }
+.chip-muted   { color: var(--text-tertiary); background-color: var(--bg-hover); }
+
+/* ---- §6 Status accent left-border helpers ----
+   Apply on a container that already has `border-left: 3px solid …` (or a
+   status-header / standard card) to override only the color. */
+
+.accent-success { border-left-color: var(--success-color); }
+.accent-info    { border-left-color: var(--info-color); }
+.accent-warn    { border-left-color: var(--warning-color); }
+.accent-danger  { border-left-color: var(--danger-color); }
+.accent-muted   { border-left-color: var(--border-color); }
+
+/* ---- §11 Status header block ----
+   `--bg-hover` bg + dynamic 3px left accent. Compose with one of the
+   .accent-* classes above. */
+
+.status-header {
+    background-color: var(--bg-hover);
+    border-left: 3px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.status-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+}
+
+/* Primary identifier in the title row — mono, 14px, weight 700 (per §11).
+   Opaque ids clamp to one line with ellipsis; pair with title="…" so the
+   full string stays reachable (per §5 "Overflow: identifiers vs names"). */
+.status-header-id {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+/* Display-name line below the title row — human-readable text wraps
+   freely. Never ellipsis (per §5). */
+.status-header-name {
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.45;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+/* Identity line — Role + identifier in inline mono fragments separated by
+   middle dots. Wraps when the panel is narrow. */
+.status-header-ident {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+/* "Role" prefix inside an identity line — e.g. "Run #N" / "Switch" /
+   "Signal". Names what the record IS so the reader doesn't have to guess
+   from format alone (per §12 principle 7). */
+.status-header-role {
+    color: var(--text-primary);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+.status-sep {
+    color: var(--text-tertiary);
+}
+
+/* ---- §6 / §10 Banner ----
+   Single-line (or label+value) diagnostic strip. 3px left accent + tinted
+   bg. For longer multi-line prose, use a disclosure card instead (§14). */
+
+.banner {
+    padding: 8px 10px;
+    margin-bottom: 12px;
+    font-size: 11px;
+    border-radius: var(--control-radius-sm);
+    border-left: 3px solid var(--border-color);
+    background-color: var(--bg-dark);
+}
+
+.banner-warn {
+    border-left-color: var(--warning-color);
+    background-color: rgba(255, 205, 30, 0.08);
+    color: var(--warning-color);
+}
+
+.banner-danger {
+    border-left-color: var(--danger-color);
+    background-color: rgba(232, 63, 91, 0.06);
+    color: var(--text-primary);
+}
+
+.banner-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+    font-weight: 500;
+    margin-bottom: 2px;
+}
+
+.banner-text { color: var(--danger-color); }
+
+/* Mono-identifier banner content that needs to wrap (long opaque ids
+   that the reader is supposed to see end-to-end — e.g. a path id naming
+   the holder of a resource lock). Sits below a .banner-label inside any
+   banner variant; its color comes from the parent .banner-{warn,danger}. */
+.banner-value {
+    font-family: var(--font-mono);
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    line-height: 1.4;
+}

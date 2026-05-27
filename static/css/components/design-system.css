@@ -1118,3 +1118,40 @@
 .debug-controls .checkbox-wrapper:hover {
     background: rgba(255, 255, 255, 0.02);
 }
+
+/* ============================================================================
+   Non-selectable chrome labels
+   ----------------------------------------------------------------------------
+   Structural label/title chrome shouldn't capture a drag-selection — the user
+   reaches for those elements to click or to skip past on the way to a value,
+   not to copy their text. This rule covers section titles, subtitles, field
+   and row labels, status badges, and other descriptor chrome across the
+   editor panels. Values, identifiers (status-header-id, tc-train-id),
+   names, and numeric readouts stay selectable so the user can still copy
+   them. The .secondary-sidebar-header h3 (the panel title) and
+   .secondary-tab-label (tab strip labels) are handled in layout/shell.css.
+   ============================================================================ */
+.section-header,
+.control-section-header,
+.input-large-label,
+.input-small-label,
+.property-label,
+.tc-section-title,
+.tc-section-subtitle,
+.tc-field-label,
+.tc-row-label,
+.tc-speed-row-label,
+.tc-dest-metric-label,
+.tc-card-title,
+.tc-state-badge,
+.tc-running-badge,
+.tc-eb-badge,
+.tc-card-pill,
+.rr-section-title,
+.status-header-role,
+.status-sep,
+.chip-state,
+.train-debug-label,
+.train-debug-subsection-title {
+    user-select: none;
+}

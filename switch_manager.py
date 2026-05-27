@@ -45,11 +45,20 @@ class SwitchLockRequest:
     Per design_new.md "SwitchManager" — `source_switch_id` is None for
     primary (main) claims and the originating switch_id for flank claims.
     The role is derived from this field, not stored separately.
+
+    `route` is the unordered ``frozenset({entry_edge, exit_edge})`` the
+    path traverses through this switch (e.g. ``frozenset({"N","W"})`` for
+    an NW arc). When supplied, two requests at the same ``locked_state``
+    may coexist if their routes are non-conflicting per
+    ``switch.routes_conflict(...)`` — what lets two trains share a
+    scissors crossover in DIVERGE state. ``None`` falls back to the
+    conservative same-train cross-primary rule.
     """
 
     switch_id: str
     locked_state: int
     source_switch_id: Optional[str] = None
+    route: Optional[frozenset] = None
 
 
 @dataclass
@@ -112,6 +121,7 @@ class SwitchManager:
         requests: List[SwitchLockRequest],
         path_id: str,
         train_id: str,
+        manual_override: bool = False,
     ) -> LockAcquireResult:
         """Atomically acquire every requested switch lock and align the
         switch's physical position to the requested state.
@@ -123,6 +133,15 @@ class SwitchManager:
         can actually traverse the locked segment when it arrives. If a switch
         is occupied by another train, `Switch.acquire_lock` will already
         have rejected the request before we reach the throw.
+
+        `manual_override` (default False) is propagated from the calling
+        `PathDispatcher.create_path(...)` / `extend_path(...)` per the
+        `disabled` and `manual` availability flags canonical home in
+        design_new.md (under TrackResource). It is forwarded to every
+        `Switch.acquire_lock(claim)` call via `claim.manual_override`, and
+        to every `Switch.apply_position_change(...)` call performed by this
+        method, so manual switches participate when (and only when) the
+        operator explicitly overrode.
 
         On any failure, release the locks recorded in this call and return a
         failure result.
@@ -161,11 +180,28 @@ class SwitchManager:
                     failed_switch_id=req.switch_id,
                     reason="unknown_switch",
                 )
+            # Per design_new.md cross-train primary co-locking rule: primary
+            # claims (source_switch_id is None) must always carry a route in
+            # v1 so the cross-train route-conflict check can run with
+            # geometry. A primary claim missing the route is a path-
+            # construction bug — reject the whole acquire request rather
+            # than silently downgrading to the conservative single-owner
+            # fallback (which used to leave Switch.lock_routes empty and
+            # break later route-aware acquires on the same switch).
+            if req.source_switch_id is None and req.route is None:
+                self._rollback(recorded, path_id)
+                return LockAcquireResult(
+                    success=False,
+                    failed_switch_id=req.switch_id,
+                    reason="missing_route_on_primary_claim",
+                )
             claim = SwitchLockClaim(
                 path_id=path_id,
                 train_id=train_id,
                 locked_state=req.locked_state,
                 source_switch_id=req.source_switch_id,
+                manual_override=manual_override,
+                route=req.route,
             )
             # Fix #23 (design_new.md line 617): SwitchManager wraps the entity
             # bool into a structured LockAcquireResult so manager-level callers
@@ -185,7 +221,9 @@ class SwitchManager:
             # acquired the right to throw — do it now so clearance walks and
             # train physics see a usable route.
             if int(switch.position) != int(req.locked_state):
-                ok_throw, msg = switch.apply_position_change(int(req.locked_state))
+                ok_throw, msg = switch.apply_position_change(
+                    int(req.locked_state), manual_override=manual_override
+                )
                 if not ok_throw:
                     # Roll back this lock and any earlier ones acquired in
                     # this segment so the request is fully atomic.
@@ -259,19 +297,31 @@ class SwitchManager:
     # Tail-vacate
     # ------------------------------------------------------------------
 
-    def on_switch_tail_vacated(self, switch_id: str, train_id: str) -> None:
-        """Switch tail-vacate entry — called by PathDispatcher per event."""
+    def on_switch_tail_vacated(
+        self,
+        switch_id: str,
+        train_id: str,
+        route: Optional[frozenset] = None,
+    ) -> None:
+        """Switch tail-vacate entry — called by PathDispatcher per event.
+
+        ``route`` is the unordered frozenset of edges the train used through
+        this switch (derived from the train's vacating `TileTraversal`).
+        When provided, only that route's ownership is cleared from
+        ``route_owners``; other routes (potentially held by other trains)
+        remain. When ``None``, the legacy whole-switch clear applies.
+        """
         switch = self._switch_registry.get(switch_id)
         if switch is None:
             return
-        switch.on_train_tail_vacated(train_id, network=self.network)
+        switch.on_train_tail_vacated(train_id, network=self.network, route=route)
 
     # ------------------------------------------------------------------
     # Switch position change request (admin / API / UI)
     # ------------------------------------------------------------------
 
     def request_position_change(
-        self, switch_id: str, new_position: int
+        self, switch_id: str, new_position: int, manual_override: bool = False
     ) -> tuple[bool, str]:
         """Request a position change on `switch_id`.
 
@@ -279,12 +329,21 @@ class SwitchManager:
         then notifies `BlockManager.on_switch_position_changed(switch_id)` so
         the block reachability graph stays in sync. Returns the
         `(success, message)` tuple from the data-layer helper.
+
+        `manual_override` (default False) is the operator-override flag per
+        the `disabled` and `manual` availability flags canonical home in
+        design_new.md (under TrackResource). Without the override, a
+        switch with `Switch.manual == True` rejects the request; with the
+        override, the manual filter is bypassed (the disabled filter always
+        applies regardless).
         """
         switch = self._switch_registry.get(switch_id)
         if switch is None:
             return (False, f"Unknown switch {switch_id}")
 
-        success, message = switch.apply_position_change(new_position)
+        success, message = switch.apply_position_change(
+            new_position, manual_override=manual_override
+        )
         if not success:
             return (False, message)
 
@@ -314,12 +373,22 @@ class SwitchManager:
         switch_id: str,
         train_id: str,
         path_id: Optional[str],
+        route: Optional[frozenset] = None,
     ) -> bool:
         """Record a clean physical entry of `train_id` into `switch_id`.
 
-        Returns True on clean entry. Reports a fatal physical-entry conflict
-        and returns False on conflict (disabled switch entry, or occupancy by
-        a different train). When `path_id` is provided, also consumes the
+        ``route`` is the unordered ``frozenset({entry_edge, exit_edge})`` the
+        train uses through this switch (derived by the dispatcher from the
+        train's `TileTraversal`). When supplied, occupancy is recorded
+        under that route key in ``Switch.route_owners`` and only routes
+        that physically conflict (per ``switch.routes_conflict``) cause a
+        fatal `SWITCH_OCCUPIED_BY_OTHER_TRAIN`. When ``route`` is ``None``,
+        the legacy whole-switch single-owner rule applies — any other
+        train on the switch is treated as a conflict.
+
+        Returns True on clean entry; False on disabled-switch entry or
+        route-conflict by a different train (after reporting the typed
+        fatal conflict). When `path_id` is provided, also consumes the
         path-owned primary lock for this switch and converts each required
         flank-protection claim on neighbours into a train-owned
         `train_protection_claim`.
@@ -337,17 +406,41 @@ class SwitchManager:
             )
             return False
 
-        current = getattr(switch, "occupied_by", None)
-        if current is not None and current != train_id:
+        if route is None:
+            # Per design_new.md "ResourceCoordinator.on_physical_entry(...)"
+            # canonical home and FatalConflictKind.MALFORMED_ROUTE_KEY: the
+            # dispatcher must always supply a non-None route for switch
+            # physical-entry events. A route=None argument is a v1 contract
+            # violation that we report as a fatal conflict rather than
+            # silently falling through to a single-owner write that would
+            # leave Switch.route_owners empty and let later route-aware
+            # acquires miss the occupant.
+            self._report_fatal_conflict(
+                switch_id=switch_id,
+                train_id=train_id,
+                conflict_kind=FatalConflictKind.MALFORMED_ROUTE_KEY,
+                prior_owner_train_id=None,
+            )
+            return False
+
+        # Route-keyed entry: only fatal if a *conflicting* route is
+        # already held by a different train. Two trains using
+        # non-conflicting routes (NW + SE on a scissors crossover)
+        # coexist cleanly.
+        from switch import routes_conflict
+        for existing_route, existing_train in switch.route_owners.items():
+            if existing_train == train_id:
+                continue
+            if not routes_conflict(existing_route, route):
+                continue
             self._report_fatal_conflict(
                 switch_id=switch_id,
                 train_id=train_id,
                 conflict_kind=FatalConflictKind.SWITCH_OCCUPIED_BY_OTHER_TRAIN,
-                prior_owner_train_id=current,
+                prior_owner_train_id=existing_train,
             )
             return False
-
-        switch.occupied_by = train_id
+        switch.add_route_occupant(route, train_id)
 
         if path_id:
             self._convert_locks_on_entry(switch, train_id, path_id)

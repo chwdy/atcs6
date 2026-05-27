@@ -303,8 +303,17 @@ class TestSwitchLocking:
         assert track.locked_state == 0
 
     def test_lock_switch_conflicting_state(self, network):
-        """Acquiring a lock with a different state than an existing lock fails
-        (v1 multi-owner compatibility rule)."""
+        """Lock compatibility rules per design_new.md:617, :624, :633:
+
+        - same-train multi-path same-state co-locking is allowed
+          (e.g. extend_path reuses the live path's lock);
+        - cross-train primary same-state co-locking is rejected — two
+          trains' primary claims would both authorize physical traversal
+          but `Switch.occupied_by` is single-owner, so the second
+          arriver would hit the fatal `SWITCH_OCCUPIED_BY_OTHER_TRAIN`
+          conflict;
+        - different-state claims are rejected regardless of train.
+        """
         _, switch = self._make_switch_at(network, 0, 0)
 
         first = SwitchLockClaim(
@@ -312,13 +321,23 @@ class TestSwitchLocking:
         )
         assert switch.acquire_lock(first)
 
-        # Same state from a different path is allowed in v1 (compatible).
-        compat = SwitchLockClaim(
+        # Same train, different path, same state: allowed (e.g. extend).
+        same_train = SwitchLockClaim(
+            path_id="PATH_001b", train_id="TRAIN_X", locked_state=0
+        )
+        assert switch.acquire_lock(same_train)
+
+        # Different train, same state primary: rejected.
+        cross_train = SwitchLockClaim(
             path_id="PATH_002", train_id="TRAIN_Y", locked_state=0
         )
-        assert switch.acquire_lock(compat)
+        assert not switch.acquire_lock(cross_train), (
+            "Cross-train primary same-state co-locking is rejected per "
+            "design_new.md:624 — the second arriving train would crash "
+            "on Switch.occupied_by single-owner check."
+        )
 
-        # Different state is rejected.
+        # Different state is rejected regardless of train.
         conflict = SwitchLockClaim(
             path_id="PATH_003", train_id="TRAIN_Z", locked_state=1
         )
@@ -333,6 +352,88 @@ class TestSwitchLocking:
         )
         assert switch.acquire_lock(claim)
         assert switch.acquire_lock(claim)
+
+    def test_cross_train_non_conflicting_routes_coexist(self, network):
+        """Two trains with geometrically non-conflicting routes (NW + SE on
+        a scissors crossover) may both hold primary locks at the same
+        ``locked_state``, per design_new.md:617/:624/:649. This is the
+        case the bare cross-train-primary rejection used to block — with
+        route info the lock layer is gated by geometry instead.
+        """
+        from switch import routes_conflict, make_route_key
+        from track import TRACK_NS, TRACK_EW, TRACK_NW, TRACK_SE
+        # Place a scissors crossover (NS+EW+NW+SE) so DIVERGE alignment
+        # exposes the NW and SE routes simultaneously.
+        track = TrackSegment(
+            x=0, y=0,
+            track_bits=TRACK_NS | TRACK_EW | TRACK_NW | TRACK_SE,
+        )
+        network.add_track(track)
+        switch = Switch(switch_id="SW_SCISSOR", x=0, y=0)
+        network.add_switch(switch)
+        track.switch_id = switch.switch_id
+        switch.position = 1  # DIVERGE — NW + SE routes active
+
+        nw = make_route_key("N", "W")
+        se = make_route_key("S", "E")
+        assert not routes_conflict(nw, se), (
+            "Geometry precondition: NW and SE arcs are in opposite "
+            "quadrants and must not conflict."
+        )
+
+        # T1 locks NW; T2 (different train) locks SE at the same state.
+        t1 = SwitchLockClaim(
+            path_id="PATH_T1", train_id="T1",
+            locked_state=1, route=nw,
+        )
+        t2 = SwitchLockClaim(
+            path_id="PATH_T2", train_id="T2",
+            locked_state=1, route=se,
+        )
+        assert switch.acquire_lock(t1)
+        assert switch.acquire_lock(t2), (
+            "Cross-train primary co-locking must be allowed when the "
+            "routes are geometrically non-conflicting per "
+            "design_new.md:624."
+        )
+        # A third train trying NS (which crosses the tile center) must
+        # conflict with both — NS shares N with NW and S with SE.
+        ns = make_route_key("N", "S")
+        t3 = SwitchLockClaim(
+            path_id="PATH_T3", train_id="T3",
+            locked_state=1, route=ns,
+        )
+        assert not switch.acquire_lock(t3), (
+            "NS shares the N edge with NW and the S edge with SE; must "
+            "reject regardless of train identity."
+        )
+
+    def test_cross_train_conflicting_routes_rejected(self, network):
+        """NW + NE share the N edge midpoint — even on a tile where both
+        bits are present, cross-train primary co-locking with conflicting
+        routes is rejected. Same train would also be rejected, since
+        route_owners can't hold two trains on overlapping geometry.
+        """
+        from switch import make_route_key
+        from track import TRACK_NW, TRACK_NE
+        track = TrackSegment(
+            x=0, y=0,
+            track_bits=TRACK_NW | TRACK_NE,
+        )
+        network.add_track(track)
+        switch = Switch(switch_id="SW_T", x=0, y=0)
+        network.add_switch(switch)
+        track.switch_id = switch.switch_id
+
+        nw = make_route_key("N", "W")
+        ne = make_route_key("N", "E")
+        assert switch.acquire_lock(SwitchLockClaim(
+            path_id="P1", train_id="T1", locked_state=0, route=nw,
+        ))
+        # Different train, conflicting route (shares N edge): rejected.
+        assert not switch.acquire_lock(SwitchLockClaim(
+            path_id="P2", train_id="T2", locked_state=0, route=ne,
+        ))
 
     def test_unlock_switch(self, network):
         """`release_lock` removes the future-authority claim; derived Track
@@ -1452,18 +1553,90 @@ class TestBestEffortAcquisitionContract:
             acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
 
-        # With BLOCK_C the only new block in the extension segment
-        # ([BLOCK_B, BLOCK_C]) and it occupied, the truncate helper
-        # cannot find a 2-block prefix that adds any new resource. The
-        # extension reports failure (BLOCKED_NO_GROWTH semantics is out
-        # of scope per the plan; BLOCKED_BEFORE_TARGET is the v1 outcome).
-        assert not result.success
-        assert result.failure_kind == PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET
+        # With BLOCK_C the only new block in the extension segment and it
+        # occupied by another train, no new resource can be appended. Per
+        # design_new.md ":994" / ":997", BEST_EFFORT extend in this case
+        # must return `success=True, result_kind=BLOCKED_NO_GROWTH` — the
+        # existing path is still a legal prefix toward BLOCK_C; the
+        # obstruction is purely live occupancy. Route executors use this
+        # to distinguish "temporarily blocked, retry" from cancellation.
+        assert result.success, (
+            f"extend_path should report blocked_no_growth as success per "
+            f"design_new.md:994; got failure_kind={result.failure_kind!r}"
+        )
+        assert result.result_kind == PathAcquisitionResultKind.BLOCKED_NO_GROWTH
         # Existing path must still be ACTIVE and unchanged.
         live_path = dispatcher.paths.get(path_id)
         assert live_path is not None
         assert live_path.status == PathStatus.ACTIVE
         assert live_path.get_authority_end_block_id() == "BLOCK_B"
+
+    def test_create_path_best_effort_truncates_before_locked_switch(
+        self, network, dispatcher,
+    ):
+        """A boundary switch whose lock is held in a conflicting state must
+        NOT force the truncated prefix to keep that switch.
+
+        Layout (all EW; switch at (2,0) supports EW MAIN or NE DIVERGE):
+
+            [A:(0,0)]--[B:(1,0)]--[SW:(2,0)]--[C:(3,0)]
+
+        With SW pre-locked by another path in DIVERGE (state=1), the
+        candidate A->B->SW->C requires state=0 and cannot acquire SW.
+        Per design_new.md ":891" / ":938", BEST_EFFORT must truncate the
+        live authority to land BEFORE the contested switch (authority
+        ends at BLOCK_B). Without the fix `_best_effort_truncate` keeps
+        the switch tile in `cutoff_tiles`, propagates its lock request
+        into `cutoff_switches`, fails the acquire, and returns None — so
+        `create_path` falls through to BLOCKED_BEFORE_TARGET.
+        """
+        # Build A--B--SW--C inline.
+        for x in range(4):
+            bits = (TRACK_EW | TRACK_NE) if x == 2 else TRACK_EW
+            network.add_track(TrackSegment(x=x, y=0, track_bits=bits))
+
+        block_a = network.create_block("BLOCK_A", "Block A")
+        block_a.length_cm = 100.0
+        network.get_track(0, 0).block_section_id = "BLOCK_A"
+
+        block_b = network.create_block("BLOCK_B", "Block B")
+        block_b.length_cm = 100.0
+        network.get_track(1, 0).block_section_id = "BLOCK_B"
+
+        switch = Switch(switch_id="SW_X", x=2, y=0)
+        network.add_switch(switch)
+        network.get_track(2, 0).switch_id = "SW_X"
+
+        block_c = network.create_block("BLOCK_C", "Block C")
+        block_c.length_cm = 100.0
+        network.get_track(3, 0).block_section_id = "BLOCK_C"
+
+        self._make_probe_train(network)
+
+        # Pre-lock the switch in DIVERGE (state=1) on behalf of another
+        # path so the candidate's required MAIN (state=0) is unavailable.
+        held = SwitchLockClaim(
+            path_id="PATH_OTHER", train_id="T_OTHER", locked_state=1
+        )
+        assert switch.acquire_lock(held)
+
+        result = dispatcher.create_path(
+            train_id="T_PROBE",
+            requested_destination_block_id="BLOCK_C",
+            requested_destination_direction="forward",
+            acquisition_mode=AcquisitionMode.BEST_EFFORT,
+        )
+
+        assert result.success, (
+            f"BEST_EFFORT create_path must truncate before a locked "
+            f"boundary switch per design_new.md:891/:938. Got "
+            f"failure_kind={result.failure_kind!r}, reason={result.reason!r}"
+        )
+        assert result.result_kind == PathAcquisitionResultKind.TRUNCATED_GREW
+        assert result.authority_end_block_id == "BLOCK_B", (
+            f"Truncated authority must land at BLOCK_B (before the "
+            f"contested switch). Got: {result.authority_end_block_id!r}"
+        )
 
 
 

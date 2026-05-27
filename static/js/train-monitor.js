@@ -57,13 +57,6 @@ class TrainMonitor {
         });
         this.canvas.addEventListener('click', (e) => this.handleClick(e));
         
-        this.stateColors = {
-            'free': '#04d361',
-            'reserved': '#8257e5',
-            'occupied': '#e83f5b',
-            'caution': '#ffcd1e'
-        };
-        
         this.signalColors = {
             'green': '#04d361',
             'yellow': '#ffcd1e',
@@ -798,7 +791,7 @@ class TrainMonitor {
                 data: block
             });
 
-            const color = this.stateColors[block.state] || '#666';
+            const color = getBlockStateColor(block.state);
             
             this.ctx.fillStyle = color;
             this.ctx.globalAlpha = 0.3;

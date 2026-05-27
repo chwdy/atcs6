@@ -90,6 +90,33 @@ def register(app, state: AppState) -> None:
         """
         data = request.json or {}
 
+        # Per design_new.md "RouteRun overrides": each allowlisted field may
+        # arrive in two shapes — bare `{<field>: value}` (defaults to soft
+        # push) or `{<field>: {"value": ..., "push": "force"|"soft"}}`.
+        # Unpack the value and the optional per-field push policy.
+        def _unpack(field_name: str):
+            if field_name not in data:
+                return None, None
+            raw = data[field_name]
+            if (
+                isinstance(raw, dict)
+                and "value" in raw
+                and field_name in train_route_service.OVERRIDE_ALLOWLIST
+            ):
+                return raw.get("value"), raw.get("push", "soft")
+            return raw, "soft"
+
+        priority_value, priority_push = _unpack("priority")
+        acq_value, acq_push = _unpack("acquisition_mode")
+        action_value, action_push = _unpack("action_on_waypoint_unreachable")
+        push_policies = {}
+        if "priority" in data:
+            push_policies["priority"] = priority_push
+        if "acquisition_mode" in data:
+            push_policies["acquisition_mode"] = acq_push
+        if "action_on_waypoint_unreachable" in data:
+            push_policies["action_on_waypoint_unreachable"] = action_push
+
         with state.simulation_lock:
             try:
                 route = train_route_service.update_route(
@@ -98,10 +125,11 @@ def register(app, state: AppState) -> None:
                     name=data["name"] if "name" in data else None,
                     mode=data["mode"] if "mode" in data else None,
                     tasks=data["tasks"] if "tasks" in data else None,
-                    priority=data["priority"] if "priority" in data else None,
-                    acquisition_mode=(
-                        data["acquisition_mode"]
-                        if "acquisition_mode" in data
+                    priority=priority_value if "priority" in data else None,
+                    acquisition_mode=acq_value if "acquisition_mode" in data else None,
+                    action_on_waypoint_unreachable=(
+                        action_value
+                        if "action_on_waypoint_unreachable" in data
                         else None
                     ),
                     assigned_train_ids=(
@@ -109,6 +137,7 @@ def register(app, state: AppState) -> None:
                         if "assigned_train_ids" in data
                         else None
                     ),
+                    push_policies=push_policies,
                 )
             except NotFoundError as exc:
                 return jsonify({"error": str(exc)}), 404

@@ -10,6 +10,31 @@ helpers; this doc describes how those primitives compose into the panel
 language you see in [features/inspector.css](../static/css/features/inspector.css)
 and [features/train-monitor.css](../static/css/features/train-monitor.css).
 
+### Where the primitives live
+
+Three layers, with one rule per layer.
+
+- **Tokens** → [base/tokens.css](../static/css/base/tokens.css) (§1). Refer to
+  them by variable name in CSS, never by hex literal.
+- **Shared compositional primitives** → [components/status-blocks.css](../static/css/components/status-blocks.css)
+  (§6 banner + accent helpers, §7 chip, §11 status header). Every editor
+  panel that needs a status header, a chip, a banner, or a left-border
+  accent consumes these classes directly — `.status-header`, `.chip`,
+  `.banner`, `.accent-*`. Don't redefine the same shape under a feature
+  prefix in `features/*.css`; that creates a second source of truth and
+  the two drift apart.
+- **Feature implementations** → `features/{inspector,train-monitor,train-control,routes-paths}.css`
+  (§15). Layer feature-specific composition on top of the shared
+  primitives — a route-run-shaped card (`.rr-card`), a train-monitor
+  status grid (`.tm-*`), a switch-editor toggle row. These files **do
+  not** redefine the §6/§7/§11 shapes; they consume them.
+
+The trigger for promoting a shape into `status-blocks.css` is **the
+second consumer**. When a primitive in a feature file is about to be
+copied — even with a different prefix — for a new panel, that's the
+moment to extract it instead. One copy is "the reference
+implementation"; two copies is duplication waiting to drift.
+
 ---
 
 ## 1. Tokens
@@ -55,6 +80,50 @@ above the 4.5:1 AA floor against the panel background.
 
 The accent palette doubles as the **status accent palette** for left-border
 strips, banner tints, and badge backgrounds. Don't introduce new hues.
+
+### Block / track status
+
+The block-state palette is the one domain palette that gets its own tokens.
+It reuses the accent hues for the four primary states and adds two
+domain-only hues for static availability flags. Track / block renderers
+consume these tokens; do not hard-code hex literals at the call site.
+
+| State | Token | Hex | Semantic |
+|-------|-------|-----|----------|
+| FREE | `--block-free` | `#00d4ff` (= `--info-color`) | Clear — no train, no plan |
+| RESERVED | `--block-reserved` | `#04d361` (= `--success-color`) | Go / enter — the next train may proceed |
+| OCCUPIED | `--block-occupied` | `#ef4444` | Train physically present |
+| CAUTION | `--block-caution` | `#fde047` | Restricted entry |
+| DISABLED | `--block-disabled` | `#6c6c78` | Out of service (physical absence) |
+| MANUAL | `--block-manual` | `#ff9500` | Manual override active |
+
+The FREE / RESERVED mapping is deliberate: green is the "enter" signal a
+driver reads on the canvas, so it lives on the state the next train is
+cleared into. FREE inherits cyan from `--info-color` because an empty
+block is informational, not a green-light.
+
+OCCUPIED and CAUTION diverge from the §1 accent palette by design. The
+`--danger-color` `#e83f5b` is a coral-pink tuned to harmonize with the
+accent purple in panel chrome — it reads as "alert pill" rather than
+"stop signal." On the canvas, where a red block is meant to read as a
+train physically present (a railway-aspect red), `#ef4444` is purer and
+more signal-correct. CAUTION sits at `#fde047` (lighter than
+`--warning-color` lemon) so that the three warm hues — OCCUPIED red,
+CAUTION yellow, MANUAL orange — space cleanly on the hue wheel and also
+separate by lightness. The accent-tuned lemon `#ffcd1e` and the MANUAL
+orange `#ff9500` were too close at canvas alpha. DISABLED and MANUAL are
+standalone hex (not aliases) because no §1 accent matches their
+semantic — DISABLED is the only place a desaturated grey is correct, and
+MANUAL is the only orange in the system.
+
+The tokens are declared as literal hex (not `var(--info-color)`
+references) so `getComputedStyle().getPropertyValue('--block-…')` reads
+the resolved color directly. CSS custom properties are not substituted
+when read from JS, so `var()` chains return the unresolved string.
+
+Canonical consumer: `getBlockStateColor(state, alpha)` in
+[static/js/helpers.js](../static/js/helpers.js). Pass `alpha` < 1 to get
+the rgba form used for canvas overlays.
 
 ### Layout
 
@@ -409,9 +478,10 @@ The `min-width: 0` line is the rule most often missed when clamping.
 Flex children default to `min-width: auto`, which lets their content
 expand the cell and silently defeats `overflow: hidden`. Set it
 explicitly on every flex child whose content is supposed to truncate.
-Reference: `.rr-card-route` (clamp, opaque id) and `.rr-status-route`
-(wrap, display name) in
-[features/routes-paths.css](../static/css/features/routes-paths.css).
+Reference: `.rr-card-route` (clamp, opaque id) in
+[features/routes-paths.css](../static/css/features/routes-paths.css), and
+`.status-header-name` (wrap, display name) in
+[components/status-blocks.css](../static/css/components/status-blocks.css).
 
 ---
 
@@ -429,8 +499,14 @@ Three patterns for showing a row's status:
 
 2. **Banner**: full-width strip with a 3px left-border accent + ~10% opacity
    background tint of the same color. Use for one-line diagnostics
-   (`speed_limit_reason`, `ATC: yellow signal at S-3`). Banners belong in
-   the panel **footer**, not inside scrollable columns.
+   (`speed_limit_reason`, `ATC: yellow signal at S-3`) or a label/value
+   pair (e.g. `Locked by · PATH_…` on a switch panel — `.banner-label`
+   over `.banner-value`). Banners belong in the panel **footer** for
+   running diagnostics; an inline-in-body banner is also fine when it
+   surfaces a single high-priority detail for the record on screen.
+   Canonical home: `.banner` / `.banner-{warn,danger}` / `.banner-label` /
+   `.banner-value` / `.banner-text` in
+   [components/status-blocks.css](../static/css/components/status-blocks.css).
 
 3. **Source badge**: a small color-coded pill (used by inspector to show
    `stored / property / latch / external`). Background is the accent color
@@ -464,9 +540,10 @@ every other dimension. Don't mint per-feature chip classes (no
 `.foo-direction-pill`, `.foo-error-chip`); add modifier classes
 (`-success`, `-warn`, `-danger`, `-muted`) on a single base class
 instead. A row of mismatched chip shapes reads as cluttered even when
-each one is individually correct. Reference: `.rr-chip` /
-`.rr-chip-state` / `.rr-chip-{success,info,warn,danger,muted}` in
-[features/routes-paths.css](../static/css/features/routes-paths.css).
+each one is individually correct. The canonical base class is `.chip` /
+`.chip-state` / `.chip-{success,info,warn,danger,muted}` in
+[components/status-blocks.css](../static/css/components/status-blocks.css)
+— every editor panel consumes these directly.
 
 ---
 
@@ -654,8 +731,12 @@ proximity (§12 principle 1) and waste vertical real estate — the hero +
 metadata-strip variant carries the same information in roughly half the
 height with no dotted leaders.
 
-Reference: `.rr-status-header` (header block) and `.rr-summary` (stats
-block) in
+Reference: the canonical header block lives in
+[components/status-blocks.css](../static/css/components/status-blocks.css)
+as `.status-header` + `.status-header-{row,id,name,ident,role}` +
+`.status-sep`, with the `.accent-{success,info,warn,danger,muted}`
+left-border helpers from the same file. The stats block (route-runs
+specific) is `.rr-summary` in
 [features/routes-paths.css](../static/css/features/routes-paths.css).
 
 ---
@@ -888,6 +969,7 @@ Reference: `.route-resource-picker` in
 
 - **No color emoji anywhere in the UI.** The icon system is Tabler (see §3 Icons); monochrome Unicode glyphs (`▸ ▾ × ↻`) remain fine for tiny structural chrome. Both render in the CSS `color` property and respect the token palette. Color emoji (`🚦 🚉 📋 📊 🚨`) render as color pictographs regardless of `color:` and fight with the palette — never use them in buttons, headers, labels, or any panel chrome. Quick test: if setting `color: red` on the character turns it red, it's a monochrome symbol and is OK; if it stays a colorful picture, it's an emoji and is not.
 - **No new colors.** If you can't reach for a token, the design doesn't have a slot for it yet — pause and discuss instead of inventing.
+- **No freelance ornaments inside a shared shape.** The same logic that bars new colors bars adding visual elements (an inner status dot, a leading icon, a divider rule, a decorative glyph) to a canonical primitive the doc already specifies. The §7 chip is text on a tinted pill — not "text + a glowing dot." If you find yourself reaching for an extra mark to make a component read better, pause: either the component is wrong for the job (pick a different one) or the doc is missing a slot (raise it as a doc question). Quick test: would I have to mint a new class to render this? Then it's freelance.
 - **No solid filled buttons in panels.** Use the ghost + accent-tint pattern.
 - **Don't border the container *and* every child.** If the container has a border (segmented cluster, tool grid, tab strip, card), the children inside are flat ghosts. If the children need their own borders (standalone buttons on the panel body), the container is unbordered. Doubling the borders reads as fenced-off boxes inside fenced-off boxes — the rendered weight is double what the structure needs.
 - **No nested panels.** A panel inside a panel inside a panel is a sign the structure is wrong.
@@ -900,6 +982,8 @@ Reference: `.route-resource-picker` in
 
 When in doubt, copy the structure of one of these:
 
+- **Shared compositional primitives** → [components/status-blocks.css](../static/css/components/status-blocks.css) — the §6 banner, §7 chip, §11 status header, and §6 accent helpers. Editor panels consume these classes directly (`.status-header`, `.chip`, `.banner`, `.accent-*`) instead of redefining the shapes per feature.
+- **Detail-page editor** → [editor-route-runs.js](../static/js/editor-route-runs.js) + [features/routes-paths.css](../static/css/features/routes-paths.css) — the worked reference for composing a `status-header` + stats block + list of rows inside an editor sidebar. Route-run-specific bits (`.rr-card`, `.rr-summary`, `.rr-task-*`) layer on top of the shared primitives.
 - **Floating debug panel** → [inspector.css](../static/css/features/inspector.css) — header + toolbar + scrolling body + footer, draggable, resizable. Header has no border; relies on `--bg-hover` against `--bg-panel`. Toolbar keeps `border-bottom` because it shares `--bg-panel` with the body (per the §2 toolbar rule: same surface → hairline separator needed).
 - **Bottom dock** → [train-monitor.css](../static/css/features/train-monitor.css) — header + multi-column body + status footer, full-width, fixed height. Header has no border; the segmented view-distance control inside the header is a bordered container of flat ghosts (no internal dividers).
 - **Sidebar form** → [train-control.css](../static/css/features/train-control.css) — sectioned vertical stack inside a secondary sidebar. Status rows use the 3px left-border accent only, no surrounding 1px box.

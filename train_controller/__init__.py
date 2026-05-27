@@ -1832,6 +1832,11 @@ class TrainController:
             if key in seen_entered:
                 continue
             seen_entered.add(key)
+            # For switch events, propagate entry_edge + switch_exit_edge so
+            # the dispatcher can build the route key for route-keyed
+            # occupancy. Block events leave them None.
+            ev_entry_edge = tile.entry_edge if res_type == "switch" else None
+            ev_switch_exit_edge = tile.exit_edge if res_type == "switch" else None
             entered_resources.append(
                 ResourceEvent(
                     sequence_index=tile_xy_to_seq_index.get(tile.tile_xy),
@@ -1839,6 +1844,8 @@ class TrainController:
                     resource_id=res_id,
                     exit_edge=None,
                     block_id=tile.block_id,
+                    entry_edge=ev_entry_edge,
+                    switch_exit_edge=ev_switch_exit_edge,
                 )
             )
 
@@ -1869,6 +1876,8 @@ class TrainController:
                 continue
             seen_vacated.add(key)
             exit_edge = tile.exit_edge if res_type == "block" else None
+            ev_entry_edge = tile.entry_edge if res_type == "switch" else None
+            ev_switch_exit_edge = tile.exit_edge if res_type == "switch" else None
             tail_vacated_resources.append(
                 ResourceEvent(
                     sequence_index=tile_xy_to_seq_index.get(tile.tile_xy),
@@ -1876,6 +1885,8 @@ class TrainController:
                     resource_id=res_id,
                     exit_edge=exit_edge,
                     block_id=tile.block_id,
+                    entry_edge=ev_entry_edge,
+                    switch_exit_edge=ev_switch_exit_edge,
                 )
             )
 

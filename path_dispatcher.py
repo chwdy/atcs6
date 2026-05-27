@@ -229,9 +229,11 @@ class PathDispatcher:
 
         ``segment`` is a candidate produced by ``find_paths`` whose first tile
         sits on the path's current authority-end block. The segment continues
-        forward when its first hop exits that block at the same tile and edge
-        the existing prefix was about to use; any other exit would force a
-        180-degree reverse through the authority-end block.
+        forward when its first hop exits that block at the geometrically
+        valid exit edge — i.e. the edge the train would naturally take from
+        its current entry, which for non-switch tracks is the unique non-
+        entry edge defined by the track bits. Any other first-hop direction
+        would force a 180-degree reverse through the authority-end block.
         """
         if not segment.tiles or len(segment.tiles) < 2:
             # Can't tell from geometry alone; treat as forward and let
@@ -241,11 +243,6 @@ class PathDispatcher:
         if not path_tiles:
             return True
         terminal = path_tiles[-1]
-        terminal_exit = terminal.exit_edge or None
-        if not terminal_exit:
-            # Existing prefix has no recorded exit_edge; cannot prove a
-            # reverse from geometry, so allow the candidate through.
-            return True
         first = segment.tiles[0]
         nxt = segment.tiles[1]
         if (first[0], first[1]) != (terminal.x, terminal.y):
@@ -257,7 +254,27 @@ class PathDispatcher:
             # existing travel frame.
             return False
         seg_exit = direction_from_delta(nxt[0] - first[0], nxt[1] - first[1])
-        return seg_exit == terminal_exit
+        if seg_exit is None:
+            return True
+
+        # Derive the terminal tile's true geometric exit edge from track
+        # geometry (the unique non-entry edge for non-switch tracks). Note:
+        # `PathTileEntry.exit_edge` cannot be used here directly — for
+        # zigzag (NW/SE/NE/SW) terminal tiles its terminal-fallback value
+        # is OPPOSITE-of-entry, which represents the train's velocity
+        # vector rather than the tile's outgoing edge. Those two are
+        # perpendicular on diagonals, so consulting `exit_edge` rejects
+        # legitimate forward extensions on diagonal terminal tiles.
+        terminal_entry = terminal.entry_edge or None
+        if not terminal_entry:
+            return True
+        terminal_track = self.network.get_track(terminal.x, terminal.y)
+        if terminal_track is None:
+            return True
+        valid_exits = terminal_track.get_exits(terminal_entry, use_switch_state=True)
+        if not valid_exits:
+            return True
+        return seg_exit in valid_exits
 
     # ========================================================================
     # Endpoint Discovery
@@ -359,17 +376,23 @@ class PathDispatcher:
         end_block_id: str,
         train_id: Optional[str] = None,
         direction_constraint: Optional[str] = None,
+        manual_override: bool = False,
     ) -> List[PathSegment]:
         """Return the geometry candidates between two blocks.
 
         Thin wrapper over the shared `RailwayPathfinder.find_ordered_walk`.
         Each surviving candidate's geometry payload is unwrapped into a
         `PathSegment` for the existing dispatcher callers.
+
+        `manual_override` (default False) is propagated from the calling
+        `create_path(...)` / `extend_path(...)` per the `disabled` and `manual`
+        availability flags canonical home in design_new.md (under TrackResource).
         """
         candidates = self._pathfinder.find_ordered_walk(
             start_block_id=start_block_id,
             end_block_id=end_block_id,
             direction_constraint=direction_constraint,
+            manual_override=manual_override,
         )
         return [c.walk for c in candidates if isinstance(c.walk, PathSegment)]
 
@@ -382,8 +405,17 @@ class PathDispatcher:
         path: PathSegment,
         path_id: str,
         train_id: Optional[str] = None,
+        manual_override: bool = False,
     ) -> ValidationResult:
-        """Validate a PathSegment for resource availability."""
+        """Validate a PathSegment for resource availability.
+
+        `manual_override` (default False) is the operator-override flag per the
+        `disabled` and `manual` availability flags canonical home in
+        design_new.md (under TrackResource). When False, blocks/switches with
+        `manual == True` produce ``BLOCK_MANUAL`` / ``SWITCH_MANUAL`` structural
+        validation errors. When True, the manual filter is bypassed (disabled
+        resources still produce ``BLOCK_DISABLED`` errors).
+        """
         errors: List[ValidationError] = []
         for tile in path.tiles:
             track = self.network.get_track(*tile)
@@ -420,6 +452,18 @@ class PathDispatcher:
                     )
                 )
                 continue
+            if getattr(block, "manual", False) and not manual_override:
+                errors.append(
+                    ValidationError(
+                        type=ValidationErrorType.BLOCK_MANUAL,
+                        block_id=block_id,
+                        message=(
+                            f"Block {block_id} is set to manual "
+                            f"(manual_override required)"
+                        ),
+                    )
+                )
+                continue
             if not block.is_available_for_path(path_id, train_id):
                 if block.state == BlockState.OCCUPIED:
                     errors.append(
@@ -444,6 +488,35 @@ class PathDispatcher:
             track = self.network.get_track(*pos)
             if not track:
                 continue
+            # Resolve the underlying Switch entity for availability checks.
+            switch_entity = self._resolve_switch_at_position(pos)
+            # Disabled switches are structural failures, not occupancy-class.
+            # Per design_new.md "Availability flags" canonical home, a
+            # disabled switch behaves like missing track; per
+            # ValidationErrorType.is_occupancy_class, SWITCH_DISABLED is not
+            # occupancy-class, so BEST_EFFORT will not retry around it and a
+            # RouteExecutor sees `no_viable_path` instead of a retry storm.
+            if switch_entity is not None and getattr(switch_entity, "disabled", False):
+                errors.append(
+                    ValidationError(
+                        type=ValidationErrorType.SWITCH_DISABLED,
+                        position=pos,
+                        message=f"Switch at {pos} is disabled",
+                    )
+                )
+                continue
+            if switch_entity is not None and getattr(switch_entity, "manual", False) and not manual_override:
+                errors.append(
+                    ValidationError(
+                        type=ValidationErrorType.SWITCH_MANUAL,
+                        position=pos,
+                        message=(
+                            f"Switch at {pos} is set to manual "
+                            f"(manual_override required)"
+                        ),
+                    )
+                )
+                continue
             if not track.can_lock_for_path(path_id, required_state):
                 lock_info = track.get_lock_info()
                 errors.append(
@@ -467,6 +540,7 @@ class PathDispatcher:
         requested_destination_block_id: str = "",
         requested_destination_direction: str = "forward",
         acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
+        manual_override: bool = False,
     ) -> PathAcquisitionResult:
         """v1 create_path: build authority for a train to a destination block.
 
@@ -475,6 +549,12 @@ class PathDispatcher:
             requested_destination_block_id: Caller's target block.
             requested_destination_direction: "forward" or "reverse".
             acquisition_mode: ALL_OR_NOTHING or BEST_EFFORT.
+            manual_override: Operator-override flag per the `disabled` and
+                `manual` availability flags canonical home in design_new.md
+                (under TrackResource). Default False (every automatic caller,
+                including `RouteExecutor`); True only for operator-initiated
+                API/UI/admin calls that explicitly chose to use manual
+                resources. Disabled resources are always excluded regardless.
 
         Returns:
             PathAcquisitionResult.
@@ -553,7 +633,10 @@ class PathDispatcher:
 
         # Find geometry candidates.
         candidates = self.find_paths(
-            start_block_id_resolved, requested_destination_block_id, train_id
+            start_block_id_resolved,
+            requested_destination_block_id,
+            train_id,
+            manual_override=manual_override,
         )
         if not candidates:
             return PathAcquisitionResult(
@@ -572,7 +655,9 @@ class PathDispatcher:
         last_reason: str = ""
         had_structural_failure = False
         for segment in candidates:
-            validation = self.validate_path(segment, path_id, train_id)
+            validation = self.validate_path(
+                segment, path_id, train_id, manual_override=manual_override
+            )
             if not validation.valid:
                 structural = [
                     e for e in validation.errors
@@ -606,6 +691,7 @@ class PathDispatcher:
                     segment, path_id, train_id,
                     requested_destination_direction,
                     start_at_block_count=hint,
+                    manual_override=manual_override,
                 )
                 if truncated is None:
                     continue
@@ -631,7 +717,8 @@ class PathDispatcher:
 
             # Acquire resources.
             acquire_ok, fail_reason, fail_resource = self._acquire_segment_resources(
-                segment, path_id, train_id, requested_destination_direction
+                segment, path_id, train_id, requested_destination_direction,
+                manual_override=manual_override,
             )
             if not acquire_ok:
                 last_failed_resource_id = fail_resource
@@ -642,7 +729,8 @@ class PathDispatcher:
                     continue
                 # BEST_EFFORT: try to acquire a truncated prefix of this segment.
                 truncated = self._best_effort_truncate(
-                    segment, path_id, train_id, requested_destination_direction
+                    segment, path_id, train_id, requested_destination_direction,
+                    manual_override=manual_override,
                 )
                 if truncated is None:
                     continue
@@ -727,8 +815,16 @@ class PathDispatcher:
         requested_destination_block_id: str = "",
         requested_destination_direction: str = "forward",
         acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
+        manual_override: bool = False,
     ) -> PathAcquisitionResult:
-        """v1 extend_path: append more authority to an existing ACTIVE path."""
+        """v1 extend_path: append more authority to an existing ACTIVE path.
+
+        `manual_override` (default False) is the operator-override flag per the
+        `disabled` and `manual` availability flags canonical home in
+        design_new.md (under TrackResource). Default for every automatic
+        caller; True only for operator-initiated API/UI/admin calls that
+        explicitly chose to use manual resources.
+        """
         if requested_destination_direction not in ("forward", "reverse"):
             return PathAcquisitionResult(
                 success=False,
@@ -788,7 +884,10 @@ class PathDispatcher:
         # Find extension geometry from current authority end.
         start_block_id = path.get_authority_end_block_id()
         candidates = self.find_paths(
-            start_block_id, requested_destination_block_id, train_id
+            start_block_id,
+            requested_destination_block_id,
+            train_id,
+            manual_override=manual_override,
         )
         if not candidates:
             return PathAcquisitionResult(
@@ -827,9 +926,12 @@ class PathDispatcher:
         now = self._now()
         last_reason = ""
         last_resource = None
+        had_occupancy_blocker = False
         for segment in candidates:
             # Validate (pretend the extension uses the same path_id).
-            validation = self.validate_path(segment, path_id, train_id)
+            validation = self.validate_path(
+                segment, path_id, train_id, manual_override=manual_override
+            )
             applied_segment: Optional[PathSegment] = None
             if not validation.valid:
                 structural = [
@@ -847,40 +949,52 @@ class PathDispatcher:
 
                 if structural:
                     continue
+                # Pure occupancy failure: this is the "valid prefix,
+                # temporarily blocked" condition described by
+                # design_new.md ":994". Track it so the tail can return
+                # `BLOCKED_NO_GROWTH` if no candidate grows the path.
+                had_occupancy_blocker = True
                 if acquisition_mode == AcquisitionMode.ALL_OR_NOTHING:
                     continue
 
                 # BEST_EFFORT + occupancy-only: truncate to the longest
                 # acquirable prefix of the extension segment, per
-                # design_new.md ":938" / ":994". The first block of an
-                # extension segment is the current authority-end block, so
-                # the minimum 2-block prefix yields one new appended block.
-                # BLOCKED_NO_GROWTH (extend_path-only outcome when the
-                # existing path is still a valid prefix but no new resource
-                # can be appended) is out of scope here; truncate returning
-                # None falls through to the BLOCKED_BEFORE_TARGET tail.
+                # design_new.md ":938" / ":994".
                 hint = self._compute_truncate_hint(segment, occupancy)
                 truncated = self._best_effort_truncate(
                     segment, path_id, train_id,
                     requested_destination_direction,
                     start_at_block_count=hint,
+                    manual_override=manual_override,
                 )
                 if truncated is None:
                     continue
                 applied_segment = truncated
             else:
                 ok, fail_reason, fail_resource = self._acquire_segment_resources(
-                    segment, path_id, train_id, requested_destination_direction
+                    segment, path_id, train_id, requested_destination_direction,
+                    manual_override=manual_override,
                 )
                 if not ok:
                     last_resource = fail_resource
                     last_reason = fail_reason
                     self._rollback_segment(segment, path_id)
+                    # Acquire-time failure on a validation-passing segment
+                    # is an occupancy-class blocker (a race between
+                    # validation and acquire); track it so the tail can
+                    # return `BLOCKED_NO_GROWTH` per design_new.md ":994".
+                    had_occupancy_blocker = True
                     if acquisition_mode == AcquisitionMode.ALL_OR_NOTHING:
                         continue
+                    # Forward manual_override per the operator-initiated
+                    # `manual_override` rule in design_new.md (under the
+                    # `disabled` and `manual` availability flags canonical
+                    # home); the three sibling _best_effort_truncate sites
+                    # in this file already do.
                     truncated = self._best_effort_truncate(
                         segment, path_id, train_id,
                         requested_destination_direction,
+                        manual_override=manual_override,
                     )
                     if truncated is None:
                         continue
@@ -928,6 +1042,34 @@ class PathDispatcher:
         ext_reason = last_reason or "All extension paths blocked"
         if last_resource and last_resource not in ext_reason:
             ext_reason = f"{ext_reason} (blocked at {last_resource})"
+
+        # Per design_new.md ":994" / ":997": when BEST_EFFORT extend cannot
+        # append any new resource but the existing path is still a legal
+        # forward prefix to the requested target (`find_paths` returned
+        # forward candidates above) and the only obstruction was an
+        # occupancy/reservation/lock conflict, return
+        # `success=True / result_kind=BLOCKED_NO_GROWTH`. The stored
+        # requested target is updated to reflect this attempt; the
+        # `resource_sequence` is left untouched. Route executors use this
+        # outcome to keep retrying the same path_id rather than cancelling.
+        if (
+            acquisition_mode == AcquisitionMode.BEST_EFFORT
+            and had_occupancy_blocker
+        ):
+            path.requested_destination_block_id = requested_destination_block_id
+            path.requested_destination_direction = requested_destination_direction
+            path._set_status(PathStatus.ACTIVE, now)
+            return PathAcquisitionResult(
+                success=True,
+                result_kind=PathAcquisitionResultKind.BLOCKED_NO_GROWTH,
+                path_id=path_id,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=requested_destination_direction,
+                authority_end_block_id=path.get_authority_end_block_id(),
+                resource_sequence=list(path.resource_sequence),
+                reason=ext_reason,
+            )
+
         return PathAcquisitionResult(
             success=False,
             failure_kind=PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
@@ -1071,9 +1213,14 @@ class PathDispatcher:
         path_id: str,
         train_id: str,
         direction: str,
+        manual_override: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """Reserve all blocks + lock all switches in a PathSegment via the
         ResourceCoordinator facade.
+
+        `manual_override` (default False) is propagated from the calling
+        `create_path(...)` / `extend_path(...)` per the `disabled` and `manual`
+        availability flags canonical home in design_new.md (under TrackResource).
 
         Returns (success, failure_reason, failed_resource_id).
         """
@@ -1097,15 +1244,23 @@ class PathDispatcher:
         }
 
         switch_requests: List[SwitchLockRequest] = []
+        # Build a map: switch tile xy -> its index in segment.tiles, so we
+        # can derive the route (entry_edge, exit_edge) by looking at the
+        # neighbouring tiles in path order.
+        tile_index_by_xy: Dict[Tuple[int, int], int] = {
+            tile: i for i, tile in enumerate(segment.tiles)
+        }
         for pos, locked_state in segment.required_switches.items():
             switch_entity = self._resolve_switch_at_position(pos)
             if switch_entity is None:
                 continue
+            route = self._derive_switch_route(segment, pos, tile_index_by_xy)
             switch_requests.append(
                 SwitchLockRequest(
                     switch_id=switch_entity.switch_id,
                     locked_state=int(locked_state),
                     source_switch_id=None,
+                    route=route,
                 )
             )
 
@@ -1115,6 +1270,7 @@ class PathDispatcher:
             switch_requests=switch_requests,
             path_id=path_id,
             train_id=train_id,
+            manual_override=manual_override,
         )
         if not result.success:
             return (
@@ -1124,6 +1280,49 @@ class PathDispatcher:
             )
 
         return (True, "", None)
+
+    def _derive_switch_route(
+        self,
+        segment: PathSegment,
+        switch_pos: Tuple[int, int],
+        tile_index_by_xy: Dict[Tuple[int, int], int],
+    ) -> Optional[frozenset]:
+        """Return the unordered route key the path takes through the switch
+        tile at ``switch_pos``, as ``frozenset({entry_edge, exit_edge})``.
+
+        Derived from the neighbouring tiles in ``segment.tiles``:
+          - entry_edge = the switch tile's edge facing the previous tile
+          - exit_edge  = the switch tile's edge facing the next tile
+
+        Returns None when the switch tile has no neighbour on one side
+        within the segment (path terminates at the switch, which is
+        already forbidden by the block-terminated-authority rule but
+        defended for callers that pass an irregular segment).
+        """
+        idx = tile_index_by_xy.get(switch_pos)
+        if idx is None:
+            return None
+        x, y = switch_pos
+        # Entry edge: face of the switch tile toward the previous tile.
+        entry_edge: Optional[str] = None
+        if idx > 0:
+            px, py = segment.tiles[idx - 1]
+            # direction_from_delta(dx, dy) returns the cardinal heading
+            # from prev → curr; the switch tile's entry edge is the
+            # opposite of that heading.
+            heading_in = direction_from_delta(x - px, y - py)
+            if heading_in:
+                entry_edge = OPPOSITE_EDGE.get(heading_in)
+        # Exit edge: face of the switch tile toward the next tile.
+        exit_edge: Optional[str] = None
+        if idx + 1 < len(segment.tiles):
+            nx, ny = segment.tiles[idx + 1]
+            heading_out = direction_from_delta(nx - x, ny - y)
+            if heading_out:
+                exit_edge = heading_out
+        if entry_edge is None or exit_edge is None:
+            return None
+        return frozenset({entry_edge, exit_edge})
 
     def _train_already_in(self, train_id: str, block_id: str) -> bool:
         train = self._get_train(train_id)
@@ -1165,8 +1364,15 @@ class PathDispatcher:
         The index of the first failing occupancy-class block in
         `segment.blocks` is the count of blocks that are still acquirable
         (validation would have flagged any earlier conflict in the same
-        pass). For switch-only conflicts that carry no `block_id`, return
-        None so the caller falls back to the full backward walk.
+        pass).
+
+        For occupancy-class errors that carry no `block_id` (e.g.
+        `SWITCH_LOCKED` records the failure as a tile position only), find
+        the most recent block in `segment.blocks` whose ordered tiles
+        appear before the failing switch position in `segment.tiles` and
+        use that block's index. This avoids the previous O(N) backward
+        walk against a still-locked switch on every BEST_EFFORT dispatch
+        tick.
         """
         candidate_indices: List[int] = []
         for err in errors:
@@ -1174,9 +1380,54 @@ class PathDispatcher:
                 continue
             if err.block_id and err.block_id in segment.blocks:
                 candidate_indices.append(segment.blocks.index(err.block_id))
+                continue
+            if err.position is not None:
+                idx = self._position_to_block_index(segment, err.position)
+                if idx is not None:
+                    candidate_indices.append(idx)
         if not candidate_indices:
             return None
         return min(candidate_indices)
+
+    def _position_to_block_index(
+        self,
+        segment: PathSegment,
+        position: Tuple[int, int],
+    ) -> Optional[int]:
+        """Return the index in `segment.blocks` of the last block whose
+        ordered tile appears strictly before `position` in `segment.tiles`.
+
+        Used by `_compute_truncate_hint` when an occupancy-class error
+        carries only a tile position (e.g. `SWITCH_LOCKED`) so the
+        BEST_EFFORT truncate can land on the block before the contested
+        switch without walking the full prefix backwards.
+
+        Returns None when the position is not in `segment.tiles` or when
+        no earlier block is found (e.g. the failing switch is at the head
+        of the segment).
+        """
+        try:
+            switch_tile_idx = segment.tiles.index(position)
+        except ValueError:
+            return None
+        # Walk back through tiles; for each, locate the owning block via
+        # the network's track. The most recent block in `segment.blocks`
+        # before the switch tile is the truncation hint (block-index = +1
+        # of the count we want to acquire — the first one to drop is at
+        # that index, so the prefix length is the index itself).
+        for tile_idx in range(switch_tile_idx - 1, -1, -1):
+            x, y = segment.tiles[tile_idx]
+            track = self.network.get_track(x, y)
+            if track is None:
+                continue
+            block_id = getattr(track, "block_section_id", None)
+            if block_id and block_id in segment.blocks:
+                # `block_id` is acquirable; the first block to drop is the
+                # one AFTER this one in `segment.blocks`. _best_effort_truncate
+                # interprets the hint as `start_at_block_count = N` meaning
+                # "try the prefix of length N first," so return that count.
+                return segment.blocks.index(block_id) + 1
+        return None
 
     def _best_effort_truncate(
         self,
@@ -1185,6 +1436,7 @@ class PathDispatcher:
         train_id: str,
         direction: str,
         start_at_block_count: Optional[int] = None,
+        manual_override: bool = False,
     ) -> Optional[PathSegment]:
         """Try to acquire a strictly shorter prefix of `segment`.
 
@@ -1202,18 +1454,49 @@ class PathDispatcher:
             start = max(2, min(start_at_block_count, max_prefix))
         for prefix_block_count in range(start, 1, -1):
             prefix_blocks = segment.blocks[:prefix_block_count]
-            # Compute prefix tile cutoff: include all tiles whose track
-            # belongs to one of `prefix_blocks` (or to a switch on the way).
+            # Compute prefix tile cutoff. Block tiles are kept while their
+            # block_section_id is in `prefix_blocks`. A switch tile is kept
+            # only when the next non-switch tile in path order belongs to a
+            # kept block — i.e. the switch sits inside the prefix, not at
+            # the boundary to a dropped block. Per design_new.md ":891" the
+            # stored live authority is always block-terminated, and per
+            # ":938" truncation must land "before that failed switch", so a
+            # boundary switch must not appear in the truncated segment.
             cutoff_tiles: List[Tuple[int, int]] = []
-            for tile in segment.tiles:
+            n_tiles = len(segment.tiles)
+            i = 0
+            while i < n_tiles:
+                tile = segment.tiles[i]
                 track = self.network.get_track(*tile)
                 if track is None:
+                    i += 1
                     continue
                 if track.is_switch:
-                    cutoff_tiles.append(tile)
-                    continue
+                    # Look ahead to the next non-switch tile; include this
+                    # switch only if that tile belongs to a kept block.
+                    next_in_prefix = False
+                    j = i + 1
+                    while j < n_tiles:
+                        next_track = self.network.get_track(*segment.tiles[j])
+                        if next_track is None:
+                            j += 1
+                            continue
+                        if next_track.is_switch:
+                            j += 1
+                            continue
+                        next_in_prefix = (
+                            next_track.block_section_id in prefix_blocks
+                        )
+                        break
+                    if next_in_prefix:
+                        cutoff_tiles.append(tile)
+                        i += 1
+                        continue
+                    # Boundary switch to a dropped block: truncate here.
+                    break
                 if track.block_section_id in prefix_blocks:
                     cutoff_tiles.append(tile)
+                    i += 1
                 else:
                     # Stop at first tile of an excluded block.
                     break
@@ -1228,7 +1511,8 @@ class PathDispatcher:
                 blocks=prefix_blocks,
             )
             ok, reason, _ = self._acquire_segment_resources(
-                truncated, path_id, train_id, direction
+                truncated, path_id, train_id, direction,
+                manual_override=manual_override,
             )
             if ok:
                 return truncated
@@ -1579,11 +1863,22 @@ class PathDispatcher:
             return True  # no coordinator = no conflict detection
         active_path = self.get_active_path(train_id)
         path_id = active_path.path_id if active_path is not None else None
+        # For switch events the controller side filled entry_edge +
+        # switch_exit_edge on the ResourceEvent; build the unordered route
+        # key (frozenset of two edges) for route-keyed occupancy.
+        route = None
+        if (
+            event.resource_type == "switch"
+            and event.entry_edge
+            and event.switch_exit_edge
+        ):
+            route = frozenset({event.entry_edge, event.switch_exit_edge})
         return coordinator.on_physical_entry(
             resource_type=event.resource_type,
             resource_id=event.resource_id,
             train_id=train_id,
             path_id=path_id,
+            route=route,
         )
 
     def _fire_route_advanced_callback(
@@ -1600,17 +1895,31 @@ class PathDispatcher:
     def _release_tail_vacated_resource(
         self, event: ResourceEvent, train_id: str
     ) -> None:
-        """Route a tail-vacate event to ResourceCoordinator."""
+        """Route a tail-vacate event to ResourceCoordinator.
+
+        For switch events, builds the route key the train used (from the
+        vacating tile's entry_edge / switch_exit_edge) so the right
+        ``route_owners`` entry gets cleared. Block events forward
+        ``direction`` (the vacated block's forward exit edge) as before.
+        """
         if event is None or not event.resource_id:
             return
         coordinator = getattr(self.network, "resource_coordinator", None)
         if coordinator is None:
             return
+        route = None
+        if (
+            event.resource_type == "switch"
+            and event.entry_edge
+            and event.switch_exit_edge
+        ):
+            route = frozenset({event.entry_edge, event.switch_exit_edge})
         coordinator.release_tail_vacated(
             resource_type=event.resource_type,
             resource_id=event.resource_id,
             train_id=train_id,
             direction=event.exit_edge,
+            route=route,
         )
 
     # ========================================================================

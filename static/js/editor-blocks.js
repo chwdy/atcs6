@@ -157,6 +157,8 @@ class BlockEditorHandler {
                         <input type="number" id="block-speed-input" class="input-small-field input-small-field-compact" value="${block.speed_limit_kmh || ''}" min="0" step="1" placeholder="Not set">
                     </div>
 
+                    ${renderAvailabilitySegment('block', block, { idBase: 'block-availability' })}
+
                     <div class="flex gap-8">
                         <button id="save-block-btn" class="btn btn-primary btn-sm flex-1">💾 Save</button>
                         <button id="delete-block-btn" class="btn btn-danger btn-sm flex-1">🗑 Delete</button>
@@ -181,6 +183,35 @@ class BlockEditorHandler {
         const lengthInput = document.getElementById('block-length-input');
         const radiusInput = document.getElementById('block-radius-input');
         const speedInput = document.getElementById('block-speed-input');
+
+        // Availability segment (disabled / manual). Per docs/DESIGN_LANGUAGE.md
+        // §3 segmented control — three-state availability per design_new.md
+        // "Availability flag REST API surface".
+        bindAvailabilitySegment('block-availability', async (_state, flags) => {
+            try {
+                const result = await this.api.updateBlock(blockId, flags);
+                if (result && result.error) {
+                    window.showToast(
+                        `Cannot change availability: ${result.error}`,
+                        'error',
+                        4000
+                    );
+                    // Re-render to roll the active class back to the server's value.
+                    this.showEditor(blockId);
+                } else {
+                    window.showToast(`Block ${blockId} availability updated`, 'info', 1500);
+                    await window.app.refreshNetwork();
+                }
+            } catch (err) {
+                console.error('Failed to update block availability:', err);
+                window.showToast(
+                    `Cannot change availability: ${err.message || err}`,
+                    'error',
+                    4000
+                );
+                this.showEditor(blockId);
+            }
+        });
 
         // Save button
         if (saveBtn) {

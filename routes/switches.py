@@ -80,19 +80,79 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/switches/<switch_id>", methods=["PUT"])
     def update_switch(switch_id: str):
-        """Update switch configuration."""
+        """Update switch configuration.
+
+        Per design_new.md "Availability flag REST API surface" canonical home
+        (under TrackResource): setting `disabled = True` runs the Switch
+        admin-reject preconditions (occupancy / future locks / train-owned
+        protection) and returns HTTP 409 on rejection; setting `manual` always
+        succeeds. Toggling `disabled` also fires
+        `BlockManager.on_switch_position_changed(switch_id)`.
+        """
         try:
             data = request.json
             if not data:
                 return jsonify({"error": "No data provided"}), 400
 
-            switch = state.network.update_switch(switch_id, **data)
+            switch = state.network.get_switch(switch_id)
             if not switch:
                 return jsonify({"error": "Switch not found"}), 404
+
+            # Pull availability flags out of the data dict before forwarding
+            # the remaining fields to the legacy update path; we handle the
+            # admin-reject + notify here.
+            data = dict(data)
+            disabled_change = data.pop("disabled", None)
+            manual_change = data.pop("manual", None)
+
+            if disabled_change is not None:
+                new_disabled = bool(disabled_change)
+                if new_disabled and not switch.disabled:
+                    if switch.occupied_by is not None:
+                        return jsonify(
+                            {"error": f"Switch is occupied by {switch.occupied_by}"}
+                        ), 409
+                    if switch.locks:
+                        return jsonify({"error": "Switch has live future locks"}), 409
+                    if switch.train_protection_claims:
+                        return jsonify(
+                            {"error": "Switch has live train-protection claims"}
+                        ), 409
+                disabled_actually_changed = (new_disabled != switch.disabled)
+                switch.disabled = new_disabled
+                # Connectivity changed — notify BlockManager. Per design_new.md
+                # "Toggling `disabled` also fires
+                # `BlockManager.on_switch_position_changed(switch_id)`": fire
+                # only when the value actually changed, not on every PATCH that
+                # carries the `disabled` key (the UI's availability segment
+                # always sends both disabled and manual together).
+                if disabled_actually_changed:
+                    bm = getattr(state.network, "block_manager", None)
+                    if bm is not None:
+                        try:
+                            bm.on_switch_position_changed(switch_id)
+                        except Exception:
+                            pass
+
+            if manual_change is not None:
+                switch.manual = bool(manual_change)
+
+            # Forward any remaining fields to the existing update helper.
+            if data:
+                switch = state.network.update_switch(switch_id, **data) or switch
 
             return jsonify(switch.to_dict(state.network))
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/switches/<switch_id>", methods=["PATCH"])
+    def patch_switch_availability(switch_id: str):
+        """PATCH endpoint that mirrors the PATCH /api/blocks/<id> shape for the
+        availability flags (`disabled`, `manual`). Delegates to the same
+        logic as PUT for these fields; included so the entity-editor UI can
+        use a uniform PATCH endpoint per design_new.md "Availability flag
+        REST API surface"."""
+        return update_switch(switch_id)
 
     @app.route("/api/switches/<switch_id>", methods=["DELETE"])
     def delete_switch(switch_id: str):
@@ -150,11 +210,14 @@ def register(app, state: AppState) -> None:
                 )
 
             command_id = data.get("command_id") or str(uuid.uuid4())
+            manual_override = bool(data.get("manual_override", False))
 
             # Route through SwitchManager so the BlockManager notification is
-            # paired with the position write.
+            # paired with the position write. `manual_override` is the
+            # operator-override flag per design_new.md "Availability flag REST
+            # API surface" — without it, a manual switch fails the request.
             success, message = switch_manager.request_position_change(
-                switch_id, new_state
+                switch_id, new_state, manual_override=manual_override
             )
 
             # Emit command_result through NotificationCenter so callers observe

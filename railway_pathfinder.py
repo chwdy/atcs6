@@ -62,6 +62,7 @@ class RailwayPathfinder:
         end_block_id: str,
         direction_constraint: Optional[str] = None,
         max_candidates: Optional[int] = None,
+        manual_override: bool = False,
     ) -> List[GraphWalkCandidate]:
         """Thin adapter over ``query_graph_walks`` for block-ID callers.
 
@@ -118,6 +119,7 @@ class RailwayPathfinder:
             requested_destination_direction=direction_constraint,
             return_tiles=True,
             return_blocks=True,
+            manual_override=manual_override,
         )
         candidates = self.query_graph_walks(request)
         if max_candidates is not None and max_candidates >= 0:
@@ -187,9 +189,12 @@ class RailwayPathfinder:
         # 3. Apply direction-aware filters; wrap survivors into
         #    GraphWalkCandidate with all new fields populated.
         direction_constraint = request.requested_destination_direction
+        manual_override = request.manual_override
         candidates: List[GraphWalkCandidate] = []
         for rank, walk in enumerate(raw_walks):
-            if not self._walk_passes_filters(walk, direction_constraint):
+            if not self._walk_passes_filters(
+                walk, direction_constraint, manual_override=manual_override
+            ):
                 continue
 
             # Determine terminal block info.
@@ -826,19 +831,28 @@ class RailwayPathfinder:
         self,
         walk: PathSegment,
         direction_constraint: Optional[str],
+        manual_override: bool = False,
     ) -> bool:
-        """Reject walks that traverse a disabled resource or violate
+        """Reject walks that traverse a disabled resource, traverse a manual
+        resource without operator override, or violate
         ``Block.allowed_travel_directions`` / ``direction_constraint``.
+
+        Per the `disabled` and `manual` availability flags canonical home in
+        design_new.md (under TrackResource): disabled blocks/switches are
+        always rejected; manual blocks/switches are rejected when
+        ``manual_override`` is False.
         """
-        # Disabled-block filter.
+        # Disabled-block and manual-block filters.
         for block_id in walk.blocks:
             block = self.network.blocks.get(block_id)
             if block is None:
                 continue
             if getattr(block, "disabled", False):
                 return False
+            if getattr(block, "manual", False) and not manual_override:
+                return False
 
-        # Disabled-switch filter.
+        # Disabled-switch and manual-switch filters.
         switches = getattr(self.network, "switches", None) or {}
         for pos in walk.required_switches.keys():
             track = self.network.get_track(*pos)
@@ -852,6 +866,12 @@ class RailwayPathfinder:
                         switch = s
                         break
             if switch is not None and getattr(switch, "disabled", False):
+                return False
+            if (
+                switch is not None
+                and getattr(switch, "manual", False)
+                and not manual_override
+            ):
                 return False
 
         # Direction filter against the destination block.

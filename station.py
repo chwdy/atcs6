@@ -30,6 +30,20 @@ class Station:
     name: str = ""
     platform_ids: List[str] = field(default_factory=list)
     created_at: Optional[str] = None
+    disabled: bool = False
+    """When True, no StationTarget task can resolve to this station; the
+    station's platform_ids are excluded from candidate enumeration. Individual
+    Platform records inside the station remain reachable via PlatformTarget
+    subject to each platform's own flags. No operator override at the station
+    level. See the Platform And Station availability flags in design_new.md."""
+    manual: bool = False
+    """When True, every StationTarget auto-resolution treats this station as
+    if disabled (all of its platform_ids excluded from candidate enumeration)
+    because automatic callers never set manual_override. Individual platforms
+    inside it remain reachable through their own PlatformTarget rules subject
+    to each platform's own flags. See the Platform And Station availability
+    flags in design_new.md and the `disabled` and `manual` availability flags
+    canonical home under TrackResource."""
 
     def __post_init__(self):
         """Set creation timestamp if not provided."""
@@ -154,6 +168,8 @@ class Station:
             "name": self.name,
             "platform_ids": list(self.platform_ids),
             "created_at": self.created_at,
+            "disabled": self.disabled,
+            "manual": self.manual,
         }
 
     @classmethod
@@ -164,4 +180,6 @@ class Station:
             name=data.get("name", ""),
             platform_ids=list(data.get("platform_ids", [])),
             created_at=data.get("created_at"),
+            disabled=bool(data.get("disabled", False)),
+            manual=bool(data.get("manual", False)),
         )

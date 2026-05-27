@@ -79,15 +79,6 @@ class Renderer {
         // - true: show block colors only (for block tools)
         this.showBlockColorsOnly = false;
 
-        // Block section colors (semi-transparent versions of track colors)
-        // FREE=Blue, RESERVED=Green, OCCUPIED=Red, CAUTION=Yellow
-        this.blockColors = {
-            'FREE': 'rgba(66, 133, 244, 0.3)',      // Blue
-            'RESERVED': 'rgba(4, 211, 97, 0.3)',    // Green
-            'OCCUPIED': 'rgba(232, 63, 91, 0.3)',   // Red
-            'CAUTION': 'rgba(255, 205, 30, 0.3)'    // Yellow
-        };
-
         // Current blocks data for track coloring
         this.currentBlocks = {};
 
@@ -109,6 +100,7 @@ class Renderer {
         this.trackHandler = new RendererTrackHandler(this);
         this.signalHandler = new RendererSignalHandler(this);
         this.platformHandler = new RendererPlatformHandler(this);
+        this.stationHandler = new RendererStationHandler(this);
         this.blockHandler = new RendererBlockHandler(this);
         this.routeHandler = new RendererRouteHandler(this);
         this.trainHandler = new RendererTrainHandler(this);
@@ -124,14 +116,14 @@ class Renderer {
             this.mouseY = e.clientY - rect.top;
 
             // Redraw if mouse moved and we have a network
-            // Need redraw for: block hover, platform name hover, etc.
+            // Need redraw for: block hover, platform name hover, train label dodge.
             const showBlocksElement = document.getElementById('debug-show-blocks');
             const showBlocks = showBlocksElement ? showBlocksElement.checked : false;
             const hasPlatforms = this.currentPlatforms && this.currentPlatforms.length > 0;
+            const hasTrains = this.currentNetwork?.trains?.length > 0;
 
             if (this.currentNetwork && (prevMouseX !== this.mouseX || prevMouseY !== this.mouseY)) {
-                // Redraw if blocks debug is enabled OR if there are platforms (for hover-to-expand)
-                if (showBlocks || this.showBlockColorsOnly || hasPlatforms) {
+                if (showBlocks || this.showBlockColorsOnly || hasPlatforms || hasTrains) {
                     this.drawNetwork(this.currentNetwork);
                 }
             }
@@ -146,9 +138,10 @@ class Renderer {
             const showBlocksElement = document.getElementById('debug-show-blocks');
             const showBlocks = showBlocksElement ? showBlocksElement.checked : false;
             const hasPlatforms = this.currentPlatforms && this.currentPlatforms.length > 0;
+            const hasTrains = this.currentNetwork?.trains?.length > 0;
 
             if (this.currentNetwork && (prevMouseX !== -1 || prevMouseY !== -1)) {
-                if (showBlocks || this.showBlockColorsOnly || hasPlatforms) {
+                if (showBlocks || this.showBlockColorsOnly || hasPlatforms || hasTrains) {
                     this.drawNetwork(this.currentNetwork);
                 }
             }
@@ -442,6 +435,10 @@ class Renderer {
             });
         }
 
+        // Station labels go on top of everything so the high-level grouping
+        // marker is always visible.
+        this.stationHandler.drawStations();
+
         // Box/lasso-select overlay (highlight + in-progress shape) sits on top
         this.drawBoxSelection();
         this.drawBoxSelectRect();
@@ -551,5 +548,66 @@ class Renderer {
 
     clearPathHighlight() {
         this.routeHandler.clearRouteHighlight();
+    }
+
+    // ========================================================================
+    // Label placement helpers (shared by train + platform labels)
+    // ========================================================================
+
+    getNearbyTrackSegments(cx, cy, radius) {
+        const tracks = this.currentNetwork?.tracks;
+        if (!tracks || !tracks.length) return [];
+        const half = this.gridSize * this.scale / 2;
+        const edges = {
+            'N': { x:  half / 2, y: -half / 2 },
+            'E': { x:  half / 2, y:  half / 2 },
+            'S': { x: -half / 2, y:  half / 2 },
+            'W': { x: -half / 2, y: -half / 2 },
+        };
+        const cutoff = (radius + half) * (radius + half);
+        const segments = [];
+        for (const tr of tracks) {
+            const tx = this.gridToScreenX(tr.x, tr.y);
+            const ty = this.gridToScreenY(tr.x, tr.y);
+            const dx = tx - cx, dy = ty - cy;
+            if (dx * dx + dy * dy > cutoff) continue;
+            const bits = tr.track_bits || 0;
+            for (let bit = 0; bit < 6; bit++) {
+                if (!(bits & (1 << bit))) continue;
+                const [e1, e2] = BIT_TO_EDGES[bit];
+                segments.push({
+                    x1: tx + edges[e1].x, y1: ty + edges[e1].y,
+                    x2: tx + edges[e2].x, y2: ty + edges[e2].y,
+                });
+            }
+        }
+        return segments;
+    }
+
+    distPointToSegment(px, py, x1, y1, x2, y2) {
+        const dx = x2 - x1, dy = y2 - y1;
+        const lenSq = dx * dx + dy * dy;
+        if (lenSq < 1e-6) return Math.hypot(px - x1, py - y1);
+        let t = ((px - x1) * dx + (py - y1) * dy) / lenSq;
+        t = Math.max(0, Math.min(1, t));
+        return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+    }
+
+    distRectToSegments(bx, by, w, h, segments) {
+        if (!segments || !segments.length) return Infinity;
+        const cx = bx + w / 2, cy = by + h / 2;
+        const samples = [
+            [cx, cy],
+            [bx, by], [bx + w, by], [bx, by + h], [bx + w, by + h],
+            [cx, by], [cx, by + h], [bx, cy], [bx + w, cy],
+        ];
+        let minDist = Infinity;
+        for (const seg of segments) {
+            for (const [px, py] of samples) {
+                const d = this.distPointToSegment(px, py, seg.x1, seg.y1, seg.x2, seg.y2);
+                if (d < minDist) minDist = d;
+            }
+        }
+        return minDist;
     }
 }

@@ -60,6 +60,13 @@ def register(app, state: AppState) -> None:
             platform.platform_side = PlatformSide(data["platform_side"])
         if "top_speed_kmh" in data:
             platform.top_speed_kmh = data["top_speed_kmh"]
+        # Availability flags per design_new.md "Availability flag REST API
+        # surface". Both succeed unconditionally — they affect only future
+        # route target resolution.
+        if "disabled" in data:
+            platform.disabled = bool(data["disabled"])
+        if "manual" in data:
+            platform.manual = bool(data["manual"])
 
         return jsonify(platform.to_dict_with_orientation(state.network))
 

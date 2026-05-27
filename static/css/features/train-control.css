@@ -12,8 +12,7 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-    padding: 10px;
-    padding-bottom: 16px;
+    padding: 0;
     font-family: var(--font-main);
     font-size: 12px;
     color: var(--text-primary);
@@ -26,6 +25,16 @@
     gap: 6px;
     padding-top: 6px;
     border-top: 1px solid var(--border-color);
+}
+
+/* Card-bearing zones reach the panel edges — the inner card (.tc-section-task
+   itself, or .tc-hmi inside .tc-section-status) carries its own internal
+   padding. Text-content zones (Controls / Debug) keep horizontal padding so
+   their labels and inputs stay inset from the sidebar walls. */
+.tc-section-controls,
+.tc-section-debug {
+    padding-left: 10px;
+    padding-right: 10px;
 }
 
 .tc-section-title {
@@ -1103,7 +1112,9 @@
 
 /* ---- Wide (≥ 400px) — use the extra space ---- */
 @container (min-width: 400px) {
-    .tc-panel { padding: 12px; gap: 12px; }
+    .tc-panel { gap: 12px; }
+    .tc-section-controls,
+    .tc-section-debug { padding-left: 12px; padding-right: 12px; }
 
     /* Status: roomier */
     .tc-status { padding: 12px 14px; }

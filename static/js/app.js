@@ -473,6 +473,17 @@ class App {
 
         try {
             const network = await window.api.getNetwork();
+
+            // Pull station groups alongside so the renderer can draw station
+            // labels at the centroid of each station's platforms. Failure here
+            // shouldn't block the rest of the render.
+            try {
+                const stationResp = await window.api.listStationGroups();
+                network.stations = stationResp?.stations || [];
+            } catch (_) {
+                network.stations = [];
+            }
+
             this.currentNetwork = network;
 
             // NEW: Update StateManager cache

@@ -18,16 +18,6 @@ class SwitchEditorHandler {
     get api() { return this.editor.api; }
     get selectedElement() { return this.editor.selectedElement; }
 
-    getSwitchStateClass(switchState) {
-        return switchState === 0 ? 'switch-state-main' : 'switch-state-diverge';
-    }
-
-    _replaceSwitchStateClass(element, nextClass) {
-        if (!element) return;
-        element.classList.remove('switch-state-main', 'switch-state-diverge');
-        element.classList.add(nextClass);
-    }
-
     // === Switch Editor Panel ===
 
     async showEditor(switchId) {
@@ -59,7 +49,8 @@ class SwitchEditorHandler {
 
         const currentState = track?.switch_state ?? 0;
         const stateText = currentState === 0 ? 'MAIN' : 'DIVERGE';
-        const stateClass = this.getSwitchStateClass(currentState);
+        const accentClass = currentState === 0 ? 'accent-success' : 'accent-warn';
+        const chipClass   = currentState === 0 ? 'chip-success'   : 'chip-warn';
         // The Switch entity exposes a `locks` array; the Track mirrors a
         // single canonical owner via `locked_by_path`. Prefer the Track
         // mirror for display because it picks the same path the path
@@ -72,50 +63,41 @@ class SwitchEditorHandler {
             trackLockedBy ||
             (lockEntries.length > 0 ? (lockEntries[0].path_id || null) : null);
         const isLocked = lockedByPath !== null;
-        const lockText = isLocked ? `Locked by ${lockedByPath}` : 'Unlocked';
+        const switchType = switchData.switch_type || 'standard';
 
         const content = `
-            <!-- INFO SECTION (Read-only) -->
-            <div class="info-box-track info-display-large">
-                <!-- Large State Display -->
-                <div class="switch-state-header">
-                    <div class="switch-state-row">
-                        <span class="train-status-dot switch-state-dot ${stateClass}"></span>
-                        <span class="switch-state-title ${stateClass}">${stateText}</span>
-                    </div>
-                    <div class="info-meta mt-4">State ${currentState}</div>
+            <!-- §11 Status header — identity + state pill, dynamic accent. -->
+            <div class="status-header ${accentClass}">
+                <div class="status-header-row">
+                    <div class="status-header-id font-mono" title="${switchData.switch_id}">${switchData.switch_id}</div>
+                    <span class="chip chip-state ${chipClass}">${stateText}</span>
                 </div>
-
-                <!-- Info Grid -->
-                <div class="property-grid signal-grid-tight info-display-small">
-                    <div class="property-item">
-                        <div class="info-label">Switch ID</div>
-                        <div class="info-value text-info">${switchData.switch_id}</div>
-                    </div>
-                    <div class="property-item">
-                        <div class="info-label">Position</div>
-                        <div class="info-value text-muted">(${switchData.x}, ${switchData.y})</div>
-                    </div>
-                    <div class="property-item">
-                        <div class="info-label">Type</div>
-                        <div class="info-value">${switchData.switch_type || 'standard'}</div>
-                    </div>
-                    <div class="property-item">
-                        <div class="info-label">Lock Status</div>
-                        <div class="info-value ${isLocked ? 'text-danger' : 'text-success'}">${lockText}</div>
-                    </div>
+                <div class="status-header-ident">
+                    <span class="status-header-role">Switch</span>
+                    <span class="status-sep">·</span>
+                    <span class="font-mono">${switchType}</span>
+                    <span class="status-sep">·</span>
+                    <span class="font-mono">(${switchData.x}, ${switchData.y})</span>
                 </div>
             </div>
 
-            <!-- CONTROL BUTTONS -->
+            <!-- §6 banner — surfaces the lock owner when locked. Hidden when free. -->
+            ${isLocked ? `
+            <div class="banner banner-danger">
+                <div class="banner-label">Locked by</div>
+                <div class="banner-value banner-text">${lockedByPath}</div>
+            </div>
+            ` : ''}
+
+            <!-- Controls -->
             <div class="control-section">
                 <div class="control-section-header">Controls</div>
                 <div class="flex gap-8">
-                    <button id="toggle-switch-btn" class="btn ${isLocked ? 'btn-secondary' : 'btn-primary'} flex-1" ${isLocked ? 'disabled' : ''}>
+                    <button id="toggle-switch-btn" class="btn btn-secondary btn-sm flex-1" ${isLocked ? 'disabled' : ''}>
                         Toggle State
                     </button>
                 </div>
-                ${isLocked ? '<div class="text-warning text-xs mt-8">Switch is locked and cannot be toggled</div>' : ''}
+                ${isLocked ? '<div class="text-warning text-xs mt-8">Switch is locked and cannot be toggled.</div>' : ''}
             </div>
 
             <!-- LENGTH PROPERTIES SECTION -->
@@ -156,9 +138,11 @@ class SwitchEditorHandler {
                     <input type="text" id="switch-notes" class="property-input" value="${switchData.notes || ''}" placeholder="Notes...">
                 </div>
 
-                <div class="switch-action-row mt-16">
-                    <button id="save-switch-btn" class="btn btn-primary flex-1">Save Properties</button>
-                    <button id="delete-switch-btn" class="btn btn-danger">Delete</button>
+                ${renderAvailabilitySegment('switch', switchData, { idBase: 'switch-availability' })}
+
+                <div class="flex gap-8 mt-16">
+                    <button id="save-switch-btn" class="btn btn-secondary btn-sm flex-1">Save Properties</button>
+                    <button id="delete-switch-btn" class="btn btn-danger btn-sm">Delete</button>
                 </div>
             </div>
         `;
@@ -170,6 +154,39 @@ class SwitchEditorHandler {
     }
 
     bindEventHandlers(switchData) {
+        // Availability segment (disabled / manual). Per docs/DESIGN_LANGUAGE.md
+        // §3 segmented control and design_new.md "Availability flag REST API
+        // surface". Toggling `disabled = True` runs admin-reject preconditions
+        // on the server (HTTP 409); toggling `manual` always succeeds.
+        bindAvailabilitySegment('switch-availability', async (_state, flags) => {
+            try {
+                const result = await this.api.updateSwitch(switchData.switch_id, flags);
+                if (result && result.error) {
+                    window.showToast(
+                        `Cannot change availability: ${result.error}`,
+                        'error',
+                        4000
+                    );
+                    this.showEditor(switchData.switch_id);
+                } else {
+                    window.showToast(
+                        `Switch ${switchData.switch_id} availability updated`,
+                        'info',
+                        1500
+                    );
+                    await window.app.refreshNetwork();
+                }
+            } catch (err) {
+                console.error('Failed to update switch availability:', err);
+                window.showToast(
+                    `Cannot change availability: ${err.message || err}`,
+                    'error',
+                    4000
+                );
+                this.showEditor(switchData.switch_id);
+            }
+        });
+
         // Toggle switch state
         const toggleBtn = document.getElementById('toggle-switch-btn');
         if (toggleBtn && !toggleBtn.disabled) {
@@ -279,30 +296,12 @@ class SwitchEditorHandler {
     }
     
     async _updateSwitchDisplay(switchData) {
-        const track = await this.api.getTrack(switchData.x, switchData.y);
-        const currentState = track?.switch_state ?? 0;
-        const stateText = currentState === 0 ? 'MAIN' : 'DIVERGE';
-        const stateClass = this.getSwitchStateClass(currentState);
-        const lockEntries = Array.isArray(switchData.locks) ? switchData.locks : [];
-        const lockedByPath =
-            (track?.locked_by_path || null) ||
-            (lockEntries.length > 0 ? (lockEntries[0].path_id || null) : null);
-        const isLocked = lockedByPath !== null;
-        
-        const stateDot = document.querySelector('.train-status-dot');
-        this._replaceSwitchStateClass(stateDot, stateClass);
-        
-        const stateSpan = stateDot?.nextElementSibling;
-        if (stateSpan) {
-            this._replaceSwitchStateClass(stateSpan, stateClass);
-            stateSpan.textContent = stateText;
-        }
-        
-        const lockBadge = document.querySelector('.badge-danger, .badge-success');
-        if (lockBadge) {
-            lockBadge.className = `badge ${isLocked ? 'badge-danger' : 'badge-success'} text-xxs`;
-            lockBadge.textContent = isLocked ? 'LOCKED' : 'UNLOCKED';
-        }
+        // The status header chrome + lock banner are structural (the banner
+        // appears/disappears based on lock state, and the state pill's text
+        // and accent class both change with switch state). Re-render via
+        // showEditor so every part stays in sync; _onSwitchUpdate already
+        // skips this path while the user is editing form fields.
+        await this.showEditor(switchData.switch_id);
     }
     
     _cleanup() {

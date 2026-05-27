@@ -70,6 +70,18 @@ class Platform:
     block_assignments: Dict[Tuple[int, int], str] = field(
         default_factory=dict
     )  # (x, y) -> block_id
+    disabled: bool = False
+    """When True, the platform cannot be the resolved target of any route task.
+    StationTarget candidate enumeration excludes it; PlatformTarget naming this
+    platform fails at resolution time. No operator override. See the
+    Platform And Station availability flags in design_new.md."""
+    manual: bool = False
+    """When True, automatic route target resolution treats the platform as if
+    disabled. Operator-initiated paths can still land on the platform's
+    constituent blocks via dispatcher-level manual_override (subject to each
+    block's own flags). See the Platform And Station availability flags in
+    design_new.md and the `disabled` and `manual` availability flags
+    canonical home under TrackResource."""
 
     def __post_init__(self):
         """Set creation timestamp if not provided."""
@@ -92,6 +104,8 @@ class Platform:
                 f"{x},{y}": block_id
                 for (x, y), block_id in self.block_assignments.items()
             },
+            "disabled": self.disabled,
+            "manual": self.manual,
         }
 
     def to_dict_with_orientation(self, network: "RailwayNetwork") -> Dict[str, Any]:
@@ -203,6 +217,8 @@ class Platform:
             created_at=data.get("created_at"),
             initial_orientation=data.get("initial_orientation"),
             block_assignments=block_assignments,
+            disabled=bool(data.get("disabled", False)),
+            manual=bool(data.get("manual", False)),
         )
 
     def add_position(self, x: int, y: int) -> None:

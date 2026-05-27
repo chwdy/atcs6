@@ -198,31 +198,33 @@ class BlockManager:
             )
             return False
 
-        if prior_state == BlockState.RESERVED:
-            # Only the train the reservation was for may take it.
-            if (
-                block.reserved_for_train is not None
-                and block.reserved_for_train != train_id
-            ):
-                self._report_fatal_conflict(
-                    block_id=block_id,
-                    train_id=train_id,
-                    conflict_kind=FatalConflictKind.RESERVED_FOR_OTHER_TRAIN,
-                    prior_owner_train_id=block.reserved_for_train,
-                )
-                return False
-            block.occupied_by = train_id
-            block.caution = None
-            # Same-train reservation is consumed by clean entry.
-            block.reservation = None
-            self._record_history(
-                block_id, "occupy", prior_state, BlockState.OCCUPIED, train_id
+        # Cross-train reservation conflict — checked regardless of whether
+        # the computed state is RESERVED or CAUTION-with-reservation-underneath,
+        # because CAUTION outranks RESERVED in `Block.state` priority so a
+        # reservation can live under a caution and would otherwise slip
+        # through the RESERVED-only branch.
+        if (
+            block.reserved_for_train is not None
+            and block.reserved_for_train != train_id
+        ):
+            self._report_fatal_conflict(
+                block_id=block_id,
+                train_id=train_id,
+                conflict_kind=FatalConflictKind.RESERVED_FOR_OTHER_TRAIN,
+                prior_owner_train_id=block.reserved_for_train,
             )
-            return True
+            return False
 
-        # FREE or CAUTION -> OCCUPIED. Clean entry clears stale caution.
+        # Clean entry per design_new.md:717 — set physical occupancy, clear
+        # stale caution, and consume any same-train reservation. The
+        # reservation clear must run for every clean entry (FREE / RESERVED
+        # / CAUTION) so a reservation hidden under a caution does not
+        # survive the train and re-surface as RESERVED once the caution
+        # clears. (`block.reservation = None` is a no-op when the field is
+        # already None, so the FREE case is unaffected.)
         block.occupied_by = train_id
         block.caution = None
+        block.reservation = None
         self._record_history(
             block_id, "occupy", prior_state, BlockState.OCCUPIED, train_id
         )
@@ -470,6 +472,7 @@ class BlockManager:
         path_id: str,
         train_id: str,
         directions: Mapping[str, ReservedBlockTraversal],
+        manual_override: bool = False,
     ) -> ReserveResult:
         """Atomically reserve a list of future blocks for a path.
 
@@ -484,12 +487,19 @@ class BlockManager:
             block.occupied_by is None,
             (block.reserved_by_path is None
              or block.reserved_by_path == path_id),
-            and the candidate `block_direction` is in
-            block.allowed_travel_directions.
+            the candidate `block_direction` is in
+              block.allowed_travel_directions,
+            and (block.manual is False OR manual_override is True).
 
         `_is_caution == True` is NOT an eligibility failure; it affects the
         following train through the controller's caution speed cap rather
         than reservation eligibility.
+
+        `manual_override` is propagated from the calling
+        `PathDispatcher.create_path(...)` / `extend_path(...)` per the
+        `disabled` and `manual` availability flags canonical home in
+        design_new.md (under TrackResource). Automatic callers omit this
+        flag; only operator-initiated calls set it to True.
 
         Blocks the train already physically occupies should not be in the
         candidate set (they are train-owned physical occupancy, not
@@ -509,6 +519,12 @@ class BlockManager:
                     success=False,
                     failed_block_id=block_id,
                     failure_reason="disabled",
+                )
+            if block.manual and not manual_override:
+                return ReserveResult(
+                    success=False,
+                    failed_block_id=block_id,
+                    failure_reason="manual_no_override",
                 )
             if block.occupied_by is not None:
                 return ReserveResult(

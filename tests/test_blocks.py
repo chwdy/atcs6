@@ -434,6 +434,70 @@ class TestBlockManager:
         assert blocks["B1"].state == BlockState.RESERVED
         assert blocks["B1"].reserved_for_train == "TRAIN_A"
 
+    def test_occupy_block_from_caution_consumes_same_train_reservation(self):
+        """A reservation can live under a CAUTION because CAUTION outranks
+        RESERVED in `Block.state` priority. Per design_new.md:717 clean
+        entry must "consume any same-train reservation by clearing
+        block.reservation" — for entry from CAUTION as well as from
+        RESERVED. Without this, the reservation survives the train's
+        traversal and the block flips to RESERVED (green) instead of FREE
+        (blue) once caution clears later, surfacing as a phantom
+        reservation behind the departed train.
+        """
+        from block_manager import BlockManager
+        from block import CautionState
+
+        block = Block("B1", ordered_tiles=[(0, 0, "S")])
+        # Prior train left → CAUTION. Our train's path then reserved this
+        # block before our train physically arrived. Reservation sits
+        # underneath the caution.
+        block.caution = CautionState(exit_edge="E")
+        block.reserve_for_path("P_OURS", "TRAIN_OURS", "forward")
+        assert block.state == BlockState.CAUTION
+        assert block.reserved_for_train == "TRAIN_OURS"
+
+        manager = BlockManager({"B1": block})
+        assert manager.occupy_block("B1", "TRAIN_OURS")
+        assert block.state == BlockState.OCCUPIED
+        assert block.reservation is None, (
+            "Clean entry from CAUTION must consume the same-train "
+            "reservation per design_new.md:717."
+        )
+
+        # Now simulate the rest of the lifecycle: train tail vacates,
+        # caution sets directionally, then caution clears (e.g. switch
+        # flip downstream). Block must end FREE, not RESERVED.
+        block.occupied_by = None
+        block.caution = CautionState(exit_edge="E")
+        assert block.state == BlockState.CAUTION
+        block.caution = None
+        assert block.state == BlockState.FREE, (
+            "After the train has gone and caution clears, the block "
+            "must be FREE (blue). RESERVED (green) here means a phantom "
+            "reservation survived the traversal."
+        )
+
+    def test_occupy_block_from_caution_rejects_cross_train_reservation(self):
+        """If a CAUTION block holds a reservation for a DIFFERENT train,
+        clean entry by another train must hard-reject — mirrors the
+        RESERVED case at design_new.md:717. Previously the CAUTION-entry
+        branch silently overrode the conflicting reservation.
+        """
+        from block_manager import BlockManager
+        from block import CautionState
+
+        block = Block("B1", ordered_tiles=[(0, 0, "S")])
+        block.caution = CautionState(exit_edge="E")
+        block.reserve_for_path("P_OTHER", "TRAIN_OTHER", "forward")
+        assert block.state == BlockState.CAUTION  # CAUTION outranks RESERVED
+
+        manager = BlockManager({"B1": block})
+        result = manager.occupy_block("B1", "TRAIN_OURS")
+        assert result is False
+        # State must be unchanged.
+        assert block.occupied_by is None
+        assert block.reserved_for_train == "TRAIN_OTHER"
+
 
 class _FakeSimulationController:
     """Minimal simulation controller stand-in for fatal-conflict tests."""

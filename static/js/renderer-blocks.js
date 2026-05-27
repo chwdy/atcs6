@@ -17,16 +17,6 @@ class RendererBlockHandler {
     gridToScreenX(x, y) { return this.renderer.gridToScreenX(x, y); }
     gridToScreenY(x, y) { return this.renderer.gridToScreenY(x, y); }
 
-    getBlockStateColor(state) {
-        const colors = {
-            'free': '#00ff88',
-            'reserved': '#ffd93d',
-            'occupied': '#e83f5b',
-            'caution': '#ff8c42'
-        };
-        return colors[state] || '#888';
-    }
-
     getBlockColor(blockId) {
         if (!blockId) return null;
 
@@ -302,13 +292,7 @@ class RendererBlockHandler {
 
             const blockName = blockInfo.name || '';
             const blockState = (blockInfo.state || 'FREE').toUpperCase();
-            const stateColors = {
-                'FREE': '#04d361',
-                'RESERVED': '#ffd93d',
-                'OCCUPIED': '#e83f5b',
-                'CAUTION': '#ff9500'
-            };
-            const stateColor = stateColors[blockState] || '#888';
+            const stateColor = getBlockStateColor(blockState);
 
             const shortId = hoveredBlockId.length > 10 ? hoveredBlockId.slice(-6) : hoveredBlockId;
             const displayName = blockName || shortId;

@@ -56,21 +56,31 @@ class Editor {
 
         // Box-select tool state. selectedKeys accumulates "x,y" strings across
         // successive rectangle drags; cleared by Delete (after success), Esc
-        // (when non-empty), or mode exit. Drag coords are screen-space so the
-        // rubber-band stays pixel-accurate during zooming.
+        // (when non-empty), Space, or mode exit. Drag coords are screen-space
+        // so the rubber-band stays pixel-accurate during zooming.
         //
-        // The lasso-select tool shares the same selectedKeys set so Delete /
-        // Esc semantics apply to both tools; only the in-progress drag shape
-        // differs (rectangle vs. free-drawn polyline).
+        // The lasso-select and paint-select tools share the same selectedKeys
+        // set so Delete / Esc / Space semantics apply uniformly; only the
+        // in-progress drag shape differs (rectangle, free-drawn polyline, or
+        // per-tile brush). `shiftRemoving` is captured at mousedown so the
+        // add/remove choice is locked for the duration of the drag even if
+        // the user releases Shift partway through.
         this.boxSelectState = {
             selectedKeys: new Set(),
             dragScreenStart: null,
             dragScreenEnd: null,
             isDragging: false,
+            shiftRemoving: false,
         };
         this.lassoSelectState = {
             screenPoints: [],
             isDrawing: false,
+            shiftRemoving: false,
+        };
+        this.paintSelectState = {
+            isPainting: false,
+            shiftRemoving: false,
+            lastKey: null,  // last "x,y" applied this stroke, to avoid redundant work
         };
 
         // === Active editor mode ===
@@ -496,6 +506,7 @@ class Editor {
             'cancel-path': () => this.pathHandler.buildCancelRouteMode(),
             'box-select':  () => this._buildBoxSelectMode(),
             'lasso-select':() => this._buildLassoSelectMode(),
+            'paint-select':() => this._buildPaintSelectMode(),
         };
     }
 
@@ -505,6 +516,7 @@ class Editor {
             this.boxSelectState.dragScreenStart = null;
             this.boxSelectState.dragScreenEnd = null;
             this.boxSelectState.isDragging = false;
+            this.boxSelectState.shiftRemoving = false;
             this.renderer.setBoxSelection(new Set());
             this.renderer.setBoxSelectRect(null);
         };
@@ -515,7 +527,7 @@ class Editor {
             onEnter: () => {
                 resetState();
                 const status = document.getElementById('status-state');
-                if (status) status.textContent = 'Box: drag to add, Delete to remove, Esc to clear';
+                if (status) status.textContent = 'Box: drag to add, Shift+drag to remove, Space clears, Delete removes tracks';
             },
             // Mouse interactions are handled by the mousedown/move/up branches
             // below; the click hook is a no-op so clicks don't fall through to
@@ -550,6 +562,7 @@ class Editor {
             this.boxSelectState.selectedKeys = new Set();
             this.lassoSelectState.screenPoints = [];
             this.lassoSelectState.isDrawing = false;
+            this.lassoSelectState.shiftRemoving = false;
             this.renderer.setBoxSelection(new Set());
             this.renderer.setLassoPath(null);
         };
@@ -560,7 +573,7 @@ class Editor {
             onEnter: () => {
                 resetState();
                 const status = document.getElementById('status-state');
-                if (status) status.textContent = 'Lasso: draw a shape to add, Delete to remove, Esc to clear';
+                if (status) status.textContent = 'Lasso: draw a shape to add, Shift to remove, Space clears, Delete removes tracks';
             },
             onClick: () => true,
             onExit: () => {
@@ -570,6 +583,54 @@ class Editor {
                 if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
             },
         };
+    }
+
+    // Brush-select: click adds the tile under the cursor; mouse-down + drag
+    // paints every tile the cursor passes through into the same selection set
+    // box and lasso write to. Shift inverts add → remove (locked at mousedown
+    // so a release mid-stroke doesn't flip the operation).
+    _buildPaintSelectMode() {
+        const resetState = () => {
+            this.boxSelectState.selectedKeys = new Set();
+            this.paintSelectState.isPainting = false;
+            this.paintSelectState.shiftRemoving = false;
+            this.paintSelectState.lastKey = null;
+            this.renderer.setBoxSelection(new Set());
+        };
+        return {
+            name: 'Brush select',
+            toolName: 'paint-select',
+            cancelMessage: 'Brush select cancelled',
+            onEnter: () => {
+                resetState();
+                const status = document.getElementById('status-state');
+                if (status) status.textContent = 'Brush: click or drag to add, Shift to remove, Space clears, Delete removes tracks';
+            },
+            onClick: () => true,
+            onExit: () => {
+                resetState();
+                const status = document.getElementById('status-state');
+                if (status) status.textContent = 'Ready';
+                if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+            },
+        };
+    }
+
+    // Apply a single tile to the brush-select set. Returns true if selectedKeys
+    // actually changed (so the caller can skip a redraw on a no-op).
+    _applyPaintTile(gridPos, removing) {
+        const tracks = this.cachedNetwork?.tracks || [];
+        const track = tracks.find(t => t.x === gridPos.x && t.y === gridPos.y);
+        if (!track) return false;
+        const key = `${gridPos.x},${gridPos.y}`;
+        if (removing) {
+            if (!this.boxSelectState.selectedKeys.has(key)) return false;
+            this.boxSelectState.selectedKeys.delete(key);
+        } else {
+            if (this.boxSelectState.selectedKeys.has(key)) return false;
+            this.boxSelectState.selectedKeys.add(key);
+        }
+        return true;
     }
 
     // Tools that just open a panel or run a one-shot action. They never change
@@ -672,6 +733,7 @@ class Editor {
             // Left mouse + box-select = start screen-space rubber-band rectangle
             else if (e.button === 0 && this.selectedTool === 'box-select') {
                 this.boxSelectState.isDragging = true;
+                this.boxSelectState.shiftRemoving = e.shiftKey;
                 this.boxSelectState.dragScreenStart = { x, y };
                 this.boxSelectState.dragScreenEnd = { x, y };
                 this.renderer.setBoxSelectRect({ startX: x, startY: y, endX: x, endY: y });
@@ -679,8 +741,22 @@ class Editor {
             // Left mouse + lasso-select = start free-form polyline
             else if (e.button === 0 && this.selectedTool === 'lasso-select') {
                 this.lassoSelectState.isDrawing = true;
+                this.lassoSelectState.shiftRemoving = e.shiftKey;
                 this.lassoSelectState.screenPoints = [{ x, y }];
                 this.renderer.setLassoPath(this.lassoSelectState.screenPoints);
+            }
+            // Left mouse + paint-select = start tile-by-tile brush stroke,
+            // applying the start tile immediately so a plain click also adds.
+            else if (e.button === 0 && this.selectedTool === 'paint-select') {
+                this.paintSelectState.isPainting = true;
+                this.paintSelectState.shiftRemoving = e.shiftKey;
+                this.paintSelectState.lastKey = null;
+                const removing = this.paintSelectState.shiftRemoving;
+                if (this._applyPaintTile(gridPos, removing)) {
+                    this.paintSelectState.lastKey = `${gridPos.x},${gridPos.y}`;
+                    this.renderer.setBoxSelection(this.boxSelectState.selectedKeys);
+                    if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+                }
             }
             // Left click with signal/platform = single click placement
             else if (e.button === 0 && ['signal', 'platform'].includes(this.selectedTool)) {
@@ -742,6 +818,17 @@ class Editor {
                     if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
                 }
             }
+            else if (this.paintSelectState.isPainting) {
+                const key = `${gridPos.x},${gridPos.y}`;
+                if (key !== this.paintSelectState.lastKey) {
+                    const removing = this.paintSelectState.shiftRemoving;
+                    if (this._applyPaintTile(gridPos, removing)) {
+                        this.renderer.setBoxSelection(this.boxSelectState.selectedKeys);
+                        if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+                    }
+                    this.paintSelectState.lastKey = key;
+                }
+            }
             // Hover preview for signal/platform tools
             else if (['signal', 'platform'].includes(this.selectedTool)) {
                 this.updateHoverPreview(gridPos);
@@ -762,27 +849,29 @@ class Editor {
                 this.boxSelectState.isDragging = false;
                 const start = this.boxSelectState.dragScreenStart;
                 const end = this.boxSelectState.dragScreenEnd;
+                const removing = this.boxSelectState.shiftRemoving;
                 this.boxSelectState.dragScreenStart = null;
                 this.boxSelectState.dragScreenEnd = null;
+                this.boxSelectState.shiftRemoving = false;
                 this.renderer.setBoxSelectRect(null);
 
                 if (onCanvas && start && end) {
                     const tracks = this.cachedNetwork?.tracks || [];
-                    // No-movement click (within 2px slop): toggle the track at the click
+                    // No-movement click (within 2px slop): add (or remove if Shift)
+                    // the track at the click. Plain click always adds; redoing
+                    // an add on an already-selected tile is a no-op.
                     const isClick = Math.abs(start.x - end.x) <= 2 && Math.abs(start.y - end.y) <= 2;
                     if (isClick) {
                         const gp = this.renderer.screenToGrid(start.x, start.y);
                         const track = tracks.find(t => t.x === gp.x && t.y === gp.y);
                         if (track) {
                             const key = `${gp.x},${gp.y}`;
-                            if (this.boxSelectState.selectedKeys.has(key)) {
-                                this.boxSelectState.selectedKeys.delete(key);
-                            } else {
-                                this.boxSelectState.selectedKeys.add(key);
-                            }
+                            if (removing) this.boxSelectState.selectedKeys.delete(key);
+                            else this.boxSelectState.selectedKeys.add(key);
                         }
                     } else {
-                        // Drag: union any track whose screen center falls inside the rect
+                        // Drag: add (or remove if Shift) any track whose screen
+                        // center falls inside the rect
                         const minX = Math.min(start.x, end.x);
                         const maxX = Math.max(start.x, end.x);
                         const minY = Math.min(start.y, end.y);
@@ -791,7 +880,9 @@ class Editor {
                             const sx = this.renderer.gridToScreenX(t.x, t.y);
                             const sy = this.renderer.gridToScreenY(t.x, t.y);
                             if (sx >= minX && sx <= maxX && sy >= minY && sy <= maxY) {
-                                this.boxSelectState.selectedKeys.add(`${t.x},${t.y}`);
+                                const key = `${t.x},${t.y}`;
+                                if (removing) this.boxSelectState.selectedKeys.delete(key);
+                                else this.boxSelectState.selectedKeys.add(key);
                             }
                         }
                     }
@@ -803,7 +894,9 @@ class Editor {
             else if (this.lassoSelectState.isDrawing) {
                 this.lassoSelectState.isDrawing = false;
                 const pts = this.lassoSelectState.screenPoints;
+                const removing = this.lassoSelectState.shiftRemoving;
                 this.lassoSelectState.screenPoints = [];
+                this.lassoSelectState.shiftRemoving = false;
                 this.renderer.setLassoPath(null);
 
                 if (onCanvas && pts.length >= 3) {
@@ -812,13 +905,22 @@ class Editor {
                         const sx = this.renderer.gridToScreenX(t.x, t.y);
                         const sy = this.renderer.gridToScreenY(t.x, t.y);
                         if (this._pointInPolygon(sx, sy, pts)) {
-                            this.boxSelectState.selectedKeys.add(`${t.x},${t.y}`);
+                            const key = `${t.x},${t.y}`;
+                            if (removing) this.boxSelectState.selectedKeys.delete(key);
+                            else this.boxSelectState.selectedKeys.add(key);
                         }
                     }
                 }
 
                 this.renderer.setBoxSelection(this.boxSelectState.selectedKeys);
                 if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
+            }
+            else if (this.paintSelectState.isPainting) {
+                // Tiles were applied incrementally during mousedown/mousemove;
+                // mouseup just ends the stroke and clears per-stroke state.
+                this.paintSelectState.isPainting = false;
+                this.paintSelectState.shiftRemoving = false;
+                this.paintSelectState.lastKey = null;
             }
             else if (this.isDraggingBuild && this.dragStart && this.dragEnd) {
                 // Stop dragging state immediately to prevent updates during async operations
@@ -941,12 +1043,21 @@ class Editor {
                 this.hasPanned = false; // Reset for next interaction
                 return;
             }
-            
+
             const rect = canvas.getBoundingClientRect();
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
+
+            // Station labels float above the grid — give them a chance to
+            // capture the click before any tile/tool logic runs.
+            const stationId = this.renderer.stationHandler?.stationAt?.(x, y);
+            if (stationId) {
+                await this.stationGroupHandler.showStationDetail(stationId);
+                return;
+            }
+
             const gridPos = this.renderer.screenToGrid(x, y);
-            
+
             // Any active EditorMode gets the first shot at the click.
             // Returning true consumes the click; false lets it fall through.
             if (this.activeMode) {
@@ -1057,9 +1168,11 @@ class Editor {
                     return; // Let modal/input handlers deal with it
                 }
 
-                // Box/lasso select: first Esc clears any selection; second Esc
-                // (empty selection) falls through to exit the mode.
-                const isMarkSelectTool = this.selectedTool === 'box-select' || this.selectedTool === 'lasso-select';
+                // Box/lasso/brush select: first Esc clears any selection;
+                // second Esc (empty selection) falls through to exit the mode.
+                const isMarkSelectTool = this.selectedTool === 'box-select'
+                    || this.selectedTool === 'lasso-select'
+                    || this.selectedTool === 'paint-select';
                 if (isMarkSelectTool && this.boxSelectState.selectedKeys.size > 0) {
                     this.boxSelectState.selectedKeys = new Set();
                     this.renderer.setBoxSelection(new Set());
@@ -1084,10 +1197,12 @@ class Editor {
             }
         });
 
-        // Delete / Backspace key - remove the box/lasso-select selection.
+        // Delete / Backspace key - remove the box/lasso/brush-select selection.
         document.addEventListener('keydown', async (e) => {
             if (e.key !== 'Delete' && e.key !== 'Backspace') return;
-            if (this.selectedTool !== 'box-select' && this.selectedTool !== 'lasso-select') return;
+            if (this.selectedTool !== 'box-select'
+                && this.selectedTool !== 'lasso-select'
+                && this.selectedTool !== 'paint-select') return;
             const inInput = document.activeElement && (
                 document.activeElement.tagName === 'INPUT' ||
                 document.activeElement.tagName === 'TEXTAREA' ||
@@ -1118,6 +1233,29 @@ class Editor {
                 console.error('[Editor] Box-select delete failed:', err);
                 window.showToast('Failed to delete: ' + err.message, 'error', 5000);
             }
+        });
+
+        // Space key - clear the current selection without exiting the tool.
+        // Distinct from Esc, which clears on first press and exits the mode on
+        // the second.
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== ' ' && e.code !== 'Space') return;
+            if (this.selectedTool !== 'box-select'
+                && this.selectedTool !== 'lasso-select'
+                && this.selectedTool !== 'paint-select') return;
+            const inInput = document.activeElement && (
+                document.activeElement.tagName === 'INPUT' ||
+                document.activeElement.tagName === 'TEXTAREA' ||
+                document.activeElement.tagName === 'SELECT'
+            );
+            const inModal = document.querySelector('.block-modal-overlay, .modal-overlay') !== null;
+            if (inInput || inModal) return;
+            e.preventDefault();
+
+            if (this.boxSelectState.selectedKeys.size === 0) return;
+            this.boxSelectState.selectedKeys = new Set();
+            this.renderer.setBoxSelection(new Set());
+            if (this.cachedNetwork) this.renderer.drawNetwork(this.cachedNetwork);
         });
     }
 
@@ -2235,10 +2373,7 @@ class Editor {
             ${track.block_section_id ? (() => {
                 const block = this.cachedBlocks && this.cachedBlocks.find(b => b.block_id === track.block_section_id);
                 const blockColor = this.getBlockColor(track.block_section_id);
-                const stateColor = block && block.state === 'free' ? 'var(--success-color)' :
-                                   block && block.state === 'reserved' ? 'var(--accent-color)' :
-                                   block && block.state === 'occupied' ? 'var(--danger-color)' :
-                                   block && block.state === 'caution' ? 'var(--warning-color)' : 'var(--text-secondary)';
+                const stateColor = block ? getBlockStateColor(block.state) : 'var(--text-secondary)';
                 return `
                 <div class="property-group-header">Block</div>
                 <div class="property-item-row">

@@ -88,6 +88,11 @@ def register(app, state: AppState) -> None:
             "requested_destination_direction", "forward"
         )
         acquisition_mode = _parse_acquisition_mode(data.get("acquisition_mode"))
+        # Operator override flag per design_new.md "Availability flag REST API
+        # surface" canonical home (under TrackResource). When True, manual
+        # blocks/switches participate in candidate search and acquisition.
+        # Disabled resources are always excluded regardless.
+        manual_override = bool(data.get("manual_override", False))
 
         if not train_id:
             return jsonify({"error": "train_id required"}), 400
@@ -110,6 +115,7 @@ def register(app, state: AppState) -> None:
                     requested_destination_block_id=requested_destination_block_id,
                     requested_destination_direction=requested_destination_direction,
                     acquisition_mode=acquisition_mode,
+                    manual_override=manual_override,
                 )
 
                 if result.success and result.path_id:
@@ -298,6 +304,9 @@ def register(app, state: AppState) -> None:
             "requested_destination_direction", "forward"
         )
         acquisition_mode = _parse_acquisition_mode(data.get("acquisition_mode"))
+        # Operator override flag per design_new.md "Availability flag REST API
+        # surface" canonical home (under TrackResource).
+        manual_override = bool(data.get("manual_override", False))
 
         if not requested_destination_block_id:
             return (
@@ -315,6 +324,7 @@ def register(app, state: AppState) -> None:
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
                 acquisition_mode=acquisition_mode,
+                manual_override=manual_override,
             )
 
             # Sync train state after successful extension. The controller

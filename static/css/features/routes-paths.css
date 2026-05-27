@@ -296,16 +296,17 @@
 /* ============================================================================
    Route Runs panel + single-run editor
 
-   Built strictly on the primitives in docs/DESIGN_LANGUAGE.md:
+   Built on the shared primitives in components/status-blocks.css plus the
+   route-runs-specific composition layered here:
      §5A stacked label/value rows   → .rr-fields / .rr-field
-     §6 3px left-border row accents → .rr-card / .rr-task / .rr-accent-*
-     §7 pill counts and status chips → .rr-chip / .rr-chip-state
-     §11 status header block        → .rr-status-header
+     §6 banner timestamp annotation → .rr-banner-time
+     §6 row-foot chip grouping       → .rr-status-meta
      §11 standard card, action       → .rr-card
          buttons inside go flat       → .rr-flat-btn
-   All accent colors come from tokens — no new hues. Long auto-generated
-   route names are clamped to one line; the full string lives in the
-   title attribute as a tooltip.
+
+   The generic shapes (.status-header, .chip, .banner, .accent-*) live in
+   components/status-blocks.css — that file is the canonical home for
+   primitives shared across editor panels. Don't redefine them here.
    ============================================================================ */
 
 .rr-panel { padding: 0; }
@@ -403,116 +404,13 @@
     color: var(--accent-hover);
 }
 
-/* ---- Chip row (§7). ---- */
-
-.rr-chip-row {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 4px 6px;
-}
-
-/* §7 base pill — small mono numeric/short-text chips for header/toolbar. */
-.rr-chip {
-    background-color: var(--bg-dark);
-    color: var(--text-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 999px;
-    padding: 1px 8px;
-    font-size: 10px;
-    font-family: var(--font-mono);
-    line-height: 1.4;
-    white-space: nowrap;
-}
-
-/* §7 state badge — accent text on 15%-opacity accent bg, no border. */
-.rr-chip-state {
-    border-color: transparent;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    font-family: var(--font-main);
-    font-size: 9px;
-}
-
-.rr-chip-success { color: var(--success-color); background-color: rgba(4, 211, 97, 0.15); }
-.rr-chip-info    { color: var(--info-color);    background-color: rgba(0, 212, 255, 0.15); }
-.rr-chip-warn    { color: var(--warning-color); background-color: rgba(255, 205, 30, 0.15); }
-.rr-chip-danger  { color: var(--danger-color);  background-color: rgba(232, 63, 91, 0.15); border-color: transparent; }
-.rr-chip-muted   { color: var(--text-tertiary); background-color: var(--bg-hover); }
-
-/* Status left-border accent classes — used by .rr-card and .rr-status-header. */
-.rr-accent-success { border-left-color: var(--success-color); }
-.rr-accent-info    { border-left-color: var(--info-color); }
-.rr-accent-warn    { border-left-color: var(--warning-color); }
-.rr-accent-danger  { border-left-color: var(--danger-color); }
-.rr-accent-muted   { border-left-color: var(--border-color); }
-
 /* ---- Single-run editor ---- */
 
 .rr-editor { padding: 0; }
 
-/* §11 Status header block — `--bg-hover` bg, dynamic 3px left accent. */
-.rr-status-header {
-    background-color: var(--bg-hover);
-    border-left: 3px solid var(--border-color);
-    border-radius: var(--control-radius-sm);
-    padding: 10px 12px;
-    margin-bottom: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-
-.rr-status-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    min-width: 0;
-}
-
-.rr-status-train {
-    font-size: 14px;
-    font-weight: 700;
-    color: var(--text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
-}
-
-.rr-status-route {
-    font-size: 11px;
-    color: var(--text-secondary);
-    line-height: 1.45;
-    word-break: break-word;
-    overflow-wrap: anywhere;
-}
-
-/* Identity line — Run #N + route_id. The run number is the unique identity
-   of this run instance, so it gets a labelled prominent treatment (the
-   view-level equivalent of the `#` ordinal in the task list). */
-.rr-status-ident {
-    display: flex;
-    align-items: baseline;
-    flex-wrap: wrap;
-    gap: 6px;
-    font-size: 11px;
-    color: var(--text-secondary);
-}
-
-.rr-status-runid {
-    color: var(--text-primary);
-    font-weight: 600;
-    letter-spacing: 0.02em;
-}
-
-.rr-status-sep {
-    color: var(--text-tertiary);
-}
-
-/* Kept for back-compat — used by the route-runs list (.rr-card foot). */
+/* Chip-row grouping used at the foot of an .rr-card. Same shape as the
+   generic .chip-row from components/status-blocks.css — kept here for
+   the route-runs list's back-compat. */
 .rr-status-meta {
     display: flex;
     align-items: center;
@@ -520,40 +418,8 @@
     gap: 4px 6px;
 }
 
-/* ---- Banners (§10 error row + §6 banner) ---- */
-
-.rr-banner {
-    padding: 8px 10px;
-    margin-bottom: 12px;
-    font-size: 11px;
-    border-radius: var(--control-radius-sm);
-    border-left: 3px solid var(--border-color);
-    background-color: var(--bg-dark);
-}
-
-.rr-banner-warn {
-    border-left-color: var(--warning-color);
-    background-color: rgba(255, 205, 30, 0.08);
-    color: var(--warning-color);
-}
-
-.rr-banner-danger {
-    border-left-color: var(--danger-color);
-    background-color: rgba(232, 63, 91, 0.06);
-    color: var(--text-primary);
-}
-
-.rr-banner-label {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-tertiary);
-    font-weight: 500;
-    margin-bottom: 2px;
-}
-
-.rr-banner-text { color: var(--danger-color); }
-
+/* Timestamp annotation appended below a .banner in the route-runs editor
+   (e.g. "started 1:23 PM" under the error text). */
 .rr-banner-time {
     margin-top: 2px;
     font-size: 10px;
@@ -1511,11 +1377,13 @@
     padding-top: 12px;
 }
 
-.block-state-display.block-state-free { color: #04d361; }
-.block-state-display.block-state-reserved { color: #ffd93d; }
-.block-state-display.block-state-occupied { color: #e83f5b; }
-.block-state-display.block-state-caution { color: #ff9500; }
-.block-state-display.block-state-unknown { color: #888; }
+.block-state-display.block-state-free { color: var(--block-free); }
+.block-state-display.block-state-reserved { color: var(--block-reserved); }
+.block-state-display.block-state-occupied { color: var(--block-occupied); }
+.block-state-display.block-state-caution { color: var(--block-caution); }
+.block-state-display.block-state-disabled { color: var(--block-disabled); }
+.block-state-display.block-state-manual { color: var(--block-manual); }
+.block-state-display.block-state-unknown { color: var(--text-tertiary); }
 
 .block-station-names {
     color: #eebb00;

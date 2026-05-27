@@ -160,39 +160,69 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/blocks/<block_id>", methods=["PATCH"])
     def update_block(block_id):
-        """Update block properties"""
-        block = state.network.get_block(block_id)
-        if not block:
-            return jsonify({"error": "Block not found"}), 404
+        """Update block properties.
 
-        data = request.json or {}
-        if "name" in data:
-            block.name = data["name"] if data["name"] is not None else ""
-        if "length_cm" in data:
-            block.length_cm = float(data["length_cm"])
-        if "min_radius_cm" in data:
-            block.min_radius_cm = data["min_radius_cm"]
-        if "speed_limit_kmh" in data:
-            block.speed_limit_kmh = data["speed_limit_kmh"]
-        elif "max_speed_kmh" in data:
-            block.speed_limit_kmh = data["max_speed_kmh"]
-        if "state" in data:
-            # Block state is owned by BlockManager / ResourceCoordinator in v1
-            # and computed from `occupied_by` / `_is_caution` / `reservation`;
-            # there is no admin-side direct-mutation surface. The cycle-state
-            # endpoint that exercised this path was removed in PR 6.
-            return jsonify(
-                {
-                    "error": (
-                        "Direct block state mutation is not supported in v1. "
-                        "Block state is derived from occupied_by / "
-                        "_is_caution / reservation, written exclusively by "
-                        "BlockManager and ResourceCoordinator."
-                    )
-                }
-            ), 410
+        Mutations to block runtime state happen between simulation ticks
+        per design_new.md "single-threaded runtime" — Flask worker holds
+        `state.simulation_lock` while writing entity fields so the
+        per-tick phase loop cannot observe a torn read.
+        """
+        with state.simulation_lock:
+            block = state.network.get_block(block_id)
+            if not block:
+                return jsonify({"error": "Block not found"}), 404
 
-        return jsonify(block.to_dict())
+            data = request.json or {}
+            if "name" in data:
+                block.name = data["name"] if data["name"] is not None else ""
+            if "length_cm" in data:
+                block.length_cm = float(data["length_cm"])
+            if "min_radius_cm" in data:
+                block.min_radius_cm = data["min_radius_cm"]
+            if "speed_limit_kmh" in data:
+                block.speed_limit_kmh = data["speed_limit_kmh"]
+            elif "max_speed_kmh" in data:
+                block.speed_limit_kmh = data["max_speed_kmh"]
+            if "state" in data:
+                # Block state is owned by BlockManager / ResourceCoordinator in v1
+                # and computed from `occupied_by` / `_is_caution` / `reservation`;
+                # there is no admin-side direct-mutation surface. The cycle-state
+                # endpoint that exercised this path was removed in PR 6.
+                return jsonify(
+                    {
+                        "error": (
+                            "Direct block state mutation is not supported in v1. "
+                            "Block state is derived from occupied_by / "
+                            "_is_caution / reservation, written exclusively by "
+                            "BlockManager and ResourceCoordinator."
+                        )
+                    }
+                ), 410
+
+            # Availability flags per design_new.md "Availability flag REST API
+            # surface" canonical home (under TrackResource). Setting `disabled = True`
+            # runs the Block admin-reject preconditions (occupancy / reservation /
+            # CAUTION) and returns HTTP 409 on rejection; setting `manual` always
+            # succeeds.
+            if "disabled" in data:
+                new_disabled = bool(data["disabled"])
+                if new_disabled and not block.disabled:
+                    # Reject the request when block is held by something.
+                    if block.occupied_by is not None:
+                        return jsonify(
+                            {"error": f"Block is occupied by {block.occupied_by}"}
+                        ), 409
+                    if block.reservation is not None:
+                        return jsonify(
+                            {"error": f"Block is reserved by {block.reserved_by_path}"}
+                        ), 409
+                    if block.caution is not None:
+                        return jsonify({"error": "Block is in CAUTION"}), 409
+                block.disabled = new_disabled
+            if "manual" in data:
+                block.manual = bool(data["manual"])
+
+            return jsonify(block.to_dict())
 
     @app.route("/api/blocks/<block_id>", methods=["DELETE"])
     def delete_block(block_id):

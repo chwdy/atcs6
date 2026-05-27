@@ -496,6 +496,63 @@ class RouteEditorHandler {
                          </div>
                     </div>
                 </div>
+
+                ${this.renderRoutePolicyRow(route)}
+            </div>
+        `;
+    }
+
+    /**
+     * Per design_new.md "Action on waypoint unreachable" + "RouteRun
+     * overrides": the route-level allowlisted policy fields plus per-field
+     * push toggles (force vs soft). Each picker reads route.<field> on
+     * render; the save flow packs {value, push} when push is non-default.
+     */
+    renderRoutePolicyRow(route) {
+        const action = (route.action_on_waypoint_unreachable || 'WAIT');
+        const priority = Number.isInteger(route.priority) ? route.priority : 5;
+        const acq = (route.acquisition_mode || 'best_effort');
+        const seg = (id, options, current) => {
+            return `
+                <div id="${id}" class="switch-group compact route-seg" role="radiogroup">
+                    ${options.map(o => `
+                        <button type="button" class="switch-btn ${o.value === current ? 'active' : ''}"
+                                data-value="${o.value}" data-seg="${id}">${o.label}</button>
+                    `).join('')}
+                </div>
+            `;
+        };
+        const pushSeg = (id, current) => seg(id, [
+            { value: 'soft', label: 'Soft' },
+            { value: 'force', label: 'Force' },
+        ], current || 'soft');
+        return `
+            <div class="route-header-row" data-route-policy-row>
+                <div class="route-header-col">
+                    <label class="property-label">Acquisition</label>
+                    ${seg('route-acq-seg', [
+                        { value: 'best_effort', label: 'Best effort' },
+                        { value: 'all_or_nothing', label: 'All or nothing' },
+                    ], acq)}
+                    <div class="text-xxs text-muted mt-4">Push to runs:</div>
+                    ${pushSeg('route-acq-push-seg', 'soft')}
+                </div>
+                <div class="route-header-col">
+                    <label class="property-label">On waypoint unreachable</label>
+                    ${seg('route-action-seg', [
+                        { value: 'WAIT', label: 'Wait' },
+                        { value: 'SKIP', label: 'Skip' },
+                    ], action)}
+                    <div class="text-xxs text-muted mt-4">Push to runs:</div>
+                    ${pushSeg('route-action-push-seg', 'soft')}
+                </div>
+                <div class="route-header-col narrow">
+                    <label class="property-label">Priority (0-9)</label>
+                    <input type="number" id="route-priority-input" class="property-input"
+                           min="0" max="9" step="1" value="${priority}">
+                    <div class="text-xxs text-muted mt-4">Push to runs:</div>
+                    ${pushSeg('route-priority-push-seg', 'soft')}
+                </div>
             </div>
         `;
     }
@@ -1047,6 +1104,26 @@ class RouteEditorHandler {
                 seg.querySelectorAll('.switch-btn').forEach(b =>
                     b.classList.toggle('active', b === e.currentTarget));
             };
+        });
+
+        // Route-policy + per-field push segmented controls. Toggle .active
+        // on click; the value is read back at save() time. The push pickers
+        // tag each request payload with `{value, push}` per design_new.md
+        // "RouteRun overrides" canonical home.
+        [
+            'route-acq-seg',
+            'route-acq-push-seg',
+            'route-action-seg',
+            'route-action-push-seg',
+            'route-priority-push-seg',
+        ].forEach(segId => {
+            document.querySelectorAll(`#${segId} .switch-btn`).forEach(btn => {
+                btn.onclick = (e) => {
+                    const seg = e.currentTarget.parentElement;
+                    seg.querySelectorAll('.switch-btn').forEach(b =>
+                        b.classList.toggle('active', b === e.currentTarget));
+                };
+            });
         });
 
         // Task reorder/delete/locate buttons
@@ -1690,12 +1767,48 @@ class RouteEditorHandler {
             });
         }
 
+        // Per design_new.md "RouteRun overrides": the three allowlisted
+        // policy fields each carry their own push policy. Pack as
+        // `{value, push}` so the server's per-field push logic picks it up.
+        const segValue = (segId) => {
+            const seg = document.getElementById(segId);
+            if (!seg) return null;
+            const active = seg.querySelector('.switch-btn.active');
+            return active ? active.dataset.value : null;
+        };
+
+        const acqValue = segValue('route-acq-seg');
+        const acqPush = segValue('route-acq-push-seg') || 'soft';
+        const actionValue = segValue('route-action-seg');
+        const actionPush = segValue('route-action-push-seg') || 'soft';
+        const priorityRaw = document.getElementById('route-priority-input')?.value;
+        const priorityPush = segValue('route-priority-push-seg') || 'soft';
+
+        const payload = {
+            name: this.currentRoute.name,
+            mode: this.currentRoute.mode,
+            tasks: tasks,
+        };
+        if (acqValue) {
+            payload.acquisition_mode = { value: acqValue, push: acqPush };
+        }
+        if (actionValue) {
+            payload.action_on_waypoint_unreachable = { value: actionValue, push: actionPush };
+        }
+        // Priority via the shared validator (helpers.js#validatePriorityInput)
+        // so invalid user input surfaces a toast instead of silently dropping
+        // the field per design_new.md "RouteRun overrides" (priority in 0..9).
+        const priorityCheck = validatePriorityInput(priorityRaw);
+        if (priorityCheck.kind === 'error') {
+            window.showToast(priorityCheck.message, 'error', 4000);
+            return;
+        }
+        if (priorityCheck.kind === 'ok') {
+            payload.priority = { value: priorityCheck.value, push: priorityPush };
+        }
+
         try {
-            await this.api.updateRoute(this.currentRoute.route_id, {
-                name: this.currentRoute.name,
-                mode: this.currentRoute.mode,
-                tasks: tasks
-            });
+            await this.api.updateRoute(this.currentRoute.route_id, payload);
             window.showToast('Route saved', 'success', 3000);
         } catch (err) {
             console.error('[RouteEditor] Failed to save route:', err);

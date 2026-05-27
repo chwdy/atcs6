@@ -22,7 +22,7 @@ flow.
 from dataclasses import dataclass, field
 import logging
 import time
-from typing import Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, ClassVar, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
 from enums import ControllerCondition, Direction, TrainState
 from train_controller import TrainController, create_controller_for_train
@@ -31,6 +31,7 @@ from train_route import (
     RouteRunStatus,
     RouteTask,
     RouteTaskRun,
+    WaypointUnreachableAction,
 )
 from runtime_payloads import (
     AcquisitionMode,
@@ -80,12 +81,23 @@ class ResolvedNextTaskProjection:
     Per design_new.md line 1089, `walk_position` is the walk-position index
     in `RouteRun.task_runs`. The underlying `RouteTask` is
     `Route.tasks[task_runs[walk_position].task_index]`.
+
+    `failure_reason` carries the resolver's diagnostic when
+    `resolved_target is None` for a non-dwell task because every candidate
+    block / platform was filtered out (disabled, manual without override,
+    every station platform unavailable). Phase 1 writes this string into
+    `task_runs[walk_position].last_error` via `_record_run_error(...)` so
+    the operator sees why the task is stalled instead of an empty
+    diagnostic. `None` for dwell projections and for the same-tick exclude
+    sentinel (all candidates already attempted) — both of those non-None-
+    target paths do not need a fresh resolver-level error record.
     """
 
     walk_position: int
     task_kind: str  # "waypoint" | "stop" | "dwell"
     direction: str  # "forward" | "reverse"
     resolved_target: Optional[ResolvedRouteTarget] = None
+    failure_reason: Optional[str] = None
 
 
 # =============================================================================
@@ -131,6 +143,107 @@ class RouteExecutionState:
     # field of their own. `last_error` is the canonical ErrorRecord shape so
     # message and timestamp are always either both present or both absent.
     last_error: Optional["ErrorRecord"] = None
+
+    # Sparse per-run overrides of allowlisted route-level operational fields.
+    # Per design_new.md "RouteRun overrides" canonical home: keys are field
+    # names from the v1 override allowlist
+    # (`"priority"`, `"acquisition_mode"`, `"action_on_waypoint_unreachable"`);
+    # a key being absent means "use the shared `Route` value for that field."
+    # Reads go through the effective_* helpers below, which resolve the shared
+    # Route live each access so later operator edits to either the run-level
+    # override or the shared Route take effect on the next read.
+    overrides: Dict[str, Any] = field(default_factory=dict)
+    # Diagnostic-only audit timestamp; bumped by RouteExecutor.set_run_override /
+    # clear_run_override per design_new.md. Not consumed for control flow.
+    overrides_updated_at: Optional[float] = None
+
+    # ------------------------------------------------------------------
+    # Effective-value read helpers (per design_new.md "RouteRun overrides")
+    # ------------------------------------------------------------------
+
+    OVERRIDE_ALLOWLIST: ClassVar[Tuple[str, ...]] = (
+        "priority",
+        "acquisition_mode",
+        "action_on_waypoint_unreachable",
+    )
+
+    def _resolve_route(self, route_executor: Optional[object] = None) -> Optional["Route"]:
+        """Resolve the shared Route for effective-value fallback.
+
+        Callers that already hold a `Route` reference pass it via the
+        `route` argument on `effective_*`. When neither is available the
+        helpers fall back to the stored value (or the shared-route default
+        when nothing is stored) so they remain safe to call outside a
+        RouteExecutor context.
+        """
+        if route_executor is None:
+            return None
+        getter = getattr(route_executor, "get_route", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter(self.route_id)
+        except Exception:
+            return None
+
+    def effective_priority(
+        self,
+        route: Optional["Route"] = None,
+        route_executor: Optional[object] = None,
+    ) -> int:
+        """Per-run priority: override if present, else shared Route.priority,
+        else default 5. See design_new.md "RouteRun overrides"."""
+        if "priority" in self.overrides:
+            return int(self.overrides["priority"])
+        resolved = route if route is not None else self._resolve_route(route_executor)
+        if resolved is not None:
+            return int(getattr(resolved, "priority", 5))
+        return 5
+
+    def effective_acquisition_mode(
+        self,
+        route: Optional["Route"] = None,
+        route_executor: Optional[object] = None,
+    ) -> AcquisitionMode:
+        """Per-run acquisition_mode: override if present, else shared Route's,
+        else BEST_EFFORT. See design_new.md "RouteRun overrides"."""
+        if "acquisition_mode" in self.overrides:
+            val = self.overrides["acquisition_mode"]
+            if isinstance(val, AcquisitionMode):
+                return val
+            try:
+                return AcquisitionMode(val)
+            except Exception:
+                return AcquisitionMode.BEST_EFFORT
+        resolved = route if route is not None else self._resolve_route(route_executor)
+        if resolved is not None:
+            return getattr(resolved, "acquisition_mode", AcquisitionMode.BEST_EFFORT)
+        return AcquisitionMode.BEST_EFFORT
+
+    def effective_action_on_waypoint_unreachable(
+        self,
+        route: Optional["Route"] = None,
+        route_executor: Optional[object] = None,
+    ) -> WaypointUnreachableAction:
+        """Per-run action_on_waypoint_unreachable: override if present, else
+        shared Route's, else WAIT. See design_new.md "Action on waypoint
+        unreachable" + "RouteRun overrides"."""
+        if "action_on_waypoint_unreachable" in self.overrides:
+            val = self.overrides["action_on_waypoint_unreachable"]
+            if isinstance(val, WaypointUnreachableAction):
+                return val
+            try:
+                return WaypointUnreachableAction(val)
+            except Exception:
+                return WaypointUnreachableAction.WAIT
+        resolved = route if route is not None else self._resolve_route(route_executor)
+        if resolved is not None:
+            return getattr(
+                resolved,
+                "action_on_waypoint_unreachable",
+                WaypointUnreachableAction.WAIT,
+            )
+        return WaypointUnreachableAction.WAIT
 
     def task_started_at(self, i: int) -> Optional[float]:
         """Derived per design_new.md ``RouteTaskRun.started_at`` rule.
@@ -503,16 +616,140 @@ class RouteExecutor:
         ordered = list(candidate_train_ids)
 
         def effective_priority(train_id: str) -> int:
+            # Per design_new.md "RouteRun overrides": the per-run override on
+            # `priority` wins over the shared `Route.priority` when set.
+            run = self.execution_state_for(train_id)
             route_id = self.assigned_route_id_for(train_id)
-            if route_id is None:
-                return 5
-            route = routes.get(route_id)
-            if route is None:
-                return 5
-            return int(getattr(route, "priority", 5))
+            route = routes.get(route_id) if route_id else None
+            if run is not None:
+                return run.effective_priority(route=route, route_executor=self)
+            if route is not None:
+                return int(getattr(route, "priority", 5))
+            return 5
 
         ordered.sort(key=effective_priority, reverse=True)
         return ordered
+
+    # ------------------------------------------------------------------
+    # Route + RouteRun override helpers (per design_new.md
+    # "RouteRun overrides" canonical home).
+    # ------------------------------------------------------------------
+
+    def get_route(self, route_id: str) -> Optional["Route"]:
+        """Resolve a shared `Route` from the registry. Used by
+        `RouteExecutionState.effective_*` helpers so they can fall back to
+        the live shared value when no per-run override is present.
+        """
+        return self.route_registry.get(route_id)
+
+    def set_run_override(
+        self, train_id: str, field_name: str, value: Any
+    ) -> Tuple[bool, str]:
+        """Set one allowlisted override on the train's currently RUNNING run.
+
+        Per design_new.md "RouteRun overrides" canonical home: only the v1
+        allowlist (`priority`, `acquisition_mode`, `action_on_waypoint_unreachable`)
+        is accepted. Validation is per-field. Historical (FINISHED / DEACTIVATED)
+        runs reject override edits because their snapshot is part of the
+        historical record.
+
+        Returns (success, message). No RUNNING run is a no-op success so
+        callers can treat the helper as idempotent for non-RUNNING trains.
+        """
+        if field_name not in RouteExecutionState.OVERRIDE_ALLOWLIST:
+            return (False, f"override field {field_name!r} is not in v1 allowlist")
+        run = self.execution_state_for(train_id)
+        if run is None:
+            return (True, "no RUNNING route_run for train")
+        # Per-field type validation.
+        if field_name == "priority":
+            try:
+                int_val = int(value)
+            except (TypeError, ValueError):
+                return (False, "priority must be an integer")
+            if int_val < 0 or int_val > 9:
+                return (False, "priority must be in 0..9")
+            run.overrides[field_name] = int_val
+        elif field_name == "acquisition_mode":
+            if isinstance(value, AcquisitionMode):
+                run.overrides[field_name] = value
+            else:
+                try:
+                    run.overrides[field_name] = AcquisitionMode(value)
+                except (TypeError, ValueError):
+                    return (False, f"acquisition_mode must be one of {[m.value for m in AcquisitionMode]}")
+        elif field_name == "action_on_waypoint_unreachable":
+            if isinstance(value, WaypointUnreachableAction):
+                run.overrides[field_name] = value
+            else:
+                try:
+                    run.overrides[field_name] = WaypointUnreachableAction(value)
+                except (TypeError, ValueError):
+                    return (
+                        False,
+                        f"action_on_waypoint_unreachable must be one of "
+                        f"{[a.value for a in WaypointUnreachableAction]}",
+                    )
+        run.overrides_updated_at = self._now()
+        return (True, f"override {field_name} set on run {run.run_number}")
+
+    def clear_run_override(
+        self, train_id: str, field_name: str
+    ) -> Tuple[bool, str]:
+        """Remove one allowlisted override from the train's currently RUNNING
+        run, restoring the shared-route value for that field.
+
+        Per design_new.md "RouteRun overrides": clearing a key that is not
+        present is a no-op success. No RUNNING run is a no-op success too.
+        """
+        if field_name not in RouteExecutionState.OVERRIDE_ALLOWLIST:
+            return (False, f"override field {field_name!r} is not in v1 allowlist")
+        run = self.execution_state_for(train_id)
+        if run is None:
+            return (True, "no RUNNING route_run for train")
+        if field_name in run.overrides:
+            del run.overrides[field_name]
+            run.overrides_updated_at = self._now()
+        return (True, f"override {field_name} cleared on run {run.run_number}")
+
+    def apply_route_field_push(
+        self, route_id: str, field_name: str, push: str
+    ) -> Tuple[int, int]:
+        """Distribute a route-level field edit to every currently RUNNING
+        RouteRun for `route_id` per the push policy.
+
+        Per design_new.md "RouteRun overrides" canonical home:
+          - push == "force" — clear `overrides[field_name]` on every RUNNING
+            run so the new shared-route value takes effect everywhere.
+          - push == "soft" — leave existing overrides intact; runs without
+            an override for this field automatically pick up the new shared
+            value through the effective-value helpers.
+
+        Returns ``(touched, skipped)``: number of runs whose override was
+        cleared, and number left intact (no-op or soft-skipped).
+        """
+        if field_name not in RouteExecutionState.OVERRIDE_ALLOWLIST:
+            return (0, 0)
+        if push not in ("force", "soft"):
+            push = "soft"
+        touched = 0
+        skipped = 0
+        for run in self.execution_states.values():
+            if run.route_id != route_id:
+                continue
+            if run.current_route_status != RouteRunStatus.RUNNING:
+                continue
+            if push == "soft":
+                skipped += 1
+                continue
+            # force
+            if field_name in run.overrides:
+                del run.overrides[field_name]
+                run.overrides_updated_at = self._now()
+                touched += 1
+            else:
+                skipped += 1
+        return (touched, skipped)
 
     # ------------------------------------------------------------------ update
     def update(self, delta_seconds: float) -> None:
@@ -684,9 +921,28 @@ class RouteExecutor:
         # prevent an infinite loop when every candidate is blocked.
         exclude: List[ResolvedRouteTarget] = []
         _max_iterations = 8
+        # Track the walk-position of the first attempted target so we can
+        # apply the action_on_waypoint_unreachable policy below if the whole
+        # retry loop exhausts without acquiring authority.
+        failed_walk_position: Optional[int] = projection.walk_position
+        any_success = False
         for _attempt in range(_max_iterations):
             if projection is None or projection.task_kind == "dwell":
                 break
+            # Per design_new.md "RouteTaskRun.last_error canonical writer":
+            # a sentinel projection (resolved_target=None) means
+            # `route_target_resolver` filtered out every candidate (manual /
+            # disabled flag, no platforms, etc.). Write last_error from the
+            # resolver's failure_reason BEFORE breaking the loop, so a SKIP
+            # action_on_waypoint_unreachable doesn't advance the cursor past
+            # the task with an empty last_error.
+            if projection.resolved_target is None:
+                if projection.failure_reason and 0 <= projection.walk_position < len(exec_state.task_runs):
+                    now = self._now()
+                    err = ErrorRecord(text=projection.failure_reason, time=now)
+                    exec_state.task_runs[projection.walk_position].last_error = err
+                    exec_state.last_error = err
+                break  # sentinel projection — no more candidates this tick
             # Phase 1 step `66aa`: dispatch via PathDispatcher.create_path or
             # extend_path (v1 signature). Both methods take train_id +
             # requested_destination_block_id + requested_destination_direction +
@@ -695,18 +951,59 @@ class RouteExecutor:
                 train, route, exec_state, controller, projection
             )
             if success:
+                any_success = True
                 break
-            # Acquisition failed for this resolved_target. If the projection
-            # carried a concrete resolved_target, add it to the exclude set and
-            # try the next candidate platform (fix #14a).
-            if projection.resolved_target is not None:
-                exclude.append(projection.resolved_target)
-            else:
-                break  # sentinel projection — no more candidates this tick
+            # Acquisition failed for this resolved_target. Add to exclude
+            # and try the next candidate platform (fix #14a).
+            exclude.append(projection.resolved_target)
             projection = self._find_next_task_target(train_id, exclude=exclude)
-            if projection is None or projection.resolved_target is None:
-                # Terminal walk or no-more-candidates sentinel (fix #14b).
+            if projection is None:
+                # Terminal walk — no later task on the directed walk.
                 break
+
+        # Per design_new.md "Action on waypoint unreachable": when every
+        # same-tick candidate failed without creating or growing live
+        # authority, consult the effective policy for this run. WAIT
+        # (default) preserves the existing v1 behaviour — leave the task
+        # armed, retry on the next eligible tick. SKIP advances the cursor
+        # past the failed task so a later Phase 1 tries the following one.
+        if (
+            not any_success
+            and failed_walk_position is not None
+            and 0 <= failed_walk_position < len(exec_state.task_runs)
+            and exec_state.task_runs[failed_walk_position].finished_at is None
+        ):
+            try:
+                has_active_path = (
+                    controller.path_projection.received_path_plan is not None
+                )
+            except Exception:
+                has_active_path = False
+            if not has_active_path:
+                action = exec_state.effective_action_on_waypoint_unreachable(
+                    route=route, route_executor=self
+                )
+                if action == WaypointUnreachableAction.SKIP:
+                    now = self._now()
+                    # Per design_new.md "RouteTaskRun.last_error canonical
+                    # writer": SKIP must not advance past a task with an
+                    # empty last_error. Resolver-side and acquisition-side
+                    # failures above should have already written last_error;
+                    # write a fallback record here only when neither did.
+                    failed_row = exec_state.task_runs[failed_walk_position]
+                    if failed_row.last_error is None:
+                        fallback_err = ErrorRecord(
+                            text="task target unreachable: no candidates",
+                            time=now,
+                        )
+                        failed_row.last_error = fallback_err
+                        exec_state.last_error = fallback_err
+                    exec_state.task_runs[failed_walk_position].finished_at = now
+                    # Bookkeeping per the canonical append rule.
+                    try:
+                        exec_state._append_next_walk_task(route)
+                    except Exception:
+                        pass
 
     # ----- Phase 1 sub-steps ------------------------------------------------
     def _deviation_cleanup_eligible(self, controller: TrainController) -> bool:
@@ -973,17 +1270,12 @@ class RouteExecutor:
         # Decide create vs extend by active authority presence.
         active_path_id = self._get_active_path_id(train.train_id)
 
-        # Resolve acquisition_mode for the route.
-        route_mode_raw = getattr(route, "acquisition_mode", None)
-        if isinstance(route_mode_raw, AcquisitionMode):
-            acquisition_mode = route_mode_raw
-        elif isinstance(route_mode_raw, str):
-            try:
-                acquisition_mode = AcquisitionMode(route_mode_raw)
-            except ValueError:
-                acquisition_mode = AcquisitionMode.BEST_EFFORT
-        else:
-            acquisition_mode = AcquisitionMode.BEST_EFFORT
+        # Resolve acquisition_mode: per-run override (if present) wins over
+        # shared Route.acquisition_mode per design_new.md "RouteRun overrides"
+        # canonical home.
+        acquisition_mode = exec_state.effective_acquisition_mode(
+            route=route, route_executor=self
+        )
 
         success = False
         result = None

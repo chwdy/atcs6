@@ -118,6 +118,16 @@ class ResourceEvent:
     `exit_edge` is required for block tail-vacate events (the vacated block's
     forward exit edge for the traversal by which the train left the block)
     and is `None` for switch tail-vacate events and for entered-resource events.
+
+    `entry_edge` is required for switch events (both entered and tail-vacate)
+    so the dispatcher can derive the unordered route key
+    `frozenset({entry_edge, exit_edge_at_switch})` for route-keyed switch
+    occupancy. For block events `entry_edge` is None — block occupancy is
+    not route-keyed.
+
+    `switch_exit_edge` is the exit edge through the switch tile itself
+    (perpendicular to `exit_edge` semantics for blocks). For switch events
+    it's required; for block events None.
     """
 
     sequence_index: Optional[int]
@@ -125,6 +135,8 @@ class ResourceEvent:
     resource_id: str
     exit_edge: Optional[str] = None  # "N" / "E" / "S" / "W"
     block_id: Optional[str] = None
+    entry_edge: Optional[str] = None  # switch events only
+    switch_exit_edge: Optional[str] = None  # switch events only
 
 
 @dataclass
@@ -465,13 +477,16 @@ class FatalConflictKind(Enum):
     Per design_new.md "Fatal physical-entry conflict procedure" v1 values:
     a train tried to enter a block already held by another train, a block
     reserved for another train, a switch already occupied by another train,
-    or a resource (block/switch) flagged disabled.
+    a resource (block/switch) flagged disabled, or a switch physical-entry
+    event arrived without a route key (which the dispatcher must always
+    supply for an interior-switch tile).
     """
 
     OCCUPIED_BY_OTHER_TRAIN = "occupied_by_other_train"
     RESERVED_FOR_OTHER_TRAIN = "reserved_for_other_train"
     SWITCH_OCCUPIED_BY_OTHER_TRAIN = "switch_occupied_by_other_train"
     DISABLED_RESOURCE_ENTRY = "disabled_resource_entry"
+    MALFORMED_ROUTE_KEY = "malformed_route_key"
 
 
 @dataclass
@@ -537,15 +552,29 @@ class SwitchLockClaim:
     """Structured payload for `Switch.acquire_lock(claim)`.
 
     Per design_new.md "Switch entity" — the canonical claim shape carries
-    `path_id`, `train_id`, `locked_state`, and an optional
-    `source_switch_id`. The role (main/primary vs flank) is derived from
-    `source_switch_id is None`; it is not a separate stored field.
+    `path_id`, `train_id`, `locked_state`, an optional `source_switch_id`,
+    the operator-override flag `manual_override`, and the path's route
+    through this switch (`route`, an unordered pair of edge names). The
+    role (main/primary vs flank) is derived from `source_switch_id is
+    None`; it is not a separate stored field. `manual_override` is not
+    stored on the recorded lock entry; it is only consulted at the
+    eligibility step inside `acquire_lock(...)`.
+
+    `route` is the canonical entry/exit edge pair the path uses through
+    this switch (e.g. `frozenset({"N","W"})` for an NW arc). When present,
+    two locks may coexist when their routes are non-conflicting per
+    `switch.routes_conflict(...)` — this is what lets two trains share a
+    scissors crossover in DIVERGE state (one on NW, one on SE). When
+    `route is None`, the lock is treated as "any route at this
+    locked_state" and falls back to the same-train cross-primary rule.
     """
 
     path_id: str
     train_id: str
     locked_state: int  # 0 = MAIN, 1 = DIVERGE
     source_switch_id: Optional[str] = None
+    manual_override: bool = False
+    route: Optional[frozenset] = None  # frozenset of two edge names, or None
 
 
 # =============================================================================
@@ -587,25 +616,30 @@ class ValidationErrorType(Enum):
     BLOCK_OCCUPIED = "block_occupied"
     BLOCK_RESERVED = "block_reserved"
     BLOCK_DISABLED = "block_disabled"
+    BLOCK_MANUAL = "block_manual"  # block.manual==True and no manual_override
     SWITCH_LOCKED = "switch_locked"
+    SWITCH_MANUAL = "switch_manual"  # switch.manual==True and no manual_override
+    SWITCH_DISABLED = "switch_disabled"
     FLANK_SWITCH_CONFLICT = "flank_switch_conflict"
 
     def is_occupancy_class(self) -> bool:
-        # Live-state conflicts on a future BLOCK are truncation points in
-        # BEST_EFFORT mode per design_new.md "create_path() / extend_path()
-        # return contract" — the dispatcher cuts authority to the longest
-        # acquirable block-terminated prefix BEFORE the conflict.
-        #
-        # SWITCH_LOCKED / FLANK_SWITCH_CONFLICT are intentionally NOT in
-        # this set under v1: the truncate helper's prefix-acquire path
-        # goes through `Switch.acquire_lock`, which allows same-state
-        # co-locking by design but the physical `Switch.occupied_by`
-        # field is single-owner, so co-locked truncations can deadlock
-        # when both trains' bodies meet at the switch tile. Switch
-        # conflicts fall through to the BLOCKED_BEFORE_TARGET tail.
+        # Live-state conflicts that BEST_EFFORT truncates around per
+        # design_new.md ":938" ("If a switch acquisition fails ... truncate
+        # the candidate to the previous block before that failed switch")
+        # and the block-conflict half of the same contract. `_best_effort_
+        # truncate` drops the contested resource entirely — for a
+        # SWITCH_LOCKED conflict the boundary switch is excluded from the
+        # truncated segment, so the requesting train never locks it, and
+        # the same-state co-lock deadlock concern does not apply here.
+        # Structural failures (BLOCK_DISABLED, BLOCK_MANUAL, SWITCH_DISABLED,
+        # SWITCH_MANUAL) are never occupancy-class: they are permanent under
+        # the current availability flags and need `no_viable_path`, not
+        # retry-with-truncation. FLANK_SWITCH_CONFLICT is kept out for now;
+        # flank protection has its own truncation rules.
         return self in (
             ValidationErrorType.BLOCK_OCCUPIED,
             ValidationErrorType.BLOCK_RESERVED,
+            ValidationErrorType.SWITCH_LOCKED,
         )
 
 

@@ -86,6 +86,14 @@ def register(app, state: AppState) -> None:
         if "name" in data:
             station.name = data["name"]
 
+        # Availability flags per design_new.md "Availability flag REST API
+        # surface". Both succeed unconditionally — they affect only future
+        # route target resolution.
+        if "disabled" in data:
+            station.disabled = bool(data["disabled"])
+        if "manual" in data:
+            station.manual = bool(data["manual"])
+
         if "platform_ids" in data:
             try:
                 platform_ids = list(data.get("platform_ids") or [])

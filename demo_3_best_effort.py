@@ -373,7 +373,7 @@ def setup_demo_train(
         RouteTask(task_kind="stop",  task_location=StationTarget("STN_1"),
                   task_direction="either"),
         RouteTask(task_kind="dwell", task_location=StationTarget("STN_1"),
-                  task_time=2.0),
+                  task_time=4.0),
         # S2-S platform (outbound leg)
         RouteTask(task_kind="stop",  task_location=PlatformTarget("PLT_S2_S"),
                   task_direction="either"),
@@ -388,7 +388,7 @@ def setup_demo_train(
         RouteTask(task_kind="stop",  task_location=StationTarget("STN_4"),
                   task_direction="either"),
         RouteTask(task_kind="dwell", task_location=StationTarget("STN_4"),
-                  task_time=2.0),
+                  task_time=5.0),
         # S3-N platform (return leg)
         RouteTask(task_kind="stop",  task_location=PlatformTarget("PLT_S3_N"),
                   task_direction="either"),

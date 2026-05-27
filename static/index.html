@@ -58,11 +58,14 @@
                             <button class="tool-btn active" data-tool="select" title="Select">
                                 <i class="ti ti-pointer tool-icon"></i> Select
                             </button>
-                            <button class="tool-btn" data-tool="box-select" title="Box Select (drag to mark tracks, Delete to remove)">
+                            <button class="tool-btn" data-tool="box-select" title="Box Select (drag a rectangle to mark tracks. Shift = remove. Space clears, Delete removes tracks)">
                                 <i class="ti ti-box-multiple tool-icon"></i> Box
                             </button>
-                            <button class="tool-btn" data-tool="lasso-select" title="Lasso Select (draw a shape around tracks to mark them, Delete to remove)">
+                            <button class="tool-btn" data-tool="lasso-select" title="Lasso Select (draw a shape around tracks to mark them. Shift = remove. Space clears, Delete removes tracks)">
                                 <i class="ti ti-lasso tool-icon"></i> Lasso
+                            </button>
+                            <button class="tool-btn" data-tool="paint-select" title="Brush Select (click or drag to paint tracks into the selection. Shift = remove. Space clears, Delete removes tracks)">
+                                <i class="ti ti-brush tool-icon"></i> Brush
                             </button>
                         </div>
                     </div>
@@ -457,6 +460,7 @@
     <script src="js/renderer-tracks.js?v=15"></script>
     <script src="js/renderer-signals.js?v=15"></script>
     <script src="js/renderer-platforms.js?v=16"></script>
+    <script src="js/renderer-stations.js?v=1"></script>
     <script src="js/renderer-blocks.js?v=15"></script>
     <script src="js/renderer-debug.js?v=15"></script>
     <script src="js/renderer-routes.js?v=15"></script>

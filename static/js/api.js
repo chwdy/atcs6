@@ -503,6 +503,13 @@ class API {
         }, 'deleteStationGroup');
     }
 
+    async updateStationGroup(stationId, patch) {
+        return this._request(`/station/${encodeURIComponent(stationId)}`, {
+            method: 'PATCH',
+            body: patch
+        }, 'updateStationGroup');
+    }
+
     async addPlatformToStation(stationId, platformId) {
         return this._request(`/station/${encodeURIComponent(stationId)}/add-platform`, {
             method: 'POST',
@@ -1128,6 +1135,40 @@ class API {
      */
     async getRouteRun(runNumber) {
         return this._request(`/route-runs/${runNumber}`, {}, 'getRouteRun');
+    }
+
+    /**
+     * Patch one or more per-run overrides on a currently RUNNING RouteRun.
+     * Per design_new.md "RouteRun overrides" canonical home: accepts the
+     * single-field shape `{field: value}` or the batched shape
+     * `{overrides: {field: value, ...}}`.
+     *
+     * @param {number} runNumber - The composite RouteRun.run_number.
+     * @param {object} body - The override payload.
+     * @returns {Promise<object>} Updated RouteRun summary.
+     */
+    async patchRouteRunOverrides(runNumber, body) {
+        return this._request(`/route-runs/${runNumber}/overrides`, {
+            method: 'PATCH',
+            body,
+        }, 'patchRouteRunOverrides');
+    }
+
+    /**
+     * Clear one per-run override on a currently RUNNING RouteRun. Restores
+     * the shared-route value for that field via the effective_* helpers.
+     *
+     * @param {number} runNumber - The composite RouteRun.run_number.
+     * @param {string} field - One of `priority` / `acquisition_mode` /
+     *     `action_on_waypoint_unreachable`.
+     * @returns {Promise<object>} Updated RouteRun summary.
+     */
+    async clearRouteRunOverride(runNumber, field) {
+        return this._request(
+            `/route-runs/${runNumber}/overrides/${encodeURIComponent(field)}`,
+            { method: 'DELETE' },
+            'clearRouteRunOverride'
+        );
     }
 
     /**

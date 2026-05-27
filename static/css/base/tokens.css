@@ -20,6 +20,19 @@
     --accent-yellow: var(--warning-color);
     --accent-blue: var(--info-color);
 
+    /* Block / track status palette. FREE/RESERVED/OCCUPIED/CAUTION reuse
+       the §1 info/success/danger/warning hues so a block-state pill reads
+       in the same family as the matching status accent; DISABLED and
+       MANUAL extend the palette with two domain-only hues. Literal hex
+       (not var() refs) so getPropertyValue() returns the resolved color
+       directly — custom properties are not substituted when read from JS. */
+    --block-free: #00d4ff;        /* cyan — clear, no train, no plan */
+    --block-reserved: #04d361;    /* green — go/enter signal for the next train */
+    --block-occupied: #ef4444;    /* red — train physically present (purer than --danger-color so OCCUPIED reads as a stop signal, not an alert pill) */
+    --block-caution: #fde047;     /* light yellow — restricted entry (lifted off lemon to space cleanly from MANUAL orange) */
+    --block-disabled: #6c6c78;    /* grey — out of service */
+    --block-manual: #ff9500;      /* orange — manual override */
+
     --control-height-sm: 32px;
     --control-height-xs: 28px;
     --control-radius-sm: 6px;

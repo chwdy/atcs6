@@ -348,6 +348,7 @@ textarea {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    user-select: none;
 }
 
 .secondary-sidebar-header .close-btn {
@@ -440,6 +441,7 @@ textarea {
     text-overflow: ellipsis;
     white-space: nowrap;
     padding: 0;
+    user-select: none;
 }
 
 .secondary-tab-close {

@@ -126,6 +126,26 @@ class RouteMode(Enum):
     ROUND_TRIP = "round_trip"  # A -> B -> C -> B -> A -> B -> ...
 
 
+class WaypointUnreachableAction(Enum):
+    """Policy for how a route reacts when a task target cannot be resolved or
+    acquired for an entire Phase 1 pass.
+
+    Per design_new.md "Action on waypoint unreachable" canonical home.
+
+    Values:
+        WAIT: (default) leave the task armed; the next eligible Phase 1 tick
+            reruns the same target resolution against current live conditions.
+            Preserves the existing v1 contract.
+        SKIP: record the failure on RouteTaskRun.last_error, set
+            RouteTaskRun.finished_at = current_time for the failed walk-
+            position, advance the route-progress cursor past this task, and
+            let the next eligible Phase 1 try the following task.
+    """
+
+    WAIT = "WAIT"
+    SKIP = "SKIP"
+
+
 class RouteRunStatus(Enum):
     """Per-run lifecycle state.
 
@@ -333,12 +353,25 @@ class Route:
     # Route-level policy (v1)
     priority: int = 5
     acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT
+    action_on_waypoint_unreachable: WaypointUnreachableAction = (
+        WaypointUnreachableAction.WAIT
+    )
+    """Policy for how the route reacts when a task target cannot be resolved or
+    acquired for an entire Phase 1 pass. v1 values: WAIT (default) — leave the
+    task armed, retry on the next eligible Phase 1 tick, never advance past it.
+    SKIP — record the failure, set RouteTaskRun.finished_at = current_time,
+    advance the route-progress cursor past this task, and let the next eligible
+    Phase 1 try the following task. See the "Action on waypoint unreachable"
+    canonical home in design_new.md.
+
+    This field is one of the v1 RouteRun override allowlist; per-run override
+    is read through `RouteRun.effective_action_on_waypoint_unreachable`."""
 
     # Edit timestamps (per design_new.md "Route edit timestamps"). `created_at`
     # is sampled once in `__post_init__`; `last_edited_at` is written by the
     # POST/PUT route-definition handlers when name/tasks/mode/priority/
-    # acquisition_mode is mutated. Neither field is touched by assign/unassign
-    # or activate/deactivate.
+    # acquisition_mode/action_on_waypoint_unreachable is mutated. Neither field
+    # is touched by assign/unassign or activate/deactivate.
     created_at: float = 0.0
     last_edited_at: Optional[float] = None
 
@@ -456,6 +489,7 @@ class Route:
             "last_edited_at": self.last_edited_at,
             "priority": self.priority,
             "acquisition_mode": self.acquisition_mode.value,
+            "action_on_waypoint_unreachable": self.action_on_waypoint_unreachable.value,
         }
 
     @classmethod
@@ -478,6 +512,17 @@ class Route:
             except ValueError:
                 acquisition_mode = AcquisitionMode.BEST_EFFORT
 
+        raw_action = data.get(
+            "action_on_waypoint_unreachable", WaypointUnreachableAction.WAIT
+        )
+        if isinstance(raw_action, WaypointUnreachableAction):
+            action_on_waypoint_unreachable = raw_action
+        else:
+            try:
+                action_on_waypoint_unreachable = WaypointUnreachableAction(raw_action)
+            except ValueError:
+                action_on_waypoint_unreachable = WaypointUnreachableAction.WAIT
+
         return cls(
             route_id=str(data.get("route_id", "")),
             name=str(data.get("name", "")),
@@ -488,6 +533,7 @@ class Route:
             started_at=data.get("started_at"),
             priority=int(data.get("priority", 5)),
             acquisition_mode=acquisition_mode,  # type: ignore[arg-type]
+            action_on_waypoint_unreachable=action_on_waypoint_unreachable,
             created_at=float(data.get("created_at") or 0.0),
             last_edited_at=data.get("last_edited_at"),
         )

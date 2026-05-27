@@ -670,6 +670,126 @@ function renderBitToggle(bit, name, trackBits) {
 }
 
 // ============================================================================
+// AVAILABILITY SEGMENT (Block / Switch / Platform / Station)
+// ----------------------------------------------------------------------------
+// Three-state segmented control per docs/DESIGN_LANGUAGE.md §3:
+//   Available  — disabled=false, manual=false  (default)
+//   Manual     — disabled=false, manual=true   (auto blocks; operator can use)
+//   Disabled   — disabled=true                 (off-limits to everything)
+//
+// Returns the markup for the segmented control. The caller wires three
+// buttons by ID and applies the chosen state back via the entity PATCH
+// endpoint (`{disabled: ..., manual: ...}`).
+//
+// `entityKind` is used only for ID prefixing so multiple availability
+// segments can coexist on one screen (e.g. block-editor + adjacent switch).
+// ============================================================================
+
+function deriveAvailabilityState(entity) {
+    if (!entity) return 'available';
+    if (entity.disabled) return 'disabled';
+    if (entity.manual) return 'manual';
+    return 'available';
+}
+
+function availabilityStateToFlags(state) {
+    switch (state) {
+        case 'disabled':
+            return { disabled: true, manual: false };
+        case 'manual':
+            return { disabled: false, manual: true };
+        case 'available':
+        default:
+            return { disabled: false, manual: false };
+    }
+}
+
+function renderAvailabilitySegment(entityKind, entity, opts = {}) {
+    const state = deriveAvailabilityState(entity);
+    const idBase = (opts.idBase || `${entityKind}-availability`).replace(/[^a-z0-9-]/gi, '-');
+    const label = opts.label || 'Availability';
+    const help = opts.help
+        || 'Manual = hidden from automatic routing (operator can still override). Disabled = fully off-limits.';
+    const dis = (s) => state === s ? 'active' : '';
+    return `
+        <div class="input-large-container mb-8" data-availability-segment="${entityKind}">
+            <label class="input-large-label">${label}</label>
+            <div class="switch-group" role="radiogroup" aria-label="${label}">
+                <button type="button"
+                    class="switch-btn ${dis('available')}"
+                    id="${idBase}-available"
+                    data-availability="available"
+                    title="Available — normal operation">Available</button>
+                <button type="button"
+                    class="switch-btn ${dis('manual')}"
+                    id="${idBase}-manual"
+                    data-availability="manual"
+                    title="Manual — auto-routing skips this; operator can override with manual_override=true">Manual</button>
+                <button type="button"
+                    class="switch-btn ${dis('disabled')}"
+                    id="${idBase}-disabled"
+                    data-availability="disabled"
+                    title="Disabled — physically off-limits; no operator override">Disabled</button>
+            </div>
+            <div class="text-xxs text-muted mt-4">${help}</div>
+        </div>
+    `;
+}
+
+// Wire the three buttons of a `renderAvailabilitySegment` block. `onChange`
+// ============================================================================
+// PRIORITY INPUT VALIDATION
+// ============================================================================
+//
+// Per design_new.md "RouteRun overrides" — priority is an integer in 0..9.
+// The route editor and the per-RouteRun override editor both surface a free-
+// text priority input; both call this helper so a single rule decides what
+// "empty / valid / invalid" means and the user always sees a toast on invalid.
+//
+// Returns one of three shapes:
+//   { kind: 'empty' }                 — input was blank or missing; caller skips the field.
+//   { kind: 'ok', value: <int> }      — valid integer in 0..9.
+//   { kind: 'error', message: <str> } — invalid; caller shows the message via showToast('error').
+function validatePriorityInput(rawValue) {
+    if (rawValue === undefined || rawValue === null) {
+        return { kind: 'empty' };
+    }
+    const trimmed = String(rawValue).trim();
+    if (trimmed === '') {
+        return { kind: 'empty' };
+    }
+    const n = Number(trimmed);
+    if (!Number.isInteger(n)) {
+        return { kind: 'error', message: 'Priority must be a whole number between 0 and 9' };
+    }
+    if (n < 0 || n > 9) {
+        return { kind: 'error', message: 'Priority must be between 0 and 9' };
+    }
+    return { kind: 'ok', value: n };
+}
+
+// receives `(state, flags)` where `flags = {disabled, manual}` ready to send
+// to the entity PATCH endpoint.
+function bindAvailabilitySegment(idBase, onChange) {
+    const states = ['available', 'manual', 'disabled'];
+    states.forEach((state) => {
+        const btn = document.getElementById(`${idBase}-${state}`);
+        if (!btn) return;
+        btn.onclick = () => {
+            states.forEach((s) => {
+                const b = document.getElementById(`${idBase}-${s}`);
+                if (b) b.classList.toggle('active', s === state);
+            });
+            try {
+                onChange(state, availabilityStateToFlags(state));
+            } catch (err) {
+                console.error('[availability-segment] onChange failed', err);
+            }
+        };
+    });
+}
+
+// ============================================================================
 // TILE LIST RENDERING
 // ============================================================================
 
@@ -761,12 +881,27 @@ function renderTileList(sortedPositions, options) {
 // UTILITY FUNCTIONS
 // ============================================================================
 
-function getBlockStateColor(state) {
-    const colors = {
-        free: '#04d361',
-        reserved: '#ffcd1e',
-        occupied: '#e83f5b',
-        caution: '#ff9500'
+function getBlockStateColor(state, alpha = 1) {
+    const tokenMap = {
+        free: '--block-free',
+        reserved: '--block-reserved',
+        occupied: '--block-occupied',
+        caution: '--block-caution',
+        disabled: '--block-disabled',
+        manual: '--block-manual'
     };
-    return colors[(state || '').toLowerCase()] || '#888';
+    const token = tokenMap[(state || '').toLowerCase()];
+    const fallback = '#888';
+    let hex = fallback;
+    if (token) {
+        const value = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
+        if (value) hex = value;
+    }
+    if (alpha === 1) return hex;
+    let h = hex.replace('#', '');
+    if (h.length === 3) h = h.split('').map(c => c + c).join('');
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }

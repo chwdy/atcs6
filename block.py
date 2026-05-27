@@ -129,7 +129,8 @@ class Block(TrackResource):
     # Single Optional reservation record. The reserved_by_path,
     # reserved_for_train, reserved_direction reads are derived @properties below.
     reservation: Optional[BlockReservation] = None
-    disabled: bool = False  # Static availability flag
+    disabled: bool = False  # Static availability flag (physical-absence; no override)
+    manual: bool = False  # Virtual-disable flag (auto blocks; manual_override bypasses)
 
     # Voltage control (Phase 2 - DC analog control)
     current_voltage: float = 0.0
@@ -242,6 +243,7 @@ class Block(TrackResource):
             "reserved_direction": self.reserved_direction,
             "reserved_for_train": self.reserved_for_train,
             "disabled": self.disabled,
+            "manual": self.manual,
             "current_voltage": self.current_voltage,
             "allowed_travel_directions": sorted(self.allowed_travel_directions),
             "ordered_tiles": [
@@ -264,6 +266,7 @@ class Block(TrackResource):
             "min_radius_cm": self.min_radius_cm,
             "speed_limit_kmh": self.speed_limit_kmh,
             "disabled": self.disabled,
+            "manual": self.manual,
             "allowed_travel_directions": sorted(self.allowed_travel_directions),
             "ordered_tiles": [
                 [int(x), int(y), str(edge)] for (x, y, edge) in self.ordered_tiles
@@ -305,6 +308,7 @@ class Block(TrackResource):
             min_radius_cm=data.get("min_radius_cm"),
             speed_limit_kmh=data.get("speed_limit_kmh", data.get("max_speed_kmh")),
             disabled=bool(data.get("disabled", False)),
+            manual=bool(data.get("manual", False)),
             allowed_travel_directions=allowed,
             ordered_tiles=ordered_tiles,
         )

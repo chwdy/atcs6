@@ -63,16 +63,25 @@ class ResourceCoordinator:
         switch_requests: List[SwitchLockRequest],
         path_id: str,
         train_id: str,
+        manual_override: bool = False,
     ) -> SegmentReserveResult:
         """Atomically reserve a segment's blocks AND switches.
 
         Fix #11 (design_new.md line 938): order is switches first, then blocks,
         so switch conflicts are discovered before any blocks are reserved. On
         block failure, release the just-acquired switch locks before returning.
+
+        `manual_override` (default False) is propagated from the calling
+        `PathDispatcher.create_path(...)` / `extend_path(...)` per the
+        `disabled` and `manual` availability flags canonical home in
+        design_new.md (under TrackResource). It is forwarded to
+        `SwitchManager.acquire_locks_for_segment(...)` and
+        `BlockManager.reserve_blocks_for_path(...)` so manual resources are
+        reachable only when the operator explicitly chose to override.
         """
         # Phase 1: acquire switch locks first.
         sr: LockAcquireResult = self.switch_manager.acquire_locks_for_segment(
-            switch_requests, path_id, train_id
+            switch_requests, path_id, train_id, manual_override=manual_override
         )
         if not sr.success:
             return SegmentReserveResult(
@@ -86,7 +95,11 @@ class ResourceCoordinator:
         if future_block_ids:
             try:
                 br = self.block_manager.reserve_blocks_for_path(
-                    future_block_ids, path_id, train_id, block_traversals
+                    future_block_ids,
+                    path_id,
+                    train_id,
+                    block_traversals,
+                    manual_override=manual_override,
                 )
             except Exception as exc:
                 # Roll back switch locks acquired in phase 1.
@@ -162,8 +175,13 @@ class ResourceCoordinator:
         resource_id: str,
         train_id: str,
         direction: Optional[str],
+        route: Optional[frozenset] = None,
     ) -> None:
-        """Route a tail-vacate event to the correct manager."""
+        """Route a tail-vacate event to the correct manager.
+
+        ``route`` is forwarded only to the switch manager (route-keyed
+        occupancy); block tail-vacate uses ``direction`` instead.
+        """
         if resource_type == "block":
             handler = getattr(self.block_manager, "on_block_tail_vacated", None)
             if not callable(handler):
@@ -174,7 +192,9 @@ class ResourceCoordinator:
                 handler(resource_id, train_id)
             return
         if resource_type == "switch":
-            self.switch_manager.on_switch_tail_vacated(resource_id, train_id)
+            self.switch_manager.on_switch_tail_vacated(
+                resource_id, train_id, route=route
+            )
             return
 
     def on_physical_entry(
@@ -183,8 +203,13 @@ class ResourceCoordinator:
         resource_id: str,
         train_id: str,
         path_id: Optional[str],
+        route: Optional[frozenset] = None,
     ) -> bool:
-        """Route a clean-physical-entry event to the correct manager."""
+        """Route a clean-physical-entry event to the correct manager.
+
+        ``route`` is forwarded only to the switch manager (route-keyed
+        occupancy on the entered switch tile).
+        """
         if resource_type == "block":
             # Fix #30 (design_new.md): `occupy_blocks` (plural) is the
             # design's sole physical-entry writer. Route runtime through it.
@@ -192,6 +217,6 @@ class ResourceCoordinator:
             return bool(result)
         if resource_type == "switch":
             return self.switch_manager.on_physical_entry(
-                resource_id, train_id, path_id
+                resource_id, train_id, path_id, route=route
             )
         return False

@@ -86,6 +86,8 @@ class PlatformEditorHandler {
                         <input type="number" id="platform-speed-input" class="input-small-field input-small-field-compact" value="${platform.top_speed_kmh || ''}" min="0" step="1" placeholder="Not set">
                     </div>
 
+                    ${renderAvailabilitySegment('platform', platform, { idBase: 'platform-availability' })}
+
                     <div class="flex gap-8">
                         <button id="save-platform-btn" class="btn btn-primary btn-sm flex-1">💾 Save</button>
                         <button id="delete-platform-btn" class="btn btn-danger btn-sm flex-1">🗑 Delete</button>
@@ -103,6 +105,34 @@ class PlatformEditorHandler {
     }
 
     async initEditorHandlers(platformId) {
+        // Availability segment (disabled / manual). Per docs/DESIGN_LANGUAGE.md
+        // §3 segmented control. Both toggles succeed unconditionally per
+        // design_new.md "Availability flag REST API surface" for platforms.
+        bindAvailabilitySegment('platform-availability', async (_state, flags) => {
+            try {
+                const result = await this.api.updatePlatform(platformId, flags);
+                if (result && result.error) {
+                    window.showToast(
+                        `Cannot change availability: ${result.error}`,
+                        'error',
+                        4000
+                    );
+                    this.showEditor(platformId);
+                } else {
+                    window.showToast(`Platform ${platformId} availability updated`, 'info', 1500);
+                    await window.app.refreshNetwork();
+                }
+            } catch (err) {
+                console.error('Failed to update platform availability:', err);
+                window.showToast(
+                    `Cannot change availability: ${err.message || err}`,
+                    'error',
+                    4000
+                );
+                this.showEditor(platformId);
+            }
+        });
+
         const saveBtn = document.getElementById('save-platform-btn');
         if (saveBtn) {
             saveBtn.onclick = async () => {
@@ -396,4 +426,172 @@ class StationGroupEditorHandler {
     }
 
     _cleanup() {}
+
+    /**
+     * Focused panel for a single station — opened when the user clicks a
+     * station label on the canvas. Shows name, member platforms, and the
+     * usual add / remove / delete actions for just this station.
+     */
+    async showStationDetail(stationId) {
+        this.editor._currentEditorType = 'station-group-detail';
+        this.editor._currentEditorId = stationId;
+
+        const stationsResp = await this.api.listStationGroups();
+        const platforms = window.app?.currentNetwork?.platforms || [];
+        const station = (stationsResp?.stations || []).find(s => s.station_id === stationId);
+        if (!station) {
+            window.showToast?.(`Station ${stationId} not found`, 'error', 4000);
+            return;
+        }
+
+        const memberIds = station.platform_ids || [];
+        const nonMembers = (platforms || []).filter(p => !memberIds.includes(p.platform_id));
+        const nonMemberOptions = nonMembers
+            .map(p => `<option value="${p.platform_id}">${p.name || p.platform_id}</option>`)
+            .join('');
+
+        const memberRows = (station.platforms || []).map(pf => `
+            <div class="flex justify-between items-center mb-4" data-platform-id="${pf.platform_id}">
+                <span class="font-mono text-sm">${pf.name || pf.platform_id}</span>
+                <button class="btn btn-sm btn-secondary station-detail-remove-platform-btn"
+                        data-station-id="${stationId}" data-platform-id="${pf.platform_id}">Remove</button>
+            </div>
+        `).join('');
+
+        const content = `
+            <div class="station-detail-panel">
+                <div class="text-xs text-muted mb-4">Station ID</div>
+                <div class="font-mono mb-12">${station.station_id}</div>
+
+                <div class="text-xs text-muted mb-4">Name</div>
+                <div class="flex gap-8 mb-12">
+                    <input id="station-detail-name" class="property-input" value="${(station.name || '').replace(/"/g, '&quot;')}">
+                    <button id="station-detail-save-name-btn" class="btn btn-sm btn-primary">Save</button>
+                </div>
+
+                ${renderAvailabilitySegment('station', station, { idBase: 'station-availability' })}
+
+                <div class="text-xs text-muted mb-8">Member Platforms (${memberIds.length})</div>
+                ${memberRows || '<div class="text-muted text-sm mb-8">No platforms in this station.</div>'}
+
+                <div class="mt-12 mb-8">
+                    <div class="text-xs text-muted mb-4">Add Platform</div>
+                    <div class="flex gap-8">
+                        <select id="station-detail-add-platform" class="property-input" ${nonMembers.length === 0 ? 'disabled' : ''}>
+                            ${nonMembers.length === 0
+                                ? '<option value="">All platforms are in this station</option>'
+                                : nonMemberOptions}
+                        </select>
+                        <button id="station-detail-add-platform-btn" class="btn btn-sm btn-primary"
+                                ${nonMembers.length === 0 ? 'disabled' : ''}>Add</button>
+                    </div>
+                </div>
+
+                <div class="mt-16 flex justify-between">
+                    <button id="station-detail-back-btn" class="btn btn-sm btn-secondary">All Stations</button>
+                    <button id="station-detail-delete-btn" class="btn btn-sm btn-danger">Delete Station</button>
+                </div>
+            </div>
+        `;
+
+        this.editor.showSecondarySidebar(`🏛️ ${station.name || station.station_id}`, content);
+        setTimeout(() => this._initStationDetailHandlers(station), 0);
+    }
+
+    _initStationDetailHandlers(station) {
+        const stationId = station.station_id;
+
+        // Availability segment (disabled / manual). Per docs/DESIGN_LANGUAGE.md
+        // §3 segmented control. Both succeed unconditionally per design_new.md
+        // "Availability flag REST API surface" for stations.
+        bindAvailabilitySegment('station-availability', async (_state, flags) => {
+            try {
+                const result = await this.api.updateStationGroup(stationId, flags);
+                if (result && result.error) {
+                    window.showToast?.(
+                        `Cannot change availability: ${result.error}`,
+                        'error',
+                        4000
+                    );
+                    this.showStationDetail(stationId);
+                } else {
+                    window.showToast?.(`Station ${stationId} availability updated`, 'info', 1500);
+                    await window.app.refreshNetwork();
+                }
+            } catch (err) {
+                console.error('Failed to update station availability:', err);
+                window.showToast?.(
+                    `Cannot change availability: ${err.message || err}`,
+                    'error',
+                    4000
+                );
+                this.showStationDetail(stationId);
+            }
+        });
+
+        const saveBtn = document.getElementById('station-detail-save-name-btn');
+        if (saveBtn) {
+            saveBtn.onclick = async () => {
+                const name = document.getElementById('station-detail-name')?.value || '';
+                try {
+                    await this.api.updateStationGroup(stationId, { name });
+                    await window.app.refreshNetwork();
+                    await this.showStationDetail(stationId);
+                    window.showToast?.('Station name updated', 'success', 2000);
+                } catch (err) {
+                    window.showToast?.(`Failed to save: ${err.message}`, 'error', 5000);
+                }
+            };
+        }
+
+        const addBtn = document.getElementById('station-detail-add-platform-btn');
+        if (addBtn) {
+            addBtn.onclick = async () => {
+                const platformId = document.getElementById('station-detail-add-platform')?.value;
+                if (!platformId) return;
+                try {
+                    await this.api.addPlatformToStation(stationId, platformId);
+                    await window.app.refreshNetwork();
+                    await this.showStationDetail(stationId);
+                } catch (err) {
+                    window.showToast?.(`Failed to add: ${err.message}`, 'error', 5000);
+                }
+            };
+        }
+
+        document.querySelectorAll('.station-detail-remove-platform-btn').forEach(btn => {
+            btn.onclick = async () => {
+                const platformId = btn.dataset.platformId;
+                try {
+                    await this.api.removePlatformFromStation(stationId, platformId);
+                    await window.app.refreshNetwork();
+                    await this.showStationDetail(stationId);
+                } catch (err) {
+                    window.showToast?.(`Failed to remove: ${err.message}`, 'error', 5000);
+                }
+            };
+        });
+
+        const deleteBtn = document.getElementById('station-detail-delete-btn');
+        if (deleteBtn) {
+            deleteBtn.onclick = async () => {
+                const confirmed = await showConfirmModal({
+                    title: 'Delete Logical Station',
+                    message: `Delete logical station "${station.name || stationId}"?`,
+                    detail: 'This removes only the grouping; platform tracks remain unchanged.',
+                    confirmText: 'Delete',
+                    confirmVariant: 'danger',
+                });
+                if (!confirmed) return;
+                await this.api.deleteStationGroup(stationId);
+                await window.app.refreshNetwork();
+                await this.showPanel();
+            };
+        }
+
+        const backBtn = document.getElementById('station-detail-back-btn');
+        if (backBtn) {
+            backBtn.onclick = () => this.showPanel();
+        }
+    }
 }

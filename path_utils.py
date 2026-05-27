@@ -138,6 +138,12 @@ class GraphWalkQuery:
     exclude_resources: Optional[Set[str]] = None
     return_tiles: bool = True
     return_blocks: bool = True
+    manual_override: bool = False
+    """Operator-override flag per the `disabled` and `manual` availability flags
+    canonical home in design_new.md (under TrackResource). When False (every
+    automatic caller), manual blocks/switches are filtered out exactly like
+    disabled ones. When True (operator-initiated paths only), manual resources
+    participate normally. Disabled resources are always filtered regardless."""
 
 
 @dataclass(order=False)

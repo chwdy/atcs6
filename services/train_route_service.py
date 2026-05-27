@@ -20,12 +20,12 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from app_state import AppState
 from runtime_payloads import AcquisitionMode
 from services.exceptions import NotFoundError, ValidationError
-from train_route import Route, RouteMode, RouteTask
+from train_route import Route, RouteMode, RouteTask, WaypointUnreachableAction
 
 
 _MODE_ALIASES = {
@@ -33,7 +33,25 @@ _MODE_ALIASES = {
     "loop": RouteMode.CIRCULAR,
 }
 
-EDIT_FIELDS = ("name", "tasks", "mode", "priority", "acquisition_mode")
+EDIT_FIELDS = (
+    "name",
+    "tasks",
+    "mode",
+    "priority",
+    "acquisition_mode",
+    "action_on_waypoint_unreachable",
+)
+
+# Per design_new.md "RouteRun overrides" — fields that may carry per-field
+# push policies on a PUT /api/train-routes/<id> edit. The overrides themselves
+# are written via PATCH /api/route-runs/<run_number>/overrides; this list
+# names the route-level fields whose edits may distribute through the
+# RouteExecutor.apply_route_field_push helper.
+OVERRIDE_ALLOWLIST = (
+    "priority",
+    "acquisition_mode",
+    "action_on_waypoint_unreachable",
+)
 
 
 def _coerce_mode(mode_str: str) -> RouteMode:
@@ -89,6 +107,7 @@ def create_route(
     assigned_train_ids: Optional[Iterable[str]] = None,
     priority: Optional[int] = None,
     acquisition_mode: Optional[str] = None,
+    action_on_waypoint_unreachable: Optional[str] = None,
     edit_fields_present: Optional[bool] = None,
 ) -> Route:
     """Create and register a new Route.
@@ -126,6 +145,17 @@ def create_route(
                 f"Invalid acquisition_mode {acquisition_mode!r}"
             )
 
+    if action_on_waypoint_unreachable is not None:
+        try:
+            route.action_on_waypoint_unreachable = WaypointUnreachableAction(
+                action_on_waypoint_unreachable
+            )
+        except ValueError:
+            raise ValidationError(
+                f"Invalid action_on_waypoint_unreachable "
+                f"{action_on_waypoint_unreachable!r}"
+            )
+
     for task_data in tasks or ():
         route.add_task(_coerce_route_task(task_data))
 
@@ -149,7 +179,9 @@ def update_route(
     tasks: Optional[Iterable[Any]] = None,
     priority: Optional[Any] = None,
     acquisition_mode: Optional[str] = None,
+    action_on_waypoint_unreachable: Optional[str] = None,
     assigned_train_ids: Optional[Iterable[str]] = None,
+    push_policies: Optional[Dict[str, str]] = None,
 ) -> Route:
     """Apply a partial update to an existing route.
 
@@ -158,13 +190,24 @@ def update_route(
     unassigned and trains in the list (and known to the network) will be
     assigned. Unknown trains are silently dropped.
 
+    `push_policies` is an optional dict mapping allowlisted field names
+    (`"priority"`, `"acquisition_mode"`, `"action_on_waypoint_unreachable"`)
+    to `"force"` or `"soft"`. When omitted the default per design_new.md
+    "RouteRun overrides" is `"soft"`. Force pushes clear the corresponding
+    `RouteRun.overrides[field]` on every currently RUNNING run for this
+    route. Soft pushes leave overrides intact.
+
     Raises:
         NotFoundError when no route exists with that id.
         ValidationError on bad input shapes.
     """
     route = _require_route(state, route_id)
+    push_policies = push_policies or {}
 
     definition_edit_touched = False
+    # Track which allowlisted fields changed so push policies can be
+    # applied after all writes commit.
+    changed_overridable: List[str] = []
 
     if name is not None:
         route.name = name
@@ -196,6 +239,7 @@ def update_route(
         except (TypeError, ValueError):
             raise ValidationError("priority must be an integer")
         definition_edit_touched = True
+        changed_overridable.append("priority")
 
     if acquisition_mode is not None:
         try:
@@ -205,6 +249,36 @@ def update_route(
                 f"Invalid acquisition_mode {acquisition_mode!r}"
             )
         definition_edit_touched = True
+        changed_overridable.append("acquisition_mode")
+
+    if action_on_waypoint_unreachable is not None:
+        try:
+            route.action_on_waypoint_unreachable = WaypointUnreachableAction(
+                action_on_waypoint_unreachable
+            )
+        except ValueError:
+            raise ValidationError(
+                f"Invalid action_on_waypoint_unreachable "
+                f"{action_on_waypoint_unreachable!r}"
+            )
+        definition_edit_touched = True
+        changed_overridable.append("action_on_waypoint_unreachable")
+
+    # Apply per-field push policies to currently RUNNING RouteRuns for
+    # this route per design_new.md "RouteRun overrides". Only look up the
+    # executor when there is overridable state to push — an editor-only
+    # boot or a pre-init window may legitimately have no sim_controller
+    # wired, in which case a non-overridable edit (rename, task swap)
+    # must still succeed.
+    if changed_overridable:
+        sim_controller = getattr(state, "sim_controller", None)
+        if sim_controller is not None:
+            executor = sim_controller.route_executor
+            for field_name in changed_overridable:
+                push = push_policies.get(field_name, "soft")
+                if push not in ("force", "soft"):
+                    push = "soft"
+                executor.apply_route_field_push(route_id, field_name, push)
 
     if assigned_train_ids is not None:
         requested_train_ids = set(assigned_train_ids)

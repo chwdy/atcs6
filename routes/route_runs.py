@@ -1,14 +1,17 @@
 """
-Route-Run Routes - Read-only access to live and historical ``RouteRun``
-records across all routes.
+Route-Run Routes - Access to live and historical ``RouteRun`` records
+across all routes.
 
 Route *definitions* live in `train_routes.py`; this module surfaces the
-per-run execution records that `RouteExecutor` builds as routes run.
+per-run execution records that `RouteExecutor` builds as routes run, plus
+the override write endpoints per design_new.md "RouteRun overrides"
+canonical home.
 """
 
-from flask import jsonify
+from flask import jsonify, request
 
 from app_state import AppState
+from train_route import RouteRunStatus
 
 
 def _route_run_summary(route, run) -> dict:
@@ -21,6 +24,12 @@ def _route_run_summary(route, run) -> dict:
     ``last_error``. The list endpoint also includes route name + mode so the
     panel can render them without a second fetch.
     """
+    # Serialize per-run overrides as a plain dict — enums are flattened to
+    # their string values so the frontend can render directly. The dict is
+    # sparse: only fields with active overrides are present.
+    overrides_payload = {}
+    for key, value in (run.overrides or {}).items():
+        overrides_payload[key] = getattr(value, "value", value)
     return {
         "run_number": run.run_number,
         "train_id": run.train_id,
@@ -40,6 +49,18 @@ def _route_run_summary(route, run) -> dict:
         ),
         "last_error": (
             run.last_error.to_dict() if run.last_error is not None else None
+        ),
+        # Per design_new.md "RouteRun overrides": expose the sparse override
+        # dict plus the effective values for UI display. Effective values
+        # fall back to the shared Route when no override is present.
+        "overrides": overrides_payload,
+        "overrides_updated_at": run.overrides_updated_at,
+        "effective_priority": run.effective_priority(route=route),
+        "effective_acquisition_mode": (
+            run.effective_acquisition_mode(route=route).value
+        ),
+        "effective_action_on_waypoint_unreachable": (
+            run.effective_action_on_waypoint_unreachable(route=route).value
         ),
     }
 
@@ -143,3 +164,97 @@ def register(app, state: AppState) -> None:
         )
         payload["tasks"] = tasks_out
         return jsonify(payload)
+
+    def _resolve_running_run_train_id(run_number: int):
+        """Locate the train_id of a currently-RUNNING RouteRun by run_number.
+
+        Returns ``None`` for any run that exists in the registry but is not
+        currently RUNNING (FINISHED / DEACTIVATED / PLANNING). Caller maps
+        ``None`` to HTTP 409 per design_new.md "RouteRun overrides" canonical
+        home: historical runs reject override edits.
+        """
+        route_executor = state.sim_controller.route_executor
+        for run in route_executor.execution_states.values():
+            if run.run_number != run_number:
+                continue
+            if run.current_route_status != RouteRunStatus.RUNNING:
+                continue
+            return run.train_id
+        return None
+
+    @app.route("/api/route-runs/<int:run_number>/overrides", methods=["PATCH"])
+    def patch_route_run_overrides(run_number: int):
+        """Write one or more per-run overrides on a currently RUNNING run.
+
+        Per design_new.md "RouteRun overrides" canonical home: accepts either
+        a single-field body `{field: value}` (when `field` is one of the v1
+        allowlist) or a batched body `{"overrides": {field: value, ...}}`.
+        Historical (FINISHED / DEACTIVATED) runs reject override edits with
+        HTTP 409.
+
+        Per design_new.md "single-threaded runtime": the Flask worker holds
+        `state.simulation_lock` for the duration of the iteration + per-field
+        write so the simulation tick cannot insert/archive `execution_states`
+        mid-request (which would otherwise raise RuntimeError on the dict
+        iteration or produce a torn read of `run.overrides`).
+        """
+        with state.simulation_lock:
+            route_executor = state.sim_controller.route_executor
+            train_id = _resolve_running_run_train_id(run_number)
+            if train_id is None:
+                return jsonify({"error": "RouteRun is not RUNNING"}), 409
+
+            data = request.get_json() or {}
+            # Accept both wire shapes.
+            if "overrides" in data and isinstance(data["overrides"], dict):
+                entries = list(data["overrides"].items())
+            else:
+                entries = list(data.items())
+
+            # Apply per-field. First error short-circuits and rolls back nothing
+            # (per design_new.md the helper is per-field; callers should retry
+            # bad fields individually).
+            applied = []
+            for field_name, value in entries:
+                ok, msg = route_executor.set_run_override(train_id, field_name, value)
+                if not ok:
+                    return jsonify(
+                        {
+                            "error": msg,
+                            "applied": applied,
+                            "failed_field": field_name,
+                        }
+                    ), 400
+                applied.append(field_name)
+
+            # Re-read the updated run for the response. Because we hold the
+            # lock, execution_state_for cannot return None for a run that
+            # _resolve_running_run_train_id matched moments ago.
+            run = route_executor.execution_state_for(train_id)
+            route = route_executor.get_route(run.route_id) if run else None
+            return jsonify(_route_run_summary(route, run))
+
+    @app.route(
+        "/api/route-runs/<int:run_number>/overrides/<field>",
+        methods=["DELETE"],
+    )
+    def delete_route_run_override(run_number: int, field: str):
+        """Clear one per-run override on a currently RUNNING run.
+
+        Restores the shared-route value for that field via the effective_*
+        helpers. Clearing a key that is not present is a no-op success.
+
+        Holds `state.simulation_lock` for the same reason as the PATCH
+        handler above.
+        """
+        with state.simulation_lock:
+            route_executor = state.sim_controller.route_executor
+            train_id = _resolve_running_run_train_id(run_number)
+            if train_id is None:
+                return jsonify({"error": "RouteRun is not RUNNING"}), 409
+            ok, msg = route_executor.clear_run_override(train_id, field)
+            if not ok:
+                return jsonify({"error": msg}), 400
+            run = route_executor.execution_state_for(train_id)
+            route = route_executor.get_route(run.route_id) if run else None
+            return jsonify(_route_run_summary(route, run))

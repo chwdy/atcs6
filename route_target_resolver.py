@@ -16,7 +16,7 @@ loop can stay focused on state-machine transitions.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterable, Optional
+from typing import TYPE_CHECKING, Iterable, Optional, Tuple
 
 from train_route import (
     BlockTarget,
@@ -116,13 +116,16 @@ class RouteTargetResolver:
                 resolved_target=None,
             )
 
-        target_block = self.resolve_task_target_block(task, train=train)
+        target_block, failure_reason = self.resolve_task_target_block_detailed(
+            task, train=train
+        )
         if target_block is None:
             return ResolvedNextTaskProjection(
                 walk_position=walk_position,
                 task_kind=task.task_kind,
                 direction=direction_str,
                 resolved_target=None,
+                failure_reason=failure_reason,
             )
 
         resolved_dir = self.resolve_task_direction(
@@ -171,6 +174,33 @@ class RouteTargetResolver:
     ) -> Optional[str]:
         """Resolve `task.task_location` to a concrete `block_id`.
 
+        Thin wrapper over `resolve_task_target_block_detailed(...)` that
+        drops the failure reason. Callers that need the reason (e.g. Phase 1
+        building a `task_runs[i].last_error` record per the canonical
+        error-record writer rule in design_new.md) call the detailed
+        variant directly.
+        """
+        block_id, _reason = self.resolve_task_target_block_detailed(task, train=train)
+        return block_id
+
+    def resolve_task_target_block_detailed(
+        self,
+        task: "RouteTask",
+        train: Optional["Train"] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Resolve `task.task_location` to a concrete `block_id` and a
+        diagnostic failure reason.
+
+        Returns ``(block_id, None)`` on success.
+
+        Returns ``(None, reason)`` when the resolver gives up because of an
+        availability filter (every candidate block / platform / station is
+        `disabled` or `manual` while RouteExecutor's auto-routing context
+        cannot use manual_override). `reason` is a short human-readable
+        string suitable for `RouteTaskRun.last_error.text`; Phase 1 writes
+        it via `_record_run_error(...)` so the operator sees why the task
+        stalled instead of an empty diagnostic.
+
         Per design_new.md line 1125, `task_location` is a tagged union of
         `BlockTarget | PlatformTarget | StationTarget`; this method
         dispatches on the variant rather than probing in order.
@@ -186,41 +216,92 @@ class RouteTargetResolver:
         e = self._e
         loc = getattr(task, "task_location", None)
         if loc is None:
+            return None, "task_location is missing"
+
+        # Availability filters per design_new.md "Platform And Station"
+        # and the `disabled` and `manual` availability flags canonical home
+        # under TrackResource. RouteExecutor (auto) never sets
+        # manual_override, so manual blocks/platforms/stations are treated
+        # like disabled here. Operator-initiated paths bypass these filters
+        # at the dispatcher layer; they never reach this resolver.
+        blocks_registry = getattr(e.network, "blocks", {}) or {}
+
+        def _block_unavailable_reason(block_id: str) -> Optional[str]:
+            """Return None when block is targetable, else a reason string."""
+            block = blocks_registry.get(block_id)
+            if block is None:
+                return f"Block {block_id} is not in the network"
+            if getattr(block, "disabled", False):
+                return f"Block {block_id} is disabled"
+            if getattr(block, "manual", False):
+                return f"Block {block_id} is set to manual"
             return None
 
         if isinstance(loc, BlockTarget):
-            blocks = getattr(e.network, "blocks", {}) or {}
-            if loc.block_id in blocks:
-                return loc.block_id
-            return None
+            if loc.block_id not in blocks_registry:
+                return None, f"Block {loc.block_id} is not in the network"
+            reason = _block_unavailable_reason(loc.block_id)
+            if reason is not None:
+                return None, reason
+            return loc.block_id, None
 
         if isinstance(loc, PlatformTarget):
-            return self.platform_block_id(loc.platform_id)
+            platforms = getattr(e.network, "platforms", {}) or {}
+            platform = platforms.get(loc.platform_id)
+            if platform is None:
+                return None, f"Platform {loc.platform_id} is not in the network"
+            if getattr(platform, "disabled", False):
+                return None, f"Platform {loc.platform_id} is disabled"
+            if getattr(platform, "manual", False):
+                return None, f"Platform {loc.platform_id} is set to manual"
+            bid = self.platform_block_id(loc.platform_id)
+            if not bid:
+                return None, f"Platform {loc.platform_id} has no block"
+            reason = _block_unavailable_reason(bid)
+            if reason is not None:
+                return None, reason
+            return bid, None
 
         if isinstance(loc, StationTarget):
             station_groups = getattr(e.network, "station_groups", {}) or {}
             station = station_groups.get(loc.station_id)
             if station is None:
-                return None
+                return None, f"Station {loc.station_id} is not in the network"
+            if getattr(station, "disabled", False):
+                return None, f"Station {loc.station_id} is disabled"
+            if getattr(station, "manual", False):
+                return None, f"Station {loc.station_id} is set to manual"
             platform_ids = getattr(station, "platform_ids", []) or []
-            blocks = getattr(e.network, "blocks", {}) or {}
+            platforms = getattr(e.network, "platforms", {}) or {}
             this_train_id = getattr(train, "train_id", None) if train is not None else None
 
             fallback: Optional[str] = None
             for pid in platform_ids:
+                platform = platforms.get(pid)
+                if platform is None:
+                    continue
+                # Skip platforms that are themselves unavailable for auto-routing.
+                if getattr(platform, "disabled", False) or getattr(platform, "manual", False):
+                    continue
                 bid = self.platform_block_id(pid)
-                if not bid:
+                if not bid or _block_unavailable_reason(bid) is not None:
                     continue
                 if fallback is None:
                     fallback = bid
-                block = blocks.get(bid)
+                block = blocks_registry.get(bid)
                 if block is None:
                     continue
                 occupant = getattr(block, "occupied_by", None)
                 if occupant and occupant != this_train_id:
                     continue  # held by another train; try the next platform
-                return bid
-            return fallback
+                return bid, None
+            if fallback is not None:
+                return fallback, None
+            return (
+                None,
+                f"all platforms in station {loc.station_id} are disabled, "
+                f"manual, or otherwise unavailable",
+            )
 
         # `task_location` is guaranteed to be one of the three tagged-union
         # variants by `RouteTask.__post_init__` -> `_coerce_task_location`;
