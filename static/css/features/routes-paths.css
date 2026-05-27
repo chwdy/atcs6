@@ -565,10 +565,43 @@
     font-size: 11px;
     line-height: 1.4;
     cursor: default;
+    position: relative;
 }
 
 .rr-task:hover {
     background-color: var(--bg-hover);
+}
+
+/* Custom hover tooltip — replaces native `title` so the popup appears after
+   a predictable 1s instead of the browser's slower default (~1.5–2s on
+   macOS). Anchored above the row; the dot uses its own override below. */
+.rr-task[data-tooltip]:hover::after,
+.rr-task-status[data-tooltip]:hover::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    z-index: 50;
+    pointer-events: none;
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: var(--text-primary);
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: normal;
+    max-width: 320px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    opacity: 0;
+    animation: rr-task-tooltip-show 80ms ease 1s forwards;
+}
+
+.rr-task[data-tooltip]:hover::after {
+    bottom: calc(100% - 2px);
+    left: 12px;
+}
+
+@keyframes rr-task-tooltip-show {
+    to { opacity: 1; }
 }
 
 /* Liveness channel — brightness. */
@@ -592,9 +625,20 @@
     border-radius: 50%;
     background-color: transparent;
     justify-self: center;
+    position: relative;
 }
 .rr-task-status-warn   { background-color: var(--warning-color); }
 .rr-task-status-danger { background-color: var(--danger-color); }
+
+/* Dot tooltip — short status text (e.g. "late" or an error string). The
+   dot sits at the row's left edge so we anchor the tooltip to the dot's
+   left edge and extend rightward; otherwise long error strings would clip
+   past the panel boundary. */
+.rr-task-status[data-tooltip]:hover::after {
+    bottom: calc(100% + 4px);
+    left: 0;
+    white-space: nowrap;
+}
 
 /* Ordinal — narrow mono anchor, recedes. */
 .rr-task-ord {

@@ -415,17 +415,20 @@ class RouteRunEditorHandler {
                     : { kind: null, id: '—' };
 
         // Hue channel — status dot encodes correctness.
-        //   danger = last_error present
-        //   warn   = finished late
-        //   ok     = anything else (transparent dot)
+        //   danger = active error on a not-yet-finished task (needs attention)
+        //   warn   = finished but worth flagging: ran late and/or recovered
+        //            from an error along the way (historical, not blocking)
+        //   ok     = clean (transparent dot)
         let statusVariant = 'ok';
         let statusTitle = '';
-        if (t.last_error) {
+        const errText = t.last_error ? (t.last_error.text || 'error') : null;
+        const lateLabel = (finished && t.delay_class === 'late') ? 'late' : null;
+        if (errText && !finished) {
             statusVariant = 'danger';
-            statusTitle = t.last_error.text || 'error';
-        } else if (finished && t.delay_class === 'late') {
+            statusTitle = errText;
+        } else if (errText || lateLabel) {
             statusVariant = 'warn';
-            statusTitle = 'late';
+            statusTitle = [lateLabel, errText].filter(Boolean).join(' · ');
         }
 
         // Modifier: target.kind · direction. When resolved, the design-time
@@ -470,9 +473,11 @@ class RouteRunEditorHandler {
 
         const verbAccent = this._verbAccent(t.task_kind);
 
+        const escTooltip = this._esc(tooltip);
+        const escStatusTitle = statusTitle ? this._esc(statusTitle) : '';
         return `
-            <div class="rr-task rr-task-${liveness}" title="${this._esc(tooltip)}">
-                <span class="rr-task-status rr-task-status-${statusVariant}"${statusTitle ? ` title="${this._esc(statusTitle)}"` : ''}></span>
+            <div class="rr-task rr-task-${liveness}" data-tooltip="${escTooltip}" aria-label="${escTooltip}">
+                <span class="rr-task-status rr-task-status-${statusVariant}"${escStatusTitle ? ` data-tooltip="${escStatusTitle}" aria-label="${escStatusTitle}"` : ''}></span>
                 <span class="rr-task-ord">${t.walk_position + 1}</span>
                 <span class="rr-task-verb rr-task-verb-${verbAccent}">${this._esc(t.task_kind || '?')}</span>
                 <span class="rr-task-noun font-mono">${this._esc(target.id)}</span>
