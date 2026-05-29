@@ -52,6 +52,14 @@ These are the rules the document expects every patch to honor. They are duplicat
 - **Removed contracts are removed cleanly.** Backward compatibility is out of scope. Do not add migration shims, alias retention, dual-write transitional fields, or "kept for compatibility" notes.
 - **Frame rationale positively.** When adding a "Why this shape" rationale to a canonical home, explain why the current design is correct on its own terms. Do not justify the current design by referring to a removed alternative ("Why X is excluded," "Why Y was rejected"). The doc does not document removed alternatives.
 
+## Debugging
+
+State your root-cause hypothesis and the file/function it lives in, and verify it with a probe before editing. Don't ship a first fix until the cause is confirmed.
+
+## Cross-cutting changes
+
+When a change spans docs + code + tests (e.g. a semantics change like direction / manual_override), enumerate every affected site first, then sweep them in one pass.
+
 ## When you edit `design_new.md`
 
 - Sweep every cross-reference in one edit. The cross-reference drift rule means you cannot leave one section updated and another stale.

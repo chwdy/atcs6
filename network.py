@@ -9,7 +9,7 @@ coordinator for all railway system components.
 
 from collections import deque
 import logging
-from typing import Dict, List, Optional, Tuple, Any, Union
+from typing import Dict, List, Optional, Set, Tuple, Any, Union
 import uuid
 from track import TrackSegment, EDGE_MASKS, BIT_TO_EDGES
 from train import Train, TrainSchedule
@@ -75,6 +75,15 @@ class RailwayNetwork:
         self.schedules: Dict[str, TrainSchedule] = {}
 
         self.speed_profiles: Dict[str, "SpeedProfile"] = {}
+
+        # Symmetric map of tunnel endpoints. A tunnel pairs two dead-end
+        # edges so they behave as a single tile-to-tile connection. Keyed
+        # by ``(x, y, edge)``; both directions of every pair are stored so
+        # lookups are O(1). Written only via ``add_tunnel`` / ``remove_tunnel``
+        # / ``_sweep_stale_tunnels``.
+        self.tunnels: Dict[
+            Tuple[int, int, str], Tuple[int, int, str]
+        ] = {}
 
         self.block_manager: Optional[BlockManager] = None
         self.switch_manager: Optional[SwitchManager] = None
@@ -211,7 +220,10 @@ class RailwayNetwork:
             edge: Direction to look ('N', 'E', 'S', 'W')
 
         Returns:
-            TrackSegment if neighbor exists, None otherwise
+            TrackSegment if neighbor exists, None otherwise. When the grid
+            cell beyond ``edge`` is empty, the lookup falls through to
+            ``self.tunnels`` and returns the far tile of a tunnel anchored
+            at ``(x, y, edge)`` if one is registered.
 
         Coordinate system:
             N (North) = Y+ direction (0, +1)
@@ -231,7 +243,14 @@ class RailwayNetwork:
 
         dx, dy = offsets[edge]
         neighbor_key = (x + dx, y + dy)
-        return self.tracks.get(neighbor_key)
+        grid_neighbor = self.tracks.get(neighbor_key)
+        if grid_neighbor is not None:
+            return grid_neighbor
+
+        tunnel_far = self.tunnels.get((int(x), int(y), edge))
+        if tunnel_far is None:
+            return None
+        return self.tracks.get((tunnel_far[0], tunnel_far[1]))
 
     def _get_neighbor_coords(
         self, x: int, y: int, edge: str
@@ -261,21 +280,22 @@ class RailwayNetwork:
     def get_connection_edges(
         self, tile_a: Tuple[int, int], tile_b: Tuple[int, int]
     ) -> Optional[Tuple[str, str]]:
-        """Return the connecting edge pair for two orthogonally adjacent tiles.
+        """Return the connecting edge pair for two tiles, either via grid
+        adjacency or via a tunnel.
 
-        Per design_new.md "Pathfinding home" (line 1864, 1948): answers two
-        questions at once — are the two tiles track-connected neighbors, and if
-        so, which edge on each tile connects to the other?
+        Per design_new.md "Pathfinding home": answers two questions at once
+        — are the two tiles track-connected, and if so, which edge on each
+        tile connects to the other?
 
         Args:
             tile_a: (x, y) of the first tile.
             tile_b: (x, y) of the second tile.
 
         Returns:
-            ``(edge_on_a, edge_on_b)`` when the tiles are orthogonally adjacent
-            AND both have track segments whose edge sets include the connecting
-            edges. Returns ``None`` for non-adjacent tiles, diagonal neighbors,
-            or when either tile has no track or lacks the connecting edge.
+            ``(edge_on_a, edge_on_b)`` when the tiles are track-connected,
+            either because they are orthogonally adjacent on the grid with
+            matching opposite edges in their ``track_bits``, or because a
+            tunnel links them. Returns ``None`` otherwise.
         """
         _EDGE_OFFSETS: Dict[str, Tuple[int, int]] = {
             "N": (0, 1),
@@ -287,24 +307,160 @@ class RailwayNetwork:
 
         ax, ay = tile_a
         bx, by = tile_b
-        dx, dy = bx - ax, by - ay
-
-        # Build a reverse map from (dx, dy) -> edge name on tile_a.
-        _OFFSET_TO_EDGE = {v: k for k, v in _EDGE_OFFSETS.items()}
-        edge_a = _OFFSET_TO_EDGE.get((dx, dy))
-        if edge_a is None:
-            return None  # Not orthogonally adjacent (or same tile)
-
-        edge_b = _OPPOSITE[edge_a]
-
         track_a = self.get_track(ax, ay)
         track_b = self.get_track(bx, by)
         if track_a is None or track_b is None:
             return None
-        if edge_a not in track_a.edges or edge_b not in track_b.edges:
-            return None
 
-        return (edge_a, edge_b)
+        # 1. Grid-adjacent path.
+        dx, dy = bx - ax, by - ay
+        _OFFSET_TO_EDGE = {v: k for k, v in _EDGE_OFFSETS.items()}
+        edge_a = _OFFSET_TO_EDGE.get((dx, dy))
+        if edge_a is not None:
+            edge_b = _OPPOSITE[edge_a]
+            if edge_a in track_a.edges and edge_b in track_b.edges:
+                return (edge_a, edge_b)
+
+        # 2. Tunnel-linked path.
+        for edge in track_a.edges:
+            far = self.tunnels.get((int(ax), int(ay), edge))
+            if far is None:
+                continue
+            if (far[0], far[1]) == (bx, by) and far[2] in track_b.edges:
+                return (edge, far[2])
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Tunnels: pair two dead-end edges so they act like neighbouring tiles.
+    # ------------------------------------------------------------------
+
+    _TUNNEL_OFFSETS: Dict[str, Tuple[int, int]] = {
+        "N": (0, 1),
+        "E": (1, 0),
+        "S": (0, -1),
+        "W": (-1, 0),
+    }
+    _TUNNEL_OPPOSITE: Dict[str, str] = {"N": "S", "S": "N", "E": "W", "W": "E"}
+
+    def get_tunnel(
+        self, x: int, y: int, edge: str
+    ) -> Optional[Tuple[int, int, str]]:
+        """Far endpoint of the tunnel at ``(x, y, edge)``, or ``None`` if not
+        tunneled. Reader only — does not consult grid neighbours."""
+        return self.tunnels.get((int(x), int(y), str(edge).upper()))
+
+    def add_tunnel(
+        self,
+        a: Tuple[int, int, str],
+        b: Tuple[int, int, str],
+    ) -> None:
+        """Pair two dead-end edges as a single tile-to-tile connection.
+
+        Both endpoints must:
+          - reference a tile that exists and includes the given edge in
+            its ``track_bits``,
+          - currently be a dead-end (no grid neighbour connecting back on
+            the opposite edge),
+          - not already participate in another tunnel.
+
+        Endpoints must be distinct. After the write, both endpoint tiles
+        get a topology propagation so derived state updates.
+        """
+        ep_a = self._normalize_tunnel_endpoint(a)
+        ep_b = self._normalize_tunnel_endpoint(b)
+        if ep_a == ep_b:
+            raise ValueError(f"Tunnel endpoints must be distinct: got {ep_a}")
+        self._validate_tunnel_endpoint(ep_a)
+        self._validate_tunnel_endpoint(ep_b)
+
+        self.tunnels[ep_a] = ep_b
+        self.tunnels[ep_b] = ep_a
+
+        self.propagate_from_tile(ep_a[0], ep_a[1])
+        self.propagate_from_tile(ep_b[0], ep_b[1])
+
+    def remove_tunnel(self, endpoint: Tuple[int, int, str]) -> bool:
+        """Remove the tunnel containing ``endpoint``. Returns ``True`` if a
+        tunnel was removed, ``False`` if the endpoint was not tunneled."""
+        ep_a = self._normalize_tunnel_endpoint(endpoint)
+        ep_b = self.tunnels.pop(ep_a, None)
+        if ep_b is None:
+            return False
+        self.tunnels.pop(ep_b, None)
+        self.propagate_from_tile(ep_a[0], ep_a[1])
+        self.propagate_from_tile(ep_b[0], ep_b[1])
+        return True
+
+    def _normalize_tunnel_endpoint(self, ep) -> Tuple[int, int, str]:
+        if not (isinstance(ep, (tuple, list)) and len(ep) == 3):
+            raise ValueError(
+                f"Tunnel endpoint must be (x, y, edge); got {ep!r}"
+            )
+        return (int(ep[0]), int(ep[1]), str(ep[2]).upper())
+
+    def _validate_tunnel_endpoint(self, ep: Tuple[int, int, str]) -> None:
+        x, y, edge = ep
+        if edge not in self._TUNNEL_OFFSETS:
+            raise ValueError(f"Tunnel edge must be N/E/S/W; got {edge!r}")
+        if ep in self.tunnels:
+            raise ValueError(
+                f"Endpoint ({x},{y},{edge}) is already tunneled to "
+                f"{self.tunnels[ep]}"
+            )
+        track = self.tracks.get((x, y))
+        if track is None:
+            raise ValueError(f"No track at ({x},{y}) for tunnel endpoint")
+        if edge not in track.edges:
+            raise ValueError(
+                f"Edge {edge} not present at ({x},{y}); track has "
+                f"{sorted(track.edges)}"
+            )
+        # Dead-end check uses grid arithmetic directly, not get_neighbor,
+        # so it stays correct after get_neighbor consults tunnels in Phase C.
+        dx, dy = self._TUNNEL_OFFSETS[edge]
+        grid_neighbor = self.tracks.get((x + dx, y + dy))
+        if (
+            grid_neighbor is not None
+            and self._TUNNEL_OPPOSITE[edge] in grid_neighbor.edges
+        ):
+            raise ValueError(
+                f"Endpoint ({x},{y},{edge}) is not a dead-end — grid "
+                f"neighbour ({x+dx},{y+dy}) connects back via "
+                f"{self._TUNNEL_OPPOSITE[edge]}"
+            )
+
+    def _sweep_stale_tunnels(self) -> None:
+        """Drop any tunnel whose endpoints no longer satisfy the
+        dead-end invariants. Called from ``propagate_from_tile`` so that
+        edits to track topology automatically clean the table."""
+        if not self.tunnels:
+            return
+        stale: Set[Tuple[int, int, str]] = set()
+        seen: Set[Tuple[int, int, str]] = set()
+        for ep, other in list(self.tunnels.items()):
+            if ep in seen:
+                continue
+            seen.add(ep)
+            seen.add(other)
+            for a in (ep, other):
+                x, y, edge = a
+                track = self.tracks.get((x, y))
+                if track is None or edge not in track.edges:
+                    stale.add(ep)
+                    stale.add(other)
+                    break
+                dx, dy = self._TUNNEL_OFFSETS[edge]
+                grid_neighbor = self.tracks.get((x + dx, y + dy))
+                if (
+                    grid_neighbor is not None
+                    and self._TUNNEL_OPPOSITE[edge] in grid_neighbor.edges
+                ):
+                    stale.add(ep)
+                    stale.add(other)
+                    break
+        for ep in stale:
+            self.tunnels.pop(ep, None)
 
     def propagate_from_tile(self, x: int, y: int) -> None:
         """Propagate updates from a tile using BFS wave.
@@ -316,6 +472,7 @@ class RailwayNetwork:
 
         The wave visits each affected tile once and calls propagate_update().
         """
+        self._sweep_stale_tunnels()
         queue = deque([(x, y)])
         visited = set()
 
@@ -439,6 +596,11 @@ class RailwayNetwork:
                 )
 
         del self.tracks[key]
+
+        # Removed tile may have been a tunnel endpoint — clean those up
+        # explicitly, since the propagate loop below only fires when a
+        # grid neighbour exists.
+        self._sweep_stale_tunnels()
 
         # N=Y+, E=X+, S=Y-, W=X-
         offsets = {"N": (0, 1), "E": (1, 0), "S": (0, -1), "W": (-1, 0)}
@@ -931,12 +1093,11 @@ class RailwayNetwork:
                 f"Track at ({tile_x}, {tile_y}) does not support direction {direction.name}"
             )
 
-        neighbor_coords = self._get_neighbor_coords(tile_x, tile_y, exit_edge)
-        neighbor = self.get_track(*neighbor_coords)
+        neighbor = self.get_neighbor(tile_x, tile_y, exit_edge)
         if not neighbor:
             raise ValueError(
-                f"Cannot place train facing {direction.name}: no track at ({neighbor_coords[0]}, {neighbor_coords[1]}) "
-                f"to connect to"
+                f"Cannot place train facing {direction.name}: no track at the "
+                f"neighbor of ({tile_x}, {tile_y}) via edge {exit_edge}"
             )
 
         train_length_cm = self._get_train_length_cm(train)
@@ -1140,16 +1301,16 @@ class RailwayNetwork:
         for _ in range(max_iterations):
             # Get previous tile (in direction opposite to entry)
             backward_edge = current_entry_edge
-            prev_coords = self._get_neighbor_coords(*current_tile, backward_edge)
-            prev_track = self.get_track(*prev_coords)
+            prev_track = self.get_neighbor(*current_tile, backward_edge)
 
             if not prev_track:
                 # No track behind - train extends off layout
                 available = accumulated_length
                 raise ValueError(
                     f"Train length {train_length_cm}cm exceeds available track {available}cm. "
-                    f"No track at {prev_coords} behind {current_tile}."
+                    f"No track behind {current_tile} via edge {backward_edge}."
                 )
+            prev_coords = (prev_track.x, prev_track.y)
 
             # Check connectivity
             opposite_edge = OPPOSITE_EDGE[backward_edge]
@@ -1695,7 +1856,24 @@ class RailwayNetwork:
             "switches": {
                 k: v.to_dict() for k, v in self.switches.items()
             },
+            "tunnels": self.tunnels_to_list(),
         }
+
+    def tunnels_to_list(self) -> list:
+        """Serialize ``self.tunnels`` to a list of pair records. The
+        symmetric backing dict is collapsed to one record per pair."""
+        out = []
+        seen: Set[Tuple[int, int, str]] = set()
+        for ep_a, ep_b in self.tunnels.items():
+            if ep_a in seen:
+                continue
+            seen.add(ep_a)
+            seen.add(ep_b)
+            out.append({
+                "a": {"x": ep_a[0], "y": ep_a[1], "edge": ep_a[2]},
+                "b": {"x": ep_b[0], "y": ep_b[1], "edge": ep_b[2]},
+            })
+        return out
 
     def to_layout_dict(self) -> dict:
         """Layout-only serialization used by persistence.
@@ -1718,6 +1896,7 @@ class RailwayNetwork:
             "switches": {
                 k: v.to_layout_dict() for k, v in self.switches.items()
             },
+            "tunnels": self.tunnels_to_list(),
         }
 
     def from_dict(self, data: dict):
@@ -1731,6 +1910,7 @@ class RailwayNetwork:
         self.station_groups.clear()
         self.switches.clear()  # NEW: Clear switches
         self.schedules.clear()
+        self.tunnels.clear()
 
         for block_id, block_data in data.get("blocks", {}).items():
             self.blocks[block_id] = Block.from_dict(block_data)
@@ -1773,3 +1953,21 @@ class RailwayNetwork:
         for train_data in data.get("trains", []):
             train = Train.from_dict(train_data)
             self.trains[train.train_id] = train
+
+        # Rebuild tunnels (after all tracks are in place — add_tunnel
+        # validates against the live track set). A malformed entry is
+        # logged and skipped so one bad pair doesn't brick the load.
+        for tunnel_data in data.get("tunnels", []):
+            try:
+                a = tunnel_data["a"]
+                b = tunnel_data["b"]
+                self.add_tunnel(
+                    (a["x"], a["y"], a["edge"]),
+                    (b["x"], b["y"], b["edge"]),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "Skipping malformed tunnel entry %r: %s",
+                    tunnel_data,
+                    exc,
+                )

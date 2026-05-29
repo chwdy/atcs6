@@ -28,7 +28,7 @@ from railway_signal import Signal, SignalType
 from station import Station
 from train import Train, TrainCar
 from switch import Switch
-from enums import Direction, BlockState
+from enums import Direction, BlockState, TrainState
 
 
 @pytest.fixture
@@ -197,6 +197,61 @@ class TestBlockRoutes:
         assert response.status_code == 200
         data = response.get_json()
         assert data["name"] == "Updated"
+
+    def test_update_block_allowed_travel_directions_one_way(
+        self, client, app_state
+    ):
+        """PATCH should set a one-way `allowed_travel_directions` policy and
+        round-trip it through `to_dict` (sorted list)."""
+        block = app_state.network.create_block("BLK_001", "Test")
+        response = client.patch(
+            "/api/blocks/BLK_001",
+            json={"allowed_travel_directions": ["forward"]},
+        )
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["allowed_travel_directions"] == ["forward"]
+        # The field is actually mutated on the entity, as a set.
+        assert block.allowed_travel_directions == {"forward"}
+
+    def test_update_block_allowed_travel_directions_both(
+        self, client, app_state
+    ):
+        """PATCH with both directions stores the full bidirectional policy."""
+        app_state.network.create_block("BLK_001", "Test")
+        response = client.patch(
+            "/api/blocks/BLK_001",
+            json={"allowed_travel_directions": ["reverse", "forward"]},
+        )
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["allowed_travel_directions"] == ["forward", "reverse"]
+
+    def test_update_block_allowed_travel_directions_empty_rejected(
+        self, client, app_state
+    ):
+        """An empty set is rejected with 400 — a block must allow at least
+        one direction (design_new.md: defaults to both, never none)."""
+        block = app_state.network.create_block("BLK_001", "Test")
+        response = client.patch(
+            "/api/blocks/BLK_001",
+            json={"allowed_travel_directions": []},
+        )
+        assert response.status_code == 400
+        # The block's policy is left untouched on rejection.
+        assert block.allowed_travel_directions == {"forward", "reverse"}
+
+    def test_update_block_allowed_travel_directions_unknown_rejected(
+        self, client, app_state
+    ):
+        """An unknown direction token is rejected with 400."""
+        block = app_state.network.create_block("BLK_001", "Test")
+        response = client.patch(
+            "/api/blocks/BLK_001",
+            json={"allowed_travel_directions": ["sideways"]},
+        )
+        assert response.status_code == 400
+        assert block.allowed_travel_directions == {"forward", "reverse"}
 
     def test_delete_block(self, client, app_state):
         """DELETE /api/blocks/<block_id> should delete block."""
@@ -906,6 +961,147 @@ class TestRouteRedesignApis:
         assert result["viable"] is True
         assert result["hop_count"] == 0
         assert result["distance_cm"] == 0.0
+
+    # ------------------------------------------------------------------
+    # Quick Route flow: the canonical replacement for the legacy
+    # POST /api/paths create_path call from the editor's path tool.
+    # Per design_new.md:1297, manual reposition is modeled through an
+    # ordinary one-off Route + RouteRun rather than a raw path.
+    # ------------------------------------------------------------------
+
+    def _place_powered_train_on_two_block_line(self, app_state, train_id="TRAIN_QR"):
+        """Build BLK_A→BLK_B, place a powered cab-A train on BLK_A.
+
+        Goes through `sim_controller.add_train(...)`, which is the canonical
+        entry point that writes the initial `TrainController.physics_sync
+        .current_span` from the placed `TrainPosition` (simulation.py:607).
+        Phase 1 cannot allocate a path without that span.
+        """
+        for x in range(4):
+            app_state.network.add_track(TrackSegment(x=x, y=0, track_bits=2))
+        app_state.network.create_block_with_tracks(
+            block_id="BLK_A", positions=[(0, 0), (1, 0)], name="Block A"
+        )
+        app_state.network.create_block_with_tracks(
+            block_id="BLK_B", positions=[(2, 0), (3, 0)], name="Block B"
+        )
+
+        train = app_state.sim_controller.add_train(
+            train_id=train_id,
+            starting_block_id="BLK_A",
+            initial_direction="EAST",
+            max_speed_kmh=60.0,
+            length_cm=20.0,
+            initial_cab="A",
+        )
+
+        controller = app_state.sim_controller.get_or_create_controller(train_id)
+        controller.power_on = True
+        controller.commands.control_mode = "ato"
+        controller.ops.state = TrainState.READY
+        return train, controller
+
+    def test_quick_route_three_call_flow_creates_path_via_phase1(self, client, app_state):
+        """The Quick Route tool's three-call sequence — POST /api/train-routes
+        (one-off, single stop task) + POST /train-routes/<id>/activate
+        + PUT /api/trains/<id>/assign-route — should cause Phase 1 to
+        allocate a dispatcher path on a subsequent sim tick.
+
+        Also verifies that POST /api/train-routes accepts
+        ``acquisition_mode`` (the operator picks all_or_nothing for Quick
+        Route, taking full responsibility for the manual reposition).
+        """
+        self._place_powered_train_on_two_block_line(app_state)
+
+        create_resp = client.post(
+            "/api/train-routes",
+            json={
+                "route_id": "ROUTE_QR_TEST",
+                "name": "Quick: TRAIN_QR -> BLK_B",
+                "mode": "one_off",
+                "tasks": [{
+                    "task_kind": "stop",
+                    "task_location": {"block_id": "BLK_B"},
+                    "task_direction": "forward",
+                }],
+                "acquisition_mode": "all_or_nothing",
+            },
+        )
+        assert create_resp.status_code == 200, create_resp.get_json()
+        assert (
+            create_resp.get_json()["route"]["acquisition_mode"]
+            == "all_or_nothing"
+        ), "POST /api/train-routes must pass acquisition_mode through to the service"
+
+        activate_resp = client.post("/api/train-routes/ROUTE_QR_TEST/activate")
+        assert activate_resp.status_code == 200, activate_resp.get_json()
+
+        assign_resp = client.put(
+            "/api/trains/TRAIN_QR/assign-route",
+            json={"route_id": "ROUTE_QR_TEST"},
+        )
+        assert assign_resp.status_code == 200, assign_resp.get_json()
+
+        # Pre-tick: no path yet — assign-route only writes the assignment.
+        assert app_state.path_dispatcher.active_path_id_by_train("TRAIN_QR") is None
+
+        # Run a few ticks; Phase 1 should call PathDispatcher.create_path.
+        active_path_id = None
+        for _ in range(10):
+            app_state.sim_controller.update(0.1)
+            active_path_id = app_state.path_dispatcher.active_path_id_by_train("TRAIN_QR")
+            if active_path_id is not None:
+                break
+
+        assert active_path_id is not None, (
+            "Expected Phase 1 to allocate a dispatcher path within ~10 ticks "
+            "after assign-route. None was allocated — the one-off route flow "
+            "is the contract editor-paths.js's Quick Route tool depends on."
+        )
+
+    def test_assign_route_conflict_returns_409_without_force(self, client, app_state):
+        """assign-route returns 409 when the train already has an active
+        route assignment and `force=true` is not supplied. The Quick Route
+        UI uses this 409 to drive a confirmation modal before retrying with
+        force=true. The forced retry must succeed."""
+        self._place_powered_train_on_two_block_line(app_state)
+
+        for route_id in ("ROUTE_FIRST", "ROUTE_SECOND"):
+            resp = client.post(
+                "/api/train-routes",
+                json={
+                    "route_id": route_id,
+                    "mode": "one_off",
+                    "tasks": [{
+                        "task_kind": "stop",
+                        "task_location": {"block_id": "BLK_B"},
+                        "task_direction": "forward",
+                    }],
+                },
+            )
+            assert resp.status_code == 200, resp.get_json()
+
+        assert (
+            client.put(
+                "/api/trains/TRAIN_QR/assign-route",
+                json={"route_id": "ROUTE_FIRST"},
+            ).status_code
+            == 200
+        )
+
+        conflict_resp = client.put(
+            "/api/trains/TRAIN_QR/assign-route",
+            json={"route_id": "ROUTE_SECOND"},
+        )
+        assert conflict_resp.status_code == 409
+        assert "already assigned" in conflict_resp.get_json()["error"].lower()
+
+        forced_resp = client.put(
+            "/api/trains/TRAIN_QR/assign-route",
+            json={"route_id": "ROUTE_SECOND", "force": True},
+        )
+        assert forced_resp.status_code == 200, forced_resp.get_json()
+
 
 # ============================================================================
 # Summary

@@ -790,6 +790,102 @@ function bindAvailabilitySegment(idBase, onChange) {
 }
 
 // ============================================================================
+// BLOCK ALLOWED-TRAVEL-DIRECTION SEGMENTED CONTROL
+// ============================================================================
+//
+// `Block.allowed_travel_directions` is a non-empty subset of
+// {"forward", "reverse"} (defaults to both). "forward" means the increasing
+// direction of the block's tile order; "reverse" the decreasing direction.
+// The three mutually-exclusive UI states map 1:1 onto the allowed subset:
+//   both    -> ["forward", "reverse"]
+//   forward -> ["forward"]
+//   reverse -> ["reverse"]
+//
+// Mirrors the availability segmented control above (same `switch-group` /
+// `switch-btn` design-language component, same render/bind split). The caller
+// wires three buttons by ID and sends the chosen subset to the block PATCH
+// endpoint as `{ allowed_travel_directions: [...] }`.
+// ============================================================================
+
+function deriveDirectionState(entity) {
+    const atd = (entity && entity.allowed_travel_directions) || ['forward', 'reverse'];
+    const set = new Set(atd);
+    const hasForward = set.has('forward');
+    const hasReverse = set.has('reverse');
+    if (hasForward && hasReverse) return 'both';
+    if (hasForward) return 'forward';
+    if (hasReverse) return 'reverse';
+    // Empty / unknown — fall back to the block default (both directions).
+    return 'both';
+}
+
+function directionStateToPayload(state) {
+    switch (state) {
+        case 'forward':
+            return { allowed_travel_directions: ['forward'] };
+        case 'reverse':
+            return { allowed_travel_directions: ['reverse'] };
+        case 'both':
+        default:
+            return { allowed_travel_directions: ['forward', 'reverse'] };
+    }
+}
+
+function renderDirectionSegment(entityKind, entity, opts = {}) {
+    const state = deriveDirectionState(entity);
+    const idBase = (opts.idBase || `${entityKind}-direction`).replace(/[^a-z0-9-]/gi, '-');
+    const label = opts.label || 'Allowed travel';
+    const help = opts.help
+        || 'Which way trains may travel through this block. Auto-routing obeys this; an operator can override it.';
+    const dir = (s) => state === s ? 'active' : '';
+    return `
+        <div class="input-large-container mb-8" data-direction-segment="${entityKind}">
+            <label class="input-large-label">${label}</label>
+            <div class="switch-group" role="radiogroup" aria-label="${label}">
+                <button type="button"
+                    class="switch-btn ${dir('both')}"
+                    id="${idBase}-both"
+                    data-direction="both"
+                    title="Both directions allowed">Both</button>
+                <button type="button"
+                    class="switch-btn ${dir('forward')}"
+                    id="${idBase}-forward"
+                    data-direction="forward"
+                    title="Forward only — increasing tile order">Forward</button>
+                <button type="button"
+                    class="switch-btn ${dir('reverse')}"
+                    id="${idBase}-reverse"
+                    data-direction="reverse"
+                    title="Reverse only — decreasing tile order">Reverse</button>
+            </div>
+            <div class="text-xxs text-muted mt-4">${help}</div>
+        </div>
+    `;
+}
+
+// Wire the three buttons of a `renderDirectionSegment` block. `onChange`
+// receives `(state, payload)` where `payload = {allowed_travel_directions}`
+// ready to send to the block PATCH endpoint.
+function bindDirectionSegment(idBase, onChange) {
+    const states = ['both', 'forward', 'reverse'];
+    states.forEach((state) => {
+        const btn = document.getElementById(`${idBase}-${state}`);
+        if (!btn) return;
+        btn.onclick = () => {
+            states.forEach((s) => {
+                const b = document.getElementById(`${idBase}-${s}`);
+                if (b) b.classList.toggle('active', s === state);
+            });
+            try {
+                onChange(state, directionStateToPayload(state));
+            } catch (err) {
+                console.error('[direction-segment] onChange failed', err);
+            }
+        };
+    });
+}
+
+// ============================================================================
 // TILE LIST RENDERING
 // ============================================================================
 

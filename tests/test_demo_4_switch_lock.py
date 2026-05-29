@@ -1,5 +1,5 @@
 """Journey test: SW_X1 and SW_X2 switch_state must stay at 1 across the
-demo_3_best_effort scenario.
+demo_4 scenario.
 
 Scene: four trains (T1..T4) running the shared CIRCULAR route. The route
 never requires the swap-through alignment of either scissors crossover — every
@@ -13,7 +13,7 @@ track.py:766-784 maps the NS/EW straight bits to required_state=0 (MAIN) and
 the diagonal NW/SE bits to required_state=1 (DIVERGE). The demo's stay-on-
 track routes therefore derive ``required_state = 1``, so both crossover
 tiles are initialised with ``tile.switch_state = 1`` at scene setup
-(demo_3_best_effort.py:_add_crossovers).
+(demo_4.py:_add_crossovers).
 
 This invariant pins the expected alignment: SW_X1 and SW_X2 must remain at
 switch_state=1 across the run. If either flips to 0 (the swap alignment),
@@ -27,13 +27,13 @@ import pytest
 from bootstrap import get_current_scene_id
 from tests.journey.events import Event, Invariant, Journey
 from tests.journey.harness import JourneyHarness
-from tests.journey.scenes.demo3_best_effort_scene import Demo3BestEffortScene
+from tests.journey.scenes.demo4_scene import Demo4Scene
 from tests.journey.triggers import at_tick
 
 
-if get_current_scene_id() != "demo_3_best_effort":
+if get_current_scene_id() != "demo_4":
     pytest.skip(
-        f"Test built for scene 'demo_3_best_effort'; active scene is "
+        f"Test built for scene 'demo_4'; active scene is "
         f"{get_current_scene_id()!r}.",
         allow_module_level=True,
     )
@@ -51,7 +51,7 @@ pytest.skip(
     "truncation under contention, alternative platforms in multi-platform "
     "stations are reached via swap routes, which legitimately flip switch "
     "state. The core BEST_EFFORT contract is covered by test_dispatcher.py::"
-    "TestBestEffortAcquisitionContract and test_demo_3_best_effort_crossover_blocks.py.",
+    "TestBestEffortAcquisitionContract and test_demo_4_crossover_blocks.py.",
     allow_module_level=True,
 )
 
@@ -172,7 +172,7 @@ def build_journey(train_id: str = "T1") -> Journey:
 
 
 @pytest.mark.parametrize("dt,label", [(0.1, "1x")])
-def test_demo_3_best_effort_switches_remain_main(dt, label):
+def test_demo_4_switches_remain_main(dt, label):
     """At least 60 seconds of sim time at dt=0.1 (= 600 ticks).
 
     Per the journey-testing convention the test parametrizes playback speeds,
@@ -181,7 +181,7 @@ def test_demo_3_best_effort_switches_remain_main(dt, label):
     """
     max_ticks = max(50, int(60.0 / dt))  # 60 sim seconds
     harness = JourneyHarness(
-        scene=Demo3BestEffortScene(),
+        scene=Demo4Scene(),
         journey=build_journey(),
         dt=dt,
         max_ticks=max_ticks,

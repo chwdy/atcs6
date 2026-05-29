@@ -119,6 +119,7 @@ class Renderer {
         this.blockHandler = new RendererBlockHandler(this);
         this.routeHandler = new RendererRouteHandler(this);
         this.trainHandler = new RendererTrainHandler(this);
+        this.tunnelHandler = new RendererTunnelHandler(this);
         this.debugHandler = new RendererDebugHandler(this);
  
         // Set up mouse tracking for hover effects
@@ -173,7 +174,7 @@ class Renderer {
         this._lastFlushReason = '';
         // Refreshed once per flush from DOM debug checkboxes; hot paths
         // read this instead of querying the DOM per draw.
-        this.debugFlags = { showBlocks: false, showSignals: false };
+        this.debugFlags = { showBlocks: false, showSignals: false, showTunnelLinks: false };
         this.resize();
         window.addEventListener('resize', () => this._scheduleResize());
 
@@ -293,9 +294,11 @@ class Renderer {
     _refreshDebugFlags() {
         const showBlocks = document.getElementById('debug-show-blocks');
         const showSignals = document.getElementById('debug-show-signals');
+        const showTunnelLinks = document.getElementById('debug-show-tunnel-links');
         this.debugFlags = {
             showBlocks: showBlocks ? !!showBlocks.checked : false,
             showSignals: showSignals ? !!showSignals.checked : false,
+            showTunnelLinks: showTunnelLinks ? !!showTunnelLinks.checked : false,
         };
     }
 
@@ -533,6 +536,15 @@ class Renderer {
             }
         });
 
+        // Tunnel mouths at paired dead-ends, plus the pending first
+        // endpoint indicator when the tunnel tool is mid-pair. Dotted
+        // pairing lines are gated behind the Tunnel links debug toggle.
+        this.tunnelHandler.drawTunnels(
+            network.tunnels,
+            this._pendingTunnelEndpoint || null,
+            { showLinks: !!this.debugFlags?.showTunnelLinks }
+        );
+
         // Other debug overlays.
         this.debugHandler.drawDebugOverlays(network.tracks);
 
@@ -597,6 +609,11 @@ class Renderer {
 
     setLassoPath(points) {
         this.lassoPath = points;
+    }
+
+    setPendingTunnelEndpoint(endpoint) {
+        this._pendingTunnelEndpoint = endpoint;
+        this.requestRedraw({ world: true, live: true, reason: 'tunnel-pending' });
     }
 
     drawBoxSelection() {

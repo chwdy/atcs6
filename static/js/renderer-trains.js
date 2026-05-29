@@ -282,9 +282,6 @@ class RendererTrainHandler {
             ? [...occupiedTiles].reverse()
             : occupiedTiles;
 
-        const pathPoints = [];
-        pathPoints.push({ x: tailPos.x, y: tailPos.y });
-
         // Exit edge from one occupied tile to the next is fixed by their
         // grid positions — derive it directly. Using `getTrackExits()` with
         // the live `switch_state` would pick the wrong branch any time the
@@ -299,102 +296,123 @@ class RendererTrainHandler {
             return null;
         };
 
+        // Tunnel hops break grid adjacency: occupied_tiles can contain a
+        // pair of tiles separated by an arbitrary delta. The polyline must
+        // not span the tunnel — the body needs to render as two separate
+        // pieces, one on each mouth.
+        const tunnels = this.currentNetwork?.tunnels || [];
+        const isGridAdjacent = (a, b) => (
+            Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]) === 1
+        );
+        const findTunnelEdgePair = (a, b) => {
+            for (const pair of tunnels) {
+                if (pair.a.x === a[0] && pair.a.y === a[1] &&
+                    pair.b.x === b[0] && pair.b.y === b[1]) {
+                    return { exitEdge: pair.a.edge, entryEdge: pair.b.edge };
+                }
+                if (pair.b.x === a[0] && pair.b.y === a[1] &&
+                    pair.a.x === b[0] && pair.a.y === b[1]) {
+                    return { exitEdge: pair.b.edge, entryEdge: pair.a.edge };
+                }
+            }
+            return null;
+        };
+
+        // Build a list of body chunks. Each chunk is a polyline (array of
+        // screen points) that will be stroked as one continuous body piece.
+        // Tunnel hops start a new chunk so the line doesn't cross the gap.
+        const bodyChunks = [];
+        let currentChunk = [{ x: tailPos.x, y: tailPos.y }];
+
+        const pushEdgePoint = (chunk, tile, edge) => {
+            const cx = this.gridToScreenX(tile[0], tile[1]);
+            const cy = this.gridToScreenY(tile[0], tile[1]);
+            const offset = this.getEdgeCenterOffset(edge);
+            chunk.push({ x: cx + offset.x, y: cy + offset.y });
+        };
+
         if (!hasLeadingEnd) {
             // No cab active: simple direct line between ends regardless of track path
-            pathPoints.push({ x: headPos.x, y: headPos.y });
+            currentChunk.push({ x: headPos.x, y: headPos.y });
         } else if (occupiedTileCount === 1) {
             // Same tile - direct line
-            pathPoints.push({ x: headPos.x, y: headPos.y });
-        } else if (occupiedTileCount === 2) {
-            // 2 tiles - go through the shared boundary derived from grid positions.
-            const tailExitEdge = edgeFromDelta(tailTile, headTile);
-            const headEntryEdgeCalc = tailExitEdge ? this.getOppositeEdge(tailExitEdge) : null;
-
-            if (tailExitEdge) {
-                const tailCenterX = this.gridToScreenX(tailTile[0], tailTile[1]);
-                const tailCenterY = this.gridToScreenY(tailTile[0], tailTile[1]);
-                const tailExitOffset = this.getEdgeCenterOffset(tailExitEdge);
-                pathPoints.push({ x: tailCenterX + tailExitOffset.x, y: tailCenterY + tailExitOffset.y });
-            }
-
-            if (headEntryEdgeCalc) {
-                const headCenterX = this.gridToScreenX(headTile[0], headTile[1]);
-                const headCenterY = this.gridToScreenY(headTile[0], headTile[1]);
-                const headEntryOffset = this.getEdgeCenterOffset(headEntryEdgeCalc);
-                pathPoints.push({ x: headCenterX + headEntryOffset.x, y: headCenterY + headEntryOffset.y });
-            }
-
-            pathPoints.push({ x: headPos.x, y: headPos.y });
+            currentChunk.push({ x: headPos.x, y: headPos.y });
         } else {
-            // 3+ tiles - walk all occupied tiles tail → head, using each
-            // tile-to-next-tile delta to pick the shared edge.
+            // 2+ tiles - walk tail→head; on each hop pick edges via grid
+            // adjacency or tunnel lookup, and split at tunnel hops.
             for (let i = 0; i < tilesTailToHead.length - 1; i++) {
                 const currentTile = tilesTailToHead[i];
                 const nextTile = tilesTailToHead[i + 1];
-                const exitEdge = edgeFromDelta(currentTile, nextTile);
-                if (!exitEdge) continue;
 
-                const centerX = this.gridToScreenX(currentTile[0], currentTile[1]);
-                const centerY = this.gridToScreenY(currentTile[0], currentTile[1]);
-                const exitOffset = this.getEdgeCenterOffset(exitEdge);
-                pathPoints.push({ x: centerX + exitOffset.x, y: centerY + exitOffset.y });
+                if (isGridAdjacent(currentTile, nextTile)) {
+                    const exitEdge = edgeFromDelta(currentTile, nextTile);
+                    if (!exitEdge) continue;
+                    const entryEdge = this.getOppositeEdge(exitEdge);
+                    pushEdgePoint(currentChunk, currentTile, exitEdge);
+                    pushEdgePoint(currentChunk, nextTile, entryEdge);
+                    continue;
+                }
 
-                const entryEdge = this.getOppositeEdge(exitEdge);
-                const nextCenterX = this.gridToScreenX(nextTile[0], nextTile[1]);
-                const nextCenterY = this.gridToScreenY(nextTile[0], nextTile[1]);
-                const entryOffset = this.getEdgeCenterOffset(entryEdge);
-                pathPoints.push({ x: nextCenterX + entryOffset.x, y: nextCenterY + entryOffset.y });
+                // Non-grid-adjacent: must be a tunnel hop. End this chunk at
+                // currentTile's tunnel mouth, start the next chunk at
+                // nextTile's tunnel mouth.
+                const pair = findTunnelEdgePair(currentTile, nextTile);
+                if (pair) {
+                    pushEdgePoint(currentChunk, currentTile, pair.exitEdge);
+                }
+                bodyChunks.push(currentChunk);
+                currentChunk = [];
+                if (pair) {
+                    pushEdgePoint(currentChunk, nextTile, pair.entryEdge);
+                }
             }
-            pathPoints.push({ x: headPos.x, y: headPos.y });
+            currentChunk.push({ x: headPos.x, y: headPos.y });
         }
-        
-        // Draw body in segments: first (butt cap), middle (round caps), last (butt cap)
-        const drawBodySegments = (strokeStyle, lineWidth) => {
-            if (pathPoints.length < 2) return;
-            
-            // First segment (tail to first intermediate) - butt cap at tail
+        bodyChunks.push(currentChunk);
+
+        // Stroke each chunk independently. Butt caps at the chunk endpoints
+        // (so tunnel-cut ends look clean); round joins between intermediate
+        // points so the body bends smoothly through zigzag track.
+        const strokeChunk = (chunk, strokeStyle, lineWidth) => {
+            if (chunk.length < 2) return;
             this.ctx.save();
             this.ctx.strokeStyle = strokeStyle;
             this.ctx.lineWidth = lineWidth;
+
+            // First segment - butt cap at chunk start
             this.ctx.lineCap = 'butt';
             this.ctx.lineJoin = 'round';
             this.ctx.beginPath();
-            this.ctx.moveTo(pathPoints[0].x, pathPoints[0].y);
-            this.ctx.lineTo(pathPoints[1].x, pathPoints[1].y);
+            this.ctx.moveTo(chunk[0].x, chunk[0].y);
+            this.ctx.lineTo(chunk[1].x, chunk[1].y);
             this.ctx.stroke();
-            this.ctx.restore();
-            
+
             // Middle segments - round caps for smooth joins
-            if (pathPoints.length > 2) {
-                this.ctx.save();
-                this.ctx.strokeStyle = strokeStyle;
-                this.ctx.lineWidth = lineWidth;
+            if (chunk.length > 2) {
                 this.ctx.lineCap = 'round';
-                this.ctx.lineJoin = 'round';
-                for (let i = 1; i < pathPoints.length - 1; i++) {
+                for (let i = 1; i < chunk.length - 1; i++) {
                     this.ctx.beginPath();
-                    this.ctx.moveTo(pathPoints[i].x, pathPoints[i].y);
-                    this.ctx.lineTo(pathPoints[i + 1].x, pathPoints[i + 1].y);
+                    this.ctx.moveTo(chunk[i].x, chunk[i].y);
+                    this.ctx.lineTo(chunk[i + 1].x, chunk[i + 1].y);
                     this.ctx.stroke();
                 }
-                this.ctx.restore();
-            }
-            
-            // Last segment - butt cap at head (only if more than 2 points)
-            if (pathPoints.length > 2) {
-                this.ctx.save();
-                this.ctx.strokeStyle = strokeStyle;
-                this.ctx.lineWidth = lineWidth;
+                // Last segment - butt cap at chunk end
                 this.ctx.lineCap = 'butt';
-                this.ctx.lineJoin = 'round';
                 this.ctx.beginPath();
-                this.ctx.moveTo(pathPoints[pathPoints.length - 2].x, pathPoints[pathPoints.length - 2].y);
-                this.ctx.lineTo(pathPoints[pathPoints.length - 1].x, pathPoints[pathPoints.length - 1].y);
+                this.ctx.moveTo(chunk[chunk.length - 2].x, chunk[chunk.length - 2].y);
+                this.ctx.lineTo(chunk[chunk.length - 1].x, chunk[chunk.length - 1].y);
                 this.ctx.stroke();
-                this.ctx.restore();
+            }
+
+            this.ctx.restore();
+        };
+
+        const drawBodySegments = (strokeStyle, lineWidth) => {
+            for (const chunk of bodyChunks) {
+                strokeChunk(chunk, strokeStyle, lineWidth);
             }
         };
-        
+
         // Draw dark border then white fill
         drawBodySegments('#333', 5 * s);
         drawBodySegments('#ffffff', 3 * s);

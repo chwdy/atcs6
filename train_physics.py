@@ -565,8 +565,8 @@ class TrainPhysics:
             next_tile = self._get_neighbor_tile(current_tile, exit_edge)
             if next_tile is None:
                 break
+            current_entry = self._entry_edge_on_next(current_tile, exit_edge, next_tile)
             current_tile = next_tile
-            current_entry = OPPOSITE_EDGES[exit_edge]
 
         return frames
 
@@ -964,8 +964,9 @@ class TrainPhysics:
                 if next_tile is None:
                     break
                 swept.append((current_tile, current_entry, exit_edge))
+                new_entry = self._entry_edge_on_next(current_tile, exit_edge, next_tile)
                 current_tile = next_tile
-                current_entry = OPPOSITE_EDGES[exit_edge]
+                current_entry = new_entry
                 continue
 
             if remaining < tile_length:
@@ -980,8 +981,9 @@ class TrainPhysics:
             if next_tile is None:
                 break
             swept.append((current_tile, current_entry, exit_edge))
+            new_entry = self._entry_edge_on_next(current_tile, exit_edge, next_tile)
             current_tile = next_tile
-            current_entry = OPPOSITE_EDGES[exit_edge]
+            current_entry = new_entry
 
         return swept
 
@@ -1037,8 +1039,8 @@ class TrainPhysics:
                     (new_tile, new_entry_edge, exit_edge)
                 )
 
+                new_entry_edge = self._entry_edge_on_next(new_tile, exit_edge, next_tile)
                 new_tile = next_tile
-                new_entry_edge = OPPOSITE_EDGES[exit_edge]
                 continue
 
             if new_distance < tile_length:
@@ -1072,8 +1074,8 @@ class TrainPhysics:
             )
 
             # Move to next tile
+            new_entry_edge = self._entry_edge_on_next(new_tile, exit_edge, next_tile)
             new_tile = next_tile
-            new_entry_edge = OPPOSITE_EDGES[exit_edge]
 
         # Update position
         if is_end_a:
@@ -1136,7 +1138,10 @@ class TrainPhysics:
                 break
 
             prev_track = self.network.get_track(*prev_tile) if self.network else None
-            exit_edge = OPPOSITE_EDGES.get(current_entry, current_entry)
+            # `exit_edge` is the edge on `prev_tile` that connects back to
+            # `current_tile`. Grid-adjacent: opposite of the entry edge.
+            # Tunnel-paired: the tunnel partner's edge on `prev_tile`.
+            exit_edge = self._entry_edge_on_next(current_tile, current_entry, prev_tile)
             entry_edge = None
             if prev_track:
                 entry_edge = prev_track.get_entry_for_exit(
@@ -1212,8 +1217,9 @@ class TrainPhysics:
                 break
 
             occupied.append(next_tile)
+            new_entry = self._entry_edge_on_next(current_tile, exit_edge, next_tile)
             current_tile = next_tile
-            current_entry = OPPOSITE_EDGES[exit_edge]
+            current_entry = new_entry
 
         if position.leading_end == LeadingEnd.A:
             position.occupied_tiles = list(reversed(occupied))
@@ -1446,24 +1452,30 @@ class TrainPhysics:
         self, tile: Tuple[int, int], edge: str
     ) -> Optional[Tuple[int, int]]:
         """Get neighbor tile in given direction."""
-        dx, dy = self._get_direction_delta(edge)
-        neighbor = (tile[0] + dx, tile[1] + dy)
+        if not self.network:
+            return None
+        neighbor = self.network.get_neighbor(tile[0], tile[1], edge)
+        return (neighbor.x, neighbor.y) if neighbor else None
 
-        # Check if neighbor has a track
-        if self.network and self.network.get_track(*neighbor):
-            return neighbor
+    def _entry_edge_on_next(
+        self,
+        from_tile: Tuple[int, int],
+        from_exit_edge: str,
+        to_tile: Tuple[int, int],
+    ) -> str:
+        """Edge on `to_tile` reached by exiting `from_tile` through `from_exit_edge`.
 
-        return None
-
-    def _get_direction_delta(self, edge: str) -> Tuple[int, int]:
-        """Get (dx, dy) coordinate delta for moving through an edge."""
-        mapping = {
-            "N": (0, 1),
-            "E": (1, 0),
-            "S": (0, -1),
-            "W": (-1, 0),
-        }
-        return mapping.get(edge, (0, 0))
+        Grid-adjacent: opposite of the exit edge. Tunnel-paired: the far end's
+        edge from `network.tunnels`, which can be any cardinal (e.g. the demo_4
+        S1↔S4 tunnel maps `N ↔ W`, not `N ↔ S`).
+        """
+        if self.network is not None:
+            tunnel_far = self.network.tunnels.get(
+                (from_tile[0], from_tile[1], from_exit_edge)
+            )
+            if tunnel_far is not None and (tunnel_far[0], tunnel_far[1]) == to_tile:
+                return tunnel_far[2]
+        return OPPOSITE_EDGES[from_exit_edge]
 
     def _direction_to_edge(self, direction) -> str:
         """Convert Direction enum to edge string (N/E/S/W)."""

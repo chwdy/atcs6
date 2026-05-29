@@ -687,35 +687,37 @@ class TrackSegment:
         """Recompute dead-ends based on neighbor connectivity.
 
         An edge is a dead-end if:
-        1. track_bits has a path connecting to that edge, AND
+        1. ``track_bits`` has a path connecting to that edge, AND
         2. Either:
-           - No neighbor tile exists in that direction, OR
-           - Neighbor exists but has no path connecting back
+           - No reachable neighbour (grid or tunnel) exists through that edge, OR
+           - A neighbour exists but does not connect back through the edge that
+             links to us. For a grid neighbour the connecting edge is the
+             cardinal opposite; for a tunnel it is the recorded far edge,
+             which can be any edge.
 
-        This is called by propagate_update() when network topology changes.
+        This is called by ``propagate_update()`` when network topology changes.
         """
         self.dead_end_ports.clear()
 
-        # Check each edge
         for edge, mask in EDGE_MASKS.items():
-            # Does this tile have a path to this edge?
             if not (self.track_bits & mask):
-                continue  # No path on this edge
+                continue
 
-            # Check neighbor connectivity
             neighbor = network.get_neighbor(self.x, self.y, edge)
-
             if neighbor is None:
-                # No neighbor tile - this is a dead-end
                 self.dead_end_ports.add(edge)
-            else:
-                # Neighbor exists - check if it connects back
-                opposite = OPPOSITE_EDGE[edge]
+                continue
 
-                # Does neighbor have a path on the opposite edge?
-                if not (neighbor.track_bits & EDGE_MASKS[opposite]):
-                    # Neighbor has no path connecting back - dead-end
-                    self.dead_end_ports.add(edge)
+            # ``get_connection_edges`` returns the actual edge pair that
+            # links the two tiles — cardinal opposites for grid neighbours,
+            # the registered tunnel pair otherwise. If our edge isn't the
+            # local side of that pair, the neighbour doesn't connect back
+            # through it, so this edge is a dead-end.
+            pair = network.get_connection_edges(
+                (self.x, self.y), (neighbor.x, neighbor.y)
+            )
+            if pair is None or pair[0] != edge:
+                self.dead_end_ports.add(edge)
 
     # === Exit resolution ===
     def enumerate_traversals(

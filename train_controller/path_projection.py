@@ -119,7 +119,13 @@ class PathProjection:
         if not path_tiles:
             return None
         from path_utils import convert_tiles_to_train_path
-        return convert_tiles_to_train_path(path_tiles)
+        # Pass the network so the converter resolves direction via
+        # `network.get_connection_edges`, which handles tunnel hops.
+        # Without it, the converter falls back to `(dx, dy)` math and
+        # mis-projects the cardinal direction whenever the path crosses
+        # a tunnel — leading to a wrong travel direction and a truncated
+        # remaining-in-block reading at the head's tile.
+        return convert_tiles_to_train_path(path_tiles, network=c.network)
 
     def get_live_path_data(self) -> Optional[Dict[str, Any]]:
         """Get live path data for serialization (``Train.to_dict``).

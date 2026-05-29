@@ -207,7 +207,15 @@ named vocabulary.
 - **Tabler is the default; Unicode is for tiny structural chrome.** Reach
   for `▸ ▾ ×` carets only where adding an `<i>` would be overhead — a
   disclosure caret, a select-arrow decoration, the close `×` on a tab.
-  Otherwise prefer Tabler so the vocabulary stays consistent.
+  Otherwise prefer Tabler so the vocabulary stays consistent. The trap
+  with Unicode in an action button is rendering: Inter doesn't ship many
+  pictographic glyphs (e.g. `⟳` / `↻` for refresh), so the browser falls
+  back to Arial and Arial's baseline sits the glyph low inside the 28px
+  box. The button reads as "misaligned" even though the box-model
+  alignment is exact. Tabler glyphs render through the icon font, which
+  centers cleanly. If a refresh / rotate / arrow / play action wants a
+  glyph, use the Tabler equivalent (`ti-refresh`, etc.) — never the
+  Unicode pictograph.
 - **No inline `<svg>` in new components.** If Tabler is missing the icon
   you need, that's a roster question — propose adding it to
   `icon-selections.json` rather than pasting raw SVG into a component file.
@@ -437,6 +445,92 @@ entity, not the database key.
 Used for tabular data where each row has a categorical badge. Color-code
 the badge background using the accent palette. Reference:
 [`.inspector-row`](../static/css/features/inspector.css).
+
+### C. Multi-column form section
+
+When a section holds 2–3 short independent fields that fit side by side
+— `Acquisition`, `On waypoint unreachable`, `Priority` — lay them out
+as N columns of `[label / control / action]` with **shared row tracks
+across columns**. The label row sizes to the tallest label, the control
+row to the tallest control, the action row to the tallest action. Eye
+scans down a single horizontal band of controls regardless of whether
+one label wraps to two lines and the others stay on one.
+
+```
+┌─ Acquisition ──────┬─ On waypoint ─────┬─ Priority (0-9) ─┐
+│                    │ unreachable       │                  │
+├────────────────────┼───────────────────┼──────────────────┤
+│ [Best | All]       │ [Wait | Skip]     │ [ 5 ]            │
+├────────────────────┼───────────────────┼──────────────────┤
+│ [Reset]            │                   │                  │
+└────────────────────┴───────────────────┴──────────────────┘
+```
+
+The CSS recipe is grid + subgrid: the parent declares columns and rows;
+each column is a grid that inherits the parent's row tracks via
+`grid-template-rows: subgrid`. Separate-grid columns (or plain
+flex children) **don't** share row heights; subgrid is what makes the
+horizontal band actually line up.
+
+```css
+.parent-row {
+    display: grid;
+    grid-template-columns: 1.5fr 1fr 80px;
+    grid-template-rows: auto auto auto auto;  /* one row per inner element */
+    column-gap: 12px;
+    row-gap: 6px;
+    align-items: start;
+}
+
+.parent-row > .column {
+    display: grid;
+    grid-row: 1 / -1;
+    grid-template-rows: subgrid;
+    min-width: 0;
+}
+```
+
+`grid-template-rows` has one `auto` per element in each column's inner
+sequence — three for `label / control / action`, four for
+`label / control / sublabel / sub-control`, etc. Subgrid makes the row
+heights snap across columns regardless of how many you list.
+
+Pick column widths by content, not by equal flex. A segmented control
+with long labels (`Best effort | All or nothing`) needs more `fr` than
+one with short labels (`Wait | Skip`); a single-digit number input is a
+fixed `80px`. Comparable cells share row position; they don't have to
+share width. Equal `1fr 1fr` is the wrong default whenever the columns'
+controls hold different content widths.
+
+Per-column optional actions (a Reset button when the field carries an
+override) live in the action row. When no column has an action, the
+auto-sized row collapses to 0 px — no dead space when nothing is
+overridden.
+
+For 4+ fields, or when a label column would dominate the width, prefer
+a stack of inline field rows instead (label · control · action on one
+horizontal line per field). The multi-column shape works best for ~3
+short fields where every column has the same internal shape.
+
+**Avoid per-field Save buttons in this shape.** Three buttons that all
+say "Save override" stacked side by side hit §12 principle 8 hard —
+repetition trains the eye to skip. If each field is independent and the
+operation is reversible (Reset is always available), auto-save on
+change is the cleaner contract: segment clicks and input `change`
+events POST the override directly, no confirmation step. If explicit
+confirmation is needed, one Save for the whole section beats N
+parallel saves.
+
+References: `.route-header-row.run-overrides-grid` in
+[features/routes-paths.css](../static/css/features/routes-paths.css)
+(3-row inner sequence — label / control / reset), consumed by the
+Per-run overrides section in `editor-route-runs.js`; and
+`.route-header-row.route-policy-grid` in the same file (4-row inner
+sequence — label / control / "Push to runs:" sublabel / soft-force
+segment), consumed by the policy row in `editor-routes.js`. When the
+cluster appears in a third panel, promote the rules into a shared
+`.field-cluster*` family in `components/status-blocks.css` and have
+each panel layer only its column widths and per-cell content on top.
 
 ### Overflow: identifiers vs names
 
@@ -890,6 +984,88 @@ A row can carry a red status dot AND a bright row treatment without the
 two reading as one thing, because hue lives in a tiny saturated mark and
 brightness lives in the ambient surface.
 
+### Reusing the row pattern across panels
+
+The same dot · ordinal · verb · noun · modifier · action skeleton works
+for every "homogeneous comparable record" view in the app. The route-runs
+editor was the first consumer (`.rr-task-*` in routes-paths.css); the
+route editor's Assigned Trains list became the second (`.atr-*`, same
+file). When this skeleton appears in a third place, promote the rules
+into a shared `.list-row*` family in `components/status-blocks.css` and
+have each panel layer only its own column-set and per-cell content on
+top — keep the grid container, status dot, verb chip, action column,
+and row hover identical across panels so the eye trains once.
+
+Worked example — the assigned-trains row uses the same skeleton with
+the time column swapped for an `Unassign` action button:
+
+```
+●  T1   DWELL   Station 1    forward · 7s left   [Unassign]
+●  T2   STOP    S2 South     forward             [Unassign]
+●  T3   IDLE    queued       —                   [Unassign]
+```
+
+- **Dot** — warn (amber) while dwelling, danger (red) when the live
+  status payload is missing, transparent when ordinary running. Same
+  hue channel rules as the route-runs version; "noteworthy" means a
+  hand to play (not "important row" — that's the brightness channel).
+- **Identity** (`T1` etc.) — bright mono. The train ID is the row's
+  stable identity, sits in the §12 principle 4 "tier-1" position.
+- **Verb** (`DWELL` / `STOP` / `IDLE`) — same `verb-info` / `verb-warn`
+  / `verb-muted` token set as `.rr-task-verb-*`; trains the eye across
+  both editors.
+- **Modifier** — derived dwell-remaining + direction. **Cap defensively
+  on unit-mismatched values:** if a "remaining seconds" field comes
+  back larger than any plausible dwell (≥ 3600s = 1 hour), suppress it
+  rather than render the raw number. A backend can leak a Unix epoch
+  through a `*_remaining_sec` field when wall-clock and sim-clock units
+  mix; the UI must not propagate that as `dwell 1779949962s` to the
+  user. Test: `Number.isFinite(v) && v >= 0 && v <= 3600`.
+- **Action** — `Unassign` is a ghost button, **not** danger-colored:
+  unassign is reversible. Danger (red) is reserved for irreversible
+  destructive actions (Delete Route). Mixing the two devalues the hue
+  for the genuinely destructive case (§6).
+
+### Action modifiers must touch their action
+
+Per §12 principle 1 (proximity), a checkbox or toggle that modifies the
+behavior of a button must live in the same visual cluster as the
+button. A "Force reassign" checkbox two rows below an Assign button
+trains users to ignore the checkbox — they see it as decoration, not as
+an input that changes the next click. Put it in the same flex row:
+
+```
+[ select-train ▾ ]  [☐ Force]  [Assign]
+[ Assign on map ]
+```
+
+Same principle covers any "execute with options" pattern: per-task
+direction picker next to the move button, per-row enable toggle next to
+the row action, etc.
+
+### Editor toolbars and the unsaved-edits indicator
+
+A long editor panel (Route Editor, Path Editor) shouldn't bury Save in
+the bottom section. Sections describe what they edit; Save applies to
+the whole panel, so it lives in a sticky top toolbar instead of inside
+any one section. Reference: `.re-toolbar` in
+`features/routes-paths.css`.
+
+```
+[← Routes]      ● unsaved      [⟳]  [Save *]
+```
+
+- **Back button** — labeled with destination (`← Routes`), not the
+  ambiguous word "Back."
+- **Dirty indicator** — warn-color `● unsaved` text in the spacer. No
+  border, no badge — it's a status marker, not a button.
+- **Refresh** — icon-only ghost button. Polls already keep the panel in
+  sync, but an explicit affordance gives the user "I clicked something;
+  did the server hear me?" confidence.
+- **Save** — accent-tinted background and a `*` suffix when dirty. Not
+  a primary-fill button; the tint reads as "attention" without
+  competing with destructive actions for visual weight.
+
 ---
 
 ## 13. Overlays
@@ -967,7 +1143,7 @@ Reference: `.route-resource-picker` in
 
 ## 14. Don'ts
 
-- **No color emoji anywhere in the UI.** The icon system is Tabler (see §3 Icons); monochrome Unicode glyphs (`▸ ▾ × ↻`) remain fine for tiny structural chrome. Both render in the CSS `color` property and respect the token palette. Color emoji (`🚦 🚉 📋 📊 🚨`) render as color pictographs regardless of `color:` and fight with the palette — never use them in buttons, headers, labels, or any panel chrome. Quick test: if setting `color: red` on the character turns it red, it's a monochrome symbol and is OK; if it stays a colorful picture, it's an emoji and is not.
+- **No color emoji anywhere in the UI.** The icon system is Tabler (see §3 Icons); monochrome Unicode glyphs (`▸ ▾ ×`) remain fine for tiny structural chrome — carets, a select-arrow decoration, a close-X on a tab. Pictographic glyphs Inter doesn't carry (`⟳` / `↻` rotate arrows, play/pause triangles) fall back to Arial and misalign inside a button box — use Tabler for those. Both render in the CSS `color` property and respect the token palette. Color emoji (`🚦 🚉 📋 📊 🚨`) render as color pictographs regardless of `color:` and fight with the palette — never use them in buttons, headers, labels, or any panel chrome. Quick test: if setting `color: red` on the character turns it red, it's a monochrome symbol and is OK; if it stays a colorful picture, it's an emoji and is not.
 - **No new colors.** If you can't reach for a token, the design doesn't have a slot for it yet — pause and discuss instead of inventing.
 - **No freelance ornaments inside a shared shape.** The same logic that bars new colors bars adding visual elements (an inner status dot, a leading icon, a divider rule, a decorative glyph) to a canonical primitive the doc already specifies. The §7 chip is text on a tinted pill — not "text + a glowing dot." If you find yourself reaching for an extra mark to make a component read better, pause: either the component is wrong for the job (pick a different one) or the doc is missing a slot (raise it as a doc question). Quick test: would I have to mint a new class to render this? Then it's freelance.
 - **No solid filled buttons in panels.** Use the ghost + accent-tint pattern.
@@ -975,6 +1151,8 @@ Reference: `.route-resource-picker` in
 - **No nested panels.** A panel inside a panel inside a panel is a sign the structure is wrong.
 - **No multi-paragraph banners.** A footer banner is a single line of diagnostic text. Anything longer belongs in a tooltip or a disclosure.
 - **No `box-shadow` for emphasis.** Use border + background tint. The only shadow tokens are the panel drop-shadows (`0 10px 30px rgba(0,0,0,0.45)` for floating, `0 -6px 20px rgba(0,0,0,0.35)` for bottom-anchored).
+- **Don't hide the audit trail by default.** When the most common next user question is "what just happened?" — after activate, assign, or any state change — the history / audit panel must be visible without a click. Compactness comes from capping per-entity row counts (top 10 per train, top N per session), not from hiding the whole section. Reference: `_historyMaxRunsPerTrain = 10` in `editor-routes.js`. The wrong polarity (hide-by-default) trains users to assume the data isn't there.
+- **Don't render unit-mismatched numbers raw.** When a numeric field is supposed to be a duration but the backend can leak an absolute timestamp through it (different clock units, an off-by-1000 ms-vs-s mix, a wall-clock value where a sim-clock value belongs), sanity-cap the display in the UI: implausible values are hidden, not rendered as "dwell 1779949962s." The backend fix is separate; the UI must not propagate the garbage. Quick test: write down the plausible range for this field and assert against it before formatting.
 
 ---
 
@@ -984,6 +1162,7 @@ When in doubt, copy the structure of one of these:
 
 - **Shared compositional primitives** → [components/status-blocks.css](../static/css/components/status-blocks.css) — the §6 banner, §7 chip, §11 status header, and §6 accent helpers. Editor panels consume these classes directly (`.status-header`, `.chip`, `.banner`, `.accent-*`) instead of redefining the shapes per feature.
 - **Detail-page editor** → [editor-route-runs.js](../static/js/editor-route-runs.js) + [features/routes-paths.css](../static/css/features/routes-paths.css) — the worked reference for composing a `status-header` + stats block + list of rows inside an editor sidebar. Route-run-specific bits (`.rr-card`, `.rr-summary`, `.rr-task-*`) layer on top of the shared primitives.
+- **Long edit-and-act panel** → [editor-routes.js](../static/js/editor-routes.js) + the `.re-toolbar` / `.atr-*` rules in `features/routes-paths.css` — the worked reference for a panel that mixes editing (tasks, mode, policy) with live monitoring (assigned trains, history). Demonstrates: sticky top toolbar with Save + dirty indicator + Refresh; assigned-trains list as a row-shaped second consumer of the `.rr-task-*` skeleton; history default-visible with per-entity cap; Force checkbox adjacent to the Assign button it modifies.
 - **Floating debug panel** → [inspector.css](../static/css/features/inspector.css) — header + toolbar + scrolling body + footer, draggable, resizable. Header has no border; relies on `--bg-hover` against `--bg-panel`. Toolbar keeps `border-bottom` because it shares `--bg-panel` with the body (per the §2 toolbar rule: same surface → hairline separator needed).
 - **Bottom dock** → [train-monitor.css](../static/css/features/train-monitor.css) — header + multi-column body + status footer, full-width, fixed height. Header has no border; the segmented view-distance control inside the header is a bordered container of flat ghosts (no internal dividers).
 - **Sidebar form** → [train-control.css](../static/css/features/train-control.css) — sectioned vertical stack inside a secondary sidebar. Status rows use the 3px left-border accent only, no surrounding 1px box.

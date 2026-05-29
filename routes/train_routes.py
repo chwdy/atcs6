@@ -49,6 +49,11 @@ def register(app, state: AppState) -> None:
                 mode=data.get("mode", "one_off"),
                 tasks=data.get("tasks", []),
                 assigned_train_ids=data.get("assigned_train_ids", []),
+                priority=data.get("priority"),
+                acquisition_mode=data.get("acquisition_mode"),
+                action_on_waypoint_unreachable=data.get(
+                    "action_on_waypoint_unreachable"
+                ),
                 edit_fields_present=edit_fields_present,
             )
         except ValidationError as exc:
@@ -169,6 +174,8 @@ def register(app, state: AppState) -> None:
             route = train_route_service.activate_route(state, route_id)
         except NotFoundError:
             return jsonify({"error": "Route not found"}), 404
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
         return jsonify({"status": "success", "route": route.to_dict()})
 
     @app.route("/api/train-routes/<route_id>/deactivate", methods=["POST"])
@@ -217,7 +224,7 @@ def register(app, state: AppState) -> None:
                     status["current_waypoint_index"] = exec_state.current_waypoint_index
                     status["direction"] = exec_state.direction
 
-                    controller = route_executor.controllers.get(train_id)
+                    controller = state.sim_controller.controllers.get(train_id)
                     if controller is not None:
                         status["at_platform"] = (
                             controller.ops.state == TrainState.RUNNING_AT_STATION

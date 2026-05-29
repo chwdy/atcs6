@@ -21,7 +21,6 @@ class PathEditorHandler {
             reachableEndpoints: [],
             reachablePositions: new Set(),
             requestedDirection: 'forward',
-            acquisitionMode: 'all_or_nothing',
             trainId: null
         };
         document.getElementById('status-state').textContent = 'Path: Click train (start) block';
@@ -55,7 +54,6 @@ class PathEditorHandler {
             reachableEndpoints: [],
             reachablePositions: new Set(),
             requestedDirection: 'forward',
-            acquisitionMode: 'all_or_nothing',
             trainId: null
         };
         if (this.renderer.setReachableHighlights) {
@@ -171,79 +169,82 @@ class PathEditorHandler {
             return;
         }
 
+        const trainId = this.pathToolState.trainId;
+        const direction = this.pathToolState.requestedDirection || 'forward';
+        const routeId = `ROUTE_QR_${Date.now()}`;
+
+        document.getElementById('status-state').textContent = 'Path: Creating...';
+
+        let routeCreated = false;
         try {
-            document.getElementById('status-state').textContent = 'Path: Creating...';
+            // Quick Route is a one-off Route + RouteRun, per design_new.md:1297.
+            // Three-call sequence: create the route, activate it (so Phase 1
+            // will plan against it), then assign it to the train. On 409
+            // conflict (train already has an active route), prompt before
+            // replacing — operator owns the decision to stomp existing work.
+            await this.api.createRoute({
+                route_id: routeId,
+                name: `Quick: ${trainId} → ${endBlockId}`,
+                mode: 'one_off',
+                tasks: [{
+                    task_kind: 'stop',
+                    task_location: { block_id: endBlockId },
+                    task_direction: direction
+                }],
+                acquisition_mode: 'all_or_nothing',
+                assigned_train_ids: []
+            });
+            routeCreated = true;
 
-            const options = {
-                train_id: this.pathToolState.trainId,
-                requested_destination_direction: this.pathToolState.requestedDirection,
-                acquisition_mode: this.pathToolState.acquisitionMode
-            };
+            await this.api.activateRoute(routeId);
 
-            const result = await this.createPathWithConflictResolution(endBlockId, options);
-
-            if (result.success) {
-                window.showToast(`Path ${result.path_id} created`, 'success', 5000);
-                await window.app.refreshNetwork();
-                await this.resetRouteToolState();
-            } else {
-                const errorMsg = result.error || result.failure_kind || 'Unknown error';
-                window.showToast(`Path failed: ${errorMsg}`, 'error', 5000);
-
-                if (result.conflict_tiles && this.renderer.flashConflictTiles) {
-                    this.renderer.flashConflictTiles(result.conflict_tiles, 2000);
-                }
+            const outcome = await this.assignQuickRouteWithConfirm(trainId, routeId);
+            if (outcome === 'cancelled') {
+                await this.deleteRouteBestEffort(routeId);
+                window.showToast('Quick Route cancelled', 'info', 3000);
+                return;
             }
+
+            window.showToast(`Quick Route assigned to ${trainId}`, 'success', 5000);
+            await window.app.refreshNetwork();
+            await this.resetRouteToolState();
         } catch (err) {
-            console.error('[Editor] Failed to create path:', err);
-            window.showToast('Failed to create path: ' + err.message, 'error', 5000);
+            if (routeCreated) {
+                await this.deleteRouteBestEffort(routeId);
+            }
+            console.error('[Editor] Quick Route failed:', err);
+            window.showToast('Quick Route failed: ' + err.message, 'error', 5000);
         }
     }
 
-    async createPathWithConflictResolution(endBlockId, options) {
-        const buildArgs = () => ({
-            train_id: options.train_id,
-            requested_destination_block_id: endBlockId,
-            requested_destination_direction: options.requested_destination_direction || 'forward',
-            acquisition_mode: options.acquisition_mode || 'all_or_nothing'
-        });
-
+    async assignQuickRouteWithConfirm(trainId, routeId) {
         try {
-            return await this.api.createPath(buildArgs());
+            await this.api.assignRoute(trainId, routeId);
+            return 'ok';
         } catch (err) {
-            if (err.status !== 409 || err.conflict !== 'train_has_active_path') {
+            if (err.status !== 409) {
                 throw err;
             }
-
-            const existingPathId = err.existing_path_id;
-            const trainId = err.train_id || options.train_id;
-            const existingPath = err.existing_path || {};
-            const detail =
-                `Existing path: ${existingPathId}` +
-                (existingPath.authority_end_block_id
-                    ? `\nDestination: ${existingPath.authority_end_block_id}`
-                    : '');
-
             const confirmed = await showConfirmModal({
-                title: 'Train Already Has Active Path',
-                message: `Train ${trainId} already has an active path. Cancel it and assign the new path?`,
-                detail,
-                confirmText: 'Cancel Existing Path',
+                title: 'Train Already Has a Route',
+                message: `Train ${trainId} is already assigned to another route. Replace it with the new Quick Route?`,
+                detail: err.message || '',
+                confirmText: 'Replace Route',
                 confirmVariant: 'danger'
             });
             if (!confirmed) {
-                return { success: false, error: 'Path assignment cancelled' };
+                return 'cancelled';
             }
+            await this.api.assignRoute(trainId, routeId, { force: true });
+            return 'ok';
+        }
+    }
 
-            const cancelResult = await this.api.cancelPath(existingPathId);
-            if (!cancelResult.success) {
-                return {
-                    success: false,
-                    error: cancelResult.error || cancelResult.message || 'Failed to cancel existing path'
-                };
-            }
-
-            return await this.api.createPath(buildArgs());
+    async deleteRouteBestEffort(routeId) {
+        try {
+            await this.api.deleteRoute(routeId);
+        } catch (e) {
+            console.warn('[Editor] Quick Route cleanup (deleteRoute) failed:', e);
         }
     }
 
@@ -261,7 +262,6 @@ class PathEditorHandler {
             : '<div class="text-muted text-sm py-8">No train at start block</div>';
 
         const direction = this.pathToolState.requestedDirection || 'forward';
-        const mode = this.pathToolState.acquisitionMode || 'all_or_nothing';
 
         const content = `
             <div class="path-setup-panel">
@@ -279,22 +279,6 @@ class PathEditorHandler {
                     </div>
                     <div class="text-xxs text-muted mt-4">
                         Direction the train should travel away from its current position.
-                    </div>
-                </div>
-
-                <div class="property-item">
-                    <label class="property-label">Acquisition Mode</label>
-                    <div class="switch-group">
-                        <button id="path-mode-all-btn"
-                                class="switch-btn ${mode === 'all_or_nothing' ? 'active' : ''}"
-                                data-mode="all_or_nothing">All-or-nothing</button>
-                        <button id="path-mode-best-btn"
-                                class="switch-btn ${mode === 'best_effort' ? 'active' : ''}"
-                                data-mode="best_effort">Best-effort</button>
-                    </div>
-                    <div class="text-xxs text-muted mt-4">
-                        All-or-nothing: fail if any resource cannot be acquired.
-                        Best-effort: take what is currently free.
                     </div>
                 </div>
 
@@ -321,14 +305,6 @@ class PathEditorHandler {
                 btn.addEventListener('click', () => {
                     this.pathToolState.requestedDirection = btn.dataset.direction;
                     dirButtons.forEach(b => b.classList.toggle('active', b === btn));
-                });
-            });
-
-            const modeButtons = document.querySelectorAll('[data-mode]');
-            modeButtons.forEach(btn => {
-                btn.addEventListener('click', () => {
-                    this.pathToolState.acquisitionMode = btn.dataset.mode;
-                    modeButtons.forEach(b => b.classList.toggle('active', b === btn));
                 });
             });
         }, 0);

@@ -43,6 +43,31 @@ def register(app, state: AppState) -> None:
             }
         )
 
+    @app.route("/api/simulation/release-failed-runtime", methods=["POST"])
+    def release_failed_runtime():
+        """Clear a fatal physical-entry conflict halt after the operator has
+        resolved the conflict.
+
+        Delegates to
+        ``SimulationController.release_failed_runtime_after_manual_cleanup()``,
+        which re-verifies that the conflicting occupancy/reservation recorded
+        in the stored fatal payload is actually gone before clearing the flag.
+        Always returns HTTP 200; ``released`` reports whether the halt was
+        actually lifted (``False`` means the conflict still stands and the
+        operator must resolve it first).
+        """
+        sim = state.sim_controller
+        if sim is None:
+            return jsonify({"error": "Simulation not initialised"}), 503
+        with state.simulation_lock:
+            released = sim.release_failed_runtime_after_manual_cleanup()
+        return jsonify(
+            {
+                "released": released,
+                "failed_runtime": sim.failed_runtime,
+            }
+        )
+
     @app.route("/api/health", methods=["GET"])
     def health():
         return jsonify({"ok": True})

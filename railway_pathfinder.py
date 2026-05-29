@@ -25,7 +25,7 @@ without re-walking the network.
 from collections import deque
 from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
-from enums import Direction, DIRECTION_OFFSETS
+from enums import Direction
 from track import OPPOSITE_EDGE
 from path_utils import (
     DirectedBlockFrame,
@@ -38,10 +38,6 @@ from runtime_payloads import PathSegment
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
-
-
-# Edge offsets for navigation (canonical map from cardinal direction to dx/dy).
-EDGE_OFFSETS = DIRECTION_OFFSETS
 
 
 class RailwayPathfinder:
@@ -135,10 +131,11 @@ class RailwayPathfinder:
         ``GraphWalkQuery`` with tile-precise locators, skips disabled
         blocks/switches, respects or ignores current switch state according to
         ``request.switch_handling``, rejects candidates whose terminal
-        traversal does not satisfy ``request.requested_destination_direction``
-        or ``Block.allowed_travel_directions``, and returns comparable walk
-        candidates with whatever ordered tile/block walk payload the request
-        flags asked for.
+        traversal does not satisfy ``request.requested_destination_direction``,
+        also rejects candidates whose traversal violates
+        ``Block.allowed_travel_directions`` when ``request.manual_override``
+        is False, and returns comparable walk candidates with whatever ordered
+        tile/block walk payload the request flags asked for.
 
         Args:
             request: ``GraphWalkQuery`` describing start/end locators and
@@ -348,15 +345,11 @@ class RailwayPathfinder:
             if not track:
                 continue
             for edge in track.edges:
-                offset = EDGE_OFFSETS.get(edge)
-                if not offset:
-                    continue
-                dx, dy = offset
-                npos = (cx + dx, cy + dy)
-                if npos in visited:
-                    continue
-                neighbor = self.network.get_track(*npos)
+                neighbor = self.network.get_neighbor(cx, cy, edge)
                 if not neighbor:
+                    continue
+                npos = (neighbor.x, neighbor.y)
+                if npos in visited:
                     continue
                 opposite = OPPOSITE_EDGE.get(edge)
                 if not opposite or opposite not in neighbor.edges:
@@ -421,14 +414,12 @@ class RailwayPathfinder:
                         visited.add(step)
                         if len(visited) > 1000:
                             break
-                        offset = EDGE_OFFSETS.get(exit_edge)
-                        if not offset:
-                            continue
-                        dx, dy = offset
-                        next_x, next_y = curr_x + dx, curr_y + dy
-                        next_track = self.network.get_track(next_x, next_y)
+                        next_track = self.network.get_neighbor(
+                            curr_x, curr_y, exit_edge
+                        )
                         if not next_track:
                             continue
+                        next_x, next_y = next_track.x, next_track.y
                         next_block_id = next_track.block_section_id
                         if next_block_id and next_block_id != start_block_id:
                             reachable_blocks.add(next_block_id)
@@ -530,14 +521,10 @@ class RailwayPathfinder:
             visited.add(visited_key)
             if len(path_tiles) > 200:
                 continue
-            offset = EDGE_OFFSETS.get(exit_edge)
-            if not offset:
-                continue
-            dx, dy = offset
-            next_x, next_y = curr_x + dx, curr_y + dy
-            next_track = self.network.get_track(next_x, next_y)
+            next_track = self.network.get_neighbor(curr_x, curr_y, exit_edge)
             if not next_track:
                 continue
+            next_x, next_y = next_track.x, next_track.y
 
             # Exclude-resources filter.
             next_block_id = next_track.block_section_id
@@ -560,16 +547,29 @@ class RailwayPathfinder:
                 # (e.g. a platform spanning several tiles) ends up with
                 # authority for only its first tile — the train then stops
                 # near the start of the platform instead of the far end.
+                #
+                # The per-hop entry edge is resolved through
+                # `network.get_connection_edges`, which knows about tunnels;
+                # naive `OPPOSITE_EDGE[exit]` only works for grid-adjacent
+                # pairs and silently breaks the moment the train enters the
+                # destination block across a tunnel (e.g. demo_4's
+                # `(1,0,W) ↔ (11,10,N)`), because exit "W" and entry "N" are
+                # not cardinal opposites.
                 ext_tiles = list(new_path_tiles)
                 ext_distance = new_distance
+                prev_tile = (curr_x, curr_y)
                 cx, cy = next_x, next_y
-                came_via_exit = exit_edge
                 while True:
                     cur_track = self.network.get_track(cx, cy)
                     if cur_track is None or cur_track.is_switch:
                         break
-                    cur_entry = OPPOSITE_EDGE.get(came_via_exit)
-                    if not cur_entry or cur_entry not in cur_track.edges:
+                    edges = self.network.get_connection_edges(
+                        prev_tile, (cx, cy)
+                    )
+                    if edges is None:
+                        break
+                    cur_entry = edges[1]
+                    if cur_entry not in cur_track.edges:
                         break
                     # Always use topology-only for intra-destination extension.
                     cur_exits = cur_track.get_exits(
@@ -578,20 +578,16 @@ class RailwayPathfinder:
                     if len(cur_exits) != 1:
                         break
                     fwd_exit = cur_exits[0]
-                    fwd_offset = EDGE_OFFSETS.get(fwd_exit)
-                    if not fwd_offset:
-                        break
-                    fdx, fdy = fwd_offset
-                    fx, fy = cx + fdx, cy + fdy
-                    fwd_track = self.network.get_track(fx, fy)
+                    fwd_track = self.network.get_neighbor(cx, cy, fwd_exit)
                     if fwd_track is None:
                         break
+                    fx, fy = fwd_track.x, fwd_track.y
                     if fwd_track.block_section_id != end_block_id:
                         break
                     ext_distance += fwd_track.length * 100.0
                     ext_tiles.append((fx, fy))
+                    prev_tile = (cx, cy)
                     cx, cy = fx, fy
-                    came_via_exit = fwd_exit
                 walks.append(
                     PathSegment(
                         tiles=ext_tiles,
@@ -601,7 +597,17 @@ class RailwayPathfinder:
                     )
                 )
                 continue
-            entry_edge = OPPOSITE_EDGE.get(exit_edge)
+            # Tunnel-aware entry edge on the next tile. Falls back to the
+            # cardinal opposite for grid-adjacent pairs (where the lookup
+            # returns the same answer), so the change is a no-op there.
+            connection_edges = self.network.get_connection_edges(
+                (curr_x, curr_y), (next_x, next_y)
+            )
+            entry_edge = (
+                connection_edges[1]
+                if connection_edges
+                else OPPOSITE_EDGE.get(exit_edge)
+            )
             if not entry_edge or entry_edge not in next_track.edges:
                 continue
             all_exits = next_track.get_exits(
@@ -834,13 +840,17 @@ class RailwayPathfinder:
         manual_override: bool = False,
     ) -> bool:
         """Reject walks that traverse a disabled resource, traverse a manual
-        resource without operator override, or violate
-        ``Block.allowed_travel_directions`` / ``direction_constraint``.
+        resource without operator override, violate
+        ``Block.allowed_travel_directions`` without operator override, or
+        violate ``direction_constraint``.
 
         Per the `disabled` and `manual` availability flags canonical home in
         design_new.md (under TrackResource): disabled blocks/switches are
-        always rejected; manual blocks/switches are rejected when
-        ``manual_override`` is False.
+        always rejected; manual blocks/switches and the
+        ``Block.allowed_travel_directions`` policy are rejected/enforced when
+        ``manual_override`` is False. The ``direction_constraint`` (the
+        operator's requested terminal direction) is always enforced — the
+        override relaxes the block's policy, not the caller's request.
         """
         # Disabled-block and manual-block filters.
         for block_id in walk.blocks:
@@ -882,12 +892,13 @@ class RailwayPathfinder:
         if dest_block is None:
             return True
         terminal_direction = self._terminal_direction(walk, dest_block)
-        allowed: Set[str] = (
-            set(getattr(dest_block, "allowed_travel_directions", set()))
-            or {"forward", "reverse"}
-        )
-        if terminal_direction is not None and terminal_direction not in allowed:
-            return False
+        if not manual_override:
+            allowed: Set[str] = (
+                set(getattr(dest_block, "allowed_travel_directions", set()))
+                or {"forward", "reverse"}
+            )
+            if terminal_direction is not None and terminal_direction not in allowed:
+                return False
         if (
             direction_constraint is not None
             and terminal_direction is not None

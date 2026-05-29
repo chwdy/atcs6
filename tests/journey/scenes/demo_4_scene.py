@@ -1,6 +1,6 @@
-"""Scene for the `demo_3_best_effort` 4-train double-track loop.
+"""Scene for the `demo_4` 4-train double-track loop.
 
-Builds the full demo_3 best-effort network via `bootstrap_runtime(...)`,
+Builds the full demo_4 best-effort network via `bootstrap_runtime(...)`,
 which seats four trains (T1..T4) on the shared CIRCULAR route with
 `acquisition_mode=BEST_EFFORT`. The journey/harness drives T1; the other
 three trains run in parallel and act as live-contention against the
@@ -30,20 +30,20 @@ from bootstrap import bootstrap_runtime
 from .base import SceneFixture
 
 
-class Demo3BestEffortScene:
-    """Scene factory for the `demo_3_best_effort` 4-train loop, focused on T1."""
+class Demo4Scene:
+    """Scene factory for the `demo_4` 4-train loop, focused on T1."""
 
     train_id: str = "T1"
 
     def build(self) -> SceneFixture:
-        # demo_3_best_effort.setup_demo_train prints scene info; suppress it
+        # demo_4.setup_demo_train prints scene info; suppress it
         # so the pytest output stays clean.
         with contextlib.redirect_stdout(io.StringIO()):
             network, _path_dispatcher, sim_controller, _persistence = (
                 bootstrap_runtime(
                     demo=True,
                     setup_train=True,
-                    scene="demo_3_best_effort",
+                    scene="demo_4",
                 )
             )
 

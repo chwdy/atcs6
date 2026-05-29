@@ -458,6 +458,69 @@
     text-transform: none;
 }
 
+/* ---- Per-run overrides grid ----
+ * Three-column layout where every column shares row heights via subgrid
+ * (label / control / reset). Without subgrid, a label that wraps to
+ * two lines (e.g. "On waypoint unreachable") pushes only its own
+ * column's controls and reset button down, misaligning the row.
+ */
+
+.route-header-row.run-overrides-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 140px;
+    grid-template-rows: auto auto auto;
+    column-gap: 12px;
+    row-gap: 6px;
+    align-items: start;
+}
+
+.route-header-row.run-overrides-grid > .route-header-col {
+    display: grid;
+    grid-row: 1 / -1;
+    grid-template-rows: subgrid;
+    min-width: 0;
+}
+
+.route-header-row.run-overrides-grid .property-label {
+    margin-bottom: 0;
+}
+
+.route-header-row.run-overrides-grid .rr-override-reset-btn {
+    justify-self: start;
+}
+
+/* ---- Route policy grid (Acquisition / On waypoint / Priority) ----
+ * Same subgrid trick as .run-overrides-grid, with 4 rows: title, control,
+ * "Push to runs:" sublabel, soft/force segment. The middle column's title
+ * ("On waypoint unreachable") wraps to two lines at sidebar widths; subgrid
+ * keeps the control + sublabel + sub-segment of all three columns on the
+ * same baselines instead of letting the middle column push its own rows
+ * down by ~14px.
+ *
+ * Column weights: Acquisition gets the most room because its segment labels
+ * ("Best effort | All or nothing") are the longest of the three; Priority
+ * is narrow because a single-digit number input doesn't need much.
+ */
+.route-header-row.route-policy-grid {
+    display: grid;
+    grid-template-columns: 1.5fr 1fr 80px;
+    grid-template-rows: auto auto auto auto;
+    column-gap: 12px;
+    row-gap: 6px;
+    align-items: start;
+}
+
+.route-header-row.route-policy-grid > .route-header-col {
+    display: grid;
+    grid-row: 1 / -1;
+    grid-template-rows: subgrid;
+    min-width: 0;
+}
+
+.route-header-row.route-policy-grid .property-label {
+    margin-bottom: 0;
+}
+
 /* ---- Run summary block ----
  * Compact hero stat (X/Y tasks) + inline metadata strip + planning
  * indices. No edge-pinned labels (proximity). No section title — the
@@ -723,6 +786,202 @@
 
 .waypoint-card {
     border: 1px solid var(--border-color);
+}
+
+/* ----------------------------------------------------------------------------
+   Route Editor: top toolbar (back / refresh / save).
+
+   Sticky to the panel top so Save and Refresh are always reachable —
+   fixes the "Save is two scrolls away from Tasks" UX bug. Save also
+   carries a small dirty indicator ("Save *" + tinted bg) so the user
+   knows when they have unsaved edits without having to scroll to look
+   for it.
+   ---------------------------------------------------------------------------- */
+
+.re-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    margin: -8px 0 12px;
+    background-color: var(--bg-panel);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.re-toolbar-back {
+    /* "← Routes" — short pill on the left edge. */
+    flex-shrink: 0;
+}
+
+.re-toolbar-spacer {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    overflow: hidden;
+}
+
+.re-toolbar-dirty {
+    font-size: 11px;
+    color: var(--warning-color);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Save with unsaved edits — subtle accent tint so the button reads as
+   "needs your attention" without flipping to a full primary fill. */
+.re-toolbar-save-dirty {
+    background-color: rgba(130, 87, 229, 0.18);
+    border-color: var(--accent-color);
+}
+
+/* ----------------------------------------------------------------------------
+   Assigned Trains: row list (§12 row-shape, not cards).
+
+   Columns:  ● status | T1 id | DWELL verb | Station 1 noun | mod | [Unassign]
+             8px       auto    auto         minmax(60px,1fr)  auto   auto
+
+   Same shape as .rr-task in the route-runs editor, but with the action
+   button on the right edge instead of a timestamp column. When the panel
+   compresses (e.g. .route-editor-wide at 440px), the noun column flexes
+   and the modifier shrinks-to-nothing first. The tooltip on each row
+   carries the full info; truncation in the row is fine.
+
+   Two color channels:
+     - Hue (status dot): warn=dwelling, danger=unknown/missing status.
+     - Brightness: ambient row liveness comes from the verb chip color.
+   ---------------------------------------------------------------------------- */
+
+.assigned-trains-list {
+    display: grid;
+    grid-template-columns: 8px auto auto minmax(60px, 1fr) auto auto;
+    row-gap: 2px;
+}
+
+.atr-row {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    column-gap: 8px;
+    align-items: center;
+    padding: 6px 6px;
+    border-radius: 4px;
+    background-color: var(--bg-dark);
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.4;
+    min-width: 0;
+}
+
+.atr-row:hover {
+    background-color: var(--bg-hover);
+}
+
+/* Hue channel — dot at the row's left edge. Transparent = nothing
+   noteworthy; matches the route-runs editor's .rr-task-status semantics. */
+.atr-status {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: transparent;
+    justify-self: center;
+}
+.atr-status-warn   { background-color: var(--warning-color); }
+.atr-status-danger { background-color: var(--danger-color); }
+
+/* Train identity — bright mono, never shrinks. */
+.atr-id {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+
+/* Verb chip — categorical filter (DWELL / STOP / WAYPOINT / IDLE).
+   Same color tokens as .rr-task-verb so the eye trains across panels. */
+.atr-verb {
+    font-family: var(--font-main);
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 1px 6px;
+    border-radius: 3px;
+    text-align: center;
+    line-height: 1.4;
+    justify-self: start;
+    white-space: nowrap;
+}
+.atr-verb-info  { color: var(--info-color);    background-color: rgba(0, 212, 255, 0.15); }
+.atr-verb-warn  { color: var(--warning-color); background-color: rgba(255, 205, 30, 0.15); }
+.atr-verb-muted { color: var(--text-secondary); background-color: var(--bg-hover); }
+
+/* Target noun — bright, the row's identity within the route context.
+   Display name, wraps allowed (per §5 Overflow rule for human-readable names). */
+.atr-noun {
+    font-size: 11px;
+    color: var(--text-primary);
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+/* Modifier — direction + dwell-remaining. Muted secondary detail. Shrinks
+   first, ellipsises on overflow; the row tooltip carries the long form. */
+.atr-mod {
+    font-family: var(--font-main);
+    font-size: 10px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+/* Action column — ghost button so reversible actions don't read danger. */
+.atr-action {
+    justify-self: end;
+    white-space: nowrap;
+}
+
+/* ----------------------------------------------------------------------------
+   Assign-row: select + force + assign. Force checkbox is INSIDE the same
+   flex row as the Assign button so the proximity hint reads correctly
+   (§12 principle 1).
+   ---------------------------------------------------------------------------- */
+
+.atr-assign-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.atr-assign-select {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.atr-force-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+}
+
+.atr-force-label input[type="checkbox"] {
+    margin: 0;
 }
 
 /* ----------------------------------------------------------------------------

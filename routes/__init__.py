@@ -40,6 +40,7 @@ from routes import (
     schedules,
     speed_profiles,
     switches,
+    tunnels,
     inspector,
 )
 
@@ -66,4 +67,5 @@ def register_all(app, state) -> None:
     schedules.register(app, state)
     speed_profiles.register(app, state)
     switches.register(app, state)
+    tunnels.register(app, state)
     inspector.register(app, state)

@@ -43,6 +43,27 @@ class App {
             }
         });
 
+        const clearFatalBtn = document.getElementById('btn-clear-fatal');
+        if (clearFatalBtn) {
+            clearFatalBtn.addEventListener('click', async () => {
+                clearFatalBtn.disabled = true;
+                try {
+                    const res = await window.api.releaseFailedRuntime();
+                    if (res && res.released) {
+                        window.showToast?.('Conflict cleared — simulation resumed', 'success', 3000);
+                    } else {
+                        window.showToast?.('Conflict still present — resolve it on the layout, then clear again', 'warning', 6000);
+                    }
+                } catch (e) {
+                    console.error('[App] Clear-fatal error:', e);
+                    window.showToast?.(`Could not clear halt: ${e.message}`, 'error', 5000);
+                } finally {
+                    clearFatalBtn.disabled = false;
+                    this.refreshNetwork();
+                }
+            });
+        }
+
         document.getElementById('btn-restart-server').addEventListener('click', async () => {
             const confirmed = await showConfirmModal({
                 title: 'Restart Server?',
@@ -526,9 +547,80 @@ class App {
             if (typeof network.simulation_speed === 'number') {
                 this.syncSpeedPresetUI(network.simulation_speed);
             }
+
+            // Surface a fatal-conflict halt (failed_runtime) if one is active.
+            this.updateFatalBanner(network);
         } catch (e) {
             console.error('[App] Failed to refresh network:', e);
         }
+    }
+
+    /**
+     * Show/hide the fatal-conflict halt banner. When the runtime is halted
+     * (failed_runtime), update() skips every train tick — trains freeze at
+     * their last state (often RUNNING_MOVING / handle Px) while the clock
+     * keeps advancing, and play/pause cannot recover it. This banner is the
+     * only surface for that state and the only path to recovery (the Clear
+     * button calls release-failed-runtime).
+     */
+    updateFatalBanner(network) {
+        const banner = document.getElementById('fatal-banner');
+        if (!banner) return;
+
+        if (!network || !network.failed_runtime) {
+            banner.hidden = true;
+            return;
+        }
+
+        const detailEl = document.getElementById('fatal-banner-detail');
+        const metaEl = document.getElementById('fatal-banner-meta');
+        const c = network.failed_runtime_conflict;
+        const tail = ' All trains are halted — resolve the conflict on the layout, then clear to resume.';
+
+        if (detailEl) {
+            detailEl.textContent = c
+                ? this._describeFatalConflict(c) + tail
+                : 'A fatal track conflict halted the simulation.' + tail;
+        }
+        if (metaEl) {
+            metaEl.textContent = c ? this._fatalConflictMeta(c) : '';
+        }
+        banner.hidden = false;
+    }
+
+    /** Plain-English description of a fatal physical-entry conflict. */
+    _describeFatalConflict(c) {
+        const res = `${c.resource_type} ${c.resource_id}`;
+        const incoming = `Train ${c.incoming_train_id}`;
+        const prior = c.prior_owner_train_id;
+        switch (c.conflict_kind) {
+            case 'switch_occupied_by_other_train':
+                return `${incoming} tried to enter switch ${c.resource_id}, but train ${prior} already holds it.`;
+            case 'occupied_by_other_train':
+                return `${incoming} tried to enter block ${c.resource_id}, but train ${prior} already occupies it.`;
+            case 'reserved_for_other_train':
+                return `${incoming} tried to enter block ${c.resource_id}, but it is reserved for train ${prior}.`;
+            case 'disabled_resource_entry':
+                return `${incoming} tried to enter ${res}, which is disabled.`;
+            case 'malformed_route_key':
+                return `${incoming} entered switch ${c.resource_id} without a valid route key — an internal path/geometry error.`;
+            default:
+                return `${incoming} hit a fatal conflict at ${res}${prior ? ` (held by ${prior})` : ''}.`;
+        }
+    }
+
+    /** Mono meta line: path ids, halt time, raw kind. */
+    _fatalConflictMeta(c) {
+        const parts = [];
+        if (c.incoming_path_id) parts.push(`${c.incoming_train_id} path: ${c.incoming_path_id}`);
+        if (c.prior_owner_path_id && c.prior_owner_train_id) {
+            parts.push(`${c.prior_owner_train_id} path: ${c.prior_owner_path_id}`);
+        }
+        if (typeof c.halted_at_sim_time === 'number') {
+            parts.push(`halted at t=${c.halted_at_sim_time.toFixed(1)}s`);
+        }
+        parts.push(`kind: ${c.conflict_kind}`);
+        return parts.join('  ·  ');
     }
 
     selectTrain(trainId) {
@@ -923,13 +1015,13 @@ class App {
         });
 
         // Add change listeners to debug checkboxes to trigger re-render
-        const checkboxIds = ['debug-show-bits', 'debug-show-coords', 'debug-show-switches', 'debug-show-edges', 'debug-show-blocks', 'debug-show-signals', 'debug-show-block-boundaries'];
+        const checkboxIds = ['debug-show-bits', 'debug-show-coords', 'debug-show-switches', 'debug-show-edges', 'debug-show-blocks', 'debug-show-signals', 'debug-show-block-boundaries', 'debug-show-tunnel-links'];
         checkboxIds.forEach(id => {
             const checkbox = document.getElementById(id);
             if (checkbox) {
                 checkbox.addEventListener('change', () => {
                     // Re-render network with debug overlays
-                    this.renderer.requestRedraw({ reason: 'debug-toggle' });
+                    this.renderer.requestRedraw({ world: true, reason: 'debug-toggle' });
                 });
             }
         });

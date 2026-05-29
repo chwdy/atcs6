@@ -1,5 +1,5 @@
 """Journey-debug probe for T1's outbound trip (S1 -> S2 -> S3 -> S4) under
-`demo_3_best_effort` (acquisition_mode = BEST_EFFORT).
+`demo_4` (acquisition_mode = BEST_EFFORT).
 
 The four trains are placed phase-shifted on the shared CIRCULAR route:
 
@@ -86,12 +86,12 @@ from bootstrap import get_current_scene_id
 from tests.journey.events import Event, Invariant, Journey
 from tests.journey.harness import JourneyHarness, Snapshot
 from tests.journey.scenes.base import SceneFixture
-from tests.journey.scenes.demo_3_best_effort_scene import Demo3BestEffortScene
+from tests.journey.scenes.demo_4_scene import Demo4Scene
 
 
-if get_current_scene_id() != "demo_3_best_effort":
+if get_current_scene_id() != "demo_4":
     pytest.skip(
-        f"Test built for scene 'demo_3_best_effort'; active scene is "
+        f"Test built for scene 'demo_4'; active scene is "
         f"{get_current_scene_id()!r}.",
         allow_module_level=True,
     )
@@ -104,7 +104,7 @@ if get_current_scene_id() != "demo_3_best_effort":
 # physical co-occupation deadlock, downstream trains take ~minute-scale to
 # vacate their platforms. T1 does not reach S4 within a tight tick budget.
 # The core BEST_EFFORT contract is covered by test_dispatcher.py::
-# TestBestEffortAcquisitionContract and test_demo_3_best_effort_crossover_blocks.py.
+# TestBestEffortAcquisitionContract and test_demo_4_crossover_blocks.py.
 pytest.skip(
     "Journey timing depends on daisy-chain dynamics that change "
     "substantially under BEST_EFFORT truncation. Core contract is "
@@ -113,7 +113,7 @@ pytest.skip(
 )
 
 
-# Dwells in `demo_3_best_effort.py` are 2.0 wall-seconds. The journey-test
+# Dwells in `demo_4.py` are 2.0 wall-seconds. The journey-test
 # harness drives the sim much faster than real time (a 120 s sim run usually
 # completes in <2 wall seconds), so 2.0-wall-second dwells would never
 # expire in the test window — every train would be stuck in
@@ -125,18 +125,18 @@ pytest.skip(
 SHORTENED_DWELL_SECONDS: float = 0.02
 
 
-class ShortDwellDemo3BestEffortScene:
-    """Demo3BestEffortScene wrapper that overrides dwell `task_time` to a
+class ShortDwellDemo4Scene:
+    """Demo4Scene wrapper that overrides dwell `task_time` to a
     tiny wall-clock value so dwells finish within a fast test run.
     """
 
     train_id: str = "T1"
 
     def build(self) -> SceneFixture:
-        fixture = Demo3BestEffortScene().build()
+        fixture = Demo4Scene().build()
         sim = fixture.sim_controller
-        route = sim.route_executor.route_registry.get("R_DEMO3_LOOP")
-        assert route is not None, "expected R_DEMO3_LOOP in route registry"
+        route = sim.route_executor.route_registry.get("R_DEMO4_LOOP")
+        assert route is not None, "expected R_DEMO4_LOOP in route registry"
         for task in route.tasks:
             if task.task_kind == "dwell" and task.task_time:
                 task.task_time = SHORTENED_DWELL_SECONDS
@@ -469,7 +469,7 @@ def test_t1_reaches_s4_under_best_effort(dt, label):
     )
 
     harness = JourneyHarness(
-        scene=ShortDwellDemo3BestEffortScene(),
+        scene=ShortDwellDemo4Scene(),
         journey=journey,
         dt=dt,
         max_ticks=max_ticks,

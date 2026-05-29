@@ -82,6 +82,8 @@ class SimulationController:
         # the gate.
         self.failed_runtime: bool = False
         self.failed_runtime_payload: Optional[FatalPhysicalEntryConflict] = None
+        # simulation_time at which the halt was entered, for the UI banner.
+        self.failed_runtime_at: Optional[float] = None
 
         # TrainController + TrainPhysics instances (shared across components)
         self.controllers: Dict[str, TrainController] = {}
@@ -648,6 +650,7 @@ class SimulationController:
         """
         self.failed_runtime = True
         self.failed_runtime_payload: Optional[FatalPhysicalEntryConflict] = payload
+        self.failed_runtime_at = self.simulation_time
         self.notification_center.emit(
             source="SimulationController",
             kind="fatal_runtime",
@@ -715,6 +718,7 @@ class SimulationController:
 
         self.failed_runtime = False
         self.failed_runtime_payload = None
+        self.failed_runtime_at = None
         self.notification_center.emit(
             source="SimulationController",
             kind="failed_runtime_released",
@@ -851,6 +855,8 @@ def build_network_payload(
         payload["dispatcher_progress_by_train_id"] = {}
         payload["assigned_routes_by_train_id"] = {}
         payload["simulation_time"] = 0.0
+        payload["failed_runtime"] = False
+        payload["failed_runtime_conflict"] = None
         return payload
 
     payload["simulation_time"] = float(sim_controller.simulation_time)
@@ -899,5 +905,27 @@ def build_network_payload(
     payload["controllers_by_train_id"] = controllers_by_train_id
     payload["dispatcher_progress_by_train_id"] = dispatcher_progress_by_train_id
     payload["assigned_routes_by_train_id"] = assigned_routes_by_train_id
+
+    # Fatal physical-entry conflict halt (set by enter_failed_runtime). While
+    # it is set, update() skips every train tick — the trains freeze at their
+    # last state and only simulation_time advances. Nothing else in the polled
+    # payload reflects that, so surface the flag + the conflict cause here so
+    # the UI can show a halt banner and offer recovery.
+    payload["failed_runtime"] = bool(sim_controller.failed_runtime)
+    fatal = sim_controller.failed_runtime_payload
+    payload["failed_runtime_conflict"] = (
+        {
+            "resource_type": fatal.resource_type,
+            "resource_id": fatal.resource_id,
+            "incoming_train_id": fatal.incoming_train_id,
+            "prior_owner_train_id": fatal.prior_owner_train_id,
+            "conflict_kind": fatal.conflict_kind.value,
+            "incoming_path_id": fatal.incoming_path_id,
+            "prior_owner_path_id": fatal.prior_owner_path_id,
+            "halted_at_sim_time": sim_controller.failed_runtime_at,
+        }
+        if fatal is not None
+        else None
+    )
 
     return payload

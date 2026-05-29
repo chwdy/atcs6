@@ -487,8 +487,9 @@ class BlockManager:
             block.occupied_by is None,
             (block.reserved_by_path is None
              or block.reserved_by_path == path_id),
-            the candidate `block_direction` is in
-              block.allowed_travel_directions,
+            (manual_override is True
+             OR the candidate `block_direction` is in
+                block.allowed_travel_directions),
             and (block.manual is False OR manual_override is True).
 
         `_is_caution == True` is NOT an eligibility failure; it affects the
@@ -549,7 +550,10 @@ class BlockManager:
                     failed_block_id=block_id,
                     failure_reason="missing_direction",
                 )
-            if traversal.block_direction not in block.allowed_travel_directions:
+            if (
+                not manual_override
+                and traversal.block_direction not in block.allowed_travel_directions
+            ):
                 return ReserveResult(
                     success=False,
                     failed_block_id=block_id,
@@ -828,8 +832,7 @@ class BlockManager:
             tile = self.network.get_track(tx, ty)
             if tile is None or not (tile.track_bits & edge_mask):
                 continue
-            dx, dy = self._EDGE_OFFSETS[direction]
-            neighbour = self.network.get_track(tx + dx, ty + dy)
+            neighbour = self.network.get_neighbor(tx, ty, direction)
             if neighbour is None or neighbour.block_section_id != block.block_id:
                 exit_tile = (tx, ty)
                 break
@@ -837,8 +840,12 @@ class BlockManager:
             return None
 
         # Step out into the neighbour tile and walk forward.
-        dx, dy = self._EDGE_OFFSETS[direction]
-        cur_x, cur_y = exit_tile[0] + dx, exit_tile[1] + dy
+        first_neighbour = self.network.get_neighbor(
+            exit_tile[0], exit_tile[1], direction
+        )
+        if first_neighbour is None:
+            return None
+        cur_x, cur_y = first_neighbour.x, first_neighbour.y
         entry_edge = self._OPPOSITE_EDGE[direction]
         visited: Set[Tuple[int, int]] = set()
 
@@ -863,10 +870,10 @@ class BlockManager:
                 if not exits:
                     return None
                 exit_edge = exits[0]
-                ndx, ndy = self._EDGE_OFFSETS.get(exit_edge, (0, 0))
-                if (ndx, ndy) == (0, 0):
+                step = self.network.get_neighbor(cur_x, cur_y, exit_edge)
+                if step is None:
                     return None
-                cur_x, cur_y = cur_x + ndx, cur_y + ndy
+                cur_x, cur_y = step.x, step.y
                 entry_edge = self._OPPOSITE_EDGE[exit_edge]
                 continue
             # Plain track tile not assigned to any block: nothing protectable

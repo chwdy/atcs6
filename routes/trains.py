@@ -749,6 +749,26 @@ def register(app, state: AppState) -> None:
         if not route:
             return jsonify({"error": "Route not found"}), 404
 
+        # Reject assignment to a 0-task route. Phase 1 step `9c4f` would
+        # otherwise allocate a RouteRun, `_find_next_task_target` would
+        # return None for the empty walk, Phase 1 would immediately call
+        # `finish_route_run(train_id)` (which unassigns the train again
+        # and, for ONE_OFF mode, deactivates the route). User sees a
+        # "success" response followed by the train silently going idle
+        # a few ticks later. Reject up front so the failure mode is loud
+        # and actionable. See design_new.md "Planning Kernel" step `9c4f`
+        # / terminal-walk handling at line 1166.
+        if not route.tasks:
+            return (
+                jsonify({
+                    "error": (
+                        f"Route {route_id!r} has no tasks. Add at least "
+                        f"one task before assigning a train."
+                    )
+                }),
+                400,
+            )
+
         # Same-route assign: idempotent no-op success.
         if current_route_id == route_id:
             return jsonify(

@@ -1,10 +1,11 @@
 """
-Demo 3 (best-effort): Four-Station NE-Zigzag Double-Track Loop
+Demo 4: Four-Station NE-Zigzag Double-Track Loop (best-effort)
 
-Variant of `demo_3` that uses `AcquisitionMode.BEST_EFFORT` for the shared
-route so the dispatcher reserves as much of the path as possible and
-truncates at the first conflict, rather than refusing to acquire unless the
-full path is available end-to-end.
+Uses `AcquisitionMode.BEST_EFFORT` for the shared route so the dispatcher
+reserves as much of the path as possible and truncates at the first
+conflict, rather than refusing to acquire unless the full path is
+available end-to-end. A pair of tunnels (S1↔S4 on each track) closes the
+NE corridor into a circular loop.
 
 Layout (rendered horizontally on the rotated screen):
 
@@ -50,7 +51,7 @@ from switch import Switch
 # Identifier read by bootstrap.py and by scene-gated tests to recognise this
 # scene. Each scene module declares its own ID; tests compare against the
 # active scene (see bootstrap.get_current_scene_id) to decide whether to run.
-SCENE_ID = "demo_3_best_effort"
+SCENE_ID = "demo_4"
 
 
 # Scissors crossover bit pattern (NS + EW straights + NW + SE diagonals).
@@ -76,7 +77,7 @@ def test_block_validation():
     """Test that block validation rules are working correctly.
 
     Same checks as demo_main.test_block_validation — kept verbatim so the
-    server's startup tests still pass after `import demo_3 as demo_main`.
+    server's startup tests still pass after `import demo_4 as demo_main`.
     """
     print("\n" + "=" * 70)
     print("Testing Block Validation Rules...")
@@ -312,14 +313,25 @@ def _add_stations(network: RailwayNetwork) -> None:
         )
 
 
+def _add_tunnels(network: RailwayNetwork) -> None:
+    """Close the NE corridor into a loop by tunneling S1↔S4 on each track.
+
+    Endpoints are the outermost dead-end edges of the S/N track endpoints:
+      S track: (1, 0, W) ↔ (11, 10, N)
+      N track: (0, 1, W) ↔ (10, 11, N)
+    """
+    network.add_tunnel((1, 0, "W"), (11, 10, "N"))
+    network.add_tunnel((0, 1, "W"), (10, 11, "N"))
+
+
 def create_comprehensive_demo() -> RailwayNetwork:
-    """Build the Demo 3 network from scratch and return it.
+    """Build the Demo 4 network from scratch and return it.
 
     Mirrors the name of demo_main.create_comprehensive_demo so server.py's
-    `import demo_3 as demo_main` works without other edits.
+    `import demo_4 as demo_main` works without other edits.
     """
     print("\n" + "=" * 70)
-    print("Demo 3 (best-effort): Four-Station NE-Zigzag Double-Track Loop")
+    print("Demo 4: Four-Station NE-Zigzag Double-Track Loop (best-effort)")
     print("=" * 70)
 
     network = RailwayNetwork()
@@ -328,6 +340,7 @@ def create_comprehensive_demo() -> RailwayNetwork:
     _add_crossovers(network)
     _add_blocks(network)
     _add_stations(network)
+    _add_tunnels(network)
 
     print(
         f"  ✓ tracks={len(network.tracks)}  "
@@ -362,8 +375,8 @@ def setup_demo_train(
 
     # ---- Shared route (CIRCULAR, 12 tasks: stop+dwell × 6) ----
     route = Route(
-        route_id="R_DEMO3_LOOP",
-        name="Demo 3: Four-Station Loop",
+        route_id="R_DEMO4_LOOP",
+        name="Demo 4: Four-Station Loop",
         mode=RouteMode.CIRCULAR,
         acquisition_mode=AcquisitionMode.BEST_EFFORT,
         is_active=True,
@@ -404,10 +417,29 @@ def setup_demo_train(
         route.add_task(t)
     sim_controller.route_executor.register_route(route)
 
+    # ---- Secondary route: 4 stops down the S track only ----
+    # Registered but unassigned — the user can wire it to a train via the UI.
+    s_line_route = Route(
+        route_id="R_DEMO4_S_LINE",
+        name="Demo 4: S-Track 4-Stop",
+        mode=RouteMode.CIRCULAR,
+        acquisition_mode=AcquisitionMode.BEST_EFFORT,
+        is_active=True,
+    )
+    for plat in ("PLT_S1_S", "PLT_S2_S", "PLT_S3_S", "PLT_S4_S"):
+        s_line_route.add_task(
+            RouteTask(
+                task_kind="stop",
+                task_location=PlatformTarget(plat),
+                task_direction="either",
+            )
+        )
+    sim_controller.route_executor.register_route(s_line_route)
+
     # ---- Shared speed profile ----
     demo_profile = SpeedProfile(
-        profile_id="demo3_profile",
-        name="Demo 3 Profile",
+        profile_id="demo4_profile",
+        name="Demo 4 Profile",
         speed_voltage_curve=list(DEFAULT_SPEED_PROFILE.speed_voltage_curve),
         startup_voltage=DEFAULT_SPEED_PROFILE.startup_voltage,
         lighting_voltage=DEFAULT_SPEED_PROFILE.lighting_voltage,

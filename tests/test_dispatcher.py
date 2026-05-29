@@ -1328,6 +1328,68 @@ class TestATODirectionDetection:
         # Overall vector (1,4)->(0,3): dx=-1 -> WEST, opposite of EAST -> switch cab
         assert info.required_cab == "B"
 
+    def test_ato_info_tunnel_loop_no_spurious_flip(self):
+        """Train traversing a circular loop through a tunnel: cab must NOT flip.
+
+        Pins the fix for the tunnel-loop "Cab points away from authority" bug.
+
+        Pre-fix, _required_cab_for_path() relied on a cardinal-direction
+        fallback (`_dominant_direction_from_tiles`) which treated the
+        non-grid tile pair (E end of west block ↔ W end of east block)
+        as a straight-line displacement, decided the overall path "went
+        backward," and required a cab flip. With the fix, the connectivity
+        check (which now consults `network.get_connection_edges`, so it
+        understands tunnel adjacency) returns "no flip," and the fallback
+        is skipped because the path crosses a tunnel hop.
+        """
+        from network import RailwayNetwork
+        from track import TrackSegment, TRACK_EW
+
+        network = RailwayNetwork()
+        # Two short EW segments far apart, joined by a tunnel between
+        # (2,0).E and (10,0).W — same shape as TunnelScene.
+        for x in range(3):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        for x in range(10, 13):
+            network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
+        network.create_block_with_tracks(
+            block_id="BLK_WEST", positions=[(0, 0), (1, 0), (2, 0)], name="W"
+        )
+        network.create_block_with_tracks(
+            block_id="BLK_EAST", positions=[(10, 0), (11, 0), (12, 0)], name="E"
+        )
+        network.add_tunnel((2, 0, "E"), (10, 0, "W"))
+
+        # Train at (2, 0) facing EAST: entered through W, would tunnel to (10, 0).
+        train = self._create_stopped_train(
+            network, (2, 0), Direction.EAST, "BLK_WEST"
+        )
+
+        sim = SimulationController(network, PathDispatcher(network))
+        controller = sim._get_or_create_controller(train)
+        controller.commands.cab = "A"
+        controller.power_on = True
+
+        # Path: (2, 0) -> (10, 0) (tunnel hop) -> (11, 0) -> (12, 0).
+        # Note (2,0)->(10,0) has dx=8, dy=0 — not grid-adjacent, but
+        # tunnel-adjacent via get_connection_edges.
+        self._attach_live_path(
+            controller, train,
+            [(2, 0), (10, 0), (11, 0), (12, 0)],
+            "test_tunnel_loop",
+            end_block_id="BLK_EAST",
+        )
+
+        # The path goes forward through the tunnel — train continues facing
+        # EAST after the tunnel hop, no cab flip needed.
+        info = controller.ato.compute_info()
+        assert info is not None
+        assert info.required_cab == "A", (
+            "Tunnel hop should not be mistaken for a backward move; cab A "
+            "remains correct because the train keeps moving forward through "
+            "the tunnel."
+        )
+
     def test_path_assignment_turn_around_opposite(self):
         """ato_go() should turn train around when path is opposite direction.
 

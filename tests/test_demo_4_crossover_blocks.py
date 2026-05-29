@@ -1,11 +1,11 @@
 """Journey-driven probe: BEST_EFFORT acquisition behavior at the
-scissors crossovers `SW_X1` and `SW_X2` of `demo_3_best_effort`.
+scissors crossovers `SW_X1` and `SW_X2` of `demo_4`.
 
 What this test does
 -------------------
-1. Builds the `demo_3_best_effort` 4-train CIRCULAR loop. The route
+1. Builds the `demo_4` 4-train CIRCULAR loop. The route
    uses `acquisition_mode = AcquisitionMode.BEST_EFFORT` on the shared
-   `R_DEMO3_LOOP` route per `demo_3_best_effort.py:358`.
+   `R_DEMO4_LOOP` route per `demo_4.py:358`.
 2. Back-dates every dwell row's `finished_at` by 10 minutes so the
    demo's 2-second wall-clock dwell timer is already elapsed at tick 0
    (otherwise the trains never depart within a test window — see the
@@ -61,17 +61,17 @@ from runtime_payloads import AcquisitionMode, PathAcquisitionResultKind
 
 from tests.journey.events import Event, Invariant, Journey
 from tests.journey.harness import JourneyHarness, Snapshot
-from tests.journey.scenes.demo_3_best_effort_scene import Demo3BestEffortScene
+from tests.journey.scenes.demo_4_scene import Demo4Scene
 from tests.journey.triggers import at_tick
 
 
-# Skip when the active scene is not demo_3_best_effort. The scene itself
-# bypasses `CURRENT_SCENE` (it passes `scene="demo_3_best_effort"` to
+# Skip when the active scene is not demo_4. The scene itself
+# bypasses `CURRENT_SCENE` (it passes `scene="demo_4"` to
 # bootstrap), but pre-existing per-module caches could behave oddly under
 # another active scene; this gate keeps the test honest about its target.
-if get_current_scene_id() != "demo_3_best_effort":
+if get_current_scene_id() != "demo_4":
     pytest.skip(
-        f"Test built for scene 'demo_3_best_effort'; active scene is "
+        f"Test built for scene 'demo_4'; active scene is "
         f"{get_current_scene_id()!r}.",
         allow_module_level=True,
     )
@@ -340,7 +340,7 @@ def _t1_path_capture_window(
 @pytest.mark.parametrize("dt,label", [(0.1, "1x")])
 def test_best_effort_crossover_block_states(dt, label, capsys):
     """Record per-tick block/switch state of the 8 switch-adjacent
-    blocks + 2 crossovers during `demo_3_best_effort`, plus directly
+    blocks + 2 crossovers during `demo_4`, plus directly
     probe the BEST_EFFORT create_path return contract under contention.
 
     After the run dumps the recorded history to stdout, asserts:
@@ -352,7 +352,7 @@ def test_best_effort_crossover_block_states(dt, label, capsys):
     records: List[TickRecord] = []
     journey = _build_recording_journey(records=records, train_id="T1")
 
-    scene = Demo3BestEffortScene()
+    scene = Demo4Scene()
     fixture = scene.build()
 
     # Manually probe the dispatcher contract BEFORE the journey harness

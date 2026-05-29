@@ -43,6 +43,10 @@
     "kind": "tabler",
     "value": "plus"
   },
+  "refresh": {
+    "kind": "tabler",
+    "value": "refresh"
+  },
   "remove-block-tile": {
     "kind": "tabler",
     "value": "minus"

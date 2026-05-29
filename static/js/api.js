@@ -195,6 +195,18 @@ class API {
     }
 
     /**
+     * Clear a fatal physical-entry conflict halt after the operator has
+     * resolved the conflict. Returns { released, failed_runtime }; released
+     * is false (HTTP still 200) when the conflict still stands.
+     * @returns {Promise<{released: boolean, failed_runtime: boolean}>}
+     */
+    async releaseFailedRuntime() {
+        return this._request('/simulation/release-failed-runtime', {
+            method: 'POST'
+        }, 'releaseFailedRuntime');
+    }
+
+    /**
      * Restart the server process. The server flushes autosave, then
      * replaces itself via os.execv. Caller should immediately switch
      * the UI into a reconnect-polling state.
@@ -1186,6 +1198,24 @@ class API {
                 force: options.force || false
             }
         }, 'assignRoute');
+    }
+
+    async listTunnels() {
+        return this._request('/tunnels', {}, 'listTunnels');
+    }
+
+    async createTunnel(a, b) {
+        return this._request('/tunnels', {
+            method: 'POST',
+            body: { a, b }
+        }, 'createTunnel');
+    }
+
+    async deleteTunnel(x, y, edge) {
+        return this._request('/tunnels', {
+            method: 'DELETE',
+            body: { x, y, edge }
+        }, 'deleteTunnel');
     }
 }
 

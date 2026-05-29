@@ -37,12 +37,36 @@ class RouteEditorHandler {
         // tile->trainId map of currently-eligible trains.
         this._assignForce = false;
         this._assignTileTrainMap = null;
-        // Collapsible run-history section.
-        this._historyExpanded = false;
+        // Collapsible run-history section. Default to expanded — the audit
+        // trail answers the "what just happened?" question the user asks
+        // after every state-change, so hiding it behind a Show button has
+        // the wrong polarity. Compactness comes from capping rows per train
+        // (see `_historyMaxRunsPerTrain`) instead of hiding the whole panel.
+        this._historyExpanded = true;
         this._historyData = null;
+        this._historyMaxRunsPerTrain = 10;
         // Per-task expansion state. Tracked by task object reference (not
         // index) so add/move/delete doesn't shift which cards are open.
         this._taskExpanded = new WeakMap();
+        // Server-sync poller. When the route editor is visible we
+        // periodically re-fetch the route's server-controlled fields
+        // (is_active, started_at, assigned_train_ids, currentRouteStatus)
+        // and re-render the panel iff those changed. This catches
+        // Phase-1 driven auto-deactivation, per-train route teardown
+        // from Phase-3 latch consumption, etc. — events the optimistic
+        // single-shot updates after a lifecycle API call would miss.
+        // The poller intentionally does NOT touch UI-edit fields
+        // (name, mode, tasks, priority, acquisition_mode, ...) — those
+        // remain owned by the editor until the user clicks Save.
+        this._routeSyncInterval = null;
+        this._routeSyncIntervalMs = 500;
+        // Unsaved-changes tracking. Tasks are owned by the editor until the
+        // user clicks Save; the panel can therefore show tasks the server
+        // has never seen. When `_savedTasksSerialized` differs from the
+        // current `currentRoute.tasks` serialized, the editor is "dirty"
+        // and any action that depends on server-side tasks (activate,
+        // assign, route-status fetch) must save first or abort.
+        this._savedTasksSerialized = null;
     }
 
     get api() { return this.editor.api; }
@@ -57,9 +81,177 @@ class RouteEditorHandler {
     }
 
     /**
+     * Start the route-editor's server-sync poller. Re-fetches the route
+     * and its per-train status every `_routeSyncIntervalMs` and, when
+     * server-controlled fields changed, calls `rerenderRouteEditor()`.
+     * Caller invariant: only call after `this.currentRoute` is populated.
+     */
+    _startRouteSyncPoller() {
+        this._stopRouteSyncPoller();
+        if (!this.currentRoute?.route_id) return;
+        this._routeSyncInterval = setInterval(
+            () => this._syncRouteFromServer().catch(err => {
+                console.warn('[RouteEditor] route sync failed:', err);
+            }),
+            this._routeSyncIntervalMs,
+        );
+    }
+
+    _stopRouteSyncPoller() {
+        if (this._routeSyncInterval) {
+            clearInterval(this._routeSyncInterval);
+            this._routeSyncInterval = null;
+        }
+    }
+
+    /**
+     * Pull server-truth for the currently-open route. Returns silently
+     * (and stops the poller) when the route was deleted or the panel
+     * has navigated away. Only the server-controlled fields are written
+     * back — UI-edit fields (name, mode, tasks, priority, etc.) remain
+     * untouched until the user clicks Save.
+     *
+     * Re-renders the panel only when one of the server-controlled fields
+     * actually changed, so the user isn't blinked at every 500ms tick.
+     */
+    async _syncRouteFromServer() {
+        const routeId = this.currentRoute?.route_id;
+        if (!routeId) return;
+        if (this.editor._currentEditorType !== 'route-editor'
+            || this.editor._currentEditorId !== routeId) {
+            // Panel changed under us — stop polling and bail.
+            this._stopRouteSyncPoller();
+            return;
+        }
+        let route;
+        let status;
+        try {
+            [route, status] = await Promise.all([
+                this.api.getRoute(routeId),
+                this.api.getRouteStatus(routeId),
+            ]);
+        } catch (err) {
+            if (err && err.status === 404) {
+                // Route was deleted server-side; stop polling. Don't tear
+                // down the panel here — the user can navigate manually.
+                this._stopRouteSyncPoller();
+            }
+            throw err;
+        }
+        const changed = (
+            this.currentRoute.is_active !== route.is_active
+            || this.currentRoute.started_at !== route.started_at
+            || !this._arraysEqual(
+                this.currentRoute.assigned_train_ids || [],
+                route.assigned_train_ids || [],
+            )
+            || JSON.stringify(this.currentRouteStatus?.trains)
+                !== JSON.stringify(status?.trains)
+        );
+        // Sync only server-controlled fields. Leave name/mode/tasks/etc
+        // alone — those are owned by the editor's in-flight edit state.
+        this.currentRoute.is_active = route.is_active;
+        this.currentRoute.started_at = route.started_at;
+        this.currentRoute.assigned_train_ids = route.assigned_train_ids;
+        this.currentRouteStatus = status;
+        if (changed) {
+            this.rerenderRouteEditor();
+        }
+    }
+
+    _arraysEqual(a, b) {
+        if (a === b) return true;
+        if (!Array.isArray(a) || !Array.isArray(b)) return false;
+        if (a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) {
+            if (a[i] !== b[i]) return false;
+        }
+        return true;
+    }
+
+    /**
+     * HTML-escape a string for safe embedding inside element bodies and
+     * `attr="…"` values. Mirrors editor-route-runs.js#_esc so the two
+     * panels share an identical escape contract.
+     */
+    _esc(s) {
+        if (s == null) return '';
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    /**
+     * Snapshot the currently-loaded tasks as the "saved baseline" used by
+     * `_hasUnsavedTaskChanges()`. Called after loading the route from the
+     * server (showRouteEditor) and after a successful saveRoute().
+     */
+    _refreshSavedTasksBaseline() {
+        const tasks = (this.currentRoute && this.currentRoute.tasks) || [];
+        this._savedTasksSerialized = JSON.stringify(tasks);
+    }
+
+    /**
+     * Return true when the editor's local task list differs from the last
+     * server-confirmed version (initial load or latest successful save).
+     * Used to decide whether activate/assign needs a save-first detour.
+     */
+    _hasUnsavedTaskChanges() {
+        if (!this.currentRoute) return false;
+        if (this._savedTasksSerialized === null) {
+            // Baseline was never taken (e.g. a brand-new route whose
+            // initial fetch hasn't completed) — treat as dirty so we
+            // don't proceed past a state we can't verify.
+            return (this.currentRoute.tasks || []).length > 0;
+        }
+        const current = JSON.stringify(this.currentRoute.tasks || []);
+        return current !== this._savedTasksSerialized;
+    }
+
+    /**
+     * Save-and-continue gate for actions that depend on server-side task
+     * state (activate, assign). When the editor has unsaved task changes,
+     * prompt the user to save first; on confirm, save and return whether
+     * the save succeeded. When clean, return true immediately so the
+     * caller proceeds.
+     *
+     * Returns:
+     *   true  — caller may proceed.
+     *   false — caller must abort (user cancelled, or save failed; in the
+     *           save-failed case the saveRoute() call already toasted the
+     *           specific reason, e.g. "Task 2 has no target selected").
+     */
+    async _promptSaveIfDirty(actionLabel) {
+        if (!this._hasUnsavedTaskChanges()) return true;
+        const localCount = (this.currentRoute.tasks || []).length;
+        const confirmed = await showConfirmModal({
+            title: `${actionLabel}: unsaved changes`,
+            message: 'Save your task edits before continuing?',
+            detail: (
+                `You have unsaved task changes in this panel (${localCount} `
+                + `task${localCount === 1 ? '' : 's'} locally). The server `
+                + `still has the previous version, so ${actionLabel.toLowerCase()} `
+                + `would otherwise act on stale data. "Save and continue" `
+                + `pushes your edits then runs ${actionLabel.toLowerCase()}.`
+            ),
+            confirmText: 'Save and continue',
+            confirmVariant: 'primary',
+        });
+        if (!confirmed) return false;
+        const ok = await this.saveRoute();
+        return !!ok;
+    }
+
+    /**
      * Show the routes list panel
      */
     async showRoutesPanel() {
+        // Leaving the per-route editor — stop the server-sync poller so
+        // it doesn't keep ticking against a route we're no longer viewing.
+        this._stopRouteSyncPoller();
+
         this.editor._currentEditorType = 'routes-list';
         this.editor._currentEditorId = null;
 
@@ -80,7 +272,7 @@ class RouteEditorHandler {
                         + New Route
                     </button>
                     <button id="refresh-routes-btn" class="btn btn-secondary btn-sm btn-icon-only" title="Refresh routes" aria-label="Refresh routes">
-                        ⟳
+                        <i class="ti ti-refresh"></i>
                     </button>
                 </div>
         `;
@@ -256,10 +448,19 @@ class RouteEditorHandler {
             this.currentRoute.tasks = [];
         }
 
+        // Take the saved-tasks baseline so subsequent edits register as
+        // dirty until the user saves them.
+        this._refreshSavedTasksBaseline();
+
         // Check viability for all consecutive movement-task pairs
         await this.checkAllViability();
 
         this.rerenderRouteEditor();
+        // Start polling server-truth for is_active / assigned_train_ids /
+        // per-train status so the panel stays in sync with auto-deactivation
+        // from Phase 1 terminal-walk, route-run teardown from Phase 3 latch
+        // consumption, etc.
+        this._startRouteSyncPoller();
     }
 
     /**
@@ -287,8 +488,37 @@ class RouteEditorHandler {
 
         const trainAssignmentHtml = this.renderTrainAssignmentSection();
 
+        const isDirty = this._hasUnsavedTaskChanges();
         return `
             <div class="route-editor" data-route-id="${route.route_id}">
+                <!-- Top toolbar: back / refresh / save. Sticky so Save is
+                     always reachable no matter which section the user is
+                     editing — fixes the "Save is two scrolls away from
+                     Tasks" UX bug. -->
+                <div class="re-toolbar">
+                    <button id="back-to-routes-btn"
+                            class="btn btn-secondary btn-sm re-toolbar-back"
+                            title="Return to the routes list">
+                        ← Routes
+                    </button>
+                    <div class="re-toolbar-spacer">
+                        ${isDirty
+                            ? `<span class="re-toolbar-dirty" title="You have unsaved task edits in this panel.">● unsaved</span>`
+                            : ''}
+                    </div>
+                    <button id="refresh-route-btn"
+                            class="btn btn-secondary btn-sm btn-icon-only"
+                            title="Pull the latest server state for this route"
+                            aria-label="Refresh route">
+                        <i class="ti ti-refresh"></i>
+                    </button>
+                    <button id="save-route-btn"
+                            class="btn btn-primary btn-sm ${isDirty ? 're-toolbar-save-dirty' : ''}"
+                            title="Save name, mode, tasks, and policy edits">
+                        Save${isDirty ? ' *' : ''}
+                    </button>
+                </div>
+
                 <!-- Route Header -->
                 <div class="mb-16">
                     ${this.renderRouteHeader(route)}
@@ -312,21 +542,15 @@ class RouteEditorHandler {
                     ${trainAssignmentHtml}
                 </div>
 
-                <!-- Controls Section -->
+                <!-- Controls Section: lifecycle only (Save moved to toolbar) -->
                 <div class="control-section">
                     <h4 class="text-sm text-muted mb-12">Controls</h4>
                     ${this.renderRouteStatusPill()}
-                    <div class="flex gap-8 mb-12 mt-12">
+                    <div class="flex gap-8 mt-12">
                         ${isActive
                             ? `<button id="deactivate-route-btn" class="btn btn-danger btn-sm flex-1">Deactivate</button>`
                             : `<button id="activate-route-btn" class="btn btn-success btn-sm flex-1">Activate</button>`
                         }
-                    </div>
-                    <div class="flex gap-8">
-                        <button id="save-route-btn" class="btn btn-primary btn-sm flex-1">Save</button>
-                        <button id="back-to-routes-btn" class="btn btn-secondary btn-sm flex-1">Back</button>
-                    </div>
-                    <div class="flex gap-8 mt-8">
                         <button id="delete-route-btn" class="btn btn-danger btn-sm flex-1">Delete Route</button>
                     </div>
                 </div>
@@ -338,6 +562,10 @@ class RouteEditorHandler {
     }
 
     renderHistorySection() {
+        // History defaults to expanded. The toggle still exists so the user
+        // can hide it on tiny screens, but the polarity is correct now:
+        // "what just happened?" is the most common follow-up question after
+        // a state-change, so the audit trail is visible by default.
         return `
             <div class="control-section mt-16">
                 <div class="flex justify-between items-center mb-12">
@@ -347,6 +575,26 @@ class RouteEditorHandler {
                 <div id="route-history-body" class="route-history">${this._historyExpanded ? this.renderHistoryBody() : ''}</div>
             </div>
         `;
+    }
+
+    /**
+     * Background-fetch the history payload if the section is open and we
+     * don't have data yet. Called from `initRouteEditorHandlers` so the
+     * default-open state actually renders something instead of "Loading…".
+     */
+    async _maybeAutoLoadHistory() {
+        if (!this._historyExpanded) return;
+        if (this._historyData != null) return;
+        const body = document.getElementById('route-history-body');
+        if (!body) return;
+        try {
+            this._historyData = await this.api.getRouteHistory(this.currentRoute.route_id);
+        } catch (err) {
+            console.error('[RouteEditor] history auto-load failed:', err);
+            body.innerHTML = '<div class="route-history-empty">Failed to load history</div>';
+            return;
+        }
+        body.innerHTML = this.renderHistoryBody();
     }
 
     /**
@@ -393,13 +641,36 @@ class RouteEditorHandler {
             ? `Last activated ${this._formatTime(data.activated_at)}`
             : 'Never activated'}</div>`);
 
-        const runs = (data.runs || []).slice().reverse(); // newest first
+        // Cap at top `_historyMaxRunsPerTrain` rows per assigned train so
+        // the panel stays compact even after many circular-route cycles.
+        // Bucket newest-first per train, then merge by overall recency so
+        // the most recent activity across all trains still leads.
+        const allRuns = (data.runs || []).slice().reverse(); // newest first
+        const perTrainCap = this._historyMaxRunsPerTrain;
+        const seenPerTrain = new Map();
+        const capped = [];
+        let truncatedCount = 0;
+        for (const run of allRuns) {
+            const tid = run.train_id || '<unknown>';
+            const used = seenPerTrain.get(tid) || 0;
+            if (used >= perTrainCap) {
+                truncatedCount += 1;
+                continue;
+            }
+            seenPerTrain.set(tid, used + 1);
+            capped.push(run);
+        }
+        const runs = capped;
+        const truncatedHtml = truncatedCount > 0
+            ? `<div class="route-history-empty">+ ${truncatedCount} older run${truncatedCount === 1 ? '' : 's'} hidden (top ${perTrainCap} shown per train)</div>`
+            : '';
         const runsHtml = runs.length === 0
             ? '<div class="route-history-empty">No runs yet</div>'
             : runs.map(run => this.renderHistoryRun(run)).join('');
         return `
             <div class="route-history-activated">${metaRows.join('')}</div>
             ${runsHtml}
+            ${truncatedHtml}
         `;
     }
 
@@ -527,7 +798,7 @@ class RouteEditorHandler {
             { value: 'force', label: 'Force' },
         ], current || 'soft');
         return `
-            <div class="route-header-row" data-route-policy-row>
+            <div class="route-header-row route-policy-grid" data-route-policy-row>
                 <div class="route-header-col">
                     <label class="property-label">Acquisition</label>
                     ${seg('route-acq-seg', [
@@ -546,7 +817,7 @@ class RouteEditorHandler {
                     <div class="text-xxs text-muted mt-4">Push to runs:</div>
                     ${pushSeg('route-action-push-seg', 'soft')}
                 </div>
-                <div class="route-header-col narrow">
+                <div class="route-header-col">
                     <label class="property-label">Priority (0-9)</label>
                     <input type="number" id="route-priority-input" class="property-input"
                            min="0" max="9" step="1" value="${priority}">
@@ -916,17 +1187,22 @@ class RouteEditorHandler {
     }
 
     /**
-     * Render one assigned-train row. Uses the rich `/status` payload (which
-     * the editor already fetched into `currentRouteStatus`) so we surface
-     * direction, current task kind, target, dwell remaining, and at-platform
-     * status instead of just a "Task N" label.
+     * Render one assigned-train row using the §12 row-list pattern (status
+     * dot · train id · verb · target noun · modifier · action). Replaces
+     * the earlier card-shape that violated §12 principle 2 (homogeneous
+     * comparable records belong in rows, not cards).
+     *
+     * Columns:
+     *   ● status dot     hue channel — warn (dwell), info (running), danger (fault)
+     *     T1             train identity (mono, bright)
+     *     [DWELL]        verb chip — categorical filter the eye scans first
+     *     Station 1      target noun — what the train is at / heading to
+     *     fwd · 7s       modifier — direction + derived dwell time
+     *     [Unassign]     ghost action; not danger-colored (reversible)
      */
     renderAssignedTrainRow(trainId, trainStatus) {
         const tasks = this.currentRoute?.tasks || [];
         const finishedIdx = trainStatus?.current_waypoint_index;
-        // current_waypoint_index per design is the largest *finished* walk
-        // position (or null). The next task being worked on is +1; clamp to
-        // the task count so circular/round-trip wrap reads sanely.
         const nextIdx = trainStatus
             ? ((finishedIdx ?? -1) + 1)
             : null;
@@ -935,46 +1211,79 @@ class RouteEditorHandler {
             ? s.charAt(0).toUpperCase() + s.slice(1)
             : '';
 
-        let taskLabel;
-        if (!trainStatus) {
-            taskLabel = '<span class="text-muted">Status unknown</span>';
-        } else if (nextIdx === null || tasks.length === 0) {
-            taskLabel = '<span class="text-muted">Queued</span>';
-        } else {
-            const taskNumber = (nextIdx % Math.max(tasks.length, 1)) + 1;
-            const kind = trainStatus.current_task_kind
-                ? cap(trainStatus.current_task_kind)
-                : 'Task';
-            // Resolve target name from the live task definition.
-            let targetName = '';
-            const loc = trainStatus.current_task_location || {};
+        // Resolve target name from the live task definition.
+        let targetName = '';
+        if (trainStatus?.current_task_location) {
+            const loc = trainStatus.current_task_location;
             if (loc.block_id) targetName = this.getTargetDisplayName('block', loc.block_id);
             else if (loc.station_id) targetName = this.getTargetDisplayName('station', loc.station_id);
             else if (loc.platform_id) targetName = this.getTargetDisplayName('platform', loc.platform_id);
-            const targetSuffix = targetName ? ` → ${targetName}` : '';
-            taskLabel = `<span>${kind} ${taskNumber}${targetSuffix}</span>`;
         }
 
-        const extras = [];
-        if (trainStatus?.direction) extras.push(cap(trainStatus.direction));
-        if (trainStatus?.at_platform) extras.push('at platform');
-        if (trainStatus?.dwell_remaining_sec != null) {
-            extras.push(`dwell ${Math.round(trainStatus.dwell_remaining_sec)}s`);
+        // Verb chip — kind of task the train is currently working on. Map to
+        // the same color tokens the route-runs editor uses for task verbs so
+        // the eye trains across both panels (info=stop, warn=dwell).
+        const kind = trainStatus?.current_task_kind || null;
+        const verb = kind ? kind.toUpperCase() : 'IDLE';
+        const verbAccent =
+            kind === 'dwell' ? 'warn'
+            : kind === 'stop' ? 'info'
+            : kind === 'waypoint' ? 'info'
+            : 'muted';
+
+        // Hue dot — warn while dwelling (the train is paused), danger when
+        // the status payload is missing (server hasn't returned per-train
+        // info), transparent otherwise. The dot is "is something noteworthy
+        // happening?" not "is this row important." See §12 color channels.
+        let dotVariant = '';
+        if (!trainStatus) dotVariant = 'danger';
+        else if (kind === 'dwell') dotVariant = 'warn';
+
+        // Modifier line — direction + derived dwell remaining.
+        //
+        // dwell_remaining_sec leaks a Unix epoch in some demo scenes (the
+        // backend's get_remaining_dwell_time mixes wall-clock and sim-clock
+        // when the demo back-dates task_runs to make dwells elapse — see
+        // demo_4_scene.py). Cap defensively: if the value is
+        // bigger than any plausible dwell (1 hour), suppress it instead of
+        // rendering "dwell 1779949962s" which is what motivated this fix.
+        const modParts = [];
+        if (trainStatus?.direction) modParts.push(cap(trainStatus.direction));
+        if (trainStatus?.at_platform) modParts.push('at platform');
+        const dwellRaw = trainStatus?.dwell_remaining_sec;
+        if (dwellRaw != null && Number.isFinite(dwellRaw) && dwellRaw >= 0 && dwellRaw <= 3600) {
+            modParts.push(`${Math.round(dwellRaw)}s left`);
         }
-        const extrasHtml = extras.length
-            ? `<span class="text-muted">· ${extras.join(' · ')}</span>`
-            : '';
+        const modifier = modParts.join(' · ');
+
+        // Status text when targetName is missing (between runs, queued, etc.)
+        let nounText;
+        if (!trainStatus) {
+            nounText = '—';
+        } else if (nextIdx === null || tasks.length === 0) {
+            nounText = 'queued';
+        } else {
+            nounText = targetName || `task ${(nextIdx % Math.max(tasks.length, 1)) + 1}`;
+        }
+
+        // Tooltip carries the long form for power users; principle 12
+        // (density serves readability — keep the compact form in title).
+        let tooltip = `${trainId}`;
+        if (kind) tooltip += ` · ${verb}`;
+        if (targetName) tooltip += ` → ${targetName}`;
+        if (modifier) tooltip += ` · ${modifier}`;
+        const escTooltip = this._esc(tooltip);
 
         return `
-            <div class="p-8 bg-input rounded-lg mb-4">
-                <div class="flex justify-between items-center mb-6">
-                    <span class="font-mono text-white">${trainId}</span>
-                    <button class="btn btn-sm btn-danger unassign-train-btn" data-train-id="${trainId}">Unassign</button>
-                </div>
-                <div class="flex items-center gap-8 text-xs flex-wrap">
-                    ${taskLabel}
-                    ${extrasHtml}
-                </div>
+            <div class="atr-row" data-train-id="${trainId}" title="${escTooltip}">
+                <span class="atr-status atr-status-${dotVariant || 'ok'}"></span>
+                <span class="atr-id font-mono">${this._esc(trainId)}</span>
+                <span class="atr-verb atr-verb-${verbAccent}">${this._esc(verb)}</span>
+                <span class="atr-noun">${this._esc(nounText)}</span>
+                <span class="atr-mod">${this._esc(modifier)}</span>
+                <button class="btn btn-sm btn-secondary unassign-train-btn atr-action"
+                        data-train-id="${trainId}"
+                        title="Unassign ${trainId} from this route">Unassign</button>
             </div>
         `;
     }
@@ -1015,34 +1324,62 @@ class RouteEditorHandler {
             trainSelectHtml += `<option value="${train.train_id}">${label}</option>`;
         });
 
+        // Force reassign lives in the same flex row as Assign — the
+        // checkbox modifies the button's behavior, so per §12 principle 1
+        // (proximity) they belong in one visual cluster. The previous
+        // layout put Force two rows below the button which trained users
+        // to ignore it.
         return `
             ${assignedHtml}
-            <div class="flex gap-8">
-                <select id="assign-train-select" class="property-input route-input-compact flex-1">
+            <div class="atr-assign-row">
+                <select id="assign-train-select" class="property-input route-input-compact atr-assign-select">
                     ${trainSelectHtml}
                 </select>
+                <label class="atr-force-label" title="Reassign the train even if it is already on another route">
+                    <input type="checkbox" id="assign-train-force"
+                           class="route-inline-checkbox"
+                           ${this._assignForce ? 'checked' : ''}>
+                    <span>Force</span>
+                </label>
                 <button id="assign-train-btn" class="btn btn-sm btn-primary">Assign</button>
             </div>
             <div class="flex gap-8 mt-8">
                 <button id="assign-train-map-btn" class="btn btn-sm btn-secondary flex-1" title="Click trains on the layout to assign them; eligible trains light up. Esc to finish.">Assign on map</button>
             </div>
-            <label class="flex items-center gap-6 mt-8 text-xs text-muted route-option-hint">
-                <input type="checkbox" id="assign-train-force" class="route-inline-checkbox" ${this._assignForce ? 'checked' : ''}> Force reassign
-            </label>
         `;
     }
 
     initRouteEditorHandlers() {
-        // Back button
+        // Back-to-routes button (top toolbar).
         const backBtn = document.getElementById('back-to-routes-btn');
         if (backBtn) {
             backBtn.onclick = () => this.showRoutesPanel();
         }
 
-        // Save button
+        // Save button (top toolbar).
         const saveBtn = document.getElementById('save-route-btn');
         if (saveBtn) {
             saveBtn.onclick = () => this.saveRoute();
+        }
+
+        // Refresh button — explicitly re-fetch route + status. The poller
+        // already syncs every 500ms but users wanted an explicit affordance
+        // for confidence ("I just clicked something; did anything change?").
+        const refreshBtn = document.getElementById('refresh-route-btn');
+        if (refreshBtn) {
+            refreshBtn.onclick = async () => {
+                const routeId = this.currentRoute?.route_id;
+                if (!routeId) return;
+                refreshBtn.disabled = true;
+                try {
+                    // Use the same code path as showRouteEditor for a full
+                    // refresh — keeps the dirty-baseline snapshot in sync.
+                    await this.showRouteEditor(routeId);
+                } finally {
+                    // showRouteEditor() rebuilds the panel, so this button
+                    // reference is stale; nothing to re-enable.
+                }
+            };
         }
 
         const deleteRouteBtn = document.getElementById('delete-route-btn');
@@ -1095,6 +1432,14 @@ class RouteEditorHandler {
         if (toggleHistoryBtn) {
             toggleHistoryBtn.onclick = () => this.toggleHistory();
         }
+
+        // History defaults to expanded but the data isn't always loaded
+        // yet (especially right after entering the editor). Kick off a
+        // background fetch so the section populates without the user
+        // having to click Hide/Show to re-trigger it.
+        this._maybeAutoLoadHistory().catch(err => {
+            console.warn('[RouteEditor] history auto-load swallowed:', err);
+        });
 
         // Route-mode segmented control — click toggles the active button.
         // The value is read back at save() time from the .active button.
@@ -1285,12 +1630,16 @@ class RouteEditorHandler {
     }
 
     /**
-     * Append a blank waypoint task (default platform target) and re-render.
+     * Append a blank stop task (default platform target) and re-render.
+     * Default kind is `stop` so a fresh route halts between targets; without a
+     * stop the live path stays extended across waypoints and a destination
+     * that requires a turnaround fails with "extend would reverse at
+     * authority end". Operators can flip the kind to waypoint per-row.
      */
     addTask() {
         if (!Array.isArray(this.currentRoute.tasks)) this.currentRoute.tasks = [];
         const newTask = {
-            task_kind: 'waypoint',
+            task_kind: 'stop',
             task_location: { platform_id: '' },
             task_direction: 'either',
             task_time: null,
@@ -1455,7 +1804,7 @@ class RouteEditorHandler {
         const key = opt.type === 'block' ? 'block_id'
             : opt.type === 'station' ? 'station_id' : 'platform_id';
         this.currentRoute.tasks.push({
-            task_kind: 'waypoint',
+            task_kind: 'stop',
             task_location: { [key]: opt.id },
             task_direction: 'either',
             task_time: null,
@@ -1464,7 +1813,7 @@ class RouteEditorHandler {
         await this.checkAllViability();
         this.rerenderRouteEditor();
         await this.refreshWaypointFeasibility();
-        window.showToast(`Added waypoint: ${opt.label}`, 'success', 2000);
+        window.showToast(`Added stop: ${opt.label}`, 'success', 2000);
     }
 
     /**
@@ -1602,14 +1951,25 @@ class RouteEditorHandler {
         const trainId = this._assignTileTrainMap?.get(`${gridPos.x},${gridPos.y}`);
         if (!trainId) return true; // no eligible train here; stay in mode
 
+        // Save unsaved task edits first — same reason as the dropdown
+        // assign: a panel showing 4 tasks but a server holding 0 would
+        // make the assign-route handler reject the request.
+        const dirtyOk = await this._promptSaveIfDirty('Assign train');
+        if (!dirtyOk) return true;
+
+        // Same pre-flight check as the dropdown-driven assignTrain(): warn
+        // when sim is paused or this specific train is OFF, so map clicks
+        // don't silently no-op either.
+        const ok = await this._confirmRuntimePreconditions('Assign train', trainId);
+        if (!ok) return true;
+
         try {
             await this.api.assignRoute(trainId, this.currentRoute.route_id, {
                 force: this._assignForce
             });
-            if (!this.currentRoute.assigned_train_ids.includes(trainId)) {
-                this.currentRoute.assigned_train_ids.push(trainId);
-            }
-            this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
+            // Don't mutate assigned_train_ids locally — let the server
+            // tell us what stuck. See assignTrain() for context.
+            await this._refetchRouteAfterLifecycleOp();
             window.showToast(`Train ${trainId} assigned`, 'success', 2500);
             this.rerenderRouteEditor();
             await this.refreshAssignCandidates();
@@ -1714,6 +2074,12 @@ class RouteEditorHandler {
 
     /**
      * Save route changes (serializes rows into the canonical `tasks` payload).
+     *
+     * Returns:
+     *   true  — the route was successfully persisted.
+     *   false — a validation error (toast already shown) or a network error
+     *           (toast already shown). Callers that chain another action
+     *           after save (e.g. activate, assign) should abort on false.
      */
     async saveRoute() {
         const nameInput = document.getElementById('route-name-input');
@@ -1747,14 +2113,14 @@ class RouteEditorHandler {
                     window.showToast(
                         `Dwell task ${i + 1} must follow a stop or waypoint with a target.`,
                         'error', 5000);
-                    return;
+                    return false;
                 }
                 location = inherited;
             } else {
                 location = this._taskLocationOrNull(t);
                 if (!location) {
                     window.showToast(`Task ${i + 1} has no target selected.`, 'error', 5000);
-                    return;
+                    return false;
                 }
             }
 
@@ -1801,18 +2167,46 @@ class RouteEditorHandler {
         const priorityCheck = validatePriorityInput(priorityRaw);
         if (priorityCheck.kind === 'error') {
             window.showToast(priorityCheck.message, 'error', 4000);
-            return;
+            return false;
         }
         if (priorityCheck.kind === 'ok') {
             payload.priority = { value: priorityCheck.value, push: priorityPush };
         }
 
+        // Warn if the route has no Stop tasks. A pure-waypoint route keeps the
+        // live path extended across every task, so any task that would require
+        // a turnaround fails with "extend would reverse at authority end" at
+        // run time. Operators authoring forward-only loops can dismiss; anyone
+        // else needs at least one stop to allow a direction change.
+        if (tasks.length > 0 && !tasks.some(t => t.task_kind === 'stop')) {
+            const ok = await showConfirmModal({
+                title: 'Route has no Stop tasks',
+                message: 'Save without any Stop task?',
+                detail: (
+                    'Waypoint and dwell tasks keep the live path extended — '
+                    + "the train won't halt or reset its travel direction "
+                    + 'between them. If any task ahead requires a turnaround, '
+                    + 'the run will fail with "extend would reverse at '
+                    + 'authority end". Add at least one Stop where the train '
+                    + 'should be able to change direction.'
+                ),
+                confirmText: 'Save anyway',
+                confirmVariant: 'primary',
+            });
+            if (!ok) return false;
+        }
+
         try {
             await this.api.updateRoute(this.currentRoute.route_id, payload);
             window.showToast('Route saved', 'success', 3000);
+            // Refresh the unsaved-changes baseline so subsequent dirty checks
+            // see the saved state as clean.
+            this._refreshSavedTasksBaseline();
+            return true;
         } catch (err) {
             console.error('[RouteEditor] Failed to save route:', err);
             window.showToast('Failed to save route: ' + err.message, 'error', 5000);
+            return false;
         }
     }
 
@@ -1820,10 +2214,31 @@ class RouteEditorHandler {
      * Activate the route
      */
     async activateRoute() {
+        // The user's local task edits may not have been pushed yet — the
+        // server-side activate handler rejects 0-task routes (see
+        // train_route_service.activate_route ValidationError), so a user
+        // who added 4 tasks visibly in this panel but didn't click Save
+        // would see a confusing "no tasks" error from the server. Save
+        // first if dirty, abort on save failure.
+        const dirtyOk = await this._promptSaveIfDirty('Activate route');
+        if (!dirtyOk) return;
+
+        // Per design_new.md step `9c4f`: Phase 1 only picks up a route when
+        // is_active=True AND the train is in the assigned list AND the train's
+        // per-tick phase loop actually runs. With sim paused, "Activate" flips
+        // is_active synchronously but nothing else happens until the user
+        // resumes. Warn so the success toast can't mislead the user.
+        const ok = await this._confirmRuntimePreconditions('Activate route');
+        if (!ok) return;
+
         try {
-            await this.api.activateRoute(this.currentRoute.route_id);
+            const resp = await this.api.activateRoute(this.currentRoute.route_id);
+            // Use server-returned route as truth instead of optimistically
+            // writing `is_active = true`; the server may have rejected an
+            // invalid activation (e.g. 0-task route) — although we now 400
+            // those before they reach here.
+            this._mergeServerRoute(resp?.route);
             window.showToast('Route activated', 'success', 3000);
-            this.currentRoute.is_active = true;
             this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
             this.rerenderRouteEditor();
         } catch (err) {
@@ -1837,15 +2252,83 @@ class RouteEditorHandler {
      */
     async deactivateRoute() {
         try {
-            await this.api.deactivateRoute(this.currentRoute.route_id);
+            const resp = await this.api.deactivateRoute(this.currentRoute.route_id);
+            this._mergeServerRoute(resp?.route);
             window.showToast('Route deactivated', 'success', 3000);
-            this.currentRoute.is_active = false;
             this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
             this.rerenderRouteEditor();
         } catch (err) {
             console.error('[RouteEditor] Failed to deactivate route:', err);
             window.showToast('Failed to deactivate route: ' + err.message, 'error', 5000);
         }
+    }
+
+    /**
+     * Pre-flight check before a route mutation that needs the per-train phase
+     * loop to commit it. Both `PUT /api/trains/<id>/assign-route` and
+     * `POST /api/train-routes/<id>/activate` return success synchronously, but
+     * the runtime effect (RouteRun teardown / fresh RouteRun allocation,
+     * path creation) only materializes when Phase 1 and Phase 3 actually run.
+     * Per simulation.py:179/218, both phases are skipped while the controller
+     * is OFF, and the sim thread itself is paused when
+     * `app.isSimulationRunning === false`. In either state the user would see
+     * a green "success" toast with no visible change. Warn first so the user
+     * can choose to proceed deliberately.
+     *
+     * `trainId` is optional; pass it when the action targets a single train
+     * (assign / unassign) so the warning can also catch power-off. For
+     * route-level actions (activate / deactivate) leave it null and only the
+     * sim-paused branch fires.
+     *
+     * Returns true when the action should proceed, false to abort.
+     */
+    async _confirmRuntimePreconditions(actionLabel, trainId = null) {
+        const reasons = [];
+        const app = window.app;
+        const simPaused = !(app && app.isSimulationRunning);
+        if (simPaused) {
+            reasons.push('Simulation is paused.');
+        }
+
+        let trainOff = false;
+        if (trainId) {
+            try {
+                const payload = await this.api.getTrain(trainId);
+                const controller = payload?.controller;
+                // controller.state is the TrainState enum lowercased on the
+                // wire ("off" / "ready" / "running_moving" / ...). Treat both
+                // an explicit "off" and a false power_on flag as off.
+                trainOff = (
+                    controller?.state === 'off'
+                    || controller?.power_on === false
+                );
+            } catch (err) {
+                console.warn(
+                    '[RouteEditor] getTrain pre-flight check failed; '
+                    + 'proceeding without train-state check:', err
+                );
+            }
+        }
+        if (trainOff) {
+            reasons.push(`Train ${trainId} is powered off.`);
+        }
+
+        if (reasons.length === 0) {
+            return true;
+        }
+
+        const detail = reasons.join(' ')
+            + ` ${actionLabel} will only take effect once the simulation`
+            + ` is running and the train is powered on. The change is`
+            + ` recorded immediately but the train will not react until then.`;
+
+        return await showConfirmModal({
+            title: `${actionLabel}: precondition not met`,
+            message: 'Continue anyway?',
+            detail,
+            confirmText: 'Proceed',
+            confirmVariant: 'primary',
+        });
     }
 
     /**
@@ -1858,16 +2341,35 @@ class RouteEditorHandler {
         const trainId = select.value;
         const forceAssign = !!document.getElementById('assign-train-force')?.checked;
 
+        // Save unsaved task edits first — see activateRoute() for context.
+        // Without this, the server-side assign-route handler rejects 0-task
+        // routes (see routes/trains.py) and the user sees a confusing
+        // "no tasks" error despite seeing tasks in the panel.
+        const dirtyOk = await this._promptSaveIfDirty('Assign train');
+        if (!dirtyOk) return;
+
+        // Per design_new.md "Route assignment writers": assign-route writes the
+        // route_abort latch + updates Route.assigned_train_ids synchronously,
+        // but the live RouteRun flip (and new RouteRun allocation against the
+        // newly-assigned route) waits for the next per-train phase loop. If
+        // sim is paused or T1 is OFF, that loop never fires and the user sees
+        // a success toast with no visible effect. Warn explicitly.
+        const ok = await this._confirmRuntimePreconditions('Assign train', trainId);
+        if (!ok) return;
+
         try {
             await this.api.assignRoute(trainId, this.currentRoute.route_id, {
                 force: forceAssign
             });
 
-            this.currentRoute.assigned_train_ids.push(trainId);
-            this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
+            // Don't mutate the assigned_train_ids array locally — the server
+            // is the source of truth (the assign may auto-deactivate the
+            // route if it had 0 tasks, the abort latch may not consume on
+            // a paused sim, etc.). Re-fetch the route definition and per-
+            // train status so the panel reflects server reality.
+            await this._refetchRouteAfterLifecycleOp();
             window.showToast(`Train ${trainId} assigned`, 'success', 3000);
 
-            // Refresh
             this.rerenderRouteEditor();
         } catch (err) {
             console.error('[RouteEditor] Failed to assign train:', err);
@@ -1882,17 +2384,51 @@ class RouteEditorHandler {
         try {
             await this.api.assignRoute(trainId, null);
 
-            this.currentRoute.assigned_train_ids = this.currentRoute.assigned_train_ids.filter(
-                id => id !== trainId
-            );
-            this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
+            await this._refetchRouteAfterLifecycleOp();
             window.showToast(`Train ${trainId} unassigned`, 'success', 3000);
 
-            // Refresh
             this.rerenderRouteEditor();
         } catch (err) {
             console.error('[RouteEditor] Failed to unassign train:', err);
             window.showToast('Failed to unassign train: ' + err.message, 'error', 5000);
+        }
+    }
+
+    /**
+     * Pull the server's current view of `currentRoute` after a lifecycle
+     * op (assign/unassign/activate/deactivate). Updates only
+     * server-controlled fields and the per-train status payload — UI
+     * edit fields (name/mode/tasks/priority/...) are untouched.
+     */
+    async _refetchRouteAfterLifecycleOp() {
+        const routeId = this.currentRoute?.route_id;
+        if (!routeId) return;
+        try {
+            const [route, status] = await Promise.all([
+                this.api.getRoute(routeId),
+                this.api.getRouteStatus(routeId),
+            ]);
+            this._mergeServerRoute(route);
+            this.currentRouteStatus = status;
+        } catch (err) {
+            console.warn('[RouteEditor] post-op refetch failed:', err);
+        }
+    }
+
+    /**
+     * Copy server-controlled fields from a freshly-fetched `route` payload
+     * onto `this.currentRoute`. Never overwrites edit-state fields. Used
+     * by both the polling sync and post-lifecycle refetch.
+     */
+    _mergeServerRoute(route) {
+        if (!route || !this.currentRoute) return;
+        this.currentRoute.is_active = route.is_active;
+        this.currentRoute.started_at = route.started_at;
+        this.currentRoute.assigned_train_ids = route.assigned_train_ids;
+        // last_edited_at also reflects server state; sync it so any other
+        // panel reading it (history view, audit) sees the same timestamp.
+        if ('last_edited_at' in route) {
+            this.currentRoute.last_edited_at = route.last_edited_at;
         }
     }
 

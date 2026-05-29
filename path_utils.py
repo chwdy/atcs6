@@ -735,18 +735,36 @@ def assign_complete_path_to_train(
     return True, None
 
 
+_EDGE_TO_DIR: dict = {
+    "N": Direction.NORTH,
+    "E": Direction.EAST,
+    "S": Direction.SOUTH,
+    "W": Direction.WEST,
+}
+_OPPOSITE_EDGE: dict = {"N": "S", "S": "N", "E": "W", "W": "E"}
+
+
 def convert_tiles_to_train_path(
-    tiles, default_direction: Direction = Direction.EAST
+    tiles,
+    default_direction: Direction = Direction.EAST,
+    network=None,
 ) -> List[Tuple[int, int, Direction]]:
     """Convert tile positions to train path format with directions.
 
     Args:
         tiles: Iterable of `(x, y)` tuples OR `PathTileEntry` instances. The
             function reads `(x, y)` from either shape.
-        default_direction: Direction for single-tile paths (default: EAST)
+        default_direction: Direction for single-tile paths (default: EAST).
+        network: Optional ``RailwayNetwork``. When provided, the per-tile
+            direction is derived from
+            ``network.get_connection_edges(tile, next_tile)`` so the result
+            is correct across tunnel hops (where consecutive path tiles are
+            not grid-adjacent and `(dx, dy)` is meaningless). When omitted,
+            the legacy `(dx, dy)` inference is used — fine for grid-adjacent
+            paths but wrong for tunnel hops.
 
     Returns:
-        List of (x, y, direction) tuples for train path
+        List of (x, y, direction) tuples for train path.
     """
     if not tiles:
         return []
@@ -758,27 +776,45 @@ def convert_tiles_to_train_path(
 
     coords = [_xy(t) for t in tiles]
 
+    def _dir_from_dx_dy(a, b) -> Optional[Direction]:
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        if dy > 0:
+            return Direction.NORTH
+        if dy < 0:
+            return Direction.SOUTH
+        if dx > 0:
+            return Direction.EAST
+        if dx < 0:
+            return Direction.WEST
+        return None
+
+    def _dir_for(i: int) -> Optional[Direction]:
+        # Prefer the exit edge from coords[i] toward coords[i+1] when a
+        # network is available — this works whether the pair is grid-
+        # adjacent or linked by a tunnel.
+        if i + 1 < len(coords):
+            if network is not None:
+                edges = network.get_connection_edges(coords[i], coords[i + 1])
+                if edges is not None:
+                    return _EDGE_TO_DIR.get(edges[0])
+            return _dir_from_dx_dy(coords[i], coords[i + 1])
+        # Last tile: derive from the previous tile's connection so a path
+        # that ends just past a tunnel still reports a correct direction.
+        if i > 0 and network is not None:
+            edges = network.get_connection_edges(coords[i - 1], coords[i])
+            if edges is not None:
+                entry_on_self = edges[1]
+                forward_edge = _OPPOSITE_EDGE.get(entry_on_self)
+                if forward_edge:
+                    return _EDGE_TO_DIR.get(forward_edge)
+        return None
+
     result = []
     last_direction = default_direction
-
     for i, tile in enumerate(coords):
-        if i + 1 < len(coords):
-            next_tile = coords[i + 1]
-            dx = next_tile[0] - tile[0]
-            dy = next_tile[1] - tile[1]
-
-            if dy > 0:
-                direction = Direction.NORTH
-            elif dy < 0:
-                direction = Direction.SOUTH
-            elif dx > 0:
-                direction = Direction.EAST
-            else:
-                direction = Direction.WEST
-            last_direction = direction
-        else:
-            direction = last_direction
-
-        result.append((tile[0], tile[1], direction))
+        d = _dir_for(i)
+        if d is not None:
+            last_direction = d
+        result.append((tile[0], tile[1], last_direction))
 
     return result

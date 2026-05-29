@@ -106,6 +106,23 @@ class TestTrainRouteService:
         with pytest.raises(NotFoundError):
             train_route_service.require_route(state, "MISSING")
 
+    def test_activate_route_with_no_tasks_rejected(self, state):
+        """`activate_route` rejects 0-task routes with ValidationError.
+
+        Pins the fix for the empty-route auto-finish bug: Phase 1 step
+        `9c4f` would otherwise allocate a RouteRun for an empty walk,
+        `_find_next_task_target` would return None on the first tick,
+        and `finish_route_run` would immediately deactivate the route
+        (for ONE_OFF mode) and unassign all its trains — leaving the
+        user with a "successfully activated" toast and a silently
+        broken route.
+        """
+        train_route_service.create_route(
+            state, route_id="ROUTE_EMPTY", name="empty", mode="one_off"
+        )
+        with pytest.raises(ValidationError, match="no tasks"):
+            train_route_service.activate_route(state, "ROUTE_EMPTY")
+
 
 # ----------------------------------------------------- schedule_service ----
 

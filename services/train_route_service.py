@@ -328,10 +328,25 @@ def activate_route(
 ) -> Route:
     """Activate the route at simulation_time (defaults to controller now).
 
+    A route with no tasks would be terminal on the first eligible Phase 1
+    tick: ``_find_next_task_target`` returns ``None`` for an empty walk,
+    which makes Phase 1 call ``finish_route_run(train_id)`` immediately,
+    which for ``RouteMode.ONE_OFF`` then calls ``route.deactivate()``
+    again. The user-visible result is an "activated" toast followed by an
+    auto-deactivation a few ticks later, plus any assigned train silently
+    unassigned. Reject activation on a 0-task route up front so this
+    sequence is impossible.
+
     Raises:
         NotFoundError when the route does not exist.
+        ValidationError when the route has no tasks.
     """
     route = _require_route(state, route_id)
+    if not route.tasks:
+        raise ValidationError(
+            "Cannot activate a route with no tasks. Add at least one "
+            "task before activating."
+        )
     if simulation_time is None:
         simulation_time = state.sim_controller.simulation_time
     route.activate(simulation_time)

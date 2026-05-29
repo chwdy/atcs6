@@ -117,6 +117,7 @@ class Editor {
         this.routeRunHandler = new RouteRunEditorHandler(this);
         this.switchHandler = new SwitchEditorHandler(this);
         this.uiHandler = new EditorUIHandler(this);
+        this.multiSelectHandler = new MultiSelectActionsHandler(this);
         
         this.setupEventListeners();
         this.setupBlockManager();
@@ -517,7 +518,7 @@ class Editor {
             this.boxSelectState.dragScreenEnd = null;
             this.boxSelectState.isDragging = false;
             this.boxSelectState.shiftRemoving = false;
-            this.renderer.setBoxSelection(new Set());
+            this._applyBoxSelection(new Set());
             this.renderer.setBoxSelectRect(null);
         };
         return {
@@ -563,7 +564,7 @@ class Editor {
             this.lassoSelectState.screenPoints = [];
             this.lassoSelectState.isDrawing = false;
             this.lassoSelectState.shiftRemoving = false;
-            this.renderer.setBoxSelection(new Set());
+            this._applyBoxSelection(new Set());
             this.renderer.setLassoPath(null);
         };
         return {
@@ -595,7 +596,7 @@ class Editor {
             this.paintSelectState.isPainting = false;
             this.paintSelectState.shiftRemoving = false;
             this.paintSelectState.lastKey = null;
-            this.renderer.setBoxSelection(new Set());
+            this._applyBoxSelection(new Set());
         };
         return {
             name: 'Brush select',
@@ -786,12 +787,12 @@ class Editor {
                 const removing = this.paintSelectState.shiftRemoving;
                 if (this._applyPaintTile(gridPos, removing)) {
                     this.paintSelectState.lastKey = `${gridPos.x},${gridPos.y}`;
-                    this.renderer.setBoxSelection(this.boxSelectState.selectedKeys);
+                    this._applyBoxSelection(this.boxSelectState.selectedKeys);
                     this.renderer.requestRedraw();
                 }
             }
-            // Left click with signal/platform = single click placement
-            else if (e.button === 0 && ['signal', 'platform'].includes(this.selectedTool)) {
+            // Left click with signal/platform/tunnel = single click placement
+            else if (e.button === 0 && ['signal', 'platform', 'tunnel'].includes(this.selectedTool)) {
                 this.handleSingleClickPlace(gridPos);
             }
         });
@@ -851,7 +852,7 @@ class Editor {
                 if (key !== this.paintSelectState.lastKey) {
                     const removing = this.paintSelectState.shiftRemoving;
                     if (this._applyPaintTile(gridPos, removing)) {
-                        this.renderer.setBoxSelection(this.boxSelectState.selectedKeys);
+                        this._applyBoxSelection(this.boxSelectState.selectedKeys);
                         this.renderer.requestRedraw();
                     }
                     this.paintSelectState.lastKey = key;
@@ -916,7 +917,7 @@ class Editor {
                     }
                 }
 
-                this.renderer.setBoxSelection(this.boxSelectState.selectedKeys);
+                this._applyBoxSelection(this.boxSelectState.selectedKeys);
                 this.renderer.requestRedraw();
             }
             else if (this.lassoSelectState.isDrawing) {
@@ -940,7 +941,7 @@ class Editor {
                     }
                 }
 
-                this.renderer.setBoxSelection(this.boxSelectState.selectedKeys);
+                this._applyBoxSelection(this.boxSelectState.selectedKeys);
                 this.renderer.requestRedraw();
             }
             else if (this.paintSelectState.isPainting) {
@@ -1165,7 +1166,7 @@ class Editor {
                     || this.selectedTool === 'paint-select';
                 if (isMarkSelectTool && this.boxSelectState.selectedKeys.size > 0) {
                     this.boxSelectState.selectedKeys = new Set();
-                    this.renderer.setBoxSelection(new Set());
+                    this._applyBoxSelection(new Set());
                     this.renderer.requestRedraw();
                     return;
                 }
@@ -1216,7 +1217,7 @@ class Editor {
                 const result = await this._bulkDeleteWithConfirm(positions);
                 if (result) {
                     this.boxSelectState.selectedKeys = new Set();
-                    this.renderer.setBoxSelection(new Set());
+                    this._applyBoxSelection(new Set());
                     await this.refreshAndSelect(null);
                 }
             } catch (err) {
@@ -1244,7 +1245,7 @@ class Editor {
 
             if (this.boxSelectState.selectedKeys.size === 0) return;
             this.boxSelectState.selectedKeys = new Set();
-            this.renderer.setBoxSelection(new Set());
+            this._applyBoxSelection(new Set());
             this.renderer.requestRedraw();
         });
     }
@@ -1278,6 +1279,24 @@ class Editor {
         this.selectedTool = toolName;
         document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
         document.querySelector(`.tool-btn[data-tool="${toolName}"]`)?.classList.add('active');
+    }
+
+    // Wrapper around renderer.setBoxSelection that also syncs the sidebar
+    // multi-select panel. Every selection mutation site routes through this so
+    // the panel summary stays in lock-step with the visual selection. Read the
+    // source of truth from boxSelectState.selectedKeys (some sites pass a fresh
+    // empty Set to the renderer while having just reassigned selectedKeys).
+    _applyBoxSelection(keys) {
+        this.renderer.setBoxSelection(keys);
+        this.multiSelectHandler?.update(this.boxSelectState.selectedKeys);
+    }
+
+    // Clears box/lasso/brush selection from the sidebar Clear button or any
+    // other programmatic caller. Keeps the tool active.
+    clearMultiSelection() {
+        this.boxSelectState.selectedKeys = new Set();
+        this._applyBoxSelection(new Set());
+        this.renderer.requestRedraw();
     }
 
     setupBlockManager() {
@@ -1850,7 +1869,7 @@ class Editor {
         }
     }
 
-    // Single click placement for signal/platform tools
+    // Single click placement for signal/platform/tunnel tools
     async handleSingleClickPlace(gridPos) {
         const existingTrack = this.cachedNetwork?.tracks?.find(
             t => t.x === gridPos.x && t.y === gridPos.y
@@ -1858,6 +1877,11 @@ class Editor {
 
         if (!existingTrack) {
             window.showToast(`Cannot place ${this.selectedTool}: No track at this position`, 'error', 5000);
+            return;
+        }
+
+        if (this.selectedTool === 'tunnel') {
+            await this.handleTunnelClick(gridPos, existingTrack);
             return;
         }
 
@@ -2375,6 +2399,11 @@ class Editor {
                         <button class="edit-btn edit-block-btn" data-block-id="${track.block_section_id}">Edit</button>
                     </div>
                 </div>
+                ${block ? `
+                <div class="property-item-row">
+                    ${renderDirectionSegment('block', block, { idBase: 'prop-block-direction' })}
+                </div>
+                ` : ''}
                 `;
             })() : ''}
 
@@ -2501,6 +2530,37 @@ class Editor {
                 this.showBlockEditor(track.block_section_id);
             };
         }
+
+        // Allowed-travel-direction segment, shown only for a block selection.
+        // Per docs/DESIGN_LANGUAGE.md §3 segmented control and design_new.md
+        // `Block.allowed_travel_directions` canonical home. Auto-routing obeys
+        // this; an operator override (manual_override) bypasses it.
+        const blockId = track.block_section_id;
+        bindDirectionSegment('prop-block-direction', async (_state, payload) => {
+            try {
+                const result = await this.api.updateBlock(blockId, payload);
+                if (result && result.error) {
+                    window.showToast(
+                        `Cannot change travel direction: ${result.error}`,
+                        'error',
+                        4000
+                    );
+                    // Re-render to roll the active class back to the server's value.
+                    this.updatePropertiesPanel(this.selectedElement);
+                } else {
+                    window.showToast(`Block ${blockId} travel direction updated`, 'info', 1500);
+                    await window.app.refreshNetwork();
+                }
+            } catch (err) {
+                console.error('Failed to update block travel direction:', err);
+                window.showToast(
+                    `Cannot change travel direction: ${err.message || err}`,
+                    'error',
+                    4000
+                );
+                this.updatePropertiesPanel(this.selectedElement);
+            }
+        });
     }
 
     // Initialize switch edit button handler
@@ -2731,5 +2791,52 @@ class Editor {
 
     async showRoutesPanel() {
         return this.routeHandler.showRoutesPanel();
+    }
+
+    // === Tunnel Tool ===
+
+    async handleTunnelClick(gridPos, existingTrack) {
+        const deadEndPorts = Array.isArray(existingTrack.dead_end_ports)
+            ? existingTrack.dead_end_ports.map(p => String(p).toUpperCase())
+            : [];
+        if (deadEndPorts.length === 0) {
+            window.showToast(
+                'Tunnel: clicked tile has no dead-end edge. Tunnels can only pair dead-ends.',
+                'error',
+                5000
+            );
+            return;
+        }
+
+        // v1 picks the first dead-end edge if multiple exist on the same tile.
+        // Sorted so the choice is deterministic and obvious.
+        const edge = deadEndPorts.slice().sort()[0];
+        const endpoint = { x: gridPos.x, y: gridPos.y, edge };
+
+        if (!this._pendingTunnelEndpoint) {
+            this._pendingTunnelEndpoint = endpoint;
+            this.renderer.setPendingTunnelEndpoint(endpoint);
+            window.showToast(
+                `Tunnel: first endpoint (${endpoint.x}, ${endpoint.y}).${endpoint.edge} selected. Click another dead-end to pair.`,
+                'info',
+                4000
+            );
+            return;
+        }
+
+        const first = this._pendingTunnelEndpoint;
+        this._pendingTunnelEndpoint = null;
+        this.renderer.setPendingTunnelEndpoint(null);
+        try {
+            await this.api.createTunnel(first, endpoint);
+            window.showToast(
+                `Tunnel created: (${first.x}, ${first.y}).${first.edge} ↔ (${endpoint.x}, ${endpoint.y}).${endpoint.edge}`,
+                'success',
+                4000
+            );
+            await this.refreshAndSelect(null);
+        } catch (err) {
+            window.showToast(`Failed to create tunnel: ${err.message}`, 'error', 6000);
+        }
     }
 }

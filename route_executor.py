@@ -38,6 +38,7 @@ from runtime_payloads import (
     ErrorRecord,
     FatalConflictKind,
     FatalPhysicalEntryConflict,
+    PathAcquisitionFailureKind,
     PendingPathCancelRequest,
     ResolvedRouteTarget,
     ResourceEvent,
@@ -1303,6 +1304,34 @@ class RouteExecutor:
             success = False
 
         if not success:
+            # Auto-recover from extend_path's INVALID_REVERSE: the new
+            # destination needs the train to turn around at the current
+            # authority-end, which extend_path cannot grant. Latch a
+            # cancellation so Phase 3 tears the stale path down once the train
+            # stops; the next eligible Phase 1 will see no active path and
+            # acquire via create_path from the train's current span instead.
+            # Per design_new.md latch-table rules this is the same pattern
+            # Phase 1 uses for any "live path must be replaced" condition:
+            # write the latch, stop planning this tick, let Phase 3 commit.
+            fkind = getattr(result, "failure_kind", None)
+            if (
+                active_path_id is not None
+                and fkind == PathAcquisitionFailureKind.INVALID_REVERSE
+            ):
+                cancel_reason = (
+                    getattr(result, "reason", None)
+                    or "extend would reverse at authority end"
+                )
+                controller.route_hooks.phase_latches.set_path_cancel_request(
+                    initiator="auto_recreate_for_reverse",
+                    reason=(
+                        f"{cancel_reason}; auto-cancelling so the next "
+                        "acquisition uses create_path from the train's "
+                        "current span"
+                    ),
+                )
+                return False
+
             # Per design_new.md (fix #17): write last_error on failed
             # create_path/extend_path so operators can inspect the reason.
             now = self._now()

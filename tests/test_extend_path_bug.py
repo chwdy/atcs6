@@ -204,17 +204,6 @@ class TestExtendPathBug:
 
         The lookahead should reflect the extended path, not the old one.
         """
-        pytest.skip(
-            "Separate dispatcher bug: pathfinder/`_segment_to_resource_sequence` "
-            "ends each segment at the destination block's entry tile, so the "
-            "Path.resource_sequence is missing intermediate-block bridge tiles "
-            "and the destination block's tail tiles. After A1 the resource_sequence "
-            "now grows on extend, but the per-block tile coverage is still gappy, "
-            "so controller.get_lookahead() doesn't see the extended blocks. "
-            "Fixing this requires pathfinder semantics work (extend through the "
-            "destination block's full ordered_tiles in the path's traversal "
-            "direction). Tracked as a follow-up to A1."
-        )
         dispatcher = PathDispatcher(simple_network)
         executor = RouteExecutor(simple_network, dispatcher)
 

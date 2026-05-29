@@ -41,7 +41,6 @@ from enums import (
     SwitchState,
     TrainState,
     direction_from_delta,
-    DIRECTION_OFFSETS,
     OPPOSITE_DIRECTIONS,
 )
 from track import OPPOSITE_EDGE
@@ -72,9 +71,6 @@ if TYPE_CHECKING:
     from block import Block
     from track import TrackSegment
 
-
-# Edge offsets for navigation
-EDGE_OFFSETS = DIRECTION_OFFSETS
 
 
 class PathDispatcher:
@@ -276,6 +272,77 @@ class PathDispatcher:
             return True
         return seg_exit in valid_exits
 
+    def _segment_would_revisit_resources(
+        self,
+        segment: PathSegment,
+        existing_blocks: Set[str],
+        existing_switches: Set[str],
+    ) -> bool:
+        """True iff the ordered tile walk over ``segment`` would land on a
+        block or switch already in ``existing_blocks`` / ``existing_switches``,
+        or on a block / switch already visited earlier in the same walk.
+
+        Per design_new.md "Path extension" (lines 1040-1041, 1083): a path's
+        ``resource_sequence`` must not contain the same block or switch
+        twice; ``extend_path`` must reject any extension that would cause a
+        resource to appear twice in the combined path, and ``create_path``
+        must reject candidates with internal repeats.
+
+        The first encountered block run in ``segment`` is treated as the
+        seam (its block_id is recorded in ``seen_blocks`` and skipped for
+        the overlap-against-``existing_blocks`` check; this matches the
+        translator's ``skip_first_block=True`` behaviour for ``extend_path``
+        and is harmless for ``create_path`` because ``existing_blocks`` is
+        empty there). All later block runs and every switch tile are
+        checked against both sets.
+
+        ``find_ordered_walk`` dedupes the candidate's ``blocks`` list but
+        leaves ``path_tiles`` free to traverse a block twice via non-
+        contiguous runs (its ``visited`` set is keyed on
+        ``(x, y, exit_edge, frozenset(blocks))`` so re-entering with a
+        grown blocks set is treated as a fresh state). The translator at
+        ``_segment_to_resource_sequence`` walks tiles and emits one
+        resource entry per contiguous same-block run, which is what
+        produces the duplicate ``resource_sequence`` entries seen in the
+        bug. Walking ``segment.tiles`` here catches that case.
+        """
+        seen_blocks: Set[str] = set()
+        seen_switches: Set[str] = set()
+        prev_block_id: Optional[str] = None
+        is_first_block_run = True
+        for tile in segment.tiles:
+            track = self.network.get_track(*tile)
+            if track is None:
+                continue
+            if getattr(track, "is_switch", False):
+                switch_entity = self._resolve_switch_at_position(tile)
+                switch_id = (
+                    getattr(switch_entity, "switch_id", None)
+                    or getattr(track, "switch_id", None)
+                )
+                if not switch_id:
+                    continue
+                if switch_id in existing_switches or switch_id in seen_switches:
+                    return True
+                seen_switches.add(switch_id)
+                # Switch interrupts any in-progress block run.
+                prev_block_id = None
+                continue
+            block_id = getattr(track, "block_section_id", None)
+            if not block_id:
+                continue
+            if block_id == prev_block_id:
+                continue  # still inside the same contiguous tile run
+            prev_block_id = block_id
+            if is_first_block_run:
+                is_first_block_run = False
+                seen_blocks.add(block_id)
+                continue
+            if block_id in existing_blocks or block_id in seen_blocks:
+                return True
+            seen_blocks.add(block_id)
+        return False
+
     # ========================================================================
     # Endpoint Discovery
     # ========================================================================
@@ -335,14 +402,12 @@ class PathDispatcher:
                 visited.add(state)
                 if len(visited) > 1000:
                     break
-                offset = EDGE_OFFSETS.get(curr_exit)
-                if not offset:
-                    continue
-                dx, dy = offset
-                next_x, next_y = curr_x + dx, curr_y + dy
-                next_track = self.network.get_track(next_x, next_y)
+                next_track = self.network.get_neighbor(
+                    curr_x, curr_y, curr_exit
+                )
                 if not next_track:
                     continue
+                next_x, next_y = next_track.x, next_track.y
                 next_block_id = next_track.block_section_id
                 if next_block_id and next_block_id not in existing_blocks:
                     reachable_blocks.add(next_block_id)
@@ -631,7 +696,10 @@ class PathDispatcher:
                 reason=f"Cannot resolve current block for train {train_id}",
             )
 
-        # Find geometry candidates.
+        # Find geometry candidates (shortest first). Direction is enforced
+        # downstream during acquisition; it is intentionally not passed as a
+        # walk-search filter here because the terminal-direction check is not
+        # tunnel-aware (a tunnel hop has no meaningful tile delta to classify).
         candidates = self.find_paths(
             start_block_id_resolved,
             requested_destination_block_id,
@@ -647,10 +715,50 @@ class PathDispatcher:
                 reason="No path exists between start and destination",
             )
 
+        # Reject candidates with internal repeats — a single path's
+        # resource_sequence must not contain the same block or switch
+        # twice. Per design_new.md "Path extension" line 1083 the same
+        # rule applies to create_path() and extend_path(). At create_path
+        # time there is no existing path to overlap against; we only
+        # catch tile-walks whose post-seam path re-enters an earlier block
+        # within the same candidate (find_ordered_walk dedupes the blocks
+        # list but allows revisits in path_tiles when the visited-key's
+        # `frozenset(blocks)` differs).
+        empty_set: Set[str] = set()
+        non_revisit_candidates = [
+            seg for seg in candidates
+            if not self._segment_would_revisit_resources(
+                seg, empty_set, empty_set
+            )
+        ]
+        if not non_revisit_candidates:
+            return PathAcquisitionResult(
+                success=False,
+                failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=requested_destination_direction,
+                reason=(
+                    "all forward candidates contain repeated resources "
+                    "(internal loop)"
+                ),
+            )
+        candidates = non_revisit_candidates
+
+        # design_new.md:931 / :940 — dispatcher selects EXACTLY ONE candidate
+        # (the shortest walk per the GraphWalkCandidate comparison) and applies
+        # acquisition_mode to that one candidate. It must NOT fall through to a
+        # second, longer candidate when the chosen one cannot be acquired or
+        # truncated; choosing a different route to the same resolved target is
+        # forbidden here (RouteExecutor owns trying a different resolved target
+        # later). Committing to the single best candidate is what makes a train
+        # wait at a contested switch instead of taking a map-long detour around
+        # it.
+        candidates = candidates[:1]
+
         path_id = self._generate_path_id(train_id, requested_destination_block_id)
         now = self._now()
 
-        # Try each candidate (shortest first).
+        # Apply acquisition_mode to the single chosen candidate.
         last_failed_resource_id: Optional[str] = None
         last_reason: str = ""
         had_structural_failure = False
@@ -881,7 +989,10 @@ class PathDispatcher:
                 reason="path has no train",
             )
 
-        # Find extension geometry from current authority end.
+        # Find extension geometry from current authority end (shortest first).
+        # As in create_path, direction is enforced downstream during
+        # acquisition, not as a walk-search filter (the terminal-direction
+        # check is not tunnel-aware).
         start_block_id = path.get_authority_end_block_id()
         candidates = self.find_paths(
             start_block_id,
@@ -922,6 +1033,50 @@ class PathDispatcher:
                 reason="extend would reverse at authority end",
             )
         candidates = forward_candidates
+
+        # Reject candidates whose tile walk would cause any block or switch
+        # to appear twice in the combined (existing path + appended segment)
+        # resource_sequence, per design_new.md "Path extension" lines
+        # 1040-1041, 1083 ("repeated resources in a single path are invalid
+        # and should be rejected during both create_path() and extend_path()").
+        # Without this, find_ordered_walk can return a candidate whose
+        # post-seam tile path re-enters the path's start block via the
+        # south tunnel (or any other connection that loops the network),
+        # BEST_EFFORT truncates that loop into a closed prefix, and
+        # extend_path appends one full loop to the path every Phase-1 tick.
+        existing_path_blocks = set(path.get_all_blocks())
+        existing_path_switches = {
+            e.resource_id for e in path.resource_sequence
+            if e.resource_type == "switch"
+        }
+        non_revisit_candidates = [
+            seg for seg in candidates
+            if not self._segment_would_revisit_resources(
+                seg, existing_path_blocks, existing_path_switches
+            )
+        ]
+        if not non_revisit_candidates:
+            return PathAcquisitionResult(
+                success=False,
+                failure_kind=PathAcquisitionFailureKind.NO_VIABLE_PATH,
+                path_id=path_id,
+                requested_destination_block_id=requested_destination_block_id,
+                requested_destination_direction=requested_destination_direction,
+                authority_end_block_id=path.get_authority_end_block_id() or None,
+                reason=(
+                    "all forward candidates would revisit a resource already "
+                    "in the path"
+                ),
+            )
+        candidates = non_revisit_candidates
+
+        # design_new.md:931 / :940 / :1045 — like create_path, extend commits to
+        # EXACTLY ONE candidate (the shortest forward-continuing extension) and
+        # never falls through to a longer alternative route to the same target.
+        # When that one extension is blocked the tail returns BLOCKED_NO_GROWTH
+        # so RouteExecutor keeps retrying the same path_id (train waits) rather
+        # than the dispatcher detouring it.
+        candidates = candidates[:1]
 
         now = self._now()
         last_reason = ""
@@ -1138,7 +1293,11 @@ class PathDispatcher:
         now = self._now()
 
         # Release block reservations + switch locks via the ResourceCoordinator.
-        all_blocks = path.get_all_blocks()
+        # Only the path's still-held future reservations are released; blocks
+        # already consumed at head-entry are not part of the future set (see
+        # `_blocks_still_reserved_by`). Switch locks are released for the whole
+        # path inside `release_path_resources`, independent of this list.
+        all_blocks = self._blocks_still_reserved_by(path.get_all_blocks(), path_id)
         coordinator = getattr(self.network, "resource_coordinator", None)
         if coordinator is not None:
             coordinator.release_path_resources(
@@ -1334,9 +1493,39 @@ class PathDispatcher:
         occupied = getattr(position, "occupied_blocks", None) or []
         return block_id in occupied
 
+    def _blocks_still_reserved_by(
+        self, block_ids: List[str], path_id: str
+    ) -> List[str]:
+        """Subset of `block_ids` whose future reservation `path_id` still holds.
+
+        Per design_new.md:781, `release_path_block_reservations(...)` is meant
+        to release a path's *not-yet-entered* reservation set, and it emits the
+        "not reserved for <path_id>" diagnostic for any block whose
+        `reserved_by_path` no longer matches. A block leaves the path's future
+        set in two normal ways: a transactionally-failed segment acquire never
+        took ownership of it (`reserve_blocks_for_path` commits all-or-nothing;
+        `reserve_segment` rolls back its own switch locks on block failure), and
+        head-entry consumes the reservation as the train physically enters
+        (`reserved_by_path` cleared). Handing those blocks to the release call
+        anyway just fires the diagnostic — every Phase-1 tick for a BEST_EFFORT
+        path that keeps retrying `extend_path(...)`, and once per block at
+        completion/cancellation. Filtering here keeps the diagnostic meaningful
+        for genuine cross-path mismatches while removing the routine churn.
+        """
+        return [
+            bid
+            for bid in block_ids
+            if getattr(self.network.blocks.get(bid), "reserved_by_path", None)
+            == path_id
+        ]
+
     def _rollback_segment(self, segment: PathSegment, path_id: str) -> None:
         """Release any partial holds we may have placed on a segment via the
         ResourceCoordinator facade.
+
+        Only blocks this path still owns are handed to the coordinator (see
+        `_blocks_still_reserved_by`). Switch rollback is already scoped to
+        path-owned locks by `release_path_locks_for_switches(...)`.
         """
         coordinator = getattr(self.network, "resource_coordinator", None)
         if coordinator is None:
@@ -1348,7 +1537,7 @@ class PathDispatcher:
                 continue
             switch_ids.append(switch_entity.switch_id)
         coordinator.rollback_segment(
-            block_ids=list(segment.blocks),
+            block_ids=self._blocks_still_reserved_by(segment.blocks, path_id),
             switch_ids=switch_ids,
             path_id=path_id,
         )
@@ -2022,8 +2211,12 @@ class PathDispatcher:
             )
 
         # Release reservations + switch locks via the ResourceCoordinator
-        # (completed=True).
-        all_blocks = path.get_all_blocks()
+        # (completed=True). Only the path's still-held future reservations are
+        # released; blocks already consumed at head-entry are not part of the
+        # future set (see `_blocks_still_reserved_by`). The completed=True
+        # caution force-clear only applies to still-owned blocks, so this
+        # filtering does not drop any caution clearing.
+        all_blocks = self._blocks_still_reserved_by(path.get_all_blocks(), path_id)
         coordinator = getattr(self.network, "resource_coordinator", None)
         if coordinator is not None:
             coordinator.release_path_resources(

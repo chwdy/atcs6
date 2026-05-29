@@ -1,4 +1,4 @@
-"""Scene that bootstraps the `demo_3_best_effort` demo (Four-Station NE-Zigzag
+"""Scene that bootstraps the `demo_4` demo (Four-Station NE-Zigzag
 Double-Track Loop, BEST_EFFORT acquisition) and exposes T1 as the primary
 train for the JourneyHarness.
 
@@ -26,17 +26,17 @@ from bootstrap import bootstrap_runtime
 from .base import SceneFixture
 
 
-class Demo3BestEffortScene:
-    """Scene factory: build the demo_3_best_effort network and expose T1."""
+class Demo4Scene:
+    """Scene factory: build the demo_4 network and expose T1."""
 
     train_id: str = "T1"
 
     def build(self) -> SceneFixture:
-        # Suppress demo_3_best_effort's print spam.
+        # Suppress demo_4's print spam.
         with contextlib.redirect_stdout(io.StringIO()):
             network, _path_dispatcher, sim_controller, _persistence = (
                 bootstrap_runtime(
-                    demo=True, setup_train=True, scene="demo_3_best_effort"
+                    demo=True, setup_train=True, scene="demo_4"
                 )
             )
 

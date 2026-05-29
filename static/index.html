@@ -46,6 +46,16 @@
             </div>
         </header>
 
+        <div id="fatal-banner" class="fatal-banner" hidden role="alert" aria-live="assertive">
+            <span class="fatal-banner-icon" aria-hidden="true">⛔</span>
+            <div class="fatal-banner-body">
+                <div class="fatal-banner-title">Simulation halted — fatal track conflict</div>
+                <div class="fatal-banner-detail" id="fatal-banner-detail"></div>
+                <div class="fatal-banner-meta" id="fatal-banner-meta"></div>
+            </div>
+            <button id="btn-clear-fatal" class="btn fatal-banner-btn" type="button">Clear &amp; Resume</button>
+        </div>
+
         <div class="app-body">
             <aside class="sidebar">
                 <div class="sidebar-tools-section" id="tools-panel">
@@ -79,6 +89,9 @@
                             </button>
                             <button class="tool-btn" data-tool="signal" title="Signal">
                                 <i class="ti ti-traffic-lights tool-icon"></i> Signal
+                            </button>
+                            <button class="tool-btn" data-tool="tunnel" title="Tunnel — click two dead-end edges to pair them">
+                                <i class="ti ti-arrows-join tool-icon"></i> Tunnel
                             </button>
                             <button class="tool-btn" data-tool="eraser" title="Eraser">
                                 <i class="ti ti-eraser tool-icon"></i> Eraser
@@ -189,6 +202,11 @@
                         <p class="properties-empty">Select an element to view properties</p>
                     </div>
 
+                    <div class="sidebar-section multi-select-panel" id="multi-select-panel" hidden>
+                        <h3>Selection</h3>
+                        <p class="properties-empty">No tiles selected</p>
+                    </div>
+
                     <div class="sidebar-section debug-panel collapsible-sidebar-section collapsed" id="debug-panel" data-section="debug">
                         <button class="sidebar-section-toggle" type="button" aria-expanded="false" aria-controls="debug-panel-body">
                             <h3>Debug Info</h3>
@@ -224,6 +242,11 @@
                                     <input type="checkbox" id="debug-show-signals" class="checkbox-input" />
                                     <span class="checkbox-custom"></span>
                                     <span class="checkbox-label">Signals</span>
+                                </label>
+                                <label class="checkbox-wrapper" title="Draw a dotted line between paired tunnel mouths">
+                                    <input type="checkbox" id="debug-show-tunnel-links" class="checkbox-input" />
+                                    <span class="checkbox-custom"></span>
+                                    <span class="checkbox-label">Tunnel links</span>
                                 </label>
 
                                 <label class="checkbox-wrapper" title="Show Train Position Details">
@@ -473,7 +496,7 @@
     </div>
 
     <script src="js/constants.js?v=15"></script>
-    <script src="js/api.js?v=17"></script>
+    <script src="js/api.js?v=18"></script>
     <script src="js/state-manager.js?v=15"></script>
     <script src="js/helpers.js?v=17"></script>
     <script src="js/pathfinders.js?v=15"></script>
@@ -487,7 +510,8 @@
     <script src="js/renderer-debug.js?v=15"></script>
     <script src="js/renderer-routes.js?v=15"></script>
     <script src="js/renderer-trains.js?v=15"></script>
-    <script src="js/renderer.js?v=15"></script>
+    <script src="js/renderer-tunnels.js?v=2"></script>
+    <script src="js/renderer.js?v=17"></script>
     <script src="js/editor-blocks.js?v=15"></script>
     <script src="js/editor-stations.js?v=15"></script>
     <script src="js/editor-signals.js?v=15"></script>
@@ -497,10 +521,11 @@
     <script src="js/editor-routes.js?v=18"></script>
     <script src="js/editor-route-runs.js?v=3"></script>
     <script src="js/editor-ui.js?v=15"></script>
-    <script src="js/editor.js?v=17"></script>
+    <script src="js/editor-multi-select.js?v=4"></script>
+    <script src="js/editor.js?v=18"></script>
     <script src="js/train-monitor.js?v=20"></script>
 
-    <script src="js/app.js?v=15"></script>
+    <script src="js/app.js?v=16"></script>
     <script src="js/inspector.js?v=1" defer></script>
 </body>
 </html>

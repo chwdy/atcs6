@@ -159,6 +159,8 @@ class BlockEditorHandler {
 
                     ${renderAvailabilitySegment('block', block, { idBase: 'block-availability' })}
 
+                    ${renderDirectionSegment('block', block, { idBase: 'block-direction' })}
+
                     <div class="flex gap-8">
                         <button id="save-block-btn" class="btn btn-primary btn-sm flex-1">💾 Save</button>
                         <button id="delete-block-btn" class="btn btn-danger btn-sm flex-1">🗑 Delete</button>
@@ -206,6 +208,36 @@ class BlockEditorHandler {
                 console.error('Failed to update block availability:', err);
                 window.showToast(
                     `Cannot change availability: ${err.message || err}`,
+                    'error',
+                    4000
+                );
+                this.showEditor(blockId);
+            }
+        });
+
+        // Allowed-travel-direction segment (forward / reverse / both). Per
+        // docs/DESIGN_LANGUAGE.md §3 segmented control and design_new.md
+        // `Block.allowed_travel_directions` canonical home. Auto-routing
+        // obeys this; an operator override (manual_override) bypasses it.
+        bindDirectionSegment('block-direction', async (_state, payload) => {
+            try {
+                const result = await this.api.updateBlock(blockId, payload);
+                if (result && result.error) {
+                    window.showToast(
+                        `Cannot change travel direction: ${result.error}`,
+                        'error',
+                        4000
+                    );
+                    // Re-render to roll the active class back to the server's value.
+                    this.showEditor(blockId);
+                } else {
+                    window.showToast(`Block ${blockId} travel direction updated`, 'info', 1500);
+                    await window.app.refreshNetwork();
+                }
+            } catch (err) {
+                console.error('Failed to update block travel direction:', err);
+                window.showToast(
+                    `Cannot change travel direction: ${err.message || err}`,
                     'error',
                     4000
                 );

@@ -340,20 +340,17 @@ class RouteRunEditorHandler {
                     <span class="rr-section-count">${Object.keys(overrides).length}</span>
                 </h4>
                 <div class="text-xxs text-muted mb-8">
-                    Overrides win over the shared route until cleared. Each Save below applies one field.
+                    Overrides win over the shared route until cleared. Changes apply immediately.
                 </div>
 
-                <div class="route-header-row">
+                <div class="route-header-row run-overrides-grid">
                     <div class="route-header-col">
                         <label class="property-label">Acquisition</label>
                         ${seg('rr-acq-seg', [
                             { value: 'best_effort', label: 'Best effort' },
                             { value: 'all_or_nothing', label: 'All or nothing' },
                         ], acqEff)}
-                        <div class="flex gap-8 mt-4">
-                            <button id="rr-acq-save-btn" class="btn btn-xs btn-primary">Save override</button>
-                            ${has('acquisition_mode') ? resetBtn('acquisition_mode') : ''}
-                        </div>
+                        ${has('acquisition_mode') ? resetBtn('acquisition_mode') : ''}
                     </div>
                     <div class="route-header-col">
                         <label class="property-label">On waypoint unreachable</label>
@@ -361,19 +358,13 @@ class RouteRunEditorHandler {
                             { value: 'WAIT', label: 'Wait' },
                             { value: 'SKIP', label: 'Skip' },
                         ], actEff)}
-                        <div class="flex gap-8 mt-4">
-                            <button id="rr-action-save-btn" class="btn btn-xs btn-primary">Save override</button>
-                            ${has('action_on_waypoint_unreachable') ? resetBtn('action_on_waypoint_unreachable') : ''}
-                        </div>
+                        ${has('action_on_waypoint_unreachable') ? resetBtn('action_on_waypoint_unreachable') : ''}
                     </div>
                     <div class="route-header-col narrow">
                         <label class="property-label">Priority (0-9)</label>
                         <input type="number" id="rr-priority-input" class="property-input"
                                min="0" max="9" step="1" value="${priEff}">
-                        <div class="flex gap-8 mt-4">
-                            <button id="rr-priority-save-btn" class="btn btn-xs btn-primary">Save override</button>
-                            ${has('priority') ? resetBtn('priority') : ''}
-                        </div>
+                        ${has('priority') ? resetBtn('priority') : ''}
                     </div>
                 </div>
             </section>
@@ -494,80 +485,64 @@ class RouteRunEditorHandler {
         const refresh = document.getElementById('refresh-route-run-btn');
         if (refresh) refresh.onclick = () => this.showRouteRunEditor(this.currentRun.run_number);
 
-        // Per design_new.md "RouteRun overrides": three save buttons + per-row
-        // reset buttons wire to PATCH /api/route-runs/<run>/overrides and
-        // DELETE /api/route-runs/<run>/overrides/<field> respectively.
+        // Per-run overrides apply immediately on segment click / input change.
+        // PATCH /api/route-runs/<run>/overrides on edit; DELETE
+        // /api/route-runs/<run>/overrides/<field> on Reset.
         const runNumber = this.currentRun?.run_number;
         if (runNumber != null) {
-            ['rr-acq-seg', 'rr-action-seg'].forEach(segId => {
+            const saveOverride = async (field, value) => {
+                try {
+                    const result = await this.api.patchRouteRunOverrides(
+                        runNumber, { [field]: value }
+                    );
+                    if (result && result.error) {
+                        window.showToast(
+                            `Override rejected: ${result.error}`,
+                            'error',
+                            4000
+                        );
+                    } else {
+                        window.showToast(`Override saved: ${field}`, 'success', 2000);
+                        await this.showRouteRunEditor(runNumber);
+                    }
+                } catch (err) {
+                    window.showToast(
+                        `Override failed: ${err.message || err}`,
+                        'error',
+                        4000
+                    );
+                }
+            };
+
+            const segFields = {
+                'rr-acq-seg': 'acquisition_mode',
+                'rr-action-seg': 'action_on_waypoint_unreachable',
+            };
+            Object.entries(segFields).forEach(([segId, field]) => {
                 document.querySelectorAll(`#${segId} .switch-btn`).forEach(btn => {
                     btn.onclick = (e) => {
-                        const seg = e.currentTarget.parentElement;
+                        const target = e.currentTarget;
+                        if (target.classList.contains('active')) return;
+                        const seg = target.parentElement;
                         seg.querySelectorAll('.switch-btn').forEach(b =>
-                            b.classList.toggle('active', b === e.currentTarget));
+                            b.classList.toggle('active', b === target));
+                        saveOverride(field, target.dataset.value);
                     };
                 });
             });
 
-            const segValue = (segId) => {
-                const seg = document.getElementById(segId);
-                const active = seg?.querySelector('.switch-btn.active');
-                return active ? active.dataset.value : null;
-            };
-
-            // wireSave's getValue may return either a bare value or an
-            // object {kind, value, message} (priority uses the shared
-            // validatePriorityInput helper). Three terminating shapes:
-            //   - null / {kind:'empty'}    -> silent no-op (user didn't input)
-            //   - {kind:'error', message}  -> show toast, no API call
-            //   - non-null primitive       -> send to /api/route-runs/.../overrides
-            const wireSave = (btnId, field, getValue) => {
-                const btn = document.getElementById(btnId);
-                if (!btn) return;
-                btn.onclick = async () => {
-                    const raw = getValue();
-                    if (raw == null) return;
-                    let value = raw;
-                    if (typeof raw === 'object') {
-                        if (raw.kind === 'empty') return;
-                        if (raw.kind === 'error') {
-                            window.showToast(raw.message, 'error', 4000);
-                            return;
-                        }
-                        value = raw.value;
+            const priorityInput = document.getElementById('rr-priority-input');
+            if (priorityInput) {
+                priorityInput.onchange = () => {
+                    const raw = validatePriorityInput(priorityInput.value);
+                    if (raw == null || raw.kind === 'empty') return;
+                    if (raw.kind === 'error') {
+                        window.showToast(raw.message, 'error', 4000);
+                        return;
                     }
-                    try {
-                        const result = await this.api.patchRouteRunOverrides(
-                            runNumber, { [field]: value }
-                        );
-                        if (result && result.error) {
-                            window.showToast(
-                                `Override rejected: ${result.error}`,
-                                'error',
-                                4000
-                            );
-                        } else {
-                            window.showToast(`Override saved: ${field}`, 'success', 2000);
-                            await this.showRouteRunEditor(runNumber);
-                        }
-                    } catch (err) {
-                        window.showToast(
-                            `Override failed: ${err.message || err}`,
-                            'error',
-                            4000
-                        );
-                    }
+                    saveOverride('priority', raw.value);
                 };
-            };
-
-            wireSave('rr-acq-save-btn', 'acquisition_mode',
-                () => segValue('rr-acq-seg'));
-            wireSave('rr-action-save-btn', 'action_on_waypoint_unreachable',
-                () => segValue('rr-action-seg'));
-            wireSave('rr-priority-save-btn', 'priority', () => {
-                const raw = document.getElementById('rr-priority-input')?.value;
-                return validatePriorityInput(raw);
-            });
+            }
 
             document.querySelectorAll('.rr-override-reset-btn').forEach(btn => {
                 btn.onclick = async () => {
@@ -679,7 +654,14 @@ class RouteRunEditorHandler {
                 const next = await this.api.getRouteRun(runNumber);
                 if (next) {
                     this.currentRun = next;
-                    this.rerenderRunEditor();
+                    // Skip the innerHTML swap while the user is hovering the
+                    // editor — re-rendering destroys the hovered task row /
+                    // status dot and restarts the tooltip's 1s CSS animation,
+                    // producing a visible flicker. The next poll picks it up
+                    // once the cursor moves off.
+                    if (!this._isEditorHovered()) {
+                        this.rerenderRunEditor();
+                    }
                 }
             }
         } catch (err) {
@@ -701,6 +683,19 @@ class RouteRunEditorHandler {
     }
 
     // ---- helpers ----
+
+    /** True when the cursor is currently over the open run editor.
+     *  Used by `_pollOnce` to defer re-rendering so the hovered tooltip
+     *  doesn't get its CSS animation restarted by an innerHTML swap. */
+    _isEditorHovered() {
+        const el = document.querySelector('.rr-editor');
+        if (!el || typeof el.matches !== 'function') return false;
+        try {
+            return el.matches(':hover');
+        } catch (_) {
+            return false;
+        }
+    }
 
     _accentClass(displayState) {
         switch (displayState) {

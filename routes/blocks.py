@@ -222,6 +222,45 @@ def register(app, state: AppState) -> None:
             if "manual" in data:
                 block.manual = bool(data["manual"])
 
+            # Static block-level travel policy per design_new.md
+            # `Block.allowed_travel_directions` canonical home. Must be a
+            # non-empty subset of {"forward", "reverse"}. Unlike `disabled`,
+            # editing this has no occupancy/reservation precondition: per
+            # design_new.md the new policy does not invalidate any live path's
+            # reservations and only takes effect at the next reservation.
+            if "allowed_travel_directions" in data:
+                raw = data["allowed_travel_directions"]
+                if not isinstance(raw, (list, tuple, set)):
+                    return jsonify(
+                        {
+                            "error": (
+                                "allowed_travel_directions must be a list of "
+                                "'forward' / 'reverse'"
+                            )
+                        }
+                    ), 400
+                requested = {str(d) for d in raw}
+                unknown = requested - {"forward", "reverse"}
+                if unknown:
+                    return jsonify(
+                        {
+                            "error": (
+                                f"Unknown travel direction(s): {sorted(unknown)}. "
+                                "Allowed: forward, reverse"
+                            )
+                        }
+                    ), 400
+                if not requested:
+                    return jsonify(
+                        {
+                            "error": (
+                                "allowed_travel_directions must include at least "
+                                "one of 'forward' / 'reverse'"
+                            )
+                        }
+                    ), 400
+                block.allowed_travel_directions = requested
+
             return jsonify(block.to_dict())
 
     @app.route("/api/blocks/<block_id>", methods=["DELETE"])
