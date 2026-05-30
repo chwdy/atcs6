@@ -322,8 +322,8 @@ def test_route_deactivate_writes_latches_per_assigned_train():
 
 
 def test_route_deactivate_without_simulation_controller_just_pauses():
-    """Calling route.deactivate() with no simulation_controller flips the flag
-    only — backward-compatible legacy behavior."""
+    """Calling route.deactivate() on a route with no assigned trains flips
+    is_active to False — the no-assigned-trains no-op per design_new.md."""
     from train_route import Route, RouteMode
 
     route = Route(

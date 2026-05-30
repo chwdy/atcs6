@@ -27,7 +27,7 @@ import pytest
 from bootstrap import get_current_scene_id
 from tests.journey.events import Event, Invariant, Journey
 from tests.journey.harness import JourneyHarness
-from tests.journey.scenes.demo5_scene import Demo5Scene
+from tests.journey.scenes.demo_5_scene import Demo5Scene
 from tests.journey.triggers import at_tick
 
 

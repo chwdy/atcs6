@@ -84,31 +84,6 @@ def activate_path_for_train(dispatcher, path, train_id, block_id):
     return True
 
 
-def advance_path_to_block(dispatcher, path, entered_block_id):
-    """Simulate a train advancing to a new block along the path.
-
-    Replaces the removed PathDispatcher.on_train_advances() for test setup.
-    Manually updates path position and occupies the block.
-    """
-    if entered_block_id in path.block_sequence:
-        path.current_block_index = path.block_sequence.index(entered_block_id)
-
-    network = dispatcher.network
-    if network.block_manager:
-        network.block_manager.occupy_block(entered_block_id, path.train_id)
-    else:
-        block = network.blocks.get(entered_block_id)
-        if block:
-            block.occupy(path.train_id)
-
-    dispatcher._release_blocks_behind_train(path)
-
-    if entered_block_id == path.block_sequence[-1]:
-        path.status = PathStatus.CLEARING
-
-    return True
-
-
 # ============================================================================
 # Fixtures
 # ============================================================================

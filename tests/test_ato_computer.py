@@ -1,4 +1,4 @@
-"""Unit tests for `ato_navigator` pure helpers (sample / notch / rate-limit).
+"""Unit tests for `ATOComputer` pure helpers (sample / notch / rate-limit).
 
 These cover the static helpers that don't need a controller back-reference.
 End-to-end ATO behaviour (`ATOComputer.compute_handle`) is exercised by
