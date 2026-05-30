@@ -56,7 +56,6 @@ class TestCabSwitchEndPositionsBugFix:
         network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
-        controller.power_on = True
 
         return train, controller
 
@@ -158,7 +157,6 @@ class TestCabSwitchEntryEdgeFlipBugFix:
         network.place_train(train, head_x, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
-        controller.power_on = True
         return train, controller
 
     def _expected_reverse_entry_edge(self, network, tile, entry_edge: str) -> str:
@@ -257,7 +255,6 @@ class TestSetCabDoubleFlipBugFix:
         network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
-        controller.power_on = True
         controller.commands.set_cab("A")
 
         assert train.facing_direction == Direction.EAST
@@ -279,7 +276,6 @@ class TestSetCabDoubleFlipBugFix:
         network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
-        controller.power_on = True
         controller.commands.set_cab("A")
 
         assert train.facing_direction == Direction.EAST
@@ -411,7 +407,6 @@ class TestSetCabDoubleFlipBugFix:
         network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
-        controller.power_on = True
 
         # active_cab is None initially
         assert controller.commands.cab is None

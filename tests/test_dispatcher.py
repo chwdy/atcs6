@@ -1161,7 +1161,6 @@ class TestATODirectionDetection:
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
         controller.commands.cab = "A"
-        controller.power_on = True
 
         # Path goes EAST, train faces EAST -> same direction
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)], end_block_id="BLK_EAST")
@@ -1178,7 +1177,6 @@ class TestATODirectionDetection:
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
         controller.commands.cab = "A"
-        controller.power_on = True
 
         # Path goes WEST, train faces EAST -> opposite
         self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)], end_block_id="BLK_WEST")
@@ -1195,7 +1193,6 @@ class TestATODirectionDetection:
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
         controller.commands.cab = "B"
-        controller.power_on = True
 
         # Path goes EAST, train faces WEST (cab B) -> opposite
         self._attach_live_path(controller, train, [(4, 0), (5, 0)], end_block_id="BLK_EAST")
@@ -1214,7 +1211,6 @@ class TestATODirectionDetection:
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
         controller.commands.cab = "A"
-        controller.power_on = True
 
         # Path goes NORTH, train faces EAST -> 90 degrees
         self._attach_live_path(controller, train, [(2, 0), (2, 1)], end_block_id="BLK_EAST")
@@ -1289,7 +1285,6 @@ class TestATODirectionDetection:
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
         controller.commands.cab = "A"
-        controller.power_on = True
 
         # Return path goes south through diagonal: (1,4) -> (1,3) -> (0,3) -> (0,2) -> (0,1)
         # Tile-coord direction from (1,4) -> (1,3) is dy=-1 = SOUTH
@@ -1318,7 +1313,6 @@ class TestATODirectionDetection:
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
         controller.commands.cab = "A"
-        controller.power_on = True
 
         # Return path: (1,4) -> (1,3) = SOUTH
         self._attach_live_path(controller, train, [(1, 4), (1, 3), (0, 3)], "test_return", end_block_id="BLK_SOUTH")
@@ -1368,7 +1362,6 @@ class TestATODirectionDetection:
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
         controller.commands.cab = "A"
-        controller.power_on = True
 
         # Path: (2, 0) -> (10, 0) (tunnel hop) -> (11, 0) -> (12, 0).
         # Note (2,0)->(10,0) has dx=8, dy=0 — not grid-adjacent, but
@@ -1454,7 +1447,6 @@ class TestATODirectionDetection:
         sim = SimulationController(network, PathDispatcher(network))
         controller = sim._get_or_create_controller(train)
         controller.commands.cab = "A"
-        controller.power_on = True
 
         self._attach_live_path(controller, train, [(0, 4), (0, 3), (0, 2)], end_block_id="BLK_SOUTH")
 

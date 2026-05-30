@@ -28,7 +28,6 @@ from train_controller.atc import (
     ATC_NO_BLOCK_FALLBACK_CM,
     CAUTION_SPEED_LIMIT_KMH,
     PLATFORM_SAFETY_MARGIN_CM,
-    YELLOW_SIGNAL_SPEED_KMH,
     clearance_ahead_pure,
     effective_safety_margin_pure,
     is_approaching_yellow_signal_pure,
@@ -169,7 +168,6 @@ def test_speed_limit_no_authority_short_circuits():
         decel_rate_kmh_s=15.0,
         safety_margin_cm=25.0,
         caution_ahead=False,
-        yellow_signal_ahead=False,
         block_limit_kmh=float("inf"),
         train_max_speed_kmh=100.0,
         calculate_max_safe_speed=lambda c, d, s: 100.0,
@@ -186,7 +184,6 @@ def test_speed_limit_plain_kinematic_far_clearance():
         decel_rate_kmh_s=15.0,
         safety_margin_cm=25.0,
         caution_ahead=False,
-        yellow_signal_ahead=False,
         block_limit_kmh=float("inf"),
         train_max_speed_kmh=100.0,
         calculate_max_safe_speed=lambda c, d, s: 60.0,
@@ -203,7 +200,6 @@ def test_speed_limit_braking_zone_reason():
         decel_rate_kmh_s=15.0,
         safety_margin_cm=25.0,
         caution_ahead=False,
-        yellow_signal_ahead=False,
         block_limit_kmh=float("inf"),
         train_max_speed_kmh=100.0,
         calculate_max_safe_speed=lambda c, d, s: 20.0,
@@ -220,30 +216,12 @@ def test_speed_limit_caution_cap_layered():
         decel_rate_kmh_s=15.0,
         safety_margin_cm=25.0,
         caution_ahead=True,
-        yellow_signal_ahead=False,
         block_limit_kmh=float("inf"),
         train_max_speed_kmh=100.0,
         calculate_max_safe_speed=lambda c, d, s: 100.0,
     )
     assert speed == CAUTION_SPEED_LIMIT_KMH
     assert reason == "CAUTION block ahead"
-
-
-def test_speed_limit_yellow_cap_layered():
-    """Yellow-signal cap overrides kinematic when kinematic > 40 km/h."""
-    speed, reason = speed_limit_pure(
-        received_path_plan_exists=True,
-        clearance_cm=10000.0,
-        decel_rate_kmh_s=15.0,
-        safety_margin_cm=25.0,
-        caution_ahead=False,
-        yellow_signal_ahead=True,
-        block_limit_kmh=float("inf"),
-        train_max_speed_kmh=100.0,
-        calculate_max_safe_speed=lambda c, d, s: 100.0,
-    )
-    assert speed == YELLOW_SIGNAL_SPEED_KMH
-    assert reason == "Yellow signal ahead"
 
 
 def test_speed_limit_block_cap_dominant():
@@ -254,7 +232,6 @@ def test_speed_limit_block_cap_dominant():
         decel_rate_kmh_s=15.0,
         safety_margin_cm=25.0,
         caution_ahead=False,
-        yellow_signal_ahead=False,
         block_limit_kmh=20.0,  # Below kinematic 100
         train_max_speed_kmh=100.0,
         calculate_max_safe_speed=lambda c, d, s: 100.0,

@@ -350,13 +350,17 @@ Reference: `.tc-eb-btn` in
 
 ### Segmented control
 
-A row of mutually-exclusive buttons inside a single `var(--bg-dark)` container with a 1px outer border, **no internal dividers**. Buttons inside are flat ghosts — the active accent tint and hover bg-tint give every cell its own legible state without needing vertical hairlines. Active button: `color: var(--accent-hover)`, `background-color: rgba(130, 87, 229, 0.18)`. Hover: same accent color, `var(--bg-hover)` background. The container's outline does the grouping.
+A row of mutually-exclusive buttons inside a single `var(--bg-dark)` container with a 1px outer border, **no internal dividers**. Buttons inside are flat ghosts — the active accent tint and hover bg-tint give every cell its own legible state without needing vertical hairlines. Active button: `color: var(--accent-hover)`, `background-color: rgba(130, 87, 229, 0.18)`. Hover: same accent color, `var(--bg-hover)` background. The container's outline does the grouping. For when to reach for this over a select, tab strip, or checkbox, see §4 "Choosing a selection control."
+
+**Equal-width by default; `fluid` for long labels.** By default each cell takes an equal share of the row. That breaks when the labels differ in length — `Available | Manual | Disabled` forced into thirds clips the longest word to `Disable…`. When a small fixed set has labels too long for equal cells, add a `fluid` modifier: each cell sizes to its own label and the row wraps to a second line rather than clipping. The set is still small and fixed, so it stays a segment (§4) — `fluid` changes only how the labels fit, not the control. Reach for it whenever a label would otherwise be cut off; don't pre-shrink to a cryptic abbreviation to keep one row, and don't drop to a select just because a label is long.
 
 ### Tab strip
 
 A row of mutually-exclusive labels that switches the body content below.
 Use this for **content switching** (panes); use the segmented control for
-switching a setting inside a single pane.
+switching a setting inside a single pane. The full chooser decision — tab
+strip vs segment vs select vs checkbox — lives in §4 "Choosing a selection
+control."
 
 - **Container** — a flex row with `padding: 0 8px`, `gap: 2px`, and `border-bottom: 1px solid var(--border-color)`. That bottom rule is the divider between the strip and the content beneath; it's the only border in the strip. Keep the horizontal padding tight (8px) so tabs sit near the strip's left edge rather than floating inset.
 - **Tabs** — no border, no fill by default. 11px Inter, `--text-secondary`, `padding: 6px 6px`. Padding is deliberately tight: a tab is text + a click target, not a button — let the words speak.
@@ -373,6 +377,102 @@ Reserve filled `var(--accent-color)` buttons for top-level page CTAs, not panel 
 ---
 
 ## 4. Form controls in panels
+
+### Choosing a selection control
+
+Before styling anything, pick the *shape* by the kind of choice the user is
+making. Two questions settle it. The shapes themselves are defined
+elsewhere — tab strip and segmented control in §3, select and checkbox in
+this section — this is the rule for choosing between them.
+
+```
+Independent on/off flags, or picking one option?
+│
+├─ independent on/off (any combination valid) ───────► Checkbox
+│                                                       (one, or a column of several)
+│
+└─ picking exactly one of N
+   │
+   ├─ the pick swaps which content/pane is shown ─────► Tab strip          (§3)
+   │
+   └─ the pick sets a value on the current pane
+      │
+      ├─ small fixed set (2–4),
+      │  all worth showing at a glance ───────────────► Segmented control  (§3)
+      │     (long labels → size-to-content + wrap,
+      │      the `fluid` variant — still a segment)
+      │
+      └─ many / variable-length
+         / data-driven set ───────────────────────────► Select (dropdown)
+```
+
+Two independent axes, don't conflate them. **Cardinality** (how many
+options, how open the set) picks segment-vs-select: small + fixed +
+known-at-author-time → segment; large / variable / data-driven → select.
+**Label length** only picks the segment's *layout*, never the control: a
+small fixed set with a long label stays a segment and switches from
+equal-width cells to the size-to-content `fluid` variant (§3) that wraps
+instead of clipping. A long label is not a reason to reach for a dropdown.
+
+| Control | The choice is… | Reach for it when | Defined in |
+|---------|----------------|-------------------|------------|
+| **Checkbox** | on / off | one independent boolean, or a set of flags where any combination is valid | below |
+| **Segmented control** | one of N | the set is small (2–4), fixed, and worth showing all at once (long labels → `fluid` variant, §3) | §3 |
+| **Select (dropdown)** | one of N | the set is large, variable-length, or data-driven | below |
+| **Tab strip** | which pane | the pick swaps the content shown, not a stored value | §3 |
+
+**There is no radio-button control.** A single pick from a small fixed set
+*is* the segmented control — that is the radio button of this system. (One
+native `<input type="radio">` survives in the block-extend picker, which is
+really a data-driven list; render that kind of thing as a select or a list
+of flat-ghost rows, not radios.)
+
+**Tie-breakers:**
+
+- *Segmented vs select — the 4–5-option gray zone.* This is about option
+  *count*, not label length. Past ~5 options a segment row gets unscannable
+  even when each cell is tiny — that's when to switch to a select. (Long
+  labels on a small set are a layout problem, not a control problem: the
+  `fluid` variant wraps them — see the two-axes note above.) And a set built
+  from data (trains, route targets, stations) is always a select however
+  short it happens to be today — its length isn't yours to fix at
+  author-time.
+- *Checkbox vs a 2-cell segment.* If the unchecked state needs its own name
+  to be understood, it is not a checkbox. `[Wait | Skip]` is a segment
+  because "Wait" is a real labeled choice, not "the absence of Skip." Use a
+  checkbox only when "off" is self-evidently just "not on" (Force, a debug
+  overlay).
+- *Placement of a modifier.* A checkbox or segment that changes what a
+  button will do sits in the same flex cluster as that button, never a row
+  away — see §12 "Action modifiers must touch their action."
+
+### Control row layout
+
+A zone of segmented controls (Power / Mode / Cab in the train panel)
+follows two rules so nothing clips when the sidebar narrows.
+
+**Stack the label above a full-width segment** when the segment has three
+or more cells, or whenever the sidebar gets narrow. A label sitting
+*beside* its segment competes with it for horizontal room — a 3-button
+segment on a 240px sidebar then splits into cells too small to read, and
+the longest option clips. Stacking hands the segment the full content
+width, so the longest label can't clip at any size. **Same-category
+controls share one layout:** if Power and Mode stack, Cab stacks too — a
+lone control laid out unlike its siblings reads as a mistake even when
+each is fine on its own. Reference: `.tc-controls-pair` in
+[features/train-control.css](../static/css/features/train-control.css) —
+label-above cells that flow and wrap, with the wider 3-cell Cab taking
+its own full line.
+
+**Keep navigation off a setting's row.** A link that jumps to another
+panel (`Monitor →`, `Route Run →`) is not part of the setting beside it.
+Sharing the row makes the segment and the links `flex: 1` siblings that
+split the width evenly and starve the control — the §12 principle 2
+(match container to data shape) and principle 6 (position carries
+semantic weight) traps, in a form row instead of a list row. Give
+navigation its own row below the controls.
+
+### Text, select, and number inputs
 
 Text inputs, selects, and number inputs inside a sidebar panel match
 the button language at 28px (`--control-height-xs`). The
@@ -394,6 +494,31 @@ next to it visually belong to the same family.
 
 Reference: `.inspector-panel-field select` in
 [features/inspector.css](../static/css/features/inspector.css).
+
+### Checkbox
+
+The on/off primitive — see "Choosing a selection control" above for when a
+checkbox is the right shape rather than a segment or select. The native
+input is visually hidden and a 14px box stands in for it: a 2px
+`--border-color` outline on a dark fill with a 3px radius when unchecked,
+filling with `--accent-color` plus a white check when checked, and a 2px
+accent ring on focus. Label is 11px `--text-primary`. Hover lifts the box
+border to the accent (`--accent-hover` once checked); a `.disabled` wrapper
+drops the whole control to 40% opacity.
+
+- **A set of flags stacks into a grid, not a row of segments.** Independent
+  display toggles — the debug panel's Track Bits / Coordinates / Signals /
+  … — lay out as a 2-column grid so the eye runs down a column of labels.
+  Each is its own boolean; none excludes another.
+- **Use the styled box, never a bare native input.** `.checkbox-custom` is
+  the canonical chrome; a raw `<input type="checkbox">` renders the OS
+  default, which ignores the token palette and breaks the dark theme. (The
+  Assign-row "Force" checkbox is still bare native and should adopt
+  `.checkbox-custom`.)
+
+Reference: `.checkbox-wrapper` / `.checkbox-custom` / `.checkbox-label` in
+[components/design-system.css](../static/css/components/design-system.css);
+the multi-flag grid is `.debug-controls` in the same file.
 
 ### Slider / handle
 
@@ -635,7 +760,7 @@ every other dimension. Don't mint per-feature chip classes (no
 (`-success`, `-warn`, `-danger`, `-muted`) on a single base class
 instead. A row of mismatched chip shapes reads as cluttered even when
 each one is individually correct. The canonical base class is `.chip` /
-`.chip-state` / `.chip-{success,info,warn,danger,muted}` in
+`.chip-state` / `.chip-{success,info,warn,danger,muted,accent}` in
 [components/status-blocks.css](../static/css/components/status-blocks.css)
 — every editor panel consumes these directly.
 
@@ -909,7 +1034,10 @@ how to lay out the row-shaped alternative.
 9. **Show derived values, not just inputs.** If the user has to do math
    from your data — duration from two timestamps, percentage from two
    numbers, delta from two states — you've shipped half the feature.
-   Compute the answer; the inputs become supporting evidence.
+   Compute the answer; the inputs become supporting evidence. When the
+   derived value is *spatial* — what a `forward`/`reverse` token means on
+   the map — draw it where the thing is (an arrow on the canvas while the
+   editor is open) instead of spelling out coordinates in the panel.
 
 10. **Align comparable values into a column.** Whatever field users
     compare across rows must live in the same x-position on every row.

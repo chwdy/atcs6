@@ -37,10 +37,13 @@ def test_flush_refreshes_debug_flags():
     layer, so debug-checkbox changes propagate by the next frame."""
     src = RENDERER_JS.read_text()
     # Extract just the body of _flushRedraw() by brace-counting from the
-    # opening `{`. Stop at the matching close.
-    sig_idx = src.find("_flushRedraw()")
-    assert sig_idx >= 0, "_flushRedraw not found"
-    open_brace = src.find("{", sig_idx)
+    # opening `{`. Stop at the matching close. Locate the method DEFINITION
+    # (signature immediately followed by `{`), not a call-site like
+    # `this._flushRedraw();` — resize() invokes it directly, so the first
+    # textual `_flushRedraw()` in the file is a call, not the definition.
+    sig = re.search(r"_flushRedraw\s*\(\s*\)\s*\{", src)
+    assert sig is not None, "_flushRedraw not found"
+    open_brace = src.find("{", sig.start())
     depth = 0
     i = open_brace
     while i < len(src):

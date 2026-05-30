@@ -41,7 +41,6 @@ class TestTrainManualControlBugFixes:
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
         network.add_train(train)
         controller = create_controller_for_train("TRAIN_01", network)
-        controller.power_on = True
         controller.ops.state = TrainState.READY
         controller.commands.cab = "A"
 
@@ -56,7 +55,6 @@ class TestTrainManualControlBugFixes:
         train = Train(train_id="TRAIN_02", consist=[car], max_speed=60.0)
         network.add_train(train)
         controller = create_controller_for_train("TRAIN_02", network)
-        controller.power_on = True
         controller.ops.state = TrainState.READY
         controller.commands.cab = "A"
         controller.physics_sync.current_speed_kmh = 5.0
@@ -118,7 +116,6 @@ class TestRaceConditionFix:
 
         sim = SimulationController(network)
         controller = sim._get_or_create_controller(train)
-        controller.power_on = True
         controller.ops.state = TrainState.RUNNING_MOVING
         controller.commands.cab = "A"
         controller.physics_sync.current_speed_kmh = 42.0  # 12 km/h over limit (EB zone)
@@ -156,7 +153,6 @@ class TestRaceConditionFix:
 
         sim = SimulationController(network)
         controller = sim._get_or_create_controller(train)
-        controller.power_on = True
         controller.ops.state = TrainState.RUNNING_MOVING
         controller.commands.cab = None  # No cab selected
         controller.physics_sync.current_speed_kmh = 0.0
@@ -220,13 +216,40 @@ class TestTrainControllerBrakingNotches:
             controller.ato.calculate_braking_notch_for_speed(7.0, 6.0) == HandlePosition.B1
         )
 
-    def test_manual_mode_uses_atc_speed_braking(self, monkeypatch):
-        """Manual mode should brake toward ATC speed, not full stop."""
-        network = RailwayNetwork()
-        train = Train(train_id="TRAIN_MANUAL", max_speed=60.0)
-        network.add_train(train)
+    def test_manual_mode_uses_atc_speed_braking(self, network, monkeypatch):
+        """Manual mode should brake toward ATC speed, not full stop.
 
-        controller = TrainController(train_id=train.train_id, network=network)
+        Per design_new.md step `826a`, service-braking against an ATC limit
+        requires live authority (a no-authority rolling train escalates to EB
+        instead). Wire a one-block synthetic path so this overspeed scenario
+        has authority, then force a positive ATC limit so the braking notch is
+        deterministic.
+        """
+        from tests.train_test_helpers import (
+            attach_synthetic_path,
+            make_synthetic_path,
+        )
+
+        track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
+        next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
+        network.add_track(track)
+        network.add_track(next_track)
+        network.create_block_with_tracks("BLOCK_1", [(0, 0), (1, 0)], length_cm=200.0)
+
+        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=40.0)
+        train = Train(train_id="TRAIN_MANUAL", consist=[car], max_speed=60.0)
+        network.add_train(train)
+        network.place_train(train, 0, 0, Direction.EAST)
+
+        controller = create_controller_for_train(train.train_id, network)
+        attach_synthetic_path(
+            controller,
+            make_synthetic_path(
+                train_id=train.train_id,
+                block_id="BLOCK_1",
+                block_tiles=[(0, 0), (1, 0)],
+            ),
+        )
         controller.commands.control_mode = "manual"
         # Per design_new.md: power_on is a read-only derived property; use
         # controller.ops.state to power on.
@@ -290,7 +313,6 @@ class TestTrainDebugLogging:
 
         sim = SimulationController(network)
         controller = sim._get_or_create_controller(train)
-        controller.power_on = False
 
         caplog.set_level(logging.DEBUG)
         controller.tick(0.1)

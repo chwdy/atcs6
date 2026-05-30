@@ -308,7 +308,6 @@ class TestTrainAssignedPathSerializationBugFix:
         sim = SimulationController(network)
         controller = sim._get_or_create_controller(train)
         physics = sim._get_or_create_physics(train)
-        controller.power_on = False
         # v1: write canonical speed onto the controller; controller.physics_sync.current_speed_kmh is mirrored.
         controller.physics_sync.current_speed_kmh = 10.0
         controller.physics_sync.current_speed_kmh = 10.0

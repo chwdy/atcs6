@@ -300,6 +300,11 @@ class EditorUIHandler {
         
         this.editor._currentEditorType = null;
         this.editor._currentEditorId = null;
+
+        // Drop the block-direction arrows when the sidebar closes.
+        if (this.editor.renderer?.clearBlockDirectionOverlay) {
+            this.editor.renderer.clearBlockDirectionOverlay();
+        }
     }
 
     async goBackSecondaryPanel() {

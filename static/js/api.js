@@ -263,6 +263,22 @@ class API {
     }
 
     /**
+     * Resolve what a block-relative direction means physically — the terminal
+     * tile and compass exit heading — so the UI can render `F-(x,y)-E` labels.
+     * @param {string} blockId - Block ID
+     * @param {string} direction - "forward" or "reverse"
+     * @returns {Promise<object|null>} { terminal_tile: [x,y], terminal_heading: "N|E|S|W" },
+     *   or null when the block lacks geometry to disambiguate that direction.
+     */
+    async getBlockDirectionInfo(blockId, direction) {
+        return this._request(
+            `/blocks/${encodeURIComponent(blockId)}/direction-info?direction=${encodeURIComponent(direction)}`,
+            { returnNullOn404: true },
+            'getBlockDirectionInfo'
+        );
+    }
+
+    /**
      * Update block properties.
      * @param {string} blockId - Block ID
      * @param {object} data - Properties to update

@@ -714,7 +714,7 @@ function renderAvailabilitySegment(entityKind, entity, opts = {}) {
     return `
         <div class="input-large-container mb-8" data-availability-segment="${entityKind}">
             <label class="input-large-label">${label}</label>
-            <div class="switch-group" role="radiogroup" aria-label="${label}">
+            <div class="switch-group fluid" role="radiogroup" aria-label="${label}">
                 <button type="button"
                     class="switch-btn ${dis('available')}"
                     id="${idBase}-available"
@@ -841,7 +841,7 @@ function renderDirectionSegment(entityKind, entity, opts = {}) {
     return `
         <div class="input-large-container mb-8" data-direction-segment="${entityKind}">
             <label class="input-large-label">${label}</label>
-            <div class="switch-group" role="radiogroup" aria-label="${label}">
+            <div class="switch-group fluid" role="radiogroup" aria-label="${label}">
                 <button type="button"
                     class="switch-btn ${dir('both')}"
                     id="${idBase}-both"

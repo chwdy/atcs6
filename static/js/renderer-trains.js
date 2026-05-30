@@ -433,9 +433,87 @@ class RendererTrainHandler {
             this.drawEndMarker(headPos.x, headPos.y, rotationToHead, train, 'A');
         }
 
+        // === Draw "stuck waiting" indicator (debug overlay) ===
+        this._drawStuckIndicator(headPos.x, headPos.y, trainSnap.waitingForBlockId);
+
         // === Draw label ===
         const headTrackBits = getTrackBits(headTile);
         this.drawTrainLabel(train, headPos.x, headPos.y, headTrackBits, train.facing_direction, headTile[0], headTile[1], tracks);
+    }
+
+    /**
+     * Debug overlay ("Show stuck"): when a train is held short of its
+     * requested destination because the next resource is occupied/reserved,
+     * the dispatcher records that block as `waiting_for_block_id`
+     * (see path_dispatcher.extend_path). Draw a dashed orange line with an
+     * arrowhead from the train head to the centre of that block so it is
+     * obvious at a glance what each stalled train is waiting on.
+     *
+     * No-op unless the "Show stuck" debug toggle is on and the train has a
+     * recorded waiting block whose tiles are present in the current network.
+     */
+    _drawStuckIndicator(headX, headY, waitingBlockId) {
+        if (!this.renderer.debugFlags?.showStuck) return;
+        if (!waitingBlockId) return;
+
+        // Resolve the block to the centre of its tiles. The block-section id
+        // lives on each track tile (same source renderer-trains uses for
+        // per-tile length). A waiting resource that is a switch (not a block)
+        // matches no tiles here — we simply draw nothing rather than guess.
+        const tracks = this.currentNetwork?.tracks || [];
+        let sumX = 0, sumY = 0, n = 0;
+        for (const tr of tracks) {
+            if (tr.block_section_id !== waitingBlockId) continue;
+            sumX += this.gridToScreenX(tr.x, tr.y);
+            sumY += this.gridToScreenY(tr.x, tr.y);
+            n++;
+        }
+        if (n === 0) return;
+        const targetX = sumX / n;
+        const targetY = sumY / n;
+
+        const dx = targetX - headX;
+        const dy = targetY - headY;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 1) return;  // degenerate: train already sits on the block
+
+        const s = this.scale;
+        const angle = Math.atan2(dy, dx);
+        const ORANGE = '#ff8c00';
+
+        this.ctx.save();
+
+        // Dashed shaft from the train head toward the waited-for block.
+        this.ctx.strokeStyle = ORANGE;
+        this.ctx.lineWidth = 2 * s;
+        this.ctx.lineCap = 'butt';
+        this.ctx.setLineDash([5 * s, 4 * s]);
+        this.ctx.beginPath();
+        this.ctx.moveTo(headX, headY);
+        this.ctx.lineTo(targetX, targetY);
+        this.ctx.stroke();
+
+        // Solid filled arrowhead at the block end.
+        this.ctx.setLineDash([]);
+        const headLen = 10 * s;
+        const headWidth = 6 * s;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        this.ctx.fillStyle = ORANGE;
+        this.ctx.beginPath();
+        this.ctx.moveTo(targetX, targetY);
+        this.ctx.lineTo(
+            targetX - headLen * cos + headWidth * sin,
+            targetY - headLen * sin - headWidth * cos,
+        );
+        this.ctx.lineTo(
+            targetX - headLen * cos - headWidth * sin,
+            targetY - headLen * sin + headWidth * cos,
+        );
+        this.ctx.closePath();
+        this.ctx.fill();
+
+        this.ctx.restore();
     }
 
     /**

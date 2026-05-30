@@ -685,11 +685,13 @@
     white-space: nowrap;
 }
 
-/* Controls zone — compact layout. The two 2-button toggles (Power + Mode) sit
-   side by side via .tc-controls-pair; the wider 3-button Cab keeps its own row.
+/* Controls zone — compact layout. The three segmented toggles (Power, Mode, Cab)
+   all live in .tc-controls-pair, each stacking its label above a full-width
+   segment. Power + Mode share the first line; the wider 3-button Cab takes its
+   own full line below (see .tc-row-cab) so its buttons never get squeezed.
    Scoped to .tc-section-controls so the shared .tc-row used by the Debug-zone
-   property inputs is untouched. A narrower label width reclaims horizontal room
-   for the full-width Cab/Input rows. */
+   property inputs is untouched. The 46px label width applies to the remaining
+   inline rows here (e.g. manual "Input"). */
 .tc-section-controls { gap: 5px; }
 .tc-section-controls .tc-row { min-height: 24px; gap: 6px; }
 .tc-section-controls .tc-row-label { flex: 0 0 46px; }
@@ -712,6 +714,10 @@
 }
 .tc-controls-pair > .tc-row > .tc-row-label { flex: 0 0 auto; }
 .tc-controls-pair > .tc-row > .tc-segment { flex: 0 0 auto; }
+/* Cab has three buttons, so it takes its own full-width line below Power/Mode
+   rather than sharing a line — the segment fills the whole sidebar width and
+   A / Off / B stay legible at every size. */
+.tc-controls-pair > .tc-row-cab { flex-basis: 100%; }
 
 /* Segmented control — same vocabulary as the train-monitor view-distance group */
 .tc-segment {
@@ -1189,11 +1195,17 @@
     grid-template-columns: repeat(2, 1fr);
 }
 
-/* Inline "Monitor →" button — sits to the right of the Cab segment and grows
-   to fill the leftover row width, splitting it evenly with the segment (flex: 1
-   on both, so the cab buttons stay comfortable). Never wraps. */
-.tc-monitor-btn {
-    flex: 1;
+/* Navigation row — "Monitor →" / "Route Run →" jump to other panels, so they
+   sit on their own row below the controls instead of competing with the Cab
+   segment for width. They stay content-width and left-aligned (secondary to the
+   controls), wrapping to a second line only when the sidebar is very narrow. */
+.tc-nav-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.tc-nav-btn {
+    flex: 0 1 auto;
     padding: 0 10px;
     font-size: 11px;
     font-weight: 500;

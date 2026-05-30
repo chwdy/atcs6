@@ -127,7 +127,23 @@ to do cleanly inside a flat module tree.
 
 ### 5. Replace `getattr`-based coupling between `PathDispatcher` and `RouteExecutor` with declared `Protocol`s
 
-**Status:** Acknowledged, deferred.
+**Status:** Done — 2026-05-30.
+
+**Resolution.** Two `typing.Protocol`s now live in `runtime_payloads.py` (the
+leaf module both sides already import): `PathDispatcherForRouteExecutor`
+(`paths`, `active_path_id_by_train`, `create_path`, `extend_path`) and
+`RouteExecutorForPathDispatcher` (`handle_train_advanced`,
+`handle_path_cancellation`, `handle_path_completion`).
+`RouteExecutor.path_dispatcher` and `PathDispatcher._get_route_executor()` are
+typed to these Protocols, and the `getattr(..., None)` + `callable()`
+feature-detection at all four seam sites was replaced with direct typed calls;
+the circular-import `TYPE_CHECKING` import in `route_executor.py` is gone.
+`cancel_path` is deliberately **not** in the dispatcher Protocol —
+RouteExecutor never cancels directly, it latches and waits for the Phase-3
+flow. **Direction decision (informs item 6):** PathDispatcher is the
+*resource* (RouteExecutor drives acquisition through it); RouteExecutor is the
+Phase-3 *callback observer* (PathDispatcher calls back into it). Full suite
+green (936 passed).
 
 **Problem.** The two largest runtime classes reference each other through
 runtime feature detection rather than declared types:

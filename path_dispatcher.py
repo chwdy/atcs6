@@ -58,6 +58,7 @@ from runtime_payloads import (
     PathSegment,
     PendingPathCancelRequest,
     ResourceEvent,
+    RouteExecutorForPathDispatcher,
     ValidationError,
     ValidationErrorType,
     ValidationResult,
@@ -163,11 +164,11 @@ class PathDispatcher:
             return None
         return self.network.trains.get(train_id)
 
-    def _get_route_executor(self):
+    def _get_route_executor(self) -> Optional[RouteExecutorForPathDispatcher]:
         sc = self.simulation_controller
         if sc is None:
             return None
-        return getattr(sc, "route_executor", None)
+        return sc.route_executor
 
     def _get_controller(self, train_id: str):
         sc = self.simulation_controller
@@ -1179,9 +1180,14 @@ class PathDispatcher:
             if path.get_authority_end_block_id() == requested_destination_block_id:
                 grown_kind = PathAcquisitionResultKind.REACHED_REQUESTED_TARGET
                 grown_reason = "extended to requested target"
+                # Reached the target: no longer waiting on anything.
+                path.waiting_for_block_id = None
             else:
                 grown_kind = PathAcquisitionResultKind.TRUNCATED_GREW
                 grown_reason = "extended (truncated short of requested target)"
+                # Grew but still short — `last_resource` is the block that
+                # stopped further growth, i.e. what the train is waiting on.
+                path.waiting_for_block_id = last_resource
 
             return PathAcquisitionResult(
                 success=True,
@@ -1214,6 +1220,9 @@ class PathDispatcher:
             path.requested_destination_block_id = requested_destination_block_id
             path.requested_destination_direction = requested_destination_direction
             path._set_status(PathStatus.ACTIVE, now)
+            # Held short with no growth — `last_resource` is the occupied/
+            # reserved block the train is waiting on.
+            path.waiting_for_block_id = last_resource
             return PathAcquisitionResult(
                 success=True,
                 result_kind=PathAcquisitionResultKind.BLOCKED_NO_GROWTH,
@@ -1225,6 +1234,10 @@ class PathDispatcher:
                 reason=ext_reason,
             )
 
+        # Extend failed outright but the existing authority is untouched and
+        # still ACTIVE — surface the blocking resource for the "Show stuck"
+        # overlay (None when the obstruction was not a specific resource).
+        path.waiting_for_block_id = last_resource
         return PathAcquisitionResult(
             success=False,
             failure_kind=PathAcquisitionFailureKind.BLOCKED_BEFORE_TARGET,
@@ -1316,9 +1329,7 @@ class PathDispatcher:
         if train_id:
             route_executor = self._get_route_executor()
             if route_executor is not None:
-                handler = getattr(route_executor, "handle_path_cancellation", None)
-                if callable(handler):
-                    handler(train_id, path_id, initiator)
+                route_executor.handle_path_cancellation(train_id, path_id, initiator)
 
         # Emit the canonical `path_cancellation` notification.
         sc = self.simulation_controller
@@ -2076,10 +2087,7 @@ class PathDispatcher:
         route_executor = self._get_route_executor()
         if route_executor is None:
             return
-        handler = getattr(route_executor, "handle_train_advanced", None)
-        if not callable(handler):
-            return
-        handler(train_id, path_id, event)
+        route_executor.handle_train_advanced(train_id, path_id, event)
 
     def _release_tail_vacated_resource(
         self, event: ResourceEvent, train_id: str
@@ -2252,15 +2260,13 @@ class PathDispatcher:
         # Notify route executor.
         route_executor = self._get_route_executor()
         if route_executor is not None:
-            handler = getattr(route_executor, "handle_path_completion", None)
-            if callable(handler):
-                handler(
-                    train_id,
-                    path_id,
-                    path.get_authority_end_block_id(),
-                    path.requested_destination_direction,
-                    event_time,
-                )
+            route_executor.handle_path_completion(
+                train_id,
+                path_id,
+                path.get_authority_end_block_id(),
+                path.requested_destination_direction,
+                event_time,
+            )
 
         # Per design_new.md ~line 80: completed paths remain in
         # `paths_by_id[path_id]` for history. `Path.status == COMPLETED`
@@ -2317,6 +2323,9 @@ class PathDispatcher:
             "authority_end_block_id": path.get_authority_end_block_id(),
             "requested_destination_block_id": path.requested_destination_block_id,
             "requested_destination_direction": path.requested_destination_direction,
+            # Diagnostic for the "Show stuck" overlay: the block this train is
+            # held waiting on (occupied/reserved ahead), or None when not stuck.
+            "waiting_for_block_id": path.waiting_for_block_id,
             "resource_sequence": [
                 {
                     "sequence_index": entry.sequence_index,

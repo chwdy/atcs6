@@ -47,10 +47,8 @@ def create_test_train_with_controller(
     # through Train.
     controller.physics_sync.current_speed_kmh = current_speed
     if state == TrainState.OFF:
-        controller.power_on = False
         controller.ops.state = TrainState.OFF
     else:
-        controller.power_on = True
         controller.ops.state = state
 
     # Sync controller speed (canonical per design_new.md)
@@ -437,7 +435,6 @@ from block import Block
 from train_controller import (
     calculate_max_safe_speed,
     TRACK_END_SAFETY_MARGIN_CM,
-    YELLOW_SIGNAL_SPEED_KMH,
 )
 from block_power import MAX_TRACK_VOLTAGE, DEFAULT_LIGHTING_VOLTAGE
 
@@ -1203,21 +1200,19 @@ class TestCompleteStateFlows:
         assert controller.route_hooks.phase_latches.power_off is True
 
 
-class TestEmergencyResetButtonBugFix:
+class TestHandleUnderEmergencyBrake:
     """
-    Comprehensive tests for emergency reset button bug fixed in 2026-01-24.
+    Handle / power-percent input while the emergency brake is latched.
 
-    BUG: Emergency stop forces the handle to EB and TrainController.set_handle
-    rejects all handle changes while emergency braking is active. The UI
-    attempts to reset by sending set_handle('N'), which fails and leaves
-    the train stuck in emergency stop.
-
-    FIX: Allow release when the train is stopped, even if the handle is EB,
-    and let set_handle(N/B) trigger emergency release instead of rejecting it.
+    Per design_new.md line 1731: ``set_handle()`` is accepted while
+    ``eb.active == True`` (the operator may move the lever to any position),
+    but EB overrides motion and the handle NEVER releases EB. EB is released
+    only by ``eb.release()`` (gated on stopped + cancel consumed + no live
+    authority).
     """
 
     def test_release_allows_eb_handle_when_stopped(self):
-        """Release should succeed even when handle remains EB."""
+        """eb.release() succeeds when stopped even though the handle is EB."""
         train, controller, _ = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING, current_speed=40.0
         )
@@ -1231,8 +1226,8 @@ class TestEmergencyResetButtonBugFix:
         assert result.success is True
         assert controller.eb.active is False
 
-    def test_set_handle_neutral_releases_emergency(self):
-        """UI reset via handle neutral should release emergency stop."""
+    def test_set_handle_accepted_under_eb_does_not_release(self):
+        """set_handle(N) is accepted while EB is latched but does NOT release EB."""
         train, controller, _ = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING, current_speed=30.0
         )
@@ -1243,11 +1238,14 @@ class TestEmergencyResetButtonBugFix:
         controller.physics_sync.current_speed_kmh = 0.0
         result = controller.commands.set_handle(HandlePosition.N)
 
+        # The lever moves, but EB stays latched: the handle is not a
+        # release channel.
         assert result.success is True
-        assert controller.eb.active is False
+        assert controller.ops.handle_position == HandlePosition.N
+        assert controller.eb.active is True
 
-    def test_set_handle_release_fails_when_moving(self):
-        """Release should still be blocked while the train is moving."""
+    def test_set_handle_accepted_under_eb_while_moving(self):
+        """set_handle is accepted under EB even while moving; EB still overrides motion."""
         train, controller, _ = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING, current_speed=30.0
         )
@@ -1257,11 +1255,11 @@ class TestEmergencyResetButtonBugFix:
 
         result = controller.commands.set_handle(HandlePosition.N)
 
-        assert result.success is False
+        assert result.success is True
         assert controller.eb.active is True
 
-    def test_set_handle_release_rejects_power_position(self):
-        """Handle release should not accept power positions."""
+    def test_set_handle_power_position_accepted_under_eb(self):
+        """A power position is accepted under EB (stored), but EB still overrides motion."""
         train, controller, _ = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING, current_speed=0.0
         )
@@ -1271,5 +1269,6 @@ class TestEmergencyResetButtonBugFix:
 
         result = controller.commands.set_handle(HandlePosition.P1)
 
-        assert result.success is False
+        assert result.success is True
+        assert controller.ops.handle_position == HandlePosition.P1
         assert controller.eb.active is True

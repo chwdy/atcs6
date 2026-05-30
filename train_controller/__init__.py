@@ -100,7 +100,6 @@ EDGE_TO_DIRECTION_NAME = {"N": "NORTH", "E": "EAST", "S": "SOUTH", "W": "WEST"}
 ATC_SIGNAL_LOOKAHEAD_BLOCKS = 3
 ATC_MIN_CLEARANCE_CM = 10.0
 ATC_NO_BLOCK_FALLBACK_CM = 100000.0
-YELLOW_SIGNAL_SPEED_KMH = 40.0
 
 SPEED_TREND_EPSILON = 0.1
 
@@ -738,11 +737,22 @@ class TrainController:
         # ===== 4. ATC ACTION =====
         overspeed = self.physics_sync.current_speed_kmh - self.atc.speed_limit
 
-        if overspeed > 10:
-            # Emergency brake - overspeed > 10 km/h. Per design_new.md the
-            # EB controller-local effects are: set eb_active = True,
-            # force handle to EB, clear ato_running, and (when an active path
-            # exists) write pending_path_cancel_request(EB).
+        # Per design_new.md step `826a`: a rolling train with no path authority
+        # has nothing to brake against, so EB — not a service-brake notch — is
+        # the only stopping protocol. With no authority ATC sets atc_limit = 0,
+        # so any motion is overspeed at distance 0; we escalate here instead of
+        # letting the ATO/manual branches below pick a service notch (which
+        # would override the operator's handle with a confusing brake step).
+        no_authority_rolling = (
+            self.path_projection.received_path_plan is None
+            and not self.is_stopped()
+        )
+
+        if overspeed > 10 or no_authority_rolling:
+            # Emergency brake. Per design_new.md the EB controller-local
+            # effects are: set eb_active = True, force handle to EB, clear
+            # ato_running, and (when an active path exists) write
+            # pending_path_cancel_request(EB).
             self.eb.active = True
             self.ops.handle_position = HandlePosition.EB
             self.ato.running = False
@@ -752,11 +762,14 @@ class TrainController:
                 )
             self.notifications.emit(
                 "ATC triggered emergency brake: overspeed"
+                if overspeed > 10
+                else "No movement authority: emergency brake"
             )
             logger.debug(
-                "[TrainController %s] ATC EB: overspeed=%.2f",
+                "[TrainController %s] ATC EB: overspeed=%.2f no_authority_rolling=%s",
                 self.train_id,
                 overspeed,
+                no_authority_rolling,
             )
             return
         elif overspeed > 5:
@@ -1626,20 +1639,6 @@ class TrainController:
     def power_on(self) -> bool:
         """Convenience read derived from `state != OFF` per design_new.md."""
         return self.ops.state != TrainState.OFF
-
-    @power_on.setter
-    def power_on(self, value: bool) -> None:
-        """No-op compatibility shim.
-
-        Per design_new.md there are no writers of `power_on` — the field is a
-        derived read-only property. This setter is intentionally a no-op so
-        legacy call sites (e.g. simulation.py:350) do not raise AttributeError
-        while the simulation agent removes the stale write.
-        # TODO(simulation agent): delete `controller.power_on = False` at
-        # simulation.py:350 — state is already set by `controller.ops.state =
-        # TrainState.OFF` one line earlier.
-        """
-        pass
 
     def is_stopped(self) -> bool:
         """Canonical stopped predicate per design_new.md.

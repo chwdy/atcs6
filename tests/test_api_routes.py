@@ -996,7 +996,6 @@ class TestRouteRedesignApis:
         )
 
         controller = app_state.sim_controller.get_or_create_controller(train_id)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.ops.state = TrainState.READY
         return train, controller

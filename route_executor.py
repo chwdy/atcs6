@@ -39,6 +39,7 @@ from runtime_payloads import (
     FatalConflictKind,
     FatalPhysicalEntryConflict,
     PathAcquisitionFailureKind,
+    PathDispatcherForRouteExecutor,
     PendingPathCancelRequest,
     ResolvedRouteTarget,
     ResourceEvent,
@@ -46,7 +47,6 @@ from runtime_payloads import (
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
-    from path_dispatcher import PathDispatcher
     from train import Train
     from train_route import Route
 
@@ -396,11 +396,11 @@ class RouteExecutor:
     def __init__(
         self,
         network: "RailwayNetwork",
-        path_dispatcher: Optional["PathDispatcher"] = None,
+        path_dispatcher: Optional[PathDispatcherForRouteExecutor] = None,
         shared_controllers: Optional[Dict[str, TrainController]] = None,
     ) -> None:
         self.network = network
-        self.path_dispatcher = path_dispatcher
+        self.path_dispatcher: Optional[PathDispatcherForRouteExecutor] = path_dispatcher
         # Canonical Route registry (per design_new.md "Route And RouteExecutor").
         # Keyed by route_id. Mutated only via register_route / unregister_route.
         self.route_registry: Dict[str, "Route"] = {}
@@ -593,13 +593,7 @@ class RouteExecutor:
         """Return the dispatcher's currently active path id for train_id."""
         if self.path_dispatcher is None:
             return None
-        getter = getattr(self.path_dispatcher, "active_path_id_by_train", None)
-        if callable(getter):
-            try:
-                return getter(train_id)
-            except Exception:
-                return None
-        return None
+        return self.path_dispatcher.active_path_id_by_train(train_id)
 
     # ------------------------------------------------------------------ ordering
     def order_runnable_trains(

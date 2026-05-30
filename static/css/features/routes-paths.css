@@ -123,12 +123,11 @@
     gap: 6px;
 }
 
+/* Size deltas layered over the canonical .chip (DESIGN_LANGUAGE.md §7); the
+   shell — bg, border, radius, color, mono font — comes from .chip. */
 .route-mode-pill {
-    border: 1px solid #4b4f66;
-    border-radius: 999px;
     padding: 1px 6px;
     font-size: 9px;
-    color: #c6cada;
 }
 
 .route-row-actions {
@@ -144,7 +143,7 @@
 }
 
 /* Live route status pill shown beside the activate/deactivate button. */
-.route-status-pill {
+.route-status-box {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -159,21 +158,21 @@
     color: var(--text-secondary);
 }
 
-.route-status-pill .route-status-dot {
+.route-status-box .route-status-dot {
     background: currentColor;
 }
 
-.route-status-pill.is-active {
+.route-status-box.is-active {
     border-left-color: var(--success-color);
     color: var(--success-color);
 }
 
-.route-status-pill.is-info {
+.route-status-box.is-info {
     border-left-color: var(--info-color);
     color: var(--info-color);
 }
 
-.route-status-pill.is-inactive {
+.route-status-box.is-inactive {
     border-left-color: var(--border-color);
     color: var(--text-tertiary);
 }
@@ -280,18 +279,9 @@
     color: var(--text-tertiary);
 }
 
-.route-delay-chip {
-    font-size: 9px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    padding: 1px 6px;
-    border-radius: 999px;
-}
-
-.route-delay-chip.early { color: var(--info-color); background: rgba(0, 212, 255, 0.12); }
-.route-delay-chip.on_time { color: var(--success-color); background: rgba(4, 211, 97, 0.12); }
-.route-delay-chip.late { color: var(--warning-color); background: rgba(255, 205, 30, 0.12); }
+/* The route delay badge is a canonical state chip: .chip .chip-state plus a
+   color modifier (early=info / on_time=success / late=warn). Emitted by
+   renderTaskRow in editor-routes.js — no per-feature class needed (§7). */
 
 /* ============================================================================
    Route Runs panel + single-run editor
@@ -653,7 +643,7 @@
     line-height: 1.4;
     white-space: normal;
     max-width: 320px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
     opacity: 0;
     animation: rr-task-tooltip-show 80ms ease 1s forwards;
 }
@@ -969,19 +959,13 @@
     min-width: 0;
 }
 
+/* Force adopts the canonical checkbox chrome (.checkbox-wrapper +
+   .checkbox-custom — DESIGN_LANGUAGE.md §4 "Checkbox"). This modifier only
+   adds what the assign-row layout needs on top: keep the control on one line
+   and don't let it shrink against the select + Assign button. */
 .atr-force-label {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 11px;
-    color: var(--text-secondary);
     white-space: nowrap;
-    cursor: pointer;
-    user-select: none;
-}
-
-.atr-force-label input[type="checkbox"] {
-    margin: 0;
+    flex-shrink: 0;
 }
 
 /* ----------------------------------------------------------------------------
@@ -1207,20 +1191,14 @@
     background-color: var(--bg-hover);
 }
 
-/* Shared chip shell — per DESIGN_LANGUAGE.md §7. All chips share the
-   same dimensions (1px 8px padding, 999px radius, 11px). Kind variants
-   override color + bg only. */
+/* Task chips consume the canonical .chip shell (DESIGN_LANGUAGE.md §7). The
+   kind chip is a state badge (.chip .chip-state .chip-{info,accent,warn}); the
+   target + direction chips are plain .chip. This class adds only the row
+   layout the canonical chip doesn't carry — inline-flex around an icon. */
 .task-summary-chip {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: 1px 8px;
-    background: var(--bg-dark);
-    border: 1px solid var(--border-color);
-    border-radius: 999px;
-    font-size: 11px;
-    color: var(--text-secondary);
-    white-space: nowrap;
     min-width: 0;
     flex-shrink: 0;
 }
@@ -1228,26 +1206,6 @@
 .task-summary-chip .ti {
     font-size: 13px;
     line-height: 1;
-}
-
-/* Kind chip is the categorical "what does this task DO" filter — gets
-   a status-tinted fill per the §1 token table mapping:
-   info=movement (waypoint), accent=primary action (stop), warning=dwell.
-   Per §7, tinted state chips drop the border (the tint is the affordance). */
-.task-summary-chip.kind-waypoint {
-    color: var(--info-color);
-    background: rgba(0, 212, 255, 0.15);
-    border-color: transparent;
-}
-.task-summary-chip.kind-stop {
-    color: var(--accent-hover);
-    background: rgba(130, 87, 229, 0.18);
-    border-color: transparent;
-}
-.task-summary-chip.kind-dwell {
-    color: var(--warning-color);
-    background: rgba(255, 205, 30, 0.15);
-    border-color: transparent;
 }
 
 .task-summary-target {

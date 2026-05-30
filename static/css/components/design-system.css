@@ -788,6 +788,23 @@
     min-width: 60px;
 }
 
+/* Fluid variant: segments size to their own label and wrap to a new line
+   rather than being forced into equal columns that clip long labels (e.g.
+   "Disabled", "Reverse"). For small fixed option sets whose labels are too
+   long for equal width — block / platform / station / switch availability,
+   block allowed-travel. The set is still small and fixed (so it stays a
+   segmented control, not a select); this only changes how the labels fit. */
+.switch-group.fluid {
+    flex-wrap: wrap;
+    max-width: none;
+    min-width: 0;
+}
+
+.switch-group.fluid .switch-btn {
+    flex: 1 0 auto;
+    min-width: max-content;
+}
+
 /* ============================================================================
    BIT TOGGLE COMPONENT
    ============================================================================ */

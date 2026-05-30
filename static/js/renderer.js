@@ -181,13 +181,23 @@ class Renderer {
         // Watch the canvas's parent for size changes that don't fire a window
         // resize — e.g., the secondary sidebar opening/closing changes
         // .canvas-container's clientWidth via flex reflow without dispatching
-        // a window resize event.
+        // a window resize event. ResizeObserver delivers at most one callback
+        // per observed element per frame, so we call resize() directly here
+        // (not via _scheduleResize) — that keeps the canvas dimensions in
+        // lockstep with the parent during a drag-resize. Going through rAF
+        // would lag the canvas by one frame and cause a visible flicker.
         if (typeof ResizeObserver !== 'undefined' && this.canvas.parentElement) {
-            this._resizeObserver = new ResizeObserver(() => this._scheduleResize());
+            this._resizeObserver = new ResizeObserver(() => this.resize());
             this._resizeObserver.observe(this.canvas.parentElement);
         }
     }
 
+    /**
+     * Used by `window.resize`, which some browsers fire many times per
+     * frame during a window drag. rAF-debounces to one resize per frame.
+     * ResizeObserver does NOT go through here — it's already one-per-frame
+     * and calling resize() directly avoids a one-frame canvas-size lag.
+     */
     _scheduleResize() {
         if (this._pendingResizeFrame !== null) return;
         this._pendingResizeFrame = requestAnimationFrame(() => {
@@ -224,10 +234,20 @@ class Renderer {
         // the rationale (preserves the world coord at the visual center).
         this.camera.resizeToCanvas();
 
-        // Resize is treated as a world+live invalidation; route through the
-        // rAF coalescer so other state changes in the same frame share the
-        // paint pass.
-        this.requestRedraw({ world: true, live: true, reason: 'resize' });
+        // Paint synchronously rather than going through requestRedraw +
+        // rAF. Setting canvas.width above just *cleared* both backing
+        // buffers; if we deferred the paint to the next animation frame,
+        // the browser would commit a blank canvas in the meantime — a
+        // visible flicker on every frame of a drag-resize. Painting here
+        // lands the new dimensions and the matching frame in the same
+        // browser commit. Any pending rAF flush is cancelled so we don't
+        // paint twice.
+        if (this._flushFrame !== null) {
+            cancelAnimationFrame(this._flushFrame);
+            this._flushFrame = null;
+        }
+        this._pendingFlush = { world: true, live: true, reason: 'resize' };
+        this._flushRedraw();
     }
 
     /**
@@ -295,10 +315,12 @@ class Renderer {
         const showBlocks = document.getElementById('debug-show-blocks');
         const showSignals = document.getElementById('debug-show-signals');
         const showTunnelLinks = document.getElementById('debug-show-tunnel-links');
+        const showStuck = document.getElementById('debug-show-stuck');
         this.debugFlags = {
             showBlocks: showBlocks ? !!showBlocks.checked : false,
             showSignals: showSignals ? !!showSignals.checked : false,
             showTunnelLinks: showTunnelLinks ? !!showTunnelLinks.checked : false,
+            showStuck: showStuck ? !!showStuck.checked : false,
         };
     }
 
@@ -583,6 +605,12 @@ class Renderer {
         // Route overlays (reachable highlights, active routes, conflict flash).
         this.routeHandler.drawRouteOverlays();
 
+        // Block direction arrows — only while the block editor is open. Drawn
+        // above the route wash but below trains: it's editor context, not a
+        // live entity, so a moving train paints over it (same liveness z-order
+        // as station identity labels).
+        this.drawBlockDirectionOverlay();
+
         // Trains.
         if (network.trains) {
             network.trains.forEach(train => {
@@ -707,6 +735,128 @@ class Renderer {
 
     clearPathHighlight() {
         this.routeHandler.clearRouteHighlight();
+    }
+
+    /**
+     * Show / hide the forward + reverse direction arrows for the block being
+     * edited. The block editor pushes the resolved geometry here so the
+     * operator sees on the map what "forward" and "reverse" mean physically,
+     * instead of decoding `F-(8,7)-E` from the panel.
+     *
+     * `overlay` shape:
+     *   { forward: { terminal_tile: [x,y], terminal_heading: 'N|E|S|W' } | null,
+     *     reverse: { terminal_tile: [x,y], terminal_heading: 'N|E|S|W' } | null }
+     * Either side may be null when the block lacks geometry to disambiguate it.
+     * Pass null/omit to clear. Triggers a live-only redraw so it appears and
+     * disappears immediately on open / close.
+     */
+    setBlockDirectionOverlay(overlay) {
+        this._blockDirectionOverlay = overlay || null;
+        this.requestRedraw({ world: false, live: true, reason: 'block-direction-overlay' });
+    }
+
+    clearBlockDirectionOverlay() {
+        if (!this._blockDirectionOverlay) return;
+        this._blockDirectionOverlay = null;
+        this.requestRedraw({ world: false, live: true, reason: 'block-direction-overlay-clear' });
+    }
+
+    drawBlockDirectionOverlay() {
+        const overlay = this._blockDirectionOverlay;
+        if (!overlay) return;
+        // forward = success-green (the "enter / proceed" hue, per the block
+        // palette), reverse = info-cyan. Two distinct accents so the two arrows
+        // never read as one gesture.
+        this._drawDirectionArrow(overlay.forward, 'F', '#04d361');
+        this._drawDirectionArrow(overlay.reverse, 'R', '#00d4ff');
+    }
+
+    /**
+     * Draw one labelled direction arrow centered on a terminal tile, pointing
+     * out the tile's compass exit edge. Reuses the same edge-point geometry the
+     * signal renderer uses (`getEdgePoints`), so the screen vector is correct
+     * under the isometric projection at any zoom / pan.
+     */
+    _drawDirectionArrow(info, letter, color) {
+        if (!info) return;
+        const tile = info.terminal_tile;
+        const heading = info.terminal_heading;
+        if (!Array.isArray(tile) || tile.length !== 2 || !heading) return;
+
+        const cx = this.gridToScreenX(tile[0], tile[1]);
+        const cy = this.gridToScreenY(tile[0], tile[1]);
+        const half = this.gridSize * this.scale / 2;
+
+        // Screen-space unit vector toward the exit edge.
+        const edge = this.trackHandler.getEdgePoints(half)[String(heading).toUpperCase()];
+        if (!edge) return;
+        const len = Math.hypot(edge.x, edge.y) || 1;
+        const ux = edge.x / len;
+        const uy = edge.y / len;
+
+        // Shaft from tile center toward the edge; arrowhead at the tip.
+        const shaft = half * 0.8;
+        const tipX = cx + ux * shaft;
+        const tipY = cy + uy * shaft;
+        const headLen = Math.max(6, half * 0.35);
+        const headW = headLen * 0.6;
+        // Perpendicular for the two barbs.
+        const px = -uy;
+        const py = ux;
+        const lineW = Math.min(Math.max(1.5, this.scale * 0.6), 3);
+
+        this.ctx.save();
+        this.ctx.strokeStyle = color;
+        this.ctx.fillStyle = color;
+        this.ctx.lineWidth = lineW;
+        this.ctx.lineCap = 'round';
+        this.ctx.lineJoin = 'round';
+
+        // Shaft.
+        this.ctx.beginPath();
+        this.ctx.moveTo(cx, cy);
+        this.ctx.lineTo(tipX, tipY);
+        this.ctx.stroke();
+
+        // Arrowhead.
+        this.ctx.beginPath();
+        this.ctx.moveTo(tipX, tipY);
+        this.ctx.lineTo(tipX - ux * headLen + px * headW, tipY - uy * headLen + py * headW);
+        this.ctx.lineTo(tipX - ux * headLen - px * headW, tipY - uy * headLen - py * headW);
+        this.ctx.closePath();
+        this.ctx.fill();
+
+        // F / R glyph in an opaque dark pill just past the arrowhead, so it
+        // stays legible over tracks and block fills (canvas-label opacity rule).
+        const labelX = tipX + ux * headLen * 0.9;
+        const labelY = tipY + uy * headLen * 0.9;
+        const fontPx = Math.max(8, 9 * this.scale);
+        this.ctx.font = `bold ${fontPx}px sans-serif`;
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        const tw = this.ctx.measureText(letter).width;
+        const padX = 3 * this.scale;
+        const padY = 2 * this.scale;
+        const boxW = tw + padX * 2;
+        const boxH = fontPx + padY * 2;
+        this.ctx.fillStyle = 'rgba(15, 15, 18, 0.9)';
+        if (this.ctx.roundRect) {
+            this.ctx.beginPath();
+            this.ctx.roundRect(labelX - boxW / 2, labelY - boxH / 2, boxW, boxH, 3);
+            this.ctx.fill();
+        } else {
+            this.ctx.fillRect(labelX - boxW / 2, labelY - boxH / 2, boxW, boxH);
+        }
+        this.ctx.strokeStyle = color;
+        this.ctx.lineWidth = Math.min(Math.max(1, this.scale * 0.4), 1.5);
+        if (this.ctx.roundRect) {
+            this.ctx.beginPath();
+            this.ctx.roundRect(labelX - boxW / 2, labelY - boxH / 2, boxW, boxH, 3);
+            this.ctx.stroke();
+        }
+        this.ctx.fillStyle = color;
+        this.ctx.fillText(letter, labelX, labelY);
+        this.ctx.restore();
     }
 
     // ========================================================================

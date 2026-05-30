@@ -167,6 +167,15 @@ class Path:
     # first matching raw resource ID.
     current_resource_index: int = 0
 
+    # Diagnostic only (consumed by the UI, never by the control loop): when a
+    # best-effort extend is held short of the requested destination because
+    # the next resource is occupied/reserved/locked, the dispatcher records
+    # that blocking resource id here. Refreshed on every extend attempt and
+    # cleared to None once authority reaches the requested target. Used by the
+    # "Show stuck" debug overlay to point from a stalled train to what it is
+    # waiting on.
+    waiting_for_block_id: Optional[str] = None
+
     # System-time Unix timestamp (seconds) of the most recent status
     # change. Set on creation and on every transition.
     last_status_updated_time: float = 0.0

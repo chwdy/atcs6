@@ -701,16 +701,18 @@ class TrainEditorHandler {
                                 <button type="button" id="train-mode-manual-btn" class="tc-seg-btn switch-btn ${isManual ? 'active' : ''}" ${!canSwitchModes ? 'disabled' : ''}>Manual</button>
                             </div>
                         </div>
-                    </div>
-                    <div class="tc-row tc-row-cab">
-                        <span class="tc-row-label">Cab</span>
-                        <div class="tc-segment" role="group">
-                            <button type="button" id="train-cab-a-btn" class="tc-seg-btn switch-btn ${controller?.cab === 'A' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>A</button>
-                            <button type="button" id="train-cab-off-btn" class="tc-seg-btn switch-btn ${!controller?.cab ? 'active' : ''}" ${!powerOn || !isStopped || !controller?.cab ? 'disabled' : ''}>Off</button>
-                            <button type="button" id="train-cab-b-btn" class="tc-seg-btn switch-btn ${controller?.cab === 'B' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>B</button>
+                        <div class="tc-row tc-row-cab">
+                            <span class="tc-row-label">Cab</span>
+                            <div class="tc-segment" role="group">
+                                <button type="button" id="train-cab-a-btn" class="tc-seg-btn switch-btn ${controller?.cab === 'A' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>A</button>
+                                <button type="button" id="train-cab-off-btn" class="tc-seg-btn switch-btn ${!controller?.cab ? 'active' : ''}" ${!powerOn || !isStopped || !controller?.cab ? 'disabled' : ''}>Off</button>
+                                <button type="button" id="train-cab-b-btn" class="tc-seg-btn switch-btn ${controller?.cab === 'B' ? 'active' : ''}" ${!powerOn || !isStopped ? 'disabled' : ''}>B</button>
+                            </div>
                         </div>
-                        <button id="train-monitor-btn" type="button" class="tc-btn tc-btn-ghost tc-monitor-btn">Monitor →</button>
-                        ${fullRunId ? `<button id="train-route-run-btn" type="button" class="tc-btn tc-btn-ghost tc-monitor-btn" title="Open route run #${fullRunId.split('#')[1] || ''}">Route Run →</button>` : ''}
+                    </div>
+                    <div class="tc-nav-row">
+                        <button id="train-monitor-btn" type="button" class="tc-btn tc-btn-ghost tc-nav-btn">Monitor →</button>
+                        ${fullRunId ? `<button id="train-route-run-btn" type="button" class="tc-btn tc-btn-ghost tc-nav-btn" title="Open route run #${fullRunId.split('#')[1] || ''}">Route Run →</button>` : ''}
                     </div>
 
                     <!-- ATO Go/Stop (visible when control_mode==='ato') -->

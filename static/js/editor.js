@@ -160,6 +160,12 @@ class Editor {
     }
 
     showSecondarySidebar(title, content) {
+        // Any editor opening clears a stale block-direction overlay from a
+        // previously-open block editor. The block editor re-pushes its own
+        // overlay right after this call returns (see editor-blocks showEditor).
+        if (this.renderer?.clearBlockDirectionOverlay) {
+            this.renderer.clearBlockDirectionOverlay();
+        }
         return this.uiHandler.showSecondarySidebar(title, content);
     }
 

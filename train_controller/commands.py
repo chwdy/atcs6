@@ -348,9 +348,14 @@ class OperatorCommands:
 
         Rules:
         - Must be powered on
-        - In manual mode: directly controls acceleration/braking
-        - In ATO mode: handle is controlled by computer (read-only to user)
-        - EB always allowed (safety override)
+        - In manual mode: stores ``handle_position``; physics integrates it,
+          but ATC and EB can override (EB emergency-brakes the train
+          regardless of the handle)
+        - In ATO mode while running: rejected (handle controlled by computer)
+        - ``HandlePosition.EB`` activates the emergency brake
+        - Accepted while EB is latched (the operator may move the handle to any
+          position), but the handle never releases EB; EB is released only by
+          ``eb.release()``
         """
         c = self._c
         if not c.power_on:
@@ -358,22 +363,6 @@ class OperatorCommands:
 
         if position == HandlePosition.EB:
             return c.eb.activate()
-
-        if c.eb.active:
-            brake_positions = [
-                HandlePosition.N,
-                HandlePosition.B1,
-                HandlePosition.B2,
-                HandlePosition.B3,
-                HandlePosition.B4,
-                HandlePosition.B5,
-                HandlePosition.B6,
-                HandlePosition.B7,
-                HandlePosition.B8,
-            ]
-            if position in brake_positions:
-                return c.eb.release()
-            return CommandResult(False, "Release emergency stop first")
 
         if self.control_mode == "ato" and c.ato.running:
             return CommandResult(False, "Handle controlled by ATO while running")
@@ -575,9 +564,11 @@ class OperatorCommands:
         Set manual power-percent command (0..100).
 
         Per design_new.md: accepted only while manual mode is active,
-        manual_mode_type == power_percent, the train is powered, a cab is
-        selected, and EB is not latched. The command does not start movement
-        by itself; it just writes the controller-owned field.
+        manual_mode_type == power_percent, the train is powered, and a cab is
+        selected. It is accepted while EB is latched too, but ATC/EB override
+        the stored value (forcing 0) and this command never clears
+        ``eb.active``. The command does not start movement by itself; it just
+        writes the controller-owned field.
         """
         c = self._c
         if not c.power_on:
@@ -588,8 +579,6 @@ class OperatorCommands:
             return CommandResult(False, "Manual mode type is not power_percent")
         if self.cab not in ("A", "B"):
             return CommandResult(False, "No cab selected")
-        if c.eb.active:
-            return CommandResult(False, "Emergency brake latched")
 
         try:
             value = int(percent)

@@ -326,7 +326,7 @@ class RouteEditorHandler {
                         <div class="route-row-meta text-xs text-muted info-meta">
                             <span title="${trainIds.join(', ') || 'no trains assigned'}" class="font-mono">${trainsLabel}</span>
                             <span>${taskCount} task${taskCount !== 1 ? 's' : ''}</span>
-                            <span class="route-mode-pill uppercase">${modeText}</span>
+                            <span class="chip route-mode-pill uppercase">${modeText}</span>
                         </div>
                     </div>
                 </div>
@@ -690,7 +690,7 @@ class RouteEditorHandler {
             const finished = t.finished_at != null;
             const timeText = finished ? this._formatTime(t.finished_at) : '—';
             const delayChip = (finished && t.delay_class)
-                ? `<span class="route-delay-chip ${t.delay_class}">${t.delay_class.replace('_', '-')}</span>`
+                ? `<span class="chip chip-state ${({ early: 'chip-info', on_time: 'chip-success', late: 'chip-warn' })[t.delay_class] || 'chip-muted'}">${t.delay_class.replace('_', '-')}</span>`
                 : '';
             return `
                 <div class="route-history-task ${finished ? '' : 'is-pending'}">
@@ -835,13 +835,13 @@ class RouteEditorHandler {
      */
     renderRouteStatusPill() {
         if (!this.currentRoute?.is_active) {
-            return `<div class="route-status-pill is-inactive"><span class="route-status-dot"></span>Inactive</div>`;
+            return `<div class="route-status-box is-inactive"><span class="route-status-dot"></span>Inactive</div>`;
         }
         const trainCount = (this.currentRouteStatus?.trains || []).length;
         if (trainCount === 0) {
-            return `<div class="route-status-pill is-info"><span class="route-status-dot"></span>Active · no trains</div>`;
+            return `<div class="route-status-box is-info"><span class="route-status-dot"></span>Active · no trains</div>`;
         }
-        return `<div class="route-status-pill is-active"><span class="route-status-dot"></span>Active · ${trainCount} train${trainCount !== 1 ? 's' : ''}</div>`;
+        return `<div class="route-status-box is-active"><span class="route-status-dot"></span>Active · ${trainCount} train${trainCount !== 1 ? 's' : ''}</div>`;
     }
 
     /**
@@ -923,16 +923,16 @@ class RouteEditorHandler {
         const summaryHtml = `
             <button type="button" class="task-summary" data-index="${index}" aria-expanded="${isExpanded}">
                 <span class="waypoint-ordinal">${index + 1}</span>
-                <span class="task-summary-chip task-summary-kind kind-${kind}">
+                <span class="chip chip-state ${({ waypoint: 'chip-info', stop: 'chip-accent', dwell: 'chip-warn' })[kind] || 'chip-muted'} task-summary-chip">
                     ${ti(KIND_ICON[kind])}
                     <span>${KIND_LABEL[kind]}</span>
                 </span>
                 ${isDwell ? '' : `
-                    <span class="task-summary-chip task-summary-target" title="${targetName}">
+                    <span class="chip task-summary-chip task-summary-target" title="${targetName}">
                         ${ti(TYPE_ICON[targetType])}
                         <span class="task-summary-target-name">${targetName}</span>
                     </span>
-                    <span class="task-summary-chip task-summary-direction">
+                    <span class="chip task-summary-chip task-summary-direction">
                         ${ti(DIR_ICON[direction])}
                         <span>${DIR_LABEL[direction]}</span>
                     </span>
@@ -1335,11 +1335,11 @@ class RouteEditorHandler {
                 <select id="assign-train-select" class="property-input route-input-compact atr-assign-select">
                     ${trainSelectHtml}
                 </select>
-                <label class="atr-force-label" title="Reassign the train even if it is already on another route">
-                    <input type="checkbox" id="assign-train-force"
-                           class="route-inline-checkbox"
+                <label class="checkbox-wrapper atr-force-label" title="Reassign the train even if it is already on another route">
+                    <input type="checkbox" id="assign-train-force" class="checkbox-input"
                            ${this._assignForce ? 'checked' : ''}>
-                    <span>Force</span>
+                    <span class="checkbox-custom"></span>
+                    <span class="checkbox-label">Force</span>
                 </label>
                 <button id="assign-train-btn" class="btn btn-sm btn-primary">Assign</button>
             </div>

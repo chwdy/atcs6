@@ -73,7 +73,6 @@ class TestAtoStopButtonBugFix:
                 block_tiles=[(0, 0), (1, 0)],
             ),
         )
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.commands.cab = "A"
         controller.ops.state = TrainState.RUNNING_MOVING
@@ -161,7 +160,6 @@ class TestAtoAutoCabSelectionBugFix:
         # state, so no dispatcher wiring is needed.
 
         controller = TrainController(train_id=train.train_id, network=network)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.ops.state = TrainState.READY
         controller.commands.cab = None
@@ -186,6 +184,11 @@ class TestAtoDepartCallsAtoGo:
 
     def _setup_ato_train(self, network):
         """Create a train in ATO mode with ATO running."""
+        from tests.train_test_helpers import (
+            attach_synthetic_path,
+            make_synthetic_path,
+        )
+
         track = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
         next_track = TrackSegment(x=1, y=0, track_bits=TRACK_EW)
         network.add_track(track)
@@ -198,7 +201,18 @@ class TestAtoDepartCallsAtoGo:
         network.place_train(train, 0, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
-        controller.power_on = True
+        # Per design_new.md step `826a`, service-braking needs live authority;
+        # a no-authority rolling train escalates to EB instead. Wire a one-block
+        # synthetic path so this ATO-stop braking scenario has authority to
+        # brake against.
+        attach_synthetic_path(
+            controller,
+            make_synthetic_path(
+                train_id=train.train_id,
+                block_id="BLOCK_1",
+                block_tiles=[(0, 0), (1, 0)],
+            ),
+        )
         controller.commands.control_mode = "ato"
         controller.commands.cab = "A"
         controller.ops.state = TrainState.RUNNING_MOVING
@@ -225,7 +239,6 @@ class TestAtoDepartCallsAtoGo:
         network.place_train(train, 0, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.commands.cab = "A"
         controller.ops.state = TrainState.READY
@@ -301,7 +314,6 @@ class TestAtoDepartCallsAtoGo:
         network.place_train(train, 0, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.commands.cab = "A"
         controller.ops.state = TrainState.READY
@@ -363,7 +375,6 @@ class TestAtoDistanceAwareControl:
                 block_tiles=[(0, 0), (1, 0)],
             ),
         )
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.commands.cab = "A"
         controller.ops.state = TrainState.RUNNING_MOVING
@@ -449,7 +460,6 @@ class TestAtoDistanceAwareControl:
         network.place_train(train, 2, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.commands.cab = "A"
         controller.ops.state = TrainState.RUNNING_MOVING
@@ -620,7 +630,6 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         network.place_train(train, 3, 0, Direction.EAST)
 
         controller = TrainController(train_id=train.train_id, network=network)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.commands.cab = "A"
         controller.ops.state = TrainState.READY
@@ -677,7 +686,6 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         # depend on having an active path wired.
 
         controller = TrainController(train_id=train.train_id, network=network)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.commands.cab = "A"
         controller.ops.state = TrainState.RUNNING_MOVING
@@ -778,7 +786,6 @@ class TestTrendAwareATOControl:
                 block_tiles=[(x, 0) for x in range(10)],
             ),
         )
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.commands.cab = "A"
         controller.ops.state = TrainState.RUNNING_MOVING
@@ -1002,7 +1009,6 @@ class TestSpeedCurveCalculation:
         # is not required for the curve-shape assertions below.
 
         controller = TrainController(train_id=train.train_id, network=network)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.ops.state = TrainState.RUNNING_MOVING
 
@@ -1115,7 +1121,6 @@ class TestForwardSimulation:
         train.speed_profile_id = "test_sim"
 
         controller = TrainController(train_id="sim_test", network=network)
-        controller.power_on = True
         controller.atc.speed_limit = 60.0
         controller.atc.current_block_speed_limit = 60.0
         return controller

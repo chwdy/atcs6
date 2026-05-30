@@ -1025,7 +1025,17 @@ class App {
                 });
             }
         });
-        
+
+        // "Show stuck" draws on the live (train) layer, so it must request a
+        // live redraw — a world-only redraw would not repaint trains, leaving
+        // the toggle with no visible effect while the sim is paused.
+        const stuckCheckbox = document.getElementById('debug-show-stuck');
+        if (stuckCheckbox) {
+            stuckCheckbox.addEventListener('change', () => {
+                this.renderer.requestRedraw({ world: true, live: true, reason: 'debug-toggle' });
+            });
+        }
+
         // Train position debug checkbox
         const trainPosCheckbox = document.getElementById('debug-show-train-position');
         if (trainPosCheckbox) {

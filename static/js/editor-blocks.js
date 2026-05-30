@@ -92,6 +92,23 @@ class BlockEditorHandler {
             }
         }
 
+        // Resolve what forward / reverse mean physically for this block so the
+        // map can draw F / R arrows at the block's terminal tiles while this
+        // editor is open (docs/DESIGN_LANGUAGE.md §12 principle 9 — show the
+        // derived value on the canvas, not the raw token). The direction-info
+        // endpoint 404s (→ null) when a block lacks geometry to disambiguate;
+        // we tolerate that and that arrow is simply skipped.
+        let directionGeometry = null;
+        try {
+            const [forward, reverse] = await Promise.all([
+                this.api.getBlockDirectionInfo(blockId, 'forward'),
+                this.api.getBlockDirectionInfo(blockId, 'reverse'),
+            ]);
+            directionGeometry = { forward: forward || null, reverse: reverse || null };
+        } catch (err) {
+            console.warn('[BlockEditorHandler] direction-info fetch failed:', err);
+        }
+
         const blockColor = this.getColor(blockId);
         const blockStateClass = this.getBlockStateClass(block.state);
 
@@ -170,6 +187,13 @@ class BlockEditorHandler {
         `;
 
         this.editor.showSecondarySidebar(`📦 Block Editor`, content);
+
+        // Draw the forward / reverse arrows on the map for this block so the
+        // operator sees what the direction tokens mean physically. Cleared when
+        // any editor opens (showSecondarySidebar) or the sidebar closes.
+        if (this.editor.renderer?.setBlockDirectionOverlay) {
+            this.editor.renderer.setBlockDirectionOverlay(directionGeometry);
+        }
         
         // Setup subscription before handlers
         this._setupSubscription(blockId, block);

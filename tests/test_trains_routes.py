@@ -283,7 +283,6 @@ class TestRouteExecutorThreeStationLoopSimulation:
 
         train.state = TrainState.READY
         controller = simulation._get_or_create_controller(train)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.ops.state = TrainState.READY
         assert controller.commands.set_cab("A").success is True
@@ -304,7 +303,6 @@ class TestRouteExecutorThreeStationLoopSimulation:
 
         train.state = TrainState.READY
         controller = simulation._get_or_create_controller(train)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.ops.state = TrainState.READY
         assert controller.commands.set_cab("A").success is True
@@ -664,7 +662,6 @@ class TestMultiTilePlatformStopping:
         )
 
         controller = TrainController(train_id=train.train_id, network=network)
-        controller.power_on = True
         # `_calculate_clearance_to_end_of_current_block` reads `train.position`
         # and the network, not current_speed or current_path — both of those
         # live on TrainController / PathDispatcher in v1.
@@ -946,7 +943,6 @@ class TestManualPathAssignmentAfterArrival:
         # Setup controller
         train.state = TrainState.READY
         controller = simulation._get_or_create_controller(train)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.ops.state = TrainState.READY
         assert controller.commands.set_cab("A").success is True
@@ -1093,7 +1089,6 @@ class TestManualPathAssignmentAfterArrival:
 
         # Setup controller
         controller = simulation._get_or_create_controller(train)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.ops.state = TrainState.READY
         assert controller.commands.set_cab("A").success is True
@@ -1166,7 +1161,6 @@ class TestManualPathAssignmentAfterArrival:
 
         # Setup controller
         controller = simulation._get_or_create_controller(train)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
         controller.ops.state = TrainState.READY
 
@@ -1789,7 +1783,6 @@ class TestAutoReversalOnNewRouteAssignment:
         network.place_train(train, 7, 0, Direction.EAST)
 
         controller = simulation._get_or_create_controller(train)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
 
         # Simulate post-route-completion: IDLE, facing EAST, cab A.
@@ -1848,7 +1841,6 @@ class TestAutoReversalOnNewRouteAssignment:
         network.place_train(train, 0, 0, Direction.EAST)
 
         controller = simulation._get_or_create_controller(train)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
 
         # Simulate transition_to_idle(): clears cab and leading_end
@@ -1904,7 +1896,6 @@ class TestAutoReversalOnNewRouteAssignment:
         network.place_train(train, 7, 0, Direction.WEST)
 
         controller = simulation._get_or_create_controller(train)
-        controller.power_on = True
         controller.commands.control_mode = "ato"
 
         # Simulate transition_to_idle(): clears everything

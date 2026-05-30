@@ -36,6 +36,10 @@ function buildRenderSnapshot(network, stateManager) {
 
         // Shallow-copy span fields the renderer reads. Cheap because each
         // train carries O(few-tens) of occupied tiles.
+        // Dispatcher-owned diagnostic for the "Show stuck" overlay: the block
+        // this train is held waiting on, or null when it is not stuck.
+        const progress = stateManager.getDispatcherProgress?.(train.id);
+
         snap.trains[train.id] = {
             id: train.id,
             cab: controller.cab ?? null,
@@ -45,6 +49,7 @@ function buildRenderSnapshot(network, stateManager) {
                 endA: span.end_a,
                 endB: span.end_b,
             },
+            waitingForBlockId: progress?.waiting_for_block_id ?? null,
         };
     }
     return snap;

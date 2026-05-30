@@ -349,7 +349,6 @@ class SimulationController:
         controller.commands.cab = None
         controller.eb.active = False
         controller.ato.running = False
-        controller.power_on = False
         controller.route_hooks.phase_latches.consume_power_off()
 
     def _consume_pending_route_deactivate(

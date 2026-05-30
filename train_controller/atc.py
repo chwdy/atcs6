@@ -29,7 +29,7 @@ red, safety margin) has TWO surfaces:
 
 # Constants
 
-The v1 tunables ``CAUTION_SPEED_LIMIT_KMH``, ``YELLOW_SIGNAL_SPEED_KMH``,
+The v1 tunables ``CAUTION_SPEED_LIMIT_KMH``,
 ``PLATFORM_SAFETY_MARGIN_CM``, ``ATC_NO_BLOCK_FALLBACK_CM``, and
 ``STOPPED_SPEED_THRESHOLD_KMH`` are imported at module level and
 referenced by the pure functions directly. They are not per-call
@@ -73,7 +73,6 @@ if TYPE_CHECKING:
 # ATC tuning constants local to this module (not authored on
 # `constants.py` because they have no consumer outside ATCComputer).
 ATC_NO_BLOCK_FALLBACK_CM = 100000.0
-YELLOW_SIGNAL_SPEED_KMH = 40.0
 ATC_SIGNAL_LOOKAHEAD_BLOCKS = 3
 
 
@@ -129,15 +128,14 @@ def speed_limit_pure(
     decel_rate_kmh_s: float,
     safety_margin_cm: float,
     caution_ahead: bool,
-    yellow_signal_ahead: bool,
     block_limit_kmh: float,
     train_max_speed_kmh: float,
     calculate_max_safe_speed: Callable[[float, float, float], float],
 ) -> Tuple[float, Optional[str]]:
     """Compute (speed_limit_kmh, reason_string) from the binding caps.
 
-    Pure: takes the four candidate caps (kinematic safe-speed from
-    clearance, CAUTION cap, yellow-signal cap, block cap) and the
+    Pure: takes the three candidate caps (kinematic safe-speed from
+    clearance, CAUTION cap, block cap) and the
     inputs needed to compute the kinematic cap. Returns the smallest
     binding speed plus a human-readable reason layered by which caps
     fired.
@@ -170,13 +168,6 @@ def speed_limit_pure(
             limiting_reason = "CAUTION block ahead"
         elif limiting_reason:
             limiting_reason = f"{limiting_reason}; CAUTION block"
-
-    if yellow_signal_ahead:
-        if YELLOW_SIGNAL_SPEED_KMH < limiting_speed:
-            limiting_speed = YELLOW_SIGNAL_SPEED_KMH
-            limiting_reason = "Yellow signal ahead"
-        elif limiting_reason:
-            limiting_reason = f"{limiting_reason}; Yellow signal"
 
     if block_limit_kmh < float("inf"):
         if block_limit_kmh < limiting_speed:
@@ -375,7 +366,6 @@ class ATCComputer:
             decel_rate_kmh_s=c._get_speed_profile().deceleration_rate,
             safety_margin_cm=self.effective_safety_margin(),
             caution_ahead=self.is_caution_ahead(),
-            yellow_signal_ahead=self.is_approaching_yellow_signal(),
             block_limit_kmh=c._get_current_block_speed_limit(),
             train_max_speed_kmh=train.max_speed if train else 0.0,
             calculate_max_safe_speed=calculate_max_safe_speed,

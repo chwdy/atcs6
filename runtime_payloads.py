@@ -22,7 +22,7 @@ module imports it under TYPE_CHECKING to avoid runtime circular imports.
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Protocol, Tuple
 
 if TYPE_CHECKING:
     # TrainSpan and its component schemas (SpanEndLocator) are owned by the
@@ -678,3 +678,77 @@ class ValidationResult:
     valid: bool
     errors: List[ValidationError] = field(default_factory=list)
     path: Optional[PathSegment] = None
+
+
+# =============================================================================
+# PathDispatcher <-> RouteExecutor seam contracts
+# =============================================================================
+#
+# These two Protocols name the surface each side of the PathDispatcher /
+# RouteExecutor seam exposes to the other. They replace runtime `getattr`
+# feature-detection — which fails silently when a method is renamed — with a
+# declared, structurally-typed contract a type checker can verify. They live
+# here in runtime_payloads, the leaf module both sides already import, so
+# neither class has to import the other just to name the contract.
+
+
+class PathDispatcherForRouteExecutor(Protocol):
+    """The PathDispatcher surface that RouteExecutor (the Phase-1 planner) drives.
+
+    RouteExecutor acquires and reads authority through these members. It never
+    calls `cancel_path(...)`: cancellation is latched in Phase 1 and committed
+    by the Phase-3 cancel -> callback -> cleanup flow (see the RouteExecutor
+    module docstring), so `cancel_path` is intentionally absent here.
+    """
+
+    # Path registry, read back after a successful create to inspect the new row.
+    paths: Dict[str, Any]
+
+    def active_path_id_by_train(self, train_id: str) -> Optional[str]: ...
+
+    def create_path(
+        self,
+        train_id: str = "",
+        requested_destination_block_id: str = "",
+        requested_destination_direction: str = "forward",
+        acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
+        manual_override: bool = False,
+    ) -> PathAcquisitionResult: ...
+
+    def extend_path(
+        self,
+        path_id: str = "",
+        requested_destination_block_id: str = "",
+        requested_destination_direction: str = "forward",
+        acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT,
+        manual_override: bool = False,
+    ) -> PathAcquisitionResult: ...
+
+
+class RouteExecutorForPathDispatcher(Protocol):
+    """The RouteExecutor surface that PathDispatcher calls back into during Phase 3.
+
+    Each method is bookkeeping-only: it records the consequence of a Phase-3
+    event on the route side and must not create or choose fresh authority.
+    """
+
+    def handle_train_advanced(
+        self, train_id: str, path_id: str, resource_event: ResourceEvent
+    ) -> None: ...
+
+    def handle_path_cancellation(
+        self,
+        train_id: str,
+        path_id: str,
+        initiator: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> None: ...
+
+    def handle_path_completion(
+        self,
+        train_id: str,
+        path_id: str,
+        authority_end_block_id: Optional[str] = None,
+        requested_destination_direction: Optional[str] = None,
+        event_time: Optional[float] = None,
+    ) -> bool: ...
