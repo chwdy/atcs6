@@ -248,26 +248,69 @@ are touched by both. Or earlier if a concurrency bug bites.
 
 ### 8. Add a real frontend build pipeline
 
-**Status:** Acknowledged, deferred.
+**Status:** In progress — Phase 0 (tooling spine) and Phase 1 (payload types)
+done 2026-05-30. Phases 2–5 deferred.
 
 **Problem.** The frontend is script-tag soup:
 
-- `static/index.html` loads **33 individual `<script>` tags**, no bundler, no ES modules.
+- `static/index.html` loads **31 individual `<script>` tags**, no bundler, no ES modules.
 - Cache busting is hand-edited query strings (`?v=15`, `?v=18`) in HTML.
-- `static/js/editor.js` is **2,806 lines** of global-window code; `editor-routes.js` is 2,435; `editor-trains.js` is 1,887. These are the JS twins of the Python god objects.
-- No TypeScript. The Python ↔ JS contract is enforced by hope, and any payload field rename on the server side breaks the client silently.
-- No frontend tests in `static/js/`. The Python side has 100 test files; the frontend has zero.
+- `static/js/editor.js` is **2,848 lines** (≈150 from its 3,000-line trigger); `editor-routes.js` is 2,435; `editor-trains.js` is 1,889. 33 files, ~25.9k lines total — the JS twins of the Python god objects.
+- The Python ↔ JS contract was enforced by hope: a payload field rename on the server broke the client silently.
 
-**Sketch of the fix.** Smallest credible step:
+**Three corrections to the original sketch** (found by grounding the plan in the
+actual code):
 
-1. Adopt Vite (or esbuild) + TypeScript + ES modules. One bundle output, automatic content-hashed filenames, dev server with hot reload. `static/index.html` becomes a stub that loads one entry point.
-2. Convert one module per week, starting with the renderer family (they have the cleanest interfaces). Editor modules go last — they share most state.
-3. Generate TypeScript types from the Python payload schemas (`runtime_payloads.py`). `pydantic` → JSON Schema → `json-schema-to-typescript` is one straightforward path. This kills the silent-rename problem.
-4. Add Vitest, port the most behavior-critical helpers (`pathfinders.js`, `helpers.js`, `camera.js`) to unit tests first.
+1. **The coupling is implicit globals, not `window.*`.** Only 7 files assign
+   `window.X`; the rest share state through bare top-level declarations in
+   classic scripts. The dependency graph *is* the script order in
+   `index.html`, and the edges are invisible (no `import`, no `window.`). That
+   is the core migration hazard: converting a file to an ES module hides it
+   from the legacy globals, so each converted boundary needs a temporary
+   `window` bridge.
+2. **Payloads are plain `@dataclass`, not pydantic.** The sketch's
+   "pydantic → JSON Schema → TS" path does not apply. Phase 1 instead uses a
+   small stdlib generator (no new dependencies).
+3. **A Python↔JS parity contract already exists**
+   (`tests/test_pathfinder_frontend_parity.py`), and `tests/test_api.js`
+   exists too — so "zero frontend tests" was slightly off. Parity is a hard
+   gate the migration must keep green.
 
-**When to do it.** When the next non-trivial frontend feature would
-push `editor.js` over 3,000 lines, or when the first JS-vs-Python
-field-name bug bites in production.
+**Plan (strangler-fig, never big-bang):**
+
+- **Phase 0 — Tooling spine. DONE (2026-05-30).** Vite 4 + TypeScript 5 +
+  Vitest 0.34 (pinned for the repo's Node 17), merged into the existing
+  `package.json` without breaking `npm test`. `vite build` bundles
+  `frontend/src/main.ts` → `static/dist/main.js`, which Flask serves via its
+  catch-all route; one inert `<script type="module">` in `index.html` proves
+  end-to-end integration. All 31 legacy scripts untouched. New commands:
+  `npm run build` / `dev` / `test:unit` / `typecheck`. (Node 18 LTS
+  recommended eventually, not required.)
+- **Phase 1 — Payload types. DONE (2026-05-30).** `tools/gen_payload_types.py`
+  walks the `@dataclass` / `Enum` types in `runtime_payloads.py` and emits
+  `frontend/src/payloads.generated.ts` (enums become unions of their wire
+  `.value`s; `Optional[X]` → `X | null`). `tests/test_payload_types_sync.py`
+  re-runs the generator and fails if the committed `.ts` is stale, so the
+  contract cannot silently rot. Call-site enforcement arrives as modules start
+  importing these types in Phase 2+.
+- **Phase 2 — Renderer cluster** (10 `renderer-*` files, ~4.4k lines, cleanest
+  interfaces): convert to TS modules behind a `renderer/` barrel; port the
+  parity-critical pure helpers (`pathfinders`, `helpers`, `camera`) with
+  Vitest; bridge foundation symbols through `window` temporarily. Keep the
+  pathfinder parity test green.
+- **Phase 3 — Foundation** (`constants`, `api`, `state-manager`, `helpers`,
+  `camera`, `pathfinders`): convert to real modules; remove their `window`
+  bridges.
+- **Phase 4 — Editor cluster** (11 files, ~13k lines incl. `editor.js`): the
+  hardest and most coupled; convert one sub-module at a time, `editor.js`
+  last.
+- **Phase 5 — Decommission.** `index.html` becomes a stub with one
+  `<script type="module">`; delete the `?v=` cache-busting; CI runs
+  `vite build` + `tsc --noEmit` + Vitest; remove the remaining `window`
+  bridges.
+
+**When to do the rest.** Phase 2+ when the next non-trivial frontend feature
+would push `editor.js` over 3,000 lines. Each phase is a clean stopping point.
 
 ---
 
