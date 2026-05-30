@@ -1,0 +1,210 @@
+// camera.ts — Viewport + isometric projection.
+//
+// Migrated from static/js/camera.js (longterm_todo.md item #8, Phase 2). The
+// math is unchanged and MUST stay in sync with tests/test_projection_roundtrip.py;
+// it is covered natively by camera.test.ts (the Vitest port of the old
+// Node-eval test_camera_math.py).
+//
+// Owns viewport state (panX, panY, scale, centerX, centerY, gridSize) and the
+// world<->screen projection. Bundled into static/dist/main.js and attached to
+// window.Camera so the not-yet-migrated classic scripts (Renderer) keep doing
+// `new Camera(...)` until they migrate too.
+
+/**
+ * Minimal canvas shape the camera reads. HTMLCanvasElement satisfies it, and
+ * unit tests can pass a plain `{ width, height }` stub.
+ */
+export interface CanvasLike {
+  width: number;
+  height: number;
+}
+
+export interface CameraOptions {
+  gridSize?: number;
+}
+
+export interface GridPoint {
+  x: number;
+  y: number;
+}
+
+export class Camera {
+  canvas: CanvasLike | null;
+  gridSize: number;
+  panX: number;
+  panY: number;
+  scale: number;
+  centerX: number;
+  centerY: number;
+  private _subscribers: Array<() => void>;
+
+  constructor(canvas: CanvasLike | null, { gridSize = 40 }: CameraOptions = {}) {
+    this.canvas = canvas;
+    this.gridSize = gridSize;
+
+    // Pan offset (user dragging / fit / follow).
+    this.panX = 0;
+    this.panY = 0;
+
+    // Zoom level (wheel zoom + buttons). 1.0 = native tile size.
+    this.scale = 1.0;
+
+    // Center of canvas in screen pixels (where world coord 0,0 appears when
+    // pan = 0). Updated by resizeToCanvas().
+    this.centerX = 0;
+    this.centerY = 0;
+
+    this._subscribers = [];
+  }
+
+  onChange(cb: () => void): () => void {
+    this._subscribers.push(cb);
+    return () => {
+      const idx = this._subscribers.indexOf(cb);
+      if (idx >= 0) this._subscribers.splice(idx, 1);
+    };
+  }
+
+  private _emit(): void {
+    for (const cb of this._subscribers) {
+      try {
+        cb();
+      } catch (e) {
+        console.error('[Camera] subscriber error:', e);
+      }
+    }
+  }
+
+  // ---- Projection ----------------------------------------------------------
+  //
+  // X+ goes down-right, Y+ goes up-right. Corner-based: tile (x,y) has corners
+  // at (x,y), (x+1,y), (x+1,y+1), (x,y+1); tile center is (x+0.5, y+0.5), so we
+  // add 1 to (gridX + gridY). The math here MUST mirror
+  // tests/test_projection_roundtrip.py.
+
+  tileSize(): number {
+    return this.gridSize * this.scale;
+  }
+
+  gridToScreenX(gridX: number, gridY = 0): number {
+    const tileSize = this.gridSize * this.scale;
+    return this.centerX + this.panX + ((gridX + gridY + 1) * tileSize) / 2;
+  }
+
+  gridToScreenY(gridX: number, gridY = 0): number {
+    const tileSize = this.gridSize * this.scale;
+    return this.centerY + this.panY + ((gridX - gridY) * tileSize) / 2;
+  }
+
+  screenToGridX(screenX: number, screenY: number): number {
+    const sx = screenX - this.centerX - this.panX;
+    const sy = screenY - this.centerY - this.panY;
+    const tileSize = this.gridSize * this.scale;
+    return Math.floor((sx + sy) / tileSize);
+  }
+
+  screenToGridY(screenX: number, screenY: number): number {
+    const sx = screenX - this.centerX - this.panX;
+    const sy = screenY - this.centerY - this.panY;
+    const tileSize = this.gridSize * this.scale;
+    return Math.floor((sx - sy) / tileSize);
+  }
+
+  screenToGrid(screenX: number, screenY: number): GridPoint {
+    return {
+      x: this.screenToGridX(screenX, screenY),
+      y: this.screenToGridY(screenX, screenY),
+    };
+  }
+
+  // ---- Mutators ------------------------------------------------------------
+
+  /**
+   * Update centerX / centerY to the new canvas midpoint. panX / panY are
+   * intentionally NOT adjusted: because screenToGrid subtracts centerX, the
+   * world point at the visual center stays put under any centerX change —
+   * preserving the visual center across sidebar opens.
+   */
+  resizeToCanvas(): void {
+    const width = this.canvas?.width ?? 0;
+    const height = this.canvas?.height ?? 0;
+    this.centerX = Math.floor(width / 2);
+    this.centerY = Math.floor(height / 2);
+    this._emit();
+  }
+
+  panBy(dx: number, dy: number): void {
+    if (dx === 0 && dy === 0) return;
+    this.panX += dx;
+    this.panY += dy;
+    this._emit();
+  }
+
+  /**
+   * Set absolute scale, then adjust pan so the world point under
+   * (anchorScreenX, anchorScreenY) stays under the same screen position —
+   * keeping the cursor's tile anchored across zoom.
+   */
+  zoomAt(anchorScreenX: number, anchorScreenY: number, newScale: number): void {
+    const clamped = Math.max(0.1, Math.min(5, newScale));
+    if (clamped === this.scale) return;
+    const worldBefore = this.screenToGrid(anchorScreenX, anchorScreenY);
+    this.scale = clamped;
+    const newTileSize = this.gridSize * clamped;
+    const projX =
+      this.centerX + this.panX + ((worldBefore.x + worldBefore.y + 1) * newTileSize) / 2;
+    const projY =
+      this.centerY + this.panY + ((worldBefore.x - worldBefore.y) * newTileSize) / 2;
+    this.panX += anchorScreenX - projX;
+    this.panY += anchorScreenY - projY;
+    this._emit();
+  }
+
+  /**
+   * Centre the visual viewport on the bbox of the given tile list: sets
+   * panX/panY so the bbox center lands at (centerX, centerY).
+   */
+  centerOnContent(tracks: ReadonlyArray<GridPoint>): void {
+    if (!tracks || tracks.length === 0) return;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const t of tracks) {
+      if (t.x < minX) minX = t.x;
+      if (t.x > maxX) maxX = t.x;
+      if (t.y < minY) minY = t.y;
+      if (t.y > maxY) maxY = t.y;
+    }
+    const cx = (minX + maxX + 1) / 2;
+    const cy = (minY + maxY + 1) / 2;
+    const tileSize = this.gridSize * this.scale;
+    this.panX = -(((cx + cy + 1) * tileSize) / 2);
+    this.panY = -(((cx - cy) * tileSize) / 2);
+    this._emit();
+  }
+
+  /**
+   * Pan such that the given world tile lands at the visual center. Used by
+   * App._maybeFollowSelectedTrain when Follow Train is on.
+   */
+  panToWorld(gridX: number, gridY: number): void {
+    const tileSize = this.gridSize * this.scale;
+    this.panX = -(((gridX + gridY + 1) * tileSize) / 2);
+    this.panY = -(((gridX - gridY) * tileSize) / 2);
+    this._emit();
+  }
+}
+
+declare global {
+  interface Window {
+    Camera?: typeof Camera;
+  }
+}
+
+// Browser-global bridge so the legacy classic scripts (Renderer) keep doing
+// `new Camera(...)` until they migrate. Guarded so the module also imports
+// cleanly under Node (Vitest), where there is no `window`.
+if (typeof window !== 'undefined') {
+  window.Camera = Camera;
+}

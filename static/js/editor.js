@@ -667,8 +667,8 @@ class Editor {
      * point lands at the same screen coordinate.
      */
     _zoomAt(screenX, screenY, targetScale) {
-        // Math lives on Camera (static/js/camera.js) — see Camera.zoomAt for
-        // the cursor-anchor derivation. Tests in tests/test_camera_math.py.
+        // Math lives on Camera (frontend/src/lib/camera.ts) — see Camera.zoomAt for
+        // the cursor-anchor derivation. Tests in frontend/src/lib/camera.test.ts.
         this.renderer.camera.zoomAt(screenX, screenY, targetScale);
         this.renderer.requestRedraw({ reason: 'zoom' });
         const zoomLabel = document.getElementById('status-zoom');
@@ -2314,8 +2314,10 @@ class Editor {
             shapeDesc = 'Complex Junction';
         }
         
-        // Check if forbidden
-        const isForbidden = FORBIDDEN_TRACK_BITS.has(trackBits);
+        // Check if forbidden (explicit bad geometry) or a square-corner switch
+        // (a branch 90° to a connecting segment, no 45° easing — see
+        // isSquareCornerSwitch in constants.js).
+        const isForbidden = FORBIDDEN_TRACK_BITS.has(trackBits) || isSquareCornerSwitch(trackBits);
         
         // Format binary with highlighted 1s
         const binaryStr = trackBits.toString(2).padStart(6, '0');
