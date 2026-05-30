@@ -294,10 +294,18 @@ actual code):
   contract cannot silently rot. Call-site enforcement arrives as modules start
   importing these types in Phase 2+.
 - **Phase 2 — Renderer cluster** (10 `renderer-*` files, ~4.4k lines, cleanest
-  interfaces): convert to TS modules behind a `renderer/` barrel; port the
-  parity-critical pure helpers (`pathfinders`, `helpers`, `camera`) with
-  Vitest; bridge foundation symbols through `window` temporarily. Keep the
-  pathfinder parity test green.
+  interfaces). IN PROGRESS (2026-05-30): `camera.js` → `frontend/src/lib/camera.ts`
+  is the first conversion — bundled and bridged via `window.Camera`, its
+  Node-eval `test_camera_math.py` ported to native Vitest. Deleting the legacy
+  file makes the gitignored bundle load-bearing, so `server.py` gained a
+  build-on-serve guard (`frontend_build.py`): on `python server.py` it rebuilds
+  `static/dist/main.js` when missing or stale (skippable via
+  `--skip-frontend-build`; never blocks startup). Remaining: the 9 other
+  `renderer-*` files + `render-snapshot`, then the parity helpers
+  (`pathfinders`, `helpers`) — `pathfinders` has its own Python↔JS parity test
+  (`test_pathfinder_frontend_parity.py`) needing the same co-migration camera's
+  test got. Convert behind a `renderer/` barrel; bridge foundation symbols
+  through `window` temporarily; keep the pathfinder parity test green.
 - **Phase 3 — Foundation** (`constants`, `api`, `state-manager`, `helpers`,
   `camera`, `pathfinders`): convert to real modules; remove their `window`
   bridges.

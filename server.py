@@ -215,6 +215,7 @@ def main() -> None:
     Flags:
         --no-demo: Start with empty network instead of demo data
         --skip-startup-tests: Skip running tests on startup
+        --skip-frontend-build: Skip building the frontend bundle on startup
         --no-sim: Don't start simulation thread
         --no-autosave: Don't start autosave thread
         --no-reload: Disable auto-reload on file changes (default: reload enabled)
@@ -229,6 +230,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--skip-startup-tests", action="store_true", help="Skip startup tests"
+    )
+    parser.add_argument(
+        "--skip-frontend-build",
+        action="store_true",
+        help="Skip building the frontend bundle (static/dist/main.js) on startup",
     )
     parser.add_argument(
         "--no-sim", action="store_true", help="Don't start simulation thread"
@@ -248,6 +254,14 @@ def main() -> None:
     is_reloader_child = os.environ.get("WERKZEUG_RUN_MAIN") == "true"
     if not args.skip_startup_tests and not is_reloader_child:
         run_startup_tests()
+
+    # Ensure the frontend bundle is built before serving (longterm_todo.md item
+    # #8). Runs once in the parent (not the reloader child), only on the real
+    # `python server.py` boot — create_app() is untouched, so tests never build.
+    if not is_reloader_child:
+        from frontend_build import ensure_frontend_bundle
+
+        ensure_frontend_bundle(skip=args.skip_frontend_build)
 
     global network, path_dispatcher, sim_controller, persistence_manager
     global simulation_lock, simulation_running, simulation_speed, last_update_time
