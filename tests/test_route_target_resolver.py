@@ -48,6 +48,23 @@ class _StubDispatcher:
 
 
 @dataclass
+class _StubController:
+    """Minimal stand-in for `TrainController` exposing only the head-tile
+    surface `RouteTargetResolver._current_block_id` reads.
+
+    v1: the resolver resolves a train's current block via
+    `executor._controller_by_id(train_id)._get_head_tile()` (the live head
+    derives from the controller's seeded span, not from `Train`). These
+    unit tests seed the head tile directly on this stub.
+    """
+
+    head_tile: Optional[Tuple[int, int]] = None
+
+    def _get_head_tile(self) -> Optional[Tuple[int, int]]:
+        return self.head_tile
+
+
+@dataclass
 class _StubExecutor:
     network: Any = None
     path_dispatcher: Any = None
@@ -70,11 +87,29 @@ class _StubSegment:
 
 
 def _make_resolver(
-    network: Any = None, dispatcher: Any = None
+    network: Any = None,
+    dispatcher: Any = None,
+    train: Any = None,
 ) -> RouteTargetResolver:
-    return RouteTargetResolver(
-        _StubExecutor(network=network, path_dispatcher=dispatcher)
-    )
+    """Build a resolver over a `_StubExecutor`.
+
+    When `train` is given (and carries a `position.head_tile`), attach a
+    `_controller_by_id` to the executor that returns a seeded
+    `_StubController` so the resolver can resolve the train's current block —
+    the v1 path resolves the head via
+    `executor._controller_by_id(train_id)._get_head_tile()` (live head derives
+    from the controller's span, not from `Train`).
+
+    When `train` is omitted, the executor exposes no `_controller_by_id`,
+    matching the early-bootstrap / no-controller case the resolver guards
+    against (it then falls back to the route-walk signed direction).
+    """
+    executor = _StubExecutor(network=network, path_dispatcher=dispatcher)
+    if train is not None:
+        head_tile = getattr(getattr(train, "position", None), "head_tile", None)
+        controllers = {train.train_id: _StubController(head_tile=head_tile)}
+        executor._controller_by_id = lambda tid: controllers.get(tid)
+    return RouteTargetResolver(executor)
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +151,7 @@ def test_resolve_task_direction_either_picks_only_reachable_direction():
     train = _StubTrain(
         train_id="T1", position=_StubPosition(head_tile=(5, 0))
     )
-    resolver = _make_resolver(network=network, dispatcher=dispatcher)
+    resolver = _make_resolver(network=network, dispatcher=dispatcher, train=train)
     assert resolver.resolve_task_direction(
         train=train,
         block_id="BLOCK_MAIN_WEST",
@@ -134,7 +169,7 @@ def test_resolve_task_direction_either_picks_forward_when_only_forward_reachable
     train = _StubTrain(
         train_id="T1", position=_StubPosition(head_tile=(0, 0))
     )
-    resolver = _make_resolver(network=network, dispatcher=dispatcher)
+    resolver = _make_resolver(network=network, dispatcher=dispatcher, train=train)
     assert resolver.resolve_task_direction(
         train=train,
         block_id="BLOCK_MAIN_EAST",
@@ -158,7 +193,7 @@ def test_resolve_task_direction_either_tie_breaks_by_shortest_candidate():
     train = _StubTrain(
         train_id="T1", position=_StubPosition(head_tile=(2, 0))
     )
-    resolver = _make_resolver(network=network, dispatcher=dispatcher)
+    resolver = _make_resolver(network=network, dispatcher=dispatcher, train=train)
     assert resolver.resolve_task_direction(
         train=train,
         block_id="BLOCK_Y",

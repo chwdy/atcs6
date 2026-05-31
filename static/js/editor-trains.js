@@ -158,7 +158,7 @@ class TrainEditorHandler {
                         </div>
                         <div class="flex justify-between items-end">
                             <div class="text-xs text-muted">
-                                <div>📍 (${position.x}, ${position.y}) ${train.facing_direction ? `→ ${train.facing_direction}` : ''}</div>
+                                <div>📍 (${position.x}, ${position.y}) ${controller?.facing_direction ? `→ ${controller.facing_direction}` : ''}</div>
                                 <div>🚀 ${(controller?.current_speed || 0).toFixed(1)} km/h</div>
                             </div>
                             <div class="flex gap-4">
@@ -817,7 +817,7 @@ class TrainEditorHandler {
                             </div>
                             <div class="tc-field">
                                 <dt class="tc-field-label">Facing</dt>
-                                <dd class="tc-field-value train-dir-display">${train.facing_direction || '—'}</dd>
+                                <dd class="tc-field-value train-dir-display">${controller?.facing_direction || '—'}</dd>
                             </div>
                             <div class="tc-field">
                                 <dt class="tc-field-label">Block</dt>
@@ -1463,7 +1463,7 @@ class TrainEditorHandler {
 
         const directionEl = panel.querySelector('.train-dir-display');
         if (directionEl) {
-            directionEl.textContent = train.facing_direction || 'Unknown';
+            directionEl.textContent = controller?.facing_direction || 'Unknown';
         }
 
         const speedEl = panel.querySelector('#hmi-speed');

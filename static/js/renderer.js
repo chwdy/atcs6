@@ -76,7 +76,7 @@ class Renderer {
 
         // Viewport (pan, zoom, projection) lives on Camera so editor / app /
         // handler files all read & write through one canonical object. See
-        // static/js/camera.js for the math.
+        // frontend/src/lib/camera.ts for the math.
         this.camera = new Camera(this.canvas);
 
         // Mouse position for hover detection
@@ -230,7 +230,7 @@ class Renderer {
         this.worldCanvas.height = height;
 
         // Camera updates centerX / centerY from the new canvas dimensions.
-        // It does NOT touch panX / panY — see camera.js resizeToCanvas for
+        // It does NOT touch panX / panY — see camera.ts resizeToCanvas for
         // the rationale (preserves the world coord at the visual center).
         this.camera.resizeToCanvas();
 
@@ -462,7 +462,7 @@ class Renderer {
         this.ctx.restore();
     }
 
-    // Projection and viewport math live on Camera (static/js/camera.js).
+    // Projection and viewport math live on Camera (frontend/src/lib/camera.ts).
     // The thin delegators below let internal Renderer methods and handler
     // getters (e.g. `renderer-trains.js` get scale, gridToScreenX) keep
     // their existing call sites while the canonical state moves to Camera.

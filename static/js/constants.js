@@ -70,6 +70,20 @@ const FORBIDDEN_TRACK_BITS = new Set([
     31, 47, 55, 59, 61, 62, 63  // 5+ path configs
 ]);
 
+// A "square corner" switch joins a HORIZONTAL bit (NW=8 or SE=16, screen 0°)
+// and a VERTICAL bit (NE=4 or SW=32, screen 90°) with NO 45° diagonal
+// (NS=1 or EW=2) to ease it. On the rotated screen it renders as a 90° T-bone
+// — a connecting segment meets a switch branch at a right angle — which is
+// unintuitive, so these placements are rejected. A turnout carrying a diagonal
+// NS/EW bit eases the branch at 45° (like the scissors crossovers) and is OK.
+// Mirror of the server check in track.py (is_square_corner_switch).
+function isSquareCornerSwitch(bits) {
+    const hasHorizontal = (bits & (8 | 16)) !== 0;   // NW | SE
+    const hasVertical   = (bits & (4 | 32)) !== 0;   // NE | SW
+    const hasDiagonal   = (bits & (1 | 2)) !== 0;    // NS | EW
+    return hasHorizontal && hasVertical && !hasDiagonal;
+}
+
 // ============================================================================
 // Quadrant System (for signal/label placement)
 // ============================================================================

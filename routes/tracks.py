@@ -6,7 +6,7 @@ from flask import jsonify, request
 
 from app_state import AppState
 from switch import Switch
-from track import TrackSegment, FORBIDDEN_TRACK_BITS
+from track import TrackSegment, FORBIDDEN_TRACK_BITS, is_square_corner_switch
 
 
 def register(app, state: AppState) -> None:
@@ -76,8 +76,19 @@ def register(app, state: AppState) -> None:
                     state.network.remove_switch(impact["removes_switch"])
 
         if "track_bits" in data:
-            new_bits = data["track_bits"]
-            if not track.set_track_bits(int(new_bits)):
+            new_bits = int(data["track_bits"])
+            if is_square_corner_switch(new_bits):
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": (
+                            "Invalid switch placement: a switch branch is 90° to "
+                            "a connecting segment (square corner). Add a diagonal "
+                            "(NS/EW) leg so the branch eases at 45°."
+                        ),
+                    }
+                ), 400
+            if not track.set_track_bits(new_bits):
                 return jsonify(
                     {"success": False, "error": f"Invalid track_bits: {new_bits}"}
                 ), 400
@@ -111,12 +122,23 @@ def register(app, state: AppState) -> None:
                 ), 400
 
         if "switch_state" in data:
-            if track.is_locked_by_path():
+            # Switch lock ownership lives on `Switch.locks` (design_new.md:651);
+            # resolve the owning Switch and reject if it holds any future lock
+            # or train-owned protection.
+            switch_entity = (
+                state.network.switches.get(track.switch_id)
+                if track.switch_id is not None
+                else None
+            )
+            if switch_entity is not None and switch_entity.is_locked():
+                lock_items = list(switch_entity.locks.items())
+                holder_path = lock_items[0][0][0] if lock_items else None
+                holder_state = lock_items[0][1][1] if lock_items else None
                 return jsonify(
                     {
-                        "error": f"Switch is locked by path {track.locked_by_path}",
-                        "locked_by_path": track.locked_by_path,
-                        "locked_state": track.locked_state,
+                        "error": f"Switch is locked by path {holder_path}",
+                        "locked_by_path": holder_path,
+                        "locked_state": holder_state,
                     }
                 ), 409
             track.switch_state = int(data["switch_state"])
@@ -167,7 +189,7 @@ def register(app, state: AppState) -> None:
 
             if existing_track:
                 merged_bits = existing_track.track_bits | new_bits
-                if merged_bits in FORBIDDEN_TRACK_BITS:
+                if merged_bits in FORBIDDEN_TRACK_BITS or is_square_corner_switch(merged_bits):
                     continue
                 existing_track.set_track_bits(merged_bits)
 
@@ -190,7 +212,7 @@ def register(app, state: AppState) -> None:
                 state.network.propagate_from_tile(x, y)
                 updated.append(existing_track.to_dict())
             else:
-                if new_bits in FORBIDDEN_TRACK_BITS:
+                if new_bits in FORBIDDEN_TRACK_BITS or is_square_corner_switch(new_bits):
                     continue
                 track = TrackSegment(x=x, y=y, track_bits=new_bits)
 

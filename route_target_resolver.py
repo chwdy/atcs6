@@ -375,11 +375,15 @@ class RouteTargetResolver:
         return "forward" if signed_direction >= 0 else "reverse"
 
     def _current_block_id(self, train: "Train") -> Optional[str]:
-        """Train's current block from its head tile, or None."""
-        position = getattr(train, "position", None)
-        if not position:
-            return None
-        head_tile = getattr(position, "head_tile", None)
+        """Train's current block from its head tile, or None.
+
+        Mirrors `TrainAtTargetPredicates.current_block_id`, but is kept inline:
+        the resolver is unit-tested in isolation with a minimal stub executor
+        that exposes only `_controller_by_id` / `network`, not the predicates
+        object, so it resolves the head tile -> block directly here."""
+        getter = getattr(self._e, "_controller_by_id", None)
+        ctrl = getter(train.train_id) if callable(getter) else None
+        head_tile = ctrl._get_head_tile() if ctrl is not None else None
         if not head_tile:
             return None
         network = getattr(self._e, "network", None)

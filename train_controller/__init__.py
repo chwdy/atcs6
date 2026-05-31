@@ -63,7 +63,6 @@ from enums import (
     ControllerCondition,
     Direction,
     HandlePosition,
-    LeadingEnd,
     SignalState,
     TrainState,
 )
@@ -480,47 +479,33 @@ class TrainController:
         Returns None when no cab is selected.
 
         Resolution order:
-        1. From `current_span` (canonical) when wired — the direction from
-           `span.tail.tile` to `span.head.tile`, or for single-tile spans
-           the outward direction through the head's exit edge.
-        2. Fall back to `train.position.facing_direction` when the canonical
-           `current_span` is not yet populated (e.g. before the first
-           physics tick).
+        1. From `current_span` (canonical) when wired — the direction from the
+           tail-side end to the head-side end (head derived from the cab via
+           `_head_span_locator`), or for single-tile spans the outward
+           direction through the head's exit edge.
+        2. None when there is no live span or no cab is selected.
         """
         if self.commands.cab is None:
             return None
 
-        # Canonical path: derive from current_span when it carries head/tail.
-        span = getattr(self.physics_sync, "current_span", None)
-        if span is not None:
-            head = getattr(span, "head", None)
-            tail = getattr(span, "tail", None)
-            if head is not None:
-                head_tile = getattr(head, "tile", None)
-                tail_tile = getattr(tail, "tile", None) if tail is not None else None
-                if head_tile is not None and tail_tile is not None and head_tile != tail_tile:
-                    direction = self._direction_from_tiles(tail_tile, head_tile)
-                    if isinstance(direction, Direction):
-                        return self._direction_to_edge(direction) or direction.name
-                head_entry = getattr(head, "entry_edge", None)
-                if isinstance(head_entry, str) and head_entry:
-                    # Single-tile span (or no tail): outward direction is the
-                    # opposite of the entry edge through the head.
-                    return OPPOSITE_EDGES.get(head_entry.upper(), head_entry)
+        # Canonical path: derive the head/tail side from (cab, current_span)
+        # and read the network-frame direction from tail tile -> head tile.
+        head = self._head_span_locator()
+        if head is not None:
+            tail = self._tail_span_locator()
+            head_tile = getattr(head, "tile", None)
+            tail_tile = getattr(tail, "tile", None) if tail is not None else None
+            if head_tile is not None and tail_tile is not None and tuple(head_tile) != tuple(tail_tile):
+                direction = self._direction_from_tiles(tail_tile, head_tile)
+                if isinstance(direction, Direction):
+                    return self._direction_to_edge(direction) or direction.name
+            head_entry = getattr(head, "entry_edge", None)
+            if isinstance(head_entry, str) and head_entry:
+                # Single-tile span (or no tail): outward direction is the
+                # opposite of the entry edge through the head.
+                return OPPOSITE_EDGES.get(head_entry.upper(), head_entry)
 
-        # Fallback: existing TrainPosition-derived direction.
-        train = self._get_train()
-        if not train or not getattr(train, "position", None):
-            return None
-        position = train.position
-        facing = getattr(position, "facing_direction", None)
-        if isinstance(facing, Direction):
-            edge = self._direction_to_edge(facing)
-            if edge:
-                return edge
-            return facing.name
-        if isinstance(facing, str) and facing:
-            return facing
+        # No usable span (no live span yet): no travel direction.
         return None
 
     @property
@@ -1107,7 +1092,7 @@ class TrainController:
             if station:
                 station_positions = set(station.positions)
 
-        head_distance_cm = train.position.head_distance_cm if train.position else 0.0
+        head_distance_cm = self._get_head_distance_cm()
 
         block_positions = self.network.get_block_positions(current_block_id)
         if not block_positions:
@@ -1165,7 +1150,7 @@ class TrainController:
     def _get_travel_direction(self) -> Optional[Direction]:
         """Get the train's current travel direction from path or facing direction."""
         train = self._get_train()
-        if not train or not train.position:
+        if not train:
             return None
 
         # First, try to get direction from current_path
@@ -1194,8 +1179,8 @@ class TrainController:
                                 return Direction.WEST
                         break
 
-        # Fall back to facing direction
-        return train.position.facing_direction
+        # Fall back to facing direction (derived from cab + current_span).
+        return self._facing_direction()
 
     def _sort_positions_by_direction(
         self,
@@ -1264,26 +1249,95 @@ class TrainController:
 
         return None
 
-    def _get_head_tile(self) -> Optional[Tuple[int, int]]:
-        """Get the head tile for the train."""
-        train = self._get_train()
-        if not train:
+    # --- Cab-derived head/tail/orientation helpers ---------------------------
+    # Per design_new.md: head/tail and travel_direction derive from
+    # (cab, current_span). Cab "A" -> end_a, cab "B" -> end_b; head defaults to
+    # end_a when no cab is selected (matching the placement default). `end_a` /
+    # `end_b` on the span are cab-independent physical ends and never carry
+    # head/tail labels themselves.
+
+    def _head_end_label(self) -> str:
+        """Which physical span end ("end_a"/"end_b") is the head for the
+        selected cab. Cab "B" -> end_b; cab "A" or None -> end_a."""
+        return "end_b" if self.commands.cab == "B" else "end_a"
+
+    def _head_span_locator(self):
+        """`SpanEndLocator` for the head end of `current_span`, or None."""
+        span = getattr(self.physics_sync, "current_span", None)
+        if span is None:
             return None
+        return span.end_b if self._head_end_label() == "end_b" else span.end_a
 
-        if train.position:
-            return train.position.head_tile
+    def _tail_span_locator(self):
+        """`SpanEndLocator` for the tail end of `current_span`, or None."""
+        span = getattr(self.physics_sync, "current_span", None)
+        if span is None:
+            return None
+        return span.end_a if self._head_end_label() == "end_b" else span.end_b
 
+    def _orientation_for_head_end(self, head_end: str) -> Optional[Direction]:
+        """Direction the train points when `head_end` ("end_a"/"end_b") is the
+        head, derived purely from `current_span` geometry. Cab-independent —
+        the caller chooses which end is the head. Returns None when there is no
+        span or the geometry is degenerate."""
+        span = getattr(self.physics_sync, "current_span", None)
+        if span is None:
+            return None
+        if head_end == "end_a":
+            head, tail = span.end_a, span.end_b
+        else:
+            head, tail = span.end_b, span.end_a
+        head_tile = tuple(head.tile) if head.tile is not None else None
+        tail_tile = tuple(tail.tile) if tail.tile is not None else None
+        if head_tile is None:
+            return None
+        occupied = [tuple(t) for t in (span.occupied_tiles or [])]
+        # Multi-tile: vector from the adjacent body tile to the head tile.
+        if tail_tile is not None and head_tile != tail_tile:
+            adjacent = tail_tile
+            if len(occupied) >= 2 and head_tile in occupied:
+                hidx = occupied.index(head_tile)
+                adjacent = occupied[1] if hidx == 0 else occupied[hidx - 1]
+            dx = head_tile[0] - adjacent[0]
+            dy = head_tile[1] - adjacent[1]
+            for direction in Direction:
+                if direction.value == (dx, dy):
+                    return direction
+            return None
+        # Single-tile: derive from the head entry edge and the two end offsets.
+        head_entry = head.entry_edge
+        if not head_entry:
+            return None
+        exit_edge = OPPOSITE_EDGES.get(head_entry.upper(), head_entry)
+        edge_to_dir = {
+            "N": Direction.NORTH,
+            "E": Direction.EAST,
+            "S": Direction.SOUTH,
+            "W": Direction.WEST,
+        }
+        if float(head.distance_cm) >= float(tail.distance_cm):
+            return edge_to_dir.get(exit_edge)
+        return edge_to_dir.get(head_entry.upper())
+
+    def _facing_direction(self) -> Optional[Direction]:
+        """Train facing direction (a `Direction`) derived from
+        (cab, current_span). Replaces the removed `Train.facing_direction`. Not
+        cab-gated: head defaults to end_a when no cab. Returns None when there
+        is no live span."""
+        return self._orientation_for_head_end(self._head_end_label())
+
+    def _get_head_tile(self) -> Optional[Tuple[int, int]]:
+        """Head tile, derived from (cab, current_span), or None when no span."""
+        loc = self._head_span_locator()
+        if loc is not None and loc.tile is not None:
+            return (loc.tile[0], loc.tile[1])
         return None
 
     def _get_head_distance_cm(self) -> float:
-        """Get head distance within the current tile in cm."""
-        train = self._get_train()
-        if not train:
-            return 0.0
-
-        if train.position:
-            return train.position.head_distance_cm
-
+        """Head in-tile distance, derived from (cab, current_span)."""
+        loc = self._head_span_locator()
+        if loc is not None:
+            return float(loc.distance_cm)
         return 0.0
 
     # `get_path_tiles()` and `get_live_path_data()` live on the
@@ -1333,15 +1387,11 @@ class TrainController:
             return "W"
         return None
 
-    def _get_head_entry_edge(self, train: "Train") -> Optional[str]:
-        """Get the current head tile entry edge based on leading end."""
-        if not train.position:
-            return None
-
-        if train.position.leading_end == "a":
-            return train.position.end_a_entry_edge
-        if train.position.leading_end == "b":
-            return train.position.end_b_entry_edge
+    def _get_head_entry_edge(self) -> Optional[str]:
+        """Head tile entry edge, derived from (cab, current_span)."""
+        loc = self._head_span_locator()
+        if loc is not None:
+            return loc.entry_edge
         return None
 
     def _can_traverse_path_step(
@@ -1380,12 +1430,24 @@ class TrainController:
         assigned_path_id = self.path_projection.assigned_path_id
 
         for tile_track in (from_track, to_track):
-            if tile_track.is_switch and tile_track.is_locked_by_path():
-                if (
-                    not assigned_path_id
-                    or tile_track.locked_by_path != assigned_path_id
-                ):
-                    return False, None
+            if not tile_track.is_switch:
+                continue
+            switch_entity = (
+                self.network.switches.get(tile_track.switch_id)
+                if self.network is not None and tile_track.switch_id is not None
+                else None
+            )
+            if switch_entity is None or not switch_entity.is_locked():
+                continue
+            # The switch holds a future lock or train-owned protection. The
+            # train may cross it only when its own assigned path holds a lock
+            # here. The canonical lock store is `Switch.locks`, keyed by
+            # `(path_id, source_switch_id)` (design_new.md:651).
+            held_by_assigned = assigned_path_id is not None and any(
+                key[0] == assigned_path_id for key in switch_entity.locks
+            )
+            if not held_by_assigned:
+                return False, None
 
         if (
             to_track.block_section_id
@@ -1491,7 +1553,7 @@ class TrainController:
         resource_sequence = (
             getattr(plan, "resource_sequence", None) if plan else None
         )
-        if train.position and resource_sequence:
+        if resource_sequence:
             head_resource_index = -1
             head_tile_index = -1
             for r_idx, resource in enumerate(resource_sequence):
@@ -1507,7 +1569,7 @@ class TrainController:
                 return block.length_cm
 
             head_tile_length = self.network._get_tile_length_cm(*head_tile)
-            remaining = max(0.0, head_tile_length - train.position.head_distance_cm)
+            remaining = max(0.0, head_tile_length - self._get_head_distance_cm())
 
             # Walk forward through resource_sequence (always tail→authority
             # order per the schema) starting one tile past the head.
@@ -1896,22 +1958,10 @@ class TrainController:
         current_head_sequence_index: Optional[int] = None
 
         if plan is not None:
-            # Look up the head tile in the sequence index map.
-            new_span = span_update.new_span
-            head_tile_xy: Optional[Tuple[int, int]] = None
-            if new_span is not None:
-                # The head is the end of the span that matches the leading_end.
-                from enums import LeadingEnd
-                le = getattr(new_span, "leading_end", None)
-                if le is not None:
-                    if le == LeadingEnd.A:
-                        end = getattr(new_span, "end_a", None)
-                    else:
-                        end = getattr(new_span, "end_b", None)
-                    if end is not None:
-                        tile = getattr(end, "tile", None)
-                        if tile is not None:
-                            head_tile_xy = (tile[0], tile[1])
+            # Look up the head tile in the sequence index map. current_span was
+            # just written from span_update.new_span above, so the cab-derived
+            # head reflects this update.
+            head_tile_xy = self._get_head_tile()
 
             if head_tile_xy is not None:
                 seq_idx = tile_xy_to_seq_index.get(head_tile_xy)
@@ -2075,15 +2125,15 @@ class TrainController:
             cannot be performed.
         """
         train = self._get_train()
-        if not train or not train.position or not train.position.leading_end:
+        if not train:
             return False
 
         path_tiles = self.path_projection.get_path_tiles()
         if not path_tiles or len(path_tiles) < 2:
             return False
 
-        head_tile = train.position.head_tile
-        head_entry_edge = train.position.head_entry_edge
+        head_tile = self._get_head_tile()
+        head_entry_edge = self._get_head_entry_edge()
         if not head_tile or not head_entry_edge:
             return False
 
@@ -2140,7 +2190,7 @@ class TrainController:
             ``"A"`` or ``"B"``, or ``None`` if the check cannot be performed.
         """
         train = self._get_train()
-        if not train or not train.position:
+        if not train:
             return None
 
         current_cab = self.commands.cab or "A"
@@ -2171,7 +2221,7 @@ class TrainController:
         # Compare the path's travel direction with the train's facing
         # direction. This also resolves the "90 degrees at the head but overall
         # reverse" diagonal case after the direct backtracking check above.
-        facing = train.facing_direction
+        facing = self._facing_direction()
         if facing is None:
             return (
                 current_cab if self._connectivity_check_was_conclusive(train) else None
@@ -2225,12 +2275,12 @@ class TrainController:
         next tile to compare against.  If the head wasn't found, the
         connectivity check was inconclusive and the caller should fall back.
         """
-        if not train.position or not train.position.leading_end:
+        if not train:
             return False
         path_tiles = self.path_projection.get_path_tiles()
         if not path_tiles or len(path_tiles) < 2:
             return False
-        head_tile = train.position.head_tile
+        head_tile = self._get_head_tile()
         if not head_tile:
             return False
         for i, entry in enumerate(path_tiles):
@@ -2260,10 +2310,8 @@ class TrainController:
         path_tiles = self.path_projection.get_path_tiles()
         if not path_tiles or len(path_tiles) < 2:
             return None
-        if not train.position:
-            return None
 
-        head_tile = train.position.head_tile
+        head_tile = self._get_head_tile()
         if not head_tile:
             # Fallback: use first two tiles
             return self._direction_from_tiles(path_tiles[0], path_tiles[1])
@@ -2857,7 +2905,7 @@ class TrainController:
         # context; no field write needed here.
         if self.commands.cab not in ("A", "B"):
             return (False, "no cab selected")
-        if train.facing_direction is None:
+        if self._facing_direction() is None:
             return (False, "facing direction not set")
         if self.ops.state == TrainState.READY:
             self.ops.state = TrainState.RUNNING_MOVING
@@ -2933,6 +2981,12 @@ class TrainController:
             "manual_mode_type": self.manual.manual_mode_type,
             "manual_power_percent": self.manual.manual_power_percent,
             "travel_direction": self.travel_direction,
+            # Train facing (a `Direction` name) derived from (cab, current_span);
+            # replaces the removed `Train.facing_direction` on the wire so the
+            # client reads facing from the controller payload.
+            "facing_direction": (lambda d: d.name if d is not None else None)(
+                self._facing_direction()
+            ),
             "state": self.ops.state.value,
             "target_speed": self.target_speed,
             "handle_position": self.ops.handle_position.value,
@@ -3019,7 +3073,15 @@ class TrainController:
             },
             "occupied_tiles": [list(t) for t in span.occupied_tiles],
             "occupied_blocks": list(span.occupied_blocks),
-            "leading_end": span.leading_end.value if span.leading_end else None,
+            # leading_end is the cab-derived head end ("a"/"b"), or None when no
+            # cab is selected (a no-cab train has no designated head; the span
+            # itself carries no head/tail label per the design_new.md TrainSpan
+            # schema). Clients render dual end-markers when it is null.
+            "leading_end": (
+                None
+                if self.commands.cab is None
+                else ("a" if self._head_end_label() == "end_a" else "b")
+            ),
         }
 
     def _calculate_time_to_target_sec(self) -> Optional[float]:
@@ -3176,11 +3238,8 @@ class TrainController:
 
         head_tile = self._get_head_tile()
         head_distance_cm = self._get_head_distance_cm()
-        travel_direction = (
-            train.position.facing_direction.name
-            if train.position and train.position.facing_direction
-            else None
-        )
+        facing = self._facing_direction()
+        travel_direction = facing.name if facing is not None else None
 
         if not head_tile:
             # No reason published — head_tile being None is a missing-position
@@ -3574,8 +3633,8 @@ class TrainController:
                                 if track.switch_state == 0
                                 else "diverging",
                                 "distance_cm": point_element_start,
-                                "locked": track.is_locked_by_path()
-                                if hasattr(track, "is_locked_by_path")
+                                "locked": switch_entity.is_locked()
+                                if switch_entity is not None
                                 else False,
                             }
                         )

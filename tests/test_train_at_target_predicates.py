@@ -35,14 +35,14 @@ class _StubTrain:
 
 def test_get_target_platform_tile_empty_returns_none():
     res = TrainAtTargetPredicates.get_target_platform_tile(
-        train=_StubTrain(), platform=_StubPlatform(positions=[])
+        facing_direction=None, platform=_StubPlatform(positions=[])
     )
     assert res is None
 
 
 def test_get_target_platform_tile_single_returns_only_position():
     res = TrainAtTargetPredicates.get_target_platform_tile(
-        train=_StubTrain(facing_direction=Direction.NORTH),
+        facing_direction=Direction.NORTH,
         platform=_StubPlatform(positions=[(3, 4)]),
     )
     assert res == (3, 4)
@@ -50,7 +50,7 @@ def test_get_target_platform_tile_single_returns_only_position():
 
 def test_get_target_platform_tile_no_direction_returns_first():
     res = TrainAtTargetPredicates.get_target_platform_tile(
-        train=_StubTrain(facing_direction=None),
+        facing_direction=None,
         platform=_StubPlatform(positions=[(0, 0), (1, 0), (2, 0)]),
     )
     assert res == (0, 0)
@@ -59,7 +59,7 @@ def test_get_target_platform_tile_no_direction_returns_first():
 def test_get_target_platform_tile_north_picks_highest_y():
     """Travelling NORTH (y increases) → stop at the highest-y tile."""
     res = TrainAtTargetPredicates.get_target_platform_tile(
-        train=_StubTrain(facing_direction=Direction.NORTH),
+        facing_direction=Direction.NORTH,
         platform=_StubPlatform(positions=[(0, 0), (0, 5), (0, 2)]),
     )
     assert res == (0, 5)
@@ -67,7 +67,7 @@ def test_get_target_platform_tile_north_picks_highest_y():
 
 def test_get_target_platform_tile_south_picks_lowest_y():
     res = TrainAtTargetPredicates.get_target_platform_tile(
-        train=_StubTrain(facing_direction=Direction.SOUTH),
+        facing_direction=Direction.SOUTH,
         platform=_StubPlatform(positions=[(0, 0), (0, 5), (0, 2)]),
     )
     assert res == (0, 0)
@@ -75,7 +75,7 @@ def test_get_target_platform_tile_south_picks_lowest_y():
 
 def test_get_target_platform_tile_east_picks_highest_x():
     res = TrainAtTargetPredicates.get_target_platform_tile(
-        train=_StubTrain(facing_direction=Direction.EAST),
+        facing_direction=Direction.EAST,
         platform=_StubPlatform(positions=[(0, 0), (5, 0), (2, 0)]),
     )
     assert res == (5, 0)
@@ -83,7 +83,7 @@ def test_get_target_platform_tile_east_picks_highest_x():
 
 def test_get_target_platform_tile_west_picks_lowest_x():
     res = TrainAtTargetPredicates.get_target_platform_tile(
-        train=_StubTrain(facing_direction=Direction.WEST),
+        facing_direction=Direction.WEST,
         platform=_StubPlatform(positions=[(0, 0), (5, 0), (2, 0)]),
     )
     assert res == (0, 0)

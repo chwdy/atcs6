@@ -403,7 +403,8 @@ def setup_demo_train(
     demo_profile = SpeedProfile(
         profile_id="demo3_profile",
         name="Demo 3 Profile",
-        speed_voltage_curve=list(DEFAULT_SPEED_PROFILE.speed_voltage_curve),
+        power_speed_curve=list(DEFAULT_SPEED_PROFILE.power_speed_curve),
+        voltage_power_curve=list(DEFAULT_SPEED_PROFILE.voltage_power_curve),
         startup_voltage=DEFAULT_SPEED_PROFILE.startup_voltage,
         lighting_voltage=DEFAULT_SPEED_PROFILE.lighting_voltage,
         acceleration_rate=3.0,

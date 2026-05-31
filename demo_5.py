@@ -14,41 +14,42 @@ Demo 5 is Demo 4 with three changes:
      scissors crossover here, so the ONLY way to move between the two tracks
      in this corridor is the single N→S crossover at the throat (below).
 
-  3. A 6-platform depot is built above the depot throat. Its platforms are
+  3. A 6-platform depot is built above the corridor. Its platforms are
      perpendicular to the main line (NE/SW vertical stubs) and sit in ONE
-     aligned horizontal row — three to each side of a central lead. The lead
-     rises from SW_LEAD at the throat to a junction (SW_DEPOT_FAN) that fans
-     left and right into a six-turnout ladder.
+     aligned horizontal row. They ladder off a single running line, real-
+     depot style: the lead rises from SW_LEAD and the platforms merge onto it
+     one by one through 45°-eased turnouts (a single-direction ladder — no
+     central split, so no forced 90° corner). The lead enters at the ladder's
+     right end (nearest the throat).
 
-Throat (between S2 and S3). The three switches are consecutive along the N
-track's straight zigzag; indexing with SW_LEAD = 0 and origin-ward tiles
-negative, the N→S crossover sits one tile origin-side of the depot lead:
-    SW_LEAD     (7, 9)  index  0 : diverges the N track up into the depot
-                                   lead; through state keeps the N track.
-    SW_XOVER_N  (7, 8)  index -1 : N side of the single N→S crossover;
-                                   through keeps the N track, diverge drops
-                                   to the S track.
-    SW_XOVER_S  (7, 7)  index -2 : S side of the crossover, one tile origin-
-                                   ward on the S track; through keeps the S
-                                   track, diverge receives the N→S drop and
-                                   turns outbound.
-  A train swapping N→S runs: N track → SW_XOVER_N (W→S) → SW_XOVER_S (N→E) →
-  S corridor. A depot train reaches the N track at SW_LEAD and backs up one
-  tile to the crossover to gain the outbound S track (a reverse at the
-  throat). With the three throat switches in their default states the main-
-  line loop still runs unchanged (each throat tile keeps a through-route as
-  one state).
+Throat (between S2 and S3). The N→S crossover is a single DIAGONAL: the swap
+rides the 45° EW bit, so it draws as one slanted rail (like the X1/X2
+scissors) rather than a square drop-and-turn. The two crossover switches are
+offset by one tile — SW_XOVER_N on the N track, SW_XOVER_S one tile outbound
+on the S track:
+    SW_LEAD     (7, 9)  SE|NS : through S↔E keeps the N track; the depot lead
+                                rises from here (N↔S onto the lead).
+    SW_XOVER_N  (7, 8)  NW|EW : through W↔N keeps the N track; W↔E swaps the
+                                train DOWN-RIGHT along the diagonal to the S.
+    SW_XOVER_S  (8, 8)  SE|EW : through S↔E keeps the S track; W↔E receives
+                                the diagonal swap and merges it outbound.
+  A train swapping N→S runs as one diagonal: N track → SW_XOVER_N (W→E) →
+  SW_XOVER_S (W→E) → S corridor. None of the throat switches is a square
+  corner (each carries a 45° NS/EW bit), so they pass the no-square-corner
+  switch rule. With every throat switch in its default (through) state the
+  main-line loop still runs unchanged.
 
 Layout (rendered horizontally on the rotated screen):
 
-                      D1  D2  D3 │ D4  D5  D6     ← 6 aligned platforms
-                      ═╩═══╩═══╩══╪══╩═══╩═══╩═    ← turnout ladder
-                                  │ lead (rises from SW_LEAD)
-  ┌── S1-N ──┐    ┌── S2-N ──┐ ·· corridor ·◇xover◇◇lead◇· ┌── S3-N ──┐    ┌── S4-N ──┐
-  ├──────────┤─X1─├──────────┤── plain ──────────────────── ├──────────┤─X2─├──────────┤  ← N track
-  │          │    │          │                              │          │    │          │
-  ├──────────┤─X1─├──────────┤── plain ───────◇xover◇────── ├──────────┤─X2─├──────────┤  ← S track
-  └── S1-S ──┘    └── S2-S ──┘                              └── S3-S ──┘    └── S4-S ──┘
+      D1   D2   D3   D4   D5   D6        ← 6 aligned platforms (vertical stubs)
+       ╲    ╲    ╲    ╲    ╲    ╲         ← each peels off at 45°
+   ────╳────╳────╳────╳────╳────╳╮       ← single ladder (one running line)
+                                 │ lead rises from SW_LEAD (enters right end)
+  ┌── S1-N ──┐    ┌── S2-N ──┐ ·· corridor ··◇lead◇·· ┌── S3-N ──┐    ┌── S4-N ──┐
+  ├──────────┤─X1─├──────────┤── plain ──────╲──────── ├──────────┤─X2─├──────────┤  ← N track
+  │          │    │          │                ╲ diagonal           │    │          │
+  ├──────────┤─X1─├──────────┤── plain ────────╲─────── ├──────────┤─X2─├──────────┤  ← S track
+  └── S1-S ──┘    └── S2-S ──┘                          └── S3-S ──┘    └── S4-S ──┘
 
 Route (CIRCULAR, all 4 trains share it):
   STN_1 → dwell → PLT_S2_S → dwell → PLT_S3_S → dwell → STN_4
@@ -207,14 +208,15 @@ S_TRACK_TILES = [
     (6, 5, TRACK_NW, "BLK_S2_S_TO_S3_S_A_t2"),
     (6, 6, TRACK_SE, "BLK_S2_S_TO_S3_S_A_t3"),
     (7, 6, TRACK_NW, "BLK_S2_S_TO_S3_S_A_t4"),
-    # (7, 7) is throat switch SW_XOVER_S (S side of the crossover, index -2).
-    # --- S2↔S3 corridor, block B (6 tiles; starts after the crossover) ---
-    (8, 7, TRACK_NW, "BLK_S2_S_TO_S3_S_B_t1"),
-    (8, 8, TRACK_SE, "BLK_S2_S_TO_S3_S_B_t2"),
-    (9, 8, TRACK_NW, "BLK_S2_S_TO_S3_S_B_t3"),
-    (9, 9, TRACK_SE, "BLK_S2_S_TO_S3_S_B_t4"),
-    (10, 9, TRACK_NW, "BLK_S2_S_TO_S3_S_B_t5"),
-    (10, 10, TRACK_SE, "BLK_S2_S_TO_S3_S_B_t6"),
+    (7, 7, TRACK_SE, "BLK_S2_S_TO_S3_S_A_t5"),
+    (8, 7, TRACK_NW, "BLK_S2_S_TO_S3_S_A_t6"),
+    # (8, 8) is throat switch SW_XOVER_S — the S-side landing of the diagonal
+    # N→S crossover (the swap rides the 45° EW bit down from SW_XOVER_N).
+    # --- S2↔S3 corridor, block B (4 tiles; starts after the crossover) ---
+    (9, 8, TRACK_NW, "BLK_S2_S_TO_S3_S_B_t1"),
+    (9, 9, TRACK_SE, "BLK_S2_S_TO_S3_S_B_t2"),
+    (10, 9, TRACK_NW, "BLK_S2_S_TO_S3_S_B_t3"),
+    (10, 10, TRACK_SE, "BLK_S2_S_TO_S3_S_B_t4"),
     # --- S3-S (demo_4 coords + (4,4)) ---
     (11, 10, TRACK_NW, "S3_S_t1"),
     (11, 11, TRACK_SE, "S3_S_t2"),
@@ -247,8 +249,9 @@ N_TRACK_TILES = [
     (5, 7, TRACK_SE, "BLK_S2_N_TO_S3_N_A_t3"),
     (6, 7, TRACK_NW, "BLK_S2_N_TO_S3_N_A_t4"),
     (6, 8, TRACK_SE, "BLK_S2_N_TO_S3_N_A_t5"),
-    # (7, 8) is throat switch SW_XOVER_N (N side of the crossover, index -1);
-    # (7, 9) is throat switch SW_LEAD (to the depot, index 0).
+    # (7, 8) is throat switch SW_XOVER_N (N side of the diagonal crossover);
+    # (7, 9) is throat switch SW_LEAD (to the depot). The crossover's S-side
+    # switch SW_XOVER_S lands one tile outbound on the S track at (8, 8).
     # --- S2↔S3 corridor, block B (4 tiles; starts after SW_LEAD) ---
     (8, 9, TRACK_NW, "BLK_S2_N_TO_S3_N_B_t1"),
     (8, 10, TRACK_SE, "BLK_S2_N_TO_S3_N_B_t2"),
@@ -268,20 +271,18 @@ N_TRACK_TILES = [
 ]
 
 
-# --- Depot geometry (a "fan" above the throat) ---------------------------
-# A central lead rises from SW_LEAD (7,9) up to a junction tile (5,12) that
-# fans LEFT and RIGHT into a six-turnout ladder. Six platforms (perpendicular
-# NE/SW vertical stubs, 3 tiles / 60 cm each) hang UP off the ladder and sit
-# in ONE horizontal screen row — all base tiles at screen-row x-y = -9 — three
-# platforms to each side of the lead. Screen mapping: col = x+y (right),
-# row = x-y (down), so the platforms read as an aligned horizontal rank.
+# --- Depot geometry (a real-depot LADDER throat above the corridor) ------
+# Six platforms (vertical NE/SW stubs, 3 tiles / 60 cm each) hang UP off ONE
+# continuous ladder, bases aligned on screen-row x-y = -9 so they read as a
+# horizontal rank. Screen: col = x+y (right), row = x-y (down).
 #
-#   platform k base   BOT_k = (1+k, 10+k)      (cols 11,13,15,17,19,21)
-#   ladder turnout    AT_k  = (2+k, 10+k)      (branches W into BOT_k)
-#   ladder connector  CT_k  = (3+k, 10+k)      (plain corner; CT_2 is the lead
-#                                               junction switch SW_DEPOT_FAN)
-# The ladder turnouts mirror about the lead so both halves divert toward the
-# lead side (left half k<3 entered from the E side, right half k>=3 from S).
+# Every ladder turnout is SE|EW: SE (horizontal) carries the ladder through,
+# EW (the 45° "╲" diagonal) peels the platform off — so each merge eases at
+# 45° and NONE is a square corner. The ladder is SINGLE-DIRECTION (no central
+# 3-way split, which would force a 90°): the lead enters at the right end
+# (nearest the throat) and the platforms ladder off one by one, funnelling
+# left — exactly how a real depot throat merges tracks gradually.
+#   turnout SW_LADk = (2+k, 10+k)   platform base = (1+k, 10+k)  (W of turnout)
 DEPOT_PLATFORM_BASES = [(1 + k, 10 + k) for k in range(6)]
 
 
@@ -315,22 +316,24 @@ def _add_crossovers(network: RailwayNetwork) -> None:
 def _add_throat(network: RailwayNetwork) -> None:
     """Place the three depot-throat switch tiles between S2 and S3.
 
-    They are consecutive along the N track's straight zigzag. Indexing with
-    SW_LEAD = 0 and origin-ward tiles negative, the crossover sits one tile
-    origin-side of the depot lead (SW_XOVER_N at -1, SW_XOVER_S at -2). Each
-    tile keeps a main-line through-route as one switch state, so the loop
-    still runs with the defaults below; the other state serves the depot lead
-    / the N→S crossover.
+    The N→S crossover is a single DIAGONAL: the swap rides the 45° EW bit, so
+    it draws as one slanted rail (like the X1/X2 scissors) instead of a square
+    drop-and-turn, and the switches are offset one tile (SW_XOVER_N on the N
+    track, SW_XOVER_S one tile outbound on the S track). Every switch keeps a
+    main-line through-route as its default state (DIVERGE below) so the loop
+    still runs; the other state serves the depot lead / the crossover. None of
+    these is a "square corner" (each has a diagonal NS/EW bit), so they satisfy
+    the no-square-corner switch rule.
 
-      SW_LEAD     (7,9) SE|NE : DIVERGE S↔E = N through, MAIN N↔E = depot lead
-      SW_XOVER_N  (7,8) NW|SW : MAIN N↔W = N through, DIVERGE S↔W = crossover
-      SW_XOVER_S  (7,7) SE|NE : DIVERGE S↔E = S through, MAIN N↔E = onto S outbound
+      SW_LEAD     (7,9) SE|NS : DIVERGE S↔E = N through, MAIN N↔S = depot lead
+      SW_XOVER_N  (7,8) NW|EW : DIVERGE W↔N = N through, MAIN W↔E = swap to S
+      SW_XOVER_S  (8,8) SE|EW : DIVERGE S↔E = S through, MAIN W↔E = receive swap
     """
     from enums import SwitchState
     throat = [
-        (7, 9, TRACK_SE | TRACK_NE, "SW_LEAD", SwitchState.DIVERGE),
-        (7, 8, TRACK_NW | TRACK_SW, "SW_XOVER_N", SwitchState.MAIN),
-        (7, 7, TRACK_SE | TRACK_NE, "SW_XOVER_S", SwitchState.DIVERGE),
+        (7, 9, TRACK_SE | TRACK_NS, "SW_LEAD", SwitchState.DIVERGE),
+        (7, 8, TRACK_NW | TRACK_EW, "SW_XOVER_N", SwitchState.DIVERGE),
+        (8, 8, TRACK_SE | TRACK_EW, "SW_XOVER_S", SwitchState.DIVERGE),
     ]
     for (sx, sy, bits, sid, state) in throat:
         tile = TrackSegment(sx, sy, track_bits=bits)
@@ -353,54 +356,42 @@ def _add_depot(network: RailwayNetwork) -> None:
     """
     from enums import SwitchState
 
-    # Lead: climb from SW_LEAD's north edge (7,10) up to the fan junction.
+    # Lead (the depot "running line"): rise from SW_LEAD's north edge and
+    # thread up past the throat to the ladder's near (right) end at (8,15).
     for (x, y, bits) in [
         (7, 10, TRACK_NS),
-        (7, 11, TRACK_SW),
-        (6, 11, TRACK_NE),
-        (6, 12, TRACK_SW),
+        (7, 11, TRACK_NS),
+        (7, 12, TRACK_NS),
+        (7, 13, TRACK_SE),
+        (8, 13, TRACK_NW),
+        (8, 14, TRACK_NS),
+        (8, 15, TRACK_SW),
     ]:
         network.add_track(TrackSegment(x, y, track_bits=bits))
 
-    # Fan junction CT_2 (5,12): lead arrives from the E; EW routes it to the
-    # left ladder (W), NE routes it to the right ladder (N). Common edge = the
-    # lead, so a switch throw picks the half. Default MAIN (EW) = left.
-    jt = TrackSegment(5, 12, track_bits=TRACK_EW | TRACK_NE)
-    network.add_track(jt)
-    jsw = Switch(switch_id="SW_DEPOT_FAN", x=5, y=12)
-    jsw.position = SwitchState.MAIN
-    network.add_switch(jsw)
-    jt.switch_id = jsw.switch_id
-
     # Plain ladder connectors (NW corners) between consecutive turnouts.
-    for (x, y) in [(3, 10), (4, 11), (6, 13), (7, 14)]:
+    for (x, y) in [(3, 10), (4, 11), (5, 12), (6, 13), (7, 14)]:
         network.add_track(TrackSegment(x, y, track_bits=TRACK_NW))
 
-    # Ladder turnouts AT_k = (2+k, 10+k); each branches W into platform BOT_k.
-    # Mirror about the lead so both halves divert toward the lead side:
-    #   right half (k>=3): approached from S; SE through, SW into platform.
-    #                      diverge-only -> SE=MAIN(through), SW=DIVERGE(platform).
-    #   left half  (k<3) : approached from E; SE through, EW into platform.
-    #                      EW is a "main" bit -> EW=MAIN(platform), SE=DIVERGE(through).
-    # Default state = "ladder through, platforms closed" for both halves.
+    # Single-direction ladder: lead enters at the right end (SW_LAD5) and each
+    # turnout peels a platform off going up-left. Every turnout is SE|EW — SE
+    # carries the ladder through, EW (the 45° diagonal) eases the platform
+    # branch — so none is a square corner. Default DIVERGE = ladder through.
     for k in range(6):
         ax, ay = 2 + k, 10 + k
-        if k >= 3:
-            bits, state = TRACK_SE | TRACK_SW, SwitchState.MAIN
-        else:
-            bits, state = TRACK_SE | TRACK_EW, SwitchState.DIVERGE
-        at = TrackSegment(ax, ay, track_bits=bits)
+        at = TrackSegment(ax, ay, track_bits=TRACK_SE | TRACK_EW)
         network.add_track(at)
         sw = Switch(switch_id=f"SW_LAD{k}", x=ax, y=ay)
-        sw.position = state
+        sw.position = SwitchState.DIVERGE
         network.add_switch(sw)
         at.switch_id = sw.switch_id
 
-    # Six platforms (perpendicular NE/SW stubs, 3 tiles each), bases aligned.
+    # Six platforms (vertical NE/SW stubs, 3 tiles each), bases aligned on
+    # screen-row -9, each branching up-left off its ladder turnout.
     for (bx, by) in DEPOT_PLATFORM_BASES:
-        network.add_track(TrackSegment(bx, by, track_bits=TRACK_NE))       # BOT
-        network.add_track(TrackSegment(bx, by + 1, track_bits=TRACK_SW))   # MID
-        network.add_track(TrackSegment(bx - 1, by + 1, track_bits=TRACK_NE))  # TOP
+        network.add_track(TrackSegment(bx, by, track_bits=TRACK_NE))         # BOT
+        network.add_track(TrackSegment(bx, by + 1, track_bits=TRACK_SW))     # MID
+        network.add_track(TrackSegment(bx - 1, by + 1, track_bits=TRACK_NE)) # TOP
 
 
 # Each block: (block_id, positions, name, length_cm, speed_limit_kmh or None).
@@ -421,9 +412,9 @@ BLOCKS = [
     ("BLK_X1_TO_S2_S", [(3, 3)], "X1 → S2-S", 30.0, 50.0),
     ("BLK_X1_TO_S2_N", [(2, 4)], "X1 → S2-N", 30.0, 50.0),
     # S2↔S3 corridor — equal-length split, throat switches are boundaries.
-    ("BLK_S2_S_TO_S3_S_A", [(5, 5), (6, 5), (6, 6), (7, 6)],
+    ("BLK_S2_S_TO_S3_S_A", [(5, 5), (6, 5), (6, 6), (7, 6), (7, 7), (8, 7)],
      "S2-S → S3-S (A)", _CORRIDOR_BLOCK_CM, 50.0),
-    ("BLK_S2_S_TO_S3_S_B", [(8, 7), (8, 8), (9, 8), (9, 9), (10, 9), (10, 10)],
+    ("BLK_S2_S_TO_S3_S_B", [(9, 8), (9, 9), (10, 9), (10, 10)],
      "S2-S → S3-S (B)", _CORRIDOR_BLOCK_CM, 50.0),
     ("BLK_S2_N_TO_S3_N_A", [(4, 6), (5, 6), (5, 7), (6, 7), (6, 8)],
      "S2-N → S3-N (A)", _CORRIDOR_BLOCK_CM, 50.0),
@@ -434,13 +425,15 @@ BLOCKS = [
     ("BLK_S3_N_TO_X2", [(11, 13)], "S3-N → X2", 30.0, 50.0),
     ("BLK_X2_TO_S4_S", [(13, 13)], "X2 → S4-S", 30.0, 50.0),
     ("BLK_X2_TO_S4_N", [(12, 14)], "X2 → S4-N", 30.0, 50.0),
-    # Depot lead (throat → fan junction) + the four plain ladder connectors
-    # (the turnouts AT_k and the junction CT_2 are switch boundaries, no block).
-    ("BLK_DEPOT_LEAD", [(7, 10), (7, 11), (6, 11), (6, 12)], "Depot lead", 40.0, 30.0),
-    ("BLK_DEPOT_CT0", [(3, 10)], "Depot ladder L-end", 20.0, 30.0),
-    ("BLK_DEPOT_CT1", [(4, 11)], "Depot ladder L-mid", 20.0, 30.0),
-    ("BLK_DEPOT_CT3", [(6, 13)], "Depot ladder R-mid", 20.0, 30.0),
-    ("BLK_DEPOT_CT4", [(7, 14)], "Depot ladder R-end", 20.0, 30.0),
+    # Depot lead (throat → ladder near-end) + the five plain ladder connectors
+    # (the turnouts SW_LADk are switch boundaries, no block).
+    ("BLK_DEPOT_LEAD", [(7, 10), (7, 11), (7, 12), (7, 13), (8, 13), (8, 14), (8, 15)],
+     "Depot lead", 70.0, 30.0),
+    ("BLK_DEPOT_CT0", [(3, 10)], "Depot ladder 0", 20.0, 30.0),
+    ("BLK_DEPOT_CT1", [(4, 11)], "Depot ladder 1", 20.0, 30.0),
+    ("BLK_DEPOT_CT2", [(5, 12)], "Depot ladder 2", 20.0, 30.0),
+    ("BLK_DEPOT_CT3", [(6, 13)], "Depot ladder 3", 20.0, 30.0),
+    ("BLK_DEPOT_CT4", [(7, 14)], "Depot ladder 4", 20.0, 30.0),
 ]
 
 
@@ -646,7 +639,8 @@ def setup_demo_train(
     demo_profile = SpeedProfile(
         profile_id="demo5_profile",
         name="Demo 5 Profile",
-        speed_voltage_curve=list(DEFAULT_SPEED_PROFILE.speed_voltage_curve),
+        power_speed_curve=list(DEFAULT_SPEED_PROFILE.power_speed_curve),
+        voltage_power_curve=list(DEFAULT_SPEED_PROFILE.voltage_power_curve),
         startup_voltage=DEFAULT_SPEED_PROFILE.startup_voltage,
         lighting_voltage=DEFAULT_SPEED_PROFILE.lighting_voltage,
         acceleration_rate=3.0,

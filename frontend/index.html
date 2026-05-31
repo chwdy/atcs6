@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>atcs6 — Vite dev shell</title>
+  </head>
+  <body>
+    <!--
+      Dev-only shell for `npm run dev` (Vite HMR). The production page is served
+      by Flask from static/index.html; this file is never built or shipped — the
+      build uses src/main.ts as its explicit entry. It exists so the Vite dev
+      server has an HTML entry to mount migrated modules during development.
+    -->
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

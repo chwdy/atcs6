@@ -10,9 +10,10 @@ import pytest
 from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, LeadingEnd, TrainState, HandlePosition
-from train import Train, TrainCar, TrainPosition
-from tests.train_test_helpers import make_train_position
+from enums import BlockState, Direction, TrainState, HandlePosition
+from train import Train, TrainCar
+from train_span import SpanEndLocator, TrainSpan
+from tests.train_test_helpers import set_train_span
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
 from path_dispatcher import PathDispatcher
@@ -47,7 +48,7 @@ class TestTrainManualControlBugFixes:
         assert controller.commands.set_cab(None).success is True
         assert controller.ops.state == TrainState.READY
         assert controller.commands.cab is None
-        assert train.facing_direction is None
+        assert controller._facing_direction() is None
 
     def test_set_cab_rejects_moving(self):
         network = RailwayNetwork()
@@ -109,13 +110,13 @@ class TestRaceConditionFix:
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_EB_TEST", consist=[car], max_speed=100.0)
-        train.position = make_train_position(
-            (0, 0), Direction.EAST, occupied_blocks=["B1"]
-        )
         network.add_train(train)
 
         sim = SimulationController(network)
         controller = sim._get_or_create_controller(train)
+        set_train_span(
+            controller, (0, 0), facing_direction=Direction.EAST, occupied_blocks=["B1"]
+        )
         controller.ops.state = TrainState.RUNNING_MOVING
         controller.commands.cab = "A"
         controller.physics_sync.current_speed_kmh = 42.0  # 12 km/h over limit (EB zone)
@@ -351,19 +352,15 @@ class TestTrainClearancePrecisionBugFix:
         train = Train(train_id="TRAIN_CLEARANCE", consist=[car], max_speed=60.0)
         train.current_path = [(0, 0, Direction.EAST), (1, 0, Direction.EAST)]
 
-        train.position = TrainPosition(
-            end_a_tile=(1, 0),
-            end_a_distance_cm=5.0,
-            end_a_entry_edge="W",
-            end_b_tile=(0, 0),
-            end_b_distance_cm=5.0,
-            end_b_entry_edge="W",
-            leading_end=LeadingEnd.A,
-            occupied_tiles=[(1, 0), (0, 0)],
-        )
-
         network.add_train(train)
         controller = TrainController(train_id=train.train_id, network=network)
+        # Head is end_a=(1,0), 5cm in from the W edge; default cab (None) ->
+        # end_a is head. The span runs head (1,0) -> tail (0,0).
+        controller.physics_sync.current_span = TrainSpan(
+            end_a=SpanEndLocator(tile=(1, 0), distance_cm=5.0, entry_edge="W"),
+            end_b=SpanEndLocator(tile=(0, 0), distance_cm=5.0, entry_edge="W"),
+            occupied_tiles=[(1, 0), (0, 0)],
+        )
 
         remaining = controller._get_remaining_distance_in_current_block()
 

@@ -164,13 +164,6 @@ class PlatformSide(Enum):
     EITHER = "either"  # For flexible platform selection
 
 
-class LeadingEnd(Enum):
-    """Which end of the train is currently leading (head)"""
-
-    A = "a"
-    B = "b"
-
-
 def direction_from_delta(dx: int, dy: int) -> Optional[str]:
     """
     Get N/E/S/W direction string from coordinate delta.

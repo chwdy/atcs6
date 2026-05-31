@@ -17,13 +17,15 @@ from datetime import datetime, timedelta
 
 from network import RailwayNetwork
 from track import TrackSegment, TRACK_EW, TRACK_NS, TRACK_NW, TRACK_SE
-from train import Train, TrainCar, TrainPosition
+from train import Train, TrainCar
+from train_span import SpanEndLocator, TrainSpan
 from path_dispatcher import PathDispatcher
-from route_executor import RouteExecutor
+from simulation import SimulationController
 from train_controller import create_controller_for_train
 from enums import Direction
 from enums import BlockState
 from path_utils import assign_complete_path_to_train, convert_tiles_to_train_path
+from tests.train_test_helpers import set_train_span
 
 
 def _attach_path(dispatcher, result):
@@ -134,7 +136,19 @@ class TestExtendPathBug:
         the new destination and extended path tiles.
         """
         dispatcher = PathDispatcher(simple_network)
-        executor = RouteExecutor(simple_network, dispatcher)
+        # Wire the dispatcher to a sim that owns the controller registry so
+        # `create_path` can resolve the train's head block via the controller
+        # span (head/tail live on the controller in v1, not on Train).
+        sim = SimulationController(simple_network, dispatcher)
+        executor = sim.route_executor
+
+        # Seed the sim controller's live span at the placement tile so
+        # `_get_current_block_id_for_train` resolves BLOCK_A as the head block.
+        sim_controller = sim._get_or_create_controller(demo_train)
+        set_train_span(
+            sim_controller, (0, 0), facing_direction=Direction.EAST,
+            occupied_blocks=["BLOCK_A"],
+        )
 
         # Create initial path from A to C
         path_result = dispatcher.create_path(
@@ -151,20 +165,18 @@ class TestExtendPathBug:
         assert path_result.success, f"Failed to create path: {path_result.reason}"
         path = dispatcher.get_path(path_result.path_id)
 
-        # Assign path to train
+        # Assign path to train (validation reads the head tile from the
+        # seeded controller span in v1).
         raw_path = executor._convert_path_to_train_path(path)
         success, error = assign_complete_path_to_train(
-            simple_network, demo_train, raw_path
+            simple_network, demo_train, raw_path, controller=sim_controller
         )
         assert success, f"Failed to assign path: {error}"
         demo_train.assigned_path_id = path.path_id
 
-        # Create controller WITH dispatcher
-        controller = create_controller_for_train(
-            train_id=demo_train.train_id,
-            network=simple_network,
-            path_dispatcher=dispatcher,
-        )
+        # The controller wired to the dispatcher reads the path live; reuse the
+        # seeded sim controller so head/lookahead derive from the live span.
+        controller = sim_controller
 
         # Store initial path info
         initial_tiles = controller.path_projection.get_path_tiles()
@@ -205,7 +217,15 @@ class TestExtendPathBug:
         The lookahead should reflect the extended path, not the old one.
         """
         dispatcher = PathDispatcher(simple_network)
-        executor = RouteExecutor(simple_network, dispatcher)
+        sim = SimulationController(simple_network, dispatcher)
+        executor = sim.route_executor
+
+        # Seed the sim controller's live span so create_path resolves the head.
+        sim_controller = sim._get_or_create_controller(demo_train)
+        set_train_span(
+            sim_controller, (0, 0), facing_direction=Direction.EAST,
+            occupied_blocks=["BLOCK_A"],
+        )
 
         # Create and assign initial path A -> C
         path_result = dispatcher.create_path(
@@ -221,15 +241,14 @@ class TestExtendPathBug:
         assert path_result.success
 
         raw_path = executor._convert_path_to_train_path(path_result.path)
-        assign_complete_path_to_train(simple_network, demo_train, raw_path)
+        assign_complete_path_to_train(
+            simple_network, demo_train, raw_path, controller=sim_controller
+        )
         demo_train.assigned_path_id = path_result.path.path_id
 
-        # Create controller WITH dispatcher
-        controller = create_controller_for_train(
-            train_id=demo_train.train_id,
-            network=simple_network,
-            path_dispatcher=dispatcher,
-        )
+        # Reuse the seeded sim controller (wired to the dispatcher) so its
+        # lookahead walks the live path from the seeded head span.
+        controller = sim_controller
 
         controller.commands.power_on_cmd()
         controller.commands.set_cab("A")
@@ -290,7 +309,15 @@ class TestExtendPathBug:
         immediately without any sync.
         """
         dispatcher = PathDispatcher(simple_network)
-        executor = RouteExecutor(simple_network, dispatcher)
+        sim = SimulationController(simple_network, dispatcher)
+        executor = sim.route_executor
+
+        # Seed the sim controller's live span so create_path resolves the head.
+        sim_controller = sim._get_or_create_controller(demo_train)
+        set_train_span(
+            sim_controller, (0, 0), facing_direction=Direction.EAST,
+            occupied_blocks=["BLOCK_A"],
+        )
 
         # Create and assign path A -> C
         path_result = dispatcher.create_path(
@@ -306,31 +333,25 @@ class TestExtendPathBug:
         assert path_result.success
 
         raw_path = executor._convert_path_to_train_path(path_result.path)
-        assign_complete_path_to_train(simple_network, demo_train, raw_path)
+        assign_complete_path_to_train(
+            simple_network, demo_train, raw_path, controller=sim_controller
+        )
         demo_train.assigned_path_id = path_result.path.path_id
 
-        # Create controller WITH dispatcher and start train
-        controller = create_controller_for_train(
-            train_id=demo_train.train_id,
-            network=simple_network,
-            path_dispatcher=dispatcher,
-        )
+        # Reuse the seeded sim controller (wired to the dispatcher) and start
+        # the train; the span is overwritten below to simulate motion.
+        controller = sim_controller
 
         controller.commands.power_on_cmd()
         controller.commands.set_cab("A")
         controller.depart()
 
-        # Simulate train moving to BLOCK_B (middle of route)
-        from train import LeadingEnd
-
-        demo_train.position = TrainPosition(
-            end_a_tile=(3, 0),
-            end_a_distance_cm=25.0,
-            end_a_entry_edge="W",
-            end_b_tile=(2, 0),
-            end_b_distance_cm=25.0,
-            end_b_entry_edge="W",
-            leading_end=LeadingEnd.A,
+        # Simulate train moving to BLOCK_B (middle of route). The live span
+        # lives on the controller; cab "A" (set above) makes end_a the head,
+        # so end_a is the (3,0) head tile and end_b the (2,0) tail tile.
+        controller.physics_sync.current_span = TrainSpan(
+            end_a=SpanEndLocator(tile=(3, 0), distance_cm=25.0, entry_edge="W"),
+            end_b=SpanEndLocator(tile=(2, 0), distance_cm=25.0, entry_edge="W"),
             occupied_tiles=[(2, 0), (3, 0)],
             occupied_blocks=["BLOCK_B"],
         )
@@ -442,6 +463,14 @@ class TestExtendPathAtoSync:
     def dispatcher_and_path(self, three_block_network, train_on_network):
         """Create a dispatcher and an initial path from BLK_A to BLK_B."""
         dispatcher = PathDispatcher(three_block_network)
+        # Wire the dispatcher to a sim and seed the controller span so
+        # create_path can resolve the train's head block (BLK_A).
+        sim = SimulationController(three_block_network, dispatcher)
+        sim_controller = sim._get_or_create_controller(train_on_network)
+        set_train_span(
+            sim_controller, (0, 0), facing_direction=Direction.EAST,
+            occupied_blocks=["BLK_A"],
+        )
         result = dispatcher.create_path(
             train_id=train_on_network.train_id,
             requested_destination_block_id="BLK_B",
@@ -455,13 +484,14 @@ class TestExtendPathAtoSync:
         assert result.success, f"Failed to create initial path: {result.reason}"
         path = dispatcher.get_path(result.path_id)
 
-        # Assign path to train
+        # Assign path to train (validation reads the head tile from the
+        # seeded controller span in v1).
         raw_path = convert_tiles_to_train_path(path.get_path_tiles())
         success, error = assign_complete_path_to_train(
-            three_block_network, train_on_network, raw_path
+            three_block_network, train_on_network, raw_path,
+            controller=sim_controller,
         )
-        if not success:
-            train_on_network.current_path = raw_path
+        assert success, f"Failed to assign path: {error}"
         train_on_network.assigned_path_id = path.path_id
         train_on_network.ato_destination_block_id = path.get_authority_end_block_id()
 
@@ -526,8 +556,14 @@ class TestExtendPathAtoSync:
 
         result.path = dispatcher.get_path(result.path_id) if result.path_id else None
         if not result.success:
+            # Pre-existing v1 limitation (not the position-migration regression):
+            # `create_path` requires a train_id in v1, so a trainless path can no
+            # longer be created and this no-train scenario is unreachable. Left
+            # skipping until the v1 dispatcher supports trainless path creation.
             pytest.skip(
-                'Conditional skip retained as a guard. PR 6 audit: _compute_block_traversals works for current destination-block scenarios; if create_path returns failure here, investigate as a regression rather than the historical bug this skip was written for.'
+                f"v1: create_path requires a train_id, so a trainless path "
+                f"cannot be created (reason={result.reason!r}); the no-train "
+                f"extend scenario is unreachable in v1."
             )
         assert result.success
 
@@ -537,7 +573,8 @@ class TestExtendPathAtoSync:
         ext_result.path = dispatcher.get_path(ext_result.path_id) if ext_result.path_id else None
         if not ext_result.success:
             pytest.skip(
-                'Conditional skip retained as a guard. PR 6 audit: _compute_block_traversals works for current destination-block scenarios; if create_path returns failure here, investigate as a regression rather than the historical bug this skip was written for.'
+                f"v1: extend_path on a trainless path is unreachable "
+                f"(reason={ext_result.reason!r})."
             )
         assert ext_result.success
 
@@ -600,6 +637,7 @@ class TestGetPathTiles:
         """get_path_tiles reads from dispatcher, not train.current_path."""
         network = simple_network
         dispatcher = PathDispatcher(network)
+        sim = SimulationController(network, dispatcher)
 
         # Create a train and place it
         train = Train(train_id="TEST", consist=[TrainCar("C1", "LOCOMOTIVE", 40.0)])
@@ -609,6 +647,13 @@ class TestGetPathTiles:
         # Occupy starting block
         if network.block_manager:
             network.block_manager.occupy_block("BLOCK_A", train.train_id)
+
+        # Seed the sim controller's span so create_path resolves the head.
+        controller = sim._get_or_create_controller(train)
+        set_train_span(
+            controller, (0, 0), facing_direction=Direction.EAST,
+            occupied_blocks=["BLOCK_A"],
+        )
 
         # Create a path
         result = dispatcher.create_path(
@@ -623,13 +668,6 @@ class TestGetPathTiles:
             )
         assert result.success
         train.assigned_path_id = result.path.path_id
-
-        # Create controller with dispatcher
-        controller = create_controller_for_train(
-            train_id=train.train_id,
-            network=network,
-            path_dispatcher=dispatcher,
-        )
 
         # get_path_tiles should return tiles from dispatcher
         path_tiles = controller.path_projection.get_path_tiles()
@@ -660,6 +698,7 @@ class TestGetPathTiles:
         """After extend_path, get_path_tiles returns the extended path immediately."""
         network = simple_network
         dispatcher = PathDispatcher(network)
+        sim = SimulationController(network, dispatcher)
 
         train = Train(train_id="TEST", consist=[TrainCar("C1", "LOCOMOTIVE", 40.0)])
         network.add_train(train)
@@ -668,6 +707,13 @@ class TestGetPathTiles:
         # Occupy starting block
         if network.block_manager:
             network.block_manager.occupy_block("BLOCK_A", train.train_id)
+
+        # Seed the sim controller's span so create_path resolves the head.
+        controller = sim._get_or_create_controller(train)
+        set_train_span(
+            controller, (0, 0), facing_direction=Direction.EAST,
+            occupied_blocks=["BLOCK_A"],
+        )
 
         # Create initial path
         result = dispatcher.create_path(
@@ -682,12 +728,6 @@ class TestGetPathTiles:
             )
         assert result.success
         train.assigned_path_id = result.path.path_id
-
-        controller = create_controller_for_train(
-            train_id=train.train_id,
-            network=network,
-            path_dispatcher=dispatcher,
-        )
 
         tiles_before = controller.path_projection.get_path_tiles()
         count_before = len(tiles_before)

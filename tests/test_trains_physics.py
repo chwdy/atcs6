@@ -10,9 +10,9 @@ import pytest
 from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, LeadingEnd, TrainState, HandlePosition
-from train import Train, TrainCar, TrainPosition
-from tests.train_test_helpers import make_train_position
+from enums import BlockState, Direction, TrainState, HandlePosition
+from train import Train, TrainCar
+from tests.train_test_helpers import make_train_span
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
 from path_dispatcher import PathDispatcher
@@ -51,21 +51,22 @@ class TestTrainPhysicsOccupiedTilesOrderBugFix:
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=80.0)
         train = Train(train_id="OCCUPIED_TILE_ORDER", consist=[car])
         network.add_train(train)
-        network.place_train(train, 1, 0, Direction.EAST)
+        span = network.place_train(train, 1, 0, Direction.EAST)
 
-        return train
+        return train, span
 
     def test_occupied_tiles_order_leading_end_a(self, network):
-        train = self._setup_two_tile_train(network)
+        from train_physics import TrainPhysics, _work_from_span
 
-        from train_physics import TrainPhysics
-
+        train, span = self._setup_two_tile_train(network)
         physics = TrainPhysics(train_id=train.train_id, network=network)
+        physics._work = _work_from_span(span, head_is_a=True)
         physics._move_train(train, 1.0)
 
-        assert train.position.leading_end == LeadingEnd.A
-        assert train.position.occupied_tiles[0] == train.position.end_a_tile
-        assert train.position.occupied_tiles[-1] == train.position.end_b_tile
+        work = physics._work
+        assert work.head_is_a is True
+        assert work.occupied_tiles[0] == work.end_a_tile
+        assert work.occupied_tiles[-1] == work.end_b_tile
 
 
 
@@ -91,17 +92,19 @@ class TestTrainPhysicsTailPositionBugFix:
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
-        network.place_train(train, 0, 0, Direction.EAST)
+        span = network.place_train(train, 0, 0, Direction.EAST)
 
-        from train_physics import TrainPhysics
+        from train_physics import TrainPhysics, _work_from_span
 
         physics = TrainPhysics(train_id=train.train_id, network=network)
+        physics._work = _work_from_span(span, head_is_a=True)
         physics._move_train(train, 1.0)
 
-        assert train.position.head_tile == (1, 0)
-        assert train.position.tail_tile == (0, 0)
-        assert train.position.tail_entry_edge == "W"
-        assert train.position.tail_distance_cm == pytest.approx(11.0)
+        work = physics._work
+        assert work.end_a_tile == (1, 0)  # head
+        assert work.end_b_tile == (0, 0)  # tail
+        assert work.end_b_entry_edge == "W"
+        assert work.end_b_distance_cm == pytest.approx(11.0)
 
 
 
@@ -121,18 +124,20 @@ class TestZeroLengthSwitchTraversal:
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
-        network.place_train(train, 0, 0, Direction.EAST)
+        span = network.place_train(train, 0, 0, Direction.EAST)
 
-        from train_physics import TrainPhysics
+        from train_physics import TrainPhysics, _work_from_span
 
         physics = TrainPhysics(train_id=train.train_id, network=network)
+        physics._work = _work_from_span(span, head_is_a=True)
         physics._move_train(train, 25.0)
 
-        assert train.position.head_tile == (2, 0)
-        assert train.position.head_distance_cm == pytest.approx(25.0)
-        assert train.position.tail_tile == (0, 0)
-        assert train.position.tail_entry_edge == "W"
-        assert train.position.tail_distance_cm == pytest.approx(35.0)
+        work = physics._work
+        assert work.end_a_tile == (2, 0)  # head
+        assert work.end_a_distance_cm == pytest.approx(25.0)
+        assert work.end_b_tile == (0, 0)  # tail
+        assert work.end_b_entry_edge == "W"
+        assert work.end_b_distance_cm == pytest.approx(35.0)
 
 
 
@@ -184,25 +189,25 @@ class TestTrainPhysicsTransitions:
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_1", consist=[car], max_speed=60.0)
-        train.position = TrainPosition(
+        network.add_train(train)
+
+        network.block_manager.occupy_block("B1", train.train_id)
+
+        from train_physics import TrainPhysics, _SpanWorkState
+
+        physics = TrainPhysics(train_id=train.train_id, network=network)
+        physics._last_occupied_blocks = {"B1"}
+        physics._work = _SpanWorkState(
+            head_is_a=True,
             end_a_tile=(1, 0),
             end_a_distance_cm=5.0,
             end_a_entry_edge="W",
             end_b_tile=(1, 0),
             end_b_distance_cm=0.0,
             end_b_entry_edge="W",
-            leading_end=LeadingEnd.A,
             occupied_tiles=[(1, 0)],
             occupied_blocks=["B2"],
         )
-        network.add_train(train)
-
-        network.block_manager.occupy_block("B1", train.train_id)
-
-        from train_physics import TrainPhysics
-
-        physics = TrainPhysics(train_id=train.train_id, network=network)
-        physics._last_occupied_blocks = {"B1"}
 
         physics._update_block_occupancy(train)
 
@@ -274,11 +279,11 @@ class TestTrainPhysicsManualPowerPercent:
             network.add_track(TrackSegment(x, 0, track_bits=TRACK_EW))
         car = TrainCar(car_id="CAR_PCT", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_PCT", consist=[car], max_speed=120.0)
-        train.position = make_train_position((1, 0), Direction.EAST)
         network.add_train(train)
         sim = SimulationController(network)
         controller = sim._get_or_create_controller(train)
         physics = sim._get_or_create_physics(train)
+        controller.physics_sync.current_span = make_train_span((1, 0), Direction.EAST)
         controller.ops.state = TrainState.RUNNING_MOVING
         controller.commands.control_mode = "manual"
         controller.manual.manual_mode_type = "power_percent"

@@ -176,11 +176,13 @@ def _capture_snapshot(
     occupied_tiles: List[Tuple[int, int]] = []
     occupied_blocks: List[str] = []
     if span is not None:
-        head = span.head
-        tail = span.tail
-        if head is not None:
+        # head/tail are cab-derived on the controller (design_new.md TrainSpan
+        # schema: the span itself never labels end_a/end_b as head/tail).
+        head = controller._head_span_locator()
+        tail = controller._tail_span_locator()
+        if head is not None and head.tile is not None:
             head_tile = tuple(head.tile)
-        if tail is not None:
+        if tail is not None and tail.tile is not None:
             tail_tile = tuple(tail.tile)
         occupied_tiles = [tuple(t) for t in (span.occupied_tiles or [])]
         occupied_blocks = list(span.occupied_blocks or [])

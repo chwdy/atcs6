@@ -149,8 +149,12 @@ def test_t3_s_line_reassignment_does_not_grow_repeated_resource_path(dt, label):
 
         t3 = sim.get_or_create_controller("T3")
         if t3.eb.active:
-            span = t3.physics_sync.current_span
-            head = span.head.tile if span.head else None
+            head_loc = t3._head_span_locator()
+            head = (
+                tuple(head_loc.tile)
+                if head_loc is not None and head_loc.tile is not None
+                else None
+            )
             eb_events.append((tick, head))
 
         path = dispatcher.get_active_path("T3")

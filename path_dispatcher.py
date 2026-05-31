@@ -94,7 +94,6 @@ class PathDispatcher:
         get_reachable_endpoints(start_block_id, include_stations)
         get_reachable_endpoints_for_extension(path_id, include_stations)
         validate_path(path_segment, path_id, train_id)
-        get_and_clear_completion_events()
     """
 
     # Per design_new.md "create_path() flow" (line 884), AcquisitionMode is
@@ -107,7 +106,6 @@ class PathDispatcher:
         self.network = network
         self.paths: Dict[str, Path] = {}
         self.path_sequence_counter: int = 0
-        self.completed_path_events: List[Dict[str, Any]] = []
         # Back-reference to SimulationController, wired by the runtime when
         # available. Used to resolve TrainController instances and the
         # NotificationCenter for progress callbacks.
@@ -189,14 +187,17 @@ class PathDispatcher:
             return controllers.get(train_id)
         return None
 
-    def _get_current_block_id_for_train(self, train) -> Optional[str]:
-        """Resolve the train's current block (head tile)."""
+    def _head_tile_for_train(self, train):
+        """Train head tile via its controller's cab-derived span, or None
+        (design_new.md: head/tail live on the controller, not on Train)."""
         if train is None:
             return None
-        position = getattr(train, "position", None)
-        if position is None:
-            return None
-        head_tile = getattr(position, "head_tile", None)
+        ctrl = self._get_controller(getattr(train, "train_id", None))
+        return ctrl._get_head_tile() if ctrl is not None else None
+
+    def _get_current_block_id_for_train(self, train) -> Optional[str]:
+        """Resolve the train's current block (head tile)."""
+        head_tile = self._head_tile_for_train(train)
         if not head_tile:
             return None
         track = self.network.get_track(*head_tile)
@@ -206,12 +207,7 @@ class PathDispatcher:
 
     def _train_head_is_on_switch(self, train) -> bool:
         """Whether the train's head tile is a switch resource."""
-        if train is None:
-            return False
-        position = getattr(train, "position", None)
-        if position is None:
-            return False
-        head_tile = getattr(position, "head_tile", None)
+        head_tile = self._head_tile_for_train(train)
         if not head_tile:
             return False
         track = self.network.get_track(*head_tile)
@@ -583,13 +579,17 @@ class PathDispatcher:
                     )
                 )
                 continue
-            if not track.can_lock_for_path(path_id, required_state):
-                lock_info = track.get_lock_info()
+            if switch_entity is not None and not switch_entity.can_lock(
+                required_state, manual_override=manual_override
+            ):
+                # Representative lock holder for the diagnostic field; the
+                # canonical lock store is `Switch.locks` (design_new.md:651).
+                holder_path = next(iter(switch_entity.locks), (None,))[0]
                 errors.append(
                     ValidationError(
                         type=ValidationErrorType.SWITCH_LOCKED,
                         position=pos,
-                        locked_by_path=lock_info["path_id"] if lock_info else None,
+                        locked_by_path=holder_path,
                         message=f"Switch at {pos} locked",
                     )
                 )
@@ -1495,14 +1495,16 @@ class PathDispatcher:
         return frozenset({entry_edge, exit_edge})
 
     def _train_already_in(self, train_id: str, block_id: str) -> bool:
-        train = self._get_train(train_id)
-        if train is None:
+        # The train's currently-occupied blocks come from the controller-owned
+        # span (design_new.md: physical occupancy lives on
+        # `TrainController.physics_sync.current_span.occupied_blocks`).
+        ctrl = self._get_controller(train_id)
+        if ctrl is None:
             return False
-        position = getattr(train, "position", None)
-        if position is None:
+        span = ctrl.get_current_span()
+        if span is None:
             return False
-        occupied = getattr(position, "occupied_blocks", None) or []
-        return block_id in occupied
+        return block_id in (span.occupied_blocks or [])
 
     def _blocks_still_reserved_by(
         self, block_ids: List[str], path_id: str
@@ -2236,22 +2238,6 @@ class PathDispatcher:
         # Mark COMPLETED.
         path._set_status(PathStatus.COMPLETED, event_time)
 
-        # Record completion event.
-        end_tile = (
-            (path.get_path_tiles()[-1].x, path.get_path_tiles()[-1].y)
-            if path.get_path_tiles()
-            else None
-        )
-        if end_tile is not None:
-            self.completed_path_events.append(
-                {
-                    "train_id": train_id,
-                    "path_id": path_id,
-                    "end_tile": end_tile,
-                    "time": event_time,  # design_new.md: use sampled event_time, not wall-clock
-                }
-            )
-
         # Notify controller.
         on_complete = getattr(controller, "on_path_complete", None)
         if callable(on_complete):
@@ -2357,9 +2343,4 @@ class PathDispatcher:
             if p.status == PathStatus.ACTIVE
             and switch_id in p.get_all_switches()
         ]
-
-    def get_and_clear_completion_events(self) -> List[Dict[str, Any]]:
-        events = list(self.completed_path_events)
-        self.completed_path_events.clear()
-        return events
 

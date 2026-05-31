@@ -3,9 +3,10 @@
 Architectural items shelved from the 2026-05-24 CTO review and the
 2026-05-29 follow-up review. Not blocking day-to-day work, but worth
 picking up when the codebase has breathing room or when a related change
-makes one of them cheap.
+makes one of them cheap. Completed items are removed from this list as they
+land — see git history.
 
-## Shelved items
+## Open items
 
 ### 1. Add a service layer between Flask routes and the domain
 
@@ -66,7 +67,7 @@ unit tests. Concretely:
    hand-built inputs — no network, no controller, no simulation.
 3. Keep the journey tests as the safety net for emergent behavior.
 
-**When to do it.** Alongside (not before) the god-class shrink. The
+**When to do it.** Alongside (not before) the god-class shrink (item 5). The
 helper has to be pure-input first; the unit tests come for free after.
 
 ---
@@ -101,7 +102,7 @@ package structure. `network.py`, `path_dispatcher.py`, `route_executor.py`,
 all peers in one directory. There is no way to enforce dependency
 direction ("the domain layer must not depend on the dispatcher") when
 every file is one `from foo import bar` away from every other. This is
-the foundational issue that makes items 5–7 below hard to do cleanly.
+the foundational issue that makes items 5 and 6 below hard to do cleanly.
 
 **Sketch of the fix.** Move files into a `src/atcs6/` layout along
 existing seams:
@@ -120,61 +121,12 @@ The value is the boundary it creates: add `import-linter` to CI so that
 `domain/` cannot import from `runtime/` or `interfaces/`. Without the
 package, every future "thou shalt not" rule is honor-system.
 
-**When to do it.** Before either of items 5 or 6. They are much harder
-to do cleanly inside a flat module tree.
+**When to do it.** Before item 5 (decomposing the god objects). It is much
+harder to do cleanly inside a flat module tree.
 
 ---
 
-### 5. Replace `getattr`-based coupling between `PathDispatcher` and `RouteExecutor` with declared `Protocol`s
-
-**Status:** Done — 2026-05-30.
-
-**Resolution.** Two `typing.Protocol`s now live in `runtime_payloads.py` (the
-leaf module both sides already import): `PathDispatcherForRouteExecutor`
-(`paths`, `active_path_id_by_train`, `create_path`, `extend_path`) and
-`RouteExecutorForPathDispatcher` (`handle_train_advanced`,
-`handle_path_cancellation`, `handle_path_completion`).
-`RouteExecutor.path_dispatcher` and `PathDispatcher._get_route_executor()` are
-typed to these Protocols, and the `getattr(..., None)` + `callable()`
-feature-detection at all four seam sites was replaced with direct typed calls;
-the circular-import `TYPE_CHECKING` import in `route_executor.py` is gone.
-`cancel_path` is deliberately **not** in the dispatcher Protocol —
-RouteExecutor never cancels directly, it latches and waits for the Phase-3
-flow. **Direction decision (informs item 6):** PathDispatcher is the
-*resource* (RouteExecutor drives acquisition through it); RouteExecutor is the
-Phase-3 *callback observer* (PathDispatcher calls back into it). Full suite
-green (936 passed).
-
-**Problem.** The two largest runtime classes reference each other through
-runtime feature detection rather than declared types:
-
-- `route_executor.py:49` — `if TYPE_CHECKING: from path_dispatcher import PathDispatcher` (circular-import workaround).
-- `path_dispatcher.py:166` — `_get_route_executor` walks `getattr(sc, "route_executor", None)`.
-- `path_dispatcher.py:1294` — `handler = getattr(route_executor, "handle_path_cancellation", None)`.
-
-This is the most critical seam in the system, and it has no compile-time
-contract. The dependency direction was never decided — both sides call
-each other, and `getattr(..., None)` papers over the resulting circular
-references. Any rename or signature change on either side fails
-silently; the only safety net is the journey tests.
-
-**Sketch of the fix.** Define two `typing.Protocol`s in `runtime_payloads.py`
-(or a new `protocols.py`) that name the surface each side exposes to the
-other — e.g. `PathDispatcherForRouteExecutor` with `create_path`,
-`extend_path`, `cancel_path`, `active_path_id_by_train`; and
-`RouteExecutorForPathDispatcher` with `handle_train_advanced`,
-`handle_path_cancellation`, `handle_path_completion`. Inject the
-protocols, not the concrete classes. Pick which side is the
-orchestrator and which is the resource and make that explicit in the
-constructor signatures. `getattr` lookups become typed attribute access
-and `mypy` / `pyright` can finally see drift.
-
-**When to do it.** When the next bug at this seam costs more than half a
-day to track down. Or alongside item 6 — both touch the same files.
-
----
-
-### 6. Decompose the god objects (`RailwayNetwork`, `PathDispatcher`, `RouteExecutor`)
+### 5. Decompose the god objects (`RailwayNetwork`, `PathDispatcher`, `RouteExecutor`)
 
 **Status:** Acknowledged, deferred.
 
@@ -198,7 +150,7 @@ already there in spirit:
 
 - `RailwayNetwork` → `TileGrid`, `BlockRegistry`, `SignalRegistry`, `TunnelRegistry`, `NeighborQuery`, all behind a `RailwayNetwork` facade that delegates. The 100 methods become 5 × 15-ish.
 - `PathDispatcher` → `PathLifecycle` (create/extend/cancel), `Pathfinder` (BFS + reachable endpoints), `CallbackDispatcher` (Phase-3 fan-out), `RecoveryCoordinator`.
-- `RouteExecutor` → `Phase1Planner`, `DwellManager`, `RunArchive`, `RunOrderer`. Phase-3 callbacks remain on the executor or move to `CallbackDispatcher` depending on item 5's direction call.
+- `RouteExecutor` → `Phase1Planner`, `DwellManager`, `RunArchive`, `RunOrderer`. The dispatcher↔executor seam direction is already settled by the typed Protocols in `runtime_payloads.py`: `PathDispatcher` is the *resource* `RouteExecutor` drives, and `RouteExecutor` is the Phase-3 *callback observer* `PathDispatcher` calls back into — so the Phase-3 callbacks stay on the executor unless a dedicated `CallbackDispatcher` is extracted.
 
 Do the splits **after** item 4 and **with** item 2 (pair each extraction
 with pure-input unit tests). This is months of work; expect to do it
@@ -209,7 +161,7 @@ modify one of these files. Don't undertake speculatively.
 
 ---
 
-### 7. Replace the `AppState` bag with constructor-injected dependencies
+### 6. Replace the `AppState` bag with constructor-injected dependencies
 
 **Status:** Acknowledged, deferred.
 
@@ -246,32 +198,64 @@ are touched by both. Or earlier if a concurrency bug bites.
 
 ---
 
-### 8. Add a real frontend build pipeline
+### 7. Finish the frontend build pipeline
 
-**Status:** Acknowledged, deferred.
+**Status:** In progress. The foundation is in place; what remains is migrating
+the rest of the JavaScript off the classic-script soup, one file at a time.
 
-**Problem.** The frontend is script-tag soup:
+**Already in place** (so the rest is mechanical repeats):
 
-- `static/index.html` loads **33 individual `<script>` tags**, no bundler, no ES modules.
-- Cache busting is hand-edited query strings (`?v=15`, `?v=18`) in HTML.
-- `static/js/editor.js` is **2,806 lines** of global-window code; `editor-routes.js` is 2,435; `editor-trains.js` is 1,887. These are the JS twins of the Python god objects.
-- No TypeScript. The Python ↔ JS contract is enforced by hope, and any payload field rename on the server side breaks the client silently.
-- No frontend tests in `static/js/`. The Python side has 100 test files; the frontend has zero.
+- Vite 4 + TypeScript 5 + Vitest 0.34 (pinned for the repo's Node 17), merged
+  into `package.json`: `npm run build` / `dev` / `test:unit` / `typecheck`.
+  `vite build` bundles `frontend/src/main.ts` → `static/dist/main.js`, served
+  by Flask's catch-all route.
+- TS payload types generated from `runtime_payloads.py`
+  (`tools/gen_payload_types.py` → `frontend/src/payloads.generated.ts`), guarded
+  by a drift test (`tests/test_payload_types_sync.py`).
+- A build-on-serve guard: `server.py` runs `frontend_build.py` on
+  `python server.py`, rebuilding `static/dist/main.js` when missing or stale
+  (the bundle is gitignored and now load-bearing). Skippable via
+  `--skip-frontend-build` / `ATCS6_SKIP_FRONTEND_BUILD`; never blocks startup.
+- The first conversion is done as the template: `static/js/camera.js` →
+  `frontend/src/lib/camera.ts`, bridged via `window.Camera`, its Node-eval test
+  ported to native Vitest.
 
-**Sketch of the fix.** Smallest credible step:
+**The per-file recipe** (each conversion is one small, verifiable slice):
 
-1. Adopt Vite (or esbuild) + TypeScript + ES modules. One bundle output, automatic content-hashed filenames, dev server with hot reload. `static/index.html` becomes a stub that loads one entry point.
-2. Convert one module per week, starting with the renderer family (they have the cleanest interfaces). Editor modules go last — they share most state.
-3. Generate TypeScript types from the Python payload schemas (`runtime_payloads.py`). `pydantic` → JSON Schema → `json-schema-to-typescript` is one straightforward path. This kills the silent-rename problem.
-4. Add Vitest, port the most behavior-critical helpers (`pathfinders.js`, `helpers.js`, `camera.js`) to unit tests first.
+1. Move `static/js/<name>.js` → `frontend/src/.../<name>.ts`; add types; keep
+   behavior byte-for-byte identical.
+2. If still-classic scripts use it, attach it to `window` at module top
+   (guard with `typeof window !== 'undefined'`) and `import` it in `main.ts`
+   for that side effect. Module scripts are deferred, so the bridge is set
+   before `app.js` bootstraps on `DOMContentLoaded` — verified safe.
+3. Drop its `<script>` tag from `index.html`; delete the legacy `.js` file.
+4. Port any Python test that evals the raw JS (the `test_camera_math` pattern)
+   to native Vitest. **Watch `pathfinders.js`**: its parity is pinned by
+   `tests/test_pathfinder_frontend_parity.py` — keep that green through the move.
+5. Fix stale references to the moved file; run `npm run typecheck` +
+   `test:unit`; eyeball the canvas/UI in the browser.
 
-**When to do it.** When the next non-trivial frontend feature would
-push `editor.js` over 3,000 lines, or when the first JS-vs-Python
-field-name bug bites in production.
+**Remaining work, in order:**
+
+- **Renderer cluster** — the 9 other `renderer-*` files + `render-snapshot`,
+  then the pure helpers `pathfinders` and `helpers`. Convert behind a
+  `renderer/` barrel; bridge foundation symbols through `window` temporarily.
+- **Foundation** — `constants`, `api`, `state-manager`, `helpers`, `camera`,
+  `pathfinders` become real modules that import each other; remove their
+  `window` bridges.
+- **Editor cluster** — 11 files, ~13k lines incl. `editor.js`; the hardest and
+  most coupled; one sub-module at a time, `editor.js` last.
+- **Decommission** — `index.html` becomes a stub with one
+  `<script type="module">`; delete the `?v=` cache-busting; CI runs
+  `vite build` + `tsc --noEmit` + Vitest; remove the remaining `window` bridges.
+
+**When to do it.** When the next non-trivial frontend feature would push
+`editor.js` over 3,000 lines (it is ~2,848 today). Each slice is a clean
+stopping point.
 
 ---
 
-### 9. Version the HTTP API
+### 8. Version the HTTP API
 
 **Status:** Acknowledged, deferred.
 
@@ -292,7 +276,7 @@ expensive later.
 
 ---
 
-### 10. Minor hygiene
+### 9. Minor hygiene
 
 **Status:** Acknowledged, deferred.
 
@@ -302,11 +286,11 @@ A list of small structural smells worth a sweep on a slow afternoon:
 - `TODO List:` blocks embedded inside module docstrings (e.g. `app_state.py`, `app_factory.py`). Process artifacts belong in this file, not in source.
 - `__pycache__/` appears in the working tree listing — confirm it is `.gitignore`d and not tracked.
 - Replace ad-hoc `Optional[object]` parameters (e.g. `route_executor.py:171`) with proper forward references or protocols.
-- `routes/*.py` has 17 modules but no shared request-parsing helper. The next route added that does JSON validation is the prompt to introduce one (likely `pydantic` request models, dovetailing with item 8's payload-types work).
+- `routes/*.py` has 17 modules but no shared request-parsing helper. The next route added that does JSON validation is the prompt to introduce one (likely `pydantic` request models, dovetailing with item 7's payload-types work).
 
 **When to do it.** Whenever you are already in the area for another
 reason.
 
 ---
 
-*Last reviewed: 2026-05-29*
+*Last updated: 2026-05-31*

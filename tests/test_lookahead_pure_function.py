@@ -10,11 +10,13 @@ Likewise, `controller.path_projection.received_path_plan` is a read-only propert
 resolves to PathDispatcher.get_active_path(self.train_id) on every read.
 """
 
+from enums import Direction
 from network import RailwayNetwork
 from track import TrackSegment, TRACK_EW
 from train import Train, TrainCar
 from path_dispatcher import PathDispatcher
-from train_controller import create_controller_for_train
+from simulation import SimulationController
+from tests.train_test_helpers import set_train_span
 
 
 def _build_three_block_network() -> RailwayNetwork:
@@ -39,12 +41,18 @@ def test_received_path_plan_reads_live_from_dispatcher():
     car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T1", consist=[car], max_speed=60.0)
     network.add_train(train)
-    from enums import Direction
     network.place_train(train, 0, 0, direction=Direction.EAST)
 
+    # v1: the dispatcher resolves a train's head/current block through its
+    # `simulation_controller` controller registry. Build a sim over the same
+    # network+dispatcher, create the controller via the sim (so it lands in
+    # that registry), and seed its span at the placement tile so create_path
+    # can resolve the start block.
     dispatcher = PathDispatcher(network)
-    controller = create_controller_for_train(
-        train_id=train.train_id, network=network, path_dispatcher=dispatcher
+    sim = SimulationController(network, dispatcher)
+    controller = sim._get_or_create_controller(train)
+    set_train_span(
+        controller, (0, 0), facing_direction=Direction.EAST, occupied_blocks=["BLK_A"]
     )
 
     # No path: live read returns None.
@@ -74,12 +82,13 @@ def test_lookahead_reflects_new_path_immediately():
     car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_LA", consist=[car], max_speed=60.0)
     network.add_train(train)
-    from enums import Direction
     network.place_train(train, 0, 0, direction=Direction.EAST)
 
     dispatcher = PathDispatcher(network)
-    controller = create_controller_for_train(
-        train_id=train.train_id, network=network, path_dispatcher=dispatcher
+    sim = SimulationController(network, dispatcher)
+    controller = sim._get_or_create_controller(train)
+    set_train_span(
+        controller, (0, 0), facing_direction=Direction.EAST, occupied_blocks=["BLK_A"]
     )
     controller.commands.cab = "A"
 
@@ -118,12 +127,13 @@ def test_received_path_plan_returns_none_after_path_status_changes():
     car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_END", consist=[car], max_speed=60.0)
     network.add_train(train)
-    from enums import Direction
     network.place_train(train, 0, 0, direction=Direction.EAST)
 
     dispatcher = PathDispatcher(network)
-    controller = create_controller_for_train(
-        train_id=train.train_id, network=network, path_dispatcher=dispatcher
+    sim = SimulationController(network, dispatcher)
+    controller = sim._get_or_create_controller(train)
+    set_train_span(
+        controller, (0, 0), facing_direction=Direction.EAST, occupied_blocks=["BLK_A"]
     )
 
     result = dispatcher.create_path(

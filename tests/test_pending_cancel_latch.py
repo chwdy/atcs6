@@ -19,6 +19,7 @@ from track import TrackSegment, TRACK_EW
 from enums import Direction
 from train import Train, TrainCar
 from path_dispatcher import PathDispatcher
+from simulation import SimulationController
 from train_controller import create_controller_for_train
 
 
@@ -44,12 +45,14 @@ def test_activate_emergency_with_path_sets_pending_cancel():
     car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_EB", consist=[car], max_speed=60.0)
     network.add_train(train)
-    network.place_train(train, 0, 0, direction=Direction.EAST)
+    span = network.place_train(train, 0, 0, direction=Direction.EAST)
 
     dispatcher = PathDispatcher(network)
-    controller = create_controller_for_train(
-        train_id=train.train_id, network=network, path_dispatcher=dispatcher
-    )
+    sim = SimulationController(network, dispatcher)
+    controller = sim._get_or_create_controller(train)
+    # Seed the controller-owned span so the dispatcher can resolve the train's
+    # current block (v1: live position lives on the controller span).
+    controller.physics_sync.current_span = span
 
     # Create a path so received_path_plan is not None.
     result = dispatcher.create_path(
@@ -116,12 +119,14 @@ def test_pending_cancel_latch_survives_while_moving():
     car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_MOV", consist=[car], max_speed=60.0)
     network.add_train(train)
-    network.place_train(train, 0, 0, direction=Direction.EAST)
+    span = network.place_train(train, 0, 0, direction=Direction.EAST)
 
     dispatcher = PathDispatcher(network)
-    controller = create_controller_for_train(
-        train_id=train.train_id, network=network, path_dispatcher=dispatcher
-    )
+    sim = SimulationController(network, dispatcher)
+    controller = sim._get_or_create_controller(train)
+    # Seed the controller-owned span so the dispatcher can resolve the train's
+    # current block (v1: live position lives on the controller span).
+    controller.physics_sync.current_span = span
     result = dispatcher.create_path(
         train_id=train.train_id,
         requested_destination_block_id="BLK_C",
@@ -322,8 +327,8 @@ def test_route_deactivate_writes_latches_per_assigned_train():
 
 
 def test_route_deactivate_without_simulation_controller_just_pauses():
-    """Calling route.deactivate() with no simulation_controller flips the flag
-    only — backward-compatible legacy behavior."""
+    """Calling route.deactivate() on a route with no assigned trains flips
+    is_active to False — the no-assigned-trains no-op per design_new.md."""
     from train_route import Route, RouteMode
 
     route = Route(

@@ -8,57 +8,64 @@ no-authority lookahead whenever the dispatcher has no active path).
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from enums import Direction, LeadingEnd
+from enums import Direction
 from path import Path, PathStatus, PathTileEntry, ResourceSequenceEntry
-from train import TrainPosition
+from train_span import SpanEndLocator, TrainSpan
 
 
-def make_train_position(
+def make_train_span(
     head_tile: Tuple[int, int],
     facing_direction: Optional[Direction] = None,
     entry_edge: str = "W",
     head_distance_cm: float = 0.0,
     occupied_tiles: Optional[List[Tuple[int, int]]] = None,
     occupied_blocks: Optional[List[str]] = None,
-) -> TrainPosition:
-    """Create a minimal TrainPosition for tests.
+) -> TrainSpan:
+    """Create a minimal single-tile `TrainSpan` for tests (end_a == end_b).
 
-    Note: facing_direction is now computed from position geometry.
-    For single-tile trains, the entry_edge is set based on facing_direction.
+    The v1 replacement for `make_train_position`: the canonical live span lives
+    on `TrainController.physics_sync.current_span`, not on `Train`. `end_a` and
+    `end_b` are cab-independent physical ends; the cab (set on the controller)
+    selects which is the head. When `facing_direction` is given, `entry_edge`
+    is derived as the edge the train entered from (opposite of facing), so a
+    cab-"A" controller reads this span's `travel_direction` as `facing_direction`.
 
-    Args:
-        head_tile: Position of the head
-        facing_direction: Desired facing direction (sets entry_edge accordingly)
-        entry_edge: Manual entry edge (ignored if facing_direction is provided)
-        head_distance_cm: Distance from entry edge
-        occupied_tiles: List of tiles (if None, uses single tile)
-        occupied_blocks: List of block IDs
+    Args mirror `make_train_position`. Seed it with, e.g.:
+        controller.physics_sync.current_span = make_train_span((1, 0), Direction.EAST)
+    or via the `set_train_span(controller, ...)` convenience below.
     """
     tiles = occupied_tiles or [head_tile]
     blocks = occupied_blocks or []
-
-    # If facing_direction is provided, calculate the correct entry_edge
-    # For a single-tile train facing a direction, it entered from the opposite side
     if facing_direction:
         direction_to_entry = {
-            Direction.NORTH: "S",  # Facing north means entered from south
+            Direction.NORTH: "S",
             Direction.SOUTH: "N",
             Direction.EAST: "W",
             Direction.WEST: "E",
         }
         entry_edge = direction_to_entry.get(facing_direction, entry_edge)
-
-    return TrainPosition(
-        end_a_tile=head_tile,
-        end_a_distance_cm=head_distance_cm,
-        end_a_entry_edge=entry_edge,
-        end_b_tile=head_tile,
-        end_b_distance_cm=head_distance_cm,
-        end_b_entry_edge=entry_edge,
-        leading_end=LeadingEnd.A,
-        occupied_tiles=tiles,
-        occupied_blocks=blocks,
+    return TrainSpan(
+        end_a=SpanEndLocator(
+            tile=head_tile, distance_cm=head_distance_cm, entry_edge=entry_edge
+        ),
+        end_b=SpanEndLocator(
+            tile=head_tile, distance_cm=head_distance_cm, entry_edge=entry_edge
+        ),
+        occupied_tiles=list(tiles),
+        occupied_blocks=list(blocks),
     )
+
+
+def set_train_span(controller, head_tile, **kwargs) -> TrainSpan:
+    """Seed `controller.physics_sync.current_span` with a single-tile span built
+    by `make_train_span(head_tile, **kwargs)`; returns the span.
+
+    Convenience for tests migrating off `train.position = make_train_position(...)`.
+    The controller's cab (default "A" -> end_a is head) selects the head end.
+    """
+    span = make_train_span(head_tile, **kwargs)
+    controller.physics_sync.current_span = span
+    return span
 
 
 # ---------------------------------------------------------------------------

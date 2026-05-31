@@ -25,7 +25,7 @@ from route_executor import RouteExecutionState, RouteExecutor
 from step_player import StepPlayer
 from train import Train
 from train_route import RouteTask
-from tests.train_test_helpers import make_train_position
+from tests.train_test_helpers import set_train_span
 
 
 @pytest.fixture
@@ -329,13 +329,14 @@ class TestStationStoppingBehavior:
         )
         from train import Train, TrainCar
         from enums import Direction
-        from tests.train_test_helpers import make_train_position
+        from train_controller import create_controller_for_train
         from route_executor import RouteExecutor
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
-        train.position = make_train_position((1, 0), Direction.EAST)
-        executor = RouteExecutor(network)
+        controller = create_controller_for_train("TRAIN_01", network)
+        set_train_span(controller, (1, 0), facing_direction=Direction.EAST)
+        executor = RouteExecutor(network, shared_controllers={"TRAIN_01": controller})
         target_tile = executor._get_target_platform_tile(train, station)
         assert target_tile == (1, 0)
 
@@ -352,13 +353,14 @@ class TestStationStoppingBehavior:
         network.extend_station("STA_MULTI_EW", [(2, 0), (3, 0)])
         from train import Train, TrainCar
         from enums import Direction
-        from tests.train_test_helpers import make_train_position
+        from train_controller import create_controller_for_train
         from route_executor import RouteExecutor
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
-        train.position = make_train_position((1, 0), Direction.EAST)
-        executor = RouteExecutor(network)
+        controller = create_controller_for_train("TRAIN_01", network)
+        set_train_span(controller, (1, 0), facing_direction=Direction.EAST)
+        executor = RouteExecutor(network, shared_controllers={"TRAIN_01": controller})
         target_tile = executor._get_target_platform_tile(train, station)
         assert target_tile == (3, 0)
 
@@ -375,13 +377,14 @@ class TestStationStoppingBehavior:
         network.extend_station("STA_MULTI_NS", [(0, 2), (0, 3)])
         from train import Train, TrainCar
         from enums import Direction
-        from tests.train_test_helpers import make_train_position
+        from train_controller import create_controller_for_train
         from route_executor import RouteExecutor
 
         car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TRAIN_01", consist=[car], max_speed=60.0)
-        train.position = make_train_position((0, 1), Direction.NORTH)
-        executor = RouteExecutor(network)
+        controller = create_controller_for_train("TRAIN_01", network)
+        set_train_span(controller, (0, 1), facing_direction=Direction.NORTH)
+        executor = RouteExecutor(network, shared_controllers={"TRAIN_01": controller})
         target_tile = executor._get_target_platform_tile(train, station)
         assert target_tile == (0, 3)
 

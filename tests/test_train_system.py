@@ -10,11 +10,11 @@ This module tests:
 import pytest
 from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
 from train_route import PlatformTarget, Route, RouteTask, RouteMode
-from train import Train, TrainCar, TrainPosition
+from train import Train, TrainCar
 from enums import Direction, TrainState, BlockState, HandlePosition
 from network import RailwayNetwork
 from train_controller import TrainController, create_controller_for_train
-from tests.train_test_helpers import make_train_position
+from tests.train_test_helpers import set_train_span
 
 
 # =============================================================================
@@ -67,16 +67,16 @@ class TestSpeedProfile:
 
     @pytest.fixture
     def basic_profile(self) -> SpeedProfile:
-        """Create a basic speed profile for testing."""
+        """Create a basic speed profile for testing.
+
+        Uses the default two-stage calibration (power_speed_curve
+        [(0,0),(100,100)] + voltage_power_curve [(2,0),(12,100)] linear from
+        startup_voltage to max_voltage), which maps 30 -> 5 V, 60 -> 8 V,
+        120 -> 12 V.
+        """
         return SpeedProfile(
             profile_id="test_profile",
             name="Test Profile",
-            speed_voltage_curve=[
-                (0.0, 0.0),
-                (30.0, 5.0),
-                (60.0, 8.0),
-                (120.0, 12.0),
-            ],
             startup_voltage=2.0,
             lighting_voltage=2.5,
             acceleration_rate=10.0,
@@ -94,31 +94,31 @@ class TestSpeedProfile:
         assert basic_profile.emergency_brake_rate == 30.0
 
     def test_speed_to_voltage_at_calibration_points(self, basic_profile: SpeedProfile):
-        """Test speed_to_voltage returns exact values at calibration points."""
-        assert basic_profile.speed_to_voltage(0.0) == 0.0
-        assert basic_profile.speed_to_voltage(30.0) == 5.0
-        assert basic_profile.speed_to_voltage(60.0) == 8.0
-        assert basic_profile.speed_to_voltage(120.0) == 12.0
+        """Two-stage conversion returns exact values at calibration points."""
+        assert basic_profile.speed_to_voltage_two_stage(0.0) == 0.0
+        assert basic_profile.speed_to_voltage_two_stage(30.0) == 5.0
+        assert basic_profile.speed_to_voltage_two_stage(60.0) == 8.0
+        assert basic_profile.speed_to_voltage_two_stage(120.0) == 12.0
 
     def test_speed_to_voltage_interpolation(self, basic_profile: SpeedProfile):
-        """Test speed_to_voltage interpolates between points."""
-        # Midpoint between (30, 5) and (60, 8) -> 45 km/h should give 6.5V
-        voltage_45 = basic_profile.speed_to_voltage(45.0)
+        """Two-stage conversion interpolates between points."""
+        # 45 km/h -> 45% -> 2 + 0.45*(12-2) = 6.5V
+        voltage_45 = basic_profile.speed_to_voltage_two_stage(45.0)
         assert 6.4 < voltage_45 < 6.6
 
-        # Quarter point: 15 km/h between (0, 0) and (30, 5) -> ~2.5V
-        voltage_15 = basic_profile.speed_to_voltage(15.0)
-        assert 2.4 < voltage_15 < 2.6
+        # 15 km/h -> 15% -> 2 + 0.15*(12-2) = 3.5V
+        voltage_15 = basic_profile.speed_to_voltage_two_stage(15.0)
+        assert 3.4 < voltage_15 < 3.6
 
     def test_speed_to_voltage_clamps_max(self, basic_profile: SpeedProfile):
-        """Test speed_to_voltage clamps at maximum."""
-        assert basic_profile.speed_to_voltage(150.0) == 12.0
-        assert basic_profile.speed_to_voltage(200.0) == 12.0
+        """Two-stage conversion clamps at maximum."""
+        assert basic_profile.speed_to_voltage_two_stage(150.0) == 12.0
+        assert basic_profile.speed_to_voltage_two_stage(200.0) == 12.0
 
     def test_speed_to_voltage_zero_and_negative(self, basic_profile: SpeedProfile):
-        """Test speed_to_voltage handles zero and negative speed."""
-        assert basic_profile.speed_to_voltage(0.0) == 0.0
-        assert basic_profile.speed_to_voltage(-10.0) == 0.0
+        """Two-stage conversion outputs 0 V for zero and negative speed."""
+        assert basic_profile.speed_to_voltage_two_stage(0.0) == 0.0
+        assert basic_profile.speed_to_voltage_two_stage(-10.0) == 0.0
 
     def test_to_dict_from_dict_roundtrip(self, basic_profile: SpeedProfile):
         """Test serialization roundtrip."""
@@ -129,17 +129,21 @@ class TestSpeedProfile:
         assert restored.name == basic_profile.name
         assert restored.lighting_voltage == basic_profile.lighting_voltage
         assert restored.acceleration_rate == basic_profile.acceleration_rate
-        assert len(restored.speed_voltage_curve) == len(
-            basic_profile.speed_voltage_curve
+        assert len(restored.power_speed_curve) == len(
+            basic_profile.power_speed_curve
+        )
+        assert len(restored.voltage_power_curve) == len(
+            basic_profile.voltage_power_curve
         )
 
     def test_default_speed_profile_exists(self):
         """Test DEFAULT_SPEED_PROFILE is properly defined."""
         assert DEFAULT_SPEED_PROFILE is not None
         assert DEFAULT_SPEED_PROFILE.profile_id == "default"
-        assert len(DEFAULT_SPEED_PROFILE.speed_voltage_curve) > 0
+        assert len(DEFAULT_SPEED_PROFILE.power_speed_curve) > 0
+        assert len(DEFAULT_SPEED_PROFILE.voltage_power_curve) > 0
         # Should convert speeds reasonably
-        assert DEFAULT_SPEED_PROFILE.speed_to_voltage(60.0) > 0
+        assert DEFAULT_SPEED_PROFILE.speed_to_voltage_two_stage(60.0) > 0
 
 
 # =============================================================================
@@ -275,56 +279,44 @@ class TestTrainPhase1:
     """Tests for Train class Phase 1 modifications."""
 
     @pytest.fixture
-    def basic_train(self) -> Train:
-        """Create a basic train for testing."""
+    def basic_train(self) -> tuple[Train, TrainController]:
+        """Create a basic train + controller for testing.
+
+        Live position is the controller's span (seeded here); facing direction
+        is read back through the controller, not a Train-side field.
+        """
+        network = RailwayNetwork()
         train = Train(
             train_id="TRAIN_001",
             max_speed=100.0,
         )
         train.model = "BR 218"
         train.min_radius_cm = 40.0
-        train.position = make_train_position((0, 0), facing_direction=Direction.EAST)
-        train.state = TrainState.OFF
-        return train
+        network.add_train(train)
+        controller = create_controller_for_train(train.train_id, network)
+        set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
+        controller.commands.cab = "A"
+        controller.ops.state = TrainState.OFF
+        return train, controller
 
-    def test_new_properties_initialization(self, basic_train: Train):
+    def test_new_properties_initialization(
+        self, basic_train: tuple[Train, TrainController]
+    ):
         """Test new Phase 1 properties (Train-side persistent fields only).
 
         Per design_new.md ~line 1292, `state` and `travel_direction` live
-        on `TrainController`, not `Train`; this test only checks the
-        persistent/configuration fields that remain on Train.
+        on `TrainController`, not `Train`; this test checks the
+        persistent/configuration fields that remain on Train plus the
+        controller-derived facing direction.
         """
-        assert basic_train.model == "BR 218"
-        assert basic_train.min_radius_cm == 40.0
-        assert basic_train.facing_direction == Direction.EAST
-        assert basic_train.speed_profile_id is None
+        train, controller = basic_train
+        assert train.model == "BR 218"
+        assert train.min_radius_cm == 40.0
+        assert controller._facing_direction() == Direction.EAST
+        assert train.speed_profile_id is None
         # `Train.assigned_route_id` is no longer a field; the canonical store is
         # `RouteExecutor.assigned_route_id_for(train_id)`.
-        assert not hasattr(basic_train, "assigned_route_id")
-
-    def test_position_reverse(self, basic_train: Train):
-        """Test TrainPosition.reverse() flips leading_end and updates facing_direction."""
-        from enums import LeadingEnd
-
-        basic_train.current_speed = 0.0
-        basic_train.position = TrainPosition(
-            end_a_tile=(0, 0),
-            end_a_distance_cm=0.0,
-            end_a_entry_edge="W",
-            end_b_tile=(0, 0),
-            end_b_distance_cm=0.0,
-            end_b_entry_edge="E",
-            leading_end=LeadingEnd.A,
-            occupied_tiles=[(0, 0)],
-            occupied_blocks=[],
-        )
-        assert basic_train.facing_direction == Direction.EAST
-
-        basic_train.position.reverse()
-        assert basic_train.facing_direction == Direction.WEST
-
-        basic_train.position.reverse()
-        assert basic_train.facing_direction == Direction.EAST
+        assert not hasattr(train, "assigned_route_id")
 
 
 
@@ -366,7 +358,7 @@ class TestTrainPhase1:
         assert controller.ops.state == TrainState.RUNNING_MOVING
 
 
-    def test_from_dict_restores_new_properties(self, basic_train: Train):
+    def test_from_dict_restores_new_properties(self):
         """Test from_dict restores Phase 1 properties."""
         data = {
             "id": "TRAIN_002",
@@ -385,8 +377,6 @@ class TestTrainPhase1:
         assert train.train_id == "TRAIN_002"
         assert train.model == "Shinkansen E5"
         assert train.min_radius_cm == 50.0
-        # facing_direction is computed from position; no stored field.
-        assert train.facing_direction is None
         assert train.speed_profile_id == "profile_002"
         # `assigned_route_id` is no longer carried on `Train`; the canonical
         # store is `RouteExecutor.assigned_route_id_for(train_id)`.
@@ -407,7 +397,6 @@ class TestTrainPhase1:
         # Should use defaults for the persistent fields.
         assert train.model == ""
         assert train.min_radius_cm == 30.0
-        assert train.facing_direction is None
         assert train.speed_profile_id is None
 
 
@@ -618,7 +607,6 @@ class TestBlockPowerController:
         profile = SpeedProfile(
             profile_id="test",
             name="Test",
-            speed_voltage_curve=[(0, 0), (60, 8), (120, 12)],
         )
         voltage = controller._calculate_voltage_for_train(train_running, profile)
         assert voltage == 8.0
@@ -824,7 +812,7 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.READY
         )
-        train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
+        set_train_span(controller, (0, 0), facing_direction=Direction.NORTH)
         result = controller.commands.set_cab("A")
         assert result.success is True
         assert controller.ops.state == TrainState.READY
@@ -836,7 +824,7 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             state=TrainState.READY
         )
-        train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
+        set_train_span(controller, (0, 0), facing_direction=Direction.NORTH)
         # Use manual mode to test depart transition (not ATO auto-cab logic).
         # Manual depart now requires a cab to be selected explicitly.
         controller.commands.control_mode = "manual"
@@ -889,7 +877,8 @@ class TestTrainStateTransitions:
         controller.path_dispatcher = mock_dispatcher
         controller.commands.control_mode = "manual"
         controller.commands.cab = "A"
-        train.position = None
+        # No span seeded -> controller has no facing direction.
+        controller.physics_sync.current_span = None
         success, reason = controller.depart()
         assert success is False
         assert reason is not None
@@ -905,7 +894,7 @@ class TestTrainStateTransitions:
         mock_dispatcher = MagicMock()
         mock_dispatcher.get_active_path.return_value = mock_plan
         controller.path_dispatcher = mock_dispatcher
-        train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
+        set_train_span(controller, (0, 0), facing_direction=Direction.NORTH)
         success, reason = controller.depart()
         assert success is False
         assert reason is not None
@@ -1069,7 +1058,6 @@ class TestStateBasedVoltageOutput:
         profile = SpeedProfile(
             profile_id="test",
             name="Test",
-            speed_voltage_curve=[(0, 0), (60, 8), (120, 12)],
         )
         voltage = controller._calculate_voltage_for_train(train, profile)
         assert voltage == 8.0
@@ -1085,8 +1073,8 @@ class TestCompleteStateFlows:
             state=TrainState.OFF
         )
 
-        # Give train a position so facing_direction is available
-        train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
+        # Seed the controller span so a facing direction is available.
+        set_train_span(controller, (0, 0), facing_direction=Direction.NORTH)
 
         # Power on
         result = controller.commands.power_on_cmd()
@@ -1131,7 +1119,7 @@ class TestCompleteStateFlows:
         # Simulate moving and arriving at final station
         # Need to set controller state too for proper flow
         from unittest.mock import MagicMock
-        train.position = make_train_position((0, 0), facing_direction=Direction.NORTH)
+        set_train_span(controller, (0, 0), facing_direction=Direction.NORTH)
         # Use manual mode to test depart (not ATO auto-cab logic). Manual
         # depart now requires a cab to be selected explicitly.
         controller.commands.control_mode = "manual"

@@ -11,7 +11,7 @@ own the underlying graph walks.
 The builder holds a back-reference to `TrainController` because the walk
 needs many controller-side helpers (`_get_current_block_id`,
 `_get_remaining_distance_in_current_block`, `get_path_tiles`, etc.) that
-themselves read `train.position` / `path_dispatcher`. Future PRs may
+themselves read the controller's `current_span` / `path_dispatcher`. Future PRs may
 purify those helpers; for now the builder is the structural owner and
 `TrainController` keeps thin forwarding shims that delegate here.
 """

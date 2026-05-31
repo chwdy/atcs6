@@ -10,9 +10,10 @@ import pytest
 from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, LeadingEnd, TrainState, HandlePosition
-from train import Train, TrainCar, TrainPosition
-from tests.train_test_helpers import make_train_position
+from enums import BlockState, Direction, TrainState, HandlePosition
+from train import Train, TrainCar
+from train_span import SpanEndLocator, TrainSpan
+from tests.train_test_helpers import make_train_span, set_train_span
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
 from path_dispatcher import PathDispatcher
@@ -54,18 +55,14 @@ class TestTrainControllerMonitorLookahead:
             network.add_track(track)
 
         train = Train(train_id="TRAIN_LOOKAHEAD_CAB")
-        train.position = TrainPosition(
-            end_a_tile=(0, 0),
-            end_a_distance_cm=10.0,
-            end_a_entry_edge="W",
-            end_b_tile=(2, 0),
-            end_b_distance_cm=10.0,
-            end_b_entry_edge="E",
-            leading_end=LeadingEnd.A,
-        )
         network.add_train(train)
 
         controller = TrainController(train_id=train.train_id, network=network)
+        controller.physics_sync.current_span = TrainSpan(
+            end_a=SpanEndLocator(tile=(0, 0), distance_cm=10.0, entry_edge="W"),
+            end_b=SpanEndLocator(tile=(2, 0), distance_cm=10.0, entry_edge="E"),
+            occupied_tiles=[(0, 0), (1, 0), (2, 0)],
+        )
 
         controller.commands.set_cab("A")
         payload_a = controller.get_lookahead()
@@ -74,9 +71,9 @@ class TestTrainControllerMonitorLookahead:
 
         controller.commands.set_cab("B")
         payload_b = controller.get_lookahead()
-        # After switching to Cab B, tiles don't swap - physical train doesn't move
-        # end_a stays at (0, 0) and end_b stays at (2, 0)
-        # With Cab B active and leading_end=LeadingEnd.B, head is at end_b which is (2, 0)
+        # After switching to Cab B, ends don't swap - the physical span is
+        # cab-independent: end_a stays at (0, 0) and end_b stays at (2, 0).
+        # With Cab B active, the head is end_b which is (2, 0).
         assert payload_b["head_tile"] == [2, 0]
 
     def test_no_cab_returns_no_lookahead(self, network):
@@ -87,18 +84,14 @@ class TestTrainControllerMonitorLookahead:
             network.add_track(track)
 
         train = Train(train_id="TRAIN_LOOKAHEAD_NO_CAB")
-        train.position = TrainPosition(
-            end_a_tile=(0, 0),
-            end_a_distance_cm=10.0,
-            end_a_entry_edge="W",
-            end_b_tile=(2, 0),
-            end_b_distance_cm=10.0,
-            end_b_entry_edge="E",
-            leading_end=None,
-        )
         network.add_train(train)
 
         controller = TrainController(train_id=train.train_id, network=network)
+        controller.physics_sync.current_span = TrainSpan(
+            end_a=SpanEndLocator(tile=(0, 0), distance_cm=10.0, entry_edge="W"),
+            end_b=SpanEndLocator(tile=(2, 0), distance_cm=10.0, entry_edge="E"),
+            occupied_tiles=[(0, 0), (1, 0), (2, 0)],
+        )
         controller.commands.set_cab(None)
 
         payload = controller.get_lookahead()
@@ -150,17 +143,18 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
             network.blocks[block_id] = Block(block_id=block_id, name=block_id)
 
         train = Train(train_id="TRAIN_LOOKAHEAD_NO_PATH")
-        train.position = TrainPosition(
-            end_a_tile=(0, 0),
-            end_a_distance_cm=10.0,
-            end_a_entry_edge="W",
-            end_b_tile=(2, 0),
-            end_b_distance_cm=10.0,
-            end_b_entry_edge="E",
-            leading_end=LeadingEnd.A,
-        )
         network.add_train(train)
         return train
+
+    def _seed_span(self, controller):
+        """Seed a 3-tile (0,0)->(2,0) span on the controller (cab "A" head at
+        end_a=(0,0)). The no-authority assertion does not depend on the exact
+        geometry; the head only needs to resolve."""
+        controller.physics_sync.current_span = TrainSpan(
+            end_a=SpanEndLocator(tile=(0, 0), distance_cm=10.0, entry_edge="W"),
+            end_b=SpanEndLocator(tile=(2, 0), distance_cm=10.0, entry_edge="E"),
+            occupied_tiles=[(0, 0), (1, 0), (2, 0)],
+        )
 
     def _assert_no_authority(self, payload):
         from enums import AtcLimitReasonCode
@@ -187,6 +181,7 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
         network.get_track(1, 0).switch_state = 1
 
         controller = TrainController(train_id=train.train_id, network=network)
+        self._seed_span(controller)
         controller.commands.set_cab("A")
         controller.commands.set_cab("B")
 
@@ -207,6 +202,7 @@ class TestLookaheadNoPathRegardlessOfNetworkState:
         )
 
         controller = TrainController(train_id=train.train_id, network=network)
+        self._seed_span(controller)
         controller.commands.set_cab("A")
 
         self._assert_no_authority(controller.get_lookahead())
@@ -351,14 +347,15 @@ class TestNoPathProducesNoAuthorityPayload:
     def _place_and_build(self, network, *, train_id, head_tile, head_distance_cm,
                         occupied_tiles):
         train = Train(train_id=train_id)
-        train.position = make_train_position(
-            head_tile=head_tile,
-            head_distance_cm=head_distance_cm,
-        )
-        train.position.occupied_tiles = occupied_tiles
-        train.position.occupied_blocks = ["TERMINAL"]
         network.add_train(train)
         controller = TrainController(train_id=train.train_id, network=network)
+        set_train_span(
+            controller,
+            head_tile,
+            head_distance_cm=head_distance_cm,
+            occupied_tiles=occupied_tiles,
+            occupied_blocks=["TERMINAL"],
+        )
         controller.commands.set_cab("A")
         return controller
 

@@ -12,7 +12,8 @@ from network import RailwayNetwork
 from block import Block
 from enums import BlockState, Direction
 from train import Train, TrainCar
-from tests.train_test_helpers import make_train_position
+from tests.train_test_helpers import set_train_span
+from train_controller import create_controller_for_train
 from path_utils import (
     prepare_path_for_train,
     append_destination_block_tiles,
@@ -131,8 +132,9 @@ class TestSwitchLocking:
         assert len(data["locks"]) == 1
         lock_entry = data["locks"][0]
         assert lock_entry["path_id"] == "PATH_1"
-        # claim_role is a derived diagnostic field; "primary" when source_switch_id is None.
-        assert lock_entry["claim_role"] == "primary"
+        # claim_role is a derived diagnostic field; per design_new.md:651 it is
+        # "main" when source_switch_id is None (else "flank").
+        assert lock_entry["claim_role"] == "main"
         assert lock_entry["source_switch_id"] is None
         assert lock_entry["train_id"] == "TRAIN_A"
         assert lock_entry["locked_state"] == 1
@@ -209,12 +211,14 @@ class TestPathPrepending:
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
-        train.position = make_train_position((0, 0), Direction.EAST)
+        controller = create_controller_for_train(train.train_id, network)
+        controller.commands.cab = "A"
+        set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
         path_tiles = [
             (2, 0, Direction.EAST),
             (3, 0, Direction.EAST),
         ]
-        result = prepare_path_for_train(network, train, path_tiles)
+        result = prepare_path_for_train(network, train, path_tiles, controller=controller)
         assert result.success is True
         assert result.prepend_tiles is not None
         assert len(result.prepend_tiles) == 2
@@ -229,12 +233,14 @@ class TestPathPrepending:
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
-        train.position = make_train_position((0, 0), Direction.EAST)
+        controller = create_controller_for_train(train.train_id, network)
+        controller.commands.cab = "A"
+        set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
         path_tiles = [
             (0, 0, Direction.EAST),
             (1, 0, Direction.EAST),
         ]
-        result = prepare_path_for_train(network, train, path_tiles)
+        result = prepare_path_for_train(network, train, path_tiles, controller=controller)
         assert result.success is True
         assert result.prepend_tiles is None
 
@@ -253,12 +259,14 @@ class TestPathPrepending:
         network.blocks["BLK_B"] = Block(block_id="BLK_B")
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
-        train.position = make_train_position((0, 0), Direction.EAST)
+        controller = create_controller_for_train(train.train_id, network)
+        controller.commands.cab = "A"
+        set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
         path_tiles = [
             (3, 0, Direction.EAST),
             (4, 0, Direction.EAST),
         ]
-        result = prepare_path_for_train(network, train, path_tiles)
+        result = prepare_path_for_train(network, train, path_tiles, controller=controller)
         assert result.success is False
         assert "different blocks" in result.error
 
@@ -271,8 +279,10 @@ class TestPathPrepending:
         network.blocks["BLK_1"] = Block(block_id="BLK_1")
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=50.0)
         train = Train(train_id="TRN_1", consist=[car], max_speed=100.0)
-        train.position = make_train_position((0, 0), Direction.EAST)
-        result = prepare_path_for_train(network, train, [])
+        controller = create_controller_for_train(train.train_id, network)
+        controller.commands.cab = "A"
+        set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
+        result = prepare_path_for_train(network, train, [], controller=controller)
         assert result.success is False
         assert "Empty path" in result.error
 

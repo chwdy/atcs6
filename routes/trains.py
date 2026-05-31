@@ -132,10 +132,7 @@ def register(app, state: AppState) -> None:
             # (block has multiple tiles). If the caller requested a specific
             # (x, y), re-place there for backwards compatibility.
             try:
-                if state.network.block_manager and train.position:
-                    for block_id in train.position.occupied_blocks:
-                        state.network.block_manager.clear_block(block_id)
-                state.network.place_train(
+                state.sim_controller.reposition_train(
                     train, pos_x, pos_y, Direction[direction_name.upper()]
                 )
             except (KeyError, ValueError) as e:
@@ -633,12 +630,8 @@ def register(app, state: AppState) -> None:
             if not track:
                 return jsonify({"error": f"No track at position ({x}, {y})"}), 400
 
-            if train.position and state.network.block_manager:
-                for block_id in train.position.occupied_blocks:
-                    state.network.block_manager.clear_block(block_id)
-
             try:
-                state.network.place_train(train, x, y, direction)
+                state.sim_controller.reposition_train(train, x, y, direction)
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
 

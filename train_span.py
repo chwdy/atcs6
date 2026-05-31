@@ -4,28 +4,26 @@ Canonical TrainSpan schema for v1.
 `TrainSpan` is the controller-owned live physical span definition referenced
 throughout `design_new.md` (TrainController section, TrainPhysics section,
 PhysicsSpanUpdate payload, RouteExecutor span reads, PathDispatcher start-side
-selection). It carries:
+selection). It carries exactly four fields:
 
   - both physical end locators (`end_a`, `end_b`) — tile + distance_cm +
-    entry_edge per the canonical SpanEndLocator schema below
-  - the ordered occupied span (`occupied_tiles`, `occupied_blocks`) —
-    block-level ownership view in physical order from `end_a` to `end_b`
-  - the optional active cab indicator (`leading_end`) so derived "head"
-    helpers can return the cab-side end without needing the controller
+    entry_edge per the canonical `SpanEndLocator` schema below
+  - the ordered occupied span (`occupied_tiles`, `occupied_blocks`) in physical
+    order from `end_a` to `end_b`
 
-The schema is cab-independent: occupancy and end locators do NOT shift when
-the operator changes cab. Cab-derived "head"/"tail" helpers branch on
-`leading_end` at read time.
+`end_a` and `end_b` are stable, cab-independent physical ends; the span never
+labels either as head/tail (design_new.md TrainSpan schema). Consumers that
+need the forward/head side derive it from the controller's selected cab plus
+travel state and `end_a` / `end_b` (`TrainController._head_span_locator()` /
+`TrainController.travel_direction`).
 
-This module owns the schema only. `TrainPhysics` writes the values and
-`TrainController` stores them; both layers import from here so they share
-exactly the same shape without circular imports.
+This module owns the schema only. `TrainPhysics` produces the values and
+`TrainController` stores them (`physics_sync.current_span`); both layers import
+from here so they share exactly the same shape without circular imports.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
-
-from enums import LeadingEnd
+from typing import List, Tuple
 
 
 @dataclass
@@ -47,93 +45,23 @@ class SpanEndLocator:
 
 @dataclass
 class TrainSpan:
-    """Canonical live physical span owned by `TrainController.current_span`.
+    """Canonical live physical span owned by
+    `TrainController.physics_sync.current_span`.
 
-    Producer: `TrainPhysics.tick(...)` (one new TrainSpan per movement step).
-    Storage: `TrainController.current_span` (written by
+    Producer: `TrainPhysics.tick(...)` (one new `TrainSpan` per movement step).
+    Storage: `TrainController.physics_sync.current_span` (written by
     `TrainController.on_physics_updated(...)`).
-    Consumers: `RouteExecutor` (start-side selection, covered-task index
-    advance), `PathDispatcher.create_path` (start-side selection),
-    `TrainController` derived properties (`travel_direction`, lookahead
-    inputs).
+    Consumers: `RouteExecutor` / `PathDispatcher` (via
+    `TrainController.get_current_span()`) and `TrainController` derived reads
+    (`_head_span_locator`, `travel_direction`, lookahead inputs).
 
-    The schema is cab-independent — occupancy fields do not change when the
-    operator changes cab. `leading_end` reflects the controller's currently
-    selected cab and is updated only by cab-selection commands.
+    The schema is cab-independent: `end_a` / `end_b` are stable geometric labels
+    for the two physical ends of the consist and do NOT imply head/tail.
+    `occupied_tiles` / `occupied_blocks` are ordered from `end_a` to `end_b` and
+    do not change when the operator changes cab.
     """
 
     end_a: SpanEndLocator
     end_b: SpanEndLocator
     occupied_tiles: List[Tuple[int, int]] = field(default_factory=list)
     occupied_blocks: List[str] = field(default_factory=list)
-    leading_end: Optional[LeadingEnd] = None
-
-    @property
-    def head(self) -> Optional[SpanEndLocator]:
-        """The cab-side end locator, or None when no cab is selected."""
-        if self.leading_end == LeadingEnd.A:
-            return self.end_a
-        if self.leading_end == LeadingEnd.B:
-            return self.end_b
-        return None
-
-    @property
-    def tail(self) -> Optional[SpanEndLocator]:
-        """The non-cab end locator, or None when no cab is selected."""
-        if self.leading_end == LeadingEnd.A:
-            return self.end_b
-        if self.leading_end == LeadingEnd.B:
-            return self.end_a
-        return None
-
-    @classmethod
-    def from_train_position(cls, position: "TrainPositionLike") -> "TrainSpan":
-        """Build a TrainSpan from a TrainPosition-shaped object.
-
-        TrainPosition (defined in train.py) is the legacy in-memory position
-        record used by TrainPhysics and other layers. This factory adapts it
-        into the canonical TrainSpan schema during the migration. Once every
-        producer/consumer reads/writes TrainSpan directly, this helper can be
-        removed.
-
-        The mapping:
-          - `position.end_a_tile` + `end_a_distance_cm` + `end_a_entry_edge`
-            → `SpanEndLocator` for `end_a`
-          - `position.end_b_*` → `SpanEndLocator` for `end_b`
-          - `position.occupied_tiles` (List[Tuple[int, int]]) → forwarded
-          - `position.occupied_blocks` → forwarded
-          - `position.leading_end` → forwarded
-        """
-        end_a = SpanEndLocator(
-            tile=position.end_a_tile,
-            distance_cm=position.end_a_distance_cm,
-            entry_edge=position.end_a_entry_edge,
-        )
-        end_b = SpanEndLocator(
-            tile=position.end_b_tile,
-            distance_cm=position.end_b_distance_cm,
-            entry_edge=position.end_b_entry_edge,
-        )
-        return cls(
-            end_a=end_a,
-            end_b=end_b,
-            occupied_tiles=list(position.occupied_tiles),
-            occupied_blocks=list(position.occupied_blocks),
-            leading_end=position.leading_end,
-        )
-
-
-# A structural alias for the legacy TrainPosition shape used by
-# `from_train_position`. Defined separately to avoid importing TrainPosition
-# from train.py (which would create a cycle: train.py → train_span.py →
-# train.py). The fields below match TrainPosition's public attributes.
-class TrainPositionLike:
-    end_a_tile: Tuple[int, int]
-    end_a_distance_cm: float
-    end_a_entry_edge: str
-    end_b_tile: Tuple[int, int]
-    end_b_distance_cm: float
-    end_b_entry_edge: str
-    occupied_tiles: List[Tuple[int, int]]
-    occupied_blocks: List[str]
-    leading_end: Optional[LeadingEnd]

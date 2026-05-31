@@ -97,7 +97,11 @@ def _lock_x1_diverge_via_train_a(dispatcher, network):
             requested_destination_direction=dirc,
             acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
-        if res.success and x1.locked_by_path is not None and x1.locked_state == 1:
+        sw_x1 = network.switches.get(x1.switch_id) if x1.switch_id else None
+        locked_diverge = sw_x1 is not None and any(
+            state == 1 for (_train, state) in sw_x1.locks.values()
+        )
+        if res.success and locked_diverge:
             return res
         # A path was created but it did not lock X1 in DIVERGE (e.g. it routed
         # the long way around): release it and try the other direction.

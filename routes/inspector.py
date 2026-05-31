@@ -127,7 +127,7 @@ _DERIVED_DOC: Dict[str, Dict[str, Any]] = {
         ),
     },
     "travel_direction": {
-        "computed_from": ["cab", "train.position.facing_direction", "current_span"],
+        "computed_from": ["cab", "current_span"],
         "formula_doc": (
             "train_controller.py:462 / design_new.md ~L1311 — cab end = head; "
             "direction is from the opposite physical end through the cab end "

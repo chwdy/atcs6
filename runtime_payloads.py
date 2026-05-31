@@ -22,7 +22,17 @@ module imports it under TYPE_CHECKING to avoid runtime circular imports.
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Protocol, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    FrozenSet,
+    List,
+    Literal,
+    Optional,
+    Protocol,
+    Tuple,
+)
 
 if TYPE_CHECKING:
     # TrainSpan and its component schemas (SpanEndLocator) are owned by the
@@ -574,7 +584,7 @@ class SwitchLockClaim:
     locked_state: int  # 0 = MAIN, 1 = DIVERGE
     source_switch_id: Optional[str] = None
     manual_override: bool = False
-    route: Optional[frozenset] = None  # frozenset of two edge names, or None
+    route: Optional[FrozenSet[str]] = None  # unordered pair of two edge-name strings, or None
 
 
 # =============================================================================

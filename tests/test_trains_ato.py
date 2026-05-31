@@ -11,9 +11,9 @@ from types import SimpleNamespace
 from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, LeadingEnd, TrainState, HandlePosition
-from train import Train, TrainCar, TrainPosition
-from tests.train_test_helpers import make_train_position
+from enums import BlockState, Direction, TrainState, HandlePosition
+from train import Train, TrainCar
+from train_span import SpanEndLocator, TrainSpan
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
 from path_dispatcher import PathDispatcher
@@ -668,24 +668,19 @@ class TestAtoDestinationStoppingAfterPathCompletes:
         train = Train(train_id="TRAIN_CLEAR_TEST", consist=[car])
         network.add_train(train)
 
-        # Manually set position at last station tile (4,0), facing WEST
-        train.position = TrainPosition(
-            end_a_tile=(4, 0),
-            end_a_distance_cm=25.0,  # Middle of tile
-            end_a_entry_edge="E",  # Entered from east, so facing WEST
-            end_b_tile=(4, 0),
-            end_b_distance_cm=25.0,
-            end_b_entry_edge="E",
-            leading_end=LeadingEnd.A,
-            occupied_tiles=[(4, 0)],
-            occupied_blocks=["BLOCK_B"],
-        )
-        # Direction set via position (refactored): train.set_cab("A")  # was: Direction.WEST
         # v1: path geometry / future-authority blocks live on the dispatcher;
         # this test exercises the at-station-stopped branch which does not
         # depend on having an active path wired.
 
         controller = TrainController(train_id=train.train_id, network=network)
+        # Manually seed a single-tile span at last station tile (4,0), facing
+        # WEST (entry_edge="E" — entered from east). Cab "A" -> end_a is head.
+        controller.physics_sync.current_span = TrainSpan(
+            end_a=SpanEndLocator(tile=(4, 0), distance_cm=25.0, entry_edge="E"),
+            end_b=SpanEndLocator(tile=(4, 0), distance_cm=25.0, entry_edge="E"),
+            occupied_tiles=[(4, 0)],
+            occupied_blocks=["BLOCK_B"],
+        )
         controller.commands.control_mode = "ato"
         controller.commands.cab = "A"
         controller.ops.state = TrainState.RUNNING_MOVING
@@ -770,6 +765,7 @@ class TestTrendAwareATOControl:
         from tests.train_test_helpers import (
             attach_synthetic_path,
             make_synthetic_path,
+            set_train_span,
         )
 
         car = TrainCar(car_id="CAR_TEST", car_type="LOCOMOTIVE", length_cm=30.0)
@@ -778,6 +774,19 @@ class TestTrendAwareATOControl:
         network.place_train(train, 0, 0, Direction.EAST)
 
         controller = TrainController(train_id=train.train_id, network=network)
+        # v1: the controller's head (and thus the live lookahead / operational
+        # curve the ATO evaluator reads) derives from
+        # `physics_sync.current_span`, not from `Train`. Seed a span at the
+        # placement tile so the synthetic-path walk has a real head to start
+        # from; without it `_get_head_tile()` is None and the curve at
+        # distance 0 collapses to a stop, making ATO coast (N) regardless of
+        # the speed/curve setup under test.
+        set_train_span(
+            controller,
+            (0, 0),
+            facing_direction=Direction.EAST,
+            occupied_blocks=["BLOCK_TREND"],
+        )
         attach_synthetic_path(
             controller,
             make_synthetic_path(
@@ -1004,9 +1013,10 @@ class TestSpeedCurveCalculation:
         train = Train(train_id="TRAIN_CURVE_TEST", consist=[car], max_speed=80.0)
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
-        # `calculate_speed_curves` reads `train.position` and the network/
-        # block geometry; path geometry lives on PathDispatcher in v1 and
-        # is not required for the curve-shape assertions below.
+        # `calculate_speed_curves` reads the head from the controller's
+        # `current_span` and the network/block geometry; path geometry lives
+        # on PathDispatcher in v1 and is not required for the curve-shape
+        # assertions below.
 
         controller = TrainController(train_id=train.train_id, network=network)
         controller.commands.control_mode = "ato"
@@ -1110,7 +1120,6 @@ class TestForwardSimulation:
         profile = SpeedProfile(
             profile_id="test_sim",
             name="Test Simulation",
-            speed_voltage_curve=[(0, 0), (60, 8), (120, 12)],
             acceleration_rate=10.0,  # 10 km/h per second
             deceleration_rate=15.0,  # 15 km/h per second
             friction_rate=0.5,

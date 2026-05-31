@@ -29,10 +29,12 @@ from runtime_payloads import (
 from block_manager import BlockManager, ReservedBlockTraversal
 from path_dispatcher import PathDispatcher
 from network import RailwayNetwork
+from simulation import SimulationController
 from track import TrackSegment, TRACK_EW
 from block import Block
 from train import Train, TrainCar
 from enums import Direction
+from tests.train_test_helpers import set_train_span
 
 
 # ---------------------------------------------------------------------------
@@ -67,11 +69,29 @@ def dispatcher(linear_network):
     return PathDispatcher(linear_network)
 
 
-def _place_probe_train(network):
+def _place_probe_train(network, dispatcher):
+    """Place the probe train at BLOCK_A (0,0, facing EAST) and seed a
+    controller span so the dispatcher can resolve its current block.
+
+    v1: the train's head/current block derives from
+    `TrainController.physics_sync.current_span`, which the dispatcher reads
+    through its `simulation_controller` controller registry. Wire the
+    dispatcher to a `SimulationController` over the same network and
+    create+seed the controller through that sim.
+    """
     car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="T_PROBE", consist=[car], max_speed=60.0)
     network.add_train(train)
     network.place_train(train, 0, 0, Direction.EAST)
+
+    sim = SimulationController(network, dispatcher)
+    controller = sim._get_or_create_controller(train)
+    set_train_span(
+        controller,
+        (0, 0),
+        facing_direction=Direction.EAST,
+        occupied_blocks=["BLOCK_A"],
+    )
     return train
 
 
@@ -92,7 +112,7 @@ class TestCreatePathDirectionOverride:
         """Restrict BLOCK_C to reverse-only, then ask for forward as an
         operator with `manual_override = True`. Expect success.
         """
-        _place_probe_train(linear_network)
+        _place_probe_train(linear_network, dispatcher)
         # The probe train travels east through A -> B -> C, so the natural
         # terminal traversal at BLOCK_C is "forward". Disallow forward to
         # force the override path.
@@ -130,7 +150,7 @@ class TestCreatePathDirectionOverride:
         pre-compute). Either is acceptable; what matters is that the
         rejection is direction-driven.
         """
-        _place_probe_train(linear_network)
+        _place_probe_train(linear_network, dispatcher)
         linear_network.blocks["BLOCK_C"].allowed_travel_directions = {"reverse"}
 
         result = dispatcher.create_path(
@@ -159,7 +179,7 @@ class TestCreatePathDirectionOverride:
         direction policy. Same rejection surface as the explicit
         `manual_override=False` case above.
         """
-        _place_probe_train(linear_network)
+        _place_probe_train(linear_network, dispatcher)
         linear_network.blocks["BLOCK_C"].allowed_travel_directions = {"reverse"}
 
         result = dispatcher.create_path(

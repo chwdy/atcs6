@@ -1,15 +1,14 @@
 """
-Tests for Phase 6 - Multi-Block Occupancy & IDLE Polarity
+Tests for Phase 6 - Multi-Block Occupancy
 
 This module tests:
-- Train.get_occupied_blocks() based on length
-- Train.is_opposite_polarity_safe() checks
-- BlockPowerController opposite polarity voltage output
+- Train occupancy spans across one or more blocks based on length
 """
 
 import pytest
 from train import Train, TrainCar
-from tests.train_test_helpers import make_train_position
+from train_controller import create_controller_for_train
+from tests.train_test_helpers import set_train_span
 from network import RailwayNetwork
 from block import Block
 from track import TrackSegment
@@ -81,41 +80,58 @@ class TestMultiBlockOccupancy:
 
     def test_short_train_single_block(self, simple_network, short_train):
         """Test short train occupies only one block."""
-        short_train.position = make_train_position(
-            (0, 0), Direction.EAST, occupied_blocks=["BLK_A"]
+        simple_network.add_train(short_train)
+        controller = create_controller_for_train(short_train.train_id, simple_network)
+        set_train_span(
+            controller, (0, 0), facing_direction=Direction.EAST, occupied_blocks=["BLK_A"]
         )
 
-        occupied = short_train.get_occupied_blocks(simple_network)
+        # Occupied blocks now live on the controller's live span.
+        occupied = controller.get_current_span().occupied_blocks
 
         assert occupied == ["BLK_A"]
 
     def test_long_train_multiple_blocks(self, simple_network, long_train):
         """Test long train occupies multiple blocks."""
-        long_train.position = make_train_position(
+        simple_network.add_train(long_train)
+        controller = create_controller_for_train(long_train.train_id, simple_network)
+        set_train_span(
+            controller,
             (1, 0),
-            Direction.EAST,
+            facing_direction=Direction.EAST,
             occupied_tiles=[(0, 0), (1, 0), (2, 0)],
             occupied_blocks=["BLK_A", "BLK_B", "BLK_C"],
         )
 
-        # Long train is 2.5 meters
-        occupied = long_train.get_occupied_blocks(simple_network)
+        # Long train is 2.5 meters; occupied blocks live on the live span.
+        occupied = controller.get_current_span().occupied_blocks
 
         assert occupied == ["BLK_A", "BLK_B", "BLK_C"]
 
-    def test_get_occupied_blocks_no_position(self, simple_network, short_train):
-        """Test get_occupied_blocks with no current position."""
-        short_train.position = None
+    def test_get_occupied_blocks_no_span(self, simple_network, short_train):
+        """A controller with no live span reports no occupancy.
 
-        occupied = short_train.get_occupied_blocks(simple_network)
+        Replaces the legacy "no position" case: when the controller has not
+        received a physics span yet, `get_current_span()` is None and there
+        are no occupied blocks to read.
+        """
+        simple_network.add_train(short_train)
+        controller = create_controller_for_train(short_train.train_id, simple_network)
 
-        assert occupied == []
+        assert controller.get_current_span() is None
 
-    def test_get_occupied_blocks_no_network(self, short_train):
-        """Test get_occupied_blocks with no network."""
-        short_train.position = None
+    def test_get_occupied_blocks_empty_span(self, simple_network, short_train):
+        """A span carrying no occupied blocks reports an empty list.
 
-        occupied = short_train.get_occupied_blocks(None)
+        Replaces the legacy "no network" case: occupancy now lives directly
+        on the span (not derived from a network), so a span with no
+        `occupied_blocks` yields `[]` independent of any network.
+        """
+        simple_network.add_train(short_train)
+        controller = create_controller_for_train(short_train.train_id, simple_network)
+        set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
+
+        occupied = controller.get_current_span().occupied_blocks
 
         assert occupied == []
 

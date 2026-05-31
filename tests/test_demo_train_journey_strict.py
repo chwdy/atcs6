@@ -113,9 +113,10 @@ def test_demo_block_main_east_1_not_released_while_train_inside():
     for tick in range(1, 2001):
         sim_controller.update(dt)
         span = controller.physics_sync.current_span
-        if span is None or span.head is None:
+        head = controller._get_head_tile()
+        if span is None or head is None:
             continue
-        head_tile = tuple(span.head.tile)
+        head_tile = tuple(head)
         occupied_tiles = {tuple(t) for t in (span.occupied_tiles or [])}
         # Bug-2 window: every span tile that lies inside a block must have
         # block.occupied_by == DEMO_TRAIN. We isolate the (5,0) case because

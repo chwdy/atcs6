@@ -10,9 +10,10 @@ import pytest
 from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, LeadingEnd, TrainState, HandlePosition
-from train import Train, TrainCar, TrainPosition
-from tests.train_test_helpers import make_train_position
+from enums import BlockState, Direction, TrainState, HandlePosition
+from train import Train, TrainCar
+from train_span import SpanEndLocator, TrainSpan
+from tests.train_test_helpers import make_train_span, set_train_span
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
 from path_dispatcher import PathDispatcher
@@ -91,7 +92,7 @@ class TestBlockTileSyncValidation:
     def physics_setup(self):
         """Create network, train, and physics."""
         from network import RailwayNetwork
-        from train import Train, TrainPosition
+        from train import Train
         from train_physics import TrainPhysics
         from train_controller import TrainController
         from block import Block
@@ -112,21 +113,27 @@ class TestBlockTileSyncValidation:
             network.add_track(track)
 
         train = Train(train_id="T1", max_speed=60.0)
-        train.position = TrainPosition(
+        network.add_train(train)
+
+        controller = TrainController(train_id="T1", network=network)
+        physics = TrainPhysics(train_id="T1", network=network, controller=controller)
+        # v1: head/tail and tile occupancy live on the controller span, not
+        # train.position. Seed the physics movement scratchpad so
+        # _validate_position_sync / _get_blocks_for_train derive tile occupancy
+        # from it.
+        from train_physics import _SpanWorkState
+
+        physics._work = _SpanWorkState(
+            head_is_a=True,
             end_a_tile=(2, 0),
             end_a_distance_cm=25.0,
             end_a_entry_edge="W",
             end_b_tile=(0, 0),
             end_b_distance_cm=10.0,
             end_b_entry_edge="W",
-            leading_end=LeadingEnd.A,
             occupied_tiles=[(0, 0), (1, 0), (2, 0)],
             occupied_blocks=["B1"],
         )
-        network.add_train(train)
-
-        controller = TrainController(train_id="T1", network=network)
-        physics = TrainPhysics(train_id="T1", network=network, controller=controller)
 
         return network, train, physics
 
@@ -245,9 +252,9 @@ class TestRouteExecutorThreeStationLoopSimulation:
         """Force train at waypoint platform and trigger arrival logic deterministically."""
         platform = simulation.network.platforms[platform_id]
         tile = platform.positions[0]
-        direction = train.facing_direction or Direction.EAST
+        direction = controller._facing_direction() or Direction.EAST
 
-        train.position = make_train_position(tile, direction)
+        set_train_span(controller, tile, facing_direction=direction)
         train.current_speed = 0.0
         train.assigned_path_id = None
         train.current_path = None
@@ -354,7 +361,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
                 and dispatcher.get_path(train.assigned_path_id) is not None
                 and dispatcher.get_path(train.assigned_path_id).end_block_id
                 == "STA_A_BLOCK"
-                and train.facing_direction == Direction.WEST
+                and controller._facing_direction() == Direction.WEST
                 and controller.commands.cab == "B"
             ),
             "Train did not switch cab and dispatch from C back to A",
@@ -511,7 +518,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
         )
 
         # Move to in-between block tile and keep running, then unassign route mid-run.
-        train.position = make_train_position((6, 0), Direction.EAST)
+        set_train_span(controller, (6, 0), facing_direction=Direction.EAST)
         train.current_speed = 20.0
         train.state = TrainState.RUNNING_MOVING
         controller.ops.state = TrainState.RUNNING_MOVING
@@ -560,7 +567,7 @@ class TestRouteExecutorThreeStationLoopSimulation:
             "STA_C",
         )
 
-        stop_tile = train.position.head_tile if train.position else None
+        stop_tile = controller._get_head_tile()
         assert stop_tile in {(4, 0), (8, 0)}, (
             f"Expected final stop at B or C station tile, got {stop_tile}"
         )
@@ -648,23 +655,18 @@ class TestMultiTilePlatformStopping:
         train = Train(train_id="CLEARANCE_TEST", consist=[car])
         network.add_train(train)
 
-        # Place train at first station tile (9,3) with path to last tile (9,4)
-        train.position = TrainPosition(
-            end_a_tile=(9, 3),
-            end_a_distance_cm=0.0,
-            end_a_entry_edge="S",
-            end_b_tile=(9, 3),
-            end_b_distance_cm=0.0,
-            end_b_entry_edge="S",
-            leading_end=LeadingEnd.A,
+        controller = TrainController(train_id=train.train_id, network=network)
+        # Place train at first station tile (9,3) with path to last tile (9,4).
+        # leading_end was A -> default head end (end_a) with no cab set.
+        controller.physics_sync.current_span = TrainSpan(
+            end_a=SpanEndLocator(tile=(9, 3), distance_cm=0.0, entry_edge="S"),
+            end_b=SpanEndLocator(tile=(9, 3), distance_cm=0.0, entry_edge="S"),
             occupied_tiles=[(9, 3)],
             occupied_blocks=["STATION_BLOCK"],
         )
-
-        controller = TrainController(train_id=train.train_id, network=network)
-        # `_calculate_clearance_to_end_of_current_block` reads `train.position`
-        # and the network, not current_speed or current_path — both of those
-        # live on TrainController / PathDispatcher in v1.
+        # `_calculate_clearance_to_end_of_current_block` reads the controller's
+        # current_span and the network, not current_speed or current_path —
+        # both of those live on TrainController / PathDispatcher in v1.
 
         # Calculate clearance - should include distance to end of platform
         clearance = controller._calculate_clearance_to_end_of_current_block()
@@ -700,21 +702,17 @@ class TestMultiTilePlatformStopping:
         network.add_train(train)
         network.place_train(train, 9, 3, Direction.NORTH)
 
-        # Manually set position to be at start of tile (9,3)
-        train.position = TrainPosition(
-            end_a_tile=(9, 3),
-            end_a_distance_cm=0.0,
-            end_a_entry_edge="S",
-            end_b_tile=(9, 3),
-            end_b_distance_cm=0.0,
-            end_b_entry_edge="S",
-            leading_end=LeadingEnd.A,
+        # Create controller
+        controller = TrainController(train_id=train.train_id, network=network)
+
+        # Manually set span to be at start of tile (9,3). leading_end was A ->
+        # default head end (end_a) with no cab set.
+        controller.physics_sync.current_span = TrainSpan(
+            end_a=SpanEndLocator(tile=(9, 3), distance_cm=0.0, entry_edge="S"),
+            end_b=SpanEndLocator(tile=(9, 3), distance_cm=0.0, entry_edge="S"),
             occupied_tiles=[(9, 3)],
             occupied_blocks=["STATION_BLOCK"],
         )
-
-        # Create controller
-        controller = TrainController(train_id=train.train_id, network=network)
 
         # Calculate clearance to end of current block
         clearance = controller._calculate_clearance_to_end_of_current_block()
@@ -969,7 +967,7 @@ class TestManualPathAssignmentAfterArrival:
 
         # Step 2: Force arrival at B (simulating the train arriving and stopping)
         # Place train at B station (now at 3,0)
-        train.position = make_train_position((3, 0), Direction.EAST)
+        set_train_span(controller, (3, 0), facing_direction=Direction.EAST)
         train.current_speed = 0.0
         train.state = TrainState.READY
         controller.ops.state = TrainState.READY
@@ -1132,7 +1130,7 @@ class TestManualPathAssignmentAfterArrival:
             lambda: simulation.route_executor._is_train_at_platform(train, "STA_C"),
             "BUG: Train did not arrive at C after manual path assignment. "
             f"State: {train.state}, speed: {train.current_speed}, "
-            f"position: {getattr(train.position, 'head_tile', None)}",
+            f"position: {controller._get_head_tile()}",
             max_steps=20000,
         )
 
@@ -1155,14 +1153,15 @@ class TestManualPathAssignmentAfterArrival:
         car = TrainCar(car_id="CAR_LOOKAHEAD", car_type="LOCOMOTIVE", length_cm=45.0)
         train = Train(train_id="LOOKAHEAD_TEST", consist=[car], max_speed=60.0)
         network.add_train(train)
-        train.position = make_train_position((3, 0), Direction.EAST)
-        train.current_speed = 0.0
-        train.state = TrainState.READY
 
         # Setup controller
         controller = simulation._get_or_create_controller(train)
         controller.commands.control_mode = "ato"
         controller.ops.state = TrainState.READY
+
+        set_train_span(controller, (3, 0), facing_direction=Direction.EAST)
+        train.current_speed = 0.0
+        train.state = TrainState.READY
 
         # Manually assign B->C route
         route = Route(
@@ -1412,7 +1411,7 @@ class TestManualPathAssignmentAfterArrival:
         controller.commands.set_cab("A")
         controller.commands.set_cab("A")
 
-        assert train.facing_direction == Direction.EAST, (
+        assert controller._facing_direction() == Direction.EAST, (
             "Train should face EAST initially"
         )
         assert controller.commands.cab == "A", "Cab A should be active"
@@ -1437,7 +1436,8 @@ class TestManualPathAssignmentAfterArrival:
         train.ato_destination_block_id = "STA_A_BLOCK"
 
         # Apply the fix: Auto-turn if path requires opposite direction
-        if train.position and train.current_path and len(train.current_path) >= 2:
+        facing = controller._facing_direction()
+        if controller._get_head_tile() and train.current_path and len(train.current_path) >= 2:
             first_tile = train.current_path[0]
             second_tile = train.current_path[1]
             dx = second_tile[0] - first_tile[0]
@@ -1457,7 +1457,8 @@ class TestManualPathAssignmentAfterArrival:
             # If path goes opposite to facing, turn around
             if (
                 path_direction is not None
-                and path_direction == train.facing_direction.opposite()
+                and facing is not None
+                and path_direction == facing.opposite()
                 and train.is_stopped()
             ):
                 opposite = "B" if controller.commands.cab == "A" else "A"
@@ -1470,8 +1471,8 @@ class TestManualPathAssignmentAfterArrival:
                 )
 
         # Verify fix
-        assert train.facing_direction == Direction.WEST, (
-            f"BUG: Train should auto-turn to WEST for backward path, got {train.facing_direction}"
+        assert controller._facing_direction() == Direction.WEST, (
+            f"BUG: Train should auto-turn to WEST for backward path, got {controller._facing_direction()}"
         )
         assert controller.commands.cab == "B", (
             f"BUG: Cab should switch to B after turn, got {controller.commands.cab}"
@@ -1510,7 +1511,8 @@ class TestManualPathAssignmentAfterArrival:
         train.current_path = raw_path
 
         # Check if turn is needed (should NOT turn)
-        if train.position and train.current_path and len(train.current_path) >= 2:
+        facing = controller._facing_direction()
+        if controller._get_head_tile() and train.current_path and len(train.current_path) >= 2:
             first_tile = train.current_path[0]
             second_tile = train.current_path[1]
             dx = second_tile[0] - first_tile[0]
@@ -1524,14 +1526,15 @@ class TestManualPathAssignmentAfterArrival:
             # Should NOT turn (path and facing both EAST)
             if (
                 path_direction is not None
-                and path_direction == train.facing_direction.opposite()
+                and facing is not None
+                and path_direction == facing.opposite()
                 and train.is_stopped()
             ):
                 opposite = "B" if controller.commands.cab == "A" else "A"
                 controller.commands.set_cab(opposite)
 
         # Should still face EAST
-        assert train.facing_direction == Direction.EAST, (
+        assert controller._facing_direction() == Direction.EAST, (
             "Train should not turn for forward path"
         )
         assert controller.commands.cab == "A", "Cab should remain A"
@@ -1579,7 +1582,7 @@ class TestManualPathAssignmentAfterArrival:
         assert simulation.route_executor._is_train_at_platform(train, "STA_C"), (
             "Train should reach C"
         )
-        assert train.facing_direction == Direction.EAST, (
+        assert controller._facing_direction() == Direction.EAST, (
             "Train should still face EAST at terminal"
         )
 
@@ -1611,7 +1614,8 @@ class TestManualPathAssignmentAfterArrival:
         train.ato_destination_block_id = "STA_A_BLOCK"
 
         # Auto-turn logic
-        if train.position and train.current_path and len(train.current_path) >= 2:
+        facing = controller._facing_direction()
+        if controller._get_head_tile() and train.current_path and len(train.current_path) >= 2:
             first_tile = train.current_path[0]
             second_tile = train.current_path[1]
             dx = second_tile[0] - first_tile[0]
@@ -1629,7 +1633,8 @@ class TestManualPathAssignmentAfterArrival:
 
             if (
                 path_direction is not None
-                and path_direction == train.facing_direction.opposite()
+                and facing is not None
+                and path_direction == facing.opposite()
                 and train.is_stopped()
             ):
                 opposite = "B" if controller.commands.cab == "A" else "A"
@@ -1638,11 +1643,11 @@ class TestManualPathAssignmentAfterArrival:
                     f"set_cab({opposite}) failed! "
                     f"train.state={train.state}, controller.ops.state={controller.ops.state}, "
                     f"active_cab={controller.commands.cab}, ato_running={controller.ato.running}, "
-                    f"speed={train.current_speed}, facing={train.facing_direction}"
+                    f"speed={train.current_speed}, facing={controller._facing_direction()}"
                 )
 
         # 4. Verify train turned and can depart
-        assert train.facing_direction == Direction.WEST, (
+        assert controller._facing_direction() == Direction.WEST, (
             "BUG: Train should turn WEST for return path"
         )
 
@@ -1787,15 +1792,15 @@ class TestAutoReversalOnNewRouteAssignment:
 
         # Simulate post-route-completion: IDLE, facing EAST, cab A.
         # depart_from_station(has_more_waypoints=False) sets state=IDLE
-        # but does NOT clear active_cab or leading_end, so the train
-        # retains its cab and facing direction.
+        # but does NOT clear the cab or the span, so the train retains its
+        # cab and facing direction (head=end_a from placement, cab A).
         controller.commands.cab = "A"
         train.active_cab = "A"
         train.state = TrainState.READY
         controller.ops.state = TrainState.READY
 
         # Verify preconditions
-        assert train.facing_direction == Direction.EAST
+        assert controller._facing_direction() == Direction.EAST
         assert train.state == TrainState.READY
         assert controller.commands.cab == "A"
 
@@ -1812,10 +1817,10 @@ class TestAutoReversalOnNewRouteAssignment:
             simulation,
             lambda: (
                 train.state == TrainState.RUNNING_MOVING
-                and train.facing_direction == Direction.WEST
+                and controller._facing_direction() == Direction.WEST
             ),
             f"BUG: Train did not auto-reverse and depart westbound from IDLE. "
-            f"State={train.state}, facing={train.facing_direction}, "
+            f"State={train.state}, facing={controller._facing_direction()}, "
             f"cab={controller.commands.cab}, path={train.assigned_path_id}",
             max_steps=5000,
         )
@@ -1843,15 +1848,14 @@ class TestAutoReversalOnNewRouteAssignment:
         controller = simulation._get_or_create_controller(train)
         controller.commands.control_mode = "ato"
 
-        # Simulate transition_to_idle(): clears cab and leading_end
+        # Simulate transition_to_idle(): clears cab and the live span
         train.state = TrainState.READY
         controller.ops.state = TrainState.READY
         controller.commands.cab = None
         train.active_cab = None
-        if train.position:
-            train.position.leading_end = None
+        controller.physics_sync.current_span = None
 
-        assert train.facing_direction is None
+        assert controller._facing_direction() is None
         assert train.state == TrainState.READY
 
         # Assign forward route A->C
@@ -1867,16 +1871,16 @@ class TestAutoReversalOnNewRouteAssignment:
             simulation,
             lambda: (
                 train.state == TrainState.RUNNING_MOVING
-                and train.facing_direction is not None
+                and controller._facing_direction() is not None
             ),
             f"BUG: Train did not depart from IDLE with no cab. "
-            f"State={train.state}, facing={train.facing_direction}, "
+            f"State={train.state}, facing={controller._facing_direction()}, "
             f"cab={controller.commands.cab}",
             max_steps=5000,
         )
 
-        assert train.facing_direction == Direction.EAST, (
-            f"Expected EAST, got {train.facing_direction}"
+        assert controller._facing_direction() == Direction.EAST, (
+            f"Expected EAST, got {controller._facing_direction()}"
         )
 
     def test_idle_train_no_cab_gets_backward_route_at_terminal(self):
@@ -1903,10 +1907,9 @@ class TestAutoReversalOnNewRouteAssignment:
         controller.ops.state = TrainState.READY
         controller.commands.cab = None
         train.active_cab = None
-        if train.position:
-            train.position.leading_end = None
+        controller.physics_sync.current_span = None
 
-        assert train.facing_direction is None
+        assert controller._facing_direction() is None
         assert train.state == TrainState.READY
 
         # Assign route to A (westbound)
@@ -1922,16 +1925,16 @@ class TestAutoReversalOnNewRouteAssignment:
             simulation,
             lambda: (
                 train.state == TrainState.RUNNING_MOVING
-                and train.facing_direction is not None
+                and controller._facing_direction() is not None
             ),
             f"BUG: Train with no facing_direction did not depart. "
-            f"State={train.state}, facing={train.facing_direction}, "
+            f"State={train.state}, facing={controller._facing_direction()}, "
             f"cab={controller.commands.cab}",
             max_steps=5000,
         )
 
-        assert train.facing_direction == Direction.WEST, (
-            f"Expected WEST, got {train.facing_direction}"
+        assert controller._facing_direction() == Direction.WEST, (
+            f"Expected WEST, got {controller._facing_direction()}"
         )
 
 

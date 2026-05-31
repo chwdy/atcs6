@@ -48,7 +48,6 @@ from enums import (
     BlockState,
     Direction,
     HandlePosition,
-    LeadingEnd,
     TrainState,
 )
 from model_scale import kmh_to_cm_per_sec
@@ -59,7 +58,7 @@ from train_controller_types import (
     PHYSICS_KIND_HANDLE,
     PHYSICS_KIND_TARGET_SPEED,
 )
-from train_span import TrainSpan
+from train_span import SpanEndLocator, TrainSpan
 
 if TYPE_CHECKING:
     from block_manager import BlockManager
@@ -74,6 +73,65 @@ logger = logging.getLogger(__name__)
 
 # Edge opposites for track geometry
 OPPOSITE_EDGES = {"N": "S", "S": "N", "E": "W", "W": "E"}
+
+
+@dataclass
+class _SpanWorkState:
+    """Mutable per-tick movement scratchpad for `TrainPhysics`.
+
+    Mirrors the field layout the movement helpers expect (two physical ends
+    plus ordered occupied tiles/blocks) so the intricate tile-walk math is
+    unchanged by the live-position migration. `head_is_a` records which
+    physical end the controller's cab selects as the head (cab "A"/None ->
+    end_a, "B" -> end_b); the helpers advance that end and trace the other as
+    the tail. It is built from the controller-owned `TrainSpan` at tick start
+    and written back into a fresh `TrainSpan` for the `PhysicsSpanUpdate`. The
+    span itself never carries a head/tail label (design_new.md TrainSpan
+    schema); the head side lives only here, derived from the cab.
+    """
+
+    head_is_a: bool
+    end_a_tile: Tuple[int, int]
+    end_a_distance_cm: float
+    end_a_entry_edge: str
+    end_b_tile: Tuple[int, int]
+    end_b_distance_cm: float
+    end_b_entry_edge: str
+    occupied_tiles: List[Tuple[int, int]] = field(default_factory=list)
+    occupied_blocks: List[str] = field(default_factory=list)
+
+
+def _work_from_span(span: "TrainSpan", head_is_a: bool) -> _SpanWorkState:
+    """Build a movement scratchpad from the controller-owned span."""
+    return _SpanWorkState(
+        head_is_a=head_is_a,
+        end_a_tile=tuple(span.end_a.tile),
+        end_a_distance_cm=float(span.end_a.distance_cm),
+        end_a_entry_edge=span.end_a.entry_edge,
+        end_b_tile=tuple(span.end_b.tile),
+        end_b_distance_cm=float(span.end_b.distance_cm),
+        end_b_entry_edge=span.end_b.entry_edge,
+        occupied_tiles=[tuple(t) for t in (span.occupied_tiles or [])],
+        occupied_blocks=list(span.occupied_blocks or []),
+    )
+
+
+def _span_from_work(work: _SpanWorkState) -> "TrainSpan":
+    """Build the canonical 4-field `TrainSpan` from a moved scratchpad."""
+    return TrainSpan(
+        end_a=SpanEndLocator(
+            tile=work.end_a_tile,
+            distance_cm=work.end_a_distance_cm,
+            entry_edge=work.end_a_entry_edge,
+        ),
+        end_b=SpanEndLocator(
+            tile=work.end_b_tile,
+            distance_cm=work.end_b_distance_cm,
+            entry_edge=work.end_b_entry_edge,
+        ),
+        occupied_tiles=list(work.occupied_tiles),
+        occupied_blocks=list(work.occupied_blocks),
+    )
 
 
 @dataclass
@@ -115,6 +173,11 @@ class TrainPhysics:
     # delivers it to TrainController.on_physics_updated(...). The flag is reset
     # at the start of every movement step.
     _force_stop: bool = False
+    # Per-tick movement scratchpad, built from the controller-owned TrainSpan
+    # at the start of each powered-on movement step. The movement helpers mutate
+    # it in place; the result is written back into a fresh TrainSpan for the
+    # PhysicsSpanUpdate. None outside a movement step.
+    _work: Optional["_SpanWorkState"] = None
 
     # =========================================================================
     # Internal Helpers
@@ -199,15 +262,28 @@ class TrainPhysics:
             )
             return
 
-        # 2. Capture pre-move state for tile-delta computation. The previous
-        # occupied tile list and the pre-move tail/head locator drive the
+        # 2. Read the controller-owned canonical span and build a per-tick
+        # movement scratchpad. The cab-derived head end (resolved on the
+        # controller) decides which physical end advances; the span itself
+        # carries no head/tail label (design_new.md TrainSpan schema). When no
+        # span is seeded yet, speed still integrates below, but no movement or
+        # occupancy change happens this tick.
+        span = controller.physics_sync.current_span
+        if span is not None:
+            head_is_a = controller._head_end_label() == "end_a"
+            self._work = _work_from_span(span, head_is_a)
+        else:
+            # No live span yet (train not seeded via add_train): no movement or
+            # occupancy change this tick. Speed still integrates below.
+            self._work = None
+
+        # Capture pre-move state for tile-delta computation: the previous
+        # occupied tile list and the pre-move tail locator drive the
         # added_tiles / removed_tiles delta the controller consumes.
         prev_occupied_tiles = (
-            list(train.position.occupied_tiles)
-            if train.position and train.position.occupied_tiles
-            else []
+            list(self._work.occupied_tiles) if self._work is not None else []
         )
-        prev_tail_locator = self._get_tail_locator(train)
+        prev_tail_locator = self._get_tail_locator()
 
         # 3. Resolve speed for this tick from controller-owned storage
         # (canonical source per design).
@@ -238,50 +314,58 @@ class TrainPhysics:
         # when the train hits the end of track; that stop is captured in
         # self._force_stop and applied to new_speed before the callback.
         self._force_stop = False
-        if distance_cm > 0:
+        if self._work is not None and distance_cm > 0:
             self._move_train(train, distance_cm)
             logger.debug(
                 "[TrainPhysics %s] moved distance_cm=%.2f", self.train_id, distance_cm
             )
 
-        if self._force_stop:
-            new_speed = 0.0
+            if self._force_stop:
+                new_speed = 0.0
 
-        # 11. Update block occupancy. Recomputes `train.position.occupied_blocks`
-        # from the current `occupied_tiles` so the `TrainSpan` forwarded to
-        # `TrainController.on_physics_updated(...)` carries the live block
-        # ownership view. The actual `Block.occupied_by` / `Block.caution`
-        # writes still flow through Phase 3 via
-        # `PathDispatcher.on_controller_progress(...)` →
-        # `BlockManager.on_block_tail_vacated(...)` / `occupy_blocks(...)`.
-        self._update_block_occupancy(train)
-        logger.debug(
-            "[TrainPhysics %s] occupied_blocks=%s",
-            self.train_id,
-            sorted(self._get_blocks_for_train(train)),
-        )
+            # 11. Update block occupancy. Recomputes the scratchpad's
+            # `occupied_blocks` from the current `occupied_tiles` so the `TrainSpan`
+            # forwarded to `TrainController.on_physics_updated(...)` carries the live
+            # block ownership view. The actual `Block.occupied_by` / `Block.caution`
+            # writes still flow through Phase 3 via
+            # `PathDispatcher.on_controller_progress(...)` →
+            # `BlockManager.on_block_tail_vacated(...)` / `occupy_blocks(...)`.
+            self._update_block_occupancy(train)
+            logger.debug(
+                "[TrainPhysics %s] occupied_blocks=%s",
+                self.train_id,
+                sorted(self._get_blocks_for_train(train)),
+            )
 
-        # 12. Build and emit per-boundary PhysicsSpanUpdate callbacks plus
-        # one final no-boundary callback for this tick.
-        new_occupied_tiles = (
-            list(train.position.occupied_tiles)
-            if train.position and train.position.occupied_tiles
-            else []
-        )
-        added_traversals = self._build_added_tile_traversals(
-            prev_occupied_tiles, new_occupied_tiles
-        )
-        removed_traversals = self._build_removed_tile_traversals(
-            prev_occupied_tiles, new_occupied_tiles, prev_tail_locator
-        )
-        self._emit_span_updates(
-            controller,
-            train,
-            event_time,
-            new_speed,
-            added_traversals,
-            removed_traversals,
-        )
+            # 12. Build and emit per-boundary PhysicsSpanUpdate callbacks plus
+            # one final no-boundary callback for this tick.
+            new_occupied_tiles = (
+                list(self._work.occupied_tiles) if self._work is not None else []
+            )
+            added_traversals = self._build_added_tile_traversals(
+                prev_occupied_tiles, new_occupied_tiles
+            )
+            removed_traversals = self._build_removed_tile_traversals(
+                prev_occupied_tiles, new_occupied_tiles, prev_tail_locator
+            )
+            self._emit_span_updates(
+                controller,
+                train,
+                event_time,
+                new_speed,
+                added_traversals,
+                removed_traversals,
+            )
+        else:
+            # No movement this tick (stopped / no live span): block occupancy
+            # and the span are unchanged, so forward the controller-owned span
+            # as-is via the final no-boundary callback instead of rebuilding a
+            # fresh `TrainSpan` (cheaper on the common powered-but-stationary
+            # hold tick, and the only callback _emit_span_updates would emit
+            # here anyway is that same final no-boundary one).
+            self._emit_final_no_boundary_callback(
+                controller, train, event_time, new_speed
+            )
 
         # 13. Periodic position-block sync diagnostic (no auto-correction now
         # that the controller owns occupied_blocks state via the span).
@@ -482,7 +566,7 @@ class TrainPhysics:
         command = self._read_physics_command(controller)
         voltage_speed = float(command.voltage_source_speed_kmh)
         if speed_profile is not None:
-            return speed_profile.speed_to_voltage(voltage_speed)
+            return speed_profile.speed_to_voltage_two_stage(voltage_speed)
         return self._linear_speed_to_voltage(voltage_speed)
 
     @staticmethod
@@ -505,14 +589,15 @@ class TrainPhysics:
         )
 
     def _get_tail_locator(
-        self, train: "Train"
+        self,
     ) -> Optional[Tuple[Tuple[int, int], str]]:
-        """Return (tail_tile, tail_entry_edge) for the current train position."""
-        if not train.position:
+        """Return (tail_tile, tail_entry_edge) from the movement scratchpad."""
+        work = self._work
+        if work is None:
             return None
-        if train.position.leading_end == LeadingEnd.A:
-            return (train.position.end_b_tile, train.position.end_b_entry_edge)
-        return (train.position.end_a_tile, train.position.end_a_entry_edge)
+        if work.head_is_a:
+            return (work.end_b_tile, work.end_b_entry_edge)
+        return (work.end_a_tile, work.end_a_entry_edge)
 
     def _walk_tile_frames(
         self,
@@ -631,8 +716,7 @@ class TrainPhysics:
         new_set = set(new_occupied_tiles)
         body_added = new_set - prev_set
 
-        train = self._get_train()
-        if not train or not train.position:
+        if self._work is None:
             return []
 
         # 1. Head-swept tiles missed by the body diff. Emitted in
@@ -656,7 +740,7 @@ class TrainPhysics:
         # crossed that the body now covers.
         body_frames: List[TileTraversal] = []
         if body_added:
-            tail_locator = self._get_tail_locator(train)
+            tail_locator = self._get_tail_locator()
             if tail_locator is not None:
                 tail_tile, tail_entry = tail_locator
                 body_frames = self._walk_tile_frames(
@@ -762,15 +846,11 @@ class TrainPhysics:
           - one final no-boundary callback every tick so Phase 3 always has a
             deterministic consume point
 
-        The current span object passed as ``new_span`` is the post-move
-        ``train.position`` snapshot; the controller owns the canonical span
-        storage and uses ``span_update.new_span`` to refresh it.
+        The ``new_span`` is built from the post-move movement scratchpad via
+        ``_span_from_work(...)``; the controller owns the canonical span storage
+        and uses ``span_update.new_span`` to refresh it.
         """
-        new_span = (
-            TrainSpan.from_train_position(train.position)
-            if train.position is not None
-            else None
-        )
+        new_span = _span_from_work(self._work) if self._work is not None else None
 
         added_groups = self._group_traversals_by_resource(added_traversals)
         removed_groups = self._group_traversals_by_resource(removed_traversals)
@@ -812,12 +892,13 @@ class TrainPhysics:
         current_speed_kmh: float,
     ) -> None:
         """Emit the final no-boundary PhysicsSpanUpdate for ticks where no
-        movement occurred (powered-off ticks)."""
-        new_span = (
-            TrainSpan.from_train_position(train.position)
-            if train.position is not None
-            else None
-        )
+        movement occurred (powered-off / no-span / stationary ticks). The span
+        is unchanged, so the controller-owned span is forwarded by reference
+        (None when not yet seeded) rather than rebuilt. Consumers of
+        `PhysicsSpanUpdate.new_span` must treat it as read-only: they may store
+        or read it but must not mutate it in place, since on these ticks it IS
+        the controller's canonical span object."""
+        new_span = controller.physics_sync.current_span
         update = PhysicsSpanUpdate(
             new_span=new_span,
             current_speed_kmh=current_speed_kmh,
@@ -840,36 +921,7 @@ class TrainPhysics:
             train: Train to move
             distance_cm: Distance to move in cm
         """
-        if not train.position:
-            sc = getattr(self.controller, "simulation_controller", None)
-            nc = (
-                getattr(sc, "notification_center", None) if sc is not None else None
-            )
-            emitted = False
-            if nc is not None:
-                try:
-                    from notification_center import Severity as _Severity
-
-                    nc.emit(
-                        source="TrainPhysics",
-                        kind="missing_position",
-                        severity=_Severity.WARNING,
-                        event_time=time.time(),
-                        train_id=train.train_id,
-                        payload={"action": "skip_move"},
-                    )
-                    emitted = True
-                except Exception:
-                    pass
-            if not emitted:
-                logger.warning(
-                    "[TrainPhysics] Train %s missing TrainPosition; skipping move "
-                    "(NotificationCenter unavailable)",
-                    train.train_id,
-                )
-            return
-
-        position = train.position
+        position = self._work
 
         # Reset head-swept traversal log for this move. `_advance_end`
         # appends to this list every tile the head crosses, including
@@ -884,7 +936,7 @@ class TrainPhysics:
         # as head-swept — the body diff misses zero-length tiles that the
         # tail clears within a single tick, and without an entry on
         # `tail_vacated_resources` the switch's `occupied_by` never clears.
-        if position.leading_end == LeadingEnd.A:
+        if position.head_is_a:
             prev_tail_tile = position.end_b_tile
             prev_tail_entry = position.end_b_entry_edge
         else:
@@ -892,7 +944,7 @@ class TrainPhysics:
             prev_tail_entry = position.end_a_entry_edge
 
         # Determine which end is head based on leading_end
-        if position.leading_end == LeadingEnd.A:
+        if position.head_is_a:
             # end_a is head
             self._advance_end(
                 train,
@@ -1001,7 +1053,7 @@ class TrainPhysics:
 
         Handles tile transitions when end moves past tile boundary.
         """
-        position = train.position
+        position = self._work
         if not position:
             return
 
@@ -1093,12 +1145,12 @@ class TrainPhysics:
 
         The tail is always train.length_cm behind the head along the track.
         """
-        position = train.position
+        position = self._work
         if not position:
             return
 
         # Get head position
-        if position.leading_end == LeadingEnd.A:
+        if position.head_is_a:
             head_tile = position.end_a_tile
             head_entry = position.end_a_entry_edge
             head_distance = position.end_a_distance_cm
@@ -1118,7 +1170,7 @@ class TrainPhysics:
 
         # If train fits in current tile
         if remaining_length <= 0:
-            if position.leading_end == LeadingEnd.A:
+            if position.head_is_a:
                 position.end_b_tile = current_tile
                 position.end_b_entry_edge = current_entry
                 position.end_b_distance_cm = head_distance - train.length_cm
@@ -1161,7 +1213,7 @@ class TrainPhysics:
         # Tail is in this tile
         tail_distance = abs(remaining_length) if remaining_length < 0 else 0.0
 
-        if position.leading_end == LeadingEnd.A:
+        if position.head_is_a:
             position.end_b_tile = current_tile
             position.end_b_entry_edge = current_entry
             position.end_b_distance_cm = tail_distance
@@ -1176,12 +1228,12 @@ class TrainPhysics:
 
         Traces from tail to head and records all tiles.
         """
-        position = train.position
+        position = self._work
         if not position:
             return
 
         # Get head and tail tiles
-        if position.leading_end == LeadingEnd.A:
+        if position.head_is_a:
             head_tile = position.end_a_tile
             tail_tile = position.end_b_tile
             head_entry = position.end_a_entry_edge
@@ -1221,7 +1273,7 @@ class TrainPhysics:
             current_tile = next_tile
             current_entry = new_entry
 
-        if position.leading_end == LeadingEnd.A:
+        if position.head_is_a:
             position.occupied_tiles = list(reversed(occupied))
         else:
             position.occupied_tiles = occupied
@@ -1238,10 +1290,9 @@ class TrainPhysics:
         BlockManager.occupy_blocks(...) / on_block_tail_vacated(...). This
         method maintains:
 
-        - train.position.occupied_blocks: ordered block-level ownership view
-          (forwarded to TrainSpan via from_train_position() so Phase 3's
-          tail-vacate suppression guard `still_occupied_block_ids` sees the
-          live set, not the stale snapshot written at place_train time)
+        - the scratchpad's `occupied_blocks`: ordered block-level ownership
+          view (written into the new `TrainSpan` so Phase 3's tail-vacate
+          suppression guard `still_occupied_block_ids` sees the live set)
         - last_block_transitions: entered/vacated sets, read by tests
         - _last_occupied_blocks: cached set used by _validate_position_sync
           and by serialize/restore round-trips
@@ -1257,23 +1308,22 @@ class TrainPhysics:
             "vacated": newly_vacated,
         }
 
-        # Mirror block-level ownership back onto train.position in physical
-        # tile order. TrainSpan.from_train_position(...) forwards this list
-        # to TrainController.on_physics_updated(...), which uses it as
-        # `still_occupied_block_ids` to suppress spurious tail-vacate
-        # reports when a train moves between tiles of the same multi-tile
-        # block.
-        if train.position is not None:
+        # Record block-level ownership on the scratchpad in physical tile
+        # order. `_span_from_work(...)` carries this list into the new
+        # `TrainSpan`, which `TrainController.on_physics_updated(...)` uses as
+        # `still_occupied_block_ids` to suppress spurious tail-vacate reports
+        # when a train moves between tiles of the same multi-tile block.
+        if self._work is not None:
             ordered_blocks: List[str] = []
             seen: Set[str] = set()
-            tiles = train.position.occupied_tiles or []
+            tiles = self._work.occupied_tiles or []
             for tile in tiles:
                 track = self.network.tracks.get(tile) if self.network else None
                 bid = getattr(track, "block_section_id", None) if track else None
                 if bid and bid not in seen:
                     ordered_blocks.append(bid)
                     seen.add(bid)
-            train.position.occupied_blocks = ordered_blocks
+            self._work.occupied_blocks = ordered_blocks
 
         self._last_occupied_blocks = new_occupied
 
@@ -1281,17 +1331,18 @@ class TrainPhysics:
         """
         Get all block IDs occupied by the train.
 
-        Uses occupied_tiles from TrainPosition.
+        Uses occupied_tiles from the movement scratchpad.
         """
         blocks: Set[str] = set()
 
         if not self.network:
             return blocks
 
-        # Get occupied tiles
-        if not train.position or not train.position.occupied_tiles:
+        # Get occupied tiles from the movement scratchpad
+        work = self._work
+        if work is None or not work.occupied_tiles:
             return blocks
-        tiles = train.position.occupied_tiles
+        tiles = work.occupied_tiles
 
         # Get block for each tile
         for tile in tiles:
@@ -1310,7 +1361,7 @@ class TrainPhysics:
         _last_occupied_blocks set on every tick. We only log the discrepancy
         here — block-state corrections belong to the dispatcher progress flow.
         """
-        if not train.position:
+        if self._work is None:
             return True
 
         expected_blocks = self._get_blocks_for_train(train)

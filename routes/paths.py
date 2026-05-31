@@ -123,14 +123,19 @@ def register(app, state: AppState) -> None:
                     path = state.path_dispatcher.get_path(result.path_id)
                     train = state.network.trains[train_id]
                     if path is not None:
-                        # Bring the train's `position` into a path-consistent
-                        # layout. Per design_new.md ~line 1292 the dispatcher
+                        # Bring the train onto a path-consistent layout.
+                        # Per design_new.md ~line 1292 the dispatcher
                         # owns `assigned_path_id` and the controller derives
                         # `ato_destination_block_id` from `received_path_plan`,
                         # so we no longer mirror those fields back onto Train.
                         raw_path = _convert_path_tiles_to_train_path(path.get_path_tiles())
+                        controller = (
+                            state.sim_controller.get_or_create_controller(train_id)
+                            if state.sim_controller is not None
+                            else None
+                        )
                         assign_complete_path_to_train(
-                            state.network, train, raw_path
+                            state.network, train, raw_path, controller=controller
                         )
             return jsonify(result.to_dict()), 200 if result.success else 400
         except Exception as e:
