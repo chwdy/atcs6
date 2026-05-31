@@ -30,6 +30,7 @@ from services import (
     schedule_service,
     speed_profile_service,
     switch_service,
+    track_service,
     train_route_service,
     train_service,
 )
@@ -545,3 +546,65 @@ class TestBlockService:
     def test_can_extend_unknown_block_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
             block_service.can_extend_block(state, "GHOST", x=0, y=0)
+
+
+# --------------------------------------------------------- track_service ----
+
+
+class TestTrackService:
+    def test_get_and_require_track(self, state):
+        assert track_service.get_track(state, 9, 9) is None
+        with pytest.raises(NotFoundError):
+            track_service.require_track(state, 9, 9)
+
+    def test_update_missing_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            track_service.update_track(state, 9, 9, data={"track_bits": 2})
+
+    def test_update_invalid_body_raises_validation(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        with pytest.raises(ValidationError):
+            track_service.update_track(state, 0, 0, data=["not", "a", "dict"])
+
+    def test_update_track_bits_updates(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        result = track_service.update_track(state, 0, 0, data={"track_bits": 1})
+        assert result["status"] == "updated"
+        assert result["track"].track_bits == 1
+
+    def test_delete_missing_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            track_service.delete_track(state, 9, 9)
+
+    def test_delete_track(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        assert track_service.delete_track(state, 0, 0) is True
+        assert track_service.get_track(state, 0, 0) is None
+
+    def test_add_tracks_bulk_creates(self, state):
+        result = track_service.add_tracks_bulk(
+            state,
+            tracks_data=[
+                {"x": 0, "y": 0, "track_bits": 2},
+                {"x": 1, "y": 0, "track_bits": 2},
+            ],
+        )
+        assert len(result["added"]) == 2
+        assert len(result["updated"]) == 0
+        assert track_service.get_track(state, 0, 0) is not None
+
+    def test_add_tracks_bulk_updates_existing(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        result = track_service.add_tracks_bulk(
+            state, tracks_data=[{"x": 0, "y": 0, "track_bits": 2}]
+        )
+        assert len(result["updated"]) == 1
+        assert len(result["added"]) == 0
+
+    def test_delete_tracks_bulk_no_impact(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        state.network.add_track(TrackSegment(x=1, y=0, track_bits=2))
+        result = track_service.delete_tracks_bulk(state, positions=[[0, 0], [1, 0]])
+        assert result["status"] == "done"
+        assert result["deleted"] == [[0, 0], [1, 0]]
+        assert track_service.get_track(state, 0, 0) is None

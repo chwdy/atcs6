@@ -1,0 +1,300 @@
+"""Track lifecycle service.
+
+The HTTP layer in ``routes/tracks.py`` parses JSON and shapes responses;
+this layer owns the track-tile mutations:
+
+  * single-tile read / update (bits, dead-ends, switch state, station,
+    block membership) with the orphan-impact pre-check and the auto-
+    switch-creation that a bit change implies, and
+  * bulk add / delete with the same impact aggregation.
+
+Lookup raises ``NotFoundError`` and bad input raises ``ValidationError``.
+The richer outcomes a single update can produce -- an orphan-impact that
+needs operator confirmation, a switch locked by a live path, an empty
+tile that gets removed -- are returned as a small tagged result dict so
+the route can map each to its exact HTTP response without this layer
+knowing any status codes:
+
+    {"status": "bits_rejected", "message": str}     # invalid bit shape
+    {"status": "needs_confirmation", "impact": ...}  # orphans; retry w/ force
+    {"status": "switch_locked", "holder_path", "holder_state"}
+    {"status": "removed"}                            # tile became empty
+    {"status": "updated", "track": <TrackSegment>}
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Tuple
+
+from app_state import AppState
+from services.exceptions import NotFoundError, ValidationError
+from switch import Switch
+from track import FORBIDDEN_TRACK_BITS, TrackSegment, is_square_corner_switch
+
+_SQUARE_CORNER_MESSAGE = (
+    "Invalid switch placement: a switch branch is 90° to a connecting "
+    "segment (square corner). Add a diagonal (NS/EW) leg so the branch "
+    "eases at 45°."
+)
+_VALID_PORTS = {"N", "E", "S", "W"}
+
+
+def _ensure_switch_for_tile(state: AppState, track, x: int, y: int) -> None:
+    """Create + link a default Switch for a tile that just became a switch."""
+    if track.is_switch and not track.switch_id:
+        switch_id = f"SW_{x}_{y}"
+        if not state.network.get_switch_at(x, y):
+            state.network.add_switch(
+                Switch(
+                    switch_id=switch_id,
+                    x=x,
+                    y=y,
+                    main_length_cm=0.0,
+                    diverge_length_cm=0.0,
+                )
+            )
+            track.switch_id = switch_id
+
+
+def get_track(state: AppState, x: int, y: int):
+    """Return the track at a tile, or None."""
+    return state.network.get_track(x, y)
+
+
+def require_track(state: AppState, x: int, y: int):
+    """Return the track at a tile or raise NotFoundError."""
+    track = state.network.get_track(x, y)
+    if track is None:
+        raise NotFoundError("Track not found")
+    return track
+
+
+def update_track(
+    state: AppState, x: int, y: int, *, data: Any, force: bool = False
+) -> Dict[str, Any]:
+    """Apply an update to a single track tile.
+
+    Returns a tagged result dict (see module docstring) for the richer
+    outcomes; raises NotFoundError when the tile has no track and
+    ValidationError for malformed input.
+    """
+    track = state.network.get_track(x, y)
+    if not track:
+        raise NotFoundError("Track not found")
+
+    if not isinstance(data, dict):
+        raise ValidationError("Invalid JSON body")
+
+    # Impact pre-check for bit/dead-end changes. If the proposed change would
+    # orphan a switch/signal/platform, surface the impact so the caller can
+    # confirm and retry with force=True; the cleanup then happens below.
+    if "track_bits" in data or "dead_end_ports" in data:
+        new_bits = (
+            int(data["track_bits"]) if "track_bits" in data else track.track_bits
+        )
+        if "dead_end_ports" in data:
+            try:
+                raw = set(data["dead_end_ports"])
+                new_dead_ends = {p for p in raw if p in _VALID_PORTS}
+            except Exception:
+                raise ValidationError("dead_end_ports must be a list of N/E/S/W")
+        else:
+            new_dead_ends = track.dead_end_ports
+
+        impact = state.network.compute_bit_change_impact(
+            x, y, new_bits, new_dead_ends
+        )
+        has_impact = (
+            impact["removes_switch"] is not None
+            or bool(impact["removes_signals"])
+            or impact["removes_platform"] is not None
+        )
+        if has_impact and not force:
+            return {"status": "needs_confirmation", "impact": impact}
+
+        # Confirmed (or no orphans). Clean up entities that would otherwise be
+        # left dangling. When the tile is being fully removed we leave cleanup
+        # to remove_track at the end.
+        if not impact["tile_will_be_removed"]:
+            for sid in impact["removes_signals"]:
+                state.network.remove_signal(sid)
+            if impact["removes_switch"]:
+                state.network.remove_switch(impact["removes_switch"])
+
+    if "track_bits" in data:
+        new_bits = int(data["track_bits"])
+        if is_square_corner_switch(new_bits):
+            return {"status": "bits_rejected", "message": _SQUARE_CORNER_MESSAGE}
+        if not track.set_track_bits(new_bits):
+            return {
+                "status": "bits_rejected",
+                "message": f"Invalid track_bits: {new_bits}",
+            }
+
+        if track.is_switch and track.block_section_id:
+            state.network.remove_tile_from_block(x, y)
+        _ensure_switch_for_tile(state, track, x, y)
+
+    if "dead_end_ports" in data:
+        try:
+            ports = set(data["dead_end_ports"])
+            track.dead_end_ports = {p for p in ports if p in _VALID_PORTS}
+        except Exception:
+            raise ValidationError("dead_end_ports must be a list of N/E/S/W")
+
+    if "switch_state" in data:
+        # Switch lock ownership lives on `Switch.locks` (design_new.md:651);
+        # reject the change if the owning switch holds any live lock.
+        switch_entity = (
+            state.network.switches.get(track.switch_id)
+            if track.switch_id is not None
+            else None
+        )
+        if switch_entity is not None and switch_entity.is_locked():
+            lock_items = list(switch_entity.locks.items())
+            holder_path = lock_items[0][0][0] if lock_items else None
+            holder_state = lock_items[0][1][1] if lock_items else None
+            return {
+                "status": "switch_locked",
+                "holder_path": holder_path,
+                "holder_state": holder_state,
+            }
+        track.switch_state = int(data["switch_state"])
+
+    if "station_name" in data:
+        track.station_name = data["station_name"]
+
+    if "block_section_id" in data:
+        track.block_section_id = data["block_section_id"]
+
+    state.network.propagate_from_tile(x, y)
+
+    if "switch_state" in data or "block_section_id" in data:
+        state.network.update_signals_from_blocks()
+
+    if track.track_bits == 0 and len(track.dead_end_ports) == 0:
+        state.network.remove_track(x, y)
+        return {"status": "removed"}
+
+    return {"status": "updated", "track": track}
+
+
+def delete_track(state: AppState, x: int, y: int) -> bool:
+    """Remove a track tile. Returns True.
+
+    Raises:
+        NotFoundError when the tile has no track.
+    """
+    if not state.network.get_track(x, y):
+        raise NotFoundError("Track not found")
+    state.network.remove_track(x, y)
+    return True
+
+
+def add_tracks_bulk(
+    state: AppState, *, tracks_data: List[Dict[str, Any]]
+) -> Dict[str, List]:
+    """Add or merge many track tiles at once.
+
+    Each entry merges its bits into an existing tile or creates a new one;
+    forbidden / square-corner results are skipped. Returns the affected
+    track objects as ``{"added": [...], "updated": [...]}`` for the caller
+    to serialize.
+    """
+    added: List[TrackSegment] = []
+    updated: List[TrackSegment] = []
+
+    for track_data in tracks_data:
+        tx = track_data.get("x")
+        ty = track_data.get("y")
+        if tx is None or ty is None:
+            continue
+
+        new_bits = track_data.get("track_bits", 0)
+        existing_track = state.network.get_track(tx, ty)
+
+        if existing_track:
+            merged_bits = existing_track.track_bits | new_bits
+            if (
+                merged_bits in FORBIDDEN_TRACK_BITS
+                or is_square_corner_switch(merged_bits)
+            ):
+                continue
+            existing_track.set_track_bits(merged_bits)
+
+            if existing_track.is_switch and existing_track.block_section_id:
+                state.network.remove_tile_from_block(tx, ty)
+            _ensure_switch_for_tile(state, existing_track, tx, ty)
+
+            state.network.propagate_from_tile(tx, ty)
+            updated.append(existing_track)
+        else:
+            if new_bits in FORBIDDEN_TRACK_BITS or is_square_corner_switch(new_bits):
+                continue
+            track = TrackSegment(x=tx, y=ty, track_bits=new_bits)
+            if track_data.get("station_name"):
+                track.station_name = track_data["station_name"]
+            state.network.add_track(track)
+            _ensure_switch_for_tile(state, track, tx, ty)
+            added.append(track)
+
+    return {"added": added, "updated": updated}
+
+
+def delete_tracks_bulk(
+    state: AppState, *, positions: List[Any], force: bool = False
+) -> Dict[str, Any]:
+    """Delete many track tiles, aggregating the orphan impact first.
+
+    Returns ``{"status": "needs_confirmation", "impact": {...}}`` when the
+    deletion would orphan switches/signals/platforms and ``force`` is
+    False, otherwise ``{"status": "done", "deleted": [[x, y], ...]}``.
+    """
+    switches_set: List[str] = []
+    signals_set: List[str] = []
+    platforms_set: List[str] = []
+    seen_switches: set = set()
+    seen_signals: set = set()
+    seen_platforms: set = set()
+
+    for pos in positions:
+        if not isinstance(pos, (list, tuple)) or len(pos) < 2:
+            continue
+        px, py = pos[0], pos[1]
+        if not state.network.get_track(px, py):
+            continue
+        impact = state.network.compute_bit_change_impact(px, py, 0, set())
+        if impact["removes_switch"] and impact["removes_switch"] not in seen_switches:
+            seen_switches.add(impact["removes_switch"])
+            switches_set.append(impact["removes_switch"])
+        for sid in impact["removes_signals"]:
+            if sid not in seen_signals:
+                seen_signals.add(sid)
+                signals_set.append(sid)
+        if (
+            impact["removes_platform"]
+            and impact["removes_platform"] not in seen_platforms
+        ):
+            seen_platforms.add(impact["removes_platform"])
+            platforms_set.append(impact["removes_platform"])
+
+    if (switches_set or signals_set or platforms_set) and not force:
+        return {
+            "status": "needs_confirmation",
+            "impact": {
+                "removes_switches": switches_set,
+                "removes_signals": signals_set,
+                "removes_platforms": platforms_set,
+            },
+        }
+
+    deleted: List[List[int]] = []
+    for pos in positions:
+        if not isinstance(pos, (list, tuple)) or len(pos) < 2:
+            continue
+        px, py = pos[0], pos[1]
+        if state.network.get_track(px, py):
+            state.network.remove_track(px, py)
+            deleted.append([px, py])
+
+    return {"status": "done", "deleted": deleted}

@@ -45,14 +45,16 @@ services/
     switch_service.py        # switch CRUD + availability flags + SwitchManager position changes
     train_service.py         # train CRUD + placement + route assignment + operator commands
     block_service.py         # block CRUD + availability flags + track membership + can_extend
+    track_service.py         # track tile CRUD + bulk add/delete + orphan-impact pre-check
 ```
 
 Migrated routes: `layouts`, `schedules`, `train_routes`, `speed_profiles`,
-`switches`, `trains`, `blocks`.
+`switches`, `trains`, `blocks`, `tracks`.
 
-**Remaining.** `signals`, `stations`, `tracks`, `platforms`, `paths`,
-`route_runs`, `tunnels`, `inspector`, `simulation` still hold their domain
-logic inline. Adopt the same pattern when one is next touched; some
+**Remaining.** `signals`, `stations`, `platforms`, `paths`, `route_runs`,
+`tunnels`, `inspector`, `simulation` still hold their domain logic inline.
+Adopt the same pattern when one is next touched; `paths` is heavily
+`PathDispatcher`-coupled (better paired with item 5), and some
 (`inspector`, much of `simulation`) are largely read-only and lower-value
 to migrate.
 
