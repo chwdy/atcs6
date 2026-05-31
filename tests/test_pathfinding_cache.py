@@ -51,7 +51,22 @@ def _connected_pair(network, pf):
 
 
 def _block_lists(candidates):
-    return [c.ordered_blocks for c in candidates]
+    # `.walk` (a PathSegment) carries the ordered block sequence the dispatcher
+    # consumes when building resource_sequence.
+    return [c.walk.blocks for c in candidates]
+
+
+def _ordered_walk_sig(candidates):
+    # Identity of the per-step `ordered_walk` geometry: this is the cached,
+    # statically-derived payload that must be byte-stable across warm/cold.
+    return [
+        [
+            (s.resource_type, s.resource_id, s.tile, s.entry_edge, s.exit_edge,
+             s.block_direction, s.switch_required_state)
+            for s in (c.ordered_walk or [])
+        ]
+        for c in candidates
+    ]
 
 
 def test_walk_cache_populates_and_warm_matches_cold():
@@ -59,16 +74,19 @@ def test_walk_cache_populates_and_warm_matches_cold():
     pf = sim.path_dispatcher._pathfinder
     a, b = _connected_pair(network, pf)
 
-    # Cold: force a miss, then the query must compute and store the walks.
+    # Cold: force a miss, then the query must compute and store the candidates.
     network.invalidate_pathfinding_cache()
     assert (a, b) not in network._walk_cache
     cold = pf.find_ordered_walk(a, b)
     assert (a, b) in network._walk_cache, "query did not populate the cache"
+    assert cold, "expected at least one walk for a connected pair"
+    assert all(c.ordered_walk for c in cold), "ordered_walk must be populated"
 
-    # Warm: served from the cache -- and identical to the cold computation.
+    # Warm: served from the cache -- and identical to the cold computation,
+    # including the per-step ordered_walk geometry (caching must not change it).
     warm = pf.find_ordered_walk(a, b)
     assert _block_lists(warm) == _block_lists(cold)
-    assert cold, "expected at least one walk for a connected pair"
+    assert _ordered_walk_sig(warm) == _ordered_walk_sig(cold)
 
 
 # --- Each topology mutator must drop the cache. None of these run in the sim
@@ -94,6 +112,13 @@ def _mutate_remove_switch(network):
     network.remove_switch(next(iter(network.switches.keys())))
 
 
+def _mutate_rebuild_ordered_tiles(network):
+    # ordered_tiles feeds the cached per-step block_direction, so recomputing it
+    # must drop the cache.
+    bid = next(iter(network.blocks))
+    network._get_block_geometry_manager().rebuild_block_ordered_tiles(bid)
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -101,6 +126,7 @@ def _mutate_remove_switch(network):
         _mutate_block_membership,
         _mutate_propagate_from_tile,
         _mutate_remove_switch,
+        _mutate_rebuild_ordered_tiles,
     ],
 )
 def test_topology_mutation_clears_walk_cache(mutate):

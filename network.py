@@ -96,16 +96,18 @@ class RailwayNetwork:
         self._tile_to_block: Dict[Tuple[int, int], str] = {}
         self._tile_to_platform: Dict[Tuple[int, int], str] = {}
 
-        # Cache of topology-only BFS walk enumerations, keyed by
+        # Cache of built topology-only walk CANDIDATES, keyed by
         # (start_block_id, end_block_id). Populated lazily by
         # RailwayPathfinder.query_graph_walks and shared by every pathfinder
         # built from this network (the dispatcher's and any throwaway one).
-        # The raw walks are a pure function of the static graph -- the BFS
-        # ignores switch position and never reads dynamic block/switch
-        # availability -- so they stay valid across sim ticks and are dropped
-        # only when the topology itself changes. See
+        # The candidate geometry (raw walk + ordered_walk steps) is a pure
+        # function of the static graph -- the BFS ignores switch position and
+        # the per-step enrichment reads only static topology / Block.ordered_tiles
+        # -- so it stays valid across sim ticks and is dropped only when the
+        # topology itself changes. The per-call disabled/manual/direction FILTER
+        # runs fresh in query_graph_walks, not here. See
         # invalidate_pathfinding_cache() and its callers.
-        self._walk_cache: Dict[Tuple[str, str], List["PathSegment"]] = {}
+        self._walk_cache: Dict[Tuple[str, str], List["GraphWalkCandidate"]] = {}
 
         # Helper modules (signal computation, station registry, block
         # geometry mutation). Lazy-initialised on first access to keep
@@ -206,18 +208,20 @@ class RailwayNetwork:
 
     def get_cached_walks(
         self, start_block_id: str, end_block_id: str
-    ) -> Optional[List["PathSegment"]]:
-        """Return the cached topology-only walk enumeration for this block
-        pair, or None on a miss. The pathfinder owns what goes in; this network
-        only stores it so every pathfinder built from this graph shares one
-        BFS result per (start, end) until the topology changes."""
+    ) -> Optional[List["GraphWalkCandidate"]]:
+        """Return the cached built walk candidates for this block pair, or None
+        on a miss. The pathfinder owns what goes in (raw walk + ordered_walk
+        geometry); this network only stores it so every pathfinder built from
+        this graph shares one enrichment per (start, end) until the topology
+        changes."""
         return self._walk_cache.get((start_block_id, end_block_id))
 
     def store_cached_walks(
-        self, start_block_id: str, end_block_id: str, walks: List["PathSegment"]
+        self, start_block_id: str, end_block_id: str,
+        candidates: List["GraphWalkCandidate"],
     ) -> None:
-        """Record the topology-only walk enumeration for this block pair."""
-        self._walk_cache[(start_block_id, end_block_id)] = walks
+        """Record the built walk candidates for this block pair."""
+        self._walk_cache[(start_block_id, end_block_id)] = candidates
 
     def invalidate_pathfinding_cache(self) -> None:
         """Drop every cached walk. Called by each topology mutator (block
