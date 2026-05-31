@@ -24,8 +24,9 @@ from track import TrackSegment
 from train import Train, TrainCar
 from train_route import RouteTask
 
-from services import ConflictError, NotFoundError, ValidationError
+from services import ConflictError, GoneError, NotFoundError, ValidationError
 from services import (
+    block_service,
     schedule_service,
     speed_profile_service,
     switch_service,
@@ -456,3 +457,91 @@ class TestTrainService:
         """Operator commands return the controller's CommandResult."""
         result = train_service.power_on(state_with_train, "TRAIN_A")
         assert hasattr(result, "success")
+
+
+# --------------------------------------------------------- block_service ----
+
+
+class TestBlockService:
+    def test_require_block_raises_not_found(self, state):
+        assert block_service.get_block(state, "GHOST") is None
+        with pytest.raises(NotFoundError):
+            block_service.require_block(state, "GHOST")
+
+    def test_create_block(self, state):
+        block = block_service.create_block(
+            state, block_id="BLK_T", name="Main", length_cm=150.0
+        )
+        assert block.block_id == "BLK_T"
+        assert block.name == "Main"
+        assert block.length_cm == 150.0
+        assert state.network.get_block("BLK_T") is block
+
+    def test_create_block_autogenerates_id(self, state):
+        block = block_service.create_block(state, name="auto")
+        assert block.block_id.startswith("BLK_")
+
+    def test_update_block_name(self, state):
+        block_service.create_block(state, block_id="BLK_U", name="old")
+        updated = block_service.update_block(state, "BLK_U", data={"name": "new"})
+        assert updated.name == "new"
+
+    def test_update_block_unknown_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            block_service.update_block(state, "GHOST", data={"name": "x"})
+
+    def test_update_block_state_field_raises_gone(self, state):
+        """The removed direct `state` mutation surfaces as GoneError (410)."""
+        block_service.create_block(state, block_id="BLK_G")
+        with pytest.raises(GoneError):
+            block_service.update_block(state, "BLK_G", data={"state": "OCCUPIED"})
+
+    def test_disable_occupied_block_raises_conflict(self, state):
+        block = block_service.create_block(state, block_id="BLK_O")
+        block.occupied_by = "TRAIN_A"
+        with pytest.raises(ConflictError):
+            block_service.update_block(state, "BLK_O", data={"disabled": True})
+        assert block.disabled is False  # rejected, not applied
+
+    def test_disable_free_block_succeeds(self, state):
+        block_service.create_block(state, block_id="BLK_F")
+        updated = block_service.update_block(
+            state, "BLK_F", data={"disabled": True, "manual": True}
+        )
+        assert updated.disabled is True
+        assert updated.manual is True
+
+    def test_allowed_travel_directions_invalid_raises_validation(self, state):
+        block_service.create_block(state, block_id="BLK_D")
+        with pytest.raises(ValidationError):
+            block_service.update_block(
+                state, "BLK_D", data={"allowed_travel_directions": ["sideways"]}
+            )
+
+    def test_allowed_travel_directions_valid(self, state):
+        block_service.create_block(state, block_id="BLK_D2")
+        updated = block_service.update_block(
+            state, "BLK_D2", data={"allowed_travel_directions": ["forward"]}
+        )
+        assert updated.allowed_travel_directions == {"forward"}
+
+    def test_delete_block(self, state):
+        block_service.create_block(state, block_id="BLK_X")
+        assert block_service.delete_block(state, "BLK_X") is True
+        assert block_service.get_block(state, "BLK_X") is None
+
+    def test_delete_block_unknown_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            block_service.delete_block(state, "GHOST")
+
+    def test_add_tracks_unknown_block_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            block_service.add_tracks_to_block(state, "GHOST", positions=[[0, 0]])
+
+    def test_remove_tracks_unknown_block_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            block_service.remove_tracks_from_block(state, "GHOST", positions=[[0, 0]])
+
+    def test_can_extend_unknown_block_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            block_service.can_extend_block(state, "GHOST", x=0, y=0)
