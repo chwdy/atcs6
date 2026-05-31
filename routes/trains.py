@@ -241,13 +241,14 @@ def register(app, state: AppState) -> None:
         if not train:
             return jsonify({"error": "Train not found"}), 404
 
-        # NOTE: preserves the pre-existing always-truthy check on depart()'s
-        # (success, reason) tuple — depart rejections currently report
-        # success. This is a known bug tracked separately; it is intentionally
-        # NOT changed here so the service-layer migration stays behavior-neutral.
-        if train_service.depart(state, train_id):
+        # depart() returns a (success, reason) tuple; unpack it and branch on
+        # the boolean. A bare `if tuple:` is always truthy, which would report
+        # every rejection (no active path, EB active, pending power-off,
+        # invalid state) as a 200 success.
+        success, reason = train_service.depart(state, train_id)
+        if success:
             return jsonify({"status": "success", **_train_to_dict(train, state.network)})
-        return jsonify({"error": "Cannot depart"}), 400
+        return jsonify({"error": reason or "Cannot depart"}), 400
 
     # ============================================================================
     # Emergency and Stop Control
