@@ -10,9 +10,8 @@ import pytest
 from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, LeadingEnd, TrainState, HandlePosition
-from train import Train, TrainCar, TrainPosition
-from tests.train_test_helpers import make_train_position
+from enums import BlockState, Direction, TrainState, HandlePosition
+from train import Train, TrainCar
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
 from path_dispatcher import PathDispatcher
@@ -80,9 +79,9 @@ class TestTrainPlacementValidation:
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
-        network.place_train(train, 1, 0, Direction.EAST)
-        assert train.position is not None
-        assert train.position.head_tile == (1, 0)
+        span = network.place_train(train, 1, 0, Direction.EAST)
+        assert span is not None
+        assert span.end_a.tile == (1, 0)  # head end at placement
 
     def test_80cm_train_spans_two_tiles(self, network):
         for x in range(3):
@@ -93,10 +92,10 @@ class TestTrainPlacementValidation:
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=80.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
-        network.place_train(train, 1, 0, Direction.EAST)
-        assert train.position.head_tile == (1, 0)
-        assert train.position.tail_tile == (0, 0)
-        assert len(train.position.occupied_tiles) == 2
+        span = network.place_train(train, 1, 0, Direction.EAST)
+        assert span.end_a.tile == (1, 0)  # head end at placement
+        assert span.end_b.tile == (0, 0)  # tail end
+        assert len(span.occupied_tiles) == 2
 
     def test_train_too_long_raises_error(self, network):
         for x in range(2):
@@ -121,8 +120,8 @@ class TestTrainOccupiedTilesRich:
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0)
         train = Train(train_id="T1", consist=[car])
         network.add_train(train)
-        network.place_train(train, 1, 0, Direction.EAST)
-        rich = network.get_occupied_tiles_rich(train)
+        span = network.place_train(train, 1, 0, Direction.EAST)
+        rich = network.get_occupied_tiles_rich(span, head_is_a=True)
         assert len(rich) == 1
         assert rich[0]["tile"] == (1, 0)
         assert rich[0]["block_id"] == "BLOCK_1"

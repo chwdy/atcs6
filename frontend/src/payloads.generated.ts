@@ -121,7 +121,7 @@ export interface SwitchLockClaim {
   locked_state: number;
   source_switch_id: string | null;
   manual_override: boolean;
-  route: unknown[] | null;
+  route: string[] | null;
 }
 
 export interface ResolvedRouteTarget {

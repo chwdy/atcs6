@@ -866,7 +866,9 @@ class EditorUIHandler {
 
             const warning = document.querySelector('.bit-warning');
             if (warning) {
-                warning.style.display = FORBIDDEN_TRACK_BITS.has(bits) ? 'block' : 'none';
+                warning.style.display =
+                    (FORBIDDEN_TRACK_BITS.has(bits) || isSquareCornerSwitch(bits))
+                        ? 'block' : 'none';
             }
         };
 
@@ -916,6 +918,13 @@ class EditorUIHandler {
 
                 if (FORBIDDEN_TRACK_BITS.has(newBits)) {
                     window.showToast('Cannot apply forbidden configuration', 'error', 3000);
+                    return;
+                }
+                if (isSquareCornerSwitch(newBits)) {
+                    window.showToast(
+                        'Invalid switch: a branch is 90° to a connecting segment ' +
+                        '(square corner). Add a diagonal (NS/EW) leg to ease it.',
+                        'error', 5000);
                     return;
                 }
 
@@ -1074,7 +1083,7 @@ class EditorUIHandler {
                 ctx.fillText(name, pos.x, pos.y);
             }
 
-            if (FORBIDDEN_TRACK_BITS.has(currentBits)) {
+            if (FORBIDDEN_TRACK_BITS.has(currentBits) || isSquareCornerSwitch(currentBits)) {
                 ctx.fillStyle = '#e83f5b';
                 ctx.beginPath();
                 ctx.arc(half, half, 8, 0, Math.PI * 2);
@@ -1087,7 +1096,7 @@ class EditorUIHandler {
             }
 
             const numSegments = Object.keys(segments).filter(bit => currentBits & parseInt(bit)).length;
-            ctx.fillStyle = FORBIDDEN_TRACK_BITS.has(currentBits) ? '#e83f5b' : '#aaa';
+            ctx.fillStyle = (FORBIDDEN_TRACK_BITS.has(currentBits) || isSquareCornerSwitch(currentBits)) ? '#e83f5b' : '#aaa';
             ctx.font = 'bold 12px sans-serif';
             ctx.textAlign = 'center';
             ctx.fillText(`${numSegments} segment${numSegments !== 1 ? 's' : ''} (bits: ${currentBits})`, half, size - 10);
@@ -1096,6 +1105,13 @@ class EditorUIHandler {
         const saveToServer = async () => {
             if (FORBIDDEN_TRACK_BITS.has(currentBits)) {
                 console.warn('Cannot save forbidden configuration');
+                return;
+            }
+            if (isSquareCornerSwitch(currentBits)) {
+                window.showToast(
+                    'Invalid switch: a branch is 90° to a connecting segment ' +
+                    '(square corner). Add a diagonal (NS/EW) leg to ease it.',
+                    'error', 5000);
                 return;
             }
 

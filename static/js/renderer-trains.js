@@ -32,6 +32,7 @@ class RendererTrainHandler {
         this.drawTrainFromSnapshot(train, {
             id: train.id,
             cab: controller.cab ?? null,
+            facing: controller.facing_direction ?? null,
             span: {
                 occupiedTiles: controller.span.occupied_tiles,
                 leadingEnd: controller.span.leading_end,
@@ -438,7 +439,7 @@ class RendererTrainHandler {
 
         // === Draw label ===
         const headTrackBits = getTrackBits(headTile);
-        this.drawTrainLabel(train, headPos.x, headPos.y, headTrackBits, train.facing_direction, headTile[0], headTile[1], tracks);
+        this.drawTrainLabel(train, headPos.x, headPos.y, headTrackBits, trainSnap.facing, headTile[0], headTile[1], tracks);
     }
 
     /**

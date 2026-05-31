@@ -29,7 +29,7 @@ from typing import Any, Dict, Literal, Optional, Tuple, TYPE_CHECKING
 
 from network import RailwayNetwork
 from train import Train, TrainCar
-from enums import TrainState, Direction, LeadingEnd
+from enums import TrainState, Direction
 from block_power import BlockPowerController
 from notification_center import NotificationCenter, Severity
 from route_executor import RouteExecutor
@@ -37,7 +37,6 @@ from speed_profile import SpeedProfileRegistry
 
 from train_controller import TrainController, create_controller_for_train
 from train_physics import TrainPhysics, create_physics_for_train
-from train_span import TrainSpan
 from runtime_payloads import (
     FatalConflictKind,
     FatalPhysicalEntryConflict,
@@ -477,6 +476,30 @@ class SimulationController:
     # Train lifecycle
     # =========================================================================
 
+    def reposition_train(
+        self, train: "Train", x: int, y: int, direction: "Direction"
+    ) -> "TrainSpan":
+        """Re-place an already-added `train` at tile (x, y) and reseed its span.
+
+        Clears the train's currently-occupied blocks, calls
+        `network.place_train(...)`, and writes the resulting span onto the
+        train's controller. This is the canonical re-placement writer of
+        `TrainController.physics_sync.current_span`; callers (e.g. the train
+        route handlers) go through here rather than assigning the span
+        directly. `add_train` owns the initial seed; this owns subsequent
+        re-placement. Raises `ValueError`/`KeyError` from `place_train` for a
+        tile that cannot host the train.
+        """
+        ctrl = self.get_controller(train.train_id)
+        span = ctrl.get_current_span() if ctrl is not None else None
+        if self.network.block_manager and span is not None:
+            for block_id in span.occupied_blocks:
+                self.network.block_manager.clear_block(block_id)
+        new_span = self.network.place_train(train, x, y, direction)
+        if ctrl is not None:
+            ctrl.physics_sync.current_span = new_span
+        return new_span
+
     def add_train(
         self,
         train_id: str,
@@ -569,7 +592,9 @@ class SimulationController:
         # not fit on available track.
         self.network.add_train(train)
         try:
-            self.network.place_train(train, start_tile[0], start_tile[1], direction)
+            placed_span = self.network.place_train(
+                train, start_tile[0], start_tile[1], direction
+            )
         except ValueError:
             self.network.remove_train(train_id)
             raise
@@ -597,27 +622,23 @@ class SimulationController:
                     exc_info=True,
                 )
 
-        # Register controller and physics instances. add_train is the sole
-        # entry point that writes the initial TrainController.current_span,
-        # so we derive it from the placed TrainPosition before the first tick.
+        # Register controller and physics instances. add_train writes the
+        # initial TrainController.physics_sync.current_span, derived directly
+        # from the canonical span that place_train built, before the first tick
+        # (design_new.md "Design Direction"). Subsequent re-placement of an
+        # existing train goes through reposition_train, the only other writer
+        # of that span; route handlers never assign it directly.
         controller = self.get_or_create_controller(train_id)
         self.get_or_create_physics(train_id)
 
-        if train.position is not None:
-            try:
-                controller.physics_sync.current_span = TrainSpan.from_train_position(train.position)
-            except Exception:
-                self.network.remove_train(train_id)
-                raise
+        controller.physics_sync.current_span = placed_span
 
         # If an initial cab was requested, write it directly. add_train runs
         # before the first tick, so this bypasses the command queue by design.
+        # The cab is the head indicator (design_new.md): the controller derives
+        # head/tail from (cab, current_span); the span carries no head label.
         if initial_cab is not None:
             controller.commands.cab = initial_cab
-            if controller.physics_sync.current_span is not None:
-                controller.physics_sync.current_span.leading_end = (
-                    LeadingEnd.A if initial_cab == "A" else LeadingEnd.B
-                )
 
         # Emit notification.
         self.notification_center.emit(

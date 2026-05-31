@@ -1376,8 +1376,10 @@ class RouteExecutor:
                         _covered_xys = {
                             (t.x, t.y) for t in _first_entry.path_tiles
                         }
-                        _train_pos = getattr(train, "position", None)
-                        _head_tile = getattr(_train_pos, "head_tile", None)
+                        _ctrl = self._controller_by_id(train.train_id)
+                        _head_tile = (
+                            _ctrl._get_head_tile() if _ctrl is not None else None
+                        )
                         if (
                             _head_tile is not None
                             and _head_tile not in _covered_xys
@@ -2019,9 +2021,8 @@ class RouteExecutor:
         self, train: "Train", platform: object
     ) -> Optional[Tuple[int, int]]:
         """Forward to `TrainAtTargetPredicates.get_target_platform_tile(...)`."""
-        from train_at_target_predicates import TrainAtTargetPredicates
-
-        return TrainAtTargetPredicates.get_target_platform_tile(train, platform)
+        preds = self._get_at_target_predicates()
+        return preds.get_target_platform_tile(preds._facing(train), platform)
 
     def _get_platform(self, platform_id: str) -> Optional[object]:
         """Forward to `RouteTargetResolver.get_platform(platform_id)`."""

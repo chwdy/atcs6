@@ -2353,7 +2353,10 @@ class Editor {
             ${track.switch_points && Object.keys(track.switch_points).length > 0 ? (() => {
                 const switchStateColor = track.switch_state === 0 ? 'var(--success-color)' : 'var(--warning-color)';
                 const switchStateText = track.switch_state === 0 ? 'MAIN' : 'DIVERGE';
-                const isLocked = track.is_locked || track.locked_by_path;
+                // Lock ownership lives on the Switch entity's `locks` array
+                // (design_new.md:651); resolve it from the cached network.
+                const lockSwitchEntity = this.cachedNetwork?.switches?.[track.switch_id] || null;
+                const isLocked = !!(lockSwitchEntity && Array.isArray(lockSwitchEntity.locks) && lockSwitchEntity.locks.length > 0);
                 const hasSwitchId = track.switch_id && track.switch_id !== '';
                 return `
                 <div class="property-group-header">Switch</div>

@@ -10,9 +10,9 @@ import pytest
 from track import TrackSegment, TRACK_NS, TRACK_EW, TRACK_NW
 from network import RailwayNetwork
 from block import Block
-from enums import BlockState, Direction, LeadingEnd, TrainState, HandlePosition
-from train import Train, TrainCar, TrainPosition
-from tests.train_test_helpers import make_train_position
+from enums import BlockState, Direction, TrainState, HandlePosition
+from train import Train, TrainCar
+from train_span import SpanEndLocator, TrainSpan
 from simulation import SimulationController
 from train_controller import TrainController, create_controller_for_train
 from path_dispatcher import PathDispatcher
@@ -37,13 +37,13 @@ class TestCabSwitchEndPositionsBugFix:
     Comprehensive tests for cab switching behavior (corrected 2026-02-04).
 
     When switching cabs (A <-> B), the physical train DOES NOT MOVE:
-    - end_a_tile and end_b_tile stay at their original locations
+    - end_a.tile and end_b.tile stay at their original locations
     - The driver conceptually walks to the other cab
-    - Only leading_end changes (from "a" to "b" or vice versa)
+    - Only the head end changes (the cab selects it: A -> end_a, B -> end_b)
     - Entry edges flip for BOTH ends (train will travel opposite direction)
     - Distances flip for BOTH ends (measured from opposite edge now)
     - occupied_tiles order stays the same (train hasn't moved)
-    - facing_direction reverses (EAST -> WEST or vice versa)
+    - facing direction reverses (EAST -> WEST or vice versa)
     """
 
     def _setup_two_tile_train(self, network):
@@ -53,9 +53,12 @@ class TestCabSwitchEndPositionsBugFix:
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=80.0)
         train = Train(train_id="CAB_SWAP_TEST", consist=[car])
         network.add_train(train)
-        network.place_train(train, 1, 0, Direction.EAST)
+        span = network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
+        # place_train returns the span but does not seed the controller; the
+        # canonical live store is controller.physics_sync.current_span.
+        controller.physics_sync.current_span = span
 
         return train, controller
 
@@ -64,27 +67,28 @@ class TestCabSwitchEndPositionsBugFix:
         train, controller = self._setup_two_tile_train(network)
 
         controller.commands.set_cab("A")
-        original_end_a = train.position.end_a_tile
-        original_end_b = train.position.end_b_tile
+        original_end_a = controller.physics_sync.current_span.end_a.tile
+        original_end_b = controller.physics_sync.current_span.end_b.tile
 
         controller.commands.set_cab("B")
 
         # Tiles should NOT change - physical train stays in place
-        assert train.position.leading_end == LeadingEnd.B
-        assert train.position.end_a_tile == original_end_a  # unchanged
-        assert train.position.end_b_tile == original_end_b  # unchanged
+        assert controller.commands.cab == "B"
+        assert controller.physics_sync.current_span.end_a.tile == original_end_a
+        assert controller.physics_sync.current_span.end_b.tile == original_end_b
 
     def test_cab_switch_flips_entry_edges_for_both_ends(self, network):
         """When switching cabs, entry edges flip for BOTH ends."""
         train, controller = self._setup_two_tile_train(network)
 
         controller.commands.set_cab("A")
-        original_entry_a = train.position.end_a_entry_edge
-        original_entry_b = train.position.end_b_entry_edge
+        span = controller.physics_sync.current_span
+        original_entry_a = span.end_a.entry_edge
+        original_entry_b = span.end_b.entry_edge
 
         # Calculate expected flipped entries using track geometry
-        track_a = network.get_track(*train.position.end_a_tile)
-        track_b = network.get_track(*train.position.end_b_tile)
+        track_a = network.get_track(*span.end_a.tile)
+        track_b = network.get_track(*span.end_b.tile)
 
         expected_new_entry_a = original_entry_a
         if track_a:
@@ -101,38 +105,40 @@ class TestCabSwitchEndPositionsBugFix:
         controller.commands.set_cab("B")
 
         # BOTH ends should have flipped entry edges
-        assert train.position.end_a_entry_edge == expected_new_entry_a
-        assert train.position.end_b_entry_edge == expected_new_entry_b
+        span = controller.physics_sync.current_span
+        assert span.end_a.entry_edge == expected_new_entry_a
+        assert span.end_b.entry_edge == expected_new_entry_b
 
     def test_cab_switch_preserves_occupied_tiles_order(self, network):
         """occupied_tiles order stays the same - physical train didn't move."""
         train, controller = self._setup_two_tile_train(network)
 
         controller.commands.set_cab("A")
-        original_occupied = train.position.occupied_tiles.copy()
+        original_occupied = controller.physics_sync.current_span.occupied_tiles.copy()
 
         controller.commands.set_cab("B")
 
         # occupied_tiles should NOT change - train didn't physically move
-        assert train.position.occupied_tiles == original_occupied
+        span = controller.physics_sync.current_span
+        assert span.occupied_tiles == original_occupied
         # First tile is still end_a
-        assert train.position.occupied_tiles[0] == train.position.end_a_tile
+        assert span.occupied_tiles[0] == span.end_a.tile
         # Last tile is still end_b
-        assert train.position.occupied_tiles[-1] == train.position.end_b_tile
+        assert span.occupied_tiles[-1] == span.end_b.tile
 
 
     def test_cab_switch_reverses_facing_direction(self, network):
-        """Switching cabs reverses facing_direction."""
+        """Switching cabs reverses the train's facing direction."""
         train, controller = self._setup_two_tile_train(network)
 
         controller.commands.set_cab("A")
-        assert train.position.facing_direction == Direction.EAST
+        assert controller._facing_direction() == Direction.EAST
 
         controller.commands.set_cab("B")
-        assert train.position.facing_direction == Direction.WEST
+        assert controller._facing_direction() == Direction.WEST
 
         controller.commands.set_cab("A")
-        assert train.position.facing_direction == Direction.EAST
+        assert controller._facing_direction() == Direction.EAST
 
 
 
@@ -140,8 +146,9 @@ class TestCabSwitchEntryEdgeFlipBugFix:
     """
     Comprehensive tests for cab switching entry edge reversal (corrected 2026-02-04).
 
-    BUG: Switching cabs in manual mode flips leading_end/facing_direction but
-    leaves entry_edges unchanged, so movement/renderer keep the old direction.
+    BUG: Switching cabs in manual mode flips the head end / facing direction
+    but leaves entry_edges unchanged, so movement/renderer keep the old
+    direction.
 
     FIX: On cab switch (A <-> B), flip entry_edge for BOTH ends since the train
     will now travel in the opposite direction on the track.
@@ -154,9 +161,10 @@ class TestCabSwitchEntryEdgeFlipBugFix:
         car = TrainCar("CAB_EDGE_TEST", "LOCOMOTIVE", length_cm=length_cm)
         train = Train(train_id="CAB_EDGE_TEST", consist=[car])
         network.add_train(train)
-        network.place_train(train, head_x, 0, Direction.EAST)
+        span = network.place_train(train, head_x, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
+        controller.physics_sync.current_span = span
         return train, controller
 
     def _expected_reverse_entry_edge(self, network, tile, entry_edge: str) -> str:
@@ -171,77 +179,68 @@ class TestCabSwitchEntryEdgeFlipBugFix:
         train, controller = self._setup_straight_line(network, length_cm=40.0)
 
         controller.commands.set_cab("A")
-        original_entry_a = train.position.end_a_entry_edge
-        original_entry_b = train.position.end_b_entry_edge
+        span = controller.physics_sync.current_span
+        original_entry_a = span.end_a.entry_edge
+        original_entry_b = span.end_b.entry_edge
 
         # Both entries should flip
         expected_entry_a = self._expected_reverse_entry_edge(
-            network, train.position.end_a_tile, original_entry_a
+            network, span.end_a.tile, original_entry_a
         )
         expected_entry_b = self._expected_reverse_entry_edge(
-            network, train.position.end_b_tile, original_entry_b
+            network, span.end_b.tile, original_entry_b
         )
 
         controller.commands.set_cab("B")
 
-        assert train.position.leading_end == LeadingEnd.B
+        assert controller.commands.cab == "B"
         # BOTH ends flip their entry edges
-        assert train.position.end_a_entry_edge == expected_entry_a
-        assert train.position.end_b_entry_edge == expected_entry_b
+        span = controller.physics_sync.current_span
+        assert span.end_a.entry_edge == expected_entry_a
+        assert span.end_b.entry_edge == expected_entry_b
 
     def test_cab_switch_flips_entry_edge_multi_tile(self, network):
         """Multi-tile train: BOTH ends flip entry edges on cab switch."""
         train, controller = self._setup_straight_line(network, length_cm=140.0)
 
         controller.commands.set_cab("A")
-        original_entry_a = train.position.end_a_entry_edge
-        original_entry_b = train.position.end_b_entry_edge
+        span = controller.physics_sync.current_span
+        original_entry_a = span.end_a.entry_edge
+        original_entry_b = span.end_b.entry_edge
 
         expected_entry_a = self._expected_reverse_entry_edge(
-            network, train.position.end_a_tile, original_entry_a
+            network, span.end_a.tile, original_entry_a
         )
         expected_entry_b = self._expected_reverse_entry_edge(
-            network, train.position.end_b_tile, original_entry_b
+            network, span.end_b.tile, original_entry_b
         )
 
         controller.commands.set_cab("B")
 
-        assert train.position.leading_end == LeadingEnd.B
+        assert controller.commands.cab == "B"
         # BOTH ends flip their entry edges
-        assert train.position.end_a_entry_edge == expected_entry_a
-        assert train.position.end_b_entry_edge == expected_entry_b
+        span = controller.physics_sync.current_span
+        assert span.end_a.entry_edge == expected_entry_a
+        assert span.end_b.entry_edge == expected_entry_b
 
 
 
 class TestSetCabDoubleFlipBugFix:
     """
-    Comprehensive tests for set_cab() double-flip bug fixed 2026-02-10.
+    Comprehensive tests for set_cab() direction handling (regression guard
+    for the double-flip bug fixed 2026-02-10).
 
-    BUG: TrainController.commands.set_cab() had two conflicting operations when switching
-    cabs (A <-> B):
+    When switching cabs (A <-> B) the head end is reselected and the train's
+    facing direction must reverse exactly once:
+    - Cab "A" makes end_a the head; cab "B" makes end_b the head.
+    - For a multi-tile span the facing direction is derived from tile geometry,
+      so swapping the head end reverses it automatically.
+    - For a single-tile span the facing direction is derived from the head's
+      entry_edge + offsets, which set_cab flips for both ends.
 
-    1. It synced train.facing_direction from the computed property
-       train.position.facing_direction — which already returned the CORRECT
-       new direction because leading_end was already changed by train.set_cab().
-
-    2. It then explicitly flipped train.facing_direction to its opposite —
-       which UNDID the correct direction from step 1, putting it back to the
-       original direction.
-
-    For multi-tile trains, the computed TrainPosition.facing_direction property
-    derives direction from leading_end + tile geometry. After leading_end changes,
-    it automatically returns the reversed direction. The explicit flip was
-    redundant and destructive.
-
-    FIX: Replaced the sync-then-flip logic with direction-aware handling:
-    - Multi-tile trains (end_a_tile != end_b_tile): Use the computed property
-      directly — it already returns the correct direction.
-    - Single-tile trains (end_a_tile == end_b_tile): Explicitly flip the legacy
-      direction field since the computed property falls back to it.
-
-    This bug caused turn_around() (which delegates to set_cab()) to silently
-    "succeed" but leave the train facing the SAME direction it was before,
-    breaking backward path assignment after route completion.
+    The earlier bug double-flipped the direction so it ended up unchanged,
+    which broke backward path assignment after route completion. These tests
+    pin the direction to exactly one reversal per A <-> B switch.
     """
 
     def _setup_multi_tile_train(self, network):
@@ -252,14 +251,16 @@ class TestSetCabDoubleFlipBugFix:
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=80.0, max_speed=80.0)
         train = Train(train_id="FLIP_TEST", consist=[car], max_speed=80.0)
         network.add_train(train)
-        network.place_train(train, 1, 0, Direction.EAST)
+        span = network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
+        controller.physics_sync.current_span = span
         controller.commands.set_cab("A")
 
-        assert train.facing_direction == Direction.EAST
+        assert controller._facing_direction() == Direction.EAST
         assert controller.commands.cab == "A"
-        assert train.position.end_a_tile != train.position.end_b_tile, (
+        span = controller.physics_sync.current_span
+        assert span.end_a.tile != span.end_b.tile, (
             "Setup must produce a multi-tile train"
         )
 
@@ -273,14 +274,16 @@ class TestSetCabDoubleFlipBugFix:
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=20.0, max_speed=80.0)
         train = Train(train_id="FLIP_TEST_1T", consist=[car], max_speed=80.0)
         network.add_train(train)
-        network.place_train(train, 1, 0, Direction.EAST)
+        span = network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
+        controller.physics_sync.current_span = span
         controller.commands.set_cab("A")
 
-        assert train.facing_direction == Direction.EAST
+        assert controller._facing_direction() == Direction.EAST
         assert controller.commands.cab == "A"
-        assert train.position.end_a_tile == train.position.end_b_tile, (
+        span = controller.physics_sync.current_span
+        assert span.end_a.tile == span.end_b.tile, (
             "Setup must produce a single-tile train"
         )
 
@@ -290,35 +293,35 @@ class TestSetCabDoubleFlipBugFix:
 
     def test_multi_tile_set_cab_flips_train_facing_direction(self, network):
         """The specific case that triggered the bug: multi-tile train
-        facing_direction stays wrong after set_cab()."""
+        facing direction stays wrong after set_cab()."""
         train, controller = self._setup_multi_tile_train(network)
 
         controller.commands.set_cab("B")
 
-        assert train.facing_direction == Direction.WEST, (
-            f"BUG REGRESSION: train.facing_direction should be WEST after "
-            f"switching to cab B, got {train.facing_direction}"
+        assert controller._facing_direction() == Direction.WEST, (
+            f"BUG REGRESSION: facing direction should be WEST after "
+            f"switching to cab B, got {controller._facing_direction()}"
         )
 
     def test_multi_tile_set_cab_flips_computed_direction(self, network):
-        """Computed property on TrainPosition also returns correct direction."""
+        """travel_direction (edge form) also reverses to point WEST."""
         train, controller = self._setup_multi_tile_train(network)
 
         controller.commands.set_cab("B")
 
-        assert train.position.facing_direction == Direction.WEST
+        assert controller.travel_direction == "W"
 
     def test_multi_tile_set_cab_facing_direction_consistent(self, network):
-        """After set_cab, Train.facing_direction delegates to position correctly."""
+        """After set_cab, the enum and edge derived reads agree on WEST."""
         train, controller = self._setup_multi_tile_train(network)
 
         controller.commands.set_cab("B")
 
-        # Both access paths should return the same direction
-        via_train = train.facing_direction  # Reads Train.facing_direction property
-        via_position = train.position.facing_direction  # Reads TrainPosition property
-        assert via_train == via_position == Direction.WEST, (
-            f"Train ({via_train}) and position ({via_position}) should both be WEST"
+        # Both derived reads on the controller should agree on the direction.
+        via_enum = controller._facing_direction()  # Direction enum
+        via_edge = controller.travel_direction  # compass-edge form
+        assert via_enum == Direction.WEST and via_edge == "W", (
+            f"enum ({via_enum}) and edge ({via_edge}) should both be WEST"
         )
 
     def test_multi_tile_double_flip_returns_to_original(self, network):
@@ -326,23 +329,23 @@ class TestSetCabDoubleFlipBugFix:
         train, controller = self._setup_multi_tile_train(network)
 
         controller.commands.set_cab("B")
-        assert train.facing_direction == Direction.WEST
+        assert controller._facing_direction() == Direction.WEST
 
         controller.commands.set_cab("A")
-        assert train.facing_direction == Direction.EAST
+        assert controller._facing_direction() == Direction.EAST
 
     def test_multi_tile_triple_flip(self, network):
         """Three cab switches (A->B->A->B) end correctly."""
         train, controller = self._setup_multi_tile_train(network)
 
         controller.commands.set_cab("B")
-        assert train.facing_direction == Direction.WEST
+        assert controller._facing_direction() == Direction.WEST
 
         controller.commands.set_cab("A")
-        assert train.facing_direction == Direction.EAST
+        assert controller._facing_direction() == Direction.EAST
 
         controller.commands.set_cab("B")
-        assert train.facing_direction == Direction.WEST
+        assert controller._facing_direction() == Direction.WEST
 
     def test_multi_tile_set_cab_opposite_flips_direction(self, network):
         """Switching to the opposite cab via set_cab flips facing direction."""
@@ -350,7 +353,7 @@ class TestSetCabDoubleFlipBugFix:
 
         result = controller.commands.set_cab("B")
         assert result.success is True
-        assert train.facing_direction == Direction.WEST
+        assert controller._facing_direction() == Direction.WEST
         assert controller.commands.cab == "B"
 
     def test_multi_tile_set_cab_opposite_twice_returns_original(self, network):
@@ -358,10 +361,10 @@ class TestSetCabDoubleFlipBugFix:
         train, controller = self._setup_multi_tile_train(network)
 
         controller.commands.set_cab("B")
-        assert train.facing_direction == Direction.WEST
+        assert controller._facing_direction() == Direction.WEST
 
         controller.commands.set_cab("A")
-        assert train.facing_direction == Direction.EAST
+        assert controller._facing_direction() == Direction.EAST
 
     # ---- Single-tile tests ----
 
@@ -371,8 +374,8 @@ class TestSetCabDoubleFlipBugFix:
 
         controller.commands.set_cab("B")
 
-        assert train.facing_direction == Direction.WEST, (
-            f"Single-tile train should flip to WEST, got {train.facing_direction}"
+        assert controller._facing_direction() == Direction.WEST, (
+            f"Single-tile train should flip to WEST, got {controller._facing_direction()}"
         )
 
     def test_single_tile_double_flip(self, network):
@@ -380,10 +383,10 @@ class TestSetCabDoubleFlipBugFix:
         train, controller = self._setup_single_tile_train(network)
 
         controller.commands.set_cab("B")
-        assert train.facing_direction == Direction.WEST
+        assert controller._facing_direction() == Direction.WEST
 
         controller.commands.set_cab("A")
-        assert train.facing_direction == Direction.EAST
+        assert controller._facing_direction() == Direction.EAST
 
     def test_single_tile_set_cab_opposite(self, network):
         """Single-tile: switching cab via set_cab flips direction."""
@@ -391,7 +394,7 @@ class TestSetCabDoubleFlipBugFix:
 
         result = controller.commands.set_cab("B")
         assert result.success is True
-        assert train.facing_direction == Direction.WEST
+        assert controller._facing_direction() == Direction.WEST
         assert controller.commands.cab == "B"
 
     # ---- Edge cases ----
@@ -404,16 +407,17 @@ class TestSetCabDoubleFlipBugFix:
         car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=80.0, max_speed=80.0)
         train = Train(train_id="FIRST_CAB", consist=[car], max_speed=80.0)
         network.add_train(train)
-        network.place_train(train, 1, 0, Direction.EAST)
+        span = network.place_train(train, 1, 0, Direction.EAST)
 
         controller = create_controller_for_train(train.train_id, network)
+        controller.physics_sync.current_span = span
 
         # active_cab is None initially
         assert controller.commands.cab is None
 
-        # First cab selection should sync from computed, not flip
+        # First cab selection should adopt the placed orientation, not flip it.
         controller.commands.set_cab("A")
-        assert train.facing_direction == Direction.EAST, (
+        assert controller._facing_direction() == Direction.EAST, (
             "First cab selection should NOT flip direction"
         )
 
@@ -422,7 +426,7 @@ class TestSetCabDoubleFlipBugFix:
         train, controller = self._setup_multi_tile_train(network)
 
         controller.commands.set_cab("A")  # Already A, setting A again
-        assert train.facing_direction == Direction.EAST, (
+        assert controller._facing_direction() == Direction.EAST, (
             "Re-selecting same cab should NOT flip direction"
         )
 
@@ -434,7 +438,7 @@ class TestSetCabDoubleFlipBugFix:
 
         result = controller.commands.set_cab("B")
         assert result.success is False
-        assert train.facing_direction == Direction.EAST, (
+        assert controller._facing_direction() == Direction.EAST, (
             "Direction should not change on failed set_cab"
         )
 
@@ -465,26 +469,28 @@ class TestSetCabDoubleFlipBugFix:
         """Entry edges and distances also flip correctly alongside direction."""
         train, controller = self._setup_multi_tile_train(network)
 
-        orig_a_edge = train.position.end_a_entry_edge
-        orig_b_edge = train.position.end_b_entry_edge
-        orig_a_dist = train.position.end_a_distance_cm
-        orig_b_dist = train.position.end_b_distance_cm
+        span = controller.physics_sync.current_span
+        orig_a_edge = span.end_a.entry_edge
+        orig_b_edge = span.end_b.entry_edge
+        orig_a_dist = span.end_a.distance_cm
+        orig_b_dist = span.end_b.distance_cm
 
         controller.commands.set_cab("B")
 
         # Entry edges should have flipped
-        assert train.position.end_a_entry_edge != orig_a_edge, (
+        span = controller.physics_sync.current_span
+        assert span.end_a.entry_edge != orig_a_edge, (
             "end_a entry edge should flip on cab switch"
         )
-        assert train.position.end_b_entry_edge != orig_b_edge, (
+        assert span.end_b.entry_edge != orig_b_edge, (
             "end_b entry edge should flip on cab switch"
         )
         # Distances should have changed (tile_length - original)
-        assert train.position.end_a_distance_cm != orig_a_dist
-        assert train.position.end_b_distance_cm != orig_b_dist
+        assert span.end_a.distance_cm != orig_a_dist
+        assert span.end_b.distance_cm != orig_b_dist
 
         # Direction must be correct too
-        assert train.facing_direction == Direction.WEST
+        assert controller._facing_direction() == Direction.WEST
 
     # ---- Real-world scenario: the actual bug trigger ----
 
@@ -509,7 +515,7 @@ class TestSetCabDoubleFlipBugFix:
             f"set_cab(\"B\") should work from READY state with cab selected, "
             f"controller.ops.state={controller.ops.state}"
         )
-        assert train.facing_direction == Direction.WEST
+        assert controller._facing_direction() == Direction.WEST
         assert controller.commands.cab == "B"
 
 

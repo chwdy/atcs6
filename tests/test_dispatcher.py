@@ -46,10 +46,11 @@ from track import (
 )
 from block import Block
 from railway_platform import Platform
-from train import Train, TrainCar, TrainPosition
-from tests.train_test_helpers import make_train_position
+from train import Train, TrainCar
+from train_span import SpanEndLocator, TrainSpan
+from tests.train_test_helpers import set_train_span
 from train_route import Route, RouteMode, RouteTask
-from enums import BlockState, Direction, LeadingEnd, TrainState, HandlePosition
+from enums import BlockState, Direction, TrainState, HandlePosition
 from simulation import SimulationController
 from route_executor import RouteExecutionState
 from datetime import datetime
@@ -82,6 +83,25 @@ def activate_path_for_train(dispatcher, path, train_id, block_id):
         if block:
             block.occupy(train_id)
     return True
+
+
+def _make_seeded_controller(sim, train):
+    """Create (via the sim) the train's controller and seed its single-tile
+    span from the placement stashed by `_create_stopped_train`.
+
+    v1: head tile and facing derive from (cab, `physics_sync.current_span`),
+    so a controller built straight from `place_train`/`add_train` has no head
+    until its span is seeded. This mirrors the old `train.position` placement
+    for the unit tests that drive controller/ATO behaviour from the head.
+    """
+    controller = sim._get_or_create_controller(train)
+    set_train_span(
+        controller,
+        train._seed_head_tile,
+        facing_direction=train._seed_facing,
+        occupied_blocks=[train._seed_block_id],
+    )
+    return controller
 
 
 # ============================================================================
@@ -249,9 +269,9 @@ class TestValidationError:
 
 class TestSwitchLocking:
     """Tests for v1 multi-owner switch locking via `Switch.acquire_lock` /
-    `Switch.release_lock`. `Track.locked_by_path` / `Track.locked_state` /
-    `Track.is_locked_by_path()` are derived projections that resolve through
-    `network.switches[switch_id].locks` per design_new.md."""
+    `Switch.release_lock`. `TrackSegment` exposes no lock surface in v1; all
+    lock state lives on the owning `Switch` entity (`Switch.locks`,
+    `Switch.is_locked()`) per design_new.md:651."""
 
     def _make_switch_at(self, network, x: int, y: int):
         track = TrackSegment(x=x, y=y, track_bits=TRACK_EW | TRACK_NE)
@@ -262,20 +282,20 @@ class TestSwitchLocking:
         return track, switch
 
     def test_lock_switch_success(self, network):
-        """Successful future-authority lock acquisition surfaces on the
-        derived Track projection."""
+        """Successful future-authority lock acquisition is recorded on the
+        owning `Switch` entity."""
         track, switch = self._make_switch_at(network, 0, 0)
 
         assert track.is_switch
-        assert not track.is_locked_by_path()
+        assert not switch.is_locked()
 
         claim = SwitchLockClaim(
             path_id="PATH_001", train_id="TRAIN_X", locked_state=0
         )
         assert switch.acquire_lock(claim)
-        assert track.is_locked_by_path()
-        assert track.is_locked_by("PATH_001")
-        assert track.locked_state == 0
+        assert switch.is_locked()
+        assert ("PATH_001", None) in switch.locks
+        assert switch.locks[("PATH_001", None)][1] == 0
 
     def test_lock_switch_conflicting_state(self, network):
         """Lock compatibility rules per design_new.md:617, :624, :633:
@@ -411,40 +431,42 @@ class TestSwitchLocking:
         ))
 
     def test_unlock_switch(self, network):
-        """`release_lock` removes the future-authority claim; derived Track
-        projection clears."""
-        track, switch = self._make_switch_at(network, 0, 0)
+        """`release_lock` removes the future-authority claim from the owning
+        `Switch`."""
+        _, switch = self._make_switch_at(network, 0, 0)
 
         switch.acquire_lock(
             SwitchLockClaim(path_id="PATH_001", train_id="TRAIN_X", locked_state=0)
         )
         assert switch.release_lock("PATH_001", None)
-        assert not track.is_locked_by_path()
+        assert not switch.is_locked()
 
     def test_unlock_switch_wrong_route(self, network):
         """Releasing a non-existent claim returns False; existing claim
         remains."""
-        track, switch = self._make_switch_at(network, 0, 0)
+        _, switch = self._make_switch_at(network, 0, 0)
 
         switch.acquire_lock(
             SwitchLockClaim(path_id="PATH_001", train_id="TRAIN_X", locked_state=0)
         )
         assert not switch.release_lock("PATH_002", None)
-        assert track.is_locked_by("PATH_001")
+        assert ("PATH_001", None) in switch.locks
 
-    def test_get_lock_info(self, network):
-        """`Track.get_lock_info()` projects from `Switch.locks`."""
-        track, switch = self._make_switch_at(network, 0, 0)
+    def test_lock_record_shape(self, network):
+        """A recorded lock is keyed by `(path_id, source_switch_id)` and
+        stores `(train_id, locked_state)` on the owning `Switch` per
+        design_new.md:651."""
+        _, switch = self._make_switch_at(network, 0, 0)
 
-        assert track.get_lock_info() is None
+        assert switch.locks == {}
 
         switch.acquire_lock(
             SwitchLockClaim(path_id="PATH_001", train_id="TRAIN_X", locked_state=1)
         )
-        info = track.get_lock_info()
-        assert info is not None
-        assert info["path_id"] == "PATH_001"
-        assert info["locked_state"] == 1
+        assert ("PATH_001", None) in switch.locks
+        train_id, locked_state = switch.locks[("PATH_001", None)]
+        assert train_id == "TRAIN_X"
+        assert locked_state == 1
 
     def test_can_lock_predicate(self, network):
         """`Switch.can_lock(state)` is the canonical multi-owner predicate."""
@@ -463,14 +485,15 @@ class TestSwitchLocking:
         # Different state rejected while existing lock holds state=0.
         assert not switch.can_lock(1)
 
-    def test_non_switch_cannot_be_locked(self, network):
-        """Non-switch track has no owning `Switch` entity; the derived
-        projection always reports unlocked."""
+    def test_non_switch_has_no_owning_switch(self, network):
+        """Non-switch track has no `switch_id` and no owning `Switch`
+        entity, so it has no lock surface at all."""
         straight = TrackSegment(x=0, y=0, track_bits=TRACK_EW)
         network.add_track(straight)
 
         assert not straight.is_switch
-        assert not straight.is_locked_by_path()
+        assert straight.switch_id is None
+        assert network.switches.get(straight.switch_id) is None
 
 
 # ============================================================================
@@ -957,12 +980,19 @@ class TestATODirectionDetection:
         return network
 
     def _create_stopped_train(self, network, tile, facing, block_id):
-        """Create a stopped train at the given tile with facing direction."""
+        """Create a stopped train at the given tile with facing direction.
+
+        v1: the live position is the controller's `physics_sync.current_span`,
+        not `Train.position`. We stash the intended head tile / facing on the
+        train so `_make_seeded_controller` can seed the controller span once it
+        is created (the controller registry is owned by the sim the caller
+        builds next).
+        """
         car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="TEST_TRAIN", consist=[car], max_speed=80.0)
-        train.position = make_train_position(
-            tile, facing_direction=facing, occupied_blocks=[block_id]
-        )
+        train._seed_head_tile = tile
+        train._seed_facing = facing
+        train._seed_block_id = block_id
         train.current_speed = 0.0
         network.add_train(train)
         return train
@@ -1059,7 +1089,7 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.cab = "A"
 
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
@@ -1073,7 +1103,7 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (4, 0), Direction.EAST, "BLK_EAST")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.cab = "A"
 
         self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)])
@@ -1087,7 +1117,7 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (5, 0), Direction.EAST, "BLK_EAST")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.cab = "A"
 
         # Path doesn't include head tile (5,0)
@@ -1102,7 +1132,7 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.cab = "A"
 
         self._attach_live_path(controller, train, [(2, 0), (3, 0), (4, 0)])
@@ -1116,7 +1146,7 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (4, 0), Direction.EAST, "BLK_EAST")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.cab = "A"
 
         # Head is the last tile — no next tile to compare
@@ -1134,7 +1164,7 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.cab = "A"
 
         # Path goes EAST, train faces EAST -> same direction
@@ -1150,7 +1180,7 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (4, 0), Direction.EAST, "BLK_EAST")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.cab = "A"
 
         # Path goes WEST, train faces EAST -> opposite
@@ -1166,7 +1196,7 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (4, 0), Direction.WEST, "BLK_EAST")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.cab = "B"
 
         # Path goes EAST, train faces WEST (cab B) -> opposite
@@ -1184,7 +1214,7 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.cab = "A"
 
         # Path goes NORTH, train faces EAST -> 90 degrees
@@ -1202,7 +1232,7 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (4, 0), Direction.EAST, "BLK_EAST")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.power_on_cmd()
         controller.commands.set_cab("A")
 
@@ -1229,7 +1259,7 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.power_on_cmd()
         controller.commands.set_cab("A")
 
@@ -1258,7 +1288,7 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (1, 4), Direction.NORTH, "BLK_DIAG")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.cab = "A"
 
         # Return path goes south through diagonal: (1,4) -> (1,3) -> (0,3) -> (0,2) -> (0,1)
@@ -1286,7 +1316,7 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (1, 4), Direction.EAST, "BLK_DIAG")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.cab = "A"
 
         # Return path: (1,4) -> (1,3) = SOUTH
@@ -1335,7 +1365,7 @@ class TestATODirectionDetection:
         )
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.cab = "A"
 
         # Path: (2, 0) -> (10, 0) (tunnel hop) -> (11, 0) -> (12, 0).
@@ -1368,12 +1398,23 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (4, 0), Direction.EAST, "BLK_EAST")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
+        # Seed a real two-tile span (head (4,0) facing EAST, tail one tile
+        # behind at (3,0)) so the cab flip genuinely re-derives facing. A
+        # degenerate single-tile span (end_a == end_b) cannot express a
+        # cab-driven orientation flip.
+        controller.physics_sync.current_span = TrainSpan(
+            end_a=SpanEndLocator(tile=(4, 0), distance_cm=20.0, entry_edge="W"),
+            end_b=SpanEndLocator(tile=(3, 0), distance_cm=0.0, entry_edge="W"),
+            occupied_tiles=[(4, 0), (3, 0)],
+            occupied_blocks=["BLK_EAST", "BLK_MID"],
+        )
         controller.commands.power_on_cmd()
         controller.commands.set_cab("A")
         controller.commands.control_mode = "ato"
 
         assert controller.commands.cab == "A"
+        assert controller._facing_direction() == Direction.EAST
 
         # Assign a return path going WEST (no turn-around happens here anymore)
         self._attach_live_path(controller, train, [(4, 0), (3, 0), (2, 0)], end_block_id="BLK_WEST")
@@ -1385,7 +1426,8 @@ class TestATODirectionDetection:
         result = controller.ato.go()
         assert result.success, f"ato_go failed: {result.message}"
         assert controller.commands.cab == "B"
-        assert train.facing_direction == Direction.WEST
+        # Cab B makes end_b (the (3,0) end) the head -> train now faces WEST.
+        assert controller._facing_direction() == Direction.WEST
 
     def test_path_assignment_no_turn_when_same_direction(self):
         """ato_go() should NOT switch cab when path matches facing direction."""
@@ -1393,7 +1435,7 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.power_on_cmd()
         controller.commands.set_cab("A")
         controller.commands.control_mode = "ato"
@@ -1407,7 +1449,8 @@ class TestATODirectionDetection:
         result = controller.ato.go()
         assert result.success
         assert controller.commands.cab == "A"
-        assert train.facing_direction == Direction.EAST
+        # Facing derives from (cab, current_span); cab unchanged -> still EAST.
+        assert controller._facing_direction() == Direction.EAST
 
     def test_vertical_train_return_path_south(self):
         """Train facing NORTH on vertical track, assigned return path SOUTH.
@@ -1420,7 +1463,7 @@ class TestATODirectionDetection:
         )
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.cab = "A"
 
         self._attach_live_path(controller, train, [(0, 4), (0, 3), (0, 2)], end_block_id="BLK_SOUTH")
@@ -1435,7 +1478,7 @@ class TestATODirectionDetection:
         train = self._create_stopped_train(network, (2, 0), Direction.EAST, "BLK_MID")
 
         sim = SimulationController(network, PathDispatcher(network))
-        controller = sim._get_or_create_controller(train)
+        controller = _make_seeded_controller(sim, train)
         controller.commands.cab = "A"
 
         # No path, no destination
@@ -1463,11 +1506,29 @@ class TestBestEffortAcquisitionContract:
       * :894     — `head_on_switch_no_block_authority` exception case.
     """
 
-    def _make_probe_train(self, network):
+    def _make_probe_train(self, network, dispatcher):
+        """Place the probe train at BLOCK_A (0,0, facing EAST) and seed a
+        controller span so the dispatcher can resolve its current block.
+
+        v1: the head/current block derives from
+        `TrainController.physics_sync.current_span`, which the dispatcher
+        reads through its `simulation_controller` controller registry. Wire
+        the dispatcher to a `SimulationController` over the same network and
+        create+seed the controller via that sim.
+        """
         car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
         train = Train(train_id="T_PROBE", consist=[car], max_speed=60.0)
         network.add_train(train)
         network.place_train(train, 0, 0, Direction.EAST)
+
+        sim = SimulationController(network, dispatcher)
+        controller = sim._get_or_create_controller(train)
+        set_train_span(
+            controller,
+            (0, 0),
+            facing_direction=Direction.EAST,
+            occupied_blocks=["BLOCK_A"],
+        )
         return train
 
     def test_create_path_best_effort_truncates_on_occupied_block(
@@ -1478,7 +1539,7 @@ class TestBestEffortAcquisitionContract:
         fix, this asserts success=False with BLOCKED_BEFORE_TARGET.
         """
         dispatcher.network = simple_linear_network
-        self._make_probe_train(simple_linear_network)
+        self._make_probe_train(simple_linear_network, dispatcher)
         simple_linear_network.blocks["BLOCK_C"].occupy("T_OTHER")
 
         result = dispatcher.create_path(
@@ -1509,7 +1570,7 @@ class TestBestEffortAcquisitionContract:
         future block is still a hard reject in that mode.
         """
         dispatcher.network = simple_linear_network
-        self._make_probe_train(simple_linear_network)
+        self._make_probe_train(simple_linear_network, dispatcher)
         simple_linear_network.blocks["BLOCK_C"].occupy("T_OTHER")
 
         result = dispatcher.create_path(
@@ -1529,7 +1590,7 @@ class TestBestEffortAcquisitionContract:
         even in BEST_EFFORT mode, per design_new.md:890.
         """
         dispatcher.network = simple_linear_network
-        self._make_probe_train(simple_linear_network)
+        self._make_probe_train(simple_linear_network, dispatcher)
         simple_linear_network.blocks["BLOCK_B"].disabled = True
 
         result = dispatcher.create_path(
@@ -1561,7 +1622,7 @@ class TestBestEffortAcquisitionContract:
         remains intact.
         """
         dispatcher.network = simple_linear_network
-        self._make_probe_train(simple_linear_network)
+        self._make_probe_train(simple_linear_network, dispatcher)
 
         first = dispatcher.create_path(
             train_id="T_PROBE",
@@ -1640,7 +1701,7 @@ class TestBestEffortAcquisitionContract:
         block_c.length_cm = 100.0
         network.get_track(3, 0).block_section_id = "BLOCK_C"
 
-        self._make_probe_train(network)
+        self._make_probe_train(network, dispatcher)
 
         # Pre-lock the switch in DIVERGE (state=1) on behalf of another
         # path so the candidate's required MAIN (state=0) is unavailable.

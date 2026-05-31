@@ -16,8 +16,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, TYPE_CHECKING
 
-from enums import TrainState
-
 MAX_TRACK_VOLTAGE = 12.0
 MIN_TRACK_VOLTAGE = 0.0
 DEFAULT_LIGHTING_VOLTAGE = 2.5
@@ -153,8 +151,6 @@ class BlockPowerController:
         Determines voltage based on train state:
         - OFF: 0V
         - READY/RUNNING_AT_STATION: lighting_voltage
-          (READY + no cab selected with ≥2 blocks may use opposite polarity
-           for red lights both ends)
         - RUNNING_MOVING: voltage based on target speed
 
         Args:
@@ -167,46 +163,11 @@ class BlockPowerController:
         if not occupied_blocks:
             return
 
-        # Per design_new.md, operational state lives on the controller;
-        # resolve it through the wired SimulationController.
-        controller_state = None
-        controller_cab = None
-        if self._sim_controller is not None:
-            ctrl = self._sim_controller.get_or_create_controller(train.train_id)
-            if ctrl is not None:
-                controller_state = getattr(ctrl, "state", None)
-                controller_cab = getattr(ctrl, "cab", None)
-
-        # Use opposite polarity (red lights both ends) when the train is
-        # READY with no cab selected — the doc's "no cab" flavor of READY
-        # replaces the old IDLE state.
-        if (
-            controller_state == TrainState.READY
-            and controller_cab is None
-            and len(occupied_blocks) >= 2
-            and train.is_opposite_polarity_safe(self.network)
-        ):
-            # Opposite polarity: first block gets positive, last gets negative
-            # This shows red lights on both ends
-            lighting_voltage = self.default_lighting_voltage
-            if speed_profile:
-                lighting_voltage = speed_profile.lighting_voltage
-
-            # Set first block (head) to positive
-            self.set_block_voltage(occupied_blocks[0], lighting_voltage)
-
-            # Set last block (tail) to negative
-            self.set_block_voltage(occupied_blocks[-1], -lighting_voltage)
-
-            # Middle blocks (if any) get 0V
-            for block_id in occupied_blocks[1:-1]:
-                self.set_block_voltage(block_id, 0.0)
-        else:
-            # Normal operation: all blocks get same voltage
-            voltage = self._calculate_voltage_for_train(train, speed_profile)
-
-            for block_id in occupied_blocks:
-                self.set_block_voltage(block_id, voltage)
+        # All occupied blocks take the same voltage, resolved by TrainPhysics
+        # (the canonical owner of `track_voltage`).
+        voltage = self._calculate_voltage_for_train(train, speed_profile)
+        for block_id in occupied_blocks:
+            self.set_block_voltage(block_id, voltage)
 
     def _calculate_voltage_for_train(
         self, train: "Train", speed_profile: Optional["SpeedProfile"] = None
@@ -232,17 +193,18 @@ class BlockPowerController:
     def _get_train_occupied_blocks(self, train: "Train") -> list:
         """Get list of block IDs occupied by train.
 
-        Per design_new.md ~line 1292, `Train.reserved_blocks` is forbidden;
-        physical occupancy is read from `train.position.occupied_blocks`
-        (the canonical span projection) and authority-future blocks live on
-        the dispatcher's active path.
+        Per design_new.md, physical occupancy is read from the controller-owned
+        canonical span (`TrainController.physics_sync.current_span.occupied_blocks`,
+        exposed via `get_current_span()`); authority-future blocks live on the
+        dispatcher's active path.
         """
-        if hasattr(train, "get_occupied_blocks"):
-            return train.get_occupied_blocks(self.network)
-        if self.network and train.position:
-            track = self.network.tracks.get(train.position.head_tile)
-            if track and track.block_section_id:
-                return [track.block_section_id]
+        if self._sim_controller is not None:
+            getter = getattr(self._sim_controller, "get_controller", None)
+            ctrl = getter(train.train_id) if callable(getter) else None
+            if ctrl is not None:
+                span = ctrl.get_current_span()
+                if span is not None:
+                    return list(span.occupied_blocks)
         return []
 
     def set_block_voltage(self, block_id: str, voltage: float) -> bool:

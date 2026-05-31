@@ -141,6 +141,27 @@ FORBIDDEN_TRACK_BITS = frozenset(
 )
 
 
+def is_square_corner_switch(bits: int) -> bool:
+    """True if a switch configuration makes a 90° "square corner".
+
+    A square corner joins a *horizontal* segment (NW or SE — screen angle 0°)
+    and a *vertical* segment (NE or SW — screen angle 90°) with NO 45° diagonal
+    (NS or EW) to ease the turn. On the rotated isometric screen this renders
+    as a right-angle T-bone: a connecting segment meets a switch branch at 90°
+    (e.g. a platform stub stuck straight onto a perpendicular ladder), which is
+    unintuitive. A turnout that carries a diagonal NS/EW bit eases the branch
+    (the swap rides a 45° rail, like the scissors crossovers) and is allowed.
+
+    Screen angles per renderer IsometricGeometry.getSegmentAngle:
+        NW, SE -> 0° (horizontal)   NE, SW -> 90° (vertical)   NS, EW -> 45°.
+    Mirror of the client check in static/js/constants.js (isSquareCornerSwitch).
+    """
+    has_horizontal = bool(bits & (TRACK_NW | TRACK_SE))
+    has_vertical = bool(bits & (TRACK_NE | TRACK_SW))
+    has_diagonal = bool(bits & (TRACK_NS | TRACK_EW))
+    return has_horizontal and has_vertical and not has_diagonal
+
+
 def _normalize_edge(edge: str) -> Optional[str]:
     """Normalize edge tokens to single-letter form (N/E/S/W)."""
     if not edge:
@@ -219,14 +240,10 @@ class TrackSegment:
 
     # === PATH LOCKING (Dispatcher System) ===
     # Per design_new.md "Track-segment role and traversal", switch lock
-    # ownership lives on `Switch.locks` (keyed by `(path_id, source_switch_id)`).
-    # `TrackSegment` does not store live lock state. `_locked_by_path_local`
-    # and `_locked_state_local` are fallbacks used only when this segment is
-    # not attached to a `RailwayNetwork` (e.g. unit tests with bare
-    # TrackSegments). When attached, the `locked_by_path` / `locked_state`
-    # properties resolve through `network.switches[switch_id].locks`.
-    _locked_by_path_local: Optional[str] = None
-    _locked_state_local: Optional[int] = None
+    # ownership lives entirely on `Switch.locks` (keyed by
+    # `(path_id, source_switch_id)`). `TrackSegment` stores no lock state and
+    # exposes no lock surface; callers resolve the owning `Switch` via
+    # `switch_id` and read `Switch.locks` / `Switch.is_locked()` directly.
     # Note: pre-v1 also stored `path_direction` on TrackSegment. Per
     # design_new.md line 566/941 it is a removed field; traversal direction
     # is owned by `Block.reserved_direction` (dispatcher reservation) and
@@ -441,8 +458,8 @@ class TrackSegment:
         when the segment is not attached to a `RailwayNetwork`.
 
         Switches do not carry a "reserved for train" concept; future
-        authority on a switch is `Switch.locks` (multi-owner). The
-        `locked_by_path` / `locked_state` properties cover that.
+        authority on a switch is `Switch.locks` (multi-owner), read
+        directly from the owning `Switch` entity.
         """
         if self.network is None:
             return self._reserved_by_local
@@ -462,70 +479,6 @@ class TrackSegment:
         `BlockManager`.
         """
         self._reserved_by_local = value
-
-    @property
-    def locked_by_path(self) -> Optional[str]:
-        """Path that holds a future-authority lock on the owning switch.
-
-        Per design_new.md, switch lock ownership lives on `Switch.locks`
-        keyed by `(path_id, source_switch_id)`; `TrackSegment` does not
-        store live lock state. When this segment is attached to a
-        `RailwayNetwork` and has an owning `Switch`, this property returns
-        the first lock entry's `path_id` (representative when multiple
-        compatible locks share the switch). Detached segments fall back
-        to `_locked_by_path_local`.
-        """
-        if (
-            self.network is not None
-            and self.switch_id is not None
-            and hasattr(self.network, "switches")
-        ):
-            switch = self.network.switches.get(self.switch_id)
-            if switch is not None and switch.locks:
-                first_key = next(iter(switch.locks.keys()))
-                return first_key[0]
-            return None
-        return self._locked_by_path_local
-
-    @locked_by_path.setter
-    def locked_by_path(self, value: Optional[str]) -> None:
-        """Setter shim for legacy callers and deserialization.
-
-        Writes only the detached-mode fallback. When attached to a network
-        the canonical store is `Switch.locks`; mutations must route through
-        `Switch.acquire_lock` / `Switch.release_lock`.
-        """
-        self._locked_by_path_local = value
-
-    @property
-    def locked_state(self) -> Optional[int]:
-        """Locked state (0=MAIN, 1=DIVERGE) for the path returned by
-        `locked_by_path`.
-
-        Resolved from the same first-lock entry of `Switch.locks` when
-        attached; falls back to `_locked_state_local` when detached.
-        """
-        if (
-            self.network is not None
-            and self.switch_id is not None
-            and hasattr(self.network, "switches")
-        ):
-            switch = self.network.switches.get(self.switch_id)
-            if switch is not None and switch.locks:
-                first_key = next(iter(switch.locks.keys()))
-                _train_id, lock_state = switch.locks[first_key]
-                return int(lock_state)
-            return None
-        return self._locked_state_local
-
-    @locked_state.setter
-    def locked_state(self, value: Optional[int]) -> None:
-        """Setter shim for legacy callers and deserialization.
-
-        Writes only the detached-mode fallback. When attached to a network
-        the canonical store is `Switch.locks`.
-        """
-        self._locked_state_local = value
 
     @property
     def switch_states(self) -> Dict[str, int]:
@@ -602,14 +555,21 @@ class TrackSegment:
     @property
     def is_valid(self) -> bool:
         """Return True if geometry is allowed."""
-        return self.track_bits not in FORBIDDEN_TRACK_BITS
+        return (
+            self.track_bits not in FORBIDDEN_TRACK_BITS
+            and not is_square_corner_switch(self.track_bits)
+        )
 
     # ========== Geometry mutations ==========
     def _can_set_bits(self, new_bits: int) -> bool:
-        # Only forbid explicitly listed invalid geometries.
-        # Dead-ends are derived and will be recomputed after updates,
-        # so they should not block geometry changes.
-        return new_bits not in FORBIDDEN_TRACK_BITS
+        # Forbid explicitly listed invalid geometries, plus "square corner"
+        # switches (a switch branch 90° to a connecting segment with no 45°
+        # diagonal to ease it — see is_square_corner_switch). Dead-ends are
+        # derived and recomputed after updates, so they do not block changes.
+        return (
+            new_bits not in FORBIDDEN_TRACK_BITS
+            and not is_square_corner_switch(new_bits)
+        )
 
     def set_track_bits(self, bits: int) -> bool:
         """Set geometry directly; returns False if forbidden or conflicting."""
@@ -1139,8 +1099,9 @@ class TrackSegment:
     def to_dict(self) -> dict:
         """Convert tile to dictionary for the live frontend payload.
 
-        Includes runtime state (`locked_by_path`, `locked_state`, the
-        dispatcher-driven `switch_state`, `is_locked`) for UI rendering.
+        Includes runtime state (the dispatcher-driven `switch_state`) for UI
+        rendering. Switch lock state is not serialized on the tile; UI readers
+        resolve the owning `Switch` (via `switch_id`) and read `Switch.locks`.
         Persistence does NOT use this path; see `to_layout_dict()` instead.
         """
         return {
@@ -1154,9 +1115,6 @@ class TrackSegment:
             "block_section_id": self.block_section_id,
             "switch_id": self.switch_id,  # NEW: Reference to Switch entity
             "length": self.length,
-            # Path locking
-            "locked_by_path": self.locked_by_path,
-            "locked_state": self.locked_state,
             # Computed
             "type": self.track_type.value,
             "edges": sorted(self.edges),
@@ -1169,16 +1127,15 @@ class TrackSegment:
             "num_paths": self.num_paths,
             "is_valid": self.is_valid,
             "switch_states": self.switch_states if self.is_switch else None,
-            "is_locked": self.is_locked_by_path(),
         }
 
     def to_layout_dict(self) -> dict:
         """Layout-only serialization used by persistence.
 
-        Per design_new.md Out of Scope, runtime fields (`locked_by_path`,
-        `locked_state`, and the live `switch_state` mirror) are excluded.
-        Computed/derived reads used by the frontend are also dropped — they
-        are recomputed from `track_bits` on load.
+        Per design_new.md Out of Scope, the live `switch_state` mirror is
+        excluded (switch locks are never tile-stored). Computed/derived reads
+        used by the frontend are also dropped — they are recomputed from
+        `track_bits` on load.
         """
         return {
             "x": self.x,
@@ -1196,9 +1153,8 @@ class TrackSegment:
     def from_dict(cls, data: dict) -> "TrackSegment":
         """Reconstruct tile from a layout snapshot.
 
-        Runtime fields (`locked_by_path`, `locked_state`, the dispatcher
-        `switch_state` mirror) are not loaded from disk; they default to
-        unlocked / state 0 and the engine repopulates them.
+        Runtime fields (the dispatcher `switch_state` mirror) are not loaded
+        from disk; they default to state 0 and the engine repopulates them.
         """
         segment = cls(
             x=data["x"],
@@ -1264,78 +1220,6 @@ class TrackSegment:
         if self.reserved_by and self.reserved_by != train_id:
             return False
         return True
-
-    # ========================================================================
-    # Path Locking Methods (Dispatcher System)
-    # ========================================================================
-
-    def is_locked_by_path(self) -> bool:
-        """Check if this switch is locked by any future-authority lock or
-        train-owned physical protection.
-
-        Fix #9 (design_new.md line 617): the old impl checked only `locks`
-        (via `locked_by_path`). Using `switch.is_locked()` covers both
-        `switch.locks` and `switch.train_protection_claims` as the design
-        requires.
-        """
-        if (
-            self.network is not None
-            and self.switch_id is not None
-            and hasattr(self.network, "switches")
-        ):
-            switch = self.network.switches.get(self.switch_id)
-            if switch is not None:
-                return switch.is_locked()
-        # Detached mode: fall back to checking the local locked_by_path shim.
-        return self.locked_by_path is not None
-
-    def is_locked_by(self, path_id: str) -> bool:
-        """Check if this switch is locked by a specific path."""
-        return self.locked_by_path == path_id
-
-    def get_lock_info(self) -> Optional[Dict[str, any]]:
-        """
-        Get information about the current lock.
-
-        Returns:
-            Dictionary with lock info, or None if not locked
-        """
-        if not self.locked_by_path:
-            return None
-        return {
-            "path_id": self.locked_by_path,
-            "locked_state": self.locked_state,
-            "position": (self.x, self.y),
-        }
-
-    def can_lock_for_path(self, path_id: str, state: int) -> bool:
-        """
-        Check if this switch can be locked for a path without actually locking.
-
-        Args:
-            path_id: Path ID that would lock
-            state: State that would be locked to
-
-        Returns:
-            True if locking would succeed
-        """
-        if not self.is_switch:
-            return False
-
-        # Not locked - can lock
-        if self.locked_by_path is None:
-            return True
-
-        # Already locked by same path in same state
-        if self.locked_by_path == path_id and self.locked_state == state:
-            return True
-
-        # Already locked by same path in different state - conflict
-        if self.locked_by_path == path_id and self.locked_state != state:
-            return False
-
-        # Locked by different path
-        return False
 
     def get_required_switch_state(
         self, entry_edge: str, exit_edge: str

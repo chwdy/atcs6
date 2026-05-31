@@ -3,11 +3,13 @@ Speed Profile Management
 
 Definition:
 This module defines the SpeedProfile class which maps a train's target speed (km/h)
-to the voltage that should be output to the blocks it occupies. Each train model
-has unique motor characteristics represented by a speed-voltage curve.
+to the track voltage output for the blocks it occupies, through a two-stage
+calibration: `track_voltage <-> power_percent` (voltage_power_curve) and
+`power_percent <-> speed_kmh` (power_speed_curve). Each train model has unique
+motor characteristics represented by these calibration curves.
 
 The module also provides:
-- Interpolation methods for speed → voltage conversion
+- Interpolation methods for the two-stage speed <-> voltage conversion
 - Default profile for trains without custom calibration
 """
 
@@ -20,20 +22,20 @@ class SpeedProfile:
     """
     Maps target speed to voltage output for DC analog control.
 
-    Each train has unique motor characteristics - the speed-voltage curve
-    captures this relationship through calibration points that are interpolated.
+    Each train has unique motor characteristics - the two-stage calibration
+    (voltage_power_curve and power_speed_curve) captures this relationship
+    through calibration points that are interpolated.
 
     Attributes:
         profile_id: Unique identifier for this profile
         name: Display name (e.g., "HO Generic", "N Scale Slow")
-        speed_voltage_curve: List of (speed_kmh, voltage) calibration points
-            (direct single-stage mapping, kept for backward compatibility).
         power_speed_curve: List of (power_percent, speed_kmh) calibration points
-            for manual `power_percent` mode. Default is linear 0-100% -> 0-100 km/h.
+            for the second stage (`power_percent <-> speed_kmh`), also used by
+            manual `power_percent` mode. Default is linear 0-100% -> 0-100 km/h.
         voltage_power_curve: List of (voltage, power_percent) calibration points
-            for the two-stage mapping (design stage 1: track_voltage <-> power_percent).
-            Voltage ascending, power_percent ascending. Default covers 0 V -> 0%,
-            4 V -> 50%, 12 V -> 100%.
+            for the first stage (`track_voltage <-> power_percent`). Voltage
+            ascending, power_percent ascending. Default is linear across the
+            usable range: startup_voltage (2 V) -> 0%, max_voltage (12 V) -> 100%.
         startup_voltage: Minimum voltage to overcome static friction
         lighting_voltage: Voltage for lights without movement (READY state)
         acceleration_rate: Speed increase rate (km/h per second)
@@ -44,12 +46,11 @@ class SpeedProfile:
 
     profile_id: str
     name: str
-    speed_voltage_curve: List[Tuple[float, float]] = field(default_factory=list)
     power_speed_curve: List[Tuple[float, float]] = field(
         default_factory=lambda: [(0.0, 0.0), (100.0, 100.0)]
     )
     voltage_power_curve: List[Tuple[float, float]] = field(
-        default_factory=lambda: [(0.0, 0.0), (4.0, 50.0), (12.0, 100.0)]
+        default_factory=lambda: [(2.0, 0.0), (12.0, 100.0)]
     )
 
     startup_voltage: float = 2.0  # Voltage to overcome static friction
@@ -70,10 +71,6 @@ class SpeedProfile:
 
     def __post_init__(self) -> None:
         """Ensure all calibration curves are sorted by their independent axis."""
-        if self.speed_voltage_curve:
-            self.speed_voltage_curve = sorted(
-                self.speed_voltage_curve, key=lambda x: x[0]
-            )
         if self.power_speed_curve:
             self.power_speed_curve = sorted(
                 self.power_speed_curve, key=lambda x: x[0]
@@ -95,51 +92,6 @@ class SpeedProfile:
         """
         self.air_resistance_enabled = False
         self.drag_coefficient = 0.0
-
-    def speed_to_voltage(self, speed_kmh: float) -> float:
-        """
-        Convert target speed to required voltage (interpolated).
-
-        Uses linear interpolation between calibration points.
-        Returns 0V for 0 speed, and clamps to curve bounds.
-
-        Args:
-            speed_kmh: Target speed in km/h
-
-        Returns:
-            Voltage (0-12V typically) required for that speed
-        """
-        if not self.speed_voltage_curve:
-            # No curve defined - linear approximation (12V = 120 km/h)
-            return min(12.0, max(0.0, speed_kmh / 10.0))
-
-        if speed_kmh <= 0:
-            return 0.0
-
-        # Find bracketing points for interpolation
-        curve = self.speed_voltage_curve
-
-        # Below minimum point
-        if speed_kmh <= curve[0][0]:
-            if curve[0][0] == 0:
-                return curve[0][1]
-            # Extrapolate from first two points
-            if len(curve) > 1:
-                return self._interpolate(0, 0, curve[0][0], curve[0][1], speed_kmh)
-            return curve[0][1]
-
-        # Above maximum point
-        if speed_kmh >= curve[-1][0]:
-            return curve[-1][1]
-
-        # Find bracketing points
-        for i in range(len(curve) - 1):
-            s1, v1 = curve[i]
-            s2, v2 = curve[i + 1]
-            if s1 <= speed_kmh <= s2:
-                return self._interpolate(s1, v1, s2, v2, speed_kmh)
-
-        return curve[-1][1]
 
     def power_percent_to_speed(self, percent: float) -> float:
         """Convert manual power percentage (0-100) to target speed (km/h).
@@ -225,12 +177,17 @@ class SpeedProfile:
         Stage 2: speed_kmh -> power_percent (power_speed_curve inverted).
         Stage 1: power_percent -> voltage (voltage_power_curve inverted).
 
+        A commanded speed of 0 (or below) means the train is not being driven
+        forward, so the output is 0 V regardless of `startup_voltage`.
+
         Args:
             speed_kmh: Target speed in km/h.
 
         Returns:
             Track voltage (V).
         """
+        if speed_kmh <= 0:
+            return 0.0
         # Invert power_speed_curve: speed -> power_percent
         power_percent = self._speed_to_power(speed_kmh)
         return self.power_to_voltage(power_percent)
@@ -285,7 +242,6 @@ class SpeedProfile:
         return {
             "profile_id": self.profile_id,
             "name": self.name,
-            "speed_voltage_curve": [[s, v] for s, v in self.speed_voltage_curve],
             "power_speed_curve": [[p, s] for p, s in self.power_speed_curve],
             "voltage_power_curve": [[v, p] for v, p in self.voltage_power_curve],
             "startup_voltage": self.startup_voltage,
@@ -303,10 +259,6 @@ class SpeedProfile:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SpeedProfile":
         """Reconstruct from dictionary after deserialization."""
-        curve = data.get("speed_voltage_curve", [])
-        # Convert from list of lists to list of tuples
-        curve_tuples = [(float(s), float(v)) for s, v in curve]
-
         power_curve = data.get("power_speed_curve")
         if power_curve is None:
             power_tuples = [(0.0, 0.0), (100.0, 100.0)]
@@ -316,7 +268,7 @@ class SpeedProfile:
         voltage_power_raw = data.get("voltage_power_curve")
         if voltage_power_raw is None:
             voltage_power_tuples: List[Tuple[float, float]] = [
-                (0.0, 0.0), (4.0, 50.0), (12.0, 100.0)
+                (2.0, 0.0), (12.0, 100.0)
             ]
         else:
             voltage_power_tuples = [(float(v), float(p)) for v, p in voltage_power_raw]
@@ -324,7 +276,6 @@ class SpeedProfile:
         return cls(
             profile_id=data.get("profile_id", ""),
             name=data.get("name", ""),
-            speed_voltage_curve=curve_tuples,
             power_speed_curve=power_tuples,
             voltage_power_curve=voltage_power_tuples,
             startup_voltage=float(data.get("startup_voltage", 2.0)),
@@ -344,14 +295,6 @@ class SpeedProfile:
 DEFAULT_SPEED_PROFILE = SpeedProfile(
     profile_id="default",
     name="Default HO Scale",
-    speed_voltage_curve=[
-        (0.0, 0.0),
-        (10.0, 3.0),
-        (30.0, 5.0),
-        (60.0, 8.0),
-        (100.0, 11.0),
-        (120.0, 12.0),
-    ],
     startup_voltage=2.0,
     lighting_voltage=2.5,
     acceleration_rate=10.0,

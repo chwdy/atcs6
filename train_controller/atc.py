@@ -443,10 +443,8 @@ class ATCComputer:
         if not c.network:
             return False
 
-        train = c._get_train()
-        travel_edge = None
-        if train and train.facing_direction:
-            travel_edge = c._direction_to_edge(train.facing_direction)
+        facing = c._facing_direction()
+        travel_edge = c._direction_to_edge(facing) if facing else None
 
         return is_approaching_yellow_signal_pure(
             blocks_ahead_ids=c._get_blocks_ahead(),
@@ -465,10 +463,8 @@ class ATCComputer:
         if not c.network:
             return False
 
-        train = c._get_train()
-        travel_edge = None
-        if train and train.facing_direction:
-            travel_edge = c._direction_to_edge(train.facing_direction)
+        facing = c._facing_direction()
+        travel_edge = c._direction_to_edge(facing) if facing else None
 
         return is_signal_red_for_block_pure(
             block_id=block_id,

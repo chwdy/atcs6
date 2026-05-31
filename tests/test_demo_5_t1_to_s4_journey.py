@@ -266,10 +266,10 @@ def _record_tick(snap: Snapshot, diary: List[TickRecord]) -> None:
     other: List[Tuple[str, Optional[Tuple[int, int]], str, float]] = []
     for other_id in ("T2", "T3", "T4"):
         controller = sim.get_or_create_controller(other_id)
-        span = controller.physics_sync.current_span
+        head_loc = controller._head_span_locator()
         head_tile = None
-        if span is not None and span.head is not None:
-            head_tile = tuple(span.head.tile)
+        if head_loc is not None and head_loc.tile is not None:
+            head_tile = tuple(head_loc.tile)
         other.append(
             (
                 other_id,

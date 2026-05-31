@@ -2022,7 +2022,8 @@ List all registered speed profiles.
     {
       "profile_id": "default",
       "name": "Default Profile",
-      "speed_voltage_curve": [[0, 0], [50, 6], [100, 12]],
+      "power_speed_curve": [[0, 0], [100, 100]],
+      "voltage_power_curve": [[2, 0], [12, 100]],
       "min_start_voltage": 2.0,
       "lighting_voltage": 2.5,
       "acceleration_rate": 10.0,
@@ -2044,7 +2045,8 @@ Create a new speed profile.
 {
   "profile_id": "SHINKANSEN_N700",
   "name": "Shinkansen N700",
-  "speed_voltage_curve": [[0, 0], [100, 8], [270, 12]],
+  "power_speed_curve": [[0, 0], [100, 270]],
+  "voltage_power_curve": [[3, 0], [12, 100]],
   "min_start_voltage": 3.0,
   "lighting_voltage": 3.5,
   "acceleration_rate": 8.0,
@@ -2057,7 +2059,8 @@ Create a new speed profile.
 |-------|------|----------|---------|-------------|
 | profile_id | string | Yes | - | Unique identifier |
 | name | string | Yes | - | Human-readable name |
-| speed_voltage_curve | array | No | [[0,0],[100,12]] | Speed-voltage mapping points |
+| power_speed_curve | array | No | [[0,0],[100,100]] | (power_percent, speed_kmh) second-stage mapping |
+| voltage_power_curve | array | No | [[2,0],[12,100]] | (track_voltage, power_percent) first-stage mapping |
 | min_start_voltage | float | No | 2.0 | Minimum voltage to start moving |
 | lighting_voltage | float | No | 2.5 | Voltage for lights when stopped |
 | acceleration_rate | float | No | 10.0 | Acceleration in km/h/s |

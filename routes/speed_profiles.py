@@ -21,7 +21,8 @@ def register(app, state: AppState) -> None:
                     {
                         "profile_id": str,
                         "name": str,
-                        "speed_voltage_curve": [[speed, voltage], ...],
+                        "power_speed_curve": [[power_percent, speed_kmh], ...],
+                        "voltage_power_curve": [[track_voltage, power_percent], ...],
                         "min_start_voltage": float,
                         "lighting_voltage": float,
                         "acceleration_rate": float,
@@ -51,7 +52,8 @@ def register(app, state: AppState) -> None:
         {
             "profile_id": str (required, unique),
             "name": str (required),
-            "speed_voltage_curve": [[speed, voltage], ...] (optional),
+            "power_speed_curve": [[power_percent, speed_kmh], ...] (optional),
+            "voltage_power_curve": [[track_voltage, power_percent], ...] (optional),
             "min_start_voltage": float (optional, default 2.0),
             "lighting_voltage": float (optional, default 2.5),
             "acceleration_rate": float (optional, default 10.0),

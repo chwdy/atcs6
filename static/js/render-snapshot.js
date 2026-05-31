@@ -43,6 +43,7 @@ function buildRenderSnapshot(network, stateManager) {
         snap.trains[train.id] = {
             id: train.id,
             cab: controller.cab ?? null,
+            facing: controller.facing_direction ?? null,
             span: {
                 occupiedTiles: span.occupied_tiles,
                 leadingEnd: span.leading_end,

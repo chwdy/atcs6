@@ -240,11 +240,11 @@ class SwitchManager:
                 block_manager = self._resolve_block_manager()
                 if block_manager is not None:
                     block_manager.on_switch_position_changed(req.switch_id)
-            # Per design_new.md, `Switch.locks` is the canonical store. The
-            # UI fields `track.locked_by_path` / `track.locked_state` /
-            # `track.switch_state` are derived properties on `TrackSegment`
-            # that resolve through `network.switches[switch_id]`; no manual
-            # Track-side mirror is needed.
+            # Per design_new.md, `Switch.locks` is the canonical lock store.
+            # `TrackSegment` no longer exposes any lock surface; UI and API
+            # readers resolve the owning `Switch` (via
+            # `network.switches[switch_id]`) and read `Switch.locks` directly,
+            # so there is no Track-side mirror to maintain here.
             recorded.append(req)
         return LockAcquireResult(
             success=True,

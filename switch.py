@@ -113,7 +113,8 @@ class Switch(TrackResource):
     - `locks` is a multi-owner future-authority lock collection keyed by
       `(path_id, source_switch_id)` mapped to `(train_id, locked_state)`.
       Compatible same-position lock claims may co-exist. The claim role
-      ("primary" vs "flank") is derived from `source_switch_id is None`,
+      (`claim_role` = "main" when `source_switch_id is None`, else "flank";
+      see design_new.md:651) is derived from `source_switch_id is None`,
       not stored as a separate key field.
     - `train_protection_claims` is the train-owned physical protection set used
       after the train head has entered a switch and consumed the path lock.
@@ -678,8 +679,10 @@ class Switch(TrackResource):
                     "source_switch_id": source_switch_id,
                     "train_id": train_id,
                     "locked_state": locked_state,
-                    # Derived role for diagnostic readers.
-                    "claim_role": "primary" if source_switch_id is None else "flank",
+                    # Derived role for diagnostic readers; per design_new.md:651
+                    # `claim_role` is "main" for a primary claim (source_switch_id
+                    # is None), else "flank".
+                    "claim_role": "main" if source_switch_id is None else "flank",
                 }
                 for (
                     (path_id, source_switch_id),

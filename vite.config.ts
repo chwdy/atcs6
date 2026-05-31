@@ -32,9 +32,10 @@ export default defineConfig({
   },
   server: {
     // `npm run dev` runs Vite's HMR server for module work in later phases and
-    // proxies API calls through to the running Flask app. Match the port to how
-    // you launch server.py (CLAUDE.md uses --port 5007 in its examples).
-    proxy: { '/api': 'http://127.0.0.1:5000' },
+    // proxies API calls through to the running Flask app. Set ATCS6_API_PORT to
+    // match how you launch server.py (CLAUDE.md uses --port 5007 in its
+    // examples); it defaults to 5000.
+    proxy: { '/api': `http://127.0.0.1:${process.env.ATCS6_API_PORT ?? '5000'}` },
   },
   test: {
     // Vitest picks up co-located unit tests next to the modules they cover.

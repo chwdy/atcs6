@@ -414,83 +414,33 @@ class OperatorCommands:
         c.ato.running = False
 
         prev_state = c.ops.state
-        if cab is None:
-            if prev_state != TrainState.RUNNING_AT_STATION:
-                c.ops.state = TrainState.READY
-            train.update_position_for_cab(None)
-        else:
-            if prev_state != TrainState.RUNNING_AT_STATION:
-                c.ops.state = TrainState.READY
-            train.update_position_for_cab(cab)
+        if prev_state != TrainState.RUNNING_AT_STATION:
+            c.ops.state = TrainState.READY
 
-            # When switching cabs (A <-> B), the physical train doesn't move.
-            # The driver walks to the other end. What changes:
-            # 1. leading_end flips (done by update_position_for_cab)
-            # 2. facing_direction reverses (computed from leading_end for multi-tile trains)
-            # 3. entry_edge for BOTH ends flips (since train will travel opposite direction)
-            # 4. distance_cm for BOTH ends flips (10cm from W = tile_length - 10cm from E)
-            if old_cab in ("A", "B") and old_cab != cab:
-                # Sync facing_direction from the computed property.
-                # For multi-tile trains, the computed property derives direction from
-                # leading_end + tile positions, so changing leading_end automatically
-                # gives the correct (reversed) direction.
-                # For single-tile trains (end_a_tile == end_b_tile), the computed
-                # property falls back to the stored `facing_direction`, so we
-                # must explicitly flip it here.
-                if train.position:
-                    is_multi_tile = (
-                        train.position.end_a_tile is not None
-                        and train.position.end_b_tile is not None
-                        and train.position.end_a_tile != train.position.end_b_tile
-                    )
-                    # For multi-tile trains, facing_direction is automatically recalculated
-                    # from the already-updated leading_end. No manual sync needed.
-                    # For single-tile trains, the direction is calculated from entry_edge
-                    # and distance_cm, which are being flipped below.
-                    # Therefore, no direction sync is needed at all - it's automatic.
-
-                # Flip entry edges and distances for BOTH ends
-                if train.position and c.network:
-                    # Flip end_a entry edge
-                    if train.position.end_a_tile and train.position.end_a_entry_edge:
-                        track_a = c.network.get_track(*train.position.end_a_tile)
-                        if track_a:
-                            exits_a = track_a.get_exits(
-                                train.position.end_a_entry_edge, use_switch_state=True
+        # When switching cabs (A <-> B) the physical train doesn't move (the
+        # driver walks to the other end), but the travel direction reverses.
+        # The cab itself is the head selector (cab "A" -> end_a, "B" -> end_b),
+        # so head/tail swap automatically on the next read. We still re-express
+        # each physical end's in-tile frame on the controller-owned span: flip
+        # `entry_edge` and set `distance_cm = tile_length - distance_cm` so the
+        # ends describe the same physical points in the now-reversed travel
+        # frame (design_new.md TrainSpan schema; head/tail derive from cab).
+        if cab is not None and old_cab in ("A", "B") and old_cab != cab:
+            span = getattr(c.physics_sync, "current_span", None)
+            if span is not None and c.network:
+                for end in (span.end_a, span.end_b):
+                    if end.tile and end.entry_edge:
+                        track = c.network.get_track(*end.tile)
+                        if track:
+                            exits = track.get_exits(
+                                end.entry_edge, use_switch_state=True
                             )
-                            if exits_a:
-                                train.position.end_a_entry_edge = exits_a[0]
-                            # Flip distance: new_distance = tile_length - old_distance
+                            if exits:
+                                end.entry_edge = exits[0]
                             tile_length = c.network._get_tile_length_cm(
-                                train.position.end_a_tile[0],
-                                train.position.end_a_tile[1],
+                                end.tile[0], end.tile[1]
                             )
-                            train.position.end_a_distance_cm = (
-                                tile_length - train.position.end_a_distance_cm
-                            )
-
-                    # Flip end_b entry edge
-                    if train.position.end_b_tile and train.position.end_b_entry_edge:
-                        track_b = c.network.get_track(*train.position.end_b_tile)
-                        if track_b:
-                            exits_b = track_b.get_exits(
-                                train.position.end_b_entry_edge, use_switch_state=True
-                            )
-                            if exits_b:
-                                train.position.end_b_entry_edge = exits_b[0]
-                            # Flip distance
-                            tile_length = c.network._get_tile_length_cm(
-                                train.position.end_b_tile[0],
-                                train.position.end_b_tile[1],
-                            )
-                            train.position.end_b_distance_cm = (
-                                tile_length - train.position.end_b_distance_cm
-                            )
-
-                    # Per design_new.md ~line 1292 the head index is derived
-                    # from `train.position` against the dispatcher's path
-                    # tiles each read; nothing on Train is mirrored here.
-            # No need to sync direction - it's calculated automatically from position
+                            end.distance_cm = tile_length - end.distance_cm
 
         return CommandResult(True, f"Cab set to {cab}")
 

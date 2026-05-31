@@ -22,7 +22,7 @@ from train_route import (
 from route_executor import RouteExecutor, RouteExecutionState
 from runtime_payloads import ResolvedRouteTarget, ResourceEvent
 from train import Train
-from tests.train_test_helpers import make_train_position
+from tests.train_test_helpers import set_train_span
 from network import RailwayNetwork
 from railway_platform import Platform
 from enums import Direction, TrainState
@@ -202,7 +202,12 @@ class TestRouteExecutor:
         """Test checking if train is at platform."""
         executor = RouteExecutor(simple_network)
         train = Train(train_id="T001")
-        train.position = make_train_position((0, 0), Direction.EAST)
+        simple_network.trains[train.train_id] = train
+        # The predicate reads the head tile from the train's controller
+        # (cab + current_span), so register a controller and seed its span.
+        controller = executor._get_controller(train)
+        controller.commands.cab = "A"
+        set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
 
         # Train is at STA_A
         assert executor._is_train_at_platform(train, "STA_A") is True
@@ -211,7 +216,7 @@ class TestRouteExecutor:
         assert executor._is_train_at_platform(train, "STA_B") is False
 
         # Move train to STA_B
-        train.position = make_train_position((1, 0), Direction.EAST)
+        set_train_span(controller, (1, 0), facing_direction=Direction.EAST)
         assert executor._is_train_at_platform(train, "STA_B") is True
 
     def test_execution_state_dataclass(self):
@@ -337,11 +342,14 @@ class TestRouteCallbacksWrapAround:
         route.assign_train("T_WRAP")
 
         train = Train(train_id="T_WRAP")
-        train.position = make_train_position((0, 0), Direction.EAST)
         network.trains[train.train_id] = train
 
         executor = RouteExecutor(network)
         executor.register_route(route)
+
+        controller = executor._get_controller(train)
+        controller.commands.cab = "A"
+        set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
 
         exec_state = RouteExecutionState(
             train_id=train.train_id,
@@ -442,11 +450,14 @@ class TestRouteCallbacksWrapAround:
         route.assign_train("T_WP")
 
         train = Train(train_id="T_WP")
-        train.position = make_train_position((0, 0), Direction.EAST)
         network.trains[train.train_id] = train
 
         executor = RouteExecutor(network)
         executor.register_route(route)
+
+        controller = executor._get_controller(train)
+        controller.commands.cab = "A"
+        set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
 
         exec_state = RouteExecutionState(
             train_id=train.train_id,

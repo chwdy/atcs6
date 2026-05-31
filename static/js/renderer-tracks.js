@@ -70,7 +70,7 @@ class RendererTrackHandler {
                 this.ctx.beginPath();
                 this.ctx.arc(0, 0, 6 * this.scale, 0, Math.PI * 2);
                 this.ctx.stroke();
-            } else if (track.locked_by_path) {
+            } else if (switchEntity && Array.isArray(switchEntity.locks) && switchEntity.locks.length > 0) {
                 this.ctx.strokeStyle = '#ff8c00'; // Orange — path-owned future lock
                 this.ctx.lineWidth = 2 * this.scale;
                 this.ctx.beginPath();

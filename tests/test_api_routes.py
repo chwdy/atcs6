@@ -29,6 +29,7 @@ from station import Station
 from train import Train, TrainCar
 from switch import Switch
 from enums import Direction, BlockState, TrainState
+from tests.train_test_helpers import set_train_span
 
 
 @pytest.fixture
@@ -658,6 +659,16 @@ class TestPathRoutes:
         app_state.network.add_train(train)
         app_state.network.place_train(train, 0, 0, Direction.EAST)
 
+        # The dispatcher resolves the train's head block via its controller
+        # span (head/tail live on the controller in v1, not on Train). Seed the
+        # span at the placement tile so create_path can resolve BLK_001 as the
+        # current block instead of failing with "Cannot resolve current block".
+        controller = app_state.sim_controller.get_or_create_controller("TRAIN_001")
+        set_train_span(
+            controller, (0, 0), facing_direction=Direction.EAST,
+            occupied_blocks=["BLK_001"],
+        )
+
         first_response = client.post(
             "/api/paths",
             json={
@@ -666,17 +677,14 @@ class TestPathRoutes:
                 "train_id": "TRAIN_001",
             },
         )
-        # v1 dispatcher may not synthesize traversal directions for a 2-block
-        # path (last block missing from `_compute_block_traversals`), so
-        # creation can fail upstream with reason="missing_direction". The
-        # conflict-on-second-create contract is what's being verified; tolerate
-        # 200 (success) or 400 (dispatcher unable to acquire) on the first POST.
-        if first_response.status_code != 200:
-            pytest.skip(
-                "v1: dispatcher cannot acquire a 2-block path because "
-                "_compute_block_traversals omits the destination block; "
-                "see tests/test_dispatcher.py for traversal-conformant cases"
-            )
+        # With the controller span seeded above, the dispatcher resolves the
+        # head block and the 2-block A->B path is acquired (status 200). The
+        # conflict-on-second-create contract is what's being verified; a non-200
+        # here would mean create_path regressed, so fail loudly rather than skip.
+        assert first_response.status_code == 200, (
+            f"create_path should succeed once the controller span is seeded; "
+            f"got {first_response.status_code}: {first_response.get_json()}"
+        )
         first_data = first_response.get_json()
         assert first_data["success"] is True
         first_path_id = first_data.get("path_id") or first_data.get("path", {}).get(
@@ -974,8 +982,8 @@ class TestRouteRedesignApis:
 
         Goes through `sim_controller.add_train(...)`, which is the canonical
         entry point that writes the initial `TrainController.physics_sync
-        .current_span` from the placed `TrainPosition` (simulation.py:607).
-        Phase 1 cannot allocate a path without that span.
+        .current_span` from the span returned by `network.place_train(...)`
+        (simulation.py:607). Phase 1 cannot allocate a path without that span.
         """
         for x in range(4):
             app_state.network.add_track(TrackSegment(x=x, y=0, track_bits=2))

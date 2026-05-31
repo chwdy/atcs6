@@ -51,17 +51,13 @@ class SwitchEditorHandler {
         const stateText = currentState === 0 ? 'MAIN' : 'DIVERGE';
         const accentClass = currentState === 0 ? 'accent-success' : 'accent-warn';
         const chipClass   = currentState === 0 ? 'chip-success'   : 'chip-warn';
-        // The Switch entity exposes a `locks` array; the Track mirrors a
-        // single canonical owner via `locked_by_path`. Prefer the Track
-        // mirror for display because it picks the same path the path
-        // dispatcher considers "primary"; fall back to the first entry of
-        // the Switch's lock array when the Track mirror is empty (e.g. a
-        // switch locked outside the path-dispatcher flow).
+        // Switch lock ownership lives on the Switch entity's `locks` array
+        // (design_new.md:651); read the lock owner directly from it. The
+        // first entry's `path_id` is the representative "locked by" path for
+        // the banner.
         const lockEntries = Array.isArray(switchData.locks) ? switchData.locks : [];
-        const trackLockedBy = track?.locked_by_path || null;
         const lockedByPath =
-            trackLockedBy ||
-            (lockEntries.length > 0 ? (lockEntries[0].path_id || null) : null);
+            lockEntries.length > 0 ? (lockEntries[0].path_id || null) : null;
         const isLocked = lockedByPath !== null;
         const switchType = switchData.switch_type || 'standard';
 

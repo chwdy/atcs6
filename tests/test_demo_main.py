@@ -76,7 +76,7 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
     for tick in range(1200):
         sim_controller.update(0.3)
 
-        head_tile = train.position.head_tile if train.position else None
+        head_tile = controller._get_head_tile()
         head_track = network.get_track(*head_tile) if head_tile else None
         block_id = head_track.block_section_id if head_track else None
 
@@ -122,7 +122,7 @@ def test_bootstrap_demo_train_respects_east_terminal_speed_limit_at_3x():
         ):
             break
 
-    final_head_tile = train.position.head_tile if train.position else None
+    final_head_tile = controller._get_head_tile()
     final_track = network.get_track(*final_head_tile) if final_head_tile else None
     final_block_id = final_track.block_section_id if final_track else None
 

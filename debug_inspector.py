@@ -35,7 +35,7 @@ def resolve_path(root: Any, path: str) -> Any:
 
     Args:
         root: Starting object (typically AppState)
-        path: Dotted path like 'network.trains.T1.position'
+        path: Dotted path like 'network.trains.T1.max_speed'
 
     Returns:
         The resolved Python object

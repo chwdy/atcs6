@@ -19,7 +19,7 @@ from network import RailwayNetwork
 from block import Block
 from railway_signal import Signal, SignalType, SignalState
 from enums import BlockState
-from tests.train_test_helpers import make_train_position
+from tests.train_test_helpers import set_train_span
 
 
 @pytest.fixture
@@ -254,7 +254,7 @@ class TestControllerSignalDirectionFiltering:
         from train import Train
         from train_controller import TrainController
         from enums import Direction
-        from tests.train_test_helpers import make_train_position
+        from tests.train_test_helpers import set_train_span
 
         network = RailwayNetwork()
         # 6-tile east-west track: (0,0) to (5,0)
@@ -278,14 +278,17 @@ class TestControllerSignalDirectionFiltering:
 
         # Place a train at (3, 0)
         train = Train(train_id="TEST_TRAIN")
-        train.position = make_train_position(
-            head_tile=(3, 0),
-            facing_direction=Direction.EAST,
-            head_distance_cm=20.0,
-        )
         network.add_train(train)
 
         controller = TrainController(train_id="TEST_TRAIN", network=network)
+        # Live physical span lives on the controller now; the ATC signal
+        # filters read facing direction from it (head defaults to end_a).
+        set_train_span(
+            controller,
+            (3, 0),
+            facing_direction=Direction.EAST,
+            head_distance_cm=20.0,
+        )
 
         return network, train, controller, sig_east, sig_west
 
@@ -312,9 +315,10 @@ class TestControllerSignalDirectionFiltering:
         )
 
         # Train facing WEST, but only eastbound signal is RED
-        # Update position to face WEST instead of EAST
-        train.position = make_train_position(
-            head_tile=(3, 0),
+        # Update span to face WEST instead of EAST
+        set_train_span(
+            controller,
+            (3, 0),
             facing_direction=Direction.WEST,
             head_distance_cm=20.0,
         )
@@ -340,9 +344,10 @@ class TestControllerSignalDirectionFiltering:
         assert controller.atc.is_signal_red_for_block("BLOCK_MID") is True
 
         # Westbound train blocked by westbound red signal on BLOCK_WEST
-        # Update position to face WEST
-        train.position = make_train_position(
-            head_tile=(3, 0),
+        # Update span to face WEST
+        set_train_span(
+            controller,
+            (3, 0),
             facing_direction=Direction.WEST,
             head_distance_cm=20.0,
         )
@@ -359,9 +364,10 @@ class TestControllerSignalDirectionFiltering:
         )
 
         # Train facing WEST at (3,0) in BLOCK_MID
-        # Update position to face WEST
-        train.position = make_train_position(
-            head_tile=(3, 0),
+        # Update span to face WEST
+        set_train_span(
+            controller,
+            (3, 0),
             facing_direction=Direction.WEST,
             head_distance_cm=20.0,
         )
@@ -371,16 +377,9 @@ class TestControllerSignalDirectionFiltering:
         network.connect_signal_to_block(sig_east_on_west.signal_id, "BLOCK_WEST")
         sig_east_on_west.state = SignalState.YELLOW
 
-        # Set up westbound path
-        train.reserved_blocks = ["BLOCK_MID", "BLOCK_WEST"]
-        train.current_path = [
-            (3, 0, "E", "W"),
-            (2, 0, "E", "W"),
-            (1, 0, "E", "W"),
-            (0, 0, "E", "W"),
-        ]
-
-        # The eastbound yellow signal should NOT affect westbound train
+        # The eastbound yellow signal should NOT affect westbound train: the
+        # direction filter drops signals whose detection direction does not
+        # match the train's (westward) travel edge.
         assert controller.atc.is_approaching_yellow_signal() is False
 
     def test_no_facing_direction_falls_back_to_any_signal(self):
@@ -391,8 +390,9 @@ class TestControllerSignalDirectionFiltering:
             self._build_bidirectional_block_network()
         )
 
-        # Train with no facing direction
-        train.position = None  # Clear position to have no facing direction
+        # Train with no facing direction: clearing the span makes
+        # `_facing_direction()` return None (no head/tail geometry to derive).
+        controller.physics_sync.current_span = None
         sig_east.state = SignalState.RED
 
         # Should still detect RED since we can't determine direction

@@ -20,7 +20,7 @@ from network import RailwayNetwork
 from block import Block
 from railway_signal import Signal, SignalType, SignalState
 from enums import BlockState, PlatformSide, Direction, TrainState
-from tests.train_test_helpers import make_train_position
+from tests.train_test_helpers import set_train_span
 from block_validation import (
     validate_block_path,
     is_crossing,
@@ -294,14 +294,23 @@ class TestMultiBlockOccupancy:
         from train import Train, TrainCar
         from enums import Direction
 
+        from train_controller import create_controller_for_train
+
         train = Train(
             train_id="T1",
             consist=[TrainCar("CAR1", "LOCOMOTIVE", 5.0)],
         )
-        train.position = make_train_position(
-            (0, 0), Direction.EAST, occupied_blocks=["BLOCK_1"]
+        network.add_train(train)
+        controller = create_controller_for_train("T1", network)
+        set_train_span(
+            controller,
+            (0, 0),
+            facing_direction=Direction.EAST,
+            occupied_blocks=["BLOCK_1"],
         )
-        occupied = train.get_occupied_blocks(network)
+
+        # Occupied blocks now live on the controller's live span.
+        occupied = controller.get_current_span().occupied_blocks
         assert len(occupied) == 1
         assert occupied[0] == "BLOCK_1"
 
@@ -320,17 +329,24 @@ class TestMultiBlockOccupancy:
         from train import Train, TrainCar
         from enums import Direction
 
+        from train_controller import create_controller_for_train
+
         train = Train(
             train_id="T1",
             consist=[TrainCar("CAR1", "LOCOMOTIVE", 15.0)],
         )
-        train.position = make_train_position(
+        network.add_train(train)
+        controller = create_controller_for_train("T1", network)
+        set_train_span(
+            controller,
             (1, 0),
-            Direction.EAST,
+            facing_direction=Direction.EAST,
             occupied_tiles=[(0, 0), (1, 0)],
             occupied_blocks=["BLOCK_1", "BLOCK_2"],
         )
-        occupied = train.get_occupied_blocks(network)
+
+        # Occupied blocks now live on the controller's live span.
+        occupied = controller.get_current_span().occupied_blocks
         assert len(occupied) == 2
         assert "BLOCK_1" in occupied
         assert "BLOCK_2" in occupied

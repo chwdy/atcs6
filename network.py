@@ -20,7 +20,6 @@ from resource_coordinator import ResourceCoordinator
 from enums import (
     TrackType,
     Direction,
-    LeadingEnd,
     SwitchPosition,
     BlockState,
 )
@@ -1043,14 +1042,14 @@ class RailwayNetwork:
         tile_x: int,
         tile_y: int,
         direction: Optional[Direction] = None,
-    ) -> Tuple[int, int, float]:
+    ) -> "TrainSpan":
         """
         Place a train on a tile with proper positioning based on direction and length.
 
         Train placement rules:
         1. Train HEAD (end_a) is always placed at the EXIT edge of the specified tile
         2. Train tail (end_b) extends backward - MUST fit on available track
-        3. Creates TrainPosition with both ends tracked precisely
+        3. Builds the canonical TrainSpan with both physical ends tracked precisely
         4. Occupies all blocks the train covers
 
         Args:
@@ -1059,12 +1058,14 @@ class RailwayNetwork:
             direction: Direction the train will be heading (random if None)
 
         Returns:
-            Tuple of (final_tile_x, final_tile_y, head_distance_cm)
+            The canonical `TrainSpan` for the placed train (4-field schema).
+            Callers seed `TrainController.physics_sync.current_span` from it
+            (`add_train` / API re-placement).
 
         Raises:
             ValueError: If no track at position, or train doesn't fit on available track
         """
-        from train import TrainPosition
+        from train_span import SpanEndLocator, TrainSpan
         import random
 
         track = self.get_track(tile_x, tile_y)
@@ -1141,24 +1142,25 @@ class RailwayNetwork:
                     occupied_blocks.append(block_id)
                     seen_blocks.add(block_id)
 
-        # Create TrainPosition
-        # Note: _calculate_occupied_tiles returns tiles in tail-to-head order,
-        # but TrainPosition expects end_a to end_b order. Since end_a=head,
-        # we need to reverse the list to get head-to-tail (end_a to end_b) order.
+        # Build the canonical 4-field TrainSpan (design_new.md TrainSpan
+        # schema). `_calculate_occupied_tiles` returns tiles tail-to-head; the
+        # span orders `occupied_tiles` end_a -> end_b, and end_a is the
+        # placement (head) tile, so reverse to head-to-tail (end_a -> end_b).
         occupied_tiles_end_a_to_b = list(reversed(occupied_tiles))
-        train.position = TrainPosition(
-            end_a_tile=head_tile,
-            end_a_distance_cm=head_distance_cm,
-            end_a_entry_edge=head_entry_edge,
-            end_b_tile=tail_tile,
-            end_b_distance_cm=tail_distance_cm,
-            end_b_entry_edge=tail_entry_edge,
-            leading_end=LeadingEnd.A,  # end_a is head
+        span = TrainSpan(
+            end_a=SpanEndLocator(
+                tile=head_tile,
+                distance_cm=head_distance_cm,
+                entry_edge=head_entry_edge,
+            ),
+            end_b=SpanEndLocator(
+                tile=tail_tile,
+                distance_cm=tail_distance_cm,
+                entry_edge=tail_entry_edge,
+            ),
             occupied_tiles=occupied_tiles_end_a_to_b,
             occupied_blocks=occupied_blocks,
         )
-
-        # facing_direction is now calculated from position geometry
 
         # Occupy all blocks the train covers
         if self.block_manager and occupied_blocks:
@@ -1169,7 +1171,7 @@ class RailwayNetwork:
                 if block:
                     block.occupy(train.train_id)
 
-        return (tile_x, tile_y, head_distance_cm)
+        return span
 
     def _get_train_length_cm(self, train: Train) -> float:
         """Get train length in cm."""
@@ -1392,7 +1394,9 @@ class RailwayNetwork:
             f"Unable to calculate tail position after {max_iterations} iterations"
         )
 
-    def get_occupied_tiles_rich(self, train: Train) -> List[Dict[str, Any]]:
+    def get_occupied_tiles_rich(
+        self, span: "TrainSpan", head_is_a: bool
+    ) -> List[Dict[str, Any]]:
         """
         Get rich information about all tiles occupied by a train.
 
@@ -1400,7 +1404,10 @@ class RailwayNetwork:
         rendering train segments with correct proportions and block colors.
 
         Args:
-            train: Train to get occupied tiles for
+            span: The train's `TrainSpan` (occupied_tiles ordered end_a -> end_b).
+            head_is_a: True when the head end is end_a (cab "A"); False when it
+                is end_b (cab "B"). Derived on the controller from
+                (cab, current_span).
 
         Returns:
             List of dicts (ordered from end_a to end_b), each containing:
@@ -1410,22 +1417,21 @@ class RailwayNetwork:
             - segment_end_cm: Distance from entry edge where train ends on this tile
             - tile_length_cm: Total length of this tile
         """
-        if not train.position:
+        if span is None:
             return []
 
-        pos = train.position
-        occupied_tiles = pos.occupied_tiles
-
+        occupied_tiles = span.occupied_tiles
         if not occupied_tiles:
             return []
 
         result = []
         num_tiles = len(occupied_tiles)
 
-        # occupied_tiles is ordered from end_a to end_b
-        # When leading_end==LeadingEnd.A: end_a=head, end_b=tail, so order is head-to-tail
-        # When leading_end==LeadingEnd.B: end_a=tail, end_b=head, so order is tail-to-head
-        is_head_first = pos.leading_end == LeadingEnd.A
+        # occupied_tiles is ordered from end_a to end_b. The head end is end_a
+        # when head_is_a (cab "A"), else end_b.
+        is_head_first = head_is_a
+        head_distance = (span.end_a if head_is_a else span.end_b).distance_cm
+        tail_distance = (span.end_b if head_is_a else span.end_a).distance_cm
 
         for i, tile in enumerate(occupied_tiles):
             tile_track = self.get_track(*tile)
@@ -1438,35 +1444,31 @@ class RailwayNetwork:
             is_last = i == num_tiles - 1
 
             if is_first and is_last:
-                # Single tile - both ends on same tile
-                if is_head_first:
-                    # end_a (head) is at index 0, end_b (tail) also at index 0
-                    segment_start = pos.tail_distance_cm
-                    segment_end = pos.head_distance_cm
-                else:
-                    # end_a (tail) is at index 0, end_b (head) also at index 0
-                    segment_start = pos.tail_distance_cm
-                    segment_end = pos.head_distance_cm
+                # Single tile - both ends on the same tile. The head/tail
+                # in-tile offsets are symmetric here, so orientation does not
+                # change the segment span.
+                segment_start = tail_distance
+                segment_end = head_distance
             elif is_first:
                 # First tile in list (end_a's tile)
                 if is_head_first:
                     # end_a is head - this is head tile
                     segment_start = 0.0
-                    segment_end = pos.head_distance_cm
+                    segment_end = head_distance
                 else:
                     # end_a is tail - this is tail tile
-                    segment_start = pos.tail_distance_cm
+                    segment_start = tail_distance
                     segment_end = tile_length
             elif is_last:
                 # Last tile in list (end_b's tile)
                 if is_head_first:
                     # end_b is tail - this is tail tile
-                    segment_start = pos.tail_distance_cm
+                    segment_start = tail_distance
                     segment_end = tile_length
                 else:
                     # end_b is head - this is head tile
                     segment_start = 0.0
-                    segment_end = pos.head_distance_cm
+                    segment_end = head_distance
             else:
                 # Middle tile - train occupies entire tile
                 segment_start = 0.0
@@ -1489,20 +1491,16 @@ class RailwayNetwork:
         if not train:
             return False
 
-        if train.position:
-            track = self.get_track(*train.position.head_tile)
-            if track and track.block_section_id:
-                # Per design_new.md, physical occupancy lives on
-                # `Block.occupied_by`; the tile's `track.occupied_by` shim
-                # derives from the block (no separate tile-side store to
-                # clear). Clear the owning block's occupancy through the
-                # canonical writer.
-                block = self.blocks.get(track.block_section_id)
-                if block and block.occupied_by == train.train_id:
-                    if self.block_manager:
-                        self.block_manager.clear_block(track.block_section_id)
-                    else:
-                        block.release()
+        # Release every block this train physically occupies. Physical
+        # occupancy lives on `Block.occupied_by` (design_new.md); there is no
+        # `train.position` in v1, so the block-ownership state itself is the
+        # source of truth. Clear each owned block through the canonical writer.
+        for block_id, block in list(self.blocks.items()):
+            if getattr(block, "occupied_by", None) == train_id:
+                if self.block_manager:
+                    self.block_manager.clear_block(block_id)
+                else:
+                    block.release()
 
         self.trains.pop(train_id, None)
         self.update_signals_from_blocks()

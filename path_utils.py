@@ -255,10 +255,22 @@ class PathPrepareResult:
     path_index: int = 0
 
 
+def _resolve_head_tile(controller):
+    """Train head tile from its controller's cab-derived span (design_new.md).
+    Head/tail live on the controller, not on Train."""
+    return controller._get_head_tile() if controller is not None else None
+
+
+def _resolve_facing(controller):
+    """Train facing `Direction` from its controller (cab + span)."""
+    return controller._facing_direction() if controller is not None else None
+
+
 def prepare_path_for_train(
     network,
     train,
     path_tiles: List[Tuple[int, int, Direction]],
+    controller=None,
 ) -> PathPrepareResult:
     """
     Prepare a path for assignment to a train by prepending tiles if needed.
@@ -283,10 +295,10 @@ def prepare_path_for_train(
     if not path_tiles:
         return PathPrepareResult(success=False, error="Empty path")
 
-    if not train.position:
+    train_pos = _resolve_head_tile(controller)
+    if train_pos is None:
         return PathPrepareResult(success=False, error="Train has no position")
 
-    train_pos = train.position.head_tile
     path_start = (path_tiles[0][0], path_tiles[0][1])
 
     # Get block IDs for train position and path start
@@ -343,7 +355,7 @@ def prepare_path_for_train(
 
     # Sort block positions in traversal order
     sorted_positions = _sort_block_positions_for_direction(
-        block_positions, network, train.facing_direction
+        block_positions, network, _resolve_facing(controller)
     )
 
     # Find train position and path_start in sorted list
@@ -384,7 +396,7 @@ def prepare_path_for_train(
 
         # Convert positions to path format with directions
         prepend_tiles = _positions_to_path_tiles(
-            prepend_positions, train.facing_direction, network
+            prepend_positions, _resolve_facing(controller), network
         )
 
         return PathPrepareResult(
@@ -537,6 +549,7 @@ def assign_path_to_train_with_prepend(
     network,
     train,
     path_tiles: List[Tuple[int, int, Direction]],
+    controller=None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Validate and prepare a path for a train.
@@ -555,7 +568,7 @@ def assign_path_to_train_with_prepend(
     Returns:
         (success, error_message)
     """
-    result = prepare_path_for_train(network, train, path_tiles)
+    result = prepare_path_for_train(network, train, path_tiles, controller=controller)
     if not result.success:
         return False, result.error
     return True, None
@@ -664,6 +677,7 @@ def prepare_complete_path(
     network,
     train,
     path_tiles: List[Tuple[int, int, Direction]],
+    controller=None,
 ) -> PathPrepareResult:
     """
     Prepare a complete path for train assignment.
@@ -681,7 +695,7 @@ def prepare_complete_path(
         PathPrepareResult with prepend_tiles, append_tiles, and path_index
     """
     # First, handle the start (prepending)
-    result = prepare_path_for_train(network, train, path_tiles)
+    result = prepare_path_for_train(network, train, path_tiles, controller=controller)
 
     if not result.success:
         return result
@@ -713,6 +727,7 @@ def assign_complete_path_to_train(
     network,
     train,
     path_tiles: List[Tuple[int, int, Direction]],
+    controller=None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Validate and prepare a complete path (prepend + append) for a train.
@@ -729,7 +744,7 @@ def assign_complete_path_to_train(
     Returns:
         (success, error_message)
     """
-    result = prepare_complete_path(network, train, path_tiles)
+    result = prepare_complete_path(network, train, path_tiles, controller=controller)
     if not result.success:
         return False, result.error
     return True, None
