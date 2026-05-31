@@ -46,14 +46,15 @@ services/
     train_service.py         # train CRUD + placement + route assignment + operator commands
     block_service.py         # block CRUD + availability flags + track membership + can_extend
     track_service.py         # track tile CRUD + bulk add/delete + orphan-impact pre-check
+    platform_service.py      # platform CRUD + tile membership + placement predicates
 ```
 
 Migrated routes: `layouts`, `schedules`, `train_routes`, `speed_profiles`,
-`switches`, `trains`, `blocks`, `tracks`.
+`switches`, `trains`, `blocks`, `tracks`, `platforms`.
 
-**Remaining.** `signals`, `stations`, `platforms`, `paths`, `route_runs`,
-`tunnels`, `inspector`, `simulation` still hold their domain logic inline.
-Adopt the same pattern when one is next touched; `paths` is heavily
+**Remaining.** `signals`, `stations`, `paths`, `route_runs`, `tunnels`,
+`inspector`, `simulation` still hold their domain logic inline. Adopt the
+same pattern when one is next touched; `paths` is heavily
 `PathDispatcher`-coupled (better paired with item 5), and some
 (`inspector`, much of `simulation`) are largely read-only and lower-value
 to migrate.

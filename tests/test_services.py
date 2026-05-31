@@ -27,6 +27,7 @@ from train_route import RouteTask
 from services import ConflictError, GoneError, NotFoundError, ValidationError
 from services import (
     block_service,
+    platform_service,
     schedule_service,
     speed_profile_service,
     switch_service,
@@ -608,3 +609,73 @@ class TestTrackService:
         assert result["status"] == "done"
         assert result["deleted"] == [[0, 0], [1, 0]]
         assert track_service.get_track(state, 0, 0) is None
+
+
+# ------------------------------------------------------ platform_service ----
+
+
+class TestPlatformService:
+    def test_get_and_require_platform(self, state):
+        assert platform_service.get_platform(state, "GHOST") is None
+        with pytest.raises(NotFoundError):
+            platform_service.require_platform(state, "GHOST")
+
+    def test_create_platform(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        platform = platform_service.create_platform(
+            state, x=0, y=0, platform_id="PLT_1", name="P1"
+        )
+        assert platform.platform_id == "PLT_1"
+        assert state.network.get_platform("PLT_1") is platform
+
+    def test_update_platform(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        platform_service.create_platform(state, x=0, y=0, platform_id="PLT_U", name="old")
+        updated = platform_service.update_platform(
+            state, "PLT_U", data={"name": "new", "disabled": True}
+        )
+        assert updated.name == "new"
+        assert updated.disabled is True
+
+    def test_update_unknown_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            platform_service.update_platform(state, "GHOST", data={"name": "x"})
+
+    def test_delete_platform(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        platform_service.create_platform(state, x=0, y=0, platform_id="PLT_X")
+        assert platform_service.delete_platform(state, "PLT_X") is True
+        assert platform_service.get_platform(state, "PLT_X") is None
+
+    def test_delete_unknown_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            platform_service.delete_platform(state, "GHOST")
+
+    def test_validate_placement(self, state):
+        assert platform_service.validate_placement(state, 9, 9)["can_place"] is False
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        assert platform_service.validate_placement(state, 0, 0)["can_place"] is True
+
+    def test_can_extend_unknown_platform_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            platform_service.can_extend(state, "GHOST", x=0, y=0)
+
+    def test_assign_tile_unknown_platform_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            platform_service.assign_tile(state, "GHOST", x=0, y=0, block_id="BLK")
+
+    def test_assign_tile_unknown_block_raises_not_found(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        platform_service.create_platform(state, x=0, y=0, platform_id="PLT_A")
+        with pytest.raises(NotFoundError):
+            platform_service.assign_tile(
+                state, "PLT_A", x=0, y=0, block_id="GHOST_BLK"
+            )
+
+    def test_unassign_tile_unknown_platform_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            platform_service.unassign_tile(state, "GHOST", x=0, y=0)
+
+    def test_remove_tile_unknown_platform_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            platform_service.remove_tile(state, "GHOST", x=0, y=0)
