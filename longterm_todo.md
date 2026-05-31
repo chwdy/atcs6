@@ -43,16 +43,17 @@ services/
     schedule_service.py      # schedule CRUD; coordinates with train routes
     speed_profile_service.py # profile CRUD; owns simulation_lock + default/in-use guards
     switch_service.py        # switch CRUD + availability flags + SwitchManager position changes
+    train_service.py         # train CRUD + placement + route assignment + operator commands
 ```
 
 Migrated routes: `layouts`, `schedules`, `train_routes`, `speed_profiles`,
-`switches`.
+`switches`, `trains`.
 
 **Remaining.** The other route modules still hold domain logic inline —
-`blocks` (665 lines), `trains` (798), `signals`, `stations`, `tracks`,
-`platforms`, `paths`, `route_runs`, `tunnels`, `inspector`, `simulation`.
-Adopt the same pattern when a route is next touched; the heaviest
-(`blocks`, `trains`) give the most leverage.
+`blocks` (665 lines), `signals`, `stations`, `tracks`, `platforms`,
+`paths`, `route_runs`, `tunnels`, `inspector`, `simulation`. Adopt the
+same pattern when a route is next touched; `blocks` is now the heaviest
+unmigrated route.
 
 **When to do it.** Incrementally, when the next feature touches a given
 route — or eagerly for `blocks`/`trains` if they grow further. The pattern

@@ -1,5 +1,11 @@
 """
 Train Management Routes - Train CRUD, control, and state management.
+
+Thin HTTP layer over `services.train_service`: parse JSON, call the
+service, translate `ServiceError` subclasses to status codes
+(ValidationError -> 400, NotFoundError -> 404, ConflictError -> 409), and
+shape the sibling-payload response. Operator commands return the
+controller's `CommandResult`; a non-success result maps to 400.
 """
 
 import time
@@ -8,8 +14,8 @@ from typing import Dict
 from flask import jsonify, request
 
 from app_state import AppState
-from enums import Direction
-from train import Train, TrainCar
+from services import ConflictError, NotFoundError, ValidationError
+from services import train_service
 
 
 def register(app, state: AppState) -> None:
@@ -84,90 +90,26 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/trains", methods=["POST"])
     def create_train():
-        """Create a new train.
-
-        When a starting position is provided and a SimulationController is
-        available, the request is routed through
-        ``sim_controller.add_train(...)`` so that the controller, physics,
-        and notification center are wired in one synchronous step. Otherwise
-        the train is created without placement (editor scenario).
-        """
+        """Create a new train (placement-aware when a position is given)."""
         data = request.json
-        train_id = data.get("id")
-        if not train_id:
-            return jsonify({"error": "Missing train ID"}), 400
-
-        # API provides length in track units (approx 100m)
-        length_units = data.get("length", 1.0)
-        length_meters = length_units * 100.0
+        # API provides length in track units (approx 100m).
+        length_cm = data.get("length", 1.0) * 100.0
         max_speed_kmh = float(data.get("max_speed", 100.0))
-        car_number = data.get("car_number", "")
 
-        # Position-aware path: delegate to SimulationController.add_train.
-        if "position" in data and state.sim_controller is not None:
-            pos = data["position"]
-            direction_name = data.get("direction", "EAST")
-            try:
-                pos_x = int(pos["x"])
-                pos_y = int(pos["y"])
-            except (KeyError, TypeError, ValueError):
-                return jsonify({"error": "position must include x and y"}), 400
-            track = state.network.get_track(pos_x, pos_y)
-            if track is None or not track.block_section_id:
-                return jsonify(
-                    {"error": f"No block at position ({pos_x}, {pos_y})"}
-                ), 400
-            try:
-                train = state.sim_controller.add_train(
-                    train_id=train_id,
-                    starting_block_id=track.block_section_id,
-                    initial_direction=direction_name,
-                    max_speed_kmh=max_speed_kmh,
-                    length_cm=length_meters,
-                    name=car_number,
-                )
-            except ValueError as e:
-                return jsonify({"error": str(e)}), 400
-            # The block returned by add_train may not be the requested tile
-            # (block has multiple tiles). If the caller requested a specific
-            # (x, y), re-place there for backwards compatibility.
-            try:
-                state.sim_controller.reposition_train(
-                    train, pos_x, pos_y, Direction[direction_name.upper()]
-                )
-            except (KeyError, ValueError) as e:
-                # Tile-precise placement failed; the train is still on a
-                # tile of the requested block, which is acceptable.
-                import logging
-                logging.getLogger(__name__).debug(
-                    "Tile-precise placement failed for %s: %s",
-                    train_id,
-                    e,
-                )
-            state.network.update_signals_from_blocks()
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
+        try:
+            train = train_service.create_train(
+                state,
+                train_id=data.get("id"),
+                length_cm=length_cm,
+                max_speed_kmh=max_speed_kmh,
+                car_number=data.get("car_number", ""),
+                position=data.get("position"),
+                direction=data.get("direction", "EAST"),
             )
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
 
-        # No-position / editor path: keep direct construction; this mirrors
-        # the previous behaviour where a train can exist without placement.
-        car = TrainCar(
-            car_id=f"{train_id}_loco",
-            car_type="LOCOMOTIVE",
-            length_cm=length_meters,
-            max_speed=max_speed_kmh,
-        )
-        train = Train(
-            train_id=train_id,
-            consist=[car],
-            max_speed=max_speed_kmh,
-            car_number=car_number,
-        )
-        state.network.add_train(train)
-        state.network.update_signals_from_blocks()
-        return jsonify(
-            {"status": "success", **_train_to_dict(train, state.network)}
-        )
+        return jsonify({"status": "success", **_train_to_dict(train, state.network)})
 
     @app.route("/api/trains", methods=["GET"])
     def list_trains():
@@ -184,7 +126,7 @@ def register(app, state: AppState) -> None:
         route_executor = (
             state.sim_controller.route_executor if state.sim_controller else None
         )
-        for train in state.network.trains.values():
+        for train in train_service.list_trains(state):
             payload = _train_to_dict(train, state.network)
             trains_list.append(payload["train"])
             controllers_by_train_id[train.train_id] = payload["controller"]
@@ -206,7 +148,7 @@ def register(app, state: AppState) -> None:
     @app.route("/api/trains/<train_id>", methods=["GET"])
     def get_train(train_id):
         """Get details for a single train."""
-        train = state.network.trains.get(train_id)
+        train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
         return jsonify(_train_to_dict(train, state.network))
@@ -214,59 +156,29 @@ def register(app, state: AppState) -> None:
     @app.route("/api/trains/<train_id>", methods=["PATCH"])
     def update_train(train_id):
         """Update train properties."""
-        train = state.network.trains.get(train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
-
         data = request.json or {}
+        try:
+            train = train_service.update_train(
+                state,
+                train_id,
+                max_speed=data.get("max_speed"),
+                car_number=data.get("car_number"),
+                length_cm=data.get("length_cm"),
+            )
+        except NotFoundError:
+            return jsonify({"error": "Train not found"}), 404
+        except ValidationError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 400
 
-        errors = []
-
-        if "max_speed" in data:
-            try:
-                train.max_speed = float(data["max_speed"])
-            except (ValueError, TypeError):
-                errors.append("max_speed")
-
-        if "car_number" in data:
-            train.car_number = str(data["car_number"])
-
-        if "length_cm" in data:
-            try:
-                new_length = float(data["length_cm"])
-                if new_length > 0:
-                    if train.consist:
-                        train.consist[0].length = new_length
-                    else:
-                        # Create default car if consist is empty
-                        car = TrainCar(
-                            car_id=f"{train_id}_loco",
-                            car_type="LOCOMOTIVE",
-                            length_cm=new_length,
-                            max_speed=train.max_speed,
-                        )
-                        train.consist.append(car)
-            except (ValueError, TypeError):
-                errors.append("length_cm")
-
-        if errors:
-            return jsonify(
-                {
-                    "status": "error",
-                    "message": f"Invalid values for fields: {', '.join(errors)}",
-                }
-            ), 400
-
-        return jsonify(
-            {"status": "success", **_train_to_dict(train, state.network)}
-        )
+        return jsonify({"status": "success", **_train_to_dict(train, state.network)})
 
     @app.route("/api/trains/<train_id>", methods=["DELETE"])
     def delete_train(train_id):
         """Delete a train from the network."""
-        if not state.network.remove_train(train_id):
+        try:
+            train_service.delete_train(state, train_id)
+        except NotFoundError:
             return jsonify({"error": "Train not found"}), 404
-
         return jsonify({"status": "success", "message": f"Train {train_id} deleted"})
 
     # ============================================================================
@@ -276,31 +188,23 @@ def register(app, state: AppState) -> None:
     @app.route("/api/trains/<train_id>/power-on", methods=["POST"])
     def train_power_on(train_id):
         """Power on a train (OFF -> READY)."""
-        train = state.network.trains.get(train_id)
+        train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
-
-        controller = _get_train_controller(train)
-        result = controller.commands.power_on_cmd()
+        result = train_service.power_on(state, train_id)
         if result.success:
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
+            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
         return jsonify({"error": result.message}), 400
 
     @app.route("/api/trains/<train_id>/power-off", methods=["POST"])
     def train_power_off(train_id):
         """Power off a train (any state -> OFF). Must be stopped."""
-        train = state.network.trains.get(train_id)
+        train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
-
-        controller = _get_train_controller(train)
-        result = controller.commands.power_off_cmd()
+        result = train_service.power_off(state, train_id)
         if result.success:
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
+            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
         return jsonify({"error": result.message}), 400
 
     # ============================================================================
@@ -310,29 +214,18 @@ def register(app, state: AppState) -> None:
     @app.route("/api/trains/<train_id>/set-cab", methods=["POST"])
     def train_set_cab(train_id):
         """Set active cab (A, B, or None/off) and manage state transitions."""
-        train = state.network.trains.get(train_id)
+        train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
 
         data = request.json or {}
-        cab = data.get("cab")
+        try:
+            result = train_service.set_cab(state, train_id, cab=data.get("cab"))
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
 
-        # Validate cab value
-        if cab not in ("A", "B", None, "off", "Off", "OFF"):
-            return jsonify(
-                {"error": f"Invalid cab value: {cab}. Must be 'A', 'B', or None"}
-            ), 400
-
-        # Normalize "off" strings to None
-        if cab in ("off", "Off", "OFF"):
-            cab = None
-
-        controller = _get_train_controller(train)
-        result = controller.commands.set_cab(cab)
         if result.success:
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
+            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
         return jsonify({"error": result.message}), 400
 
     @app.route("/api/trains/<train_id>/depart", methods=["POST"])
@@ -344,15 +237,16 @@ def register(app, state: AppState) -> None:
         path only invokes the canonical ``TrainController.depart()`` for the
         ``READY`` -> ``RUNNING_MOVING`` transition.
         """
-        train = state.network.trains.get(train_id)
+        train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
 
-        controller = _get_train_controller(train)
-        if controller.depart():
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
+        # NOTE: preserves the pre-existing always-truthy check on depart()'s
+        # (success, reason) tuple — depart rejections currently report
+        # success. This is a known bug tracked separately; it is intentionally
+        # NOT changed here so the service-layer migration stays behavior-neutral.
+        if train_service.depart(state, train_id):
+            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
         return jsonify({"error": "Cannot depart"}), 400
 
     # ============================================================================
@@ -362,16 +256,12 @@ def register(app, state: AppState) -> None:
     @app.route("/api/trains/<train_id>/stop", methods=["POST"])
     def train_stop(train_id):
         """Controlled stop - bring train to standby state (ATO stop)."""
-        train = state.network.trains.get(train_id)
+        train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
-
-        controller = _get_train_controller(train)
-        result = controller.ato.stop()
+        result = train_service.ato_stop(state, train_id)
         if result.success:
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
+            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
         return jsonify({"error": result.message}), 400
 
     # ============================================================================
@@ -381,7 +271,7 @@ def register(app, state: AppState) -> None:
     @app.route("/api/trains/<train_id>/onboard", methods=["GET"])
     def get_onboard_computer(train_id):
         """Get TrainController state for a train."""
-        train = state.network.trains.get(train_id)
+        train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
 
@@ -398,7 +288,7 @@ def register(app, state: AppState) -> None:
         single-block lookahead.
         """
         with state.simulation_lock:
-            train = state.network.trains.get(train_id)
+            train = train_service.get_train(state, train_id)
             if not train:
                 return jsonify({"error": "Train not found"}), 404
 
@@ -441,7 +331,7 @@ def register(app, state: AppState) -> None:
     @app.route("/api/trains/<train_id>/notifications", methods=["GET"])
     def get_train_notifications(train_id):
         """Get and clear pending notifications for a train (for toast messages)."""
-        train = state.network.trains.get(train_id)
+        train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
 
@@ -456,82 +346,62 @@ def register(app, state: AppState) -> None:
     @app.route("/api/trains/<train_id>/handle", methods=["POST"])
     def set_handle_position(train_id):
         """Set throttle/brake handle position."""
-        train = state.network.trains.get(train_id)
+        train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
 
         data = request.json or {}
-        position_str = data.get("position")
-        if not position_str:
-            return jsonify({"error": "Missing position"}), 400
-
-        from enums import HandlePosition
-
         try:
-            position = HandlePosition(position_str)
-        except ValueError:
-            return jsonify(
-                {
-                    "error": f"Invalid handle position: {position_str}. Valid: P1-P5, N, B1-B8, EB"
-                }
-            ), 400
-
-        controller = _get_train_controller(train)
-        result = controller.commands.set_handle(position)
-        if result.success:
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
+            result = train_service.set_handle(
+                state, train_id, position=data.get("position")
             )
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        if result.success:
+            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
         return jsonify({"error": result.message}), 400
 
     @app.route("/api/trains/<train_id>/mode", methods=["POST"])
     def set_control_mode(train_id):
         """Set control mode (ATO or Manual)."""
-        train = state.network.trains.get(train_id)
+        train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
 
         data = request.json or {}
-        mode = data.get("mode")
-        if mode not in ("ato", "manual"):
-            return jsonify(
-                {"error": f"Invalid mode: {mode}. Must be 'ato' or 'manual'"}
-            ), 400
+        try:
+            result = train_service.set_mode(state, train_id, mode=data.get("mode"))
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
 
-        controller = _get_train_controller(train)
-        result = controller.commands.set_mode(mode)
         if result.success:
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
+            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
         return jsonify({"error": result.message}), 400
 
     @app.route("/api/trains/<train_id>/manual-mode-type", methods=["POST"])
     def set_manual_mode_type(train_id):
         """Set manual-mode submode ('simulation' = handle, or 'power_percent')."""
-        train = state.network.trains.get(train_id)
+        train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
 
         data = request.json or {}
-        mode_type = data.get("mode_type")
-        if mode_type not in ("simulation", "power_percent"):
-            return jsonify(
-                {"error": f"Invalid mode_type: {mode_type}. Must be 'simulation' or 'power_percent'"}
-            ), 400
-
-        controller = _get_train_controller(train)
-        result = controller.commands.set_manual_mode_type(mode_type)
-        if result.success:
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
+        try:
+            result = train_service.set_manual_mode_type(
+                state, train_id, mode_type=data.get("mode_type")
             )
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        if result.success:
+            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
         return jsonify({"error": result.message}), 400
 
     @app.route("/api/trains/<train_id>/manual-power-percent", methods=["POST"])
     def set_manual_power_percent(train_id):
         """Set manual power-percent command (0..100) when manual_mode_type == power_percent."""
-        train = state.network.trains.get(train_id)
+        train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
 
@@ -539,12 +409,11 @@ def register(app, state: AppState) -> None:
         if "percent" not in data:
             return jsonify({"error": "Missing 'percent' field"}), 400
 
-        controller = _get_train_controller(train)
-        result = controller.commands.set_manual_power_percent(data.get("percent"))
+        result = train_service.set_manual_power_percent(
+            state, train_id, percent=data.get("percent")
+        )
         if result.success:
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
+            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
         return jsonify({"error": result.message}), 400
 
     # ============================================================================
@@ -554,31 +423,23 @@ def register(app, state: AppState) -> None:
     @app.route("/api/trains/<train_id>/ato-go", methods=["POST"])
     def ato_go(train_id):
         """Start ATO movement toward destination."""
-        train = state.network.trains.get(train_id)
+        train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
-
-        controller = _get_train_controller(train)
-        result = controller.ato.go()
+        result = train_service.ato_go(state, train_id)
         if result.success:
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
+            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
         return jsonify({"error": result.message}), 400
 
     @app.route("/api/trains/<train_id>/ato-stop", methods=["POST"])
     def ato_stop(train_id):
         """Stop ATO movement (service stop)."""
-        train = state.network.trains.get(train_id)
+        train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404
-
-        controller = _get_train_controller(train)
-        result = controller.ato.stop()
+        result = train_service.ato_stop(state, train_id)
         if result.success:
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
+            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
         return jsonify({"error": result.message}), 400
 
     # ============================================================================
@@ -601,39 +462,17 @@ def register(app, state: AppState) -> None:
             404 Not Found if train doesn't exist
         """
         data = request.json or {}
-
-        with state.simulation_lock:
-            train = state.network.trains.get(train_id)
-            if not train:
-                return jsonify({"error": f"Train '{train_id}' not found"}), 404
-
-            position = data.get("position")
-            if not isinstance(position, dict):
-                return jsonify({"error": "position is required"}), 400
-
-            if "x" not in position or "y" not in position:
-                return jsonify({"error": "position must include x and y"}), 400
-
-            if not data.get("direction"):
-                return jsonify({"error": "direction is required"}), 400
-
-            try:
-                direction = Direction[data["direction"]]
-            except KeyError:
-                return jsonify(
-                    {"error": f"Invalid direction: {data['direction']}"}
-                ), 400
-
-            x, y = int(position["x"]), int(position["y"])
-
-            track = state.network.tracks.get((x, y))
-            if not track:
-                return jsonify({"error": f"No track at position ({x}, {y})"}), 400
-
-            try:
-                state.sim_controller.reposition_train(train, x, y, direction)
-            except ValueError as e:
-                return jsonify({"error": str(e)}), 400
+        try:
+            train = train_service.reposition_train(
+                state,
+                train_id,
+                position=data.get("position"),
+                direction=data.get("direction"),
+            )
+        except NotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
 
         return jsonify(_train_to_dict(train, state.network))
 
@@ -652,23 +491,14 @@ def register(app, state: AppState) -> None:
             404 Not Found if train or profile doesn't exist
         """
         data = request.json or {}
-
-        profile_id = data.get("profile_id")
-        if not profile_id:
-            return jsonify({"error": "profile_id is required"}), 400
-
-        with state.simulation_lock:
-            train = state.network.trains.get(train_id)
-            if not train:
-                return jsonify({"error": f"Train '{train_id}' not found"}), 404
-
-            profile = state.speed_profile_registry.get(profile_id)
-            if not profile:
-                return jsonify(
-                    {"error": f"Speed profile '{profile_id}' not found"}
-                ), 404
-
-            train.speed_profile_id = profile_id
+        try:
+            train = train_service.assign_speed_profile(
+                state, train_id, profile_id=data.get("profile_id")
+            )
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except NotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
 
         return jsonify(_train_to_dict(train, state.network))
 
@@ -681,118 +511,24 @@ def register(app, state: AppState) -> None:
         """Assign a route to a train.
 
         Per `design_new.md` line 272 (Operator retargeting / route swap), the
-        handler atomically:
-          (a) writes `controller.route_hooks.phase_latches.set_route_abort(...)` so Phase 3
-              of the next eligible per-train transaction tears down the live
-              authority and the existing `RouteRun`, and
-          (b) calls `Route.unassign_train(old)` / `Route.assign_train(new)`.
-
-        It does NOT mutate `RouteExecutor.execution_states` directly and does
-        NOT call `PathDispatcher.cancel_path(...)` or `controller.ato.stop()`
-        inline — those flow through Phase 3 cleanup. Phase 1 of the next
-        eligible tick allocates a fresh `RouteRun` against the newly assigned
-        route (per `design_new.md` line 1068).
+        service atomically writes the Phase-3 route-abort latch and updates
+        `Route` assignment; it does NOT mutate `RouteExecutor.execution_states`
+        or cancel the path inline -- those flow through Phase-3 cleanup, and
+        Phase 1 of the next eligible tick allocates a fresh `RouteRun`.
         """
-        train = state.network.trains.get(train_id)
-        if not train:
-            return jsonify({"error": "Train not found"}), 404
-
         data = request.get_json() or {}
-        route_id = data.get("route_id")
-        force = bool(data.get("force", False))
-
-        route_executor = (
-            state.sim_controller.route_executor if state.sim_controller else None
-        )
-        route_registry = route_executor.route_registry if route_executor else {}
-        current_route_id = (
-            route_executor.assigned_route_id_for(train_id)
-            if route_executor
-            else None
-        )
-
-        controller = (
-            _get_train_controller(train) if state.sim_controller else None
-        )
-
-        def _has_active_path() -> bool:
-            return (
-                controller is not None
-                and controller.path_projection.received_path_plan is not None
+        try:
+            train = train_service.assign_route(
+                state,
+                train_id,
+                route_id=data.get("route_id"),
+                force=bool(data.get("force", False)),
             )
+        except NotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except ConflictError as exc:
+            return jsonify({"error": str(exc)}), 409
 
-        # ── Branch 1: unassign (route_id is None) ────────────────────────────
-        if route_id is None:
-            if current_route_id:
-                if controller is not None:
-                    controller.route_hooks.phase_latches.set_route_abort(
-                        reason="unassign",
-                        has_active_path=_has_active_path(),
-                    )
-                current_route = route_registry.get(current_route_id)
-                if current_route:
-                    current_route.unassign_train(train_id)
-
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
-
-        # ── Branch 2: assign / retarget (route_id provided) ──────────────────
-        route = route_registry.get(route_id)
-        if not route:
-            return jsonify({"error": "Route not found"}), 404
-
-        # Reject assignment to a 0-task route. Phase 1 step `9c4f` would
-        # otherwise allocate a RouteRun, `_find_next_task_target` would
-        # return None for the empty walk, Phase 1 would immediately call
-        # `finish_route_run(train_id)` (which unassigns the train again
-        # and, for ONE_OFF mode, deactivates the route). User sees a
-        # "success" response followed by the train silently going idle
-        # a few ticks later. Reject up front so the failure mode is loud
-        # and actionable. See design_new.md "Planning Kernel" step `9c4f`
-        # / terminal-walk handling at line 1166.
-        if not route.tasks:
-            return (
-                jsonify({
-                    "error": (
-                        f"Route {route_id!r} has no tasks. Add at least "
-                        f"one task before assigning a train."
-                    )
-                }),
-                400,
-            )
-
-        # Same-route assign: idempotent no-op success.
-        if current_route_id == route_id:
-            return jsonify(
-                {"status": "success", **_train_to_dict(train, state.network)}
-            )
-
-        if current_route_id and not force:
-            return (
-                jsonify(
-                    {
-                        "error": f"Train already assigned to route {current_route_id}. Use force=true to reassign."
-                    }
-                ),
-                409,
-            )
-
-        if current_route_id:
-            # Retargeting: write the abort latch first so Phase 3 commits the
-            # cancellation through the canonical workflow.
-            if controller is not None:
-                controller.route_hooks.phase_latches.set_route_abort(
-                    reason="retarget",
-                    has_active_path=_has_active_path(),
-                )
-            previous_route = route_registry.get(current_route_id)
-            if previous_route:
-                previous_route.unassign_train(train_id)
-
-        route.assign_train(train_id)
-
-        return jsonify(
-            {"status": "success", **_train_to_dict(train, state.network)}
-        )
-
+        return jsonify({"status": "success", **_train_to_dict(train, state.network)})

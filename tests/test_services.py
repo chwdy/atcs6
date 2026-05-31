@@ -22,6 +22,7 @@ from simulation import SimulationController
 from speed_profile import SpeedProfileRegistry
 from track import TrackSegment
 from train import Train, TrainCar
+from train_route import RouteTask
 
 from services import ConflictError, NotFoundError, ValidationError
 from services import (
@@ -29,6 +30,7 @@ from services import (
     speed_profile_service,
     switch_service,
     train_route_service,
+    train_service,
 )
 
 
@@ -336,3 +338,121 @@ class TestSwitchService:
     def test_request_position_change_unknown_switch_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
             switch_service.request_position_change(state, "NOPE", new_state=0)
+
+
+# --------------------------------------------------------- train_service ----
+
+
+class TestTrainService:
+    def test_require_train_raises_not_found(self, state):
+        assert train_service.get_train(state, "GHOST") is None
+        with pytest.raises(NotFoundError):
+            train_service.require_train(state, "GHOST")
+
+    def test_create_train_editor_path(self, state):
+        """No-position create builds + registers a train, no Flask required."""
+        train = train_service.create_train(state, train_id="T_NEW", max_speed_kmh=90.0)
+        assert train.train_id == "T_NEW"
+        assert state.network.trains.get("T_NEW") is train
+        assert train.max_speed == 90.0
+
+    def test_create_train_missing_id_raises_validation(self, state):
+        with pytest.raises(ValidationError):
+            train_service.create_train(state, train_id="")
+
+    def test_update_train_fields(self, state_with_train):
+        train = train_service.update_train(
+            state_with_train, "TRAIN_A", max_speed=55.0, car_number="C9"
+        )
+        assert train.max_speed == 55.0
+        assert train.car_number == "C9"
+
+    def test_update_train_bad_value_raises_validation(self, state_with_train):
+        with pytest.raises(ValidationError, match="max_speed"):
+            train_service.update_train(
+                state_with_train, "TRAIN_A", max_speed="not-a-number"
+            )
+
+    def test_update_train_unknown_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            train_service.update_train(state, "GHOST", max_speed=10.0)
+
+    def test_delete_train(self, state_with_train):
+        assert train_service.delete_train(state_with_train, "TRAIN_A") is True
+        assert train_service.get_train(state_with_train, "TRAIN_A") is None
+
+    def test_delete_unknown_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            train_service.delete_train(state, "GHOST")
+
+    def test_assign_speed_profile_missing_id_raises_validation(self, state_with_train):
+        with pytest.raises(ValidationError):
+            train_service.assign_speed_profile(
+                state_with_train, "TRAIN_A", profile_id=""
+            )
+
+    def test_assign_speed_profile_unknown_profile_raises_not_found(
+        self, state_with_train
+    ):
+        with pytest.raises(NotFoundError):
+            train_service.assign_speed_profile(
+                state_with_train, "TRAIN_A", profile_id="NOPE"
+            )
+
+    def test_assign_speed_profile_success(self, state_with_train):
+        """The seeded `default` profile assigns onto the train."""
+        train = train_service.assign_speed_profile(
+            state_with_train, "TRAIN_A", profile_id="default"
+        )
+        assert train.speed_profile_id == "default"
+
+    def test_assign_route_unknown_train_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            train_service.assign_route(state, "GHOST", route_id=None)
+
+    def test_assign_route_unknown_route_raises_not_found(self, state_with_train):
+        with pytest.raises(NotFoundError):
+            train_service.assign_route(state_with_train, "TRAIN_A", route_id="GHOST")
+
+    def test_assign_route_empty_route_raises_validation(self, state_with_train):
+        train_route_service.create_route(
+            state_with_train, route_id="R_EMPTY", name="empty"
+        )
+        with pytest.raises(ValidationError, match="no tasks"):
+            train_service.assign_route(state_with_train, "TRAIN_A", route_id="R_EMPTY")
+
+    def test_assign_route_success_conflict_and_force(self, state_with_train):
+        """Assign succeeds; reassign needs force; same-route is idempotent."""
+        state = state_with_train
+        r1 = train_route_service.create_route(state, route_id="R1", name="r1")
+        r1.add_task(RouteTask(task_kind="dwell", task_location="STA_X"))
+        r2 = train_route_service.create_route(state, route_id="R2", name="r2")
+        r2.add_task(RouteTask(task_kind="dwell", task_location="STA_Y"))
+
+        train_service.assign_route(state, "TRAIN_A", route_id="R1")
+        executor = state.sim_controller.route_executor
+        assert executor.assigned_route_id_for("TRAIN_A") == "R1"
+
+        with pytest.raises(ConflictError):
+            train_service.assign_route(state, "TRAIN_A", route_id="R2")
+
+        # Same-route assign is an idempotent no-op success.
+        train_service.assign_route(state, "TRAIN_A", route_id="R1")
+        assert executor.assigned_route_id_for("TRAIN_A") == "R1"
+
+        # Force reassign retargets to R2.
+        train_service.assign_route(state, "TRAIN_A", route_id="R2", force=True)
+        assert executor.assigned_route_id_for("TRAIN_A") == "R2"
+
+    def test_set_cab_invalid_raises_validation(self, state_with_train):
+        with pytest.raises(ValidationError):
+            train_service.set_cab(state_with_train, "TRAIN_A", cab="Z")
+
+    def test_set_mode_invalid_raises_validation(self, state_with_train):
+        with pytest.raises(ValidationError):
+            train_service.set_mode(state_with_train, "TRAIN_A", mode="bogus")
+
+    def test_power_on_returns_command_result(self, state_with_train):
+        """Operator commands return the controller's CommandResult."""
+        result = train_service.power_on(state_with_train, "TRAIN_A")
+        assert hasattr(result, "success")
