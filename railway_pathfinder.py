@@ -156,32 +156,31 @@ class RailwayPathfinder:
         use_switch_state = request.switch_handling == "respect_current_state"
         exclude: Set[str] = request.exclude_resources or set()
 
-        start_positions = self.network.get_block_positions(start_block_id)
-        if not start_positions:
-            return []
-
-        # 1. Enumerate raw walks via BFS from all start-block border tiles.
-        raw_walks: List[PathSegment] = []
-        for start_pos in start_positions:
-            track = self.network.get_track(*start_pos)
-            if not track:
-                continue
-            for edge in track.edges:
-                neighbor = self.network.get_neighbor(*start_pos, edge)
-                if neighbor and neighbor.block_section_id != start_block_id:
-                    raw_walks.extend(
-                        self._bfs_walks_with_switch_mode(
-                            start_pos,
-                            edge,
-                            start_block_id,
-                            end_block_id,
-                            use_switch_state=use_switch_state,
-                            exclude_resources=exclude,
-                        )
-                    )
-
-        # 2. Deduplicate by (block sequence, switch settings).
-        raw_walks = self._deduplicate_walks(raw_walks)
+        # Steps 1-2 (BFS enumeration + dedup) are a pure function of the static
+        # graph when the search is topology-only with no resource exclusions:
+        # the BFS ignores switch position and never reads dynamic block/switch
+        # availability, so the same (start, end) yields the same raw walks until
+        # the topology changes. Reuse the network's cached enumeration in that
+        # case so the per-tick create_path/extend_path storm runs one BFS per
+        # (start, end) instead of re-walking the graph on every call. The
+        # availability/direction filters and candidate construction below stay
+        # live, so disabled/manual/direction changes still take effect at once.
+        # The cache is dropped on any topology edit -- see
+        # RailwayNetwork.invalidate_pathfinding_cache().
+        cacheable = not use_switch_state and not exclude
+        raw_walks: Optional[List[PathSegment]] = (
+            self.network.get_cached_walks(start_block_id, end_block_id)
+            if cacheable
+            else None
+        )
+        if raw_walks is None:
+            raw_walks = self._enumerate_walks(
+                start_block_id, end_block_id, use_switch_state, exclude
+            )
+            if cacheable:
+                self.network.store_cached_walks(
+                    start_block_id, end_block_id, raw_walks
+                )
 
         # 3. Apply direction-aware filters; wrap survivors into
         #    GraphWalkCandidate with all new fields populated.
@@ -444,6 +443,43 @@ class RailwayPathfinder:
         return result
 
     # ------------------------------------------------------------------ private
+
+    def _enumerate_walks(
+        self,
+        start_block_id: str,
+        end_block_id: str,
+        use_switch_state: bool,
+        exclude: Set[str],
+    ) -> List[PathSegment]:
+        """Steps 1-2 of ``query_graph_walks``: BFS from every start-block
+        border tile, then deduplicate by (block sequence, switch settings).
+
+        Factored out so ``query_graph_walks`` can cache the result for the
+        topology-only / no-exclusion case (a pure function of the static
+        graph). Returns an empty list when the start block has no tiles.
+        """
+        start_positions = self.network.get_block_positions(start_block_id)
+        if not start_positions:
+            return []
+        raw_walks: List[PathSegment] = []
+        for start_pos in start_positions:
+            track = self.network.get_track(*start_pos)
+            if not track:
+                continue
+            for edge in track.edges:
+                neighbor = self.network.get_neighbor(*start_pos, edge)
+                if neighbor and neighbor.block_section_id != start_block_id:
+                    raw_walks.extend(
+                        self._bfs_walks_with_switch_mode(
+                            start_pos,
+                            edge,
+                            start_block_id,
+                            end_block_id,
+                            use_switch_state=use_switch_state,
+                            exclude_resources=exclude,
+                        )
+                    )
+        return self._deduplicate_walks(raw_walks)
 
     def _bfs_walks(
         self,

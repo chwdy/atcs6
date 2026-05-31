@@ -96,6 +96,17 @@ class RailwayNetwork:
         self._tile_to_block: Dict[Tuple[int, int], str] = {}
         self._tile_to_platform: Dict[Tuple[int, int], str] = {}
 
+        # Cache of topology-only BFS walk enumerations, keyed by
+        # (start_block_id, end_block_id). Populated lazily by
+        # RailwayPathfinder.query_graph_walks and shared by every pathfinder
+        # built from this network (the dispatcher's and any throwaway one).
+        # The raw walks are a pure function of the static graph -- the BFS
+        # ignores switch position and never reads dynamic block/switch
+        # availability -- so they stay valid across sim ticks and are dropped
+        # only when the topology itself changes. See
+        # invalidate_pathfinding_cache() and its callers.
+        self._walk_cache: Dict[Tuple[str, str], List["PathSegment"]] = {}
+
         # Helper modules (signal computation, station registry, block
         # geometry mutation). Lazy-initialised on first access to keep
         # `__init__` cheap.
@@ -183,10 +194,43 @@ class RailwayNetwork:
             self._tile_to_block.pop(key, None)
         else:
             self._tile_to_block[key] = block_id
+        # Block membership feeds the BFS walk enumeration; a change here makes
+        # any cached walk for the affected blocks stale.
+        self.invalidate_pathfinding_cache()
 
     def _set_tile_platform(self, x: int, y: int, platform_id: Optional[str]) -> None:
         """Forward to `StationRegistry._set_tile_platform(x, y, platform_id)`."""
         return self._get_station_registry()._set_tile_platform(x, y, platform_id)
+
+    # === Pathfinding walk cache (owned here; the static graph lives here) ===
+
+    def get_cached_walks(
+        self, start_block_id: str, end_block_id: str
+    ) -> Optional[List["PathSegment"]]:
+        """Return the cached topology-only walk enumeration for this block
+        pair, or None on a miss. The pathfinder owns what goes in; this network
+        only stores it so every pathfinder built from this graph shares one
+        BFS result per (start, end) until the topology changes."""
+        return self._walk_cache.get((start_block_id, end_block_id))
+
+    def store_cached_walks(
+        self, start_block_id: str, end_block_id: str, walks: List["PathSegment"]
+    ) -> None:
+        """Record the topology-only walk enumeration for this block pair."""
+        self._walk_cache[(start_block_id, end_block_id)] = walks
+
+    def invalidate_pathfinding_cache(self) -> None:
+        """Drop every cached walk. Called by each topology mutator (block
+        membership, track add/remove, switch add/remove, tunnel changes, full
+        reload). None of those run inside the sim tick loop, so the cache
+        survives a whole `update()` storm and is rebuilt lazily after an edit."""
+        # Defensive getattr: the block_section_id setter routes through
+        # _set_tile_block -> here, which can fire on a TrackSegment whose
+        # network back-reference was attached before __init__ finished wiring
+        # the cache (e.g. unusual deserialization orders).
+        cache = getattr(self, "_walk_cache", None)
+        if cache:
+            cache.clear()
 
     def add_track(self, track: TrackSegment):
         """Add a track segment to the network and propagate updates"""
@@ -471,6 +515,9 @@ class RailwayNetwork:
 
         The wave visits each affected tile once and calls propagate_update().
         """
+        # Connectivity / track add / tunnel changes flow through here (and the
+        # editor calls it after a track edit), so any cached walk is now stale.
+        self.invalidate_pathfinding_cache()
         self._sweep_stale_tunnels()
         queue = deque([(x, y)])
         visited = set()
@@ -1742,6 +1789,8 @@ class RailwayNetwork:
 
         # Store by ID
         self.switches[switch.switch_id] = switch
+        # A new switch changes the exits the topology-only BFS can take.
+        self.invalidate_pathfinding_cache()
         # Link track to switch
         track.switch_id = switch.switch_id
 
@@ -1776,6 +1825,8 @@ class RailwayNetwork:
             track.switch_id = None
 
         del self.switches[switch_id]
+        # Removing a switch removes exits the topology-only BFS could take.
+        self.invalidate_pathfinding_cache()
         return True
 
     def update_switch(self, switch_id: str, **kwargs) -> Optional["Switch"]:
@@ -1820,6 +1871,9 @@ class RailwayNetwork:
         if "switch_type" in kwargs:
             switch.switch_type = kwargs["switch_type"]
 
+        # switch_type changes the exits the BFS can take; the *_length/_radius
+        # changes feed walk distances. Both invalidate cached walks.
+        self.invalidate_pathfinding_cache()
         return switch
 
     def to_dict(self) -> dict:
@@ -1900,6 +1954,7 @@ class RailwayNetwork:
     def from_dict(self, data: dict):
         """Reconstruct network from dictionary"""
         # Clear existing
+        self.invalidate_pathfinding_cache()
         self.tracks.clear()
         self.trains.clear()
         self.blocks.clear()
