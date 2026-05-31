@@ -10,11 +10,13 @@ land — see git history.
 
 ### 1. Add a service layer between Flask routes and the domain
 
-**Status:** Acknowledged, deferred.
+**Status:** In progress. The `services/` package exists and the five
+services originally sketched here are built and unit-tested; what remains
+is migrating the other route modules onto the same pattern.
 
 **Problem.** Route handlers in `routes/*.py` mutate `state.network.*` and
-`state.sim_controller` directly. There is no service module that owns
-multi-entity transactional operations. This means:
+`state.sim_controller` directly. Without a service module that owns
+multi-entity operations:
 
 - A multi-step domain operation (e.g. "delete a layout and stop all
   schedules tied to it") lives inline in the HTTP handler and cannot be
@@ -23,24 +25,39 @@ multi-entity transactional operations. This means:
 - Future cross-cutting concerns (authorization, audit logging,
   transactional rollback) have 40+ retrofit sites instead of one.
 
-**Sketch of the fix.** Introduce a `services/` package alongside `routes/`:
+**The pattern (now established).** `services/` sits alongside `routes/`.
+Each service function takes `state: AppState` plus structured kwargs,
+returns domain objects, and raises a typed `ServiceError` subclass on
+failure (`ValidationError` → 400, `NotFoundError` → 404, `ConflictError`
+→ 409, `ServiceUnavailableError` → 503). Route handlers shrink to: parse
+request → call service → translate exceptions + serialize. Non-HTTP
+callers invoke the same functions directly — see `tests/test_services.py`.
+
+**Built so far** (service + thin route, both covered by `test_services.py`):
 
 ```
 services/
-    layout_service.py       # save/load/delete layouts; owns the multi-write
-    train_route_service.py  # CRUD + activate/deactivate; owns RouteRun lifecycle
-    schedule_service.py     # schedule CRUD; coordinates with train routes
-    speed_profile_service.py
-    switch_service.py
+    exceptions.py            # the typed ServiceError hierarchy
+    layout_service.py        # save/load/delete; owns the pause-and-lock multi-write
+    train_route_service.py   # route CRUD + activate/deactivate; RouteRun lifecycle
+    schedule_service.py      # schedule CRUD; coordinates with train routes
+    speed_profile_service.py # profile CRUD; owns simulation_lock + default/in-use guards
+    switch_service.py        # switch CRUD + availability flags + SwitchManager position changes
 ```
 
-Each service takes `state: AppState` (or just the entities it needs) and
-exposes pure operations. Route handlers shrink to: parse request → call
-service → format response. Tests can call services directly without a
-Flask request context.
+Migrated routes: `layouts`, `schedules`, `train_routes`, `speed_profiles`,
+`switches`.
 
-**When to do it.** When the next feature touches three or more entities
-in one request, or when we add authorization. Whichever comes first.
+**Remaining.** The other route modules still hold domain logic inline —
+`blocks` (665 lines), `trains` (798), `signals`, `stations`, `tracks`,
+`platforms`, `paths`, `route_runs`, `tunnels`, `inspector`, `simulation`.
+Adopt the same pattern when a route is next touched; the heaviest
+(`blocks`, `trains`) give the most leverage.
+
+**When to do it.** Incrementally, when the next feature touches a given
+route — or eagerly for `blocks`/`trains` if they grow further. The pattern
+and its test harness are in place, so each migration is now a small,
+self-contained slice.
 
 ---
 

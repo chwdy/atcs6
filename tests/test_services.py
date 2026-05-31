@@ -20,10 +20,16 @@ from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
 from speed_profile import SpeedProfileRegistry
+from track import TrackSegment
 from train import Train, TrainCar
 
-from services import NotFoundError, ValidationError
-from services import schedule_service, train_route_service
+from services import ConflictError, NotFoundError, ValidationError
+from services import (
+    schedule_service,
+    speed_profile_service,
+    switch_service,
+    train_route_service,
+)
 
 
 @pytest.fixture
@@ -162,3 +168,171 @@ class TestScheduleService:
         """A blank train_id is a validation error, not a not-found."""
         with pytest.raises(ValidationError):
             schedule_service.create_schedule(state, train_id="", stops=[])
+
+
+# ------------------------------------------------- speed_profile_service ----
+
+
+class TestSpeedProfileService:
+    def test_list_and_get_seeded_default(self, state):
+        """A fresh registry seeds a `default` profile the service can read."""
+        assert speed_profile_service.get_profile(state, "default") is not None
+        assert len(speed_profile_service.list_profiles(state)) >= 1
+
+    def test_create_profile_registers(self, state):
+        """`create_profile` registers a profile callable without HTTP."""
+        profile = speed_profile_service.create_profile(
+            state, data={"profile_id": "P1", "name": "Profile 1"}
+        )
+        assert profile.profile_id == "P1"
+        assert speed_profile_service.get_profile(state, "P1") is not None
+
+    def test_create_duplicate_raises_conflict(self, state):
+        """A repeated profile_id surfaces as ConflictError (HTTP 409)."""
+        speed_profile_service.create_profile(
+            state, data={"profile_id": "P1", "name": "Profile 1"}
+        )
+        with pytest.raises(ConflictError):
+            speed_profile_service.create_profile(
+                state, data={"profile_id": "P1", "name": "Dup"}
+            )
+
+    def test_create_missing_fields_raises_validation(self, state):
+        """Both profile_id and name are required."""
+        with pytest.raises(ValidationError):
+            speed_profile_service.create_profile(state, data={"name": "No id"})
+        with pytest.raises(ValidationError):
+            speed_profile_service.create_profile(state, data={"profile_id": "P2"})
+
+    def test_require_profile_raises_not_found(self, state):
+        """`require_profile` raises; `get_profile` returns None."""
+        assert speed_profile_service.get_profile(state, "MISSING") is None
+        with pytest.raises(NotFoundError):
+            speed_profile_service.require_profile(state, "MISSING")
+
+    def test_update_unknown_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            speed_profile_service.update_profile(state, "MISSING", data={"name": "x"})
+
+    def test_update_id_mismatch_raises_validation(self, state):
+        """A body profile_id that disagrees with the URL id is rejected."""
+        speed_profile_service.create_profile(
+            state, data={"profile_id": "P1", "name": "Profile 1"}
+        )
+        with pytest.raises(ValidationError):
+            speed_profile_service.update_profile(
+                state, "P1", data={"profile_id": "OTHER", "name": "x"}
+            )
+
+    def test_delete_default_raises_conflict(self, state):
+        """The seeded `default` profile may never be deleted."""
+        with pytest.raises(ConflictError):
+            speed_profile_service.delete_profile(state, "default")
+
+    def test_delete_in_use_raises_conflict(self, state_with_train):
+        """A profile assigned to a train cannot be deleted."""
+        speed_profile_service.create_profile(
+            state_with_train, data={"profile_id": "INUSE", "name": "In Use"}
+        )
+        state_with_train.network.trains["TRAIN_A"].speed_profile_id = "INUSE"
+        with pytest.raises(ConflictError):
+            speed_profile_service.delete_profile(state_with_train, "INUSE")
+
+    def test_delete_success(self, state):
+        speed_profile_service.create_profile(
+            state, data={"profile_id": "P9", "name": "Temp"}
+        )
+        assert speed_profile_service.delete_profile(state, "P9") is True
+        assert speed_profile_service.get_profile(state, "P9") is None
+
+
+# -------------------------------------------------------- switch_service ----
+
+
+@pytest.fixture
+def state_with_switch_track(state):
+    """AppState with one switch-track tile at (5, 0).
+
+    track_bits = EW | NE (0b000110) makes the tile a switch: it has both a
+    long path (EW) and a short path (NE), so switch_points is non-empty and
+    `is_switch` is True -- the same shape demo_3 uses for a switch tile.
+    """
+    state.network.add_track(TrackSegment(x=5, y=0, track_bits=0b000110))
+    return state
+
+
+class TestSwitchService:
+    def test_create_switch_at_track_is_idempotent(self, state_with_switch_track):
+        """First call creates `SW_5_0`; a second returns the same switch."""
+        state = state_with_switch_track
+        switch = switch_service.create_switch_at_track(state, 5, 0, data={})
+        assert switch.switch_id == "SW_5_0"
+        assert state.network.get_switch("SW_5_0") is switch
+
+        again = switch_service.create_switch_at_track(state, 5, 0, data={})
+        assert again is switch
+        assert len(state.network.switches) == 1
+
+    def test_create_switch_no_track_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            switch_service.create_switch_at_track(state, 9, 9, data={})
+
+    def test_create_switch_non_switch_track_raises_validation(self, state):
+        """A straight (EW-only) tile is a track but not a switch."""
+        state.network.add_track(TrackSegment(x=1, y=0, track_bits=2))
+        with pytest.raises(ValidationError):
+            switch_service.create_switch_at_track(state, 1, 0, data={})
+
+    def test_update_switch_forwards_config_fields(self, state_with_switch_track):
+        """Non-availability fields forward to RailwayNetwork.update_switch."""
+        state = state_with_switch_track
+        switch_service.create_switch_at_track(state, 5, 0, data={})
+        updated = switch_service.update_switch(
+            state, "SW_5_0", data={"name": "Renamed", "main_length_cm": 12.5}
+        )
+        assert updated.name == "Renamed"
+        assert updated.main_length_cm == 12.5
+
+    def test_disable_occupied_switch_raises_conflict(self, state_with_switch_track):
+        """Enabling `disabled` on an occupied switch is rejected (HTTP 409)."""
+        state = state_with_switch_track
+        switch = switch_service.create_switch_at_track(state, 5, 0, data={})
+        switch.occupied_by = "TRAIN_A"
+        with pytest.raises(ConflictError):
+            switch_service.update_switch(state, "SW_5_0", data={"disabled": True})
+        assert switch.disabled is False  # rejected, not applied
+
+    def test_disable_free_switch_succeeds(self, state_with_switch_track):
+        """A free switch accepts the availability flags."""
+        state = state_with_switch_track
+        switch_service.create_switch_at_track(state, 5, 0, data={})
+        updated = switch_service.update_switch(
+            state, "SW_5_0", data={"disabled": True, "manual": True}
+        )
+        assert updated.disabled is True
+        assert updated.manual is True
+
+    def test_delete_switch_missing_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            switch_service.delete_switch(state, "NOPE")
+
+    def test_request_position_change_returns_command_id(self, state_with_switch_track):
+        """A valid request echoes the caller's command id (outcome is async)."""
+        state = state_with_switch_track
+        switch_service.create_switch_at_track(state, 5, 0, data={})
+        command_id = switch_service.request_position_change(
+            state, "SW_5_0", new_state=1, command_id="CMD-1"
+        )
+        assert command_id == "CMD-1"
+
+    def test_request_position_change_invalid_state_raises_validation(
+        self, state_with_switch_track
+    ):
+        state = state_with_switch_track
+        switch_service.create_switch_at_track(state, 5, 0, data={})
+        with pytest.raises(ValidationError):
+            switch_service.request_position_change(state, "SW_5_0", new_state=2)
+
+    def test_request_position_change_unknown_switch_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            switch_service.request_position_change(state, "NOPE", new_state=0)

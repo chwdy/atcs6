@@ -12,6 +12,7 @@ from services.exceptions import (
     ConflictError,
     NotFoundError,
     ServiceError,
+    ServiceUnavailableError,
     ValidationError,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "ConflictError",
     "NotFoundError",
     "ServiceError",
+    "ServiceUnavailableError",
     "ValidationError",
 ]
