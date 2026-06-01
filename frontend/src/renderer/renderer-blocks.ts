@@ -4,11 +4,10 @@
 // Migrated from static/js/renderer-blocks.js (longterm_todo.md item #7,
 // renderer cluster). Behavior is unchanged; covered by renderer-blocks.test.ts.
 //
-// Consumes several still-classic globals (getActiveSegments, trackBitsToEdges,
+// Consumes several globals (getActiveSegments, trackBitsToEdges,
 // getBlockStateColor, getLabelSpacingMultiplier, TRACK_WIDTH, DEBUG_BLOCK_WIDTH)
-// — see frontend/src/legacy-globals.d.ts. Bundled into static/dist/main.js and
-// attached to window.RendererBlockHandler so the still-classic Renderer keeps
-// constructing it until renderer.js migrates.
+// — see frontend/src/legacy-globals.d.ts. Part of the Vite bundle; the Renderer
+// constructs it directly (`new RendererBlockHandler(this)`).
 
 export interface EdgePoint {
   x: number;
@@ -492,17 +491,4 @@ export class RendererBlockHandler {
 
     this.ctx.restore();
   }
-}
-
-declare global {
-  interface Window {
-    RendererBlockHandler?: typeof RendererBlockHandler;
-  }
-}
-
-// Browser-global bridge so the still-classic Renderer keeps doing
-// `new RendererBlockHandler(this)` until renderer.js migrates. Guarded so the
-// module also imports cleanly under Node (Vitest), where there is no `window`.
-if (typeof window !== 'undefined') {
-  window.RendererBlockHandler = RendererBlockHandler;
 }

@@ -3,12 +3,11 @@
 // Migrated from static/js/editor.js (longterm_todo.md item #7, Wave 3).
 // Behavior is unchanged. The Editor owns the toolbar, the canvas mouse/keyboard
 // interactions, the EditorMode state machine, the properties panel, and the
-// 11 entity handlers — which it now imports directly (Wave 2 left them as
-// window.<Handler> bridges; this facade consumes them as real modules).
+// 11 entity handlers — which it imports directly as real modules.
 //
-// `app.js` (still classic, Wave 4) does `new Editor(renderer, window.api)`, so
-// the class is bridged onto window.Editor. renderer / api are typed `any`: the
-// Editor is glue over the (large) Renderer and API surfaces.
+// app.ts constructs it via `new Editor(renderer, api)` (imported directly).
+// renderer / api are typed `any`: the Editor is glue over the (large) Renderer
+// and API surfaces.
 
 import {
   ConstructionPathfinder,
@@ -2714,11 +2713,4 @@ export class Editor {
       window.showToast?.(`Failed to create tunnel: ${err.message}`, 'error', 6000);
     }
   }
-}
-
-// Browser-global bridge so the still-classic app.js can `new Editor(renderer,
-// window.api)`. Guarded for Node (Vitest). Removed in the Decommission wave
-// (Wave 4) once app.js migrates and imports Editor directly.
-if (typeof window !== 'undefined') {
-  Object.assign(window as unknown as Record<string, unknown>, { Editor });
 }

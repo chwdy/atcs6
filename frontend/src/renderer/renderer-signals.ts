@@ -10,8 +10,8 @@
 // projection, and the track handler's edge-point geometry, and reads the global
 // trackBitsToEdges() (still-classic constants.js) until that module migrates.
 //
-// Bundled into static/dist/main.js and attached to window.RendererSignalHandler
-// so the still-classic Renderer keeps constructing it until renderer.js migrates.
+// Part of the Vite bundle; the Renderer constructs it directly
+// (`new RendererSignalHandler(this)`).
 
 export interface EdgePoint {
   x: number;
@@ -308,17 +308,4 @@ export class RendererSignalHandler {
       }
     }
   }
-}
-
-declare global {
-  interface Window {
-    RendererSignalHandler?: typeof RendererSignalHandler;
-  }
-}
-
-// Browser-global bridge so the still-classic Renderer keeps doing
-// `new RendererSignalHandler(this)` until renderer.js migrates. Guarded so the
-// module also imports cleanly under Node (Vitest), where there is no `window`.
-if (typeof window !== 'undefined') {
-  window.RendererSignalHandler = RendererSignalHandler;
 }

@@ -6,9 +6,8 @@
 // owns the two stacked canvases, the rAF-coalesced redraw loop, the
 // ResizeObserver, mouse tracking, and the shared label-placement geometry.
 //
-// Constructed by the still-classic app.js via `new Renderer('rail-canvas')`, so
-// it bridges itself to window.Renderer. Consumes the still-classic BIT_TO_EDGES
-// global (frontend/src/legacy-globals.d.ts).
+// app.ts constructs it via `new Renderer('rail-canvas')` (imported directly).
+// Still consumes the BIT_TO_EDGES global (frontend/src/legacy-globals.d.ts).
 
 import { Camera } from '../lib/camera';
 import { buildRenderSnapshot } from './render-snapshot';
@@ -996,19 +995,6 @@ class Renderer {
     const yo = Math.max(0, Math.min(ay + ah, by + bh) - Math.max(ay, by));
     return xo * yo;
   }
-}
-
-declare global {
-  interface Window {
-    Renderer?: typeof Renderer;
-  }
-}
-
-// Browser-global bridge so the still-classic app.js keeps doing
-// `new Renderer('rail-canvas')` until app.js migrates. Guarded so the module
-// also imports cleanly under Node (Vitest), where there is no `window`.
-if (typeof window !== 'undefined') {
-  window.Renderer = Renderer;
 }
 
 export { Renderer, COLORS, IsometricGeometry };

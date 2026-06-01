@@ -1448,17 +1448,4 @@ class TrainMonitor {
     }
 }
 
-declare global {
-  interface Window {
-    TrainMonitor?: typeof TrainMonitor;
-  }
-}
-
-// Browser-global bridge so the still-classic app.js keeps doing
-// `new TrainMonitor()` until app.js migrates. Guarded so the module also
-// imports cleanly under Node (Vitest), where there is no `window`.
-if (typeof window !== 'undefined') {
-  window.TrainMonitor = TrainMonitor;
-}
-
 export { TrainMonitor };

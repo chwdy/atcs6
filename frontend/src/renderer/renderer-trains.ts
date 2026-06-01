@@ -6,11 +6,10 @@
 // renderer cluster — the largest handler). Behavior is unchanged; covered by
 // renderer-trains.test.ts.
 //
-// Consumes still-classic globals getLabelSpacingMultiplier, the optional
-// DIRECTION_PREFERRED_QUADRANTS, and window.stateManager (the snapshot
-// fallback) — see frontend/src/legacy-globals.d.ts. Bundled into
-// static/dist/main.js and attached to window.RendererTrainHandler so the
-// still-classic Renderer keeps constructing it until renderer.js migrates.
+// Consumes the getLabelSpacingMultiplier and optional DIRECTION_PREFERRED_QUADRANTS
+// globals, plus window.stateManager (the snapshot fallback) — see
+// frontend/src/legacy-globals.d.ts. Part of the Vite bundle; the Renderer
+// constructs it directly (`new RendererTrainHandler(this)`).
 
 interface SpanEndpoint {
   tile: [number, number];
@@ -952,17 +951,4 @@ export class RendererTrainHandler {
       ? { labelX: 2 * cx - bestLX, labelY: 2 * cy - bestLY }
       : { labelX: bestLX, labelY: bestLY };
   }
-}
-
-declare global {
-  interface Window {
-    RendererTrainHandler?: typeof RendererTrainHandler;
-  }
-}
-
-// Browser-global bridge so the still-classic Renderer keeps doing
-// `new RendererTrainHandler(this)` until renderer.js migrates. Guarded so the
-// module also imports cleanly under Node (Vitest), where there is no `window`.
-if (typeof window !== 'undefined') {
-  window.RendererTrainHandler = RendererTrainHandler;
 }

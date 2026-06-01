@@ -11,8 +11,8 @@
 // grid size, and the grid<->screen projection — its track-bit geometry is self
 // contained.
 //
-// Bundled into static/dist/main.js and attached to window.RendererDebugHandler
-// so the still-classic Renderer keeps constructing it until renderer.js migrates.
+// Part of the Vite bundle; the Renderer constructs it directly
+// (`new RendererDebugHandler(this)`).
 
 /** The slice of the Renderer the debug handler reads through its back-reference. */
 export interface DebugHandlerRenderer {
@@ -328,17 +328,4 @@ export class RendererDebugHandler {
       }
     }
   }
-}
-
-declare global {
-  interface Window {
-    RendererDebugHandler?: typeof RendererDebugHandler;
-  }
-}
-
-// Browser-global bridge so the still-classic Renderer keeps doing
-// `new RendererDebugHandler(this)` until renderer.js migrates. Guarded so the
-// module also imports cleanly under Node (Vitest), where there is no `window`.
-if (typeof window !== 'undefined') {
-  window.RendererDebugHandler = RendererDebugHandler;
 }

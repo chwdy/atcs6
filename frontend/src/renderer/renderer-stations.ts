@@ -6,8 +6,8 @@
 // Migrated from static/js/renderer-stations.js (longterm_todo.md item #7,
 // renderer cluster). Behavior is unchanged; covered by renderer-stations.test.ts.
 //
-// Bundled into static/dist/main.js and attached to window.RendererStationHandler
-// so the still-classic Renderer keeps constructing it until renderer.js migrates.
+// Part of the Vite bundle; the Renderer constructs it directly
+// (`new RendererStationHandler(this)`).
 
 export interface StationPlatform {
   platform_id?: string;
@@ -378,17 +378,4 @@ export class RendererStationHandler {
     this.ctx.quadraticCurveTo(x, y, x + r, y);
     this.ctx.closePath();
   }
-}
-
-declare global {
-  interface Window {
-    RendererStationHandler?: typeof RendererStationHandler;
-  }
-}
-
-// Browser-global bridge so the still-classic Renderer keeps doing
-// `new RendererStationHandler(this)` until renderer.js migrates. Guarded so the
-// module also imports cleanly under Node (Vitest), where there is no `window`.
-if (typeof window !== 'undefined') {
-  window.RendererStationHandler = RendererStationHandler;
 }

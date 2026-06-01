@@ -5,10 +5,9 @@
 // Migrated from static/js/renderer-platforms.js (longterm_todo.md item #7,
 // renderer cluster). Behavior is unchanged; covered by renderer-platforms.test.ts.
 //
-// Consumes still-classic globals TRACK_BITS and getLabelSpacingMultiplier
-// (frontend/src/legacy-globals.d.ts). Bundled into static/dist/main.js and
-// attached to window.RendererPlatformHandler so the still-classic Renderer keeps
-// constructing it until renderer.js migrates.
+// Consumes the TRACK_BITS and getLabelSpacingMultiplier globals
+// (frontend/src/legacy-globals.d.ts). Part of the Vite bundle; the Renderer
+// constructs it directly (`new RendererPlatformHandler(this)`).
 
 interface Point {
   x: number;
@@ -581,17 +580,4 @@ export class RendererPlatformHandler {
     this.ctx.fill();
     this.ctx.stroke();
   }
-}
-
-declare global {
-  interface Window {
-    RendererPlatformHandler?: typeof RendererPlatformHandler;
-  }
-}
-
-// Browser-global bridge so the still-classic Renderer keeps doing
-// `new RendererPlatformHandler(this)` until renderer.js migrates. Guarded so the
-// module also imports cleanly under Node (Vitest), where there is no `window`.
-if (typeof window !== 'undefined') {
-  window.RendererPlatformHandler = RendererPlatformHandler;
 }

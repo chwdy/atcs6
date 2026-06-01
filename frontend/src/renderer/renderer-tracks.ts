@@ -6,10 +6,9 @@
 // Migrated from static/js/renderer-tracks.js (longterm_todo.md item #7,
 // renderer cluster). Behavior is unchanged; covered by renderer-tracks.test.ts.
 //
-// Consumes still-classic globals getActiveSegments, isCrossing, TRACK_WIDTH
-// (frontend/src/legacy-globals.d.ts). Bundled into static/dist/main.js and
-// attached to window.RendererTrackHandler so the still-classic Renderer keeps
-// constructing it until renderer.js migrates.
+// Consumes the getActiveSegments, isCrossing, TRACK_WIDTH globals
+// (frontend/src/legacy-globals.d.ts). Part of the Vite bundle; the Renderer
+// constructs it directly (`new RendererTrackHandler(this)`).
 
 import type { Signal } from './renderer-signals';
 
@@ -628,17 +627,4 @@ export class RendererTrackHandler {
 
     this.ctx.restore();
   }
-}
-
-declare global {
-  interface Window {
-    RendererTrackHandler?: typeof RendererTrackHandler;
-  }
-}
-
-// Browser-global bridge so the still-classic Renderer keeps doing
-// `new RendererTrackHandler(this)` until renderer.js migrates. Guarded so the
-// module also imports cleanly under Node (Vitest), where there is no `window`.
-if (typeof window !== 'undefined') {
-  window.RendererTrackHandler = RendererTrackHandler;
 }

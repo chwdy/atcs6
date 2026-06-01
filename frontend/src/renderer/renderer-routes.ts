@@ -4,8 +4,8 @@
 // Migrated from static/js/renderer-routes.js (longterm_todo.md item #7,
 // renderer cluster). Behavior is unchanged; covered by renderer-routes.test.ts.
 //
-// Bundled into static/dist/main.js and attached to window.RendererRouteHandler
-// so the still-classic Renderer keeps constructing it until renderer.js migrates.
+// Part of the Vite bundle; the Renderer constructs it directly
+// (`new RendererRouteHandler(this)`).
 
 interface RedrawRequest {
   live?: boolean;
@@ -367,17 +367,4 @@ export class RendererRouteHandler {
       this.ctx.stroke();
     }
   }
-}
-
-declare global {
-  interface Window {
-    RendererRouteHandler?: typeof RendererRouteHandler;
-  }
-}
-
-// Browser-global bridge so the still-classic Renderer keeps doing
-// `new RendererRouteHandler(this)` until renderer.js migrates. Guarded so the
-// module also imports cleanly under Node (Vitest), where there is no `window`.
-if (typeof window !== 'undefined') {
-  window.RendererRouteHandler = RendererRouteHandler;
 }

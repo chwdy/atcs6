@@ -8,8 +8,8 @@
 // flush. It reaches back through its `renderer` reference for the 2D context,
 // the grid<->screen projection, and the track handler's edge-point geometry.
 //
-// Bundled into static/dist/main.js and attached to window.RendererTunnelHandler
-// so the still-classic Renderer keeps constructing it until renderer.js migrates.
+// Part of the Vite bundle; the Renderer constructs it directly
+// (`new RendererTunnelHandler(this)`).
 
 export interface EdgePoint {
   x: number;
@@ -159,17 +159,4 @@ export class RendererTunnelHandler {
 
     this.ctx.restore();
   }
-}
-
-declare global {
-  interface Window {
-    RendererTunnelHandler?: typeof RendererTunnelHandler;
-  }
-}
-
-// Browser-global bridge so the still-classic Renderer keeps doing
-// `new RendererTunnelHandler(this)` until renderer.js migrates. Guarded so the
-// module also imports cleanly under Node (Vitest), where there is no `window`.
-if (typeof window !== 'undefined') {
-  window.RendererTunnelHandler = RendererTunnelHandler;
 }

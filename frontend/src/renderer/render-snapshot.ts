@@ -16,9 +16,7 @@
 // state already flow through `network.*` so they don't need snapshotting
 // yet; future expansion can pre-resolve their color categories here.
 //
-// Bundled into static/dist/main.js and attached to window.buildRenderSnapshot
-// so the not-yet-migrated classic renderer scripts keep calling it until they
-// migrate too.
+// Part of the Vite bundle; Renderer._flushRedraw imports and calls it directly.
 
 /** A controller span as the renderer reads it (snake_case from the payload). */
 export interface ControllerSpan {
@@ -108,17 +106,4 @@ export function buildRenderSnapshot(
     };
   }
   return snap;
-}
-
-declare global {
-  interface Window {
-    buildRenderSnapshot?: typeof buildRenderSnapshot;
-  }
-}
-
-// Browser-global bridge so the legacy classic scripts (Renderer) keep calling
-// `buildRenderSnapshot(...)` until they migrate. Guarded so the module also
-// imports cleanly under Node (Vitest), where there is no `window`.
-if (typeof window !== 'undefined') {
-  window.buildRenderSnapshot = buildRenderSnapshot;
 }

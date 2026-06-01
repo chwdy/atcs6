@@ -6,9 +6,8 @@
 // Node-eval test_camera_math.py).
 //
 // Owns viewport state (panX, panY, scale, centerX, centerY, gridSize) and the
-// world<->screen projection. Bundled into static/dist/main.js and attached to
-// window.Camera so the not-yet-migrated classic scripts (Renderer) keep doing
-// `new Camera(...)` until they migrate too.
+// world<->screen projection. Part of the Vite bundle; the Renderer imports it
+// and constructs `new Camera(...)` directly.
 
 /**
  * Minimal canvas shape the camera reads. HTMLCanvasElement satisfies it, and
@@ -194,17 +193,4 @@ export class Camera {
     this.panY = -(((gridX - gridY) * tileSize) / 2);
     this._emit();
   }
-}
-
-declare global {
-  interface Window {
-    Camera?: typeof Camera;
-  }
-}
-
-// Browser-global bridge so the legacy classic scripts (Renderer) keep doing
-// `new Camera(...)` until they migrate. Guarded so the module also imports
-// cleanly under Node (Vitest), where there is no `window`.
-if (typeof window !== 'undefined') {
-  window.Camera = Camera;
 }
