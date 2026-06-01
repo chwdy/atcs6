@@ -53,6 +53,7 @@ interface Window {
   // files migrate: the toast helper (app.js), the App instance (app.js), and
   // the API client (api.js). Loosely typed — only the members the panels touch.
   showToast?: (message: string, kind?: string, durationMs?: number) => void;
+  dismissToast?: (toastId: string) => void;
   app?: {
     editor?: { showFullJSONViewer(data: unknown, title: string): void; [key: string]: any };
     // The editor handlers (Wave 2) call app methods like refreshNetwork();

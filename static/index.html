@@ -501,13 +501,10 @@
     </div>
 
 
-    <script src="js/app.js?v=16"></script>
-
-    <!-- Frontend build bundle (longterm_todo.md item #7). Built by Vite from
-         frontend/src/main.ts into static/dist/main.js; load-bearing — it
-         provides the modules already migrated off the classic scripts (camera,
-         render-snapshot) that the scripts above still reach for on `window`.
-         As more files migrate they drop out of the classic-script list above.
+    <!-- Frontend build bundle (longterm_todo.md item #7, complete). Built by
+         Vite from frontend/src/main.ts into static/dist/main.js — the single
+         script for the whole app. Every classic script (app.js, editor.js, the
+         renderer/panel/foundation cluster) has migrated into this bundle.
          Regenerate with `npm run build`. -->
     <script type="module" src="dist/main.js"></script>
 </body>

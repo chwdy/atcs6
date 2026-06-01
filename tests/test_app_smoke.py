@@ -60,26 +60,24 @@ class TestAppSmoke:
     def test_all_required_javascript_files_exist(self):
         """Required frontend entry points exist and are non-empty.
 
-        The frontend is mid-migration to a Vite build (see vite.config.ts):
-        the renderer/foundation/editor clusters moved under frontend/src/ and
-        are bundled into static/dist/main.js, while only app.js is still served
-        as a classic script from static/js/. "Required files" now spans two
-        roots:
+        The frontend migration to a Vite build (longterm_todo.md item #7) is
+        complete: every classic script — including the app.js bootstrap — moved
+        under frontend/src/ and is bundled into static/dist/main.js. The two
+        committed source entry points are:
 
-          - static/js/app.js — the surviving classic bootstrap, still loaded
-            directly by static/index.html.
-          - frontend/src/main.ts — the Vite entry that builds into
-            static/dist/main.js.
+          - frontend/src/app.ts — the application bootstrap (`new App()`),
+            imported by main.ts.
+          - frontend/src/main.ts — the Vite entry that imports app.ts (and the
+            rest of the modules) and builds into static/dist/main.js.
 
-        We assert the committed *source* (main.ts), not the build output:
-        static/dist/ is gitignored (.gitignore) and absent on a fresh
-        checkout until `npm run build` runs, so a pre-commit smoke test must
-        not depend on it. This matches the other frontend-source assertions
-        in this file (the train-monitor tests point at
-        frontend/src/panels/train-monitor.ts).
+        We assert the committed *source* (the .ts files), not the build output:
+        static/dist/ is gitignored (.gitignore) and absent on a fresh checkout
+        until `npm run build` runs, so a pre-commit smoke test must not depend
+        on it. This matches the other frontend-source assertions in this file
+        (the train-monitor tests point at frontend/src/panels/train-monitor.ts).
         """
         required_files = [
-            PROJECT_ROOT / "static" / "js" / "app.js",
+            PROJECT_ROOT / "frontend" / "src" / "app.ts",
             PROJECT_ROOT / "frontend" / "src" / "main.ts",
         ]
 
@@ -107,19 +105,20 @@ class TestAppSmoke:
         )
 
     def test_index_html_includes_all_scripts(self):
-        """index.html wires up both the classic scripts and the Vite bundle.
+        """index.html loads the whole app through the single Vite bundle.
 
-        Post-migration, static/index.html loads the surviving classic editor
-        scripts directly and the bundled modules through the Vite build entry
-        `dist/main.js` (the `<script type="module">` near the bottom of the
-        page). Assert all three are referenced so a dropped tag is caught.
+        The migration is complete (longterm_todo.md item #7): static/index.html
+        no longer references any classic `<script src="js/...">`; the entire app
+        loads through the Vite build entry `dist/main.js` (the `<script
+        type="module">` near the bottom of the page). Assert the bundle tag is
+        present so a dropped entry point is caught.
         """
         index_file = PROJECT_ROOT / "static" / "index.html"
         content = index_file.read_text()
 
-        required_scripts = ["app.js", "dist/main.js"]
-        for script in required_scripts:
-            assert script in content, f"index.html missing script tag for {script}"
+        assert "dist/main.js" in content, (
+            "index.html missing the dist/main.js bundle script"
+        )
 
     def test_index_html_has_canvas(self):
         """Test that index.html has the canvas element"""
@@ -130,22 +129,27 @@ class TestAppSmoke:
             "index.html missing canvas element with id='rail-canvas'"
         )
 
-    def test_index_html_has_correct_script_order(self):
-        """Test that scripts are loaded in the correct order"""
+    def test_index_html_has_no_classic_scripts(self):
+        """The page loads exactly one script: the Vite module bundle.
+
+        Post-migration (longterm_todo.md item #7) there are no classic
+        `<script src="js/...">` tags — every script moved into the bundle. The
+        only script element is `<script type="module" src="dist/main.js">` near
+        the bottom of the page. Guard against a classic tag creeping back.
+        """
         index_file = PROJECT_ROOT / "static" / "index.html"
         content = index_file.read_text()
 
-        # Only app.js remains a classic script; the renderer, foundation, and
-        # editor clusters migrated under frontend/src/ and are served via the
-        # Vite bundle. app.js (which bootstraps `new App()` → `new Editor(...)`
-        # on DOMContentLoaded) must load before the bundle's `<script
-        # type="module">` so its globals exist when the module bridges resolve.
-        app_pos = content.find('src="js/app.js')
-        bundle_pos = content.find('dist/main.js')
-
-        # Verify order: app.js -> bundle
-        assert app_pos != -1, "app.js script tag is missing"
-        assert app_pos < bundle_pos, "app.js must load before the dist/main.js bundle"
+        # No classic per-file scripts from static/js/ remain.
+        assert 'src="js/' not in content, (
+            "index.html still references a classic static/js/ script; all "
+            "scripts should load through the dist/main.js bundle"
+        )
+        # The module bundle is present and declared type="module".
+        assert 'type="module" src="dist/main.js"' in content, (
+            'index.html missing the `<script type="module" src="dist/main.js">` '
+            "bundle tag"
+        )
 
     def test_server_py_exists(self):
         """Test that server.py exists"""

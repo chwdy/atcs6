@@ -114,12 +114,18 @@ class TestJavaScriptSyntax:
         )
 
     def test_all_required_js_files_exist(self):
-        """Test that all required JavaScript files exist"""
-        required_files = ["app.js"]
+        """The migrated frontend entry points exist.
 
-        for filename in required_files:
-            file_path = JS_DIR / filename
-            assert file_path.exists(), f"Required file {filename} is missing"
+        The classic static/js/ scripts migrated to frontend/src/ (longterm_todo.md
+        item #7) and are bundled by Vite; assert the committed TS sources.
+        """
+        required_files = [
+            PROJECT_ROOT / "frontend" / "src" / "app.ts",
+            PROJECT_ROOT / "frontend" / "src" / "main.ts",
+        ]
+
+        for file_path in required_files:
+            assert file_path.exists(), f"Required file {file_path} is missing"
 
     def test_api_js_has_api_class(self):
         """Test that the migrated api module defines the API class"""
@@ -159,11 +165,11 @@ class TestJavaScriptSyntax:
         assert "class Renderer" in content, "renderer.ts must define Renderer class"
 
     def test_app_js_has_app_class(self):
-        """Test that app.js defines the App class"""
-        app_file = JS_DIR / "app.js"
+        """Test that the migrated app module defines the App class"""
+        app_file = PROJECT_ROOT / "frontend" / "src" / "app.ts"
         content = app_file.read_text()
 
-        assert "class App" in content, "app.js must define App class"
+        assert "class App" in content, "app.ts must define App class"
 
     def test_editor_trains_waits_for_ato_stop(self):
         """ATO stop should wait for train to fully stop before refresh."""
