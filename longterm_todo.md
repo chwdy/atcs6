@@ -220,103 +220,7 @@ are touched by both. Or earlier if a concurrency bug bites.
 
 ---
 
-### 7. Finish the frontend build pipeline
-
-**Status:** In progress. The renderer cluster and the monitor/inspector cluster
-are both migrated. The renderer cluster is all eleven files (`render-snapshot` +
-nine `renderer-*` handlers + `renderer.js`, the orchestrator) as TypeScript
-modules under `frontend/src/renderer/`; `renderer.js` imports the handlers +
-`Camera` + `buildRenderSnapshot` directly and bridges `window.Renderer` for
-classic `app.js`. The monitor/inspector cluster is `train-monitor` and
-`inspector` under `frontend/src/panels/` (bridged via `window.TrainMonitor` /
-the self-bootstrapping `window.inspectorPanel`), plus `debug-inspector` under
-`frontend/src/debug/` powering the rebuilt `/debug` page (a second Vite entry →
-`static/dist/debug.js`, hosted by the restored `static/debug.html`).
-`scenario-recorder.js` was orphaned (loaded/instantiated nowhere since commit
-`22dfe40`) and was deleted rather than migrated. The still-classic globals these
-modules consume (`trackBitsToEdges`, `getActiveSegments`, `isCrossing`,
-`getBlockStateColor`, `getLabelSpacingMultiplier`, `TRACK_WIDTH`,
-`DEBUG_BLOCK_WIDTH`, `TRACK_BITS`, `BIT_TO_EDGES`, `DIRECTION_PREFERRED_QUADRANTS`,
-`window.stateManager`, `window.api`, `window.app`, `window.showToast`) are
-declared once in `frontend/src/legacy-globals.d.ts`.
-Concretely: **16 of ~33 files migrated; 17 files / ~18,400 lines still classic**,
-all 17 still loaded as `<script>` tags in `static/index.html`.
-
-**Already in place** (so the rest is mechanical repeats):
-
-- Vite 4 + TypeScript 5 + Vitest 0.34 (pinned for the repo's Node 17), merged
-  into `package.json`: `npm run build` / `dev` / `test:unit` / `typecheck`.
-  `vite build` bundles two entries (`rollupOptions.input`):
-  `frontend/src/main.ts` → `static/dist/main.js` (the main page) and
-  `frontend/src/debug/debug-inspector.ts` → `static/dist/debug.js` (the `/debug`
-  page), both served by Flask's catch-all route.
-- TS payload types generated from `runtime_payloads.py`
-  (`tools/gen_payload_types.py` → `frontend/src/payloads.generated.ts`), guarded
-  by a drift test (`tests/test_payload_types_sync.py`).
-- A build-on-serve guard: `server.py` runs `frontend_build.py` on
-  `python server.py`, rebuilding `static/dist/main.js` when missing or stale
-  (the bundle is gitignored and now load-bearing). Skippable via
-  `--skip-frontend-build` / `ATCS6_SKIP_FRONTEND_BUILD`; never blocks startup.
-- The first conversion is done as the template: `static/js/camera.js` →
-  `frontend/src/lib/camera.ts`, bridged via `window.Camera`, its Node-eval test
-  ported to native Vitest.
-
-**The per-file recipe** (each conversion is one small, verifiable slice):
-
-1. Move `static/js/<name>.js` → `frontend/src/.../<name>.ts`; add types; keep
-   behavior byte-for-byte identical.
-2. If still-classic scripts use it, attach it to `window` at module top
-   (guard with `typeof window !== 'undefined'`) and `import` it in `main.ts`
-   for that side effect. Module scripts are deferred, so the bridge is set
-   before `app.js` bootstraps on `DOMContentLoaded` — verified safe.
-3. Drop its `<script>` tag from `index.html`; delete the legacy `.js` file.
-4. Port any Python test that evals the raw JS (the `test_camera_math` pattern)
-   to native Vitest. **Two files carry parity tests that must stay green through
-   the move:** `pathfinders.js` (`tests/test_pathfinder_frontend_parity.py`) and
-   `constants.js` (`tests/test_square_corner_parity.py`, which pins the
-   square-corner switch geometry shared with Python).
-5. Fix stale references to the moved file; run `npm run typecheck` +
-   `test:unit`; eyeball the canvas/UI in the browser.
-
-**Remaining work, in order** (line counts approximate; `camera`, the renderer
-cluster, and the monitor/inspector cluster are already done, so they are marked
-below; the two remaining groups sum to 16 of the 17 remaining classic files —
-`app.js` is the 17th, handled by Decommission):
-
-- **Renderer cluster** — ✅ done. All eleven files (`render-snapshot` + nine
-  `renderer-*` handlers + `renderer.js`, the orchestrator) are TypeScript modules
-  under `frontend/src/renderer/`. `renderer.js` imports the handlers + `Camera` +
-  `buildRenderSnapshot` and bridges `window.Renderer` for classic `app.js`; the
-  shared still-classic globals live in `frontend/src/legacy-globals.d.ts`.
-- **Monitor / inspector cluster** — ✅ done. `train-monitor` + `inspector` are
-  TypeScript modules under `frontend/src/panels/` (bridged via
-  `window.TrainMonitor` and the self-bootstrapping `window.inspectorPanel`);
-  `debug-inspector` is under `frontend/src/debug/` and powers the rebuilt
-  `/debug` page via a second Vite entry (`static/dist/debug.js` + restored
-  `static/debug.html` + `static/css/debug.css`). `scenario-recorder.js` was
-  orphaned and deleted, not migrated. `test_app_smoke.py`'s two train-monitor
-  source assertions were repointed to the `.ts`.
-- **Foundation** — 5 files, ~3,950 lines: `constants`, `api`, `state-manager`,
-  `helpers`, `pathfinders` become real modules that import each other; remove
-  their `window` bridges. `constants` and `pathfinders` each carry a parity
-  test (see recipe step 4) that must stay green.
-- **Editor cluster** — 11 files, ~13,000 lines incl. `editor.js` (2,853) and
-  `editor-routes.js` (2,435); the hardest and most coupled; one sub-module at a
-  time, `editor.js` last.
-- **Decommission** — migrate `app.js` last (~1,490 lines — the bootstrap that
-  builds `new App()` on `DOMContentLoaded`, which every other script hangs off).
-  `index.html` becomes a stub with one `<script type="module">`; delete the
-  `?v=` cache-busting; CI runs `vite build` + `tsc --noEmit` + Vitest; remove
-  the remaining `window` bridges.
-
-**When to do it.** When the next non-trivial frontend feature would push
-`editor.js` over 3,000 lines (it is 2,853 today — ~150 lines from the trigger,
-the closest any long-term item sits to its own tripwire). Each slice is a clean
-stopping point.
-
----
-
-### 8. Version the HTTP API
+### 7. Version the HTTP API
 
 **Status:** Acknowledged, deferred.
 
@@ -337,7 +241,7 @@ expensive later.
 
 ---
 
-### 9. Minor hygiene
+### 8. Minor hygiene
 
 **Status:** Acknowledged, deferred.
 
@@ -347,7 +251,7 @@ A list of small structural smells worth a sweep on a slow afternoon:
 - `TODO List:` blocks embedded inside module docstrings (e.g. `app_state.py`, `app_factory.py`). Process artifacts belong in this file, not in source.
 - `__pycache__/` appears in the working tree listing — confirm it is `.gitignore`d and not tracked.
 - Replace ad-hoc `Optional[object]` parameters (e.g. `route_executor.py:171`) with proper forward references or protocols.
-- `routes/*.py` has 17 modules but no shared request-parsing helper. The next route added that does JSON validation is the prompt to introduce one (likely `pydantic` request models, dovetailing with item 7's payload-types work).
+- `routes/*.py` has 17 modules but no shared request-parsing helper. The next route added that does JSON validation is the prompt to introduce one (likely `pydantic` request models, dovetailing with the payload-types tooling (`tools/gen_payload_types.py` -> `frontend/src/payloads.generated.ts`) from the now-landed frontend build pipeline).
 
 **When to do it.** Whenever you are already in the area for another
 reason.
