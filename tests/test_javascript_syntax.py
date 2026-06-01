@@ -133,7 +133,9 @@ class TestJavaScriptSyntax:
         content = api_file.read_text()
 
         assert "class API" in content, "api.ts must define API class"
-        assert "window.api = new API()" in content, "api.ts must export API instance"
+        assert "export const api = new API()" in content, (
+            "api.ts must export the singleton API instance"
+        )
 
     def test_editor_js_has_editor_class(self):
         """Test that the migrated editor module defines the Editor class"""

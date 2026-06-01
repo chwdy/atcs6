@@ -9,6 +9,8 @@
 // renderer / api are typed `any`: the Editor is glue over the (large) Renderer
 // and API surfaces.
 
+import { stateManager } from '../lib/state-manager';
+import { showToast } from '../lib/toast';
 import {
   ConstructionPathfinder,
   pathToTracks,
@@ -1105,11 +1107,11 @@ export class Editor {
       const key = e.key.toLowerCase();
       if (key === 'r') {
         this.forcedStartSegment = cycleSegment(this.forcedStartSegment);
-        window.showToast?.(`Start segment: ${this.forcedStartSegment || 'auto'}`, 'info', 800);
+        showToast(`Start segment: ${this.forcedStartSegment || 'auto'}`, 'info', 800);
         if (this.isDraggingBuild) this.updatePreviewPath();
       } else if (key === 't') {
         this.forcedEndSegment = cycleSegment(this.forcedEndSegment);
-        window.showToast?.(`End segment: ${this.forcedEndSegment || 'auto'}`, 'info', 800);
+        showToast(`End segment: ${this.forcedEndSegment || 'auto'}`, 'info', 800);
         if (this.isDraggingBuild) this.updatePreviewPath();
       }
     });
@@ -1174,7 +1176,7 @@ export class Editor {
           const m = this.activeMode;
           await this.exitMode();
           if (this.selectedTool !== 'select') this._setSelectedTool('select');
-          window.showToast?.(m.cancelMessage ?? `${m.name} cancelled`, 'info', 3000);
+          showToast(m.cancelMessage ?? `${m.name} cancelled`, 'info', 3000);
           return;
         }
 
@@ -1204,7 +1206,7 @@ export class Editor {
       e.preventDefault();
 
       if (this.boxSelectState.selectedKeys.size === 0) {
-        window.showToast?.('Nothing selected', 'info', 2000);
+        showToast('Nothing selected', 'info', 2000);
         return;
       }
 
@@ -1222,7 +1224,7 @@ export class Editor {
         }
       } catch (err: any) {
         console.error('[Editor] Box-select delete failed:', err);
-        window.showToast?.('Failed to delete: ' + err.message, 'error', 5000);
+        showToast('Failed to delete: ' + err.message, 'error', 5000);
       }
     });
 
@@ -1418,7 +1420,7 @@ export class Editor {
 
         if (!validation.valid) {
           const errorMsg = 'Cannot create block:\n' + validation.errors.join('\n');
-          window.showToast?.(errorMsg, 'error', 5000);
+          showToast(errorMsg, 'error', 5000);
           console.error('[Editor] Block creation validation failed:', validation.errors);
           return;
         }
@@ -1456,7 +1458,7 @@ export class Editor {
           await this.refreshBlocksList();
         } catch (err: any) {
           console.error('[Editor] Failed to create block:', err);
-          window.showToast?.('Failed to create block: ' + err.message, 'error', 5000);
+          showToast('Failed to create block: ' + err.message, 'error', 5000);
           return;
         }
       } else if (this.selectedTool === 'extend-block') {
@@ -1467,7 +1469,7 @@ export class Editor {
 
         if (!validation.valid) {
           const errorMsg = 'Cannot extend block:\n' + validation.errors.join('\n');
-          window.showToast?.(errorMsg, 'error', 5000);
+          showToast(errorMsg, 'error', 5000);
           console.error('[Editor] Block extension validation failed:', validation.errors);
           return;
         }
@@ -1515,13 +1517,13 @@ export class Editor {
 
           if (apiResult.invalidated_signals && apiResult.invalidated_signals.length > 0) {
             const count = apiResult.invalidated_signals.length;
-            window.showToast?.(`Block extended. ${count} signal(s) need reconfiguration.`, 'warning');
+            showToast(`Block extended. ${count} signal(s) need reconfiguration.`, 'warning');
           }
 
           await this.refreshBlocksList();
         } catch (err: any) {
           console.error('[Editor] Failed to extend block:', err);
-          window.showToast?.('Failed to extend block: ' + err.message, 'error', 5000);
+          showToast('Failed to extend block: ' + err.message, 'error', 5000);
           return;
         }
       } else if (this.selectedTool === 'extend-platform') {
@@ -1539,7 +1541,7 @@ export class Editor {
         }
 
         if (platformsInPath.size === 0) {
-          window.showToast?.('No platform found in path. Start the drag on an existing platform.', 'error', 5000);
+          showToast('No platform found in path. Start the drag on an existing platform.', 'error', 5000);
           return;
         }
 
@@ -1564,16 +1566,16 @@ export class Editor {
             .map((p: any) => [p.x, p.y]);
 
           if (newPositions.length === 0) {
-            window.showToast?.('All tiles are already part of the platform.', 'error', 5000);
+            showToast('All tiles are already part of the platform.', 'error', 5000);
             return;
           }
 
           await this.api.extendPlatform(platformId, newPositions);
 
-          window.showToast?.(`Platform extended with ${newPositions.length} tile(s)`, 'success');
+          showToast(`Platform extended with ${newPositions.length} tile(s)`, 'success');
         } catch (err: any) {
           console.error('[Editor] Failed to extend platform:', err);
-          window.showToast?.('Failed to extend platform: ' + err.message, 'error', 5000);
+          showToast('Failed to extend platform: ' + err.message, 'error', 5000);
           return;
         }
       } else if (this.selectedTool === 'eraser') {
@@ -1611,10 +1613,10 @@ export class Editor {
         }
 
         if (successCount > 0) {
-          window.showToast?.(`Removed ${successCount} platform tile(s)`, 'success');
+          showToast(`Removed ${successCount} platform tile(s)`, 'success');
         }
         if (errorCount > 0) {
-          window.showToast?.(`Failed to remove ${errorCount} tile(s):\n${errors.slice(0, 3).join('\n')}`, 'error', 5000);
+          showToast(`Failed to remove ${errorCount} tile(s):\n${errors.slice(0, 3).join('\n')}`, 'error', 5000);
         }
       } else if (this.selectedTool === 'remove-block-tile') {
         if (!this.previewPath || this.previewPath.length === 0) return;
@@ -1633,7 +1635,7 @@ export class Editor {
         }
 
         if (blockGroups.size === 0) {
-          window.showToast?.('No block tiles in selected path', 'error', 3000);
+          showToast('No block tiles in selected path', 'error', 3000);
           return;
         }
 
@@ -1653,10 +1655,10 @@ export class Editor {
         }
 
         if (totalSuccess > 0) {
-          window.showToast?.(`Removed ${totalSuccess} block tile(s)`, 'success');
+          showToast(`Removed ${totalSuccess} block tile(s)`, 'success');
         }
         if (totalErrors.length > 0) {
-          window.showToast?.(`Errors:\n${totalErrors.slice(0, 3).join('\n')}`, 'error', 5000);
+          showToast(`Errors:\n${totalErrors.slice(0, 3).join('\n')}`, 'error', 5000);
         }
       }
 
@@ -1759,25 +1761,25 @@ export class Editor {
       );
 
       if (!existingTrack) {
-        window.showToast?.('No track at this position', 'error', 3000);
+        showToast('No track at this position', 'error', 3000);
         return;
       }
 
       if (this.selectedTool === 'remove-platform-tile') {
         if (!existingTrack.station_id) {
-          window.showToast?.('No platform at this position', 'error', 3000);
+          showToast('No platform at this position', 'error', 3000);
           return;
         }
 
         try {
           await this.api.removePlatformTile(existingTrack.station_id, gridPos.x, gridPos.y);
-          window.showToast?.('Platform tile removed', 'success');
+          showToast('Platform tile removed', 'success');
         } catch (err: any) {
-          window.showToast?.(`Failed to remove platform tile: ${err.message}`, 'error', 5000);
+          showToast(`Failed to remove platform tile: ${err.message}`, 'error', 5000);
         }
       } else if (this.selectedTool === 'remove-block-tile') {
         if (!existingTrack.block_section_id) {
-          window.showToast?.('No block at this position', 'error', 3000);
+          showToast('No block at this position', 'error', 3000);
           return;
         }
 
@@ -1787,12 +1789,12 @@ export class Editor {
           ]);
 
           if (result.removed > 0) {
-            window.showToast?.('Block tile removed', 'success');
+            showToast('Block tile removed', 'success');
           } else if (result.errors && result.errors.length > 0) {
-            window.showToast?.(`Cannot remove: ${result.errors[0]}`, 'error', 5000);
+            showToast(`Cannot remove: ${result.errors[0]}`, 'error', 5000);
           }
         } catch (err: any) {
-          window.showToast?.(`Failed to remove block tile: ${err.message}`, 'error', 5000);
+          showToast(`Failed to remove block tile: ${err.message}`, 'error', 5000);
         }
       }
 
@@ -1809,7 +1811,7 @@ export class Editor {
     );
 
     if (!existingTrack) {
-      window.showToast?.(`Cannot place ${this.selectedTool}: No track at this position`, 'error', 5000);
+      showToast(`Cannot place ${this.selectedTool}: No track at this position`, 'error', 5000);
       return;
     }
 
@@ -1820,7 +1822,7 @@ export class Editor {
 
     if (this.selectedTool === 'signal') {
       if (existingTrack.station_name) {
-        window.showToast?.('Cannot place signal on a platform', 'error', 5000);
+        showToast('Cannot place signal on a platform', 'error', 5000);
         return;
       }
 
@@ -1828,7 +1830,7 @@ export class Editor {
         const validation = await this.api.validateSignalPlacement(gridPos.x, gridPos.y);
 
         if (!validation.can_place) {
-          window.showToast?.(validation.error || 'Cannot place signal at this position', 'error', 5000);
+          showToast(validation.error || 'Cannot place signal at this position', 'error', 5000);
           return;
         }
 
@@ -1845,7 +1847,7 @@ export class Editor {
         }
 
         if (!detectionDirection) {
-          window.showToast?.('No valid detection direction available for signal placement', 'error', 5000);
+          showToast('No valid detection direction available for signal placement', 'error', 5000);
           return;
         }
 
@@ -1856,7 +1858,7 @@ export class Editor {
         this._lastValidatedPosition = null;
       } catch (err: any) {
         console.error('[Editor] Signal creation failed:', err);
-        window.showToast?.('Failed to create signal: ' + err.message, 'error', 5000);
+        showToast('Failed to create signal: ' + err.message, 'error', 5000);
         return;
       }
     } else if (this.selectedTool === 'platform') {
@@ -1864,7 +1866,7 @@ export class Editor {
         const validation = await this.api.validatePlatformPlacement(gridPos.x, gridPos.y);
 
         if (!validation.can_place) {
-          window.showToast?.(validation.error || 'Cannot place platform at this position', 'error', 5000);
+          showToast(validation.error || 'Cannot place platform at this position', 'error', 5000);
           return;
         }
 
@@ -1888,7 +1890,7 @@ export class Editor {
         });
       } catch (err: any) {
         console.error('[Editor] Platform creation failed:', err);
-        window.showToast?.('Failed to create platform: ' + err.message, 'error', 5000);
+        showToast('Failed to create platform: ' + err.message, 'error', 5000);
         return;
       }
     }
@@ -2038,7 +2040,7 @@ export class Editor {
   async handleRightClick(gridPos: any): Promise<void> {
     if (this.activeMode?.name === 'Route creation' && this.pathToolState?.active) {
       await this.resetRouteToolState();
-      window.showToast?.('Route creation cancelled', 'info', 3000);
+      showToast('Route creation cancelled', 'info', 3000);
       return;
     }
 
@@ -2070,7 +2072,7 @@ export class Editor {
           });
         } catch (switchErr) {
           const errMsg = this._parseApiError(switchErr, 'Cannot toggle switch');
-          window.showToast?.(errMsg, 'error', 5000);
+          showToast(errMsg, 'error', 5000);
         }
 
         await window.app?.refreshNetwork();
@@ -2323,7 +2325,7 @@ export class Editor {
               const trainsAtTile =
                 this.cachedNetwork && this.cachedNetwork.trains
                   ? this.cachedNetwork.trains.filter((t: any) => {
-                      const span = window.stateManager?.getController(t.id)?.span;
+                      const span = stateManager?.getController(t.id)?.span;
                       if (span && span.occupied_tiles) {
                         return span.occupied_tiles.some((tile: any) => tile[0] === track.x && tile[1] === track.y);
                       }
@@ -2335,7 +2337,7 @@ export class Editor {
                 <div class="property-group-header">Train</div>
                 ${trainsAtTile
                   .map((train: any) => {
-                    const controller: any = window.stateManager?.getController(train.id);
+                    const controller: any = stateManager?.getController(train.id);
                     const dotColor =
                       controller?.control_mode === 'manual'
                         ? 'var(--warning-color)'
@@ -2437,15 +2439,15 @@ export class Editor {
       try {
         const result = await this.api.updateBlock(blockId, payload);
         if (result && result.error) {
-          window.showToast?.(`Cannot change travel direction: ${result.error}`, 'error', 4000);
+          showToast(`Cannot change travel direction: ${result.error}`, 'error', 4000);
           this.updatePropertiesPanel(this.selectedElement);
         } else {
-          window.showToast?.(`Block ${blockId} travel direction updated`, 'info', 1500);
+          showToast(`Block ${blockId} travel direction updated`, 'info', 1500);
           await window.app?.refreshNetwork();
         }
       } catch (err: any) {
         console.error('Failed to update block travel direction:', err);
-        window.showToast?.(`Cannot change travel direction: ${err.message || err}`, 'error', 4000);
+        showToast(`Cannot change travel direction: ${err.message || err}`, 'error', 4000);
         this.updatePropertiesPanel(this.selectedElement);
       }
     });
@@ -2513,7 +2515,7 @@ export class Editor {
     const trainsAtTile =
       this.cachedNetwork && this.cachedNetwork.trains
         ? this.cachedNetwork.trains.filter((t: any) => {
-            const span = window.stateManager?.getController(t.id)?.span;
+            const span = stateManager?.getController(t.id)?.span;
             if (span && span.occupied_tiles) {
               return span.occupied_tiles.some((tile: any) => tile[0] === track.x && tile[1] === track.y);
             }
@@ -2676,7 +2678,7 @@ export class Editor {
       ? existingTrack.dead_end_ports.map((p: any) => String(p).toUpperCase())
       : [];
     if (deadEndPorts.length === 0) {
-      window.showToast?.(
+      showToast(
         'Tunnel: clicked tile has no dead-end edge. Tunnels can only pair dead-ends.',
         'error',
         5000
@@ -2690,7 +2692,7 @@ export class Editor {
     if (!this._pendingTunnelEndpoint) {
       this._pendingTunnelEndpoint = endpoint;
       this.renderer.setPendingTunnelEndpoint(endpoint);
-      window.showToast?.(
+      showToast(
         `Tunnel: first endpoint (${endpoint.x}, ${endpoint.y}).${endpoint.edge} selected. Click another dead-end to pair.`,
         'info',
         4000
@@ -2703,14 +2705,14 @@ export class Editor {
     this.renderer.setPendingTunnelEndpoint(null);
     try {
       await this.api.createTunnel(first, endpoint);
-      window.showToast?.(
+      showToast(
         `Tunnel created: (${first.x}, ${first.y}).${first.edge} ↔ (${endpoint.x}, ${endpoint.y}).${endpoint.edge}`,
         'success',
         4000
       );
       await this.refreshAndSelect(null);
     } catch (err: any) {
-      window.showToast?.(`Failed to create tunnel: ${err.message}`, 'error', 6000);
+      showToast(`Failed to create tunnel: ${err.message}`, 'error', 6000);
     }
   }
 }

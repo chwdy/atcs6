@@ -9,6 +9,7 @@
 // app.ts constructs it via `new Renderer('rail-canvas')` (imported directly).
 // Imports BIT_TO_EDGES from ../lib/constants.
 
+import { stateManager } from '../lib/state-manager';
 import { BIT_TO_EDGES } from '../lib/constants';
 import { Camera } from '../lib/camera';
 import { buildRenderSnapshot } from './render-snapshot';
@@ -373,10 +374,10 @@ class Renderer {
     this._updateNetworkState(this.currentNetwork);
     // Build the per-frame snapshot once so both layers see the same view
     // of sim state. Renderers read from this instead of reaching into
-    // window.stateManager directly (Phase 6). The snapshot's span endpoints
+    // stateManager directly (Phase 6). The snapshot's span endpoints
     // are richer at runtime than render-snapshot.ts types them, so we widen
     // to the train-handler's shape here.
-    this.currentSnapshot = buildRenderSnapshot(this.currentNetwork, window.stateManager) as unknown as {
+    this.currentSnapshot = buildRenderSnapshot(this.currentNetwork, stateManager) as unknown as {
       trains?: Record<string, TrainSnap>;
     };
     // Refresh debug-checkbox state once per flush. Hot paths read

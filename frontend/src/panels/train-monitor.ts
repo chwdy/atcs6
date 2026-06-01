@@ -1,5 +1,8 @@
 // ── Payload shapes the monitor reads (loosely typed; the server owns them) ──
 
+import { api } from '../lib/api';
+import { stateManager } from '../lib/state-manager';
+import { showToast } from '../lib/toast';
 import { getBlockStateColor } from '../lib/helpers';
 
 interface CurvePoint {
@@ -355,7 +358,7 @@ class TrainMonitor {
             }
         } else {
             console.log('No lookahead data available');
-            if (window.showToast) window.showToast('No lookahead data available', 'info');
+            if (showToast) showToast('No lookahead data available', 'info');
         }
     }
 
@@ -419,7 +422,7 @@ class TrainMonitor {
     
     async loadScale() {
         try {
-            const data = await window.api!.getScale();
+            const data = await api.getScale();
             this.currentScale = data.scale || 160;
         } catch (e) {
             console.error('[TrainMonitor] Failed to load scale:', e);
@@ -447,7 +450,7 @@ class TrainMonitor {
         // Live runtime fields (state, current_speed, target_speed,
         // speed_limit_reason) live on the TrainController per design_new.md
         // "Data Flow To UI". Resolve via the state-manager sibling cache.
-        const controller = window.stateManager?.getController(train.id);
+        const controller = stateManager?.getController(train.id);
 
         const lookahead = payload && payload.lookahead ? payload.lookahead : null;
         const speedLimitReason =
@@ -577,14 +580,14 @@ class TrainMonitor {
             }
             
             // Show warning toast (auto-dismiss after 8 seconds)
-            if (window.showToast) {
-                window.showToast(message, 'warning', 8000);
+            if (showToast) {
+                showToast(message, 'warning', 8000);
             }
         }
         
         // Show summary warning
-        if (window.showToast) {
-            window.showToast(
+        if (showToast) {
+            showToast(
                 `Train ${trainId}: ${warnings.length} configuration warning(s). Operation allowed but physics may be inaccurate.`,
                 'warning',
                 6000

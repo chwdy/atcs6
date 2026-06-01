@@ -13,9 +13,9 @@
 // through the existing route teardown latch via PUT /api/trains/<id>/assign-route)
 // and editing the three allowlisted per-run overrides.
 //
-// Owned by the Editor (`new RouteRunEditorHandler(this)`); bridged onto
-// window.RouteRunEditorHandler for the still-classic editor.js.
+// Owned by the Editor (`new RouteRunEditorHandler(this)`).
 
+import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import { formatBlockDirection, validatePriorityInput, showConfirmModal } from '../lib/helpers';
 
@@ -57,7 +57,7 @@ export class RouteRunEditorHandler {
       this.runs = await this.api.getRouteRuns();
     } catch (err: any) {
       console.error('[RouteRunEditor] Failed to load route runs:', err);
-      window.showToast?.('Failed to load route runs: ' + err.message, 'error', 5000);
+      showToast('Failed to load route runs: ' + err.message, 'error', 5000);
       this.runs = [];
     }
 
@@ -153,14 +153,14 @@ export class RouteRunEditorHandler {
     } catch (err: any) {
       if (err && err.status === 404) {
         console.warn(`[RouteRunEditor] Run ${runNumber} no longer exists`);
-        window.showToast?.('Route run not found', 'warning', 4000);
+        showToast('Route run not found', 'warning', 4000);
         this.editor._currentEditorType = null;
         this.editor._currentEditorId = null;
         await this.editor.uiHandler?.hideSecondarySidebar();
         return;
       }
       console.error('[RouteRunEditor] Failed to load run:', err);
-      window.showToast?.('Failed to load route run: ' + err.message, 'error', 5000);
+      showToast('Failed to load route run: ' + err.message, 'error', 5000);
       return;
     }
 
@@ -497,13 +497,13 @@ export class RouteRunEditorHandler {
         try {
           const result = await this.api.patchRouteRunOverrides(runNumber, { [field]: value });
           if (result && result.error) {
-            window.showToast?.(`Override rejected: ${result.error}`, 'error', 4000);
+            showToast(`Override rejected: ${result.error}`, 'error', 4000);
           } else {
-            window.showToast?.(`Override saved: ${field}`, 'success', 2000);
+            showToast(`Override saved: ${field}`, 'success', 2000);
             await this.showRouteRunEditor(runNumber);
           }
         } catch (err: any) {
-          window.showToast?.(`Override failed: ${err.message || err}`, 'error', 4000);
+          showToast(`Override failed: ${err.message || err}`, 'error', 4000);
         }
       };
 
@@ -531,7 +531,7 @@ export class RouteRunEditorHandler {
           const raw = validatePriorityInput(priorityInput.value);
           if (raw == null || raw.kind === 'empty') return;
           if (raw.kind === 'error') {
-            window.showToast?.(raw.message, 'error', 4000);
+            showToast(raw.message, 'error', 4000);
             return;
           }
           saveOverride('priority', raw.value);
@@ -545,13 +545,13 @@ export class RouteRunEditorHandler {
           try {
             const result = await this.api.clearRouteRunOverride(runNumber, field);
             if (result && result.error) {
-              window.showToast?.(`Reset rejected: ${result.error}`, 'error', 4000);
+              showToast(`Reset rejected: ${result.error}`, 'error', 4000);
             } else {
-              window.showToast?.(`Override cleared: ${field}`, 'success', 2000);
+              showToast(`Override cleared: ${field}`, 'success', 2000);
               await this.showRouteRunEditor(runNumber);
             }
           } catch (err: any) {
-            window.showToast?.(`Reset failed: ${err.message || err}`, 'error', 4000);
+            showToast(`Reset failed: ${err.message || err}`, 'error', 4000);
           }
         };
       });
@@ -581,11 +581,11 @@ export class RouteRunEditorHandler {
         if (!confirmed) return;
         try {
           await this.api.assignRoute(trainId, null);
-          window.showToast?.(`Train ${trainId} unassigned`, 'success', 3000);
+          showToast(`Train ${trainId} unassigned`, 'success', 3000);
           await this.showRouteRunEditor(this.currentRun.run_number);
         } catch (err: any) {
           console.error('[RouteRunEditor] Unassign failed:', err);
-          window.showToast?.('Failed to unassign: ' + err.message, 'error', 5000);
+          showToast('Failed to unassign: ' + err.message, 'error', 5000);
         }
       };
     }

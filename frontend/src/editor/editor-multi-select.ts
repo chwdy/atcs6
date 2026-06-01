@@ -11,9 +11,9 @@
 //   4. Destructive: delete the selected tiles (tracks) or delete every block
 //      the selection touches.
 //
-// Owned by the Editor (`new MultiSelectActionsHandler(this)`); bridged onto
-// window.MultiSelectActionsHandler for the still-classic editor.js.
+// Owned by the Editor (`new MultiSelectActionsHandler(this)`).
 
+import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import { showConfirmModal } from '../lib/helpers';
 
@@ -246,7 +246,7 @@ export class MultiSelectActionsHandler {
       const sel = panel.querySelector<HTMLSelectElement>('[data-field="add-target-block"]');
       const targetId = sel?.value;
       if (!targetId) {
-        window.showToast?.('Pick a block first', 'info', 2000);
+        showToast('Pick a block first', 'info', 2000);
         return;
       }
       this._addSelectionToBlock(targetId).catch((err) => this._reportError('add to block', err));
@@ -316,7 +316,7 @@ export class MultiSelectActionsHandler {
     // the existing "Block New" tool's behaviour.
     await this.api.addTracksToBlock(result.blockId, positions, true);
 
-    window.showToast?.(
+    showToast(
       `Created block ${result.blockId} with ${positions.length} tile${positions.length !== 1 ? 's' : ''}`,
       'success',
       3000
@@ -341,7 +341,7 @@ export class MultiSelectActionsHandler {
     const reassigned = resp?.reassigned ?? 0;
     const parts = [`Added ${added} to ${targetBlockId}`];
     if (reassigned) parts.push(`(${reassigned} reassigned)`);
-    window.showToast?.(parts.join(' '), 'success', 3000);
+    showToast(parts.join(' '), 'success', 3000);
     await this._afterMutation();
   }
 
@@ -362,7 +362,7 @@ export class MultiSelectActionsHandler {
       byBlock.set(t.block_section_id, list);
     }
     if (byBlock.size === 0) {
-      window.showToast?.('No selected tiles are in a block', 'info', 3000);
+      showToast('No selected tiles are in a block', 'info', 3000);
       return;
     }
 
@@ -393,13 +393,13 @@ export class MultiSelectActionsHandler {
       removed += Array.isArray(resp?.removed) ? resp.removed.length : resp?.removed ?? 0;
     }
     if (errorBlocks.length === 0) {
-      window.showToast?.(
+      showToast(
         `Removed ${removed} tile${removed !== 1 ? 's' : ''} from ${byBlock.size} block${byBlock.size !== 1 ? 's' : ''}`,
         'success',
         3000
       );
     } else {
-      window.showToast?.(
+      showToast(
         `Removed ${removed} tile${removed !== 1 ? 's' : ''}, but ${errorBlocks.length} block${errorBlocks.length !== 1 ? 's' : ''} failed: ${errorBlocks.join(', ')}`,
         'warning',
         5000
@@ -423,7 +423,7 @@ export class MultiSelectActionsHandler {
     const removed = Array.isArray(result.removed)
       ? result.removed.length
       : result.removed ?? positions.length;
-    window.showToast?.(`Deleted ${removed} tile${removed !== 1 ? 's' : ''}`, 'success', 3000);
+    showToast(`Deleted ${removed} tile${removed !== 1 ? 's' : ''}`, 'success', 3000);
     await this._afterMutation();
   }
 
@@ -451,13 +451,13 @@ export class MultiSelectActionsHandler {
     const failed = results.filter((r) => r.err);
 
     if (failed.length === 0) {
-      window.showToast?.(`Deleted ${ok.length} block${ok.length !== 1 ? 's' : ''}`, 'success', 3000);
+      showToast(`Deleted ${ok.length} block${ok.length !== 1 ? 's' : ''}`, 'success', 3000);
     } else {
       const sample = failed
         .slice(0, 3)
         .map((r) => `${r.id}: ${r.err.message || r.err}`)
         .join('; ');
-      window.showToast?.(
+      showToast(
         `Deleted ${ok.length}, ${failed.length} failed — ${sample}`,
         'warning',
         5000
@@ -499,7 +499,7 @@ export class MultiSelectActionsHandler {
     }
 
     if (Object.keys(payload).length === 0) {
-      window.showToast?.('Nothing to apply — touch a field first', 'info', 2500);
+      showToast('Nothing to apply — touch a field first', 'info', 2500);
       return;
     }
 
@@ -515,14 +515,14 @@ export class MultiSelectActionsHandler {
     const failed = results.filter((r) => r.err);
 
     if (failed.length === 0) {
-      window.showToast?.(`Applied to ${ok.length} block${ok.length !== 1 ? 's' : ''}`, 'success', 3000);
+      showToast(`Applied to ${ok.length} block${ok.length !== 1 ? 's' : ''}`, 'success', 3000);
     } else {
       const sample = failed
         .slice(0, 3)
         .map((r) => `${r.blockId}: ${r.err.message || r.err}`)
         .join('; ');
       const more = failed.length > 3 ? ` +${failed.length - 3} more` : '';
-      window.showToast?.(
+      showToast(
         `Applied to ${ok.length}, ${failed.length} failed — ${sample}${more}`,
         'warning',
         6000
@@ -575,7 +575,7 @@ export class MultiSelectActionsHandler {
 
   _reportError(action: string, err: any): void {
     console.error(`[MultiSelect] ${action} failed:`, err);
-    window.showToast?.(`Failed to ${action}: ${err.message || err}`, 'error', 5000);
+    showToast(`Failed to ${action}: ${err.message || err}`, 'error', 5000);
   }
 
   _escape(s: unknown): string {

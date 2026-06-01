@@ -10,6 +10,9 @@
  * is structured so that a future entity selector slots in without breaking
  * the train-only path.
  */
+
+import { api } from '../lib/api';
+import { showToast } from '../lib/toast';
 // Shapes of the inspector snapshot the backend returns from
 // GET /api/inspector/entity/train/<id>. Loosely typed — the panel only reads
 // these members and is defensive about missing ones.
@@ -404,9 +407,9 @@ interface InspectorSnapshot {
                 if (!name) return;
                 if (navigator.clipboard && navigator.clipboard.writeText) {
                     navigator.clipboard.writeText(name).then(() => {
-                        if (window.showToast) window.showToast("Copied: " + name, "success", 2000);
+                        if (showToast) showToast("Copied: " + name, "success", 2000);
                     }).catch(() => {
-                        if (window.showToast) window.showToast("Failed to copy name", "error", 2000);
+                        if (showToast) showToast("Failed to copy name", "error", 2000);
                     });
                 }
             });
@@ -581,12 +584,12 @@ interface InspectorSnapshot {
         // ----- Train list ---------------------------------------------------
 
         async _refreshTrainList() {
-            if (!window.api || typeof window.api.getNetwork !== "function") {
+            if (!api || typeof api.getNetwork !== "function") {
                 return;
             }
             try {
-                const network = await window.api.getNetwork();
-                const trains = (network && Array.isArray(network.trains)) ? network.trains : [];
+                const network = await api.getNetwork();
+                const trains: any[] = (network && Array.isArray(network.trains)) ? network.trains : [];
                 this._knownTrainIds = trains
                     .map((t) => t.id || t.train_id)
                     .filter((id): id is string => !!id);
@@ -661,7 +664,7 @@ interface InspectorSnapshot {
                 return;
             }
             if (this._inflight) return; // skip while previous is in flight
-            if (!window.api || typeof window.api.getInspectorEntityTrain !== "function") {
+            if (!api || typeof api.getInspectorEntityTrain !== "function") {
                 this._renderError(new Error("API not available"));
                 return;
             }
@@ -669,7 +672,7 @@ interface InspectorSnapshot {
             this._inflight = true;
             this._abortController = new AbortController();
             try {
-                const data = await window.api.getInspectorEntityTrain(this._currentTrainId);
+                const data = await api.getInspectorEntityTrain(this._currentTrainId);
                 if (data === null) {
                     this._renderTrainGone();
                     this._stopPolling();

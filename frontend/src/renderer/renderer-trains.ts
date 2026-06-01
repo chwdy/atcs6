@@ -7,10 +7,11 @@
 // renderer-trains.test.ts.
 //
 // Imports getLabelSpacingMultiplier and DIRECTION_PREFERRED_QUADRANTS from
-// ../lib/constants, and still reads window.stateManager (the snapshot fallback).
+// ../lib/constants, and still reads stateManager (the snapshot fallback).
 // Part of the Vite bundle; the Renderer constructs it directly
 // (`new RendererTrainHandler(this)`).
 
+import { stateManager } from '../lib/state-manager';
 import { BIT_TO_EDGES, getLabelSpacingMultiplier, DIRECTION_PREFERRED_QUADRANTS } from '../lib/constants';
 
 interface SpanEndpoint {
@@ -141,7 +142,7 @@ export class RendererTrainHandler {
       this.drawTrainFromSnapshot(train, trainSnap);
       return;
     }
-    const controller = window.stateManager?.getController(train.id);
+    const controller = stateManager?.getController(train.id);
     if (!controller?.span?.occupied_tiles?.length) return;
     // Adapt the controller into a snapshot-shaped object so the
     // downstream renderer code only has one shape to consume.

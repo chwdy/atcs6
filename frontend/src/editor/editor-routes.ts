@@ -6,9 +6,9 @@
 // Manages train routes — ordered lists of RouteTasks (per design_new.md "Route
 // And RouteExecutor"). Distinct from the Path Editor (block-level reservations).
 //
-// Owned by the Editor (`new RouteEditorHandler(this)`); bridged onto
-// window.RouteEditorHandler for the still-classic editor.js.
+// Owned by the Editor (`new RouteEditorHandler(this)`).
 
+import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import { showConfirmModal, validatePriorityInput } from '../lib/helpers';
 
@@ -205,7 +205,7 @@ export class RouteEditorHandler {
       this.routes = Array.isArray(result) ? result : result?.routes || [];
     } catch (err: any) {
       console.error('[RouteEditor] Failed to load routes:', err);
-      window.showToast?.('Failed to load routes: ' + err.message, 'error', 5000);
+      showToast('Failed to load routes: ' + err.message, 'error', 5000);
       this.routes = [];
     }
 
@@ -318,11 +318,11 @@ export class RouteEditorHandler {
 
         try {
           await this.api.deleteRoute(routeId);
-          window.showToast?.('Route deleted', 'success', 3000);
+          showToast('Route deleted', 'success', 3000);
           await this.showRoutesPanel();
         } catch (err: any) {
           console.error('[RouteEditor] Failed to delete route:', err);
-          window.showToast?.('Failed to delete route: ' + err.message, 'error', 5000);
+          showToast('Failed to delete route: ' + err.message, 'error', 5000);
         }
       };
     });
@@ -342,11 +342,11 @@ export class RouteEditorHandler {
 
     try {
       await this.api.createRoute(newRoute);
-      window.showToast?.('Route created', 'success', 3000);
+      showToast('Route created', 'success', 3000);
       await this.showRouteEditor(routeId);
     } catch (err: any) {
       console.error('[RouteEditor] Failed to create route:', err);
-      window.showToast?.('Failed to create route: ' + err.message, 'error', 5000);
+      showToast('Failed to create route: ' + err.message, 'error', 5000);
     }
   }
 
@@ -378,7 +378,7 @@ export class RouteEditorHandler {
         return;
       }
       console.error('[RouteEditor] Failed to load route:', err);
-      window.showToast?.('Failed to load route', 'error', 5000);
+      showToast('Failed to load route', 'error', 5000);
       return;
     }
 
@@ -1092,7 +1092,7 @@ export class RouteEditorHandler {
     }
 
     if (!positions || positions.size === 0) {
-      window.showToast?.(`No map geometry found for task ${index + 1}`, 'warning', 3000);
+      showToast(`No map geometry found for task ${index + 1}`, 'warning', 3000);
       return;
     }
 
@@ -1260,11 +1260,11 @@ export class RouteEditorHandler {
         }
         try {
           await this.api.deleteRoute(this.currentRoute.route_id);
-          window.showToast?.('Route deleted', 'success', 3000);
+          showToast('Route deleted', 'success', 3000);
           await this.showRoutesPanel();
         } catch (err: any) {
           console.error('[RouteEditor] Failed to delete route:', err);
-          window.showToast?.('Failed to delete route: ' + err.message, 'error', 5000);
+          showToast('Failed to delete route: ' + err.message, 'error', 5000);
         }
       };
     }
@@ -1593,7 +1593,7 @@ export class RouteEditorHandler {
     if (this._waypointReachablePositions) {
       const key = `${gridPos.x},${gridPos.y}`;
       if (!this._waypointReachablePositions.has(key)) {
-        window.showToast?.('Not reachable from the previous waypoint', 'warning', 2500);
+        showToast('Not reachable from the previous waypoint', 'warning', 2500);
         return true;
       }
     }
@@ -1620,7 +1620,7 @@ export class RouteEditorHandler {
     await this.checkAllViability();
     this.rerenderRouteEditor();
     await this.refreshWaypointFeasibility();
-    window.showToast?.(`Added stop: ${opt.label}`, 'success', 2000);
+    showToast(`Added stop: ${opt.label}`, 'success', 2000);
   }
 
   /** Floating menu to pick which resource on a tile to add. */
@@ -1761,12 +1761,12 @@ export class RouteEditorHandler {
         force: this._assignForce,
       });
       await this._refetchRouteAfterLifecycleOp();
-      window.showToast?.(`Train ${trainId} assigned`, 'success', 2500);
+      showToast(`Train ${trainId} assigned`, 'success', 2500);
       this.rerenderRouteEditor();
       await this.refreshAssignCandidates();
     } catch (err: any) {
       console.error('[RouteEditor] assign (map) failed:', err);
-      window.showToast?.('Failed to assign train: ' + err.message, 'error', 5000);
+      showToast('Failed to assign train: ' + err.message, 'error', 5000);
     }
     return true;
   }
@@ -1882,7 +1882,7 @@ export class RouteEditorHandler {
           }
         }
         if (!inherited) {
-          window.showToast?.(
+          showToast(
             `Dwell task ${i + 1} must follow a stop or waypoint with a target.`,
             'error',
             5000
@@ -1893,7 +1893,7 @@ export class RouteEditorHandler {
       } else {
         location = this._taskLocationOrNull(t);
         if (!location) {
-          window.showToast?.(`Task ${i + 1} has no target selected.`, 'error', 5000);
+          showToast(`Task ${i + 1} has no target selected.`, 'error', 5000);
           return false;
         }
       }
@@ -1937,7 +1937,7 @@ export class RouteEditorHandler {
     // Priority via the shared validator (helpers#validatePriorityInput).
     const priorityCheck = validatePriorityInput(priorityRaw);
     if (priorityCheck.kind === 'error') {
-      window.showToast?.(priorityCheck.message, 'error', 4000);
+      showToast(priorityCheck.message, 'error', 4000);
       return false;
     }
     if (priorityCheck.kind === 'ok') {
@@ -1964,12 +1964,12 @@ export class RouteEditorHandler {
 
     try {
       await this.api.updateRoute(this.currentRoute.route_id, payload);
-      window.showToast?.('Route saved', 'success', 3000);
+      showToast('Route saved', 'success', 3000);
       this._refreshSavedTasksBaseline();
       return true;
     } catch (err: any) {
       console.error('[RouteEditor] Failed to save route:', err);
-      window.showToast?.('Failed to save route: ' + err.message, 'error', 5000);
+      showToast('Failed to save route: ' + err.message, 'error', 5000);
       return false;
     }
   }
@@ -1985,12 +1985,12 @@ export class RouteEditorHandler {
     try {
       const resp = await this.api.activateRoute(this.currentRoute.route_id);
       this._mergeServerRoute(resp?.route);
-      window.showToast?.('Route activated', 'success', 3000);
+      showToast('Route activated', 'success', 3000);
       this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
       this.rerenderRouteEditor();
     } catch (err: any) {
       console.error('[RouteEditor] Failed to activate route:', err);
-      window.showToast?.('Failed to activate route: ' + err.message, 'error', 5000);
+      showToast('Failed to activate route: ' + err.message, 'error', 5000);
     }
   }
 
@@ -1999,12 +1999,12 @@ export class RouteEditorHandler {
     try {
       const resp = await this.api.deactivateRoute(this.currentRoute.route_id);
       this._mergeServerRoute(resp?.route);
-      window.showToast?.('Route deactivated', 'success', 3000);
+      showToast('Route deactivated', 'success', 3000);
       this.currentRouteStatus = await this.api.getRouteStatus(this.currentRoute.route_id);
       this.rerenderRouteEditor();
     } catch (err: any) {
       console.error('[RouteEditor] Failed to deactivate route:', err);
-      window.showToast?.('Failed to deactivate route: ' + err.message, 'error', 5000);
+      showToast('Failed to deactivate route: ' + err.message, 'error', 5000);
     }
   }
 
@@ -2073,12 +2073,12 @@ export class RouteEditorHandler {
       });
 
       await this._refetchRouteAfterLifecycleOp();
-      window.showToast?.(`Train ${trainId} assigned`, 'success', 3000);
+      showToast(`Train ${trainId} assigned`, 'success', 3000);
 
       this.rerenderRouteEditor();
     } catch (err: any) {
       console.error('[RouteEditor] Failed to assign train:', err);
-      window.showToast?.('Failed to assign train: ' + err.message, 'error', 5000);
+      showToast('Failed to assign train: ' + err.message, 'error', 5000);
     }
   }
 
@@ -2088,12 +2088,12 @@ export class RouteEditorHandler {
       await this.api.assignRoute(trainId, null);
 
       await this._refetchRouteAfterLifecycleOp();
-      window.showToast?.(`Train ${trainId} unassigned`, 'success', 3000);
+      showToast(`Train ${trainId} unassigned`, 'success', 3000);
 
       this.rerenderRouteEditor();
     } catch (err: any) {
       console.error('[RouteEditor] Failed to unassign train:', err);
-      window.showToast?.('Failed to unassign train: ' + err.message, 'error', 5000);
+      showToast('Failed to unassign train: ' + err.message, 'error', 5000);
     }
   }
 

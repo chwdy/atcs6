@@ -2,9 +2,9 @@
 //
 // Migrated from static/js/editor-stations.js (longterm_todo.md item #7, Wave 2).
 // Behavior is unchanged. Two handler classes the Editor owns
-// (`new PlatformEditorHandler(this)` / `new StationGroupEditorHandler(this)`);
-// both are bridged onto window.<Handler> for the still-classic editor.js.
+// (`new PlatformEditorHandler(this)` / `new StationGroupEditorHandler(this)`).
 
+import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import {
   renderHeaderId,
@@ -38,7 +38,7 @@ export class PlatformEditorHandler {
 
     const platform = await this.api.getPlatform(platformId);
     if (!platform) {
-      window.showToast?.(`Platform ${platformId} not found`, 'error', 4000);
+      showToast(`Platform ${platformId} not found`, 'error', 4000);
       return;
     }
 
@@ -137,15 +137,15 @@ export class PlatformEditorHandler {
       try {
         const result = await this.api.updatePlatform(platformId, flags);
         if (result && result.error) {
-          window.showToast?.(`Cannot change availability: ${result.error}`, 'error', 4000);
+          showToast(`Cannot change availability: ${result.error}`, 'error', 4000);
           this.showEditor(platformId);
         } else {
-          window.showToast?.(`Platform ${platformId} availability updated`, 'info', 1500);
+          showToast(`Platform ${platformId} availability updated`, 'info', 1500);
           await window.app?.refreshNetwork();
         }
       } catch (err: any) {
         console.error('Failed to update platform availability:', err);
-        window.showToast?.(`Cannot change availability: ${err.message || err}`, 'error', 4000);
+        showToast(`Cannot change availability: ${err.message || err}`, 'error', 4000);
         this.showEditor(platformId);
       }
     });
@@ -165,9 +165,9 @@ export class PlatformEditorHandler {
           await this.api.updatePlatform(platformId, updates);
           await window.app?.refreshNetwork();
           await this.showEditor(platformId);
-          window.showToast?.('Platform updated', 'success', 2500);
+          showToast('Platform updated', 'success', 2500);
         } catch (err: any) {
-          window.showToast?.(`Failed to update platform: ${err.message}`, 'error', 5000);
+          showToast(`Failed to update platform: ${err.message}`, 'error', 5000);
         }
       };
     }
@@ -189,9 +189,9 @@ export class PlatformEditorHandler {
           await this.api.deletePlatform(platformId);
           await window.app?.refreshNetwork();
           this.editor.hideSecondarySidebar();
-          window.showToast?.('Platform deleted', 'success', 2500);
+          showToast('Platform deleted', 'success', 2500);
         } catch (err: any) {
-          window.showToast?.(`Failed to delete platform: ${err.message}`, 'error', 5000);
+          showToast(`Failed to delete platform: ${err.message}`, 'error', 5000);
         }
       };
     }
@@ -205,7 +205,7 @@ export class PlatformEditorHandler {
           await window.app?.refreshNetwork();
           await this.showEditor(platformId);
         } catch (err: any) {
-          window.showToast?.(`Failed to remove tile: ${err.message}`, 'error', 5000);
+          showToast(`Failed to remove tile: ${err.message}`, 'error', 5000);
         }
       };
     });
@@ -386,7 +386,7 @@ export class StationGroupEditorHandler {
           await this.api.createStationGroup(payload);
           await this.showPanel();
         } catch (err: any) {
-          window.showToast?.(`Failed to create station: ${err.message}`, 'error', 5000);
+          showToast(`Failed to create station: ${err.message}`, 'error', 5000);
         }
       };
     }
@@ -465,7 +465,7 @@ export class StationGroupEditorHandler {
     const platforms = window.app?.currentNetwork?.platforms || [];
     const station = (stationsResp?.stations || []).find((s: any) => s.station_id === stationId);
     if (!station) {
-      window.showToast?.(`Station ${stationId} not found`, 'error', 4000);
+      showToast(`Station ${stationId} not found`, 'error', 4000);
       return;
     }
 
@@ -539,15 +539,15 @@ export class StationGroupEditorHandler {
       try {
         const result = await this.api.updateStationGroup(stationId, flags);
         if (result && result.error) {
-          window.showToast?.(`Cannot change availability: ${result.error}`, 'error', 4000);
+          showToast(`Cannot change availability: ${result.error}`, 'error', 4000);
           this.showStationDetail(stationId);
         } else {
-          window.showToast?.(`Station ${stationId} availability updated`, 'info', 1500);
+          showToast(`Station ${stationId} availability updated`, 'info', 1500);
           await window.app?.refreshNetwork();
         }
       } catch (err: any) {
         console.error('Failed to update station availability:', err);
-        window.showToast?.(`Cannot change availability: ${err.message || err}`, 'error', 4000);
+        showToast(`Cannot change availability: ${err.message || err}`, 'error', 4000);
         this.showStationDetail(stationId);
       }
     });
@@ -560,9 +560,9 @@ export class StationGroupEditorHandler {
           await this.api.updateStationGroup(stationId, { name });
           await window.app?.refreshNetwork();
           await this.showStationDetail(stationId);
-          window.showToast?.('Station name updated', 'success', 2000);
+          showToast('Station name updated', 'success', 2000);
         } catch (err: any) {
-          window.showToast?.(`Failed to save: ${err.message}`, 'error', 5000);
+          showToast(`Failed to save: ${err.message}`, 'error', 5000);
         }
       };
     }
@@ -577,7 +577,7 @@ export class StationGroupEditorHandler {
           await window.app?.refreshNetwork();
           await this.showStationDetail(stationId);
         } catch (err: any) {
-          window.showToast?.(`Failed to add: ${err.message}`, 'error', 5000);
+          showToast(`Failed to add: ${err.message}`, 'error', 5000);
         }
       };
     }
@@ -590,7 +590,7 @@ export class StationGroupEditorHandler {
           await window.app?.refreshNetwork();
           await this.showStationDetail(stationId);
         } catch (err: any) {
-          window.showToast?.(`Failed to remove: ${err.message}`, 'error', 5000);
+          showToast(`Failed to remove: ${err.message}`, 'error', 5000);
         }
       };
     });

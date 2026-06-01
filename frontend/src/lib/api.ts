@@ -4,9 +4,8 @@
 // cluster). Behavior is unchanged from the classic file: each method is a thin
 // wrapper over `_request`, the single fetch/JSON/error-normalization choke point.
 //
-// Bundled into static/dist/main.js; the singleton is mirrored onto window.api
-// (declared narrowly in legacy-globals.d.ts) so the still-classic editor scripts
-// and the already-migrated panels keep finding it until they migrate too.
+// Part of the Vite bundle; the single client instance is imported as `{ api }`
+// by the app, panels, and editor.
 
 // Caller-supplied fetch options plus the custom `returnNullOn404` flag stripped
 // before the request reaches fetch().
@@ -1266,9 +1265,6 @@ export class API {
   }
 }
 
-// Export API instance (guarded for Node / Vitest). The window.api type
-// (legacy-globals.d.ts) carries a string index signature for ad-hoc method
-// access; a class instance has no index signature, so cast through unknown.
-if (typeof window !== 'undefined') {
-  window.api = new API() as unknown as Window['api'];
-}
+// The single API client instance — imported as `{ api }` by the app, panels,
+// and editor.
+export const api = new API();

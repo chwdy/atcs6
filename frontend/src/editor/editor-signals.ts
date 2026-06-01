@@ -1,9 +1,10 @@
 // editor-signals.ts — Signal Editor Handler.
 //
 // Migrated from static/js/editor-signals.js (longterm_todo.md item #7, Wave 2).
-// Behavior is unchanged. Owned by the Editor (`new SignalEditorHandler(this)`);
-// bridged onto window.SignalEditorHandler for the still-classic editor.js.
+// Behavior is unchanged. Owned by the Editor (`new SignalEditorHandler(this)`).
 
+import { stateManager } from '../lib/state-manager';
+import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 
 export class SignalEditorHandler {
@@ -200,7 +201,7 @@ export class SignalEditorHandler {
 
         try {
           await this.api.updateSignal(signalId, updates);
-          window.showToast?.('Signal updated successfully', 'success', 5000);
+          showToast('Signal updated successfully', 'success', 5000);
           await window.app?.refreshNetwork();
 
           if (this.selectedElement) {
@@ -208,7 +209,7 @@ export class SignalEditorHandler {
           }
         } catch (err: any) {
           console.error('Failed to save signal properties:', err);
-          window.showToast?.('Failed to save signal properties: ' + err.message, 'error', 5000);
+          showToast('Failed to save signal properties: ' + err.message, 'error', 5000);
         }
       };
     });
@@ -229,7 +230,7 @@ export class SignalEditorHandler {
 
     const signal = await this.api.getSignal(signalId);
     if (!signal || signal.error) {
-      window.showToast?.('Signal not found', 'error', 5000);
+      showToast('Signal not found', 'error', 5000);
       return;
     }
 
@@ -364,7 +365,7 @@ export class SignalEditorHandler {
 
         try {
           await this.api.updateSignal(signalId, updates);
-          window.showToast?.('Signal updated successfully', 'success', 5000);
+          showToast('Signal updated successfully', 'success', 5000);
           await window.app?.refreshNetwork();
 
           if (this.selectedElement) {
@@ -372,7 +373,7 @@ export class SignalEditorHandler {
           }
         } catch (err: any) {
           console.error('Failed to save signal properties:', err);
-          window.showToast?.('Failed to save signal properties: ' + err.message, 'error', 5000);
+          showToast('Failed to save signal properties: ' + err.message, 'error', 5000);
         }
       };
     }
@@ -391,7 +392,7 @@ export class SignalEditorHandler {
 
     // Subscribe to signal updates
     this._unsubscribe =
-      window.stateManager?.subscribe(
+      stateManager?.subscribe(
         'signals',
         signalId,
         (newSignal: any, oldSignal: any) => this._onSignalUpdate(newSignal, oldSignal),
@@ -403,7 +404,7 @@ export class SignalEditorHandler {
   _onSignalUpdate(newSignal: any, oldSignal: any): void {
     if (!newSignal) {
       // Signal was deleted
-      window.showToast?.('Signal was deleted', 'warning');
+      showToast('Signal was deleted', 'warning');
       this.editor.hideSecondarySidebar();
       return;
     }

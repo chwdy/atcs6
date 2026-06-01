@@ -2,11 +2,11 @@
 // static/index.html (longterm_todo.md item #7 is complete: every classic script
 // has migrated into this bundle).
 //
-// Import order still matters during the bridge-decommission step: each module
-// installs its browser-global bridge as a side effect on import, and the
-// modules that have not yet switched to ES imports read those globals. The
-// foundation cluster (Wave 1) is imported first so its bridges exist before the
-// renderer/panel/editor modules evaluate.
+// These imports assemble the bundle. app.ts (last) transitively imports most of
+// them for their exports; they are listed explicitly here as the module
+// manifest and to guarantee inclusion. panels/inspector is imported purely for
+// its side effect — it self-bootstraps the inspector panel onto window — and app
+// registers the DOMContentLoaded handler that constructs `new App()`.
 import './lib/constants';
 import './lib/api';
 import './lib/state-manager';

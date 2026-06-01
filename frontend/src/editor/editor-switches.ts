@@ -3,10 +3,10 @@
 // Migrated from static/js/editor-switches.js (longterm_todo.md item #7, Wave 2 —
 // editor handler cluster). Behavior is unchanged from the classic file.
 //
-// Owned by the Editor (`new SwitchEditorHandler(this)` in editor.js). Bundled
-// into static/dist/main.js and bridged onto window.SwitchEditorHandler so the
-// still-classic editor.js can `new` it until editor.js migrates (Wave 3).
+// Owned by the Editor (`new SwitchEditorHandler(this)`).
 
+import { stateManager } from '../lib/state-manager';
+import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import { renderAvailabilitySegment, bindAvailabilitySegment, showConfirmModal } from '../lib/helpers';
 
@@ -50,12 +50,12 @@ export class SwitchEditorHandler {
     try {
       switchData = await this.api.getSwitch(switchId);
       if (switchData.error) {
-        window.showToast?.('Switch not found', 'error', 5000);
+        showToast('Switch not found', 'error', 5000);
         return;
       }
     } catch (err) {
       console.error('[SwitchEditorHandler] Failed to get switch:', err);
-      window.showToast?.('Failed to load switch', 'error', 5000);
+      showToast('Failed to load switch', 'error', 5000);
       return;
     }
 
@@ -181,15 +181,15 @@ export class SwitchEditorHandler {
       try {
         const result = await this.api.updateSwitch(switchData.switch_id, flags);
         if (result && result.error) {
-          window.showToast?.(`Cannot change availability: ${result.error}`, 'error', 4000);
+          showToast(`Cannot change availability: ${result.error}`, 'error', 4000);
           this.showEditor(switchData.switch_id);
         } else {
-          window.showToast?.(`Switch ${switchData.switch_id} availability updated`, 'info', 1500);
+          showToast(`Switch ${switchData.switch_id} availability updated`, 'info', 1500);
           await window.app?.refreshNetwork();
         }
       } catch (err: any) {
         console.error('Failed to update switch availability:', err);
-        window.showToast?.(`Cannot change availability: ${err.message || err}`, 'error', 4000);
+        showToast(`Cannot change availability: ${err.message || err}`, 'error', 4000);
         this.showEditor(switchData.switch_id);
       }
     });
@@ -205,13 +205,13 @@ export class SwitchEditorHandler {
           const newState = currentState === 0 ? 1 : 0;
 
           await this.api.setSwitchState(switchData.switch_id, newState);
-          window.showToast?.('Switch state toggled', 'success', 2000);
+          showToast('Switch state toggled', 'success', 2000);
           await window.app?.refreshNetwork();
           // Refresh editor
           await this.showEditor(switchData.switch_id);
         } catch (err: any) {
           console.error('[SwitchEditorHandler] Failed to toggle switch:', err);
-          window.showToast?.('Failed to toggle switch: ' + err.message, 'error', 5000);
+          showToast('Failed to toggle switch: ' + err.message, 'error', 5000);
         }
       };
     }
@@ -231,11 +231,11 @@ export class SwitchEditorHandler {
 
         try {
           await this.api.updateSwitch(switchData.switch_id, updates);
-          window.showToast?.('Switch properties saved', 'success', 2000);
+          showToast('Switch properties saved', 'success', 2000);
           await window.app?.refreshNetwork();
         } catch (err: any) {
           console.error('[SwitchEditorHandler] Failed to save switch:', err);
-          window.showToast?.('Failed to save switch: ' + err.message, 'error', 5000);
+          showToast('Failed to save switch: ' + err.message, 'error', 5000);
         }
       };
     }
@@ -257,12 +257,12 @@ export class SwitchEditorHandler {
 
         try {
           await this.api.deleteSwitch(switchData.switch_id);
-          window.showToast?.('Switch deleted', 'success', 2000);
+          showToast('Switch deleted', 'success', 2000);
           await window.app?.refreshNetwork();
           this.editor.hideSecondarySidebar();
         } catch (err: any) {
           console.error('[SwitchEditorHandler] Failed to delete switch:', err);
-          window.showToast?.('Failed to delete switch: ' + err.message, 'error', 5000);
+          showToast('Failed to delete switch: ' + err.message, 'error', 5000);
         }
       };
     }
@@ -277,7 +277,7 @@ export class SwitchEditorHandler {
     this._isDirty = false;
 
     this._unsubscribe =
-      window.stateManager?.subscribe(
+      stateManager?.subscribe(
         'switches',
         switchData.switch_id,
         (newSwitch: any, oldSwitch: any) => this._onSwitchUpdate(newSwitch, oldSwitch),
@@ -287,7 +287,7 @@ export class SwitchEditorHandler {
 
   _onSwitchUpdate(newSwitch: any, oldSwitch: any): void {
     if (!newSwitch) {
-      window.showToast?.('Switch was deleted', 'warning');
+      showToast('Switch was deleted', 'warning');
       this.editor.hideSecondarySidebar();
       return;
     }

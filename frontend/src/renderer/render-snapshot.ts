@@ -6,7 +6,7 @@
 // tests/test_render_snapshot.py).
 //
 // Built once per rAF flush by Renderer._flushRedraw. Renderers consume the
-// snapshot instead of reaching into window.stateManager or mutable network
+// snapshot instead of reaching into the StateManager or mutable network
 // fields directly. The decoupling lets renderer handlers be tested with
 // hand-built fixtures and makes "what does the renderer see this frame?"
 // a single inspectable object.

@@ -2,9 +2,9 @@
 // collapsible categories, JSON viewer, bit/visual track editors).
 //
 // Migrated from static/js/editor-ui.js (longterm_todo.md item #7, Wave 2).
-// Behavior is unchanged. Owned by the Editor (`new EditorUIHandler(this)`);
-// bridged onto window.EditorUIHandler for the still-classic editor.js.
+// Behavior is unchanged. Owned by the Editor (`new EditorUIHandler(this)`).
 
+import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import { showConfirmModal } from '../lib/helpers';
 import { FORBIDDEN_TRACK_BITS, isSquareCornerSwitch } from '../lib/constants';
@@ -773,7 +773,7 @@ export class EditorUIHandler {
           navigator.clipboard
             .writeText(jsonString)
             .then(() => {
-              window.showToast?.('JSON copied to clipboard', 'success', 2000);
+              showToast('JSON copied to clipboard', 'success', 2000);
               copyBtn.textContent = '✓ Copied!';
               copyBtn.classList.remove('btn-primary');
               copyBtn.classList.add('btn-success');
@@ -785,7 +785,7 @@ export class EditorUIHandler {
             })
             .catch((err) => {
               console.error('Failed to copy JSON:', err);
-              window.showToast?.('Failed to copy JSON', 'error', 3000);
+              showToast('Failed to copy JSON', 'error', 3000);
             });
         };
       }
@@ -888,7 +888,7 @@ export class EditorUIHandler {
     const bitEditor = document.getElementById('bit-editor');
     if (!bitEditor) return;
 
-    const api: any = window.api;
+    const api: any = this.editor.api;
 
     const calculateBitsFromCheckboxes = () => {
       let bits = 0;
@@ -972,11 +972,11 @@ export class EditorUIHandler {
         const newBits = calculateBitsFromCheckboxes();
 
         if (FORBIDDEN_TRACK_BITS.has(newBits)) {
-          window.showToast?.('Cannot apply forbidden configuration', 'error', 3000);
+          showToast('Cannot apply forbidden configuration', 'error', 3000);
           return;
         }
         if (isSquareCornerSwitch(newBits)) {
-          window.showToast?.(
+          showToast(
             'Invalid switch: a branch is 90° to a connecting segment ' +
               '(square corner). Add a diagonal (NS/EW) leg to ease it.',
             'error',
@@ -996,12 +996,12 @@ export class EditorUIHandler {
               await applyBits(newBits, true);
             } catch (err2: any) {
               console.error('Failed to update track bits (forced):', err2);
-              window.showToast?.('Failed to update track bits: ' + err2.message, 'error', 5000);
+              showToast('Failed to update track bits: ' + err2.message, 'error', 5000);
             }
             return;
           }
           console.error('Failed to update track bits:', err);
-          window.showToast?.('Failed to update track bits: ' + err.message, 'error', 5000);
+          showToast('Failed to update track bits: ' + err.message, 'error', 5000);
         }
       };
     }
@@ -1172,7 +1172,7 @@ export class EditorUIHandler {
         return;
       }
       if (isSquareCornerSwitch(currentBits)) {
-        window.showToast?.(
+        showToast(
           'Invalid switch: a branch is 90° to a connecting segment ' +
             '(square corner). Add a diagonal (NS/EW) leg to ease it.',
           'error',

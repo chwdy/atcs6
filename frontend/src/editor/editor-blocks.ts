@@ -1,9 +1,10 @@
 // editor-blocks.ts — Block Editor Handler.
 //
 // Migrated from static/js/editor-blocks.js (longterm_todo.md item #7, Wave 2).
-// Behavior is unchanged. Owned by the Editor (`new BlockEditorHandler(this)`);
-// bridged onto window.BlockEditorHandler for the still-classic editor.js.
+// Behavior is unchanged. Owned by the Editor (`new BlockEditorHandler(this)`).
 
+import { stateManager } from '../lib/state-manager';
+import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import {
   renderHeaderId,
@@ -242,16 +243,16 @@ export class BlockEditorHandler {
       try {
         const result = await this.api.updateBlock(blockId, flags);
         if (result && result.error) {
-          window.showToast?.(`Cannot change availability: ${result.error}`, 'error', 4000);
+          showToast(`Cannot change availability: ${result.error}`, 'error', 4000);
           // Re-render to roll the active class back to the server's value.
           this.showEditor(blockId);
         } else {
-          window.showToast?.(`Block ${blockId} availability updated`, 'info', 1500);
+          showToast(`Block ${blockId} availability updated`, 'info', 1500);
           await window.app?.refreshNetwork();
         }
       } catch (err: any) {
         console.error('Failed to update block availability:', err);
-        window.showToast?.(`Cannot change availability: ${err.message || err}`, 'error', 4000);
+        showToast(`Cannot change availability: ${err.message || err}`, 'error', 4000);
         this.showEditor(blockId);
       }
     });
@@ -261,16 +262,16 @@ export class BlockEditorHandler {
       try {
         const result = await this.api.updateBlock(blockId, payload);
         if (result && result.error) {
-          window.showToast?.(`Cannot change travel direction: ${result.error}`, 'error', 4000);
+          showToast(`Cannot change travel direction: ${result.error}`, 'error', 4000);
           // Re-render to roll the active class back to the server's value.
           this.showEditor(blockId);
         } else {
-          window.showToast?.(`Block ${blockId} travel direction updated`, 'info', 1500);
+          showToast(`Block ${blockId} travel direction updated`, 'info', 1500);
           await window.app?.refreshNetwork();
         }
       } catch (err: any) {
         console.error('Failed to update block travel direction:', err);
-        window.showToast?.(`Cannot change travel direction: ${err.message || err}`, 'error', 4000);
+        showToast(`Cannot change travel direction: ${err.message || err}`, 'error', 4000);
         this.showEditor(blockId);
       }
     });
@@ -327,7 +328,7 @@ export class BlockEditorHandler {
           }
         } catch (err: any) {
           console.error('Failed to save block properties:', err);
-          window.showToast?.('Failed to save block properties: ' + err.message, 'error', 5000);
+          showToast('Failed to save block properties: ' + err.message, 'error', 5000);
         }
       };
     }
@@ -360,7 +361,7 @@ export class BlockEditorHandler {
           }
         } catch (err: any) {
           console.error('Failed to delete block:', err);
-          window.showToast?.('Failed to delete block: ' + err.message, 'error', 5000);
+          showToast('Failed to delete block: ' + err.message, 'error', 5000);
         }
       };
     }
@@ -398,7 +399,7 @@ export class BlockEditorHandler {
           }
         } catch (err: any) {
           console.error('Failed to remove block tile:', err);
-          window.showToast?.(`Failed to remove tile: ${err.message}`, 'error', 5000);
+          showToast(`Failed to remove tile: ${err.message}`, 'error', 5000);
         }
       };
     });
@@ -437,10 +438,10 @@ export class BlockEditorHandler {
         await this.editor.selectElement({ x: nextTile.x, y: nextTile.y });
       }
 
-      window.showToast?.(`Block extended ${direction} to (${nextTile.x}, ${nextTile.y})`, 'success', 3000);
+      showToast(`Block extended ${direction} to (${nextTile.x}, ${nextTile.y})`, 'success', 3000);
     } catch (err: any) {
       console.error('Failed to auto-extend block:', err);
-      window.showToast?.(`Failed to extend block: ${err.message}`, 'error', 5000);
+      showToast(`Failed to extend block: ${err.message}`, 'error', 5000);
     }
   }
 
@@ -450,7 +451,7 @@ export class BlockEditorHandler {
     try {
       const blockData = await this.api.getBlock(blockId);
       if (blockData.error) {
-        window.showToast?.(blockData.error, 'error', 5000);
+        showToast(blockData.error, 'error', 5000);
         return;
       }
 
@@ -467,7 +468,7 @@ export class BlockEditorHandler {
       await this.refreshList();
     } catch (err: any) {
       console.error('[BlockEditorHandler] Failed to update block:', err);
-      window.showToast?.('Failed to update block: ' + err.message, 'error', 5000);
+      showToast('Failed to update block: ' + err.message, 'error', 5000);
     }
   }
 
@@ -490,7 +491,7 @@ export class BlockEditorHandler {
       await window.app?.refreshNetwork();
     } catch (err: any) {
       console.error('[BlockEditorHandler] Failed to delete block:', err);
-      window.showToast?.('Failed to delete block: ' + err.message, 'error', 5000);
+      showToast('Failed to delete block: ' + err.message, 'error', 5000);
     }
   }
 
@@ -627,7 +628,7 @@ export class BlockEditorHandler {
           const maxSpeed = overlay.querySelector<HTMLInputElement>('#modal-max-speed')?.value;
 
           if (!blockId) {
-            window.showToast?.('Block ID is required', 'error', 5000);
+            showToast('Block ID is required', 'error', 5000);
             return;
           }
 
@@ -641,7 +642,7 @@ export class BlockEditorHandler {
         } else if (mode === 'extend') {
           const blockId = confirmBtn!.dataset.blockId;
           if (!blockId) {
-            window.showToast?.('Please select a block', 'error', 5000);
+            showToast('Please select a block', 'error', 5000);
             return;
           }
 
@@ -772,12 +773,12 @@ export class BlockEditorHandler {
         const speedLimitKmh = speedInput.value.trim() ? parseFloat(speedInput.value) : null;
 
         if (lengthCm < 0) {
-          window.showToast?.('Length cannot be negative', 'error', 5000);
+          showToast('Length cannot be negative', 'error', 5000);
           return;
         }
 
         if (speedLimitKmh !== null && speedLimitKmh <= 0) {
-          window.showToast?.('Max speed must be positive', 'error', 5000);
+          showToast('Max speed must be positive', 'error', 5000);
           return;
         }
 
@@ -834,7 +835,7 @@ export class BlockEditorHandler {
     this._isDirty = false;
 
     this._unsubscribe =
-      window.stateManager?.subscribe(
+      stateManager?.subscribe(
         'blocks',
         blockId,
         (newBlock: any, oldBlock: any) => this._onBlockUpdate(newBlock, oldBlock),
@@ -844,7 +845,7 @@ export class BlockEditorHandler {
 
   _onBlockUpdate(newBlock: any, oldBlock: any): void {
     if (!newBlock) {
-      window.showToast?.('Block was deleted', 'warning');
+      showToast('Block was deleted', 'warning');
       this.editor.hideSecondarySidebar();
       return;
     }

@@ -2,13 +2,14 @@
 // control panel + its live HMI updates).
 //
 // Migrated from static/js/editor-trains.js (longterm_todo.md item #7, Wave 2).
-// Behavior is unchanged. Owned by the Editor (`new TrainEditorHandler(this)`);
-// bridged onto window.TrainEditorHandler for the still-classic editor.js.
+// Behavior is unchanged. Owned by the Editor (`new TrainEditorHandler(this)`).
 //
 // The source-contract test (tests/test_javascript_syntax.py) pins the presence
 // of `waitForTrainStopped`, `updateControlPanelValuesFromData`, and
 // `updateCabButtons`; keep those names.
 
+import { stateManager } from '../lib/state-manager';
+import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import { showConfirmModal } from '../lib/helpers';
 
@@ -84,12 +85,12 @@ export class TrainEditorHandler {
           const length = parseFloat(inputValue('train-length')) || 1;
 
           if (!trainId) {
-            window.showToast?.('Please enter a train ID', 'error', 3000);
+            showToast('Please enter a train ID', 'error', 3000);
             return;
           }
 
           try {
-            const api: any = window.api;
+            const api: any = this.api;
             await api.createTrain({
               id: trainId,
               position: { x: posX, y: posY },
@@ -97,12 +98,12 @@ export class TrainEditorHandler {
               max_speed: maxSpeed,
               length: length,
             });
-            window.showToast?.(`Train "${trainId}" created successfully`, 'success', 3000);
+            showToast(`Train "${trainId}" created successfully`, 'success', 3000);
             this.editor.hideSecondarySidebar();
             window.app?.refreshNetwork();
           } catch (err: any) {
             console.error('[TrainEditorHandler] Failed to create train:', err);
-            window.showToast?.('Failed to create train: ' + err.message, 'error', 5000);
+            showToast('Failed to create train: ' + err.message, 'error', 5000);
           }
         };
       }
@@ -123,7 +124,7 @@ export class TrainEditorHandler {
       trains = await this.api.getTrains();
     } catch (err: any) {
       console.error('[TrainEditorHandler] Failed to load trains:', err);
-      window.showToast?.('Failed to load trains: ' + err.message, 'error', 5000);
+      showToast('Failed to load trains: ' + err.message, 'error', 5000);
       return;
     }
 
@@ -157,7 +158,7 @@ export class TrainEditorHandler {
   }
 
   renderTrainListItem(train: any): string {
-    const controller: any = window.stateManager?.getController(train.id);
+    const controller: any = stateManager?.getController(train.id);
     const state = controller?.state || 'off';
     const stateClass = this.getTrainStateVisualClass(state);
 
@@ -258,7 +259,7 @@ export class TrainEditorHandler {
     if (etaSec == null) return '—';
 
     const duration = this._formatDuration(etaSec);
-    const simTime = window.stateManager?.simulationTime;
+    const simTime = stateManager?.simulationTime;
     if (typeof simTime === 'number' && Number.isFinite(simTime)) {
       const arrival = this._formatSimClock(simTime + etaSec);
       return `${arrival} (${duration})`;
@@ -338,14 +339,14 @@ export class TrainEditorHandler {
         if (!confirmed) return;
 
         try {
-          const api: any = window.api;
+          const api: any = this.api;
           await api.deleteTrain(trainId);
-          window.showToast?.(`Train "${trainId}" deleted`, 'success', 3000);
+          showToast(`Train "${trainId}" deleted`, 'success', 3000);
           await this.showTrainsPanel();
           window.app?.refreshNetwork();
         } catch (err: any) {
           console.error('[TrainEditorHandler] Failed to delete train:', err);
-          window.showToast?.('Failed to delete train: ' + err.message, 'error', 5000);
+          showToast('Failed to delete train: ' + err.message, 'error', 5000);
         }
       };
     });
@@ -360,7 +361,7 @@ export class TrainEditorHandler {
       schedules = await this.api.getSchedules();
     } catch (err: any) {
       console.error('[TrainEditorHandler] Failed to load schedules:', err);
-      window.showToast?.('Failed to load schedules: ' + err.message, 'error', 5000);
+      showToast('Failed to load schedules: ' + err.message, 'error', 5000);
       return;
     }
 
@@ -453,13 +454,13 @@ export class TrainEditorHandler {
         if (!confirmed) return;
 
         try {
-          const api: any = window.api;
+          const api: any = this.api;
           await api.deleteSchedule(scheduleId);
-          window.showToast?.(`Schedule "${scheduleId}" deleted`, 'success', 3000);
+          showToast(`Schedule "${scheduleId}" deleted`, 'success', 3000);
           await this.showSchedulesPanel();
         } catch (err: any) {
           console.error('[TrainEditorHandler] Failed to delete schedule:', err);
-          window.showToast?.('Failed to delete schedule: ' + err.message, 'error', 5000);
+          showToast('Failed to delete schedule: ' + err.message, 'error', 5000);
         }
       };
     });
@@ -479,13 +480,13 @@ export class TrainEditorHandler {
       dispatcher = trainResp?.dispatcher_progress;
     } catch (err: any) {
       console.error('[TrainEditorHandler] Failed to fetch train:', err);
-      window.showToast?.(`Failed to load train: ${err.message}`, 'error', 5000);
+      showToast(`Failed to load train: ${err.message}`, 'error', 5000);
       return;
     }
 
     if (!train) {
       console.warn('[TrainEditorHandler] Train not found:', trainId);
-      window.showToast?.(`Train ${trainId} not found`, 'error', 5000);
+      showToast(`Train ${trainId} not found`, 'error', 5000);
       return;
     }
 
@@ -523,7 +524,7 @@ export class TrainEditorHandler {
         }
       } catch (err) {
         console.warn('[TrainEditorHandler] Failed to fetch path info:', err);
-        window.showToast?.('Could not load path details — showing cached data', 'warning', 5000);
+        showToast('Could not load path details — showing cached data', 'warning', 5000);
         pathName = onboardAto?.path_id || assignedPathId;
         destinationName =
           onboardAto?.destination_station_name || onboardAto?.destination_block_id || 'No path';
@@ -587,7 +588,7 @@ export class TrainEditorHandler {
         : '—';
 
     // Simulation clock — sourced from StateManager's network-wide scalar.
-    const simTimeRaw = window.stateManager?.simulationTime;
+    const simTimeRaw = stateManager?.simulationTime;
     const simClockStr =
       typeof simTimeRaw === 'number' && Number.isFinite(simTimeRaw)
         ? this._formatSimClock(simTimeRaw, { subsecond: true })
@@ -886,7 +887,7 @@ export class TrainEditorHandler {
   }
 
   async initTrainControlHandlers(trainId: string): Promise<void> {
-    const api: any = window.api;
+    const api: any = this.api;
 
     /** Execute a button action with consistent error handling and feedback. */
     const executeAction = async (
@@ -900,9 +901,9 @@ export class TrainEditorHandler {
         console.log(`[TrainControl] ${actionName} result:`, result);
 
         if (result && result.status === 'success') {
-          window.showToast?.(`${actionName}: Success`, 'success', 2000);
+          showToast(`${actionName}: Success`, 'success', 2000);
         } else if (result && result.error) {
-          window.showToast?.(`${actionName}: ${result.error}`, 'error', 5000);
+          showToast(`${actionName}: ${result.error}`, 'error', 5000);
           return;
         }
 
@@ -913,13 +914,13 @@ export class TrainEditorHandler {
         // subscription patches the panel on the same frame.
         if (result && (result.controller || result.train)) {
           if (result.train) {
-            window.stateManager?.updateEntity('trains', trainId, result.train);
+            stateManager?.updateEntity('trains', trainId, result.train);
           }
           if (result.controller) {
-            window.stateManager?.updateEntity('controllers', trainId, result.controller);
+            stateManager?.updateEntity('controllers', trainId, result.controller);
           }
           if (result.dispatcher_progress !== undefined) {
-            window.stateManager?.updateEntity('dispatcherProgress', trainId, result.dispatcher_progress);
+            stateManager?.updateEntity('dispatcherProgress', trainId, result.dispatcher_progress);
           }
           return;
         }
@@ -928,7 +929,7 @@ export class TrainEditorHandler {
         await window.app?.refreshNetwork();
       } catch (err: any) {
         console.error(`[TrainControl] ${actionName} failed:`, err);
-        window.showToast?.(`${actionName}: ${err.message}`, 'error', 5000);
+        showToast(`${actionName}: ${err.message}`, 'error', 5000);
       }
     };
 
@@ -1101,7 +1102,7 @@ export class TrainEditorHandler {
           await executeAction('Emergency Stop', () => api.setHandle(trainId, 'EB'));
         } catch (err: any) {
           console.error('[TrainControl] Emergency toggle failed:', err);
-          window.showToast?.(`Emergency: ${err.message}`, 'error', 5000);
+          showToast(`Emergency: ${err.message}`, 'error', 5000);
         }
       };
     }
@@ -1113,7 +1114,7 @@ export class TrainEditorHandler {
           await executeAction('Release Emergency', () => api.setHandle(trainId, 'N'));
         } catch (err: any) {
           console.error('[TrainControl] Emergency reset failed:', err);
-          window.showToast?.(`Emergency Reset: ${err.message}`, 'error', 5000);
+          showToast(`Emergency Reset: ${err.message}`, 'error', 5000);
         }
       };
     }
@@ -1147,10 +1148,10 @@ export class TrainEditorHandler {
           await this.api.updateTrain(trainId, updates);
           await window.app?.refreshNetwork();
           this.showTrainControlPanel(trainId);
-          window.showToast?.('Train properties saved', 'success', 5000);
+          showToast('Train properties saved', 'success', 5000);
         } catch (err: any) {
           console.error('Failed to save train properties:', err);
-          window.showToast?.('Failed to save train properties: ' + err.message, 'error', 5000);
+          showToast('Failed to save train properties: ' + err.message, 'error', 5000);
         }
       };
     }
@@ -1165,15 +1166,15 @@ export class TrainEditorHandler {
     const routeRunBtn = document.getElementById('train-route-run-btn') as HTMLButtonElement | null;
     if (routeRunBtn) {
       routeRunBtn.onclick = () => {
-        const ctrl: any = window.stateManager?.getController(trainId);
+        const ctrl: any = stateManager?.getController(trainId);
         const rrid = ctrl?.route_run_id;
         if (!rrid) {
-          window.showToast?.('No active route run for this train', 'warning', 3000);
+          showToast('No active route run for this train', 'warning', 3000);
           return;
         }
         const runNumber = parseInt(rrid.split('#')[1], 10);
         if (!Number.isFinite(runNumber)) {
-          window.showToast?.('Invalid route run id', 'error', 3000);
+          showToast('Invalid route run id', 'error', 3000);
           return;
         }
         this.editor.routeRunHandler.showRouteRunEditor(runNumber);
@@ -1184,18 +1185,18 @@ export class TrainEditorHandler {
     this._cleanup();
     this._trainId = trainId;
 
-    const unsubTrain = window.stateManager?.subscribe(
+    const unsubTrain = stateManager?.subscribe(
       'trains',
       trainId,
       (newTrain: any, oldTrain: any) => this._onTrainUpdate(newTrain, oldTrain),
       { immediate: false }
     );
 
-    const unsubController = window.stateManager?.subscribe(
+    const unsubController = stateManager?.subscribe(
       'controllers',
       trainId,
       () => {
-        const train = window.stateManager?.get('trains', trainId);
+        const train = stateManager?.get('trains', trainId);
         if (train) {
           this._onTrainUpdate(train, train);
         }
@@ -1203,11 +1204,11 @@ export class TrainEditorHandler {
       { immediate: false }
     );
 
-    const unsubDispatcher = window.stateManager?.subscribe(
+    const unsubDispatcher = stateManager?.subscribe(
       'dispatcherProgress',
       trainId,
       () => {
-        const train = window.stateManager?.get('trains', trainId);
+        const train = stateManager?.get('trains', trainId);
         if (train) {
           this._onTrainUpdate(train, train);
         }
@@ -1215,7 +1216,7 @@ export class TrainEditorHandler {
       { immediate: false }
     );
 
-    const unsubClock = window.stateManager?.subscribeSimClock((simTime: number) => {
+    const unsubClock = stateManager?.subscribeSimClock((simTime: number) => {
       const panel = document.querySelector(`.tc-panel[data-train-id="${trainId}"]`);
       const simTimeEl = panel?.querySelector('#hmi-time');
       if (simTimeEl) {
@@ -1230,7 +1231,7 @@ export class TrainEditorHandler {
       try {
         const payload = await this.api.getTrainLookahead(trainId);
         this._dwellLookahead = payload;
-        const train = window.stateManager?.get('trains', trainId);
+        const train = stateManager?.get('trains', trainId);
         if (train) this.updateControlPanelValuesFromData(train);
       } catch (e) {
         /* ignore transient errors */
@@ -1276,7 +1277,7 @@ export class TrainEditorHandler {
   _onTrainUpdate(newTrain: any, oldTrain: any): void {
     if (!newTrain) {
       // Train was deleted
-      window.showToast?.('Train was deleted', 'warning');
+      showToast('Train was deleted', 'warning');
       this.editor.hideSecondarySidebar();
       return;
     }
@@ -1369,7 +1370,7 @@ export class TrainEditorHandler {
     const panel = document.querySelector(`.train-control-panel[data-train-id="${train.id}"]`) as HTMLElement | null;
     if (!panel) return;
 
-    const controller: any = window.stateManager?.getController(train.id) || null;
+    const controller: any = stateManager?.getController(train.id) || null;
     const trainState = controller?.state || 'off';
 
     const stateEl = panel.querySelector('.train-state-display');
@@ -1606,7 +1607,7 @@ export class TrainEditorHandler {
       // ── HMI read-only cells ──
       const simTimeEl = panel.querySelector('#hmi-time');
       if (simTimeEl) {
-        const simTime = window.stateManager?.simulationTime;
+        const simTime = stateManager?.simulationTime;
         simTimeEl.textContent =
           typeof simTime === 'number' && Number.isFinite(simTime)
             ? this._formatSimClock(simTime, { subsecond: true })
@@ -1702,7 +1703,7 @@ export class TrainEditorHandler {
     }
 
     // ── Task-zone Path Index (sourced from dispatcher progress) ──
-    const dispatcher: any = window.stateManager?.getDispatcherProgress(train.id);
+    const dispatcher: any = stateManager?.getDispatcherProgress(train.id);
     const pathIndexEl = panel.querySelector('#train-path-index-val');
     if (pathIndexEl) {
       if (
@@ -1776,7 +1777,7 @@ export class TrainEditorHandler {
   }
 
   updateButtonStates(train: any): void {
-    const controller: any = window.stateManager?.getController(train.id) || null;
+    const controller: any = stateManager?.getController(train.id) || null;
     const state = controller?.state;
     const powerOn = controller?.power_on ?? false;
     // In v1, manual is a control mode (controller.control_mode), not a state.

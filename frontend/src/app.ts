@@ -7,16 +7,18 @@
 // because module scripts are deferred, this runs before DOMContentLoaded, so
 // the `new App()` bootstrap at the bottom fires once the DOM is ready.
 //
-// `api` / `stateManager` are read off `window` (still bridged by lib/api and
-// lib/state-manager); the toast IIFE still bridges window.showToast for the
-// renderer/panel/editor modules that read it. Those bridges are removed in the
-// follow-up bridge-decommission step once every consumer imports instead.
+// api / stateManager / showToast are imported from lib/. window.app is set on
+// DOMContentLoaded (the App instance) for the editor handlers and panels that
+// call app methods.
 
 import { Renderer } from './renderer';
 import { Editor } from './editor/editor';
 import { TrainMonitor } from './panels/train-monitor';
 import { showConfirmModal, showFormModal } from './lib/helpers';
 import { setLabelSpacing } from './lib/constants';
+import { api } from './lib/api';
+import { stateManager } from './lib/state-manager';
+import { showToast } from './lib/toast';
 
 class App {
   renderer: any;
@@ -38,7 +40,7 @@ class App {
 
   constructor() {
     this.renderer = new Renderer('rail-canvas');
-    this.editor = new Editor(this.renderer, this.api);
+    this.editor = new Editor(this.renderer, api);
     this.trainMonitor = new TrainMonitor();
 
     this.simulationInterval = null;
@@ -64,27 +66,18 @@ class App {
     this.refreshNetwork();
   }
 
-  // The API client and StateManager are still bridged onto window by lib/api
-  // and lib/state-manager; route through these getters until those modules are
-  // imported directly in the bridge-decommission step.
-  private get api(): any {
-    return window.api;
-  }
-  private get stateManager(): any {
-    return window.stateManager;
-  }
 
   setupControls(): void {
     const playPauseBtn = document.getElementById('btn-play-pause')!;
     playPauseBtn.addEventListener('click', () => {
       if (this.isSimulationRunning) {
         // Pause
-        this.api.controlSimulation('stop').catch((e: any) => console.error('[App] Pause error:', e));
+        api.controlSimulation('stop').catch((e: any) => console.error('[App] Pause error:', e));
         this.stopSimulationPolling();
         this.updatePlaybackUI(false);
       } else {
         // Play
-        this.api.controlSimulation('start').catch((e: any) => console.error('[App] Play error:', e));
+        api.controlSimulation('start').catch((e: any) => console.error('[App] Play error:', e));
         this.startSimulationPolling();
         this.updatePlaybackUI(true);
       }
@@ -95,15 +88,15 @@ class App {
       clearFatalBtn.addEventListener('click', async () => {
         clearFatalBtn.disabled = true;
         try {
-          const res = await this.api.releaseFailedRuntime();
+          const res = await api.releaseFailedRuntime();
           if (res && res.released) {
-            window.showToast?.('Conflict cleared — simulation resumed', 'success', 3000);
+            showToast('Conflict cleared — simulation resumed', 'success', 3000);
           } else {
-            window.showToast?.('Conflict still present — resolve it on the layout, then clear again', 'warning', 6000);
+            showToast('Conflict still present — resolve it on the layout, then clear again', 'warning', 6000);
           }
         } catch (e: any) {
           console.error('[App] Clear-fatal error:', e);
-          window.showToast?.(`Could not clear halt: ${e.message}`, 'error', 5000);
+          showToast(`Could not clear halt: ${e.message}`, 'error', 5000);
         } finally {
           clearFatalBtn.disabled = false;
           this.refreshNetwork();
@@ -123,10 +116,10 @@ class App {
       if (!confirmed) return;
 
       try {
-        await this.api.restartServer();
+        await api.restartServer();
       } catch (e: any) {
         console.error('[App] Restart request failed:', e);
-        window.showToast?.('Could not reach server to restart.', 'error', 4000);
+        showToast('Could not reach server to restart.', 'error', 4000);
         return;
       }
 
@@ -140,14 +133,14 @@ class App {
         const speed = parseFloat((e.currentTarget as HTMLElement).dataset.speed ?? '');
         if (!Number.isFinite(speed)) return;
         try {
-          await this.api.controlSimulation('set_speed', speed);
+          await api.controlSimulation('set_speed', speed);
         } catch (err: any) {
           console.error('[App] set_speed error:', err);
-          window.showToast?.(`Failed to set speed: ${err.message}`, 'error', 2000);
+          showToast(`Failed to set speed: ${err.message}`, 'error', 2000);
           return;
         }
         this.syncSpeedPresetUI(speed);
-        window.showToast?.(`Speed set to ${speed}x`, 'info', 1000);
+        showToast(`Speed set to ${speed}x`, 'info', 1000);
       });
     });
 
@@ -293,29 +286,29 @@ class App {
     const description = descInput.value.trim();
 
     if (!name) {
-      window.showToast?.('Please enter a layout name', 'error');
+      showToast('Please enter a layout name', 'error');
       nameInput.focus();
       return;
     }
 
     try {
-      const result = await this.api.saveLayout(name, description);
+      const result = await api.saveLayout(name, description);
 
       // Show success message with step count
       let message = `Layout "${name}" saved`;
       if (result.steps_count > 0) {
         message += ` (${result.steps_count} steps)`;
       }
-      window.showToast?.(message, 'success');
+      showToast(message, 'success');
 
       // Show warning if steps failed
       if (result.warning) {
-        window.showToast?.(`Warning: ${result.warning}`, 'warning');
+        showToast(`Warning: ${result.warning}`, 'warning');
       }
 
       this.closeModal(document.getElementById('save-layout-modal'));
     } catch (e: any) {
-      window.showToast?.(`Failed to save layout: ${e.message}`, 'error');
+      showToast(`Failed to save layout: ${e.message}`, 'error');
     }
   }
 
@@ -324,7 +317,7 @@ class App {
     listEl.innerHTML = '<p class="loading-text">Loading...</p>';
 
     try {
-      const layouts = await this.api.getLayouts();
+      const layouts = await api.getLayouts();
       // Filter out old _steps suffix files (now merged into main file)
       const filteredLayouts = layouts.filter((l: any) => !l.name.endsWith('_steps'));
 
@@ -362,7 +355,7 @@ class App {
     listEl.innerHTML = '<p class="loading-text">Loading layouts...</p>';
 
     try {
-      const layouts = await this.api.getLayouts();
+      const layouts = await api.getLayouts();
       // Filter out _steps suffix files (old format, now merged)
       const filteredLayouts = layouts.filter((l: any) => !l.name.endsWith('_steps'));
 
@@ -429,12 +422,12 @@ class App {
 
   async loadSelectedLayout(filename: string): Promise<void> {
     try {
-      await this.api.loadLayout(filename);
-      window.showToast?.('Layout loaded successfully', 'success');
+      await api.loadLayout(filename);
+      showToast('Layout loaded successfully', 'success');
       this.closeModal(document.getElementById('load-layout-modal'));
       await this.refreshNetwork();
     } catch (e: any) {
-      window.showToast?.(`Failed to load layout: ${e.message}`, 'error');
+      showToast(`Failed to load layout: ${e.message}`, 'error');
     }
   }
 
@@ -451,18 +444,18 @@ class App {
     }
 
     try {
-      await this.api.deleteLayout(filename);
-      window.showToast?.(`Layout "${name}" deleted`, 'success');
+      await api.deleteLayout(filename);
+      showToast(`Layout "${name}" deleted`, 'success');
       await this.loadLayoutsList();
     } catch (e: any) {
-      window.showToast?.(`Failed to delete layout: ${e.message}`, 'error');
+      showToast(`Failed to delete layout: ${e.message}`, 'error');
     }
   }
 
   async newLayout(): Promise<void> {
     try {
       // Check if there's anything on the layout
-      const stats = await this.api.getNetworkStats();
+      const stats = await api.getNetworkStats();
 
       if (!stats.is_empty) {
         // Build a summary of what will be cleared
@@ -488,12 +481,12 @@ class App {
       }
 
       // Clear the network
-      await this.api.clearNetwork();
-      window.showToast?.('New layout created', 'success');
+      await api.clearNetwork();
+      showToast('New layout created', 'success');
       await this.refreshNetwork();
 
     } catch (e: any) {
-      window.showToast?.(`Failed to create new layout: ${e.message}`, 'error');
+      showToast(`Failed to create new layout: ${e.message}`, 'error');
     }
   }
 
@@ -526,11 +519,11 @@ class App {
       // Still update the cache and trains panel, but don't redraw directly
       // The setCachedNetwork call will trigger re-validation of hover state
       try {
-        const network = await this.api.getNetwork();
+        const network = await api.getNetwork();
         this.currentNetwork = network;
 
         // NEW: Update StateManager cache
-        this.stateManager.updateFromNetwork(network);
+        stateManager.updateFromNetwork(network);
 
         this.editor.setCachedNetwork(network);
         // Validate that the current editor still exists (close if deleted)
@@ -544,13 +537,13 @@ class App {
     }
 
     try {
-      const network = await this.api.getNetwork();
+      const network = await api.getNetwork();
 
       // Pull station groups alongside so the renderer can draw station
       // labels at the centroid of each station's platforms. Failure here
       // shouldn't block the rest of the render.
       try {
-        const stationResp = await this.api.listStationGroups();
+        const stationResp = await api.listStationGroups();
         network.stations = stationResp?.stations || [];
       } catch (_) {
         network.stations = [];
@@ -559,7 +552,7 @@ class App {
       this.currentNetwork = network;
 
       // NEW: Update StateManager cache
-      this.stateManager.updateFromNetwork(network);
+      stateManager.updateFromNetwork(network);
 
       this.editor.setCachedNetwork(network);
       if (!this.hasInitiallyCentered && network.tracks && network.tracks.length > 0) {
@@ -697,7 +690,7 @@ class App {
   _maybeFollowSelectedTrain(): void {
     if (!this.followTrainEnabled) return;
     if (!this.selectedTrainId) return;
-    const controller = this.stateManager?.getController(this.selectedTrainId);
+    const controller = stateManager?.getController(this.selectedTrainId);
     const span = controller?.span;
     if (!span?.end_a || !span?.end_b) return;
     const headEnd = span.leading_end === 'a' ? span.end_a : span.end_b;
@@ -777,13 +770,13 @@ class App {
   }
 
   _subscribeTrainMonitor(trainId: string): void {
-    if (!this.stateManager) return;
+    if (!stateManager) return;
     if (this.trainMonitorUnsub) {
       this.trainMonitorUnsub();
       this.trainMonitorUnsub = null;
     }
 
-    this.trainMonitorUnsub = this.stateManager.subscribe(
+    this.trainMonitorUnsub = stateManager.subscribe(
       'trains',
       trainId,
       (newTrain: any) => {
@@ -823,8 +816,8 @@ class App {
     // Reveal the geometry + read-only properties block (Status fields moved here).
     if (debugGeometry) debugGeometry.classList.remove('hidden');
 
-    const controller = this.stateManager.getController(train.id);
-    const dispatcher = this.stateManager.getDispatcherProgress(train.id);
+    const controller = stateManager.getController(train.id);
+    const dispatcher = stateManager.getDispatcherProgress(train.id);
     const span = controller?.span || null;
 
     // Build the skeleton once. Subsequent calls reuse the same DOM nodes so
@@ -951,7 +944,7 @@ class App {
         if (!trainSnapshot) {
           return;
         }
-        const lookaheadPayload = await this.api.getTrainLookahead(trainId);
+        const lookaheadPayload = await api.getTrainLookahead(trainId);
         this.lastLookaheadPayload = lookaheadPayload;
         if (this.trainMonitor.isVisible()) {
           this.trainMonitor.updateFromController(trainSnapshot, lookaheadPayload);
@@ -1031,7 +1024,7 @@ class App {
     }
 
     try {
-      await this.api.createTrain({
+      await api.createTrain({
         id: String(values.trainId || '').trim(),
         position: { x: Number(values.posX), y: Number(values.posY) },
         direction: values.direction || 'EAST',
@@ -1040,7 +1033,7 @@ class App {
       await this.refreshNetwork();
     } catch (err: any) {
       console.error('Failed to create train:', err);
-      window.showToast?.('Failed to create train: ' + err.message, 'error', 4000);
+      showToast('Failed to create train: ' + err.message, 'error', 4000);
     }
   }
 
@@ -1130,17 +1123,17 @@ class App {
 
       const scale = parseFloat(scaleValue);
       if (isNaN(scale) || scale <= 0) {
-        window.showToast?.('Invalid scale value', 'error');
+        showToast('Invalid scale value', 'error');
         return;
       }
 
       try {
-        await this.api.setScale(scale);
+        await api.setScale(scale);
         await this.loadCurrentScale();
-        window.showToast?.(`Scale set to 1:${scale}`, 'success');
+        showToast(`Scale set to 1:${scale}`, 'success');
       } catch (e: any) {
         console.error('[App] Failed to set scale:', e);
-        window.showToast?.('Failed to set scale', 'error');
+        showToast('Failed to set scale', 'error');
       }
     };
 
@@ -1160,7 +1153,7 @@ class App {
     const scaleSelect = document.getElementById('scale-select') as HTMLSelectElement;
 
     try {
-      const data = await this.api.getScale();
+      const data = await api.getScale();
       const scale = data.scale;
       const presets = data.presets || {};
 
@@ -1281,7 +1274,7 @@ class App {
       // No need for refreshCurrentEditor() - subscriptions handle all updates
 
       if (this.selectedTrainId) {
-        const train = this.stateManager.get('trains', this.selectedTrainId);
+        const train = stateManager.get('trains', this.selectedTrainId);
         if (train) {
           // Train Control Panel updates via subscription
           // Only update debug panel here
@@ -1376,85 +1369,6 @@ class App {
   }
 }
 
-// Toast Notification System
-(function() {
-  // Ensure container exists
-  let container = document.getElementById('toast-container');
-  if (!container) {
-    container = document.createElement('div');
-    container.id = 'toast-container';
-    container.className = 'toast-container';
-    document.body.appendChild(container);
-  }
-
-  // Toast icons for each type
-  const ICONS: Record<string, string> = {
-    error: '❌',
-    success: '✅',
-    warning: '⚠️',
-    info: 'ℹ️'
-  };
-
-  let toastCounter = 0;
-
-  /**
-   * Show a toast notification
-   * @param {string} message - Message to display
-   * @param {string} type - 'error', 'success', 'warning', or 'info'
-   * @param {number} duration - Duration in ms (default: 4000, 0 = no auto-dismiss)
-   * @returns {HTMLElement} - The toast element
-   */
-  function showToast(message: string, type: string = 'info', duration: number = 4000): HTMLElement {
-    const toastId = `toast-${toastCounter++}`;
-
-    // Create toast element
-    const toast = document.createElement('div');
-    toast.className = `toast ${type}`;
-    toast.id = toastId;
-    toast.innerHTML = `
-            <span class="toast-icon">${ICONS[type] || ICONS.info}</span>
-            <div class="toast-message">${message}</div>
-            <button class="toast-close" aria-label="Close">×</button>
-        `;
-
-    // Add to container
-    container!.appendChild(toast);
-
-    // Close button handler
-    const closeBtn = toast.querySelector('.toast-close') as HTMLElement;
-    closeBtn.onclick = () => dismissToast(toastId);
-
-    // Auto-dismiss after duration (if > 0)
-    if (duration > 0) {
-      setTimeout(() => dismissToast(toastId), duration);
-    }
-
-    return toast;
-  }
-
-  /**
-   * Dismiss a toast by ID
-   * @param {string} toastId - ID of toast to dismiss
-   */
-  function dismissToast(toastId: string): void {
-    const toast = document.getElementById(toastId);
-    if (!toast) return;
-
-    // Add fade-out animation
-    toast.classList.add('toast-fade-out');
-
-    // Remove after animation completes
-    setTimeout(() => {
-      if (toast.parentNode) {
-        toast.parentNode.removeChild(toast);
-      }
-    }, 300);
-  }
-
-  // Expose to global scope
-  window.showToast = showToast;
-  window.dismissToast = dismissToast;
-})();
 
 // Sidebar resize functionality
 (function() {

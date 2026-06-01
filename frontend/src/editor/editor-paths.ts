@@ -1,9 +1,9 @@
 // editor-paths.ts — Path Editor Handler (route-creation / extend / cancel tools).
 //
 // Migrated from static/js/editor-paths.js (longterm_todo.md item #7, Wave 2).
-// Behavior is unchanged. Owned by the Editor (`new PathEditorHandler(this)`);
-// bridged onto window.PathEditorHandler for the still-classic editor.js.
+// Behavior is unchanged. Owned by the Editor (`new PathEditorHandler(this)`).
 
+import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import {
   renderHeaderId,
@@ -129,13 +129,13 @@ export class PathEditorHandler {
 
   async handleRouteFirstClick(gridPos: any, track: any): Promise<void> {
     if (!track) {
-      window.showToast?.('No track at this position', 'warning', 3000);
+      showToast('No track at this position', 'warning', 3000);
       return;
     }
 
     const blockId = track.block_section_id;
     if (!blockId) {
-      window.showToast?.('Must start path from a block', 'warning', 3000);
+      showToast('Must start path from a block', 'warning', 3000);
       return;
     }
 
@@ -147,7 +147,7 @@ export class PathEditorHandler {
     if (block?.occupied_by) {
       this.pathToolState.trainId = block.occupied_by;
     } else {
-      window.showToast?.('No train at start block; pick a block occupied by a train', 'warning', 3000);
+      showToast('No train at start block; pick a block occupied by a train', 'warning', 3000);
       await this.resetRouteToolState();
       return;
     }
@@ -173,7 +173,7 @@ export class PathEditorHandler {
       }
     } catch (err: any) {
       console.error('[Editor] Failed to get reachable destinations:', err);
-      window.showToast?.('Failed to get reachable destinations: ' + err.message, 'error', 5000);
+      showToast('Failed to get reachable destinations: ' + err.message, 'error', 5000);
       await this.resetRouteToolState();
     }
   }
@@ -195,18 +195,18 @@ export class PathEditorHandler {
 
   async handleRouteSecondClick(gridPos: any, track: any): Promise<void> {
     if (!track) {
-      window.showToast?.('No track at this position', 'warning', 3000);
+      showToast('No track at this position', 'warning', 3000);
       return;
     }
 
     const endBlockId = track.block_section_id;
     if (!endBlockId) {
-      window.showToast?.('Must end path on a block', 'warning', 3000);
+      showToast('Must end path on a block', 'warning', 3000);
       return;
     }
 
     if (!this.pathToolState.reachableEndpoints.includes(endBlockId)) {
-      window.showToast?.('Cannot reach this block from start', 'warning', 3000);
+      showToast('Cannot reach this block from start', 'warning', 3000);
       return;
     }
 
@@ -240,11 +240,11 @@ export class PathEditorHandler {
       const outcome = await this.assignQuickRouteWithConfirm(trainId, routeId);
       if (outcome === 'cancelled') {
         await this.deleteRouteBestEffort(routeId);
-        window.showToast?.('Quick Route cancelled', 'info', 3000);
+        showToast('Quick Route cancelled', 'info', 3000);
         return;
       }
 
-      window.showToast?.(`Quick Route assigned to ${trainId}`, 'success', 5000);
+      showToast(`Quick Route assigned to ${trainId}`, 'success', 5000);
       await window.app?.refreshNetwork();
       await this.resetRouteToolState();
     } catch (err: any) {
@@ -252,7 +252,7 @@ export class PathEditorHandler {
         await this.deleteRouteBestEffort(routeId);
       }
       console.error('[Editor] Quick Route failed:', err);
-      window.showToast?.('Quick Route failed: ' + err.message, 'error', 5000);
+      showToast('Quick Route failed: ' + err.message, 'error', 5000);
     }
   }
 
@@ -357,7 +357,7 @@ export class PathEditorHandler {
       this.cachedPaths = await this.api.getPaths();
     } catch (err: any) {
       console.error('[Editor] Failed to load paths:', err);
-      window.showToast?.('Failed to load paths: ' + err.message, 'error', 5000);
+      showToast('Failed to load paths: ' + err.message, 'error', 5000);
       return;
     }
 
@@ -507,7 +507,7 @@ export class PathEditorHandler {
             const message = queued
               ? `Path ${pathId} cancellation queued — train is braking`
               : `Path ${pathId} cancelled`;
-            window.showToast?.(message, 'success', 5000);
+            showToast(message, 'success', 5000);
             await window.app?.refreshNetwork();
             await this.showPathsPanel();
             // For latched cancels, the path is not yet removed. Reconcile
@@ -523,7 +523,7 @@ export class PathEditorHandler {
               }, 500);
             }
           } else {
-            window.showToast?.(
+            showToast(
               `Failed to cancel: ${result.reason || result.error || 'unknown error'}`,
               'error',
               5000
@@ -531,7 +531,7 @@ export class PathEditorHandler {
           }
         } catch (err: any) {
           console.error('[Editor] Failed to cancel path:', err);
-          window.showToast?.('Failed to cancel path: ' + err.message, 'error', 5000);
+          showToast('Failed to cancel path: ' + err.message, 'error', 5000);
         }
       };
     });
@@ -546,7 +546,7 @@ export class PathEditorHandler {
       path = await this.api.getPath(pathId);
       if (path.error) throw new Error(path.error);
     } catch (err) {
-      window.showToast?.('Path not found', 'error', 5000);
+      showToast('Path not found', 'error', 5000);
       return;
     }
 
@@ -710,7 +710,7 @@ export class PathEditorHandler {
                   : '';
               message = `Path ${pathId} cancelled${suffix}`;
             }
-            window.showToast?.(message, 'success', 5000);
+            showToast(message, 'success', 5000);
             await window.app?.refreshNetwork();
             if (this.renderer.clearPathHighlight) {
               this.renderer.clearPathHighlight();
@@ -727,7 +727,7 @@ export class PathEditorHandler {
               }, 500);
             }
           } else {
-            window.showToast?.(
+            showToast(
               `Failed to cancel: ${result.reason || result.message || result.error}`,
               'error',
               5000
@@ -735,7 +735,7 @@ export class PathEditorHandler {
           }
         } catch (err: any) {
           console.error('[Editor] Failed to cancel path:', err);
-          window.showToast?.('Failed to cancel path: ' + err.message, 'error', 5000);
+          showToast('Failed to cancel path: ' + err.message, 'error', 5000);
         }
       };
     }
@@ -743,7 +743,7 @@ export class PathEditorHandler {
     const extendBtn = document.getElementById('extend-path-btn') as HTMLButtonElement | null;
     if (extendBtn) {
       extendBtn.onclick = async () => {
-        window.showToast?.('Path extension not yet implemented', 'info', 3000);
+        showToast('Path extension not yet implemented', 'info', 3000);
       };
     }
   }
@@ -817,13 +817,13 @@ export class PathEditorHandler {
 
   async handleExtendRouteFirstClick(gridPos: any, track: any): Promise<void> {
     if (!track) {
-      window.showToast?.('No track at this position', 'warning', 3000);
+      showToast('No track at this position', 'warning', 3000);
       return;
     }
 
     const blockId = track.block_section_id;
     if (!blockId) {
-      window.showToast?.('No block at this position', 'warning', 3000);
+      showToast('No block at this position', 'warning', 3000);
       return;
     }
 
@@ -848,9 +848,9 @@ export class PathEditorHandler {
         );
 
         if (partOfPath) {
-          window.showToast?.('Can only extend from the END of a path. Click on the end block.', 'warning', 4000);
+          showToast('Can only extend from the END of a path. Click on the end block.', 'warning', 4000);
         } else {
-          window.showToast?.('No active path ends at this block', 'warning', 3000);
+          showToast('No active path ends at this block', 'warning', 3000);
         }
         return;
       }
@@ -869,7 +869,7 @@ export class PathEditorHandler {
       const endpointsResult = await this.api.getPathReachableExtensions(selectedPath.path_id);
 
       if (endpointsResult.error) {
-        window.showToast?.('Cannot extend path: ' + endpointsResult.error, 'error', 5000);
+        showToast('Cannot extend path: ' + endpointsResult.error, 'error', 5000);
         await this.resetExtendRouteState();
         return;
       }
@@ -893,7 +893,7 @@ export class PathEditorHandler {
       }
     } catch (err: any) {
       console.error('[Editor] Failed to get paths for extend:', err);
-      window.showToast?.('Failed to load paths: ' + err.message, 'error', 5000);
+      showToast('Failed to load paths: ' + err.message, 'error', 5000);
       await this.resetExtendRouteState();
     }
   }
@@ -915,18 +915,18 @@ export class PathEditorHandler {
 
   async handleExtendRouteSecondClick(gridPos: any, track: any): Promise<void> {
     if (!track) {
-      window.showToast?.('No track at this position', 'warning', 3000);
+      showToast('No track at this position', 'warning', 3000);
       return;
     }
 
     const newEndBlockId = track.block_section_id;
     if (!newEndBlockId) {
-      window.showToast?.('Must select a block as destination', 'warning', 3000);
+      showToast('Must select a block as destination', 'warning', 3000);
       return;
     }
 
     if (!this.extendPathState.reachableEndpoints.includes(newEndBlockId)) {
-      window.showToast?.('Cannot extend to this block', 'warning', 3000);
+      showToast('Cannot extend to this block', 'warning', 3000);
       return;
     }
 
@@ -941,17 +941,17 @@ export class PathEditorHandler {
       });
 
       if (result.success) {
-        window.showToast?.(`Path extended to ${newEndBlockId}`, 'success', 5000);
+        showToast(`Path extended to ${newEndBlockId}`, 'success', 5000);
         await window.app?.refreshNetwork();
         await this.resetExtendRouteState();
         setStatusState('Extend Path: Click on a path to extend');
       } else {
         const errorMsg = result.error || result.failure_kind || result.message || 'unknown error';
-        window.showToast?.(`Extend failed: ${errorMsg}`, 'error', 5000);
+        showToast(`Extend failed: ${errorMsg}`, 'error', 5000);
       }
     } catch (err: any) {
       console.error('[Editor] Failed to extend route:', err);
-      window.showToast?.('Failed to extend route: ' + err.message, 'error', 5000);
+      showToast('Failed to extend route: ' + err.message, 'error', 5000);
     }
   }
 
@@ -1031,13 +1031,13 @@ export class PathEditorHandler {
     const track = this.cachedNetwork?.tracks?.find((t: any) => t.x === gridPos.x && t.y === gridPos.y);
 
     if (!track) {
-      window.showToast?.('No track at this position', 'warning', 3000);
+      showToast('No track at this position', 'warning', 3000);
       return;
     }
 
     const blockId = track.block_section_id;
     if (!blockId) {
-      window.showToast?.('No block at this position', 'warning', 3000);
+      showToast('No block at this position', 'warning', 3000);
       return;
     }
 
@@ -1055,7 +1055,7 @@ export class PathEditorHandler {
       );
 
       if (matchingPaths.length === 0) {
-        window.showToast?.('No active path found at this block', 'warning', 3000);
+        showToast('No active path found at this block', 'warning', 3000);
         return;
       }
 
@@ -1086,7 +1086,7 @@ export class PathEditorHandler {
         const message = queued
           ? `Path ${pathToCancel.path_id} cancellation queued — train is braking`
           : `Path ${pathToCancel.path_id} cancelled`;
-        window.showToast?.(message, 'success', 5000);
+        showToast(message, 'success', 5000);
         await window.app?.refreshNetwork();
         if (queued) {
           setTimeout(async () => {
@@ -1098,7 +1098,7 @@ export class PathEditorHandler {
           }, 500);
         }
       } else {
-        window.showToast?.(
+        showToast(
           `Failed to cancel: ${cancelResult.reason || cancelResult.error || 'unknown error'}`,
           'error',
           5000
@@ -1108,7 +1108,7 @@ export class PathEditorHandler {
       setStatusState('Cancel Path: Click on a path to cancel');
     } catch (err: any) {
       console.error('[Editor] Failed to cancel path:', err);
-      window.showToast?.('Failed to cancel path: ' + err.message, 'error', 5000);
+      showToast('Failed to cancel path: ' + err.message, 'error', 5000);
       setStatusState('Cancel Path: Click on a path to cancel');
     }
   }

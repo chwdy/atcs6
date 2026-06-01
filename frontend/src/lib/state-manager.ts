@@ -9,9 +9,8 @@
 //   3. Diffs incoming data to detect changes
 //   4. Notifies subscribers only when their entity changes
 //
-// Bundled into static/dist/main.js; the singleton is mirrored onto
-// window.stateManager so the still-classic editor scripts and the already-
-// migrated panels keep finding it until they migrate too.
+// Part of the Vite bundle; the single instance is imported as `{ stateManager }`
+// by the app, renderer, panels, and editor.
 
 // The cache holds arbitrary backend JSON per entity, so the map value type is
 // intentionally permissive.
@@ -538,10 +537,6 @@ export class StateManager {
 // SINGLETON INSTANCE
 // ═══════════════════════════════════════════════════════════════════════════
 
-// `window.stateManager` is declared (narrowly, for the panels that consume it)
-// in frontend/src/legacy-globals.d.ts; the full StateManager instance is
-// assignable to it. Create and expose the global instance (guarded for Node /
-// Vitest).
-if (typeof window !== 'undefined') {
-  window.stateManager = new StateManager();
-}
+// The single StateManager instance — imported as `{ stateManager }` by the app,
+// renderer, panels, and editor.
+export const stateManager = new StateManager();
