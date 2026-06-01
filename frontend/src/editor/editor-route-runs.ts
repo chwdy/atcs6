@@ -773,9 +773,3 @@ export class RouteRunEditorHandler {
       .replace(/"/g, '&quot;');
   }
 }
-
-// Browser-global bridge so the still-classic editor.js can `new
-// RouteRunEditorHandler(this)`. Guarded for Node (Vitest). Removed in Wave 3.
-if (typeof window !== 'undefined') {
-  Object.assign(window as unknown as Record<string, unknown>, { RouteRunEditorHandler });
-}

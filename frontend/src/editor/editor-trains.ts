@@ -1812,9 +1812,3 @@ export class TrainEditorHandler {
     if (manualOffBtn) manualOffBtn.disabled = !isManual;
   }
 }
-
-// Browser-global bridge so the still-classic editor.js can `new
-// TrainEditorHandler(this)`. Guarded for Node (Vitest). Removed in Wave 3.
-if (typeof window !== 'undefined') {
-  Object.assign(window as unknown as Record<string, unknown>, { TrainEditorHandler });
-}

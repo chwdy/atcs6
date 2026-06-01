@@ -1113,9 +1113,3 @@ export class PathEditorHandler {
     }
   }
 }
-
-// Browser-global bridge so the still-classic editor.js can `new
-// PathEditorHandler(this)`. Guarded for Node (Vitest). Removed in Wave 3.
-if (typeof window !== 'undefined') {
-  Object.assign(window as unknown as Record<string, unknown>, { PathEditorHandler });
-}

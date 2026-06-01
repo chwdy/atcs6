@@ -327,10 +327,3 @@ export class SwitchEditorHandler {
     this._isDirty = false;
   }
 }
-
-// Browser-global bridge so the still-classic editor.js can `new
-// SwitchEditorHandler(this)`. Guarded for Node (Vitest). Removed in Wave 3 when
-// editor.js imports the handler directly.
-if (typeof window !== 'undefined') {
-  Object.assign(window as unknown as Record<string, unknown>, { SwitchEditorHandler });
-}

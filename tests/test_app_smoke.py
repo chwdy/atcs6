@@ -61,13 +61,13 @@ class TestAppSmoke:
         """Required frontend entry points exist and are non-empty.
 
         The frontend is mid-migration to a Vite build (see vite.config.ts):
-        the renderer/foundation cluster moved under frontend/src/ and is
-        bundled into static/dist/main.js, while the editor cluster is still
-        served as classic scripts from static/js/. "Required files" now spans
-        two roots:
+        the renderer/foundation/editor clusters moved under frontend/src/ and
+        are bundled into static/dist/main.js, while only app.js is still served
+        as a classic script from static/js/. "Required files" now spans two
+        roots:
 
-          - static/js/editor.js, static/js/app.js — surviving classic
-            scripts, still loaded directly by static/index.html.
+          - static/js/app.js — the surviving classic bootstrap, still loaded
+            directly by static/index.html.
           - frontend/src/main.ts — the Vite entry that builds into
             static/dist/main.js.
 
@@ -79,7 +79,6 @@ class TestAppSmoke:
         frontend/src/panels/train-monitor.ts).
         """
         required_files = [
-            PROJECT_ROOT / "static" / "js" / "editor.js",
             PROJECT_ROOT / "static" / "js" / "app.js",
             PROJECT_ROOT / "frontend" / "src" / "main.ts",
         ]
@@ -118,7 +117,7 @@ class TestAppSmoke:
         index_file = PROJECT_ROOT / "static" / "index.html"
         content = index_file.read_text()
 
-        required_scripts = ["editor.js", "app.js", "dist/main.js"]
+        required_scripts = ["app.js", "dist/main.js"]
         for script in required_scripts:
             assert script in content, f"index.html missing script tag for {script}"
 
@@ -136,17 +135,17 @@ class TestAppSmoke:
         index_file = PROJECT_ROOT / "static" / "index.html"
         content = index_file.read_text()
 
-        # Find positions of script tags. The renderer cluster and the
-        # foundation cluster (constants/api/state-manager/helpers/pathfinders)
-        # are no longer classic scripts — they migrated under frontend/src/ and
-        # are served via the bundle — so they are dropped from the ordering
-        # check. editor.js still loads before app.js, which bootstraps
-        # `new App()` (and with it the Editor) on DOMContentLoaded.
-        editor_pos = content.find('src="js/editor.js')
+        # Only app.js remains a classic script; the renderer, foundation, and
+        # editor clusters migrated under frontend/src/ and are served via the
+        # Vite bundle. app.js (which bootstraps `new App()` → `new Editor(...)`
+        # on DOMContentLoaded) must load before the bundle's `<script
+        # type="module">` so its globals exist when the module bridges resolve.
         app_pos = content.find('src="js/app.js')
+        bundle_pos = content.find('dist/main.js')
 
-        # Verify order: editor -> app
-        assert editor_pos < app_pos, "editor.js must load before app.js"
+        # Verify order: app.js -> bundle
+        assert app_pos != -1, "app.js script tag is missing"
+        assert app_pos < bundle_pos, "app.js must load before the dist/main.js bundle"
 
     def test_server_py_exists(self):
         """Test that server.py exists"""

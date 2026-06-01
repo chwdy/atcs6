@@ -2124,9 +2124,3 @@ export class RouteEditorHandler {
     }
   }
 }
-
-// Browser-global bridge so the still-classic editor.js can `new
-// RouteEditorHandler(this)`. Guarded for Node (Vitest). Removed in Wave 3.
-if (typeof window !== 'undefined') {
-  Object.assign(window as unknown as Record<string, unknown>, { RouteEditorHandler });
-}

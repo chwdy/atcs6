@@ -115,7 +115,7 @@ class TestJavaScriptSyntax:
 
     def test_all_required_js_files_exist(self):
         """Test that all required JavaScript files exist"""
-        required_files = ["editor.js", "app.js"]
+        required_files = ["app.js"]
 
         for filename in required_files:
             file_path = JS_DIR / filename
@@ -130,11 +130,11 @@ class TestJavaScriptSyntax:
         assert "window.api = new API()" in content, "api.ts must export API instance"
 
     def test_editor_js_has_editor_class(self):
-        """Test that editor.js defines the Editor class"""
-        editor_file = JS_DIR / "editor.js"
+        """Test that the migrated editor module defines the Editor class"""
+        editor_file = PROJECT_ROOT / "frontend" / "src" / "editor" / "editor.ts"
         content = editor_file.read_text()
 
-        assert "class Editor" in content, "editor.js must define Editor class"
+        assert "class Editor" in content, "editor.ts must define Editor class"
 
     def test_editor_js_has_helper_class(self):
         """Test that the migrated helpers module defines the required helper functions"""
