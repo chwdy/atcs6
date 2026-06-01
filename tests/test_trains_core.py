@@ -153,6 +153,21 @@ class TestSimulationController:
         # ...and handle_path_completion(...) finished the route run, so the
         # train is no longer assigned to ROUTE_AC.
         assert simulation.route_executor.assigned_route_id_for("TRAIN_1") is None
+        # ...and completion was delivered through the SimulationController
+        # surface, so a `path_completion` NotificationCenter event fired
+        # (design_new.md:240/415/1553; gap #6 — the dispatcher must not call
+        # RouteExecutor directly and skip the notification).
+        completion_notes = [
+            n
+            for n in simulation.notification_center.peek_recent()
+            if getattr(n, "kind", None) == "path_completion"
+            and getattr(n, "train_id", None) == "TRAIN_1"
+        ]
+        assert completion_notes, (
+            "expected a path_completion notification for TRAIN_1; the "
+            "dispatcher must deliver completion through "
+            "SimulationController.handle_path_completion(...)."
+        )
 
 
 

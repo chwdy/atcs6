@@ -902,12 +902,29 @@ class TestTrainStateTransitions:
 
 
     def test_enter_station_dwell_transition(self):
-        """enter_station_dwell() transitions RUNNING_MOVING -> RUNNING_AT_STATION."""
+        """enter_station_dwell() transitions READY -> RUNNING_AT_STATION.
+
+        Per design_new.md:1516/1901 dwell entry is valid only from the
+        dispatcher-completed READY state: stop completion lands the train in
+        READY (on_path_complete), and the next Phase-1 dwell-entry step calls
+        enter_station_dwell() from there.
+        """
+        train, controller, network = create_test_train_with_controller(
+            state=TrainState.READY
+        )
+        ok, reason = controller.enter_station_dwell()
+        assert ok, reason
+        assert controller.ops.state == TrainState.RUNNING_AT_STATION
+
+    def test_enter_station_dwell_rejected_from_running_moving(self):
+        """enter_station_dwell() is rejected (state unchanged) when not in
+        READY — the documented acceptance precondition (design_new.md:1901)."""
         train, controller, network = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING
         )
-        controller.enter_station_dwell()
-        assert controller.ops.state == TrainState.RUNNING_AT_STATION
+        ok, reason = controller.enter_station_dwell()
+        assert not ok
+        assert controller.ops.state == TrainState.RUNNING_MOVING
 
     def test_finish_dwell_transition(self):
         """finish_dwell() transitions RUNNING_AT_STATION -> READY."""
@@ -1108,12 +1125,20 @@ class TestCompleteStateFlows:
             state=TrainState.RUNNING_MOVING
         )
 
-        # Phase-1 dwell entry transitions to RUNNING_AT_STATION.
-        controller.enter_station_dwell()
+        # Stop completion lands the train in READY first (on_path_complete),
+        # which is the only state dwell entry is valid from
+        # (design_new.md:1516/1901).
+        controller.on_path_complete()
+        assert controller.ops.state == TrainState.READY
+
+        # Phase-1 dwell entry transitions READY -> RUNNING_AT_STATION.
+        ok, reason = controller.enter_station_dwell()
+        assert ok, reason
         assert controller.ops.state == TrainState.RUNNING_AT_STATION
 
         # Phase-1 dwell complete transitions back to READY.
-        controller.finish_dwell()
+        ok, reason = controller.finish_dwell()
+        assert ok, reason
         assert controller.ops.state == TrainState.READY
 
         # Simulate moving and arriving at final station
@@ -1132,12 +1157,19 @@ class TestCompleteStateFlows:
         controller.depart()
         assert controller.ops.state == TrainState.RUNNING_MOVING
 
-        controller.enter_station_dwell()
+        # Arriving at the station completes the path into READY first
+        # (on_path_complete), the only state dwell entry is valid from.
+        controller.on_path_complete()
+        assert controller.ops.state == TrainState.READY
+
+        ok, reason = controller.enter_station_dwell()
+        assert ok, reason
         assert controller.ops.state == TrainState.RUNNING_AT_STATION
 
         # Route complete (controller-side state transition only; route
         # teardown is owned by RouteExecutor in v1).
-        controller.finish_dwell()
+        ok, reason = controller.finish_dwell()
+        assert ok, reason
         assert controller.ops.state == TrainState.READY
 
 

@@ -1121,7 +1121,6 @@ class PathDispatcher:
         # than the dispatcher detouring it.
         candidates = candidates[:1]
 
-        now = self._now()
         last_reason = ""
         last_resource = None
         had_occupancy_blocker = False
@@ -1224,7 +1223,11 @@ class PathDispatcher:
             # the resource_sequence.extend(...) above advanced it.
             path.requested_destination_block_id = requested_destination_block_id
             path.requested_destination_direction = requested_destination_direction
-            path._set_status(PathStatus.ACTIVE, now)
+            # No status transition here: the path is already ACTIVE (guaranteed
+            # by the MISSING_OR_INACTIVE_PATH guard at the top of extend_path).
+            # Per design_new.md, `last_status_updated_time` advances only on a
+            # real `status` transition, so a successful extend must not re-stamp
+            # it.
 
             # Per design_new.md: when the live authority reaches the
             # requested target, return REACHED_REQUESTED_TARGET; otherwise
@@ -1272,7 +1275,9 @@ class PathDispatcher:
         ):
             path.requested_destination_block_id = requested_destination_block_id
             path.requested_destination_direction = requested_destination_direction
-            path._set_status(PathStatus.ACTIVE, now)
+            # No status transition here: the path is already ACTIVE and stays
+            # ACTIVE on a BLOCKED_NO_GROWTH hold, so `last_status_updated_time`
+            # must not be re-stamped (design_new.md: status transitions only).
             # Held short with no growth — `last_resource` is the occupied/
             # reserved block the train is waiting on.
             path.waiting_for_block_id = last_resource
@@ -2327,7 +2332,54 @@ class PathDispatcher:
         route_executor = self._get_route_executor()
         if route_executor is None:
             return
+        # Populate the block-relative traversal_direction the head-advance
+        # callback matches a waypoint against (design_new.md:462, 465). For a
+        # block resource it is computed by the canonical block-direction helper
+        # from the entered block's `resource_sequence` entry exit_edge against
+        # `Block.ordered_tiles`; for switches it stays None. The controller's
+        # ResourceEvent.exit_edge is None for entered blocks, so the direction
+        # is derived from the dispatcher-owned path geometry, not the event.
+        if event.resource_type == "block" and event.traversal_direction is None:
+            event.traversal_direction = self._block_traversal_direction(
+                path_id, event
+            )
         route_executor.handle_train_advanced(train_id, path_id, event)
+
+    def _block_traversal_direction(
+        self, path_id: str, event: ResourceEvent
+    ) -> Optional[str]:
+        """Block-relative "forward"/"reverse" for an entered block event.
+
+        Resolves the block's `resource_sequence` entry on the active path
+        (by `sequence_index` when present, else by `resource_id`), then maps
+        that entry's compass `exit_edge` to a block-relative direction via the
+        canonical `Block.block_direction_for_compass_exit(...)`. Returns None
+        when the entry, block, or geometry cannot be resolved.
+        """
+        path = self.paths.get(path_id)
+        if path is None:
+            return None
+        entry = None
+        if event.sequence_index is not None:
+            for e in path.resource_sequence:
+                if e.sequence_index == event.sequence_index:
+                    entry = e
+                    break
+        if entry is None:
+            for e in path.resource_sequence:
+                if e.resource_type == "block" and e.resource_id == event.resource_id:
+                    entry = e
+                    break
+        if entry is None or not entry.exit_edge:
+            return None
+        blocks = getattr(self.network, "blocks", None)
+        block = blocks.get(event.resource_id) if blocks else None
+        if block is None:
+            return None
+        helper = getattr(block, "block_direction_for_compass_exit", None)
+        if not callable(helper):
+            return None
+        return helper(entry.exit_edge)
 
     def _release_tail_vacated_resource(
         self, event: ResourceEvent, train_id: str
@@ -2481,16 +2533,32 @@ class PathDispatcher:
         if callable(on_complete):
             on_complete()
 
-        # Notify route executor.
-        route_executor = self._get_route_executor()
-        if route_executor is not None:
-            route_executor.handle_path_completion(
+        # Deliver completion through the SimulationController surface, which
+        # delegates to RouteExecutor.handle_path_completion(...) and emits the
+        # canonical `path_completion` notification (design_new.md:240, 415,
+        # 1553). Fall back to a direct RouteExecutor call only when no
+        # SimulationController is wired (isolated unit tests) — there is no
+        # NotificationCenter to emit through in that case.
+        sc = self.simulation_controller
+        sc_complete = getattr(sc, "handle_path_completion", None) if sc else None
+        if callable(sc_complete):
+            sc_complete(
                 train_id,
                 path_id,
                 path.get_authority_end_block_id(),
                 path.requested_destination_direction,
                 event_time,
             )
+        else:
+            route_executor = self._get_route_executor()
+            if route_executor is not None:
+                route_executor.handle_path_completion(
+                    train_id,
+                    path_id,
+                    path.get_authority_end_block_id(),
+                    path.requested_destination_direction,
+                    event_time,
+                )
 
         # Per design_new.md ~line 80: completed paths remain in
         # `paths_by_id[path_id]` for history. `Path.status == COMPLETED`

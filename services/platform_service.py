@@ -69,6 +69,8 @@ def update_platform(state: AppState, platform_id: str, *, data: Dict[str, Any]):
 
     Raises:
         NotFoundError when no platform has that id.
+        ValidationError when a supplied value is invalid (e.g. an
+            unrecognized ``platform_side``).
     """
     platform = require_platform(state, platform_id)
 
@@ -77,7 +79,10 @@ def update_platform(state: AppState, platform_id: str, *, data: Dict[str, Any]):
     if "length_cm" in data:
         platform.length_cm = data["length_cm"]
     if "platform_side" in data:
-        platform.platform_side = PlatformSide(data["platform_side"])
+        try:
+            platform.platform_side = PlatformSide(data["platform_side"])
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
     if "top_speed_kmh" in data:
         platform.top_speed_kmh = data["top_speed_kmh"]
     # Availability flags per design_new.md "Availability flag REST API

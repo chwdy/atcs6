@@ -21,6 +21,7 @@ TODO List:
 """
 
 import importlib
+import os
 from types import ModuleType
 
 from network import RailwayNetwork
@@ -30,10 +31,21 @@ from persistence import PersistenceManager
 from simulation import SimulationController
 
 
-# The active scene. Edit this single line to swap which demo the server,
-# CLI entry points, and unparameterised tests build by default. Per-call
-# overrides via the `scene=` argument take precedence.
-CURRENT_SCENE: str = "demo_5"
+# Environment variable that overrides the default scene. `set_current_scene()`
+# (called e.g. by `server.py --scene ...`) exports it so a subprocess pytest
+# run inherits the same scene and its scene-gated tests select correctly. You
+# can also export it directly: `ATCS_SCENE=demo_4 python -m pytest tests/`.
+SCENE_ENV_VAR = "ATCS_SCENE"
+
+# The default scene when ATCS_SCENE is unset. Edit this line to change which
+# demo the server, CLI entry points, and unparameterised tests build by
+# default. Per-call `scene=` arguments, the ATCS_SCENE environment variable,
+# and `set_current_scene()` all take precedence.
+_DEFAULT_SCENE: str = "demo_5"
+
+# The active scene, resolved at import time from ATCS_SCENE (falling back to
+# the default). `set_current_scene()` reassigns this for the running process.
+CURRENT_SCENE: str = os.environ.get(SCENE_ENV_VAR, _DEFAULT_SCENE)
 
 # Registry of known scene IDs to their importable module names.
 _SCENE_MODULES: dict[str, str] = {
@@ -53,12 +65,41 @@ def get_current_scene_id() -> str:
     return CURRENT_SCENE
 
 
+def available_scenes() -> list[str]:
+    """Return the sorted list of known scene IDs (for CLI `choices`, etc.)."""
+    return sorted(_SCENE_MODULES)
+
+
 def _resolve_scene_name(scene: str | None) -> str:
     """Normalise a `scene=` argument: `None` means use `CURRENT_SCENE`."""
     name = scene if scene is not None else CURRENT_SCENE
     if name not in _SCENE_MODULES:
         known = ", ".join(sorted(_SCENE_MODULES))
         raise ValueError(f"Unknown scene {name!r}; known scenes: {known}")
+    return name
+
+
+def set_current_scene(scene: str) -> str:
+    """Switch the active scene for this process and any subprocess it spawns.
+
+    Updates the module-level `CURRENT_SCENE` (so in-process callers such as the
+    startup block-validation gate and `bootstrap_runtime` see it) and exports
+    `ATCS_SCENE` into the environment (so a subprocess pytest run inherits the
+    same scene and its scene-gated tests select correctly).
+
+    Args:
+        scene: Scene ID to activate. Must be a known scene.
+
+    Returns:
+        The resolved scene ID.
+
+    Raises:
+        ValueError: If `scene` is not a known scene.
+    """
+    global CURRENT_SCENE
+    name = _resolve_scene_name(scene)
+    CURRENT_SCENE = name
+    os.environ[SCENE_ENV_VAR] = name
     return name
 
 

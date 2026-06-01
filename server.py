@@ -26,8 +26,10 @@ from flask import Flask, jsonify, request, send_from_directory
 from app_factory import create_app
 from app_state import AppState
 from bootstrap import (
+    available_scenes,
     create_demo_network,
     get_current_scene_id,
+    set_current_scene,
     setup_demo_train,
     _load_scene_module,
 )
@@ -220,6 +222,7 @@ def main() -> None:
         --no-autosave: Don't start autosave thread
         --no-reload: Disable auto-reload on file changes (default: reload enabled)
         --port: Port to run on (default: 5001)
+        --scene: Scene to boot and gate startup tests to (sets ATCS_SCENE)
     """
     import argparse
     import os
@@ -246,7 +249,25 @@ def main() -> None:
         "--no-reload", action="store_true", help="Disable auto-reload on file changes"
     )
     parser.add_argument("--port", type=int, default=5001, help="Port to run on")
+    parser.add_argument(
+        "--scene",
+        type=str,
+        default=None,
+        choices=available_scenes(),
+        help=(
+            f"Scene to boot and gate startup tests to (default: "
+            f"{get_current_scene_id()}). Sets ATCS_SCENE for the run, so the "
+            "subprocess test suite selects the matching scene-gated tests."
+        ),
+    )
     args = parser.parse_args()
+
+    # Activate the requested scene before anything reads it. set_current_scene
+    # updates the in-process CURRENT_SCENE (used by the block-validation gate
+    # and bootstrap below) and exports ATCS_SCENE so the subprocess pytest run
+    # in run_startup_tests() inherits the same scene.
+    if args.scene is not None:
+        set_current_scene(args.scene)
 
     # When the reloader is active, Werkzeug sets WERKZEUG_RUN_MAIN=true in the
     # child (server) process. Startup tests run only in the parent/watcher so

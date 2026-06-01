@@ -313,10 +313,6 @@ class ATOComputer:
         if not train or not c.network:
             return None
 
-        # ``path_tiles`` is read for parity with the original implementation
-        # (which fetched it before deciding whether to compute).
-        c.path_projection.get_path_tiles()
-
         path_id = c.path_projection.assigned_path_id or c.path_projection.ato_path_id
         destination_block_id = c.path_projection.ato_destination_block_id
 

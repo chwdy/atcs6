@@ -641,6 +641,17 @@ class TestPlatformService:
         with pytest.raises(NotFoundError):
             platform_service.update_platform(state, "GHOST", data={"name": "x"})
 
+    def test_update_bad_platform_side_raises_validation_error(self, state):
+        # Regression: an invalid platform_side must surface as ValidationError
+        # (-> HTTP 400) rather than a bare ValueError leaking as HTTP 500, so
+        # update_platform matches the create/extend bad-input contract.
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        platform_service.create_platform(state, x=0, y=0, platform_id="PLT_S")
+        with pytest.raises(ValidationError):
+            platform_service.update_platform(
+                state, "PLT_S", data={"platform_side": "sideways"}
+            )
+
     def test_delete_platform(self, state):
         state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
         platform_service.create_platform(state, x=0, y=0, platform_id="PLT_X")

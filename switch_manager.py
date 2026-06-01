@@ -162,10 +162,15 @@ class SwitchManager:
             if main_switch is None:
                 continue
             for neighbour_switch_id, blocking_state in main_switch.flank_protection:
+                # design_new.md:687/990: lock the neighbour to the SAFE state,
+                # which is the binary complement of the blocking_state (the
+                # state that would aim the neighbour's branch toward this
+                # switch). v1 switches are binary, so safe_state = 1 - blocking.
+                safe_state = 1 - blocking_state
                 expanded.append(
                     SwitchLockRequest(
                         switch_id=neighbour_switch_id,
-                        locked_state=blocking_state,
+                        locked_state=safe_state,
                         source_switch_id=req.switch_id,
                     )
                 )

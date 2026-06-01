@@ -20,16 +20,14 @@ External callers access path projections as:
     ``assigned_path_id``)
   - ``controller.path_projection.ato_destination_block_id``
   - ``controller.path_projection.path_backed_run_active``
-  - ``controller.path_projection.get_path_tiles()``
   - ``controller.path_projection.get_live_path_data()``
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
-    from enums import Direction
     from path import Path
     from train_controller import TrainController
 
@@ -56,6 +54,31 @@ class PathProjection:
         if getter is None:
             return None
         return getter(c.train_id)
+
+    def received_path_plan_dict(self) -> Optional[Dict[str, Any]]:
+        """Serialize the active authority as the canonical
+        **received_path_plan schema** (design_new.md:1740): exactly
+        ``path_id``, ``resource_sequence``, and ``authority_end_block_id``.
+
+        Dispatcher-only fields (``requested_destination_block_id`` /
+        ``requested_destination_direction`` / ``status`` /
+        ``current_resource_index`` / ``last_status_updated_time``) stay on
+        the ``Path`` record and are deliberately not exposed here — the
+        controller projection must not surface them (design_new.md:1740,
+        2187). ``resource_sequence`` uses each entry's own ``to_dict()`` so
+        the nested ``path_tiles`` keep the canonical entry schema.
+
+        Returns ``None`` when the train has no ``ACTIVE`` path.
+        """
+        plan = self.received_path_plan
+        if plan is None:
+            return None
+        resource_sequence = getattr(plan, "resource_sequence", None) or []
+        return {
+            "path_id": getattr(plan, "path_id", None) or getattr(plan, "id", None),
+            "authority_end_block_id": plan.get_authority_end_block_id() or None,
+            "resource_sequence": [e.to_dict() for e in resource_sequence],
+        }
 
     @property
     def assigned_path_id(self) -> Optional[str]:
@@ -102,31 +125,6 @@ class PathProjection:
             return False
         return c._has_path_backed_run_context(train)
 
-    def get_path_tiles(self) -> Optional[List[Tuple[int, int, "Direction"]]]:
-        """Get path tiles from ``PathDispatcher`` (single source of truth).
-
-        Reads ``Path.path_tiles`` from the dispatcher's currently active
-        path for this train and converts it to ``(x, y, Direction)``
-        format. Returns ``None`` if no active path exists.
-        """
-        c = self._c
-        if not c.path_dispatcher:
-            return None
-        path = c.path_dispatcher.get_active_path(c.train_id)
-        if not path:
-            return None
-        path_tiles = path.get_path_tiles()
-        if not path_tiles:
-            return None
-        from path_utils import convert_tiles_to_train_path
-        # Pass the network so the converter resolves direction via
-        # `network.get_connection_edges`, which handles tunnel hops.
-        # Without it, the converter falls back to `(dx, dy)` math and
-        # mis-projects the cardinal direction whenever the path crosses
-        # a tunnel — leading to a wrong travel direction and a truncated
-        # remaining-in-block reading at the head's tile.
-        return convert_tiles_to_train_path(path_tiles, network=c.network)
-
     def get_live_path_data(self) -> Optional[Dict[str, Any]]:
         """Get live path data for serialization (``Train.to_dict``).
 
@@ -139,7 +137,7 @@ class PathProjection:
         if not train:
             return None
 
-        path_tiles = self.get_path_tiles()
+        path_tiles = c._get_effective_path_tiles()
         if path_tiles is None:
             return None
 

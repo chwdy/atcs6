@@ -76,6 +76,54 @@ def test_received_path_plan_reads_live_from_dispatcher():
     assert controller.path_projection.ato_destination_block_id == "BLK_C"
 
 
+def test_received_path_plan_projection_carries_only_canonical_fields():
+    """The serialized received_path_plan exposes exactly the canonical
+    schema (path_id, resource_sequence, authority_end_block_id) and must
+    NOT leak dispatcher-only fields (design_new.md:1740, 2187; gap #7)."""
+    network = _build_three_block_network()
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
+    train = Train(train_id="T1", consist=[car], max_speed=60.0)
+    network.add_train(train)
+    network.place_train(train, 0, 0, direction=Direction.EAST)
+
+    dispatcher = PathDispatcher(network)
+    sim = SimulationController(network, dispatcher)
+    controller = sim._get_or_create_controller(train)
+    set_train_span(
+        controller, (0, 0), facing_direction=Direction.EAST, occupied_blocks=["BLK_A"]
+    )
+    result = dispatcher.create_path(
+        train_id=train.train_id,
+        requested_destination_block_id="BLK_C",
+        requested_destination_direction="forward",
+    )
+    assert result.success
+
+    # Both the projection serializer and the controller payload must carry
+    # exactly the three canonical keys.
+    expected_keys = {"path_id", "resource_sequence", "authority_end_block_id"}
+    leaked = {
+        "status",
+        "requested_destination_block_id",
+        "requested_destination_direction",
+        "current_resource_index",
+        "last_status_updated_time",
+        "train_id",
+    }
+
+    proj = controller.path_projection.received_path_plan_dict()
+    assert proj is not None
+    assert set(proj.keys()) == expected_keys, f"unexpected projection keys: {proj.keys()}"
+    assert not (set(proj.keys()) & leaked), "projection leaks dispatcher-only fields"
+    assert proj["path_id"] == result.path_id
+    assert proj["authority_end_block_id"] == "BLK_C"
+
+    payload = controller.to_dict()
+    rpp = payload["received_path_plan"]
+    assert rpp is not None
+    assert set(rpp.keys()) == expected_keys, f"to_dict leaked keys: {rpp.keys()}"
+
+
 def test_lookahead_reflects_new_path_immediately():
     """create_path -> controller.lookahead recomputes and reflects new authority."""
     network = _build_three_block_network()

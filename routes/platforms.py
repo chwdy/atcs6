@@ -57,6 +57,8 @@ def register(app, state: AppState) -> None:
             )
         except NotFoundError:
             return jsonify({"error": "Platform not found"}), 404
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
         return jsonify(platform.to_dict_with_orientation(state.network))
 
     @app.route("/api/platform/<platform_id>", methods=["DELETE"])

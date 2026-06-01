@@ -463,10 +463,10 @@ class TrainController:
     # -------------------------------------------------------------------------
 
     # `received_path_plan`, `assigned_path_id`, `ato_path_id`,
-    # `ato_destination_block_id`, `path_backed_run_active`,
-    # `get_path_tiles()`, and `get_live_path_data()` live on the
-    # `PathProjection` sub-module at `self.path_projection`. External
-    # callers use `controller.path_projection.<name>` directly.
+    # `ato_destination_block_id`, `path_backed_run_active`, and
+    # `get_live_path_data()` live on the `PathProjection` sub-module at
+    # `self.path_projection`. External callers use
+    # `controller.path_projection.<name>` directly.
 
     @property
     def travel_direction(self) -> Optional[str]:
@@ -602,7 +602,10 @@ class TrainController:
             import traceback as _tb
 
             event_time = self.commands._estimate_event_time()
-            sc = self.simulation_controller
+            # TrainController has no `simulation_controller` field; reach the
+            # NotificationCenter via the dispatcher's sim back-reference,
+            # fully guarded so the error handler never raises a second error.
+            sc = getattr(self.path_dispatcher, "simulation_controller", None)
             nc = (
                 getattr(sc, "notification_center", None) if sc is not None else None
             )
@@ -1154,7 +1157,7 @@ class TrainController:
             return None
 
         # First, try to get direction from current_path
-        path_tiles = self.path_projection.get_path_tiles()
+        path_tiles = self._get_effective_path_tiles()
         if path_tiles and len(path_tiles) > 0:
             head_tile = self._get_head_tile()
             if head_tile:
@@ -1340,9 +1343,9 @@ class TrainController:
             return float(loc.distance_cm)
         return 0.0
 
-    # `get_path_tiles()` and `get_live_path_data()` live on the
-    # `PathProjection` sub-module at `self.path_projection`. External
-    # callers use `controller.path_projection.<method>()` directly.
+    # `get_live_path_data()` lives on the `PathProjection` sub-module at
+    # `self.path_projection`. External callers use
+    # `controller.path_projection.<method>()` directly.
 
     def _get_head_path_index(self, head_tile: Tuple[int, int]) -> int:
         """Get the path index for the train head tile.
@@ -1350,7 +1353,7 @@ class TrainController:
         v1 path geometry forbids tile re-visits in a single direction of
         travel, so the first match is always the correct one.
         """
-        path_tiles = self.path_projection.get_path_tiles()
+        path_tiles = self._get_effective_path_tiles()
         if not path_tiles:
             return -1
         for i, (x, y, _) in enumerate(path_tiles):
@@ -2023,14 +2026,27 @@ class TrainController:
     # -------------------------------------------------------------------------
 
     def _get_effective_path_tiles(self):
-        """Get active path tiles for control decisions.
+        """Active path tiles for control decisions, as `(x, y, Direction)` tuples.
 
-        Per design_new.md ~line 1292, the dispatcher's `Path` is the single
-        source of truth for active path geometry. This delegates to
-        `get_path_tiles()` which reads `Path.path_tiles` from the active
-        dispatcher path.
+        Derived live from `received_path_plan.resource_sequence` — the
+        dispatcher-owned active `Path` is the single source of truth for path
+        geometry (design_new.md "received_path_plan schema"). The ordered tile
+        list comes from `Path.get_path_tiles()` (the `resource_sequence[*].
+        path_tiles` slices concatenated in `sequence_index` order) and is
+        converted with the network so the per-tile direction stays correct
+        across tunnel hops, where consecutive tiles are not grid-adjacent and
+        raw `(dx, dy)` would mis-project the cardinal direction. Returns `None`
+        when the train has no `ACTIVE` path.
         """
-        return self.path_projection.get_path_tiles()
+        plan = self.path_projection.received_path_plan
+        if plan is None:
+            return None
+        path_tiles = plan.get_path_tiles()
+        if not path_tiles:
+            return None
+        from path_utils import convert_tiles_to_train_path
+
+        return convert_tiles_to_train_path(path_tiles, network=self.network)
 
     def _has_active_route_context(self, train: "Train") -> bool:
         """Return True when the train still belongs to an active route."""
@@ -2049,7 +2065,7 @@ class TrainController:
         """Return True while the train still has movement authority to follow."""
         if getattr(train, "assigned_path_id", None):
             return True
-        if self.path_projection.get_path_tiles():
+        if self._get_effective_path_tiles():
             return True
         if self.path_projection.ato_path_id:
             return True
@@ -2128,7 +2144,7 @@ class TrainController:
         if not train:
             return False
 
-        path_tiles = self.path_projection.get_path_tiles()
+        path_tiles = self._get_effective_path_tiles()
         if not path_tiles or len(path_tiles) < 2:
             return False
 
@@ -2235,7 +2251,7 @@ class TrainController:
                 return "B" if current_cab == "A" else "A"
 
         # 90 degrees or path direction unknown — use overall path vector
-        path_tiles = self.path_projection.get_path_tiles()
+        path_tiles = self._get_effective_path_tiles()
         if path_tiles and len(path_tiles) >= 2:
             overall = self._dominant_direction_from_tiles(path_tiles[0], path_tiles[-1])
             if overall is not None and overall == facing.opposite():
@@ -2251,7 +2267,7 @@ class TrainController:
         the dominant-vector heuristic projects a meaningless straight-line
         displacement, so we have to trust the connectivity-based verdict.
         """
-        path_tiles = self.path_projection.get_path_tiles()
+        path_tiles = self._get_effective_path_tiles()
         if not path_tiles or len(path_tiles) < 2:
             return False
         for i in range(len(path_tiles) - 1):
@@ -2277,7 +2293,7 @@ class TrainController:
         """
         if not train:
             return False
-        path_tiles = self.path_projection.get_path_tiles()
+        path_tiles = self._get_effective_path_tiles()
         if not path_tiles or len(path_tiles) < 2:
             return False
         head_tile = self._get_head_tile()
@@ -2307,7 +2323,7 @@ class TrainController:
         Returns:
             Direction the path is heading at the train's head, or None.
         """
-        path_tiles = self.path_projection.get_path_tiles()
+        path_tiles = self._get_effective_path_tiles()
         if not path_tiles or len(path_tiles) < 2:
             return None
 
@@ -2600,23 +2616,34 @@ class TrainController:
         )
 
         # Add block speed limits as restrictions (for braking curve calculation)
-        # This creates braking curves to slow down BEFORE entering speed-limited blocks
+        # This creates braking curves to slow down BEFORE entering speed-limited blocks.
+        # A CAUTION block always contributes the controller-owned global cap
+        # CAUTION_SPEED_LIMIT_KMH (design_new.md:1849), taking the lower of that
+        # cap and any nominal block limit; this applies even when the block has
+        # no nominal speed_limit_kmh of its own.
         if lookahead_blocks:
             for block in lookahead_blocks:
                 block_start = block.get("start_cm", 0)
                 block_speed = block.get("speed_limit_kmh")  # None if no limit
-                if block_speed is not None and block_speed < max_speed:
-                    block_state = block.get("state")
+                block_state = block.get("state")
+                is_caution = block_state == BlockState.CAUTION.value
+                if is_caution:
+                    block_code = AtcLimitReasonCode.CAUTION
+                    restriction_speed = (
+                        CAUTION_SPEED_LIMIT_KMH
+                        if block_speed is None
+                        else min(block_speed, CAUTION_SPEED_LIMIT_KMH)
+                    )
+                else:
+                    block_code = AtcLimitReasonCode.OBSTRUCTION
+                    restriction_speed = block_speed
+                if restriction_speed is not None and restriction_speed < max_speed:
                     block_id = block.get("id")
-                    if block_state == BlockState.CAUTION.value:
-                        block_code = AtcLimitReasonCode.CAUTION
-                    else:
-                        block_code = AtcLimitReasonCode.OBSTRUCTION
                     detail = (
                         f"Block speed limit at {block_id}" if block_id else None
                     )
                     restrictions.append(
-                        (block_start, block_speed, 0.0, block_code, detail)
+                        (block_start, restriction_speed, 0.0, block_code, detail)
                     )
 
         # Signal restrictions are intentionally NOT used for ATC/ATO speed calculation.
@@ -2723,22 +2750,31 @@ class TrainController:
                     block_end = block.get("end_cm", 0)
                     if block_start <= sample_distance < block_end:
                         block_speed = block.get("speed_limit_kmh")  # None if no limit
-                        if block_speed is not None:
-                            block_state = block.get("state")
+                        block_state = block.get("state")
+                        is_caution = block_state == BlockState.CAUTION.value
+                        if is_caution:
+                            inside_code = AtcLimitReasonCode.CAUTION
+                            # CAUTION always caps at the global limit, lower of
+                            # it and any nominal block limit (design_new.md:1849).
+                            inside_speed = (
+                                CAUTION_SPEED_LIMIT_KMH
+                                if block_speed is None
+                                else min(block_speed, CAUTION_SPEED_LIMIT_KMH)
+                            )
+                        else:
+                            inside_code = AtcLimitReasonCode.OBSTRUCTION
+                            inside_speed = block_speed
+                        if inside_speed is not None:
                             block_id = block.get("id")
-                            if block_state == BlockState.CAUTION.value:
-                                inside_code = AtcLimitReasonCode.CAUTION
-                            else:
-                                inside_code = AtcLimitReasonCode.OBSTRUCTION
                             inside_detail = (
                                 f"Block speed limit at {block_id}"
                                 if block_id
                                 else None
                             )
                             atc_candidates.append(
-                                (block_speed, inside_code, inside_detail)
+                                (inside_speed, inside_code, inside_detail)
                             )
-                            operational_limits.append(block_speed)
+                            operational_limits.append(inside_speed)
                         break
 
             # NOTE: Station speed limits are NOT applied here.
@@ -2911,17 +2947,52 @@ class TrainController:
             self.ops.state = TrainState.RUNNING_MOVING
         return (True, None)
 
+    def _emit_dwell_diagnostic(self, message: str) -> None:
+        """Emit a dwell-transition rejection diagnostic through
+        NotificationCenter (design_new.md: rejected dwell transitions leave
+        state unchanged and emit a diagnostic). Best-effort: resolves the sink
+        defensively and no-ops when no NotificationCenter is wired (isolated
+        unit-test controllers), and never raises into the caller."""
+        try:
+            sc = getattr(self.path_dispatcher, "simulation_controller", None)
+            nc = getattr(sc, "notification_center", None) if sc is not None else None
+            if nc is None:
+                return
+            from notification_center import Severity as _Severity
+
+            nc.emit(
+                source="TrainController",
+                kind="diagnostic",
+                severity=_Severity.WARNING,
+                event_time=self.commands._estimate_event_time(),
+                train_id=self.train_id,
+                payload={"message": message},
+            )
+        except Exception:
+            pass
+
     def enter_station_dwell(self) -> Tuple[bool, Optional[str]]:
         """Dwell-entry transition called by Phase 1 dwell-entry step.
 
-        Per design_new.md lines 1817–1818, RouteExecutor invokes this directly
-        when its preconditions are met. Transitions controller state to
-        RUNNING_AT_STATION; clears ato_running because dwell entry is a
-        run-ending event.
+        Per design_new.md, RouteExecutor invokes this directly when its
+        preconditions are met. Acceptance preconditions (design_new.md:1901):
+        `state == READY` and `eb.active == False`. On acceptance, transitions
+        controller state to RUNNING_AT_STATION and clears ato_running because
+        dwell entry is a run-ending event. On rejection, leaves controller
+        state unchanged and emits a NotificationCenter diagnostic.
 
         Returns:
-            Tuple[bool, Optional[str]]: (True, None) on success.
+            Tuple[bool, Optional[str]]: (True, None) on success;
+            (False, reason) on rejection.
         """
+        if self.ops.state != TrainState.READY:
+            reason = f"enter_station_dwell requires READY, state is {self.ops.state.value}"
+            self._emit_dwell_diagnostic(reason)
+            return (False, reason)
+        if self.eb.active:
+            reason = "enter_station_dwell rejected: EB latched"
+            self._emit_dwell_diagnostic(reason)
+            return (False, reason)
         self.ops.state = TrainState.RUNNING_AT_STATION
         self.ato.running = False
         return (True, None)
@@ -2929,13 +3000,27 @@ class TrainController:
     def finish_dwell(self) -> Tuple[bool, Optional[str]]:
         """Dwell-end transition called by Phase 1 dwell-complete step.
 
-        Per design_new.md lines 1817–1818: lands in READY (powered, stopped,
-        not dwelling — cab selection is preserved as an orthogonal field). Does
-        not clear received_path_plan and does not start movement.
+        Acceptance precondition (design_new.md:1902): `state ==
+        RUNNING_AT_STATION`. EB latch state is NOT a precondition — the
+        Phase-3 teardown caller `RouteExecutor.remove_train_route_run(...)`
+        may invoke this with `eb.active == True` (the OFF cleanup that
+        follows clears the latch). On acceptance, lands in READY (powered,
+        stopped, not dwelling — cab selection is preserved as an orthogonal
+        field); does not clear received_path_plan and does not start
+        movement. On rejection, leaves controller state unchanged and emits a
+        NotificationCenter diagnostic.
 
         Returns:
-            Tuple[bool, Optional[str]]: (True, None) on success.
+            Tuple[bool, Optional[str]]: (True, None) on success;
+            (False, reason) on rejection.
         """
+        if self.ops.state != TrainState.RUNNING_AT_STATION:
+            reason = (
+                f"finish_dwell requires RUNNING_AT_STATION, state is "
+                f"{self.ops.state.value}"
+            )
+            self._emit_dwell_diagnostic(reason)
+            return (False, reason)
         self.ops.state = TrainState.READY
         return (True, None)
 
@@ -2995,13 +3080,12 @@ class TrainController:
             "ato_path_id": self.path_projection.ato_path_id,
             "assigned_path_id": self.path_projection.assigned_path_id,
             "path_backed_run_active": self.path_projection.path_backed_run_active,
-            # Per design_new.md line 2088: serialize the live received_path_plan
-            # so callers see the full authority snapshot in one payload.
-            "received_path_plan": (
-                (lambda plan: plan.to_dict() if hasattr(plan, "to_dict") else None)(
-                    self.path_projection.received_path_plan
-                )
-            ),
+            # Export the live received_path_plan using the canonical
+            # received_path_plan schema (design_new.md:1740, 2187): exactly
+            # path_id, resource_sequence, authority_end_block_id. Dispatcher-
+            # only requested-target / lifecycle / progress fields stay on the
+            # Path record and must not leak into the controller projection.
+            "received_path_plan": self.path_projection.received_path_plan_dict(),
             "clearance_ahead_cm": safe_float(self.atc.clearance_ahead_cm),
             "atc_speed_limit": safe_float(self.atc.speed_limit),
             "current_block_speed_limit": safe_float(self.atc.current_block_speed_limit),

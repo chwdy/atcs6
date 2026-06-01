@@ -74,7 +74,6 @@ def test_clearance_ahead_no_current_block_returns_fallback():
         remaining_in_current_cm=50.0,
         blocks_ahead=[],
         is_obstructed=lambda b: False,
-        is_signal_red=lambda bid: False,
         ato_destination_block_id=None,
         fallback_clearance_to_destination=lambda base: base,
     )
@@ -93,7 +92,6 @@ def test_clearance_ahead_single_block_walk():
         remaining_in_current_cm=50.0,
         blocks_ahead=blocks,
         is_obstructed=lambda b: False,
-        is_signal_red=lambda bid: False,
         ato_destination_block_id=None,
         fallback_clearance_to_destination=lambda base: base,
     )
@@ -113,7 +111,6 @@ def test_clearance_ahead_stops_at_obstructed_block():
         remaining_in_current_cm=0.0,
         blocks_ahead=blocks,
         is_obstructed=lambda b: b.block_id == "B2",
-        is_signal_red=lambda bid: False,
         ato_destination_block_id=None,
         fallback_clearance_to_destination=lambda base: base,
     )
@@ -121,8 +118,14 @@ def test_clearance_ahead_stops_at_obstructed_block():
     assert result == 200.0
 
 
-def test_clearance_ahead_stops_at_red_signal():
-    """The walk breaks at the first block with a red signal."""
+def test_clearance_ahead_ignores_signal_state():
+    """Signal state is not an ATC clearance input (design_new.md:1849).
+
+    The walk sums the full authority-bounded ``blocks_ahead`` regardless
+    of any red signal protecting a block on the train's own live
+    authority; only ``is_obstructed`` (foreign occupancy / reservation /
+    disabled) can truncate clearance.
+    """
     blocks = [
         FakeBlock("B1", 200.0),
         FakeBlock("B2", 300.0),
@@ -132,12 +135,11 @@ def test_clearance_ahead_stops_at_red_signal():
         remaining_in_current_cm=0.0,
         blocks_ahead=blocks,
         is_obstructed=lambda b: False,
-        is_signal_red=lambda bid: bid == "B2",
         ato_destination_block_id=None,
         fallback_clearance_to_destination=lambda base: base,
     )
-    # 0 + 200, then signal for B2 is red → break
-    assert result == 200.0
+    # 0 + 200 + 300 = 500; a red signal on B2 no longer truncates.
+    assert result == 500.0
 
 
 def test_clearance_ahead_uses_fallback_when_no_blocks_ahead():
@@ -147,7 +149,6 @@ def test_clearance_ahead_uses_fallback_when_no_blocks_ahead():
         remaining_in_current_cm=100.0,
         blocks_ahead=[],
         is_obstructed=lambda b: False,
-        is_signal_red=lambda bid: False,
         ato_destination_block_id="STA_BLK",
         fallback_clearance_to_destination=lambda base: base + 250.0,
     )

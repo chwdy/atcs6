@@ -1095,7 +1095,80 @@ class TestSpeedCurveCalculation:
                     f"below ATC ({atc}) at distance {point['distance_cm']}cm"
                 )
 
+    def test_caution_block_without_nominal_limit_caps_at_global(
+        self, train_and_controller
+    ):
+        """A CAUTION block ahead caps the curve at CAUTION_SPEED_LIMIT_KMH
+        even when it carries no nominal speed_limit_kmh (design_new.md:1849).
 
+        Regression for gap #8: previously the curve only applied a CAUTION
+        restriction when the block also had a nominal limit, so a CAUTION
+        block with `speed_limit_kmh=None` produced no cap in the canonical
+        lookahead speed_curves at all.
+        """
+        from constants import CAUTION_SPEED_LIMIT_KMH
+
+        train, controller = train_and_controller
+        # One CAUTION block with NO nominal limit, sitting 300-900cm ahead.
+        lookahead_blocks = [
+            {
+                "id": "BLK_CAUTION",
+                "name": "BLK_CAUTION",
+                "state": BlockState.CAUTION.value,
+                "start_cm": 300.0,
+                "end_cm": 900.0,
+                "length_cm": 600.0,
+                "speed_limit_kmh": None,
+            }
+        ]
+        curves = controller.calculate_speed_curves(
+            max_distance_cm=3000, lookahead_blocks=lookahead_blocks
+        )
+
+        inside = [
+            p for p in curves if 300.0 <= p["distance_cm"] < 900.0
+        ]
+        assert inside, "expected curve sample points inside the CAUTION block"
+        for p in inside:
+            assert p["atc_limit"] <= CAUTION_SPEED_LIMIT_KMH + 1e-6, (
+                f"CAUTION block (no nominal limit) should cap atc_limit at "
+                f"{CAUTION_SPEED_LIMIT_KMH}, got {p['atc_limit']} at "
+                f"{p['distance_cm']}cm"
+            )
+        # At least one in-block point is reported with the CAUTION reason.
+        assert any(
+            p.get("atc_limit_reason_code") == "caution" for p in inside
+        ), "expected at least one in-block point tagged CAUTION"
+
+    def test_caution_block_with_high_nominal_limit_still_capped(
+        self, train_and_controller
+    ):
+        """When a CAUTION block's nominal limit exceeds the global CAUTION
+        cap, the global cap wins (lower of the two)."""
+        from constants import CAUTION_SPEED_LIMIT_KMH
+
+        train, controller = train_and_controller
+        lookahead_blocks = [
+            {
+                "id": "BLK_CAUTION_HI",
+                "name": "BLK_CAUTION_HI",
+                "state": BlockState.CAUTION.value,
+                "start_cm": 300.0,
+                "end_cm": 900.0,
+                "length_cm": 600.0,
+                "speed_limit_kmh": CAUTION_SPEED_LIMIT_KMH + 30.0,
+            }
+        ]
+        curves = controller.calculate_speed_curves(
+            max_distance_cm=3000, lookahead_blocks=lookahead_blocks
+        )
+        inside = [p for p in curves if 300.0 <= p["distance_cm"] < 900.0]
+        assert inside
+        for p in inside:
+            assert p["atc_limit"] <= CAUTION_SPEED_LIMIT_KMH + 1e-6, (
+                f"global CAUTION cap should win over the higher nominal "
+                f"limit; got {p['atc_limit']} at {p['distance_cm']}cm"
+            )
 
 
 class TestForwardSimulation:
