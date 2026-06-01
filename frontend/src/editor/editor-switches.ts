@@ -80,6 +80,53 @@ export class SwitchEditorHandler {
     const isLocked = lockedByPath !== null;
     const switchType = switchData.switch_type || 'standard';
 
+    // Flank protection — read-only, topology-derived (design_new.md:686). Each
+    // entry is [neighbour_switch_id, blocking_state]; the neighbour is held at
+    // its SAFE state (= 1 - blocking_state) while this switch's route is locked.
+    // Mirrors the `lockEntries` guard above; the field is always present in the
+    // live `to_dict` payload (switch.py:665).
+    const flankEntries: Array<[string, number]> = Array.isArray(switchData.flank_protection)
+      ? switchData.flank_protection
+      : [];
+    const flankRows = flankEntries
+      .map(([neighbourId, blockingState]) => {
+        const safeState = 1 - Number(blockingState);
+        const safeLabel = safeState === 0 ? 'MAIN' : 'DIVERGE';
+        const safeChip = safeState === 0 ? 'chip-success' : 'chip-warn';
+        const blockLabel = Number(blockingState) === 0 ? 'MAIN' : 'DIVERGE';
+        return `
+                    <div class="flex gap-8 mb-8" title="Conflict if neighbour set to ${blockLabel} · held safe at ${safeLabel}">
+                        <button class="edit-btn flank-nav-btn font-mono" data-switch-id="${neighbourId}" title="Open ${neighbourId} editor">${neighbourId}</button>
+                        <span class="flex-1"></span>
+                        <span class="chip chip-state ${safeChip}">${safeLabel}</span>
+                    </div>`;
+      })
+      .join('');
+
+    // Train protection — read-only, runtime. Train-owned physical protection
+    // held on this switch after a train head entered a source switch and its
+    // flank lock was converted (design_new.md:665). Each entry is
+    // [train_id, source_switch_id, locked_state]; empty unless a sim is running.
+    const protectionClaims: Array<[string, string, number]> = Array.isArray(
+      switchData.train_protection_claims,
+    )
+      ? switchData.train_protection_claims
+      : [];
+    const protectionRows = protectionClaims
+      .map(([trainId, sourceId, lockedState]) => {
+        const stateLabel = Number(lockedState) === 0 ? 'MAIN' : 'DIVERGE';
+        const stateChip = Number(lockedState) === 0 ? 'chip-success' : 'chip-warn';
+        return `
+                    <div class="flex gap-8 mb-8" title="Train ${trainId} holds this switch at ${stateLabel}, sourced from ${sourceId}">
+                        <span class="font-mono">${trainId}</span>
+                        <span class="flex-1"></span>
+                        <span class="text-muted text-xs">from</span>
+                        <button class="edit-btn flank-nav-btn font-mono" data-switch-id="${sourceId}" title="Open ${sourceId} editor">${sourceId}</button>
+                        <span class="chip chip-state ${stateChip}">${stateLabel}</span>
+                    </div>`;
+      })
+      .join('');
+
     const content = `
             <!-- §11 Status header — identity + state pill, dynamic accent. -->
             <div class="status-header ${accentClass}">
@@ -107,6 +154,26 @@ export class SwitchEditorHandler {
             `
                 : ''
             }
+
+            <!-- Flank Protection — read-only: neighbouring switches this one mutually flank-protects. -->
+            <div class="control-section">
+                <div class="control-section-header">Flank Protection${flankEntries.length ? ` (${flankEntries.length})` : ''}</div>
+                ${
+                  flankEntries.length
+                    ? `<div class="text-muted text-xs mb-8">Neighbours held at their safe state while this switch's route is locked.</div>${flankRows}`
+                    : `<div class="text-muted text-xs">None — no nearby switches require mutual locking.</div>`
+                }
+            </div>
+
+            <!-- Train Protection — read-only, runtime: train-owned protection currently held on this switch. -->
+            <div class="control-section">
+                <div class="control-section-header">Train Protection${protectionClaims.length ? ` (${protectionClaims.length})` : ''}</div>
+                ${
+                  protectionClaims.length
+                    ? `<div class="text-muted text-xs mb-8">Active train-owned protection held while a train occupies the source switch.</div>${protectionRows}`
+                    : `<div class="text-muted text-xs">None — no train is currently protecting this switch.</div>`
+                }
+            </div>
 
             <!-- Controls -->
             <div class="control-section">
@@ -266,6 +333,20 @@ export class SwitchEditorHandler {
         }
       };
     }
+
+    // Flank / train-protection cross-navigation: clicking a switch reference in
+    // either read-only section opens that switch's editor (same data-switch-id
+    // pattern as the track-inspector Edit buttons in editor.ts). showEditor
+    // re-fetches and re-renders, so no manual teardown is needed here.
+    const sidebar = document.getElementById('secondary-sidebar-content');
+    sidebar?.querySelectorAll<HTMLButtonElement>('.flank-nav-btn').forEach((btn) => {
+      btn.onclick = () => {
+        const targetId = btn.dataset.switchId;
+        if (targetId) {
+          this.showEditor(targetId);
+        }
+      };
+    });
 
     // ═══════════════════════════════════════════════════════════════
     // SUBSCRIPTION SETUP (Phase 4)
