@@ -66,6 +66,7 @@ from runtime_payloads import (
 from block_manager import ReservedBlockTraversal
 from switch_manager import SwitchLockRequest
 from railway_pathfinder import RailwayPathfinder
+from path_utils import GraphWalkCandidate, GraphWalkStep
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
@@ -450,13 +451,39 @@ class PathDispatcher:
         `create_path(...)` / `extend_path(...)` per the `disabled` and `manual`
         availability flags canonical home in design_new.md (under TrackResource).
         """
-        candidates = self._pathfinder.find_ordered_walk(
+        return [
+            c.walk
+            for c in self._find_walk_candidates(
+                start_block_id, end_block_id, train_id,
+                direction_constraint=direction_constraint,
+                manual_override=manual_override,
+            )
+            if isinstance(c.walk, PathSegment)
+        ]
+
+    def _find_walk_candidates(
+        self,
+        start_block_id: str,
+        end_block_id: str,
+        train_id: Optional[str] = None,
+        direction_constraint: Optional[str] = None,
+        manual_override: bool = False,
+    ) -> List[GraphWalkCandidate]:
+        """Return the ranked walk candidates between two blocks.
+
+        The candidate carries both the flat `walk` (a `PathSegment`, used by the
+        structural-validation/acquisition helpers) and the per-step `ordered_walk`
+        (used to build `resource_sequence` and block/switch traversals without
+        re-deriving from flat tiles). `create_path` / `extend_path` consume the
+        whole candidate; `find_paths` is the thin `.walk`-only adapter for the
+        UI/route callers that need only geometry.
+        """
+        return self._pathfinder.find_ordered_walk(
             start_block_id=start_block_id,
             end_block_id=end_block_id,
             direction_constraint=direction_constraint,
             manual_override=manual_override,
         )
-        return [c.walk for c in candidates if isinstance(c.walk, PathSegment)]
 
     # ========================================================================
     # Validation
@@ -701,7 +728,7 @@ class PathDispatcher:
         # downstream during acquisition; it is intentionally not passed as a
         # walk-search filter here because the terminal-direction check is not
         # tunnel-aware (a tunnel hop has no meaningful tile delta to classify).
-        candidates = self.find_paths(
+        candidates = self._find_walk_candidates(
             start_block_id_resolved,
             requested_destination_block_id,
             train_id,
@@ -727,9 +754,9 @@ class PathDispatcher:
         # `frozenset(blocks)` differs).
         empty_set: Set[str] = set()
         non_revisit_candidates = [
-            seg for seg in candidates
+            cand for cand in candidates
             if not self._segment_would_revisit_resources(
-                seg, empty_set, empty_set
+                cand.walk, empty_set, empty_set
             )
         ]
         if not non_revisit_candidates:
@@ -763,7 +790,12 @@ class PathDispatcher:
         last_failed_resource_id: Optional[str] = None
         last_reason: str = ""
         had_structural_failure = False
-        for segment in candidates:
+        for cand in candidates:
+            # `segment` is the flat walk used by the structural/acquisition
+            # helpers; `cand.ordered_walk` is the per-step geometry threaded
+            # into resource_sequence / traversal building.
+            segment = cand.walk
+            ordered_walk = cand.ordered_walk
             validation = self.validate_path(
                 segment, path_id, train_id, manual_override=manual_override
             )
@@ -801,6 +833,7 @@ class PathDispatcher:
                     requested_destination_direction,
                     start_at_block_count=hint,
                     manual_override=manual_override,
+                    ordered_walk=ordered_walk,
                 )
                 if truncated is None:
                     continue
@@ -811,6 +844,9 @@ class PathDispatcher:
                     requested_destination_block_id=requested_destination_block_id,
                     requested_destination_direction=requested_destination_direction,
                     now=now,
+                    ordered_walk=self._slice_ordered_walk(
+                        ordered_walk, truncated.tiles
+                    ),
                 )
                 self.paths[path_id] = path
                 return PathAcquisitionResult(
@@ -828,6 +864,7 @@ class PathDispatcher:
             acquire_ok, fail_reason, fail_resource = self._acquire_segment_resources(
                 segment, path_id, train_id, requested_destination_direction,
                 manual_override=manual_override,
+                ordered_walk=ordered_walk,
             )
             if not acquire_ok:
                 last_failed_resource_id = fail_resource
@@ -840,6 +877,7 @@ class PathDispatcher:
                 truncated = self._best_effort_truncate(
                     segment, path_id, train_id, requested_destination_direction,
                     manual_override=manual_override,
+                    ordered_walk=ordered_walk,
                 )
                 if truncated is None:
                     continue
@@ -851,6 +889,9 @@ class PathDispatcher:
                     requested_destination_block_id=requested_destination_block_id,
                     requested_destination_direction=requested_destination_direction,
                     now=now,
+                    ordered_walk=self._slice_ordered_walk(
+                        ordered_walk, truncated.tiles
+                    ),
                 )
                 self.paths[path_id] = path
                 return PathAcquisitionResult(
@@ -872,6 +913,7 @@ class PathDispatcher:
                 requested_destination_block_id=requested_destination_block_id,
                 requested_destination_direction=requested_destination_direction,
                 now=now,
+                ordered_walk=ordered_walk,
             )
             self.paths[path_id] = path
             return PathAcquisitionResult(
@@ -995,7 +1037,7 @@ class PathDispatcher:
         # acquisition, not as a walk-search filter (the terminal-direction
         # check is not tunnel-aware).
         start_block_id = path.get_authority_end_block_id()
-        candidates = self.find_paths(
+        candidates = self._find_walk_candidates(
             start_block_id,
             requested_destination_block_id,
             train_id,
@@ -1019,9 +1061,9 @@ class PathDispatcher:
         # authority-end block via an edge other than the prefix's terminal
         # exit_edge, the request is an invalid reverse.
         forward_candidates = [
-            seg
-            for seg in candidates
-            if self._segment_continues_forward(path, seg)
+            cand
+            for cand in candidates
+            if self._segment_continues_forward(path, cand.walk)
         ]
         if not forward_candidates:
             return PathAcquisitionResult(
@@ -1051,9 +1093,9 @@ class PathDispatcher:
             if e.resource_type == "switch"
         }
         non_revisit_candidates = [
-            seg for seg in candidates
+            cand for cand in candidates
             if not self._segment_would_revisit_resources(
-                seg, existing_path_blocks, existing_path_switches
+                cand.walk, existing_path_blocks, existing_path_switches
             )
         ]
         if not non_revisit_candidates:
@@ -1079,11 +1121,15 @@ class PathDispatcher:
         # than the dispatcher detouring it.
         candidates = candidates[:1]
 
-        now = self._now()
         last_reason = ""
         last_resource = None
         had_occupancy_blocker = False
-        for segment in candidates:
+        for cand in candidates:
+            # `segment` is the flat walk used by the structural/acquisition
+            # helpers; `cand.ordered_walk` is the per-step geometry threaded
+            # into resource_sequence / traversal building (Step 3+).
+            segment = cand.walk
+            ordered_walk = cand.ordered_walk
             # Validate (pretend the extension uses the same path_id).
             validation = self.validate_path(
                 segment, path_id, train_id, manual_override=manual_override
@@ -1122,6 +1168,7 @@ class PathDispatcher:
                     requested_destination_direction,
                     start_at_block_count=hint,
                     manual_override=manual_override,
+                    ordered_walk=ordered_walk,
                 )
                 if truncated is None:
                     continue
@@ -1130,6 +1177,7 @@ class PathDispatcher:
                 ok, fail_reason, fail_resource = self._acquire_segment_resources(
                     segment, path_id, train_id, requested_destination_direction,
                     manual_override=manual_override,
+                    ordered_walk=ordered_walk,
                 )
                 if not ok:
                     last_resource = fail_resource
@@ -1151,6 +1199,7 @@ class PathDispatcher:
                         segment, path_id, train_id,
                         requested_destination_direction,
                         manual_override=manual_override,
+                        ordered_walk=ordered_walk,
                     )
                     if truncated is None:
                         continue
@@ -1162,7 +1211,10 @@ class PathDispatcher:
             # entry which is already present as authority_end).
             base_index = len(path.resource_sequence)
             new_entries = self._segment_to_resource_sequence(
-                applied_segment, base_index, skip_first_block=True
+                applied_segment, base_index, skip_first_block=True,
+                ordered_walk=self._slice_ordered_walk(
+                    ordered_walk, applied_segment.tiles
+                ),
             )
             path.resource_sequence.extend(new_entries)
             # path_tiles is a derived `@property` over resource_sequence; no
@@ -1171,7 +1223,11 @@ class PathDispatcher:
             # the resource_sequence.extend(...) above advanced it.
             path.requested_destination_block_id = requested_destination_block_id
             path.requested_destination_direction = requested_destination_direction
-            path._set_status(PathStatus.ACTIVE, now)
+            # No status transition here: the path is already ACTIVE (guaranteed
+            # by the MISSING_OR_INACTIVE_PATH guard at the top of extend_path).
+            # Per design_new.md, `last_status_updated_time` advances only on a
+            # real `status` transition, so a successful extend must not re-stamp
+            # it.
 
             # Per design_new.md: when the live authority reaches the
             # requested target, return REACHED_REQUESTED_TARGET; otherwise
@@ -1219,7 +1275,9 @@ class PathDispatcher:
         ):
             path.requested_destination_block_id = requested_destination_block_id
             path.requested_destination_direction = requested_destination_direction
-            path._set_status(PathStatus.ACTIVE, now)
+            # No status transition here: the path is already ACTIVE and stays
+            # ACTIVE on a BLOCKED_NO_GROWTH hold, so `last_status_updated_time`
+            # must not be re-stamped (design_new.md: status transitions only).
             # Held short with no growth — `last_resource` is the occupied/
             # reserved block the train is waiting on.
             path.waiting_for_block_id = last_resource
@@ -1384,6 +1442,7 @@ class PathDispatcher:
         train_id: str,
         direction: str,
         manual_override: bool = False,
+        ordered_walk: Optional[List[GraphWalkStep]] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Reserve all blocks + lock all switches in a PathSegment via the
         ResourceCoordinator facade.
@@ -1391,6 +1450,8 @@ class PathDispatcher:
         `manual_override` (default False) is propagated from the calling
         `create_path(...)` / `extend_path(...)` per the `disabled` and `manual`
         availability flags canonical home in design_new.md (under TrackResource).
+        `ordered_walk` (sliced to ``segment.tiles`` by the caller) supplies the
+        per-block traversal direction without re-deriving it from flat tiles.
 
         Returns (success, failure_reason, failed_resource_id).
         """
@@ -1398,8 +1459,9 @@ class PathDispatcher:
         if coordinator is None:
             return (False, "no_resource_coordinator", None)
 
-        # Compute traversal directions per block from path tiles.
-        block_traversals = self._compute_block_traversals(segment)
+        # Compute traversal directions per block from the ordered walk (or, as
+        # a fallback, from path tiles).
+        block_traversals = self._compute_block_traversals(segment, ordered_walk)
 
         # Skip the first block in the segment if it's the train's current
         # block (which the train already physically occupies). The reservation
@@ -1639,6 +1701,7 @@ class PathDispatcher:
         direction: str,
         start_at_block_count: Optional[int] = None,
         manual_override: bool = False,
+        ordered_walk: Optional[List[GraphWalkStep]] = None,
     ) -> Optional[PathSegment]:
         """Try to acquire a strictly shorter prefix of `segment`.
 
@@ -1715,6 +1778,7 @@ class PathDispatcher:
             ok, reason, _ = self._acquire_segment_resources(
                 truncated, path_id, train_id, direction,
                 manual_override=manual_override,
+                ordered_walk=self._slice_ordered_walk(ordered_walk, cutoff_tiles),
             )
             if ok:
                 return truncated
@@ -1722,19 +1786,27 @@ class PathDispatcher:
         return None
 
     def _compute_block_traversals(
-        self, segment: PathSegment
+        self,
+        segment: PathSegment,
+        ordered_walk: Optional[List[GraphWalkStep]] = None,
     ) -> Dict[str, ReservedBlockTraversal]:
         """Compute (exit_edge, block_direction) for each block in segment.
 
         Per design_new.md every block in the path's authority — including the
         destination block — needs a `ReservedBlockTraversal` entry; the block
         manager's `reserve_blocks_for_path(...)` rejects with
-        `missing_direction` otherwise. For tiles 0..N-2 the exit_edge is the
-        direction-of-travel toward the next tile. For the final tile (N-1)
-        there is no `nxt`, so we derive the same direction-of-travel from the
-        previous step (prev → curr); this matches the traversal direction the
-        train uses to enter the destination block.
+        `missing_direction` otherwise.
+
+        When ``ordered_walk`` is provided, both values come from the precomputed
+        per-step geometry: `exit_edge` is the block's first step exit edge and
+        `block_direction` is the canonical `Block.ordered_tiles` direction
+        (`_build_ordered_walk` / `_terminal_direction` convention). Otherwise
+        they are re-derived from tile deltas (the fallback; for tiles 0..N-2 the
+        exit_edge is the direction-of-travel toward the next tile, and for the
+        final tile from the previous step).
         """
+        if ordered_walk:
+            return self._ordered_walk_block_traversals(ordered_walk)
         result: Dict[str, ReservedBlockTraversal] = {}
         if not segment.tiles or len(segment.tiles) < 2:
             return result
@@ -1776,6 +1848,43 @@ class PathDispatcher:
             )
         return result
 
+    def _ordered_walk_block_traversals(
+        self, ordered_walk: List[GraphWalkStep]
+    ) -> Dict[str, ReservedBlockTraversal]:
+        """Per-block `ReservedBlockTraversal` read from the ordered walk.
+
+        For each block's first run: `exit_edge` is the run's first step exit
+        edge (the travel direction entering the block, matching the legacy
+        first-tile derivation) and `block_direction` is the canonical
+        `Block.ordered_tiles` direction carried on the step (defaulting to
+        ``forward`` when geometry cannot decide, as the legacy path did).
+        """
+        result: Dict[str, ReservedBlockTraversal] = {}
+        i = 0
+        n = len(ordered_walk)
+        while i < n:
+            step = ordered_walk[i]
+            if step.resource_type != "block" or not step.block_id:
+                i += 1
+                continue
+            block_id = step.block_id
+            run_first = step
+            j = i
+            while (
+                j < n
+                and ordered_walk[j].resource_type == "block"
+                and ordered_walk[j].block_id == block_id
+            ):
+                j += 1
+            i = j
+            if block_id in result:
+                continue
+            result[block_id] = ReservedBlockTraversal(
+                exit_edge=run_first.exit_edge,
+                block_direction=run_first.block_direction or "forward",
+            )
+        return result
+
     def _resolve_switch_at_position(self, pos: Tuple[int, int]):
         """Resolve a Switch entity by its tile position."""
         track = self.network.get_track(*pos)
@@ -1810,8 +1919,21 @@ class PathDispatcher:
         segment: PathSegment,
         base_index: int,
         skip_first_block: bool = False,
+        ordered_walk: Optional[List[GraphWalkStep]] = None,
     ) -> List[ResourceSequenceEntry]:
-        """Convert a PathSegment into ResourceSequenceEntry list."""
+        """Convert a PathSegment into a ResourceSequenceEntry list.
+
+        When ``ordered_walk`` (the chosen candidate's per-step geometry) is
+        provided, the per-tile entry/exit edges and the block/switch grouping
+        are read from the precomputed steps -- tunnel-aware and built once at
+        cache time -- instead of being re-derived from tile deltas. The flat
+        tile-walk below is kept as the fallback for segments that have no
+        candidate geometry (e.g. legacy callers).
+        """
+        if ordered_walk:
+            return self._ordered_walk_to_resource_sequence(
+                ordered_walk, base_index, skip_first_block
+            )
         entries: List[ResourceSequenceEntry] = []
         # Walk segment.tiles, grouping by resource (block or switch).
         if not segment.tiles:
@@ -1918,6 +2040,121 @@ class PathDispatcher:
                 seq_index += 1
         return entries
 
+    def _ordered_walk_to_resource_sequence(
+        self,
+        ordered_walk: List[GraphWalkStep],
+        base_index: int,
+        skip_first_block: bool,
+    ) -> List[ResourceSequenceEntry]:
+        """Build resource_sequence entries directly from the per-step
+        ``ordered_walk``.
+
+        Switch steps are singletons; consecutive same-block steps form one block
+        entry. Mirrors the flat-tile builder's grouping, switch-id resolution,
+        and ``skip_first_block`` semantics (skip the first BLOCK run, which is
+        already in the caller's path), sourcing all edges from the steps.
+        """
+        entries: List[ResourceSequenceEntry] = []
+        seq_index = base_index
+        i = 0
+        n = len(ordered_walk)
+        seen_first_block = not skip_first_block
+        while i < n:
+            step = ordered_walk[i]
+            if step.resource_type == "switch":
+                resource_id = self._switch_resource_id(step.tile)
+                tile_entry = PathTileEntry(
+                    x=step.tile[0],
+                    y=step.tile[1],
+                    entry_edge=step.entry_edge or "",
+                    exit_edge=step.exit_edge or "",
+                    resource_sequence_index=seq_index,
+                )
+                entries.append(
+                    ResourceSequenceEntry(
+                        sequence_index=seq_index,
+                        resource_type="switch",
+                        resource_id=resource_id,
+                        path_tiles=[tile_entry],
+                        entry_edge=step.entry_edge or "",
+                        exit_edge=step.exit_edge or "",
+                    )
+                )
+                seq_index += 1
+                i += 1
+                continue
+
+            block_id = step.block_id
+            if not block_id:
+                i += 1
+                continue
+            # Collect the contiguous run of steps in this block.
+            j = i
+            while (
+                j < n
+                and ordered_walk[j].resource_type == "block"
+                and ordered_walk[j].block_id == block_id
+            ):
+                j += 1
+            run = ordered_walk[i:j]
+            i = j
+            if not seen_first_block:
+                # Skip the first block run (already present as authority_end).
+                seen_first_block = True
+                continue
+            path_tiles = [
+                PathTileEntry(
+                    x=s.tile[0],
+                    y=s.tile[1],
+                    entry_edge=s.entry_edge or "",
+                    exit_edge=s.exit_edge or "",
+                    resource_sequence_index=seq_index,
+                )
+                for s in run
+            ]
+            entries.append(
+                ResourceSequenceEntry(
+                    sequence_index=seq_index,
+                    resource_type="block",
+                    resource_id=block_id,
+                    path_tiles=path_tiles,
+                    entry_edge=run[0].entry_edge or "",
+                    exit_edge=run[-1].exit_edge or "",
+                )
+            )
+            seq_index += 1
+        return entries
+
+    def _switch_resource_id(self, tile: Tuple[int, int]) -> str:
+        """Resolve the switch resource_id at ``tile``, matching the flat-tile
+        builder's resolution (switch entity id, then track switch_id, then the
+        ``x,y`` fallback)."""
+        switch_entity = self._resolve_switch_at_position(tile)
+        track = self.network.get_track(*tile)
+        return (
+            getattr(switch_entity, "switch_id", None)
+            or getattr(track, "switch_id", None)
+            or f"{tile[0]},{tile[1]}"
+        )
+
+    def _slice_ordered_walk(
+        self,
+        ordered_walk: Optional[List[GraphWalkStep]],
+        tiles: List[Tuple[int, int]],
+    ) -> Optional[List[GraphWalkStep]]:
+        """Restrict ``ordered_walk`` to the steps whose tile is in ``tiles``,
+        preserving order.
+
+        For a full segment this returns the whole list; for a BEST_EFFORT
+        truncated segment (whose tiles are a contiguous prefix of the walk) it
+        returns the matching prefix. Returns None when there is no candidate
+        geometry, so callers fall back to the flat-tile builder.
+        """
+        if not ordered_walk:
+            return None
+        tileset = set(tiles)
+        return [s for s in ordered_walk if s.tile in tileset]
+
     def _tile_entry_edge(
         self, tiles: List[Tuple[int, int]], i: int
     ) -> Optional[str]:
@@ -1971,10 +2208,16 @@ class PathDispatcher:
         requested_destination_block_id: str,
         requested_destination_direction: str,
         now: float,
+        ordered_walk: Optional[List[GraphWalkStep]] = None,
     ) -> Path:
-        """Construct a v1 Path entity from a successfully acquired PathSegment."""
+        """Construct a v1 Path entity from a successfully acquired PathSegment.
+
+        ``ordered_walk`` (sliced to ``segment.tiles`` by the caller) carries the
+        per-step geometry used to build ``resource_sequence`` without re-deriving
+        edges from flat tiles.
+        """
         sequence = self._segment_to_resource_sequence(
-            segment, base_index=0, skip_first_block=False
+            segment, base_index=0, skip_first_block=False, ordered_walk=ordered_walk
         )
         # `path_tiles` is a derived `@property` over `resource_sequence`; do
         # not pass it as a constructor field. authority_end_block_id is also
@@ -2089,7 +2332,54 @@ class PathDispatcher:
         route_executor = self._get_route_executor()
         if route_executor is None:
             return
+        # Populate the block-relative traversal_direction the head-advance
+        # callback matches a waypoint against (design_new.md:462, 465). For a
+        # block resource it is computed by the canonical block-direction helper
+        # from the entered block's `resource_sequence` entry exit_edge against
+        # `Block.ordered_tiles`; for switches it stays None. The controller's
+        # ResourceEvent.exit_edge is None for entered blocks, so the direction
+        # is derived from the dispatcher-owned path geometry, not the event.
+        if event.resource_type == "block" and event.traversal_direction is None:
+            event.traversal_direction = self._block_traversal_direction(
+                path_id, event
+            )
         route_executor.handle_train_advanced(train_id, path_id, event)
+
+    def _block_traversal_direction(
+        self, path_id: str, event: ResourceEvent
+    ) -> Optional[str]:
+        """Block-relative "forward"/"reverse" for an entered block event.
+
+        Resolves the block's `resource_sequence` entry on the active path
+        (by `sequence_index` when present, else by `resource_id`), then maps
+        that entry's compass `exit_edge` to a block-relative direction via the
+        canonical `Block.block_direction_for_compass_exit(...)`. Returns None
+        when the entry, block, or geometry cannot be resolved.
+        """
+        path = self.paths.get(path_id)
+        if path is None:
+            return None
+        entry = None
+        if event.sequence_index is not None:
+            for e in path.resource_sequence:
+                if e.sequence_index == event.sequence_index:
+                    entry = e
+                    break
+        if entry is None:
+            for e in path.resource_sequence:
+                if e.resource_type == "block" and e.resource_id == event.resource_id:
+                    entry = e
+                    break
+        if entry is None or not entry.exit_edge:
+            return None
+        blocks = getattr(self.network, "blocks", None)
+        block = blocks.get(event.resource_id) if blocks else None
+        if block is None:
+            return None
+        helper = getattr(block, "block_direction_for_compass_exit", None)
+        if not callable(helper):
+            return None
+        return helper(entry.exit_edge)
 
     def _release_tail_vacated_resource(
         self, event: ResourceEvent, train_id: str
@@ -2243,16 +2533,32 @@ class PathDispatcher:
         if callable(on_complete):
             on_complete()
 
-        # Notify route executor.
-        route_executor = self._get_route_executor()
-        if route_executor is not None:
-            route_executor.handle_path_completion(
+        # Deliver completion through the SimulationController surface, which
+        # delegates to RouteExecutor.handle_path_completion(...) and emits the
+        # canonical `path_completion` notification (design_new.md:240, 415,
+        # 1553). Fall back to a direct RouteExecutor call only when no
+        # SimulationController is wired (isolated unit tests) — there is no
+        # NotificationCenter to emit through in that case.
+        sc = self.simulation_controller
+        sc_complete = getattr(sc, "handle_path_completion", None) if sc else None
+        if callable(sc_complete):
+            sc_complete(
                 train_id,
                 path_id,
                 path.get_authority_end_block_id(),
                 path.requested_destination_direction,
                 event_time,
             )
+        else:
+            route_executor = self._get_route_executor()
+            if route_executor is not None:
+                route_executor.handle_path_completion(
+                    train_id,
+                    path_id,
+                    path.get_authority_end_block_id(),
+                    path.requested_destination_direction,
+                    event_time,
+                )
 
         # Per design_new.md ~line 80: completed paths remain in
         # `paths_by_id[path_id]` for history. `Path.status == COMPLETED`

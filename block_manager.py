@@ -18,12 +18,14 @@ State Descriptions:
     CAUTION: Train recently cleared but the safety margin must remain
 """
 
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional, Dict, List, Mapping, Set, Tuple, TYPE_CHECKING
 
 from block import Block, BlockState, CautionState
+from notification_center import Severity
 from runtime_payloads import (
     FatalPhysicalEntryConflict,
     FatalConflictKind,
@@ -261,6 +263,32 @@ class BlockManager:
             self.simulation_controller.enter_failed_runtime(payload)
         except Exception:
             # Receiver issues must not mask the underlying conflict.
+            pass
+
+    def _emit_diagnostic(self, message: str, *, block_id: str, train_id: Optional[str] = None) -> None:
+        """Emit a runtime diagnostic through `NotificationCenter`.
+
+        Per design_new.md, `NotificationCenter` is the only runtime sink;
+        skipped no-op release paths surface their warnings as
+        `kind = "diagnostic"` notifications rather than component-local
+        logging. Skips the emit when no `simulation_controller` /
+        `notification_center` is wired (early bootstrap / isolated unit
+        tests); a receiver error must not mask the underlying operation.
+        """
+        sc = self.simulation_controller
+        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        if nc is None:
+            return
+        try:
+            nc.emit(
+                source="BlockManager",
+                kind="diagnostic",
+                severity=Severity.WARNING,
+                event_time=time.time(),
+                train_id=train_id,
+                payload={"message": message, "block_id": block_id},
+            )
+        except Exception:
             pass
 
     def set_block_to_caution(self, block_id: str) -> bool:
@@ -612,9 +640,10 @@ class BlockManager:
                 continue
             if block.reserved_by_path != path_id:
                 # Spec: emit a diagnostic, do not treat as a hard failure.
-                print(
-                    f"[BlockManager] release {block_id} but it's not reserved "
-                    f"for {path_id} (current owner: {block.reserved_by_path!r})"
+                self._emit_diagnostic(
+                    f"release {block_id} but it's not reserved for {path_id} "
+                    f"(current owner: {block.reserved_by_path!r})",
+                    block_id=block_id,
                 )
                 continue
             block.release_path_reservation()
@@ -660,9 +689,11 @@ class BlockManager:
 
         if block.occupied_by != train_id:
             other = block.occupied_by
-            print(
-                f"[BlockManager] block {block_id} release for train {train_id} "
-                f"skipped: currently occupied by {other!r}"
+            self._emit_diagnostic(
+                f"block {block_id} release for train {train_id} "
+                f"skipped: currently occupied by {other!r}",
+                block_id=block_id,
+                train_id=train_id,
             )
             return False
 

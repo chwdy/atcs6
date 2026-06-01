@@ -190,9 +190,14 @@ class TrainPhysics:
         return self.network.trains.get(self.train_id)
 
     def _get_path_tiles(self) -> Optional[List[Tuple[int, int, "Direction"]]]:
-        """Get path tiles from controller (reads from dispatcher)."""
+        """Get active path tiles from the controller as `(x, y, Direction)`.
+
+        Sourced from the dispatcher-owned authority via the controller's
+        `received_path_plan` geometry (design_new.md "Movement-authority input
+        in TrainPhysics"); the per-tile direction is tunnel-aware.
+        """
         if self.controller:
-            return self.controller.path_projection.get_path_tiles()
+            return self.controller._get_effective_path_tiles()
         return None
 
     def _get_speed_profile(self) -> "SpeedProfile":

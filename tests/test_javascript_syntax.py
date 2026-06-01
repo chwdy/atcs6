@@ -114,31 +114,39 @@ class TestJavaScriptSyntax:
         )
 
     def test_all_required_js_files_exist(self):
-        """Test that all required JavaScript files exist"""
-        required_files = ["api.js", "renderer.js", "editor.js", "app.js"]
+        """The migrated frontend entry points exist.
 
-        for filename in required_files:
-            file_path = JS_DIR / filename
-            assert file_path.exists(), f"Required file {filename} is missing"
+        The classic static/js/ scripts migrated to frontend/src/ (longterm_todo.md
+        item #7) and are bundled by Vite; assert the committed TS sources.
+        """
+        required_files = [
+            PROJECT_ROOT / "frontend" / "src" / "app.ts",
+            PROJECT_ROOT / "frontend" / "src" / "main.ts",
+        ]
+
+        for file_path in required_files:
+            assert file_path.exists(), f"Required file {file_path} is missing"
 
     def test_api_js_has_api_class(self):
-        """Test that api.js defines the API class"""
-        api_file = JS_DIR / "api.js"
+        """Test that the migrated api module defines the API class"""
+        api_file = PROJECT_ROOT / "frontend" / "src" / "lib" / "api.ts"
         content = api_file.read_text()
 
-        assert "class API" in content, "api.js must define API class"
-        assert "window.api = new API()" in content, "api.js must export API instance"
+        assert "class API" in content, "api.ts must define API class"
+        assert "export const api = new API()" in content, (
+            "api.ts must export the singleton API instance"
+        )
 
     def test_editor_js_has_editor_class(self):
-        """Test that editor.js defines the Editor class"""
-        editor_file = JS_DIR / "editor.js"
+        """Test that the migrated editor module defines the Editor class"""
+        editor_file = PROJECT_ROOT / "frontend" / "src" / "editor" / "editor.ts"
         content = editor_file.read_text()
 
-        assert "class Editor" in content, "editor.js must define Editor class"
+        assert "class Editor" in content, "editor.ts must define Editor class"
 
     def test_editor_js_has_helper_class(self):
-        """Test that helpers.js defines the required helper functions"""
-        helpers_file = JS_DIR / "helpers.js"
+        """Test that the migrated helpers module defines the required helper functions"""
+        helpers_file = PROJECT_ROOT / "frontend" / "src" / "lib" / "helpers.ts"
         content = helpers_file.read_text()
 
         # Check for key helper functions
@@ -152,22 +160,22 @@ class TestJavaScriptSyntax:
             assert func in content, f"helpers.js must define {func} function"
 
     def test_renderer_js_has_renderer_class(self):
-        """Test that renderer.js defines the Renderer class"""
-        renderer_file = JS_DIR / "renderer.js"
+        """Test that the migrated renderer module defines the Renderer class"""
+        renderer_file = PROJECT_ROOT / "frontend" / "src" / "renderer" / "renderer.ts"
         content = renderer_file.read_text()
 
-        assert "class Renderer" in content, "renderer.js must define Renderer class"
+        assert "class Renderer" in content, "renderer.ts must define Renderer class"
 
     def test_app_js_has_app_class(self):
-        """Test that app.js defines the App class"""
-        app_file = JS_DIR / "app.js"
+        """Test that the migrated app module defines the App class"""
+        app_file = PROJECT_ROOT / "frontend" / "src" / "app.ts"
         content = app_file.read_text()
 
-        assert "class App" in content, "app.js must define App class"
+        assert "class App" in content, "app.ts must define App class"
 
     def test_editor_trains_waits_for_ato_stop(self):
         """ATO stop should wait for train to fully stop before refresh."""
-        editor_trains_file = JS_DIR / "editor-trains.js"
+        editor_trains_file = PROJECT_ROOT / "frontend" / "src" / "editor" / "editor-trains.ts"
         content = editor_trains_file.read_text()
 
         assert "waitForTrainStopped" in content, (
@@ -179,7 +187,7 @@ class TestJavaScriptSyntax:
 
     def test_editor_trains_updates_cab_buttons_on_live_update(self):
         """Train control panel should update cab buttons during live updates."""
-        editor_trains_file = JS_DIR / "editor-trains.js"
+        editor_trains_file = PROJECT_ROOT / "frontend" / "src" / "editor" / "editor-trains.ts"
         content = editor_trains_file.read_text()
 
         assert "updateControlPanelValuesFromData" in content, (

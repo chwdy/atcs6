@@ -138,6 +138,14 @@ class ResourceEvent:
     `switch_exit_edge` is the exit edge through the switch tile itself
     (perpendicular to `exit_edge` semantics for blocks). For switch events
     it's required; for block events None.
+
+    `traversal_direction` is the block-relative `"forward"` / `"reverse"`
+    direction of the entered block, used by the head-advance route callback
+    to match a waypoint task on block AND direction (design_new.md:462,
+    465). It is populated by `PathDispatcher` from the entered block's
+    `resource_sequence` entry before calling
+    `RouteExecutor.handle_train_advanced(...)`; it is `None` for switch
+    resources and `None` until the dispatcher computes it.
     """
 
     sequence_index: Optional[int]
@@ -147,6 +155,7 @@ class ResourceEvent:
     block_id: Optional[str] = None
     entry_edge: Optional[str] = None  # switch events only
     switch_exit_edge: Optional[str] = None  # switch events only
+    traversal_direction: Optional[str] = None  # "forward" / "reverse"; blocks only
 
 
 @dataclass

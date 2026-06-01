@@ -1,13 +1,17 @@
 """
 Platform Management Routes - Platform CRUD and tile management.
 
-This module provides the new /api/platform endpoints while preserving
-behavior currently implemented for legacy /api/station endpoints.
+Thin HTTP layer over `services.platform_service`: parse JSON, call the
+service, translate typed exceptions (NotFoundError -> 404,
+ValidationError -> 400), and serialize. Read-only endpoints keep their
+serialization here.
 """
 
 from flask import jsonify, request
 
 from app_state import AppState
+from services import NotFoundError, ValidationError
+from services import platform_service
 
 
 def register(app, state: AppState) -> None:
@@ -23,7 +27,8 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Missing x or y coordinate"}), 400
 
         try:
-            platform = state.network.add_platform(
+            platform = platform_service.create_platform(
+                state,
                 x=x,
                 y=y,
                 platform_id=data.get("platform_id"),
@@ -32,77 +37,41 @@ def register(app, state: AppState) -> None:
                 platform_side=data.get("platform_side", "both"),
                 top_speed_kmh=data.get("top_speed_kmh"),
             )
-            return jsonify(platform.to_dict_with_orientation(state.network))
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(platform.to_dict_with_orientation(state.network))
 
     @app.route("/api/platform/<platform_id>", methods=["GET"])
     def get_platform(platform_id: str):
-        platform = state.network.get_platform(platform_id)
+        platform = platform_service.get_platform(state, platform_id)
         if not platform:
             return jsonify({"error": "Platform not found"}), 404
         return jsonify(platform.to_dict_with_orientation(state.network))
 
     @app.route("/api/platform/<platform_id>", methods=["PATCH"])
     def update_platform(platform_id: str):
-        platform = state.network.get_platform(platform_id)
-        if not platform:
-            return jsonify({"error": "Platform not found"}), 404
-
         data = request.json or {}
-        if "name" in data:
-            platform.name = data["name"]
-        if "length_cm" in data:
-            platform.length_cm = data["length_cm"]
-        if "platform_side" in data:
-            from enums import PlatformSide
-
-            platform.platform_side = PlatformSide(data["platform_side"])
-        if "top_speed_kmh" in data:
-            platform.top_speed_kmh = data["top_speed_kmh"]
-        # Availability flags per design_new.md "Availability flag REST API
-        # surface". Both succeed unconditionally — they affect only future
-        # route target resolution.
-        if "disabled" in data:
-            platform.disabled = bool(data["disabled"])
-        if "manual" in data:
-            platform.manual = bool(data["manual"])
-
+        try:
+            platform = platform_service.update_platform(
+                state, platform_id, data=data
+            )
+        except NotFoundError:
+            return jsonify({"error": "Platform not found"}), 404
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
         return jsonify(platform.to_dict_with_orientation(state.network))
 
     @app.route("/api/platform/<platform_id>", methods=["DELETE"])
     def delete_platform(platform_id: str):
-        success = state.network.delete_platform(platform_id)
-        if not success:
+        try:
+            platform_service.delete_platform(state, platform_id)
+        except NotFoundError:
             return jsonify({"error": "Platform not found"}), 404
         return jsonify({"success": True})
 
     @app.route("/api/platform/validate/<sint:x>/<sint:y>", methods=["GET"])
     def validate_platform_at(x: int, y: int):
-        track = state.network.get_track(x, y)
-        if not track:
-            return jsonify(
-                {"can_place": False, "error": f"No track at position ({x}, {y})"}
-            )
-        if track.is_switch:
-            return jsonify(
-                {"can_place": False, "error": "Cannot place platform on switch"}
-            )
-        if track.signal_ids:
-            return jsonify(
-                {
-                    "can_place": False,
-                    "error": "Cannot place platform on tile with signal",
-                }
-            )
-        if track.station_id is not None:
-            return jsonify(
-                {
-                    "can_place": False,
-                    "error": f"Tile already belongs to platform {track.station_id}",
-                }
-            )
-        return jsonify({"can_place": True, "existing_block": track.block_section_id})
+        return jsonify(platform_service.validate_placement(state, x, y))
 
     @app.route("/api/platform/<platform_id>/extend", methods=["POST"])
     def extend_platform(platform_id: str):
@@ -111,12 +80,12 @@ def register(app, state: AppState) -> None:
         if not positions:
             return jsonify({"error": "Missing positions"}), 400
         try:
-            platform = state.network.extend_platform(
-                platform_id, [tuple(pos) for pos in positions]
+            platform = platform_service.extend_platform(
+                state, platform_id, positions=positions
             )
-            return jsonify(platform.to_dict_with_orientation(state.network))
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(platform.to_dict_with_orientation(state.network))
 
     @app.route("/api/platform/<platform_id>/remove_tile", methods=["POST"])
     def remove_platform_tile(platform_id: str):
@@ -126,44 +95,28 @@ def register(app, state: AppState) -> None:
         if x is None or y is None:
             return jsonify({"error": "Missing x or y coordinate"}), 400
 
-        # Reuse existing legacy station endpoint behavior through network methods.
-        platform = state.network.get_platform(platform_id)
-        if not platform:
+        try:
+            result = platform_service.remove_tile(state, platform_id, x=x, y=y)
+        except NotFoundError:
             return jsonify({"error": "Platform not found"}), 404
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
 
-        if (x, y) not in platform.positions:
+        if result["status"] == "continuity_error":
             return jsonify(
-                {"error": f"Position ({x}, {y}) is not part of platform {platform_id}"}
+                {
+                    "error": "Cannot remove tile: would break continuity",
+                    "validation_errors": result["errors"],
+                }
             ), 400
-
-        new_positions = [p for p in platform.positions if p != (x, y)]
-        if len(new_positions) > 1:
-            is_continuous, errors = state.network._validate_station_continuity(
-                new_positions
-            )
-            if not is_continuous:
-                return jsonify(
-                    {
-                        "error": "Cannot remove tile: would break continuity",
-                        "validation_errors": errors,
-                    }
-                ), 400
-
-        platform.remove_position(x, y)
-        track = state.network.get_track(x, y)
-        if track and track.station_id == platform_id:
-            track.station_id = None
-            if track.block_section_id:
-                state.network.remove_tile_from_block(x, y)
-
-        if len(platform.positions) == 0:
-            state.network.delete_platform(platform_id)
+        if result["status"] == "deleted":
             return jsonify({"success": True, "platform_deleted": True})
-
         return jsonify(
             {
                 "success": True,
-                "platform": platform.to_dict_with_orientation(state.network),
+                "platform": result["platform"].to_dict_with_orientation(
+                    state.network
+                ),
             }
         )
 
@@ -174,57 +127,11 @@ def register(app, state: AppState) -> None:
         y = data.get("y")
         if x is None or y is None:
             return jsonify({"error": "Missing x or y coordinate"}), 400
-
-        platform = state.network.get_platform(platform_id)
-        if not platform:
+        try:
+            result = platform_service.can_extend(state, platform_id, x=x, y=y)
+        except NotFoundError:
             return jsonify({"error": "Platform not found"}), 404
-
-        track = state.network.get_track(x, y)
-        if not track:
-            return jsonify({"can_extend": False, "reason": "No track at position"})
-        if track.is_switch:
-            return jsonify(
-                {"can_extend": False, "reason": "Cannot add switch to platform"}
-            )
-        if track.signal_ids:
-            return jsonify(
-                {
-                    "can_extend": False,
-                    "reason": "Cannot add tile with signal to platform",
-                }
-            )
-        if track.station_id is not None and track.station_id != platform_id:
-            return jsonify(
-                {
-                    "can_extend": False,
-                    "reason": f"Tile already belongs to platform {track.station_id}",
-                }
-            )
-
-        is_adjacent = any(
-            abs(x - px) + abs(y - py) == 1 for px, py in platform.positions
-        )
-        if not is_adjacent and len(platform.positions) > 0:
-            return jsonify(
-                {
-                    "can_extend": False,
-                    "reason": "Position must be adjacent to existing platform",
-                }
-            )
-
-        all_positions = platform.positions + [(x, y)]
-        is_continuous, errors = state.network._validate_station_continuity(
-            all_positions
-        )
-        if not is_continuous:
-            return jsonify(
-                {
-                    "can_extend": False,
-                    "reason": f"Would break continuity: {', '.join(errors)}",
-                }
-            )
-
-        return jsonify({"can_extend": True})
+        return jsonify(result)
 
     @app.route("/api/platform/<platform_id>/assign_tile", methods=["POST"])
     def assign_platform_tile_to_block(platform_id: str):
@@ -238,14 +145,14 @@ def register(app, state: AppState) -> None:
         if not block_id:
             return jsonify({"error": "Missing block_id"}), 400
 
-        platform = state.network.get_platform(platform_id)
-        if not platform:
-            return jsonify({"error": "Platform not found"}), 404
-        if not state.network.get_block(block_id):
-            return jsonify({"error": "Block not found"}), 404
-        if not platform.assign_tile_to_block(x, y, block_id):
-            return jsonify({"error": "Tile not in platform"}), 400
-
+        try:
+            platform = platform_service.assign_tile(
+                state, platform_id, x=x, y=y, block_id=block_id
+            )
+        except NotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
         return jsonify({"status": "success", "platform": platform.to_dict()})
 
     @app.route("/api/platform/<platform_id>/unassign_tile", methods=["POST"])
@@ -256,19 +163,17 @@ def register(app, state: AppState) -> None:
         if x is None or y is None:
             return jsonify({"error": "Missing x or y coordinate"}), 400
 
-        platform = state.network.get_platform(platform_id)
-        if not platform:
+        try:
+            platform = platform_service.unassign_tile(state, platform_id, x=x, y=y)
+        except NotFoundError:
             return jsonify({"error": "Platform not found"}), 404
-        if not platform.unassign_tile_from_block(x, y):
-            return jsonify(
-                {"error": "Tile has no block assignment or not in platform"}
-            ), 400
-
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
         return jsonify({"status": "success", "platform": platform.to_dict()})
 
     @app.route("/api/platform/<platform_id>/block_assignments", methods=["GET"])
     def get_platform_block_assignments(platform_id: str):
-        platform = state.network.get_platform(platform_id)
+        platform = platform_service.get_platform(state, platform_id)
         if not platform:
             return jsonify({"error": "Platform not found"}), 404
 

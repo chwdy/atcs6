@@ -10,11 +10,13 @@ land — see git history.
 
 ### 1. Add a service layer between Flask routes and the domain
 
-**Status:** Acknowledged, deferred.
+**Status:** In progress. The `services/` package exists and the five
+services originally sketched here are built and unit-tested; what remains
+is migrating the other route modules onto the same pattern.
 
 **Problem.** Route handlers in `routes/*.py` mutate `state.network.*` and
-`state.sim_controller` directly. There is no service module that owns
-multi-entity transactional operations. This means:
+`state.sim_controller` directly. Without a service module that owns
+multi-entity operations:
 
 - A multi-step domain operation (e.g. "delete a layout and stop all
   schedules tied to it") lives inline in the HTTP handler and cannot be
@@ -23,24 +25,44 @@ multi-entity transactional operations. This means:
 - Future cross-cutting concerns (authorization, audit logging,
   transactional rollback) have 40+ retrofit sites instead of one.
 
-**Sketch of the fix.** Introduce a `services/` package alongside `routes/`:
+**The pattern (now established).** `services/` sits alongside `routes/`.
+Each service function takes `state: AppState` plus structured kwargs,
+returns domain objects, and raises a typed `ServiceError` subclass on
+failure (`ValidationError` → 400, `NotFoundError` → 404, `ConflictError`
+→ 409, `ServiceUnavailableError` → 503). Route handlers shrink to: parse
+request → call service → translate exceptions + serialize. Non-HTTP
+callers invoke the same functions directly — see `tests/test_services.py`.
+
+**Built so far** (service + thin route, both covered by `test_services.py`):
 
 ```
 services/
-    layout_service.py       # save/load/delete layouts; owns the multi-write
-    train_route_service.py  # CRUD + activate/deactivate; owns RouteRun lifecycle
-    schedule_service.py     # schedule CRUD; coordinates with train routes
-    speed_profile_service.py
-    switch_service.py
+    exceptions.py            # the typed ServiceError hierarchy
+    layout_service.py        # save/load/delete; owns the pause-and-lock multi-write
+    train_route_service.py   # route CRUD + activate/deactivate; RouteRun lifecycle
+    schedule_service.py      # schedule CRUD; coordinates with train routes
+    speed_profile_service.py # profile CRUD; owns simulation_lock + default/in-use guards
+    switch_service.py        # switch CRUD + availability flags + SwitchManager position changes
+    train_service.py         # train CRUD + placement + route assignment + operator commands
+    block_service.py         # block CRUD + availability flags + track membership + can_extend
+    track_service.py         # track tile CRUD + bulk add/delete + orphan-impact pre-check
+    platform_service.py      # platform CRUD + tile membership + placement predicates
 ```
 
-Each service takes `state: AppState` (or just the entities it needs) and
-exposes pure operations. Route handlers shrink to: parse request → call
-service → format response. Tests can call services directly without a
-Flask request context.
+Migrated routes: `layouts`, `schedules`, `train_routes`, `speed_profiles`,
+`switches`, `trains`, `blocks`, `tracks`, `platforms`.
 
-**When to do it.** When the next feature touches three or more entities
-in one request, or when we add authorization. Whichever comes first.
+**Remaining.** `signals`, `stations`, `paths`, `route_runs`, `tunnels`,
+`inspector`, `simulation` still hold their domain logic inline. Adopt the
+same pattern when one is next touched; `paths` is heavily
+`PathDispatcher`-coupled (better paired with item 5), and some
+(`inspector`, much of `simulation`) are largely read-only and lower-value
+to migrate.
+
+**When to do it.** Incrementally, when the next feature touches a given
+route — or eagerly for `blocks`/`trains` if they grow further. The pattern
+and its test harness are in place, so each migration is now a small,
+self-contained slice.
 
 ---
 
@@ -198,64 +220,7 @@ are touched by both. Or earlier if a concurrency bug bites.
 
 ---
 
-### 7. Finish the frontend build pipeline
-
-**Status:** In progress. The foundation is in place; what remains is migrating
-the rest of the JavaScript off the classic-script soup, one file at a time.
-
-**Already in place** (so the rest is mechanical repeats):
-
-- Vite 4 + TypeScript 5 + Vitest 0.34 (pinned for the repo's Node 17), merged
-  into `package.json`: `npm run build` / `dev` / `test:unit` / `typecheck`.
-  `vite build` bundles `frontend/src/main.ts` → `static/dist/main.js`, served
-  by Flask's catch-all route.
-- TS payload types generated from `runtime_payloads.py`
-  (`tools/gen_payload_types.py` → `frontend/src/payloads.generated.ts`), guarded
-  by a drift test (`tests/test_payload_types_sync.py`).
-- A build-on-serve guard: `server.py` runs `frontend_build.py` on
-  `python server.py`, rebuilding `static/dist/main.js` when missing or stale
-  (the bundle is gitignored and now load-bearing). Skippable via
-  `--skip-frontend-build` / `ATCS6_SKIP_FRONTEND_BUILD`; never blocks startup.
-- The first conversion is done as the template: `static/js/camera.js` →
-  `frontend/src/lib/camera.ts`, bridged via `window.Camera`, its Node-eval test
-  ported to native Vitest.
-
-**The per-file recipe** (each conversion is one small, verifiable slice):
-
-1. Move `static/js/<name>.js` → `frontend/src/.../<name>.ts`; add types; keep
-   behavior byte-for-byte identical.
-2. If still-classic scripts use it, attach it to `window` at module top
-   (guard with `typeof window !== 'undefined'`) and `import` it in `main.ts`
-   for that side effect. Module scripts are deferred, so the bridge is set
-   before `app.js` bootstraps on `DOMContentLoaded` — verified safe.
-3. Drop its `<script>` tag from `index.html`; delete the legacy `.js` file.
-4. Port any Python test that evals the raw JS (the `test_camera_math` pattern)
-   to native Vitest. **Watch `pathfinders.js`**: its parity is pinned by
-   `tests/test_pathfinder_frontend_parity.py` — keep that green through the move.
-5. Fix stale references to the moved file; run `npm run typecheck` +
-   `test:unit`; eyeball the canvas/UI in the browser.
-
-**Remaining work, in order:**
-
-- **Renderer cluster** — the 9 other `renderer-*` files + `render-snapshot`,
-  then the pure helpers `pathfinders` and `helpers`. Convert behind a
-  `renderer/` barrel; bridge foundation symbols through `window` temporarily.
-- **Foundation** — `constants`, `api`, `state-manager`, `helpers`, `camera`,
-  `pathfinders` become real modules that import each other; remove their
-  `window` bridges.
-- **Editor cluster** — 11 files, ~13k lines incl. `editor.js`; the hardest and
-  most coupled; one sub-module at a time, `editor.js` last.
-- **Decommission** — `index.html` becomes a stub with one
-  `<script type="module">`; delete the `?v=` cache-busting; CI runs
-  `vite build` + `tsc --noEmit` + Vitest; remove the remaining `window` bridges.
-
-**When to do it.** When the next non-trivial frontend feature would push
-`editor.js` over 3,000 lines (it is ~2,848 today). Each slice is a clean
-stopping point.
-
----
-
-### 8. Version the HTTP API
+### 7. Version the HTTP API
 
 **Status:** Acknowledged, deferred.
 
@@ -276,7 +241,7 @@ expensive later.
 
 ---
 
-### 9. Minor hygiene
+### 8. Minor hygiene
 
 **Status:** Acknowledged, deferred.
 
@@ -286,11 +251,11 @@ A list of small structural smells worth a sweep on a slow afternoon:
 - `TODO List:` blocks embedded inside module docstrings (e.g. `app_state.py`, `app_factory.py`). Process artifacts belong in this file, not in source.
 - `__pycache__/` appears in the working tree listing — confirm it is `.gitignore`d and not tracked.
 - Replace ad-hoc `Optional[object]` parameters (e.g. `route_executor.py:171`) with proper forward references or protocols.
-- `routes/*.py` has 17 modules but no shared request-parsing helper. The next route added that does JSON validation is the prompt to introduce one (likely `pydantic` request models, dovetailing with item 7's payload-types work).
+- `routes/*.py` has 17 modules but no shared request-parsing helper. The next route added that does JSON validation is the prompt to introduce one (likely `pydantic` request models, dovetailing with the payload-types tooling (`tools/gen_payload_types.py` -> `frontend/src/payloads.generated.ts`) from the now-landed frontend build pipeline).
 
 **When to do it.** Whenever you are already in the area for another
 reason.
 
 ---
 
-*Last updated: 2026-05-31*
+*Last updated: 2026-06-01*

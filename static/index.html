@@ -500,41 +500,11 @@
         </div>
     </div>
 
-    <script src="js/constants.js?v=15"></script>
-    <script src="js/api.js?v=18"></script>
-    <script src="js/state-manager.js?v=15"></script>
-    <script src="js/helpers.js?v=17"></script>
-    <script src="js/pathfinders.js?v=15"></script>
-    <script src="js/render-snapshot.js?v=1"></script>
-    <script src="js/renderer-tracks.js?v=15"></script>
-    <script src="js/renderer-signals.js?v=15"></script>
-    <script src="js/renderer-platforms.js?v=16"></script>
-    <script src="js/renderer-stations.js?v=1"></script>
-    <script src="js/renderer-blocks.js?v=15"></script>
-    <script src="js/renderer-debug.js?v=15"></script>
-    <script src="js/renderer-routes.js?v=15"></script>
-    <script src="js/renderer-trains.js?v=15"></script>
-    <script src="js/renderer-tunnels.js?v=2"></script>
-    <script src="js/renderer.js?v=17"></script>
-    <script src="js/editor-blocks.js?v=15"></script>
-    <script src="js/editor-stations.js?v=15"></script>
-    <script src="js/editor-signals.js?v=15"></script>
-    <script src="js/editor-switches.js?v=15"></script>
-    <script src="js/editor-trains.js?v=20"></script>
-    <script src="js/editor-paths.js?v=17"></script>
-    <script src="js/editor-routes.js?v=18"></script>
-    <script src="js/editor-route-runs.js?v=3"></script>
-    <script src="js/editor-ui.js?v=15"></script>
-    <script src="js/editor-multi-select.js?v=4"></script>
-    <script src="js/editor.js?v=18"></script>
-    <script src="js/train-monitor.js?v=20"></script>
 
-    <script src="js/app.js?v=16"></script>
-    <script src="js/inspector.js?v=1" defer></script>
-
-    <!-- Frontend build spine (longterm_todo.md item #8, Phase 0). Built by Vite
-         from frontend/src/main.ts into static/dist/main.js. Inert today; future
-         modules migrate here and drop out of the classic-script list above.
+    <!-- Frontend build bundle (longterm_todo.md item #7, complete). Built by
+         Vite from frontend/src/main.ts into static/dist/main.js — the single
+         script for the whole app. Every classic script (app.js, editor.js, the
+         renderer/panel/foundation cluster) has migrated into this bundle.
          Regenerate with `npm run build`. -->
     <script type="module" src="dist/main.js"></script>
 </body>

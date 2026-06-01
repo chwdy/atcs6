@@ -87,7 +87,6 @@ def clearance_ahead_pure(
     remaining_in_current_cm: float,
     blocks_ahead: List[Any],
     is_obstructed: Callable[[Any], bool],
-    is_signal_red: Callable[[str], bool],
     ato_destination_block_id: Optional[str],
     fallback_clearance_to_destination: Callable[[float], float],
 ) -> float:
@@ -95,9 +94,18 @@ def clearance_ahead_pure(
 
     Pure: depends only on the explicit value/callable inputs. The walk
     sums block lengths until an obstruction (other train, foreign
-    reservation, red signal, end of path). When ``blocks_ahead`` is
-    empty but ``ato_destination_block_id`` is set, derives clearance
-    from ``fallback_clearance_to_destination(base_clearance)`` instead.
+    reservation, end of path). When ``blocks_ahead`` is empty but
+    ``ato_destination_block_id`` is set, derives clearance from
+    ``fallback_clearance_to_destination(base_clearance)`` instead.
+
+    Signal state is intentionally not an ATC input (design_new.md:1849):
+    signals are display state derived from blocks, not an independent
+    clearance source. ``blocks_ahead`` walks only the train's own live
+    authority (``received_path_plan``), whose switches are already locked
+    in position and whose blocks are reserved in this train's direction,
+    so the switch-blocks-route and opposite-direction-reservation cases a
+    red signal would flag cannot occur for a block on this walk; foreign
+    occupancy / reservation is already caught by ``is_obstructed``.
 
     The caller resolves block IDs to ``Block`` objects (with
     ``block_id`` and ``length_cm`` attributes) before calling. Passing
@@ -110,8 +118,6 @@ def clearance_ahead_pure(
 
     for block in blocks_ahead:
         if is_obstructed(block):
-            break
-        if is_signal_red(block.block_id):
             break
         clearance += block.length_cm
 
@@ -338,7 +344,6 @@ class ATCComputer:
             remaining_in_current_cm=c._get_remaining_distance_in_current_block(),
             blocks_ahead=blocks_ahead,
             is_obstructed=lambda block: c._is_block_obstructed(block, block.block_id),
-            is_signal_red=lambda bid: self.is_signal_red_for_block(bid),
             ato_destination_block_id=c.path_projection.ato_destination_block_id,
             fallback_clearance_to_destination=(
                 lambda base: c._calculate_clearance_to_destination(base)

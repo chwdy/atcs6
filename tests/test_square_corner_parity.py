@@ -1,7 +1,7 @@
 """Pin the frontend and backend "square corner switch" validity rule to agree.
 
 `track.is_square_corner_switch(bits)` (Python) and `isSquareCornerSwitch(bits)`
-(static/js/constants.js) encode the same geometry rule: a switch placement is
+(frontend/src/lib/constants.ts) encode the same geometry rule: a switch placement is
 rejected when it joins a horizontal segment (NW|SE) and a vertical segment
 (NE|SW) with no 45-degree diagonal (NS|EW) to ease the branch. The server uses
 it in `TrackSegment.is_valid` / `routes/tracks.py`; the client uses it in the
@@ -10,14 +10,14 @@ this test pins a line-for-line Python port of the JS function against the
 backend for every `track_bits` value (0..63) — a future change on either side
 trips CI before the two implementations drift.
 
-If `isSquareCornerSwitch` in static/js/constants.js changes, mirror it in
+If `isSquareCornerSwitch` in frontend/src/lib/constants.ts changes, mirror it in
 `js_is_square_corner_switch` below; that is the whole point of the file.
 """
 
 from track import is_square_corner_switch
 
 
-# Direct translation of `isSquareCornerSwitch` in static/js/constants.js.
+# Direct translation of `isSquareCornerSwitch` in frontend/src/lib/constants.ts.
 # NW=8, SE=16 (horizontal); NE=4, SW=32 (vertical); NS=1, EW=2 (diagonal).
 def js_is_square_corner_switch(bits: int) -> bool:
     has_horizontal = (bits & (8 | 16)) != 0

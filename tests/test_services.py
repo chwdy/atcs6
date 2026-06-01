@@ -20,10 +20,21 @@ from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
 from speed_profile import SpeedProfileRegistry
+from track import TrackSegment
 from train import Train, TrainCar
+from train_route import RouteTask
 
-from services import NotFoundError, ValidationError
-from services import schedule_service, train_route_service
+from services import ConflictError, GoneError, NotFoundError, ValidationError
+from services import (
+    block_service,
+    platform_service,
+    schedule_service,
+    speed_profile_service,
+    switch_service,
+    track_service,
+    train_route_service,
+    train_service,
+)
 
 
 @pytest.fixture
@@ -162,3 +173,520 @@ class TestScheduleService:
         """A blank train_id is a validation error, not a not-found."""
         with pytest.raises(ValidationError):
             schedule_service.create_schedule(state, train_id="", stops=[])
+
+
+# ------------------------------------------------- speed_profile_service ----
+
+
+class TestSpeedProfileService:
+    def test_list_and_get_seeded_default(self, state):
+        """A fresh registry seeds a `default` profile the service can read."""
+        assert speed_profile_service.get_profile(state, "default") is not None
+        assert len(speed_profile_service.list_profiles(state)) >= 1
+
+    def test_create_profile_registers(self, state):
+        """`create_profile` registers a profile callable without HTTP."""
+        profile = speed_profile_service.create_profile(
+            state, data={"profile_id": "P1", "name": "Profile 1"}
+        )
+        assert profile.profile_id == "P1"
+        assert speed_profile_service.get_profile(state, "P1") is not None
+
+    def test_create_duplicate_raises_conflict(self, state):
+        """A repeated profile_id surfaces as ConflictError (HTTP 409)."""
+        speed_profile_service.create_profile(
+            state, data={"profile_id": "P1", "name": "Profile 1"}
+        )
+        with pytest.raises(ConflictError):
+            speed_profile_service.create_profile(
+                state, data={"profile_id": "P1", "name": "Dup"}
+            )
+
+    def test_create_missing_fields_raises_validation(self, state):
+        """Both profile_id and name are required."""
+        with pytest.raises(ValidationError):
+            speed_profile_service.create_profile(state, data={"name": "No id"})
+        with pytest.raises(ValidationError):
+            speed_profile_service.create_profile(state, data={"profile_id": "P2"})
+
+    def test_require_profile_raises_not_found(self, state):
+        """`require_profile` raises; `get_profile` returns None."""
+        assert speed_profile_service.get_profile(state, "MISSING") is None
+        with pytest.raises(NotFoundError):
+            speed_profile_service.require_profile(state, "MISSING")
+
+    def test_update_unknown_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            speed_profile_service.update_profile(state, "MISSING", data={"name": "x"})
+
+    def test_update_id_mismatch_raises_validation(self, state):
+        """A body profile_id that disagrees with the URL id is rejected."""
+        speed_profile_service.create_profile(
+            state, data={"profile_id": "P1", "name": "Profile 1"}
+        )
+        with pytest.raises(ValidationError):
+            speed_profile_service.update_profile(
+                state, "P1", data={"profile_id": "OTHER", "name": "x"}
+            )
+
+    def test_delete_default_raises_conflict(self, state):
+        """The seeded `default` profile may never be deleted."""
+        with pytest.raises(ConflictError):
+            speed_profile_service.delete_profile(state, "default")
+
+    def test_delete_in_use_raises_conflict(self, state_with_train):
+        """A profile assigned to a train cannot be deleted."""
+        speed_profile_service.create_profile(
+            state_with_train, data={"profile_id": "INUSE", "name": "In Use"}
+        )
+        state_with_train.network.trains["TRAIN_A"].speed_profile_id = "INUSE"
+        with pytest.raises(ConflictError):
+            speed_profile_service.delete_profile(state_with_train, "INUSE")
+
+    def test_delete_success(self, state):
+        speed_profile_service.create_profile(
+            state, data={"profile_id": "P9", "name": "Temp"}
+        )
+        assert speed_profile_service.delete_profile(state, "P9") is True
+        assert speed_profile_service.get_profile(state, "P9") is None
+
+
+# -------------------------------------------------------- switch_service ----
+
+
+@pytest.fixture
+def state_with_switch_track(state):
+    """AppState with one switch-track tile at (5, 0).
+
+    track_bits = EW | NE (0b000110) makes the tile a switch: it has both a
+    long path (EW) and a short path (NE), so switch_points is non-empty and
+    `is_switch` is True -- the same shape demo_3 uses for a switch tile.
+    """
+    state.network.add_track(TrackSegment(x=5, y=0, track_bits=0b000110))
+    return state
+
+
+class TestSwitchService:
+    def test_create_switch_at_track_is_idempotent(self, state_with_switch_track):
+        """First call creates `SW_5_0`; a second returns the same switch."""
+        state = state_with_switch_track
+        switch = switch_service.create_switch_at_track(state, 5, 0, data={})
+        assert switch.switch_id == "SW_5_0"
+        assert state.network.get_switch("SW_5_0") is switch
+
+        again = switch_service.create_switch_at_track(state, 5, 0, data={})
+        assert again is switch
+        assert len(state.network.switches) == 1
+
+    def test_create_switch_no_track_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            switch_service.create_switch_at_track(state, 9, 9, data={})
+
+    def test_create_switch_non_switch_track_raises_validation(self, state):
+        """A straight (EW-only) tile is a track but not a switch."""
+        state.network.add_track(TrackSegment(x=1, y=0, track_bits=2))
+        with pytest.raises(ValidationError):
+            switch_service.create_switch_at_track(state, 1, 0, data={})
+
+    def test_update_switch_forwards_config_fields(self, state_with_switch_track):
+        """Non-availability fields forward to RailwayNetwork.update_switch."""
+        state = state_with_switch_track
+        switch_service.create_switch_at_track(state, 5, 0, data={})
+        updated = switch_service.update_switch(
+            state, "SW_5_0", data={"name": "Renamed", "main_length_cm": 12.5}
+        )
+        assert updated.name == "Renamed"
+        assert updated.main_length_cm == 12.5
+
+    def test_disable_occupied_switch_raises_conflict(self, state_with_switch_track):
+        """Enabling `disabled` on an occupied switch is rejected (HTTP 409)."""
+        state = state_with_switch_track
+        switch = switch_service.create_switch_at_track(state, 5, 0, data={})
+        switch.occupied_by = "TRAIN_A"
+        with pytest.raises(ConflictError):
+            switch_service.update_switch(state, "SW_5_0", data={"disabled": True})
+        assert switch.disabled is False  # rejected, not applied
+
+    def test_disable_free_switch_succeeds(self, state_with_switch_track):
+        """A free switch accepts the availability flags."""
+        state = state_with_switch_track
+        switch_service.create_switch_at_track(state, 5, 0, data={})
+        updated = switch_service.update_switch(
+            state, "SW_5_0", data={"disabled": True, "manual": True}
+        )
+        assert updated.disabled is True
+        assert updated.manual is True
+
+    def test_delete_switch_missing_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            switch_service.delete_switch(state, "NOPE")
+
+    def test_request_position_change_returns_command_id(self, state_with_switch_track):
+        """A valid request echoes the caller's command id (outcome is async)."""
+        state = state_with_switch_track
+        switch_service.create_switch_at_track(state, 5, 0, data={})
+        command_id = switch_service.request_position_change(
+            state, "SW_5_0", new_state=1, command_id="CMD-1"
+        )
+        assert command_id == "CMD-1"
+
+    def test_request_position_change_invalid_state_raises_validation(
+        self, state_with_switch_track
+    ):
+        state = state_with_switch_track
+        switch_service.create_switch_at_track(state, 5, 0, data={})
+        with pytest.raises(ValidationError):
+            switch_service.request_position_change(state, "SW_5_0", new_state=2)
+
+    def test_request_position_change_unknown_switch_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            switch_service.request_position_change(state, "NOPE", new_state=0)
+
+
+# --------------------------------------------------------- train_service ----
+
+
+class TestTrainService:
+    def test_require_train_raises_not_found(self, state):
+        assert train_service.get_train(state, "GHOST") is None
+        with pytest.raises(NotFoundError):
+            train_service.require_train(state, "GHOST")
+
+    def test_create_train_editor_path(self, state):
+        """No-position create builds + registers a train, no Flask required."""
+        train = train_service.create_train(state, train_id="T_NEW", max_speed_kmh=90.0)
+        assert train.train_id == "T_NEW"
+        assert state.network.trains.get("T_NEW") is train
+        assert train.max_speed == 90.0
+
+    def test_create_train_missing_id_raises_validation(self, state):
+        with pytest.raises(ValidationError):
+            train_service.create_train(state, train_id="")
+
+    def test_update_train_fields(self, state_with_train):
+        train = train_service.update_train(
+            state_with_train, "TRAIN_A", max_speed=55.0, car_number="C9"
+        )
+        assert train.max_speed == 55.0
+        assert train.car_number == "C9"
+
+    def test_update_train_bad_value_raises_validation(self, state_with_train):
+        with pytest.raises(ValidationError, match="max_speed"):
+            train_service.update_train(
+                state_with_train, "TRAIN_A", max_speed="not-a-number"
+            )
+
+    def test_update_train_unknown_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            train_service.update_train(state, "GHOST", max_speed=10.0)
+
+    def test_delete_train(self, state_with_train):
+        assert train_service.delete_train(state_with_train, "TRAIN_A") is True
+        assert train_service.get_train(state_with_train, "TRAIN_A") is None
+
+    def test_delete_unknown_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            train_service.delete_train(state, "GHOST")
+
+    def test_assign_speed_profile_missing_id_raises_validation(self, state_with_train):
+        with pytest.raises(ValidationError):
+            train_service.assign_speed_profile(
+                state_with_train, "TRAIN_A", profile_id=""
+            )
+
+    def test_assign_speed_profile_unknown_profile_raises_not_found(
+        self, state_with_train
+    ):
+        with pytest.raises(NotFoundError):
+            train_service.assign_speed_profile(
+                state_with_train, "TRAIN_A", profile_id="NOPE"
+            )
+
+    def test_assign_speed_profile_success(self, state_with_train):
+        """The seeded `default` profile assigns onto the train."""
+        train = train_service.assign_speed_profile(
+            state_with_train, "TRAIN_A", profile_id="default"
+        )
+        assert train.speed_profile_id == "default"
+
+    def test_assign_route_unknown_train_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            train_service.assign_route(state, "GHOST", route_id=None)
+
+    def test_assign_route_unknown_route_raises_not_found(self, state_with_train):
+        with pytest.raises(NotFoundError):
+            train_service.assign_route(state_with_train, "TRAIN_A", route_id="GHOST")
+
+    def test_assign_route_empty_route_raises_validation(self, state_with_train):
+        train_route_service.create_route(
+            state_with_train, route_id="R_EMPTY", name="empty"
+        )
+        with pytest.raises(ValidationError, match="no tasks"):
+            train_service.assign_route(state_with_train, "TRAIN_A", route_id="R_EMPTY")
+
+    def test_assign_route_success_conflict_and_force(self, state_with_train):
+        """Assign succeeds; reassign needs force; same-route is idempotent."""
+        state = state_with_train
+        r1 = train_route_service.create_route(state, route_id="R1", name="r1")
+        r1.add_task(RouteTask(task_kind="dwell", task_location="STA_X"))
+        r2 = train_route_service.create_route(state, route_id="R2", name="r2")
+        r2.add_task(RouteTask(task_kind="dwell", task_location="STA_Y"))
+
+        train_service.assign_route(state, "TRAIN_A", route_id="R1")
+        executor = state.sim_controller.route_executor
+        assert executor.assigned_route_id_for("TRAIN_A") == "R1"
+
+        with pytest.raises(ConflictError):
+            train_service.assign_route(state, "TRAIN_A", route_id="R2")
+
+        # Same-route assign is an idempotent no-op success.
+        train_service.assign_route(state, "TRAIN_A", route_id="R1")
+        assert executor.assigned_route_id_for("TRAIN_A") == "R1"
+
+        # Force reassign retargets to R2.
+        train_service.assign_route(state, "TRAIN_A", route_id="R2", force=True)
+        assert executor.assigned_route_id_for("TRAIN_A") == "R2"
+
+    def test_set_cab_invalid_raises_validation(self, state_with_train):
+        with pytest.raises(ValidationError):
+            train_service.set_cab(state_with_train, "TRAIN_A", cab="Z")
+
+    def test_set_mode_invalid_raises_validation(self, state_with_train):
+        with pytest.raises(ValidationError):
+            train_service.set_mode(state_with_train, "TRAIN_A", mode="bogus")
+
+    def test_power_on_returns_command_result(self, state_with_train):
+        """Operator commands return the controller's CommandResult."""
+        result = train_service.power_on(state_with_train, "TRAIN_A")
+        assert hasattr(result, "success")
+
+
+# --------------------------------------------------------- block_service ----
+
+
+class TestBlockService:
+    def test_require_block_raises_not_found(self, state):
+        assert block_service.get_block(state, "GHOST") is None
+        with pytest.raises(NotFoundError):
+            block_service.require_block(state, "GHOST")
+
+    def test_create_block(self, state):
+        block = block_service.create_block(
+            state, block_id="BLK_T", name="Main", length_cm=150.0
+        )
+        assert block.block_id == "BLK_T"
+        assert block.name == "Main"
+        assert block.length_cm == 150.0
+        assert state.network.get_block("BLK_T") is block
+
+    def test_create_block_autogenerates_id(self, state):
+        block = block_service.create_block(state, name="auto")
+        assert block.block_id.startswith("BLK_")
+
+    def test_update_block_name(self, state):
+        block_service.create_block(state, block_id="BLK_U", name="old")
+        updated = block_service.update_block(state, "BLK_U", data={"name": "new"})
+        assert updated.name == "new"
+
+    def test_update_block_unknown_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            block_service.update_block(state, "GHOST", data={"name": "x"})
+
+    def test_update_block_state_field_raises_gone(self, state):
+        """The removed direct `state` mutation surfaces as GoneError (410)."""
+        block_service.create_block(state, block_id="BLK_G")
+        with pytest.raises(GoneError):
+            block_service.update_block(state, "BLK_G", data={"state": "OCCUPIED"})
+
+    def test_disable_occupied_block_raises_conflict(self, state):
+        block = block_service.create_block(state, block_id="BLK_O")
+        block.occupied_by = "TRAIN_A"
+        with pytest.raises(ConflictError):
+            block_service.update_block(state, "BLK_O", data={"disabled": True})
+        assert block.disabled is False  # rejected, not applied
+
+    def test_disable_free_block_succeeds(self, state):
+        block_service.create_block(state, block_id="BLK_F")
+        updated = block_service.update_block(
+            state, "BLK_F", data={"disabled": True, "manual": True}
+        )
+        assert updated.disabled is True
+        assert updated.manual is True
+
+    def test_allowed_travel_directions_invalid_raises_validation(self, state):
+        block_service.create_block(state, block_id="BLK_D")
+        with pytest.raises(ValidationError):
+            block_service.update_block(
+                state, "BLK_D", data={"allowed_travel_directions": ["sideways"]}
+            )
+
+    def test_allowed_travel_directions_valid(self, state):
+        block_service.create_block(state, block_id="BLK_D2")
+        updated = block_service.update_block(
+            state, "BLK_D2", data={"allowed_travel_directions": ["forward"]}
+        )
+        assert updated.allowed_travel_directions == {"forward"}
+
+    def test_delete_block(self, state):
+        block_service.create_block(state, block_id="BLK_X")
+        assert block_service.delete_block(state, "BLK_X") is True
+        assert block_service.get_block(state, "BLK_X") is None
+
+    def test_delete_block_unknown_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            block_service.delete_block(state, "GHOST")
+
+    def test_add_tracks_unknown_block_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            block_service.add_tracks_to_block(state, "GHOST", positions=[[0, 0]])
+
+    def test_remove_tracks_unknown_block_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            block_service.remove_tracks_from_block(state, "GHOST", positions=[[0, 0]])
+
+    def test_can_extend_unknown_block_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            block_service.can_extend_block(state, "GHOST", x=0, y=0)
+
+
+# --------------------------------------------------------- track_service ----
+
+
+class TestTrackService:
+    def test_get_and_require_track(self, state):
+        assert track_service.get_track(state, 9, 9) is None
+        with pytest.raises(NotFoundError):
+            track_service.require_track(state, 9, 9)
+
+    def test_update_missing_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            track_service.update_track(state, 9, 9, data={"track_bits": 2})
+
+    def test_update_invalid_body_raises_validation(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        with pytest.raises(ValidationError):
+            track_service.update_track(state, 0, 0, data=["not", "a", "dict"])
+
+    def test_update_track_bits_updates(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        result = track_service.update_track(state, 0, 0, data={"track_bits": 1})
+        assert result["status"] == "updated"
+        assert result["track"].track_bits == 1
+
+    def test_delete_missing_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            track_service.delete_track(state, 9, 9)
+
+    def test_delete_track(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        assert track_service.delete_track(state, 0, 0) is True
+        assert track_service.get_track(state, 0, 0) is None
+
+    def test_add_tracks_bulk_creates(self, state):
+        result = track_service.add_tracks_bulk(
+            state,
+            tracks_data=[
+                {"x": 0, "y": 0, "track_bits": 2},
+                {"x": 1, "y": 0, "track_bits": 2},
+            ],
+        )
+        assert len(result["added"]) == 2
+        assert len(result["updated"]) == 0
+        assert track_service.get_track(state, 0, 0) is not None
+
+    def test_add_tracks_bulk_updates_existing(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        result = track_service.add_tracks_bulk(
+            state, tracks_data=[{"x": 0, "y": 0, "track_bits": 2}]
+        )
+        assert len(result["updated"]) == 1
+        assert len(result["added"]) == 0
+
+    def test_delete_tracks_bulk_no_impact(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        state.network.add_track(TrackSegment(x=1, y=0, track_bits=2))
+        result = track_service.delete_tracks_bulk(state, positions=[[0, 0], [1, 0]])
+        assert result["status"] == "done"
+        assert result["deleted"] == [[0, 0], [1, 0]]
+        assert track_service.get_track(state, 0, 0) is None
+
+
+# ------------------------------------------------------ platform_service ----
+
+
+class TestPlatformService:
+    def test_get_and_require_platform(self, state):
+        assert platform_service.get_platform(state, "GHOST") is None
+        with pytest.raises(NotFoundError):
+            platform_service.require_platform(state, "GHOST")
+
+    def test_create_platform(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        platform = platform_service.create_platform(
+            state, x=0, y=0, platform_id="PLT_1", name="P1"
+        )
+        assert platform.platform_id == "PLT_1"
+        assert state.network.get_platform("PLT_1") is platform
+
+    def test_update_platform(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        platform_service.create_platform(state, x=0, y=0, platform_id="PLT_U", name="old")
+        updated = platform_service.update_platform(
+            state, "PLT_U", data={"name": "new", "disabled": True}
+        )
+        assert updated.name == "new"
+        assert updated.disabled is True
+
+    def test_update_unknown_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            platform_service.update_platform(state, "GHOST", data={"name": "x"})
+
+    def test_update_bad_platform_side_raises_validation_error(self, state):
+        # Regression: an invalid platform_side must surface as ValidationError
+        # (-> HTTP 400) rather than a bare ValueError leaking as HTTP 500, so
+        # update_platform matches the create/extend bad-input contract.
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        platform_service.create_platform(state, x=0, y=0, platform_id="PLT_S")
+        with pytest.raises(ValidationError):
+            platform_service.update_platform(
+                state, "PLT_S", data={"platform_side": "sideways"}
+            )
+
+    def test_delete_platform(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        platform_service.create_platform(state, x=0, y=0, platform_id="PLT_X")
+        assert platform_service.delete_platform(state, "PLT_X") is True
+        assert platform_service.get_platform(state, "PLT_X") is None
+
+    def test_delete_unknown_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            platform_service.delete_platform(state, "GHOST")
+
+    def test_validate_placement(self, state):
+        assert platform_service.validate_placement(state, 9, 9)["can_place"] is False
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        assert platform_service.validate_placement(state, 0, 0)["can_place"] is True
+
+    def test_can_extend_unknown_platform_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            platform_service.can_extend(state, "GHOST", x=0, y=0)
+
+    def test_assign_tile_unknown_platform_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            platform_service.assign_tile(state, "GHOST", x=0, y=0, block_id="BLK")
+
+    def test_assign_tile_unknown_block_raises_not_found(self, state):
+        state.network.add_track(TrackSegment(x=0, y=0, track_bits=2))
+        platform_service.create_platform(state, x=0, y=0, platform_id="PLT_A")
+        with pytest.raises(NotFoundError):
+            platform_service.assign_tile(
+                state, "PLT_A", x=0, y=0, block_id="GHOST_BLK"
+            )
+
+    def test_unassign_tile_unknown_platform_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            platform_service.unassign_tile(state, "GHOST", x=0, y=0)
+
+    def test_remove_tile_unknown_platform_raises_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            platform_service.remove_tile(state, "GHOST", x=0, y=0)

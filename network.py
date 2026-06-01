@@ -23,6 +23,7 @@ from enums import (
     SwitchPosition,
     BlockState,
 )
+from constants import FLANK_PROTECTION_DISTANCE_CM
 from railway_signal import Signal, SignalType, SignalState
 from station import Station
 from railway_platform import Platform
@@ -95,6 +96,19 @@ class RailwayNetwork:
         # tile_to_block_id / tile_to_platform_id / tile_to_station_id below.
         self._tile_to_block: Dict[Tuple[int, int], str] = {}
         self._tile_to_platform: Dict[Tuple[int, int], str] = {}
+
+        # Cache of built topology-only walk CANDIDATES, keyed by
+        # (start_block_id, end_block_id). Populated lazily by
+        # RailwayPathfinder.query_graph_walks and shared by every pathfinder
+        # built from this network (the dispatcher's and any throwaway one).
+        # The candidate geometry (raw walk + ordered_walk steps) is a pure
+        # function of the static graph -- the BFS ignores switch position and
+        # the per-step enrichment reads only static topology / Block.ordered_tiles
+        # -- so it stays valid across sim ticks and is dropped only when the
+        # topology itself changes. The per-call disabled/manual/direction FILTER
+        # runs fresh in query_graph_walks, not here. See
+        # invalidate_pathfinding_cache() and its callers.
+        self._walk_cache: Dict[Tuple[str, str], List["GraphWalkCandidate"]] = {}
 
         # Helper modules (signal computation, station registry, block
         # geometry mutation). Lazy-initialised on first access to keep
@@ -183,10 +197,45 @@ class RailwayNetwork:
             self._tile_to_block.pop(key, None)
         else:
             self._tile_to_block[key] = block_id
+        # Block membership feeds the BFS walk enumeration; a change here makes
+        # any cached walk for the affected blocks stale.
+        self.invalidate_pathfinding_cache()
 
     def _set_tile_platform(self, x: int, y: int, platform_id: Optional[str]) -> None:
         """Forward to `StationRegistry._set_tile_platform(x, y, platform_id)`."""
         return self._get_station_registry()._set_tile_platform(x, y, platform_id)
+
+    # === Pathfinding walk cache (owned here; the static graph lives here) ===
+
+    def get_cached_walks(
+        self, start_block_id: str, end_block_id: str
+    ) -> Optional[List["GraphWalkCandidate"]]:
+        """Return the cached built walk candidates for this block pair, or None
+        on a miss. The pathfinder owns what goes in (raw walk + ordered_walk
+        geometry); this network only stores it so every pathfinder built from
+        this graph shares one enrichment per (start, end) until the topology
+        changes."""
+        return self._walk_cache.get((start_block_id, end_block_id))
+
+    def store_cached_walks(
+        self, start_block_id: str, end_block_id: str,
+        candidates: List["GraphWalkCandidate"],
+    ) -> None:
+        """Record the built walk candidates for this block pair."""
+        self._walk_cache[(start_block_id, end_block_id)] = candidates
+
+    def invalidate_pathfinding_cache(self) -> None:
+        """Drop every cached walk. Called by each topology mutator (block
+        membership, track add/remove, switch add/remove, tunnel changes, full
+        reload). None of those run inside the sim tick loop, so the cache
+        survives a whole `update()` storm and is rebuilt lazily after an edit."""
+        # Defensive getattr: the block_section_id setter routes through
+        # _set_tile_block -> here, which can fire on a TrackSegment whose
+        # network back-reference was attached before __init__ finished wiring
+        # the cache (e.g. unusual deserialization orders).
+        cache = getattr(self, "_walk_cache", None)
+        if cache:
+            cache.clear()
 
     def add_track(self, track: TrackSegment):
         """Add a track segment to the network and propagate updates"""
@@ -471,6 +520,9 @@ class RailwayNetwork:
 
         The wave visits each affected tile once and calls propagate_update().
         """
+        # Connectivity / track add / tunnel changes flow through here (and the
+        # editor calls it after a track edit), so any cached walk is now stale.
+        self.invalidate_pathfinding_cache()
         self._sweep_stale_tunnels()
         queue = deque([(x, y)])
         visited = set()
@@ -1742,8 +1794,13 @@ class RailwayNetwork:
 
         # Store by ID
         self.switches[switch.switch_id] = switch
+        # A new switch changes the exits the topology-only BFS can take.
+        self.invalidate_pathfinding_cache()
         # Link track to switch
         track.switch_id = switch.switch_id
+        # A new switch can create flank relationships for itself and any
+        # nearby switches (design_new.md:686 — recompute on topology change).
+        self.recompute_all_flank_protection()
 
     def get_switch(self, switch_id: str) -> Optional["Switch"]:
         """Get switch configuration by ID."""
@@ -1776,6 +1833,12 @@ class RailwayNetwork:
             track.switch_id = None
 
         del self.switches[switch_id]
+        # Removing a switch removes exits the topology-only BFS could take.
+        self.invalidate_pathfinding_cache()
+        # Drop any stale flank entries that referenced the removed switch and
+        # recompute neighbours (design_new.md:686 — recompute on topology
+        # change).
+        self.recompute_all_flank_protection()
         return True
 
     def update_switch(self, switch_id: str, **kwargs) -> Optional["Switch"]:
@@ -1820,7 +1883,182 @@ class RailwayNetwork:
         if "switch_type" in kwargs:
             switch.switch_type = kwargs["switch_type"]
 
+        # switch_type changes the exits the BFS can take; the *_length/_radius
+        # changes feed walk distances. Both invalidate cached walks.
+        self.invalidate_pathfinding_cache()
+        # *_length changes can move a neighbour in/out of the flank radius.
+        self.recompute_all_flank_protection()
         return switch
+
+    # ------------------------------------------------------------------
+    # Flank protection computation (design_new.md "Flank Protection
+    # Computation", lines 679-688)
+    # ------------------------------------------------------------------
+
+    def _switch_at_tile(self, x: int, y: int) -> Optional["Switch"]:
+        """Resolve the Switch entity anchored at a tile via the tile's
+        `switch_id` back-reference, or None when the tile is not a switch."""
+        track = self.get_track(x, y)
+        if track is None or track.switch_id is None:
+            return None
+        return self.switches.get(track.switch_id)
+
+    def compute_flank_protection_for(
+        self, switch: "Switch"
+    ) -> List[Tuple[str, int]]:
+        """Compute the `(neighbour_switch_id, blocking_state)` flank list for
+        one switch (design_new.md:683-687).
+
+        Searches the network graph outward from the switch tile within
+        `FLANK_PROTECTION_DISTANCE_CM` and, for every neighbour switch found
+        within that radius, records the neighbour state whose active branch
+        points back toward this switch — the `blocking_state` that would
+        create a head-on flank approach. Acquisition later locks the
+        neighbour to the safe state `1 - blocking_state` (design_new.md:990).
+
+        The walk accumulates per-tile length via `_get_tile_length_cm`.
+        Because switch tiles are ~0 cm and ordinary block tiles are
+        `DEFAULT_TILE_LENGTH_CM` (50 cm), the small 5 cm budget captures
+        directly track-connected neighbour switches (crossover throats,
+        ladders) without crossing a full block — the doc's "nearby switches
+        that require mutual locking".
+        """
+        origin = (switch.x, switch.y)
+        budget = FLANK_PROTECTION_DISTANCE_CM
+        # BFS over track connectivity, tracking accumulated cm at each tile.
+        # Seed neighbours of the origin at distance 0 (we step *out* of the
+        # zero-or-near-zero-length switch tile into its connected neighbours).
+        visited: Set[Tuple[int, int]] = {origin}
+        found: Dict[str, int] = {}
+        queue: deque = deque()
+        origin_track = self.get_track(*origin)
+        if origin_track is None:
+            return []
+        for edge in origin_track.edges:
+            neighbor_coords = self._get_neighbor_coords(origin[0], origin[1], edge)
+            # `get_neighbor` also resolves tunnels; map back to coords.
+            neighbor = self.get_neighbor(origin[0], origin[1], edge)
+            if neighbor is None:
+                continue
+            ncoords = (neighbor.x, neighbor.y)
+            if ncoords in visited:
+                continue
+            queue.append((ncoords, 0.0))
+
+        while queue:
+            (cx, cy), dist_so_far = queue.popleft()
+            if (cx, cy) in visited:
+                continue
+            visited.add((cx, cy))
+
+            neighbour_switch = self._switch_at_tile(cx, cy)
+            if neighbour_switch is not None and neighbour_switch.switch_id != switch.switch_id:
+                blocking_state = self._neighbour_blocking_state(
+                    neighbour_switch, toward=origin
+                )
+                if blocking_state is not None:
+                    # Keep the most-constraining (first found) entry per
+                    # neighbour; a neighbour appears once in the list.
+                    found.setdefault(neighbour_switch.switch_id, blocking_state)
+                # A switch is a hazard boundary: do not search past it.
+                continue
+
+            # Extend the walk to this tile's neighbours while within budget.
+            tile_len = self._get_tile_length_cm(cx, cy)
+            next_dist = dist_so_far + tile_len
+            if next_dist > budget:
+                continue
+            tile = self.get_track(cx, cy)
+            if tile is None:
+                continue
+            for edge in tile.edges:
+                nb = self.get_neighbor(cx, cy, edge)
+                if nb is None:
+                    continue
+                ncoords = (nb.x, nb.y)
+                if ncoords not in visited:
+                    queue.append((ncoords, next_dist))
+
+        return sorted(found.items())
+
+    def _neighbour_blocking_state(
+        self, neighbour: "Switch", *, toward: Tuple[int, int]
+    ) -> Optional[int]:
+        """Return the neighbour switch state (0/1) whose active branch exit
+        points back toward the `toward` tile through the connecting edge —
+        the `blocking_state` for flank protection (design_new.md:990).
+
+        Returns None when the neighbour is not track-connected toward the
+        origin or no single state aligns a branch along that edge.
+        """
+        ncoords = (neighbour.x, neighbour.y)
+        ntrack = self.get_track(*ncoords)
+        if ntrack is None:
+            return None
+        # Which edge of the neighbour faces the walk that reached it. We look
+        # for the connecting edge between the neighbour and any already-walked
+        # tile in the direction of the origin; the immediate connection is the
+        # edge whose neighbour tile is closer to `toward`. Use the connecting
+        # edge to the tile we came from by scanning the neighbour's edges for
+        # one whose far tile is on the path back to origin.
+        facing_edge = self._edge_from_neighbour_toward(neighbour, toward)
+        if facing_edge is None:
+            return None
+        # A state "blocks" when one of its branch traversals exits through the
+        # facing edge (the branch points back at us). enumerate_traversals
+        # yields (exit_edge, required_state) per legal traversal.
+        for entry in ntrack.edges:
+            for exit_edge, required_state in ntrack.enumerate_traversals(entry):
+                if exit_edge == facing_edge and required_state is not None:
+                    return required_state
+        return None
+
+    def _edge_from_neighbour_toward(
+        self, neighbour: "Switch", toward: Tuple[int, int]
+    ) -> Optional[str]:
+        """The edge on the neighbour switch tile that connects, in one hop,
+        toward the origin tile. Resolves the direct connection edge when the
+        neighbour is adjacent to `toward`; otherwise the edge whose far tile
+        is the nearest step back toward `toward` by Manhattan heuristic."""
+        ncoords = (neighbour.x, neighbour.y)
+        # Direct connection (adjacent or tunnel) to the origin.
+        direct = self.get_connection_edges(ncoords, toward)
+        if direct is not None:
+            return direct[0]
+        # Otherwise pick the connected edge whose far tile reduces Manhattan
+        # distance to the origin the most (the step back along the walk).
+        ntrack = self.get_track(*ncoords)
+        if ntrack is None:
+            return None
+        best_edge: Optional[str] = None
+        best_dist: Optional[int] = None
+        for edge in ntrack.edges:
+            nb = self.get_neighbor(ncoords[0], ncoords[1], edge)
+            if nb is None:
+                continue
+            d = abs(nb.x - toward[0]) + abs(nb.y - toward[1])
+            if best_dist is None or d < best_dist:
+                best_dist = d
+                best_edge = edge
+        return best_edge
+
+    def recompute_flank_protection_for(self, switch_id: str) -> None:
+        """Recompute and store `flank_protection` for one switch."""
+        switch = self.switches.get(switch_id)
+        if switch is None:
+            return
+        switch.flank_protection = self.compute_flank_protection_for(switch)
+
+    def recompute_all_flank_protection(self) -> None:
+        """Recompute `flank_protection` for every switch in the network.
+
+        Called after any topology change that can alter switch adjacency
+        (add/remove/update switch, bulk `from_dict` load). Cheap relative to
+        the per-tick loop and run only on between-tick topology edits, which
+        v1 forbids during simulation anyway (editor and runtime are binary
+        modes per session)."""
+        for switch in self.switches.values():
+            switch.flank_protection = self.compute_flank_protection_for(switch)
 
     def to_dict(self) -> dict:
         """Convert network to dictionary for the live frontend payload.
@@ -1900,6 +2138,7 @@ class RailwayNetwork:
     def from_dict(self, data: dict):
         """Reconstruct network from dictionary"""
         # Clear existing
+        self.invalidate_pathfinding_cache()
         self.tracks.clear()
         self.trains.clear()
         self.blocks.clear()
@@ -1969,3 +2208,8 @@ class RailwayNetwork:
                     tunnel_data,
                     exc,
                 )
+
+        # `Switch.from_dict` does not persist runtime `flank_protection`
+        # (design_new.md: it is recomputed, not loaded). Compute it once the
+        # full topology — tracks, switches, and tunnels — is in place.
+        self.recompute_all_flank_protection()

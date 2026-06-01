@@ -144,8 +144,8 @@ def test_layer_flag_routing():
 
 def test_renderer_declares_layer_methods():
     """renderer.js has _drawWorld and _drawLive."""
-    src = (JS_DIR / "renderer.js").read_text()
-    assert re.search(r"\b_drawWorld\s*\(", src), "renderer.js must declare _drawWorld"
+    src = (PROJECT_ROOT / "frontend" / "src" / "renderer" / "renderer.ts").read_text()
+    assert re.search(r"\b_drawWorld\s*\(", src), "renderer.ts must declare _drawWorld"
     assert re.search(r"\b_drawLive\s*\(", src), "renderer.js must declare _drawLive"
     assert "worldCtx" in src, "renderer.js must have worldCtx"
     assert "liveCtx" in src, "renderer.js must have liveCtx"

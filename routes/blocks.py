@@ -1,16 +1,20 @@
 """
-Block Management Routes - Block CRUD, state cycling, and validation.
+Block Management Routes - Block CRUD, track membership, and validation.
+
+Thin HTTP layer over `services.block_service` for mutations: parse JSON,
+call the service, translate `ServiceError` subclasses to status codes
+(ValidationError -> 400, NotFoundError -> 404, ConflictError -> 409,
+GoneError -> 410). Read-only endpoints keep their serialization here.
 """
 
 from collections import Counter
 from datetime import datetime
-import uuid
 
 from flask import jsonify, request
 
 from app_state import AppState
-from block_validation import is_crossing
-from enums import BlockState as BlockStateEnum
+from services import ConflictError, GoneError, NotFoundError, ValidationError
+from services import block_service
 from track import BIT_TO_GROUP
 
 
@@ -75,7 +79,7 @@ def register(app, state: AppState) -> None:
     def get_blocks():
         """List all blocks with their track counts and positions"""
         result = []
-        for block in state.network.blocks.values():
+        for block in block_service.list_blocks(state):
             block_dict = block.to_dict()
             tracks = state.network.get_block_tracks(block.block_id)
             block_dict["track_count"] = len(tracks)
@@ -100,27 +104,24 @@ def register(app, state: AppState) -> None:
     @app.route("/api/blocks", methods=["POST"])
     def create_block():
         data = request.json or {}
-        block_id = data.get("block_id") or f"BLK_{uuid.uuid4().hex[:8].upper()}"
-        name = data.get("name", "")
         try:
-            block = state.network.create_block(block_id, name)
-            # Set optional properties
-            if "length_cm" in data:
-                block.length_cm = float(data["length_cm"])
-            if "min_radius_cm" in data:
-                block.min_radius_cm = data["min_radius_cm"]
-            if "speed_limit_kmh" in data:
-                block.speed_limit_kmh = data["speed_limit_kmh"]
-            elif "max_speed_kmh" in data:
-                block.speed_limit_kmh = data["max_speed_kmh"]
-            return jsonify(block.to_dict())
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
+            block = block_service.create_block(
+                state,
+                block_id=data.get("block_id"),
+                name=data.get("name", ""),
+                length_cm=data.get("length_cm"),
+                min_radius_cm=data.get("min_radius_cm"),
+                speed_limit_kmh=data.get("speed_limit_kmh"),
+                max_speed_kmh=data.get("max_speed_kmh"),
+            )
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(block.to_dict())
 
     @app.route("/api/blocks/<block_id>", methods=["GET"])
     def get_block(block_id):
         """Get block details including validation status and connected signals"""
-        block = state.network.get_block(block_id)
+        block = block_service.get_block(state, block_id)
         if not block:
             return jsonify({"error": "Block not found"}), 404
         result = block.to_dict()
@@ -163,120 +164,31 @@ def register(app, state: AppState) -> None:
         """Update block properties.
 
         Mutations to block runtime state happen between simulation ticks
-        per design_new.md "single-threaded runtime" — Flask worker holds
-        `state.simulation_lock` while writing entity fields so the
-        per-tick phase loop cannot observe a torn read.
+        per design_new.md "single-threaded runtime" — the service holds
+        `state.simulation_lock` while writing entity fields so the per-tick
+        phase loop cannot observe a torn read.
         """
-        with state.simulation_lock:
-            block = state.network.get_block(block_id)
-            if not block:
-                return jsonify({"error": "Block not found"}), 404
-
-            data = request.json or {}
-            if "name" in data:
-                block.name = data["name"] if data["name"] is not None else ""
-            if "length_cm" in data:
-                block.length_cm = float(data["length_cm"])
-            if "min_radius_cm" in data:
-                block.min_radius_cm = data["min_radius_cm"]
-            if "speed_limit_kmh" in data:
-                block.speed_limit_kmh = data["speed_limit_kmh"]
-            elif "max_speed_kmh" in data:
-                block.speed_limit_kmh = data["max_speed_kmh"]
-            if "state" in data:
-                # Block state is owned by BlockManager / ResourceCoordinator in v1
-                # and computed from `occupied_by` / `_is_caution` / `reservation`;
-                # there is no admin-side direct-mutation surface. The cycle-state
-                # endpoint that exercised this path was removed in PR 6.
-                return jsonify(
-                    {
-                        "error": (
-                            "Direct block state mutation is not supported in v1. "
-                            "Block state is derived from occupied_by / "
-                            "_is_caution / reservation, written exclusively by "
-                            "BlockManager and ResourceCoordinator."
-                        )
-                    }
-                ), 410
-
-            # Availability flags per design_new.md "Availability flag REST API
-            # surface" canonical home (under TrackResource). Setting `disabled = True`
-            # runs the Block admin-reject preconditions (occupancy / reservation /
-            # CAUTION) and returns HTTP 409 on rejection; setting `manual` always
-            # succeeds.
-            if "disabled" in data:
-                new_disabled = bool(data["disabled"])
-                if new_disabled and not block.disabled:
-                    # Reject the request when block is held by something.
-                    if block.occupied_by is not None:
-                        return jsonify(
-                            {"error": f"Block is occupied by {block.occupied_by}"}
-                        ), 409
-                    if block.reservation is not None:
-                        return jsonify(
-                            {"error": f"Block is reserved by {block.reserved_by_path}"}
-                        ), 409
-                    if block.caution is not None:
-                        return jsonify({"error": "Block is in CAUTION"}), 409
-                block.disabled = new_disabled
-            if "manual" in data:
-                block.manual = bool(data["manual"])
-
-            # Static block-level travel policy per design_new.md
-            # `Block.allowed_travel_directions` canonical home. Must be a
-            # non-empty subset of {"forward", "reverse"}. Unlike `disabled`,
-            # editing this has no occupancy/reservation precondition: per
-            # design_new.md the new policy does not invalidate any live path's
-            # reservations and only takes effect at the next reservation.
-            if "allowed_travel_directions" in data:
-                raw = data["allowed_travel_directions"]
-                if not isinstance(raw, (list, tuple, set)):
-                    return jsonify(
-                        {
-                            "error": (
-                                "allowed_travel_directions must be a list of "
-                                "'forward' / 'reverse'"
-                            )
-                        }
-                    ), 400
-                requested = {str(d) for d in raw}
-                unknown = requested - {"forward", "reverse"}
-                if unknown:
-                    return jsonify(
-                        {
-                            "error": (
-                                f"Unknown travel direction(s): {sorted(unknown)}. "
-                                "Allowed: forward, reverse"
-                            )
-                        }
-                    ), 400
-                if not requested:
-                    return jsonify(
-                        {
-                            "error": (
-                                "allowed_travel_directions must include at least "
-                                "one of 'forward' / 'reverse'"
-                            )
-                        }
-                    ), 400
-                block.allowed_travel_directions = requested
-
-            return jsonify(block.to_dict())
+        data = request.json or {}
+        try:
+            block = block_service.update_block(state, block_id, data=data)
+        except NotFoundError:
+            return jsonify({"error": "Block not found"}), 404
+        except GoneError as exc:
+            return jsonify({"error": str(exc)}), 410
+        except ConflictError as exc:
+            return jsonify({"error": str(exc)}), 409
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(block.to_dict())
 
     @app.route("/api/blocks/<block_id>", methods=["DELETE"])
     def delete_block(block_id):
         """Delete block and clear track references"""
-        if state.network.delete_block(block_id):
-            return jsonify(
-                {"status": "success", "message": f"Block {block_id} deleted"}
-            )
-        return jsonify({"error": "Block not found"}), 404
-
-    # The `POST /api/blocks/<block_id>/cycle-state` endpoint was removed in
-    # PR 6. v1's design owns block state through BlockManager /
-    # ResourceCoordinator (see Block model in design_new.md); the admin
-    # cycle-state shim tried to assign `block.state`, which is now a
-    # read-only computed property, and so always raised AttributeError.
+        try:
+            block_service.delete_block(state, block_id)
+        except NotFoundError:
+            return jsonify({"error": "Block not found"}), 404
+        return jsonify({"status": "success", "message": f"Block {block_id} deleted"})
 
     @app.route("/api/blocks/create-with-tracks", methods=["POST"])
     def create_block_with_tracks():
@@ -302,21 +214,17 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "positions required"}), 400
 
         try:
-            # Convert positions to tuples
-            positions = [tuple(pos) for pos in positions]
-
-            block = state.network.create_block_with_tracks(
+            block = block_service.create_block_with_tracks(
+                state,
                 block_id=block_id,
                 positions=positions,
                 name=data.get("name", ""),
                 length_cm=data.get("length_cm", 0.0),
-                speed_limit_kmh=data.get(
-                    "speed_limit_kmh", data.get("max_speed_kmh")
-                ),
+                speed_limit_kmh=data.get("speed_limit_kmh", data.get("max_speed_kmh")),
             )
-            return jsonify(block.to_dict())
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(block.to_dict())
 
     @app.route("/api/blocks/<block_id>/extend", methods=["POST"])
     def extend_block_endpoint(block_id):
@@ -335,184 +243,54 @@ def register(app, state: AppState) -> None:
         """
         data = request.json
         positions = data.get("positions", [])
-        force = data.get("force", False)
-        force_overwrite = data.get("force_overwrite", False)
-
         if not positions:
             return jsonify({"error": "positions required"}), 400
 
         try:
-            positions = [tuple(pos) for pos in positions]
-            block = state.network.extend_block(
-                block_id, positions, force=force, force_overwrite=force_overwrite
+            block = block_service.extend_block(
+                state,
+                block_id,
+                positions=positions,
+                force=data.get("force", False),
+                force_overwrite=data.get("force_overwrite", False),
             )
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
 
-            # Build response with invalidated signals info
-            response = block.to_dict()
-            if hasattr(block, "_invalidated_signals") and block._invalidated_signals:
-                response["invalidated_signals"] = block._invalidated_signals
-                # Clean up temporary attribute
-                del block._invalidated_signals
-
-            return jsonify(response)
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
+        # Build response with invalidated signals info
+        response = block.to_dict()
+        if hasattr(block, "_invalidated_signals") and block._invalidated_signals:
+            response["invalidated_signals"] = block._invalidated_signals
+            # Clean up temporary attribute
+            del block._invalidated_signals
+        return jsonify(response)
 
     @app.route("/api/blocks/<block_id>/tracks", methods=["POST"])
     def add_tracks_to_block(block_id):
         """Add tracks to a block by positions"""
-        block = state.network.get_block(block_id)
-        if not block:
-            return jsonify({"error": "Block not found"}), 404
-
         data = request.json or {}
-        positions = data.get("positions", [])
-        force = data.get("force", False)  # Allow reassignment if force=True
-        added = []
-        reassigned = []
-
-        for pos in positions:
-            if not isinstance(pos, (list, tuple)) or len(pos) < 2:
-                continue
-            x, y = pos[0], pos[1]
-
-            # Check if track already assigned to a different block
-            track = state.network.get_track(x, y)
-            if track and track.block_section_id and track.block_section_id != block_id:
-                if force:
-                    # Unassign from old block first
-                    old_block_id = track.block_section_id
-                    track.block_section_id = None
-                    reassigned.append(
-                        {"position": [x, y], "from": old_block_id, "to": block_id}
-                    )
-                else:
-                    # Skip if not forcing reassignment
-                    continue
-
-            # Now assign to new block
-            try:
-                state.network.assign_track_to_block(x, y, block_id)
-                added.append([x, y])
-            except ValueError:
-                pass
-
-        return jsonify(
-            {
-                "status": "success",
-                "added": len(added),
-                "reassigned": len(reassigned),
-                "positions": added,
-                "reassignment_details": reassigned,
-                "block_id": block_id,
-            }
-        )
+        try:
+            result = block_service.add_tracks_to_block(
+                state,
+                block_id,
+                positions=data.get("positions", []),
+                force=data.get("force", False),
+            )
+        except NotFoundError:
+            return jsonify({"error": "Block not found"}), 404
+        return jsonify(result)
 
     @app.route("/api/blocks/<block_id>/tracks", methods=["DELETE"])
     def remove_tracks_from_block(block_id):
         """Remove tracks from a block (clear their block_section_id) with edge validation"""
-        block = state.network.get_block(block_id)
-        if not block:
-            return jsonify({"error": "Block not found"}), 404
-
         data = request.json or {}
-        positions = data.get("positions", [])
-        removed = []
-        errors = []
-
-        # Get all current block positions
-        current_positions = state.network.get_block_positions(block_id)
-        position_set = set((x, y) for x, y in current_positions)
-
-        for pos in positions:
-            if not isinstance(pos, (list, tuple)) or len(pos) < 2:
-                continue
-            x, y = pos[0], pos[1]
-
-            track = state.network.get_track(x, y)
-            if not track or track.block_section_id != block_id:
-                errors.append(f"Position ({x}, {y}) is not part of block {block_id}")
-                continue
-
-            # Check if this is an edge tile
-            # Edge tiles have at least one exit that either:
-            # 1. Has no neighbor track, OR
-            # 2. Has a neighbor track that's not in the block
-
-            # Get all connected edges from this track (excludes dead-ends)
-            exits = []
-            for bit in range(6):
-                if track.track_bits & (1 << bit):
-                    from track import BIT_TO_EDGES
-
-                    e1, e2 = BIT_TO_EDGES[bit]
-                    exits.extend([e1, e2])
-            exits = list(set(exits))  # Remove duplicates
-
-            is_edge = False
-            for exit_edge in exits:
-                # Get neighbor position based on exit edge
-                neighbor_pos = state.network._get_neighbor_coords(x, y, exit_edge)
-                if not neighbor_pos:
-                    # No neighbor (edge of map) -> definitely an edge tile
-                    is_edge = True
-                    break
-
-                nx, ny = neighbor_pos
-                neighbor_track = state.network.get_track(nx, ny)
-
-                if not neighbor_track or (nx, ny) not in position_set:
-                    # Exit leads outside block -> edge tile
-                    is_edge = True
-                    break
-
-            # If no exit leads outside the block, this is not an edge tile
-            if not is_edge:
-                errors.append(f"Cannot remove tile ({x}, {y}): not an edge tile")
-                continue
-
-            # Temporarily remove track to check continuity
-            original_block_id = track.block_section_id
-            track.block_section_id = None
-
-            # Check if remaining block is still continuous (only if block has more than 1 track left)
-            remaining_tracks = state.network.get_block_tracks(block_id)
-            if len(remaining_tracks) > 1:
-                is_continuous, validation_errors = (
-                    state.network.validate_block_continuity(block_id)
-                )
-                if not is_continuous:
-                    # Restore the block_section_id
-                    track.block_section_id = original_block_id
-                    errors.append(
-                        f"Cannot remove tile ({x}, {y}): would break block continuity"
-                    )
-                    continue
-
-            # Keep the removal (track.block_section_id is already None)
-            removed.append([x, y])
-            position_set.discard((x, y))
-
-        # Check if block is now empty and delete it
-        remaining_tracks = state.network.get_block_tracks(block_id)
-        block_deleted = False
-        if len(remaining_tracks) == 0:
-            state.network.delete_block(block_id)
-            block_deleted = True
-
-        return jsonify(
-            {
-                "status": "success"
-                if removed
-                else "partial"
-                if errors
-                else "no_changes",
-                "removed": len(removed),
-                "positions": removed,
-                "errors": errors,
-                "block_deleted": block_deleted,
-            }
-        )
+        try:
+            result = block_service.remove_tracks_from_block(
+                state, block_id, positions=data.get("positions", [])
+            )
+        except NotFoundError:
+            return jsonify({"error": "Block not found"}), 404
+        return jsonify(result)
 
     @app.route("/api/blocks/<block_id>/voltage", methods=["GET"])
     def get_block_voltage(block_id: str):
@@ -528,7 +306,7 @@ def register(app, state: AppState) -> None:
             404 Not Found if block doesn't exist
         """
         with state.simulation_lock:
-            block = state.network.get_block(block_id)
+            block = block_service.get_block(state, block_id)
             if not block:
                 return jsonify({"error": f"Block '{block_id}' not found"}), 404
 
@@ -545,7 +323,7 @@ def register(app, state: AppState) -> None:
     @app.route("/api/blocks/<block_id>/end_tiles", methods=["GET"])
     def get_block_end_tiles(block_id):
         """Get the start and end tiles of a block (sorted in traversal order)"""
-        block = state.network.get_block(block_id)
+        block = block_service.get_block(state, block_id)
         if not block:
             return jsonify({"error": "Block not found"}), 404
 
@@ -599,67 +377,8 @@ def register(app, state: AppState) -> None:
         if x is None or y is None:
             return jsonify({"error": "Missing x or y coordinate"}), 400
 
-        block = state.network.get_block(block_id)
-        if not block:
+        try:
+            result = block_service.can_extend_block(state, block_id, x=x, y=y)
+        except NotFoundError:
             return jsonify({"error": "Block not found"}), 404
-
-        # Check if track exists
-        track = state.network.get_track(x, y)
-        if not track:
-            return jsonify({"can_extend": False, "reason": "No track at position"})
-
-        # Check for crossings (never allowed)
-        if is_crossing(track.track_bits):
-            return jsonify(
-                {
-                    "can_extend": False,
-                    "reason": "Cannot add crossing to block - crossings isolate paths",
-                }
-            )
-
-        # Check for switches (never allowed)
-        if track.is_switch:
-            return jsonify(
-                {
-                    "can_extend": False,
-                    "reason": "Cannot add switch to block - switches are block boundaries",
-                }
-            )
-
-        # Check for signals (requires force flag in actual extend operation)
-        if track.signal_ids:
-            return jsonify(
-                {
-                    "can_extend": False,
-                    "reason": "Tile has signal(s) - use force=true to extend past signal",
-                    "requires_force": True,
-                }
-            )
-
-        # Check if tile belongs to another block (requires force_overwrite flag)
-        if track.block_section_id and track.block_section_id != block_id:
-            return jsonify(
-                {
-                    "can_extend": False,
-                    "reason": f"Tile already in block {track.block_section_id} - use force_overwrite=true",
-                    "requires_force_overwrite": True,
-                }
-            )
-
-        # Check adjacency
-        existing_positions = state.network.get_block_positions(block_id)
-        is_adjacent = False
-        for old_x, old_y in existing_positions:
-            if abs(x - old_x) + abs(y - old_y) == 1:
-                is_adjacent = True
-                break
-
-        if not is_adjacent and len(existing_positions) > 0:
-            return jsonify(
-                {
-                    "can_extend": False,
-                    "reason": "Position must be adjacent to existing block",
-                }
-            )
-
-        return jsonify({"can_extend": True})
+        return jsonify(result)

@@ -19,7 +19,7 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
-RENDERER_JS = PROJECT_ROOT / "static" / "js" / "renderer.js"
+RENDERER_JS = PROJECT_ROOT / "frontend" / "src" / "renderer" / "renderer.ts"
 
 
 def test_renderer_declares_debug_flags():
@@ -41,7 +41,7 @@ def test_flush_refreshes_debug_flags():
     # (signature immediately followed by `{`), not a call-site like
     # `this._flushRedraw();` — resize() invokes it directly, so the first
     # textual `_flushRedraw()` in the file is a call, not the definition.
-    sig = re.search(r"_flushRedraw\s*\(\s*\)\s*\{", src)
+    sig = re.search(r"_flushRedraw\s*\(\s*\)\s*(?::\s*\w+\s*)?\{", src)
     assert sig is not None, "_flushRedraw not found"
     open_brace = src.find("{", sig.start())
     depth = 0
@@ -74,7 +74,7 @@ def test_draw_world_no_direct_dom_reads():
     """_drawWorld must not read debug checkboxes via document.getElementById.
     Hot-path DOM lookups should go through debugFlags."""
     src = RENDERER_JS.read_text()
-    dw_start = src.find("_drawWorld(network)")
+    dw_start = src.find("_drawWorld(network")
     assert dw_start >= 0, "_drawWorld(network) not found"
     # Roughly the body of _drawWorld — first ~3500 chars after the signature.
     body = src[dw_start : dw_start + 3500]
@@ -89,7 +89,7 @@ def test_mouse_handlers_no_direct_debug_reads():
     """Constructor mouse handlers also use debugFlags rather than reading
     DOM on every mousemove (Phase 7)."""
     src = RENDERER_JS.read_text()
-    ctor_start = src.find("constructor(canvasId)")
+    ctor_start = src.find("constructor(canvasId")
     # Constructor body — roughly the first 5000 chars.
     body = src[ctor_start : ctor_start + 5000]
     # _drawWorld might still appear later in the file but not in this slice.

@@ -30,7 +30,7 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
-RENDERER_JS = PROJECT_ROOT / "static" / "js" / "renderer.js"
+RENDERER_JS = PROJECT_ROOT / "frontend" / "src" / "renderer" / "renderer.ts"
 
 
 def _screen_to_grid(sx, sy, *, pan_x, pan_y, center_x, center_y, grid_size, scale):
@@ -116,7 +116,7 @@ def test_resize_does_not_adjust_pan():
     # Locate the resize() method body. Cheap regex: find `resize() {` and
     # everything up to the next top-level `}` that closes the method. To
     # avoid brace-matching complexity, just look at the next ~2000 chars.
-    match = re.search(r"\bresize\s*\(\s*\)\s*\{", src)
+    match = re.search(r"\bresize\s*\(\s*\)\s*(?::\s*\w+\s*)?\{", src)
     assert match, "Could not find resize() method in renderer.js"
     body = src[match.end() : match.end() + 2000]
 

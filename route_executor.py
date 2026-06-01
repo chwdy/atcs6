@@ -1606,10 +1606,17 @@ class RouteExecutor:
             != resource_event.resource_id
         ):
             return
+        # Match on block AND direction (design_new.md:465). Both sides are
+        # block-relative "forward"/"reverse": the resolved target carries the
+        # requested block-relative direction, and `traversal_direction` is the
+        # block-relative direction the dispatcher computed for this entry. Skip
+        # the direction check only when the dispatcher could not resolve a
+        # direction (None) — falling back to block-id-only match rather than
+        # consuming on a wrong-direction pass when direction IS known.
         if (
-            resource_event.exit_edge is not None
+            resource_event.traversal_direction is not None
             and projection.resolved_target.requested_destination_direction
-            != resource_event.exit_edge
+            != resource_event.traversal_direction
         ):
             return
 

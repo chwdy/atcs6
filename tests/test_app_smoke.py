@@ -58,16 +58,34 @@ class TestAppSmoke:
         assert "<html" in content.lower(), "index.html doesn't look like HTML"
 
     def test_all_required_javascript_files_exist(self):
-        """Test that all required JavaScript files exist"""
-        js_dir = PROJECT_ROOT / "static" / "js"
-        required_files = ["api.js", "renderer.js", "editor.js", "app.js"]
+        """Required frontend entry points exist and are non-empty.
 
-        for filename in required_files:
-            file_path = js_dir / filename
-            assert file_path.exists(), f"Required file {filename} is missing"
+        The frontend migration to a Vite build (longterm_todo.md item #7) is
+        complete: every classic script — including the app.js bootstrap — moved
+        under frontend/src/ and is bundled into static/dist/main.js. The two
+        committed source entry points are:
+
+          - frontend/src/app.ts — the application bootstrap (`new App()`),
+            imported by main.ts.
+          - frontend/src/main.ts — the Vite entry that imports app.ts (and the
+            rest of the modules) and builds into static/dist/main.js.
+
+        We assert the committed *source* (the .ts files), not the build output:
+        static/dist/ is gitignored (.gitignore) and absent on a fresh checkout
+        until `npm run build` runs, so a pre-commit smoke test must not depend
+        on it. This matches the other frontend-source assertions in this file
+        (the train-monitor tests point at frontend/src/panels/train-monitor.ts).
+        """
+        required_files = [
+            PROJECT_ROOT / "frontend" / "src" / "app.ts",
+            PROJECT_ROOT / "frontend" / "src" / "main.ts",
+        ]
+
+        for file_path in required_files:
+            assert file_path.exists(), f"Required file {file_path} is missing"
 
             content = file_path.read_text()
-            assert len(content) > 0, f"{filename} is empty"
+            assert len(content) > 0, f"{file_path} is empty"
 
     def test_css_file_exists(self):
         """Test that the CSS file exists"""
@@ -79,21 +97,28 @@ class TestAppSmoke:
 
     def test_emergency_reset_button_exists(self):
         """Ensure emergency reset button markup is present."""
-        editor_trains = PROJECT_ROOT / "static" / "js" / "editor-trains.js"
+        editor_trains = PROJECT_ROOT / "frontend" / "src" / "editor" / "editor-trains.ts"
         content = editor_trains.read_text()
 
         assert "train-emergency-reset-btn" in content, (
-            "Emergency reset button markup is missing in editor-trains.js"
+            "Emergency reset button markup is missing in editor-trains.ts"
         )
 
     def test_index_html_includes_all_scripts(self):
-        """Test that index.html includes all required script tags"""
+        """index.html loads the whole app through the single Vite bundle.
+
+        The migration is complete (longterm_todo.md item #7): static/index.html
+        no longer references any classic `<script src="js/...">`; the entire app
+        loads through the Vite build entry `dist/main.js` (the `<script
+        type="module">` near the bottom of the page). Assert the bundle tag is
+        present so a dropped entry point is caught.
+        """
         index_file = PROJECT_ROOT / "static" / "index.html"
         content = index_file.read_text()
 
-        required_scripts = ["api.js", "renderer.js", "editor.js", "app.js"]
-        for script in required_scripts:
-            assert script in content, f"index.html missing script tag for {script}"
+        assert "dist/main.js" in content, (
+            "index.html missing the dist/main.js bundle script"
+        )
 
     def test_index_html_has_canvas(self):
         """Test that index.html has the canvas element"""
@@ -104,21 +129,27 @@ class TestAppSmoke:
             "index.html missing canvas element with id='rail-canvas'"
         )
 
-    def test_index_html_has_correct_script_order(self):
-        """Test that scripts are loaded in the correct order"""
+    def test_index_html_has_no_classic_scripts(self):
+        """The page loads exactly one script: the Vite module bundle.
+
+        Post-migration (longterm_todo.md item #7) there are no classic
+        `<script src="js/...">` tags — every script moved into the bundle. The
+        only script element is `<script type="module" src="dist/main.js">` near
+        the bottom of the page. Guard against a classic tag creeping back.
+        """
         index_file = PROJECT_ROOT / "static" / "index.html"
         content = index_file.read_text()
 
-        # Find positions of script tags
-        api_pos = content.find('src="js/api.js')
-        renderer_pos = content.find('src="js/renderer.js')
-        editor_pos = content.find('src="js/editor.js')
-        app_pos = content.find('src="js/app.js')
-
-        # Verify order: api -> renderer -> editor -> app
-        assert api_pos < renderer_pos, "api.js must load before renderer.js"
-        assert renderer_pos < editor_pos, "renderer.js must load before editor.js"
-        assert editor_pos < app_pos, "editor.js must load before app.js"
+        # No classic per-file scripts from static/js/ remain.
+        assert 'src="js/' not in content, (
+            "index.html still references a classic static/js/ script; all "
+            "scripts should load through the dist/main.js bundle"
+        )
+        # The module bundle is present and declared type="module".
+        assert 'type="module" src="dist/main.js"' in content, (
+            'index.html missing the `<script type="module" src="dist/main.js">` '
+            "bundle tag"
+        )
 
     def test_server_py_exists(self):
         """Test that server.py exists"""
@@ -160,7 +191,9 @@ class TestAppSmoke:
 
     def test_train_monitor_upcoming_has_no_fixed_limit(self):
         """Train monitor upcoming list should not be hard-limited."""
-        monitor_file = PROJECT_ROOT / "static" / "js" / "train-monitor.js"
+        # train-monitor.js migrated to frontend/src/panels/train-monitor.ts
+        # (longterm_todo.md item #7); the source assertion follows it there.
+        monitor_file = PROJECT_ROOT / "frontend" / "src" / "panels" / "train-monitor.ts"
         content = monitor_file.read_text()
 
         assert "elements.slice(0, 3)" not in content, (
@@ -169,7 +202,7 @@ class TestAppSmoke:
 
     def test_train_monitor_block_labels_use_dynamic_fit(self):
         """Train monitor block labels should use dynamic text fitting."""
-        monitor_file = PROJECT_ROOT / "static" / "js" / "train-monitor.js"
+        monitor_file = PROJECT_ROOT / "frontend" / "src" / "panels" / "train-monitor.ts"
         content = monitor_file.read_text()
 
         assert "fitTextToWidth" in content, (

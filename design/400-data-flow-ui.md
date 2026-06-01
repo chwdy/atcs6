@@ -22,7 +22,7 @@
 - Export ATO state using `ato_destination_block_id` derived from `received_path_plan.authority_end_block_id`.
 - Export `received_path_plan` when present using the canonical **received_path_plan schema**. This is the controller/UI projection of active dispatcher authority, and its nested authority geometry must continue to follow the canonical **resource_sequence entry schema** and **path_tile entry schema**.
 - Do not make `TrainController.to_dict()` the owner of live path-progress state in v1. `PathDispatcher` remains the sole owner of `current_resource_index`; if UI needs that progress projection, expose it through a dispatcher-owned read model such as `PathDispatcher.get_active_path_progress(train_id) -> {path_id, status, current_resource_index}`, resolved from the dispatcher's own active-path registry for that `train_id`, rather than copying ownership into `TrainController` or writing per-tick sequence-index updates into the controller.
-- Do not keep `TrainController.path_projection.get_path_tiles()` in v1. UI/debug consumers that need active authority geometry should read `received_path_plan.resource_sequence`; consumers that need current physical occupancy should read `TrainController.get_current_span()`.
+- UI/debug consumers that need active authority geometry should read `received_path_plan.resource_sequence`; consumers that need current physical occupancy should read `TrainController.get_current_span()`.
 - Expose the full canonical lookahead payload as the single source of truth for current target speed, ATC limit, speed-limit reason, and forward curve rendering.
 
 **UI data-flow anchor**

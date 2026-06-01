@@ -501,10 +501,89 @@ class TestRouteCallbacksWrapAround:
                 sequence_index=None,
                 resource_type="block",
                 resource_id="BLK_A",
-                exit_edge="forward",
+                traversal_direction="forward",
             ),
         )
 
         assert exec_state.task_runs[2].finished_at is not None
         assert exec_state.task_runs[0].finished_at == 10.0
         assert exec_state.task_runs[1].finished_at == 20.0
+
+    def test_handle_train_advanced_skips_wrong_direction_waypoint(self):
+        """A head-entry into the waypoint's block in the WRONG block-relative
+        direction must NOT consume the waypoint (design_new.md:465; gap #4).
+        Direction is matched on `traversal_direction`, not the compass
+        `exit_edge`, and a known mismatch is a no-op."""
+        network = RailwayNetwork()
+        network.blocks = {"BLK_A": object()}
+
+        route = Route(
+            route_id="ROUTE_DIR_WP",
+            name="Direction waypoint",
+            mode=RouteMode.CIRCULAR,
+            tasks=[
+                RouteTask(
+                    task_kind="waypoint",
+                    task_location=BlockTarget(block_id="BLK_A"),
+                    task_direction="forward",
+                ),
+            ],
+        )
+        route.activate(0.0)
+        route.assign_train("T_DIR")
+
+        train = Train(train_id="T_DIR")
+        network.trains[train.train_id] = train
+
+        executor = RouteExecutor(network)
+        executor.register_route(route)
+        controller = executor._get_controller(train)
+        controller.commands.cab = "A"
+        set_train_span(controller, (0, 0), facing_direction=Direction.EAST)
+
+        exec_state = RouteExecutionState(
+            train_id=train.train_id,
+            route_id=route.route_id,
+            started_at=0.0,
+            task_runs=[
+                RouteTaskRun(
+                    task_index=0,
+                    finished_at=None,
+                    resolved_target=ResolvedRouteTarget(
+                        requested_destination_block_id="BLK_A",
+                        requested_destination_direction="forward",
+                    ),
+                ),
+            ],
+        )
+        executor.execution_states[train.train_id] = exec_state
+
+        # Reported entry is REVERSE — opposite the waypoint's forward target.
+        executor.handle_train_advanced(
+            train_id=train.train_id,
+            path_id="P_X",
+            resource_event=ResourceEvent(
+                sequence_index=None,
+                resource_type="block",
+                resource_id="BLK_A",
+                traversal_direction="reverse",
+            ),
+        )
+        assert exec_state.task_runs[0].finished_at is None, (
+            "wrong-direction entry must not consume the forward waypoint"
+        )
+
+        # A forward entry DOES consume it.
+        executor.handle_train_advanced(
+            train_id=train.train_id,
+            path_id="P_X",
+            resource_event=ResourceEvent(
+                sequence_index=None,
+                resource_type="block",
+                resource_id="BLK_A",
+                traversal_direction="forward",
+            ),
+        )
+        assert exec_state.task_runs[0].finished_at is not None, (
+            "matching-direction entry must consume the waypoint"
+        )

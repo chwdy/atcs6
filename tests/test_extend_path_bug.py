@@ -179,7 +179,7 @@ class TestExtendPathBug:
         controller = sim_controller
 
         # Store initial path info
-        initial_tiles = controller.path_projection.get_path_tiles()
+        initial_tiles = controller._get_effective_path_tiles()
         initial_path_length = len(initial_tiles)
 
         # Extend path from C to E
@@ -196,8 +196,8 @@ class TestExtendPathBug:
         updated_path = dispatcher.get_path(path.path_id)
         assert updated_path.get_authority_end_block_id() == "BLOCK_E"
 
-        # Verify controller sees extended path immediately via get_path_tiles()
-        extended_tiles = controller.path_projection.get_path_tiles()
+        # Verify controller sees extended path immediately via _get_effective_path_tiles()
+        extended_tiles = controller._get_effective_path_tiles()
         assert len(extended_tiles) > initial_path_length, (
             f"Controller should see extended path immediately.\n"
             f"  Initial: {initial_path_length} tiles\n"
@@ -361,7 +361,7 @@ class TestExtendPathBug:
         simple_network.block_manager.occupy_block("BLOCK_B", demo_train.train_id)
 
         # Get path tiles before extension
-        tiles_before = controller.path_projection.get_path_tiles()
+        tiles_before = controller._get_effective_path_tiles()
         count_before = len(tiles_before)
 
         # Extend path to E
@@ -379,7 +379,7 @@ class TestExtendPathBug:
         assert updated_path.get_authority_end_block_id() == "BLOCK_E"
 
         # Controller should see extended path immediately
-        tiles_after = controller.path_projection.get_path_tiles()
+        tiles_after = controller._get_effective_path_tiles()
         assert len(tiles_after) > count_before, (
             f"Controller should see extended path while train is in motion.\n"
             f"  Before: {count_before} tiles\n"
@@ -588,8 +588,10 @@ class TestExtendPathAtoSync:
     # naturally exercised by the dispatcher's existing failure-path tests.
 
 
-class TestGetPathTiles:
-    """Tests for TrainController.get_path_tiles() reading from PathDispatcher."""
+class TestEffectivePathTiles:
+    """Tests for TrainController._get_effective_path_tiles() — the control-side
+    geometry helper that derives `(x, y, Direction)` tiles live from
+    `received_path_plan` (the dispatcher-owned active path)."""
 
     @pytest.fixture
     def simple_network(self):
@@ -633,8 +635,8 @@ class TestGetPathTiles:
 
         return network
 
-    def test_get_path_tiles_returns_dispatcher_path(self, simple_network):
-        """get_path_tiles reads from dispatcher, not train.current_path."""
+    def test_effective_path_tiles_returns_dispatcher_path(self, simple_network):
+        """_get_effective_path_tiles reads from the dispatcher's active path."""
         network = simple_network
         dispatcher = PathDispatcher(network)
         sim = SimulationController(network, dispatcher)
@@ -669,8 +671,8 @@ class TestGetPathTiles:
         assert result.success
         train.assigned_path_id = result.path.path_id
 
-        # get_path_tiles should return tiles from dispatcher
-        path_tiles = controller.path_projection.get_path_tiles()
+        # _get_effective_path_tiles should return tiles from dispatcher
+        path_tiles = controller._get_effective_path_tiles()
         assert path_tiles is not None
         assert len(path_tiles) > 0
 
@@ -679,8 +681,8 @@ class TestGetPathTiles:
             assert len(entry) == 3
             assert isinstance(entry[2], Direction)
 
-    def test_get_path_tiles_returns_none_when_no_path(self, simple_network):
-        """get_path_tiles returns None when train has no assigned path."""
+    def test_effective_path_tiles_returns_none_when_no_path(self, simple_network):
+        """_get_effective_path_tiles returns None when train has no assigned path."""
         network = simple_network
         dispatcher = PathDispatcher(network)
         train = Train(train_id="TEST", consist=[TrainCar("C1", "LOCOMOTIVE", 40.0)])
@@ -692,10 +694,10 @@ class TestGetPathTiles:
             path_dispatcher=dispatcher,
         )
 
-        assert controller.path_projection.get_path_tiles() is None
+        assert controller._get_effective_path_tiles() is None
 
-    def test_get_path_tiles_reflects_extension(self, simple_network):
-        """After extend_path, get_path_tiles returns the extended path immediately."""
+    def test_effective_path_tiles_reflects_extension(self, simple_network):
+        """After extend_path, _get_effective_path_tiles returns the extended path immediately."""
         network = simple_network
         dispatcher = PathDispatcher(network)
         sim = SimulationController(network, dispatcher)
@@ -729,7 +731,7 @@ class TestGetPathTiles:
         assert result.success
         train.assigned_path_id = result.path.path_id
 
-        tiles_before = controller.path_projection.get_path_tiles()
+        tiles_before = controller._get_effective_path_tiles()
         count_before = len(tiles_before)
 
         # Extend the path
@@ -742,16 +744,15 @@ class TestGetPathTiles:
             )
         assert ext_result.success, f"Extension failed: {ext_result.reason}"
 
-        tiles_after = controller.path_projection.get_path_tiles()
+        tiles_after = controller._get_effective_path_tiles()
         assert len(tiles_after) > count_before, (
-            "get_path_tiles should reflect extension immediately"
+            "_get_effective_path_tiles should reflect extension immediately"
         )
 
-    def test_get_path_tiles_returns_none_without_dispatcher(self, simple_network):
+    def test_effective_path_tiles_returns_none_without_dispatcher(self, simple_network):
         """Per design_new.md ~line 1292, the dispatcher's `Path` is the
         single source of truth for path tiles. With no dispatcher wired
-        and no active path, `get_path_tiles()` returns `None` (the legacy
-        train-side `current_path` mirror is gone)."""
+        and no active path, `_get_effective_path_tiles()` returns `None`."""
         network = simple_network
         train = Train(train_id="TEST", consist=[TrainCar("C1", "LOCOMOTIVE", 40.0)])
         network.add_train(train)
@@ -761,7 +762,7 @@ class TestGetPathTiles:
             network=network,
         )
 
-        result = controller.path_projection.get_path_tiles()
+        result = controller._get_effective_path_tiles()
         assert result is None
 
 

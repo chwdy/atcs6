@@ -57,6 +57,11 @@ class BlockGeometryManager:
         if block is None:
             return
 
+        # `ordered_tiles` feeds the cached per-block traversal direction
+        # (`block_direction`) in the pathfinding walk cache, so recomputing it
+        # invalidates those cached walks. Editor/build-only; never in the tick.
+        self._n.invalidate_pathfinding_cache()
+
         in_block = []
         for (x, y), track in self._n.tracks.items():
             if track is None or track.is_switch:

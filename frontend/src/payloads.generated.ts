@@ -42,6 +42,7 @@ export interface ResourceEvent {
   block_id: string | null;
   entry_edge: string | null;
   switch_exit_edge: string | null;
+  traversal_direction: string | null;
 }
 
 export interface ControllerProgressReport {

@@ -162,7 +162,7 @@ def test_renderer_exposes_request_redraw():
     """Source-level guarantee: renderer.js declares requestRedraw and
     _flushRedraw. If these get renamed/removed, every caller breaks
     silently — catch that here."""
-    src = (JS_DIR / "renderer.js").read_text()
+    src = (PROJECT_ROOT / "frontend" / "src" / "renderer" / "renderer.ts").read_text()
     assert re.search(r"\brequestRedraw\s*\(", src), (
         "renderer.js must define requestRedraw — Phase 3 contract."
     )

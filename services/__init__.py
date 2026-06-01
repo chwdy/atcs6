@@ -10,14 +10,18 @@ can call the same functions directly.
 
 from services.exceptions import (
     ConflictError,
+    GoneError,
     NotFoundError,
     ServiceError,
+    ServiceUnavailableError,
     ValidationError,
 )
 
 __all__ = [
     "ConflictError",
+    "GoneError",
     "NotFoundError",
     "ServiceError",
+    "ServiceUnavailableError",
     "ValidationError",
 ]

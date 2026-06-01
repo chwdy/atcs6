@@ -20,14 +20,20 @@ export default defineConfig({
     outDir: '../static/dist',
     emptyOutDir: true,
     rollupOptions: {
-      // Explicit script entry (not an HTML entry): Flask owns the production
-      // page, so we only need the bundled module. Stable filename keeps the
-      // index.html reference simple until the stub-page phase introduces
-      // content-hashed names.
-      // Absolute path: Rollup resolves `input` relative to the process CWD
+      // Explicit script entries (not HTML entries): Flask owns the production
+      // pages, so we only need the bundled modules. Stable filenames keep the
+      // index.html / debug.html references simple until the stub-page phase
+      // introduces content-hashed names.
+      //   main  → static/dist/main.js  (loaded by static/index.html)
+      //   debug → static/dist/debug.js (loaded by static/debug.html, the
+      //           /debug object-browser page served by debug_inspector.py)
+      // Absolute paths: Rollup resolves `input` relative to the process CWD
       // (the repo root, where npm runs the script), not the Vite `root`.
-      input: resolve(process.cwd(), 'frontend/src/main.ts'),
-      output: { entryFileNames: 'main.js' },
+      input: {
+        main: resolve(process.cwd(), 'frontend/src/main.ts'),
+        debug: resolve(process.cwd(), 'frontend/src/debug/debug-inspector.ts'),
+      },
+      output: { entryFileNames: '[name].js' },
     },
   },
   server: {
