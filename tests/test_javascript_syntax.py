@@ -167,7 +167,7 @@ class TestJavaScriptSyntax:
 
     def test_editor_trains_waits_for_ato_stop(self):
         """ATO stop should wait for train to fully stop before refresh."""
-        editor_trains_file = JS_DIR / "editor-trains.js"
+        editor_trains_file = PROJECT_ROOT / "frontend" / "src" / "editor" / "editor-trains.ts"
         content = editor_trains_file.read_text()
 
         assert "waitForTrainStopped" in content, (
@@ -179,7 +179,7 @@ class TestJavaScriptSyntax:
 
     def test_editor_trains_updates_cab_buttons_on_live_update(self):
         """Train control panel should update cab buttons during live updates."""
-        editor_trains_file = JS_DIR / "editor-trains.js"
+        editor_trains_file = PROJECT_ROOT / "frontend" / "src" / "editor" / "editor-trains.ts"
         content = editor_trains_file.read_text()
 
         assert "updateControlPanelValuesFromData" in content, (

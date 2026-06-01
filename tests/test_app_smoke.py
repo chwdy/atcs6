@@ -100,11 +100,11 @@ class TestAppSmoke:
 
     def test_emergency_reset_button_exists(self):
         """Ensure emergency reset button markup is present."""
-        editor_trains = PROJECT_ROOT / "static" / "js" / "editor-trains.js"
+        editor_trains = PROJECT_ROOT / "frontend" / "src" / "editor" / "editor-trains.ts"
         content = editor_trains.read_text()
 
         assert "train-emergency-reset-btn" in content, (
-            "Emergency reset button markup is missing in editor-trains.js"
+            "Emergency reset button markup is missing in editor-trains.ts"
         )
 
     def test_index_html_includes_all_scripts(self):

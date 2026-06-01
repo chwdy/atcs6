@@ -18,3 +18,15 @@ import './lib/camera';
 import './renderer';
 import './panels/train-monitor';
 import './panels/inspector';
+// Editor handler cluster (item #7, Wave 2) — bridged onto window.<Handler> so
+// the still-classic editor.js can `new` each one until editor.js migrates.
+import './editor/editor-switches';
+import './editor/editor-signals';
+import './editor/editor-multi-select';
+import './editor/editor-stations';
+import './editor/editor-route-runs';
+import './editor/editor-blocks';
+import './editor/editor-paths';
+import './editor/editor-ui';
+import './editor/editor-trains';
+import './editor/editor-routes';

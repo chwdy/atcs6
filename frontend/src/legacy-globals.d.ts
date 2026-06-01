@@ -43,6 +43,10 @@ interface Window {
         end_b: { tile: [number, number]; distance_cm: number; entry_edge: string };
       } | null;
     } | null | undefined;
+    // The editor handlers (Wave 2) also call subscribe / updateFromNetwork /
+    // etc.; keep this permissive until the panels and handlers import the real
+    // StateManager type after Wave 4.
+    [key: string]: any;
   };
 
   // Classic globals the migrated panels still reach for until their defining
@@ -50,7 +54,10 @@ interface Window {
   // the API client (api.js). Loosely typed — only the members the panels touch.
   showToast?: (message: string, kind?: string, durationMs?: number) => void;
   app?: {
-    editor?: { showFullJSONViewer(data: unknown, title: string): void };
+    editor?: { showFullJSONViewer(data: unknown, title: string): void; [key: string]: any };
+    // The editor handlers (Wave 2) call app methods like refreshNetwork();
+    // keep this permissive until app.js migrates (Wave 4).
+    [key: string]: any;
   };
   api?: {
     getScale(): Promise<{ scale?: number }>;
