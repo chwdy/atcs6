@@ -1,25 +1,191 @@
+// ── Payload shapes the monitor reads (loosely typed; the server owns them) ──
+
+interface CurvePoint {
+    distance_cm: number;
+    atc_limit: number;
+    operational_limit: number;
+}
+
+interface BlockDatum {
+    start_cm: number;
+    end_cm: number;
+    state?: string;
+    name?: string;
+    id?: string | number;
+    tile_count?: number;
+    length_cm: number;
+    sequence?: number;
+}
+
+interface StationDatum {
+    distance_cm: number;
+    length_cm?: number;
+    name?: string;
+    platform_id?: string;
+    station_id?: string;
+    tile_count?: number;
+    sequence?: number;
+}
+
+interface SwitchDatum {
+    distance_cm: number;
+    position?: string | number;
+    locked?: boolean;
+    name?: string;
+    x?: number;
+    y?: number;
+    sequence?: number;
+}
+
+interface SignalDatum {
+    distance_cm: number;
+    state?: string;
+    name?: string;
+    id?: string | number;
+    sequence?: number;
+}
+
+interface LookaheadData {
+    current_speed_kmh: number;
+    state?: string | null;
+    speed_limit_reason: string | null;
+    blocks: BlockDatum[];
+    signals: SignalDatum[];
+    switches: SwitchDatum[];
+    stations: StationDatum[];
+    distance_into_path_cm: number;
+    clearance_cm: number;
+    safety_margin_cm: number;
+    target_stop_cm: number;
+    speed_curves: CurvePoint[];
+    current_block_speed_limit: number | null;
+}
+
+/** The lookahead sub-object embedded in the per-tick payload. */
+interface LookaheadPayloadInner {
+    safety_margin_cm?: number;
+    clearance_cm?: number;
+    target_stop_cm?: number;
+    blocks?: BlockDatum[];
+    signals?: SignalDatum[];
+    switches?: SwitchDatum[];
+    stations?: StationDatum[];
+    speed_curves?: CurvePoint[];
+}
+
+/** The per-tick payload app.js hands to updateFromController. */
+interface MonitorPayload {
+    lookahead?: LookaheadPayloadInner | null;
+    speed_limit_reason?: string | null;
+    current_block_speed_limit?: number | null;
+    current_task_kind?: string;
+    dwell_remaining_sec?: number | null;
+    dwell_finish_sim_sec?: number | null;
+}
+
+interface TrainRef {
+    id: string;
+    name?: string;
+}
+
+interface BlockRect {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    data: BlockDatum;
+}
+
+/** A normalized row in the "upcoming elements" list (block/station/switch/signal). */
+interface UpcomingElement {
+    type: 'block' | 'station' | 'switch' | 'signal';
+    name?: string | number;
+    distance: number;
+    length: number;
+    state?: string;
+    position?: string | number;
+    sequence: number;
+}
+
+interface MonitorView {
+    padding: { left: number; right: number; top: number; bottom: number };
+    width: number;
+    height: number;
+    visibleStartCm: number;
+    visibleEndCm: number;
+}
+
+type ConfigWarning = {
+    type: string;
+    position?: [number, number];
+    block_id?: string | number;
+    station_id?: string | number;
+    state?: string;
+    message?: string;
+};
+
 class TrainMonitor {
+    bar!: HTMLElement;
+    canvas!: HTMLCanvasElement;
+    ctx!: CanvasRenderingContext2D;
+    titleEl!: HTMLElement;
+    currentSpeedEl!: HTMLElement;
+    atcSpeedEl!: HTMLElement;
+    atoSpeedEl!: HTMLElement;
+    speedLimitReasonEl!: HTMLElement;
+    speedCmsEl!: HTMLElement;
+    clearanceEl!: HTMLElement;
+    dwellRemainingContainer!: HTMLElement;
+    dwellRemainingEl!: HTMLElement;
+    dwellFinishContainer!: HTMLElement;
+    dwellFinishEl!: HTMLElement;
+    upcomingEl!: HTMLElement;
+    upcomingContainer!: HTMLElement;
+    upcomingCountEl!: HTMLElement;
+    monitorContent!: HTMLElement;
+    resizerEl!: HTMLElement;
+    closeBtn!: HTMLElement;
+    viewLookaheadBtn!: HTMLElement | null;
+
+    lookaheadData: LookaheadData | null = null;
+    trainId: string | null = null;
+    currentScale = 160;
+    viewDistance = 500;
+    hoveredBlock: BlockDatum | null = null;
+    blockRects: BlockRect[] = [];
+    isColumnResizing = false;
+    mouseX: number | null = null;
+    mouseY: number | null = null;
+    pinnedCm: number | null = null;
+    signalColors!: Record<string, string>;
+    lastWarningKey?: string;
+
+    // View transform exposed by render() for the mouse/click handlers.
+    _cmToX?: (cm: number) => number;
+    _xToCm?: (x: number) => number;
+    _view!: MonitorView;
+
     constructor() {
-        this.bar = document.getElementById('train-monitor-bar');
-        this.canvas = document.getElementById('train-monitor-canvas');
-        this.ctx = this.canvas.getContext('2d');
-        this.titleEl = document.getElementById('train-monitor-title');
-        this.currentSpeedEl = document.getElementById('monitor-current-speed');
-        this.atcSpeedEl = document.getElementById('monitor-atc-speed');
-        this.atoSpeedEl = document.getElementById('monitor-ato-speed');
-        this.speedLimitReasonEl = document.getElementById('monitor-speed-limit-reason');
-        this.speedCmsEl = document.getElementById('monitor-speed-cms');
-        this.clearanceEl = document.getElementById('monitor-clearance');
-        this.dwellRemainingContainer = document.getElementById('monitor-dwell-remaining-container');
-        this.dwellRemainingEl = document.getElementById('monitor-dwell-remaining');
-        this.dwellFinishContainer = document.getElementById('monitor-dwell-finish-container');
-        this.dwellFinishEl = document.getElementById('monitor-dwell-finish');
-        this.upcomingEl = document.getElementById('monitor-upcoming');
-        this.upcomingContainer = document.getElementById('monitor-upcoming-container');
-        this.upcomingCountEl = document.getElementById('monitor-upcoming-count');
-        this.monitorContent = document.querySelector('.train-monitor-content');
-        this.resizerEl = document.getElementById('train-monitor-resizer');
-        this.closeBtn = document.getElementById('train-monitor-close');
+        this.bar = document.getElementById('train-monitor-bar')!;
+        this.canvas = document.getElementById('train-monitor-canvas') as HTMLCanvasElement;
+        this.ctx = this.canvas.getContext('2d')!;
+        this.titleEl = document.getElementById('train-monitor-title')!;
+        this.currentSpeedEl = document.getElementById('monitor-current-speed')!;
+        this.atcSpeedEl = document.getElementById('monitor-atc-speed')!;
+        this.atoSpeedEl = document.getElementById('monitor-ato-speed')!;
+        this.speedLimitReasonEl = document.getElementById('monitor-speed-limit-reason')!;
+        this.speedCmsEl = document.getElementById('monitor-speed-cms')!;
+        this.clearanceEl = document.getElementById('monitor-clearance')!;
+        this.dwellRemainingContainer = document.getElementById('monitor-dwell-remaining-container')!;
+        this.dwellRemainingEl = document.getElementById('monitor-dwell-remaining')!;
+        this.dwellFinishContainer = document.getElementById('monitor-dwell-finish-container')!;
+        this.dwellFinishEl = document.getElementById('monitor-dwell-finish')!;
+        this.upcomingEl = document.getElementById('monitor-upcoming')!;
+        this.upcomingContainer = document.getElementById('monitor-upcoming-container')!;
+        this.upcomingCountEl = document.getElementById('monitor-upcoming-count')!;
+        this.monitorContent = document.querySelector('.train-monitor-content')!;
+        this.resizerEl = document.getElementById('train-monitor-resizer')!;
+        this.closeBtn = document.getElementById('train-monitor-close')!;
         
         this.lookaheadData = null;
         this.trainId = null;
@@ -68,7 +234,7 @@ class TrainMonitor {
         window.addEventListener('resize', () => this.resizeCanvas());
     }
     
-    show(trainId, trainName) {
+    show(trainId: string, trainName?: string) {
         this.trainId = trainId;
         this.titleEl.textContent = trainName || `Train ${trainId}`;
         this.bar.classList.remove('hidden');
@@ -94,7 +260,7 @@ class TrainMonitor {
             btn.addEventListener('click', () => {
                 buttons.forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
-                this.viewDistance = parseInt(btn.dataset.distance, 10);
+                this.viewDistance = parseInt((btn as HTMLElement).dataset.distance!, 10);
                 this.render();
             });
         });
@@ -105,7 +271,7 @@ class TrainMonitor {
             return;
         }
 
-        const onMouseMove = (e) => {
+        const onMouseMove = (e: MouseEvent) => {
             if (!this.isColumnResizing) return;
 
             const contentRect = this.monitorContent.getBoundingClientRect();
@@ -191,7 +357,7 @@ class TrainMonitor {
         }
     }
 
-    _formatSimClock(totalSec) {
+    _formatSimClock(totalSec: number) {
         const t = Math.max(0, Math.floor(totalSec));
         const h = Math.floor(t / 3600);
         const m = Math.floor((t % 3600) / 60);
@@ -199,7 +365,7 @@ class TrainMonitor {
         return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
     }
 
-    handleMouseMove(e) {
+    handleMouseMove(e: MouseEvent) {
         if (!this.lookaheadData) return;
 
         // CSS pixels: the canvas context is scaled by devicePixelRatio, so all
@@ -226,7 +392,7 @@ class TrainMonitor {
         }
     }
 
-    handleClick(e) {
+    handleClick(e: MouseEvent) {
         if (!this.lookaheadData || !this._xToCm) return;
 
         const rect = this.canvas.getBoundingClientRect();
@@ -236,7 +402,7 @@ class TrainMonitor {
 
         // Clicking on (or within a few px of) the existing pin clears it.
         if (this.pinnedCm != null) {
-            const pinX = this._cmToX(this.pinnedCm);
+            const pinX = this._cmToX!(this.pinnedCm);
             if (Math.abs(pinX - x) <= 6) {
                 this.pinnedCm = null;
                 this.render();
@@ -251,7 +417,7 @@ class TrainMonitor {
     
     async loadScale() {
         try {
-            const data = await window.api.getScale();
+            const data = await window.api!.getScale();
             this.currentScale = data.scale || 160;
         } catch (e) {
             console.error('[TrainMonitor] Failed to load scale:', e);
@@ -268,7 +434,7 @@ class TrainMonitor {
         }
     }
     
-    updateFromController(train, payload) {
+    updateFromController(train: TrainRef | null, payload: MonitorPayload | null) {
         if (!train) {
             console.warn('[TrainMonitor] No train data');
             this.lookaheadData = null;
@@ -306,15 +472,15 @@ class TrainMonitor {
             current_block_speed_limit: payload?.current_block_speed_limit ?? null,
         };
 
-        this.currentSpeedEl.textContent = Math.round(this.lookaheadData.current_speed_kmh || 0);
+        this.currentSpeedEl.textContent = String(Math.round(this.lookaheadData.current_speed_kmh || 0));
 
         // Per design_new.md: target speed and ATC/ATO limits live at position 0
         // of `lookahead.speed_curves`. There is no standalone scalar.
         const curves = this.lookaheadData.speed_curves || [];
         const atcSpeed = curves.length > 0 ? (curves[0].atc_limit ?? 0) : 0;
         const atoSpeed = curves.length > 0 ? (curves[0].operational_limit ?? 0) : 0;
-        if (this.atcSpeedEl) this.atcSpeedEl.textContent = Math.round(atcSpeed);
-        if (this.atoSpeedEl) this.atoSpeedEl.textContent = Math.round(atoSpeed);
+        if (this.atcSpeedEl) this.atcSpeedEl.textContent = String(Math.round(atcSpeed));
+        if (this.atoSpeedEl) this.atoSpeedEl.textContent = String(Math.round(atoSpeed));
 
         if (this.speedCmsEl) {
             const speedCms = ((this.lookaheadData.current_speed_kmh || 0) * 27.78 / this.currentScale).toFixed(1);
@@ -326,7 +492,7 @@ class TrainMonitor {
             const unitEl = this.clearanceEl.nextElementSibling;
             if (unitEl) unitEl.textContent = unit;
         }
-        
+
         // Update distance to next destination (target stop point)
         const nextDestContainer = document.getElementById('monitor-next-dest-container');
         const nextDestEl = document.getElementById('monitor-next-dest-dist');
@@ -355,7 +521,7 @@ class TrainMonitor {
         const dwellRemaining = payload?.dwell_remaining_sec ?? null;
         const dwellFinishSimSec = payload?.dwell_finish_sim_sec ?? null;
         if (isDwell && dwellRemaining !== null) {
-            if (this.dwellRemainingEl) this.dwellRemainingEl.textContent = Math.ceil(dwellRemaining);
+            if (this.dwellRemainingEl) this.dwellRemainingEl.textContent = String(Math.ceil(dwellRemaining));
             this.dwellRemainingContainer?.classList.remove('hidden');
             if (dwellFinishSimSec !== null) {
                 if (this.dwellFinishEl) this.dwellFinishEl.textContent = this._formatSimClock(dwellFinishSimSec);
@@ -372,10 +538,10 @@ class TrainMonitor {
         this.render();
     }
 
-    _displayConfigurationWarnings(warnings, trainId) {
+    _displayConfigurationWarnings(warnings: ConfigWarning[], trainId: string) {
         // Display configuration warnings via toast notifications.
         // Track which warnings we've already shown to avoid spam
-        const warningKey = warnings.map(w => `${w.type}_${w.position || w.block_id || w.station_id}`).join('|');
+        const warningKey = warnings.map((w: ConfigWarning) => `${w.type}_${w.position || w.block_id || w.station_id}`).join('|');
         
         // Only show warnings once per unique set (avoid repeated toasts)
         if (this.lastWarningKey === warningKey) {
@@ -393,10 +559,10 @@ class TrainMonitor {
                     message = `⚠️ Platform ${warning.station_id} has no length configured. Please set length in Platform Editor.`;
                     break;
                 case 'switch_not_configured':
-                    message = `⚠️ Switch at (${warning.position[0]}, ${warning.position[1]}) [${warning.state}] has no length configured.`;
+                    message = `⚠️ Switch at (${warning.position?.[0]}, ${warning.position?.[1]}) [${warning.state}] has no length configured.`;
                     break;
                 case 'switch_entity_missing':
-                    message = `⚠️ Switch at (${warning.position[0]}, ${warning.position[1]}) has no configuration entity.`;
+                    message = `⚠️ Switch at (${warning.position?.[0]}, ${warning.position?.[1]}) has no configuration entity.`;
                     break;
                 case 'block_not_found':
                     message = `⚠️ Block ${warning.block_id} not found in network.`;
@@ -424,12 +590,12 @@ class TrainMonitor {
         }
     }
     
-    updateUpcomingElements(data) {
+    updateUpcomingElements(data: LookaheadData) {
         if (!this.upcomingEl) return;
-        
-        const elements = [];
-        
-        (data.blocks || []).forEach(block => {
+
+        const elements: UpcomingElement[] = [];
+
+        (data.blocks || []).forEach((block: BlockDatum) => {
             elements.push({
                 type: 'block',
                 name: block.name || block.id,
@@ -439,8 +605,8 @@ class TrainMonitor {
                 sequence: block.sequence || 0
             });
         });
-        
-        (data.stations || []).forEach(station => {
+
+        (data.stations || []).forEach((station: StationDatum) => {
             elements.push({
                 type: 'station',
                 name: station.name || station.station_id,
@@ -449,8 +615,8 @@ class TrainMonitor {
                 sequence: station.sequence || 0
             });
         });
-        
-        (data.switches || []).forEach(sw => {
+
+        (data.switches || []).forEach((sw: SwitchDatum) => {
             elements.push({
                 type: 'switch',
                 name: sw.name || `Switch (${sw.x},${sw.y})`,
@@ -460,8 +626,8 @@ class TrainMonitor {
                 sequence: sw.sequence || 0
             });
         });
-        
-        (data.signals || []).forEach(sig => {
+
+        (data.signals || []).forEach((sig: SignalDatum) => {
             elements.push({
                 type: 'signal',
                 name: sig.name || sig.id,
@@ -482,7 +648,7 @@ class TrainMonitor {
         const upcoming = elements;
 
         if (this.upcomingCountEl) {
-            this.upcomingCountEl.textContent = upcoming.length;
+            this.upcomingCountEl.textContent = String(upcoming.length);
         }
 
         if (upcoming.length === 0) {
@@ -491,8 +657,8 @@ class TrainMonitor {
         }
 
         const trainDist = data.distance_into_path_cm || 0;
-        const escapeHtml = (s) => String(s ?? '').replace(/[<>&"']/g, c => (
-            {'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]
+        const escapeHtml = (s: unknown) => String(s ?? '').replace(/[<>&"']/g, (c: string) => (
+            {'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c] as string
         ));
 
         this.upcomingEl.innerHTML = upcoming.map(el => {
@@ -506,7 +672,7 @@ class TrainMonitor {
 
             let icon = '▣';
             let kindClass = '';
-            let typeLabel = el.type;
+            let typeLabel: string = el.type;
 
             if (el.type === 'station') {
                 icon = '🚉';
@@ -546,12 +712,12 @@ class TrainMonitor {
         }).join('');
     }
 
-    _fmtDist(cm) {
+    _fmtDist(cm: number): { val: string; unit: string } {
         if (cm < 100) return { val: cm.toFixed(2), unit: 'cm' };
         return { val: (cm / 100).toFixed(2), unit: 'm' };
     }
 
-    fitTextToWidth(text, maxWidth) {
+    fitTextToWidth(text: string, maxWidth: number): string {
         if (!text || maxWidth <= 0) return '';
         if (this.ctx.measureText(text).width <= maxWidth) {
             return text;
@@ -569,7 +735,7 @@ class TrainMonitor {
         return '';
     }
     
-    getMaxDistanceAhead(data, trainDist) {
+    getMaxDistanceAhead(data: LookaheadData, trainDist: number): number {
         /**
          * Calculate the furthest element ahead of train in lookahead data.
          * Returns distance in cm from train's current position.
@@ -577,7 +743,7 @@ class TrainMonitor {
         let maxDist = 0;
         
         // Check blocks (use end position)
-        (data.blocks || []).forEach(b => {
+        (data.blocks || []).forEach((b: BlockDatum) => {
             const blockEnd = b.end_cm;
             if (blockEnd > trainDist) {
                 maxDist = Math.max(maxDist, blockEnd);
@@ -585,7 +751,7 @@ class TrainMonitor {
         });
         
         // Check stations (use distance + length)
-        (data.stations || []).forEach(s => {
+        (data.stations || []).forEach((s: StationDatum) => {
             const stationEnd = s.distance_cm + (s.length_cm || 0);
             if (stationEnd > trainDist) {
                 maxDist = Math.max(maxDist, stationEnd);
@@ -593,14 +759,14 @@ class TrainMonitor {
         });
         
         // Check signals (point elements, use distance only)
-        (data.signals || []).forEach(sig => {
+        (data.signals || []).forEach((sig: SignalDatum) => {
             if (sig.distance_cm > trainDist) {
                 maxDist = Math.max(maxDist, sig.distance_cm);
             }
         });
         
         // Check switches (point elements, use distance only)
-        (data.switches || []).forEach(sw => {
+        (data.switches || []).forEach((sw: SwitchDatum) => {
             if (sw.distance_cm > trainDist) {
                 maxDist = Math.max(maxDist, sw.distance_cm);
             }
@@ -649,7 +815,7 @@ class TrainMonitor {
         const blockEndY    = blockStartY + BLOCK_SECTION_H;
 
         const stationStartY = hasStations ? blockEndY + SECTION_GAP : null;
-        const stationTrackY = hasStations ? stationStartY + STN_TOP : null;
+        const stationTrackY = hasStations ? stationStartY! + STN_TOP : null;
         const trackWidth = width - padding.left - padding.right;
         
         const trainDist = data.distance_into_path_cm || 0;
@@ -665,8 +831,8 @@ class TrainMonitor {
         const visibleStartCm = trainDist;
         const visibleEndCm = trainDist + lookaheadDistance;
         const visibleRangeCm = visibleEndCm - visibleStartCm;
-        const cmToX = (cm) => padding.left + ((cm - visibleStartCm) / visibleRangeCm) * trackWidth;
-        const xToCm = (x) => visibleStartCm + ((x - padding.left) / trackWidth) * visibleRangeCm;
+        const cmToX = (cm: number) => padding.left + ((cm - visibleStartCm) / visibleRangeCm) * trackWidth;
+        const xToCm = (x: number) => visibleStartCm + ((x - padding.left) / trackWidth) * visibleRangeCm;
 
         // Expose the current view transform so the mouse/click handlers can map
         // pixel positions back to path-cm without recomputing the layout.
@@ -736,13 +902,13 @@ class TrainMonitor {
         this.drawSignals(data.signals || [], cmToX, blockTrackY);
         
         if (hasStations) {
-            this.drawTrackLine(padding.left, stationTrackY, trackWidth, '#2a4a5f');
-            this.drawStations(data.stations || [], cmToX, stationTrackY);
+            this.drawTrackLine(padding.left, stationTrackY!, trackWidth, '#2a4a5f');
+            this.drawStations(data.stations || [], cmToX, stationTrackY!);
         }
 
         this.drawTrainPosition(trainX, blockTrackY);
         if (hasStations) {
-            this.drawTrainPosition(trainX, stationTrackY);
+            this.drawTrainPosition(trainX, stationTrackY!);
         }
         
         this.drawDistanceScale(padding.left, height - 5, trackWidth, trainDist, visibleRangeCm);
@@ -752,7 +918,7 @@ class TrainMonitor {
         this.drawHoverTooltip();
     }
     
-    drawTrackLine(x, y, width, color) {
+    drawTrackLine(x: number, y: number, width: number, color: string) {
         this.ctx.strokeStyle = color;
         this.ctx.lineWidth = 3;
         this.ctx.beginPath();
@@ -761,7 +927,7 @@ class TrainMonitor {
         this.ctx.stroke();
     }
     
-    drawTrainPosition(x, y) {
+    drawTrainPosition(x: number, y: number) {
         this.ctx.fillStyle = '#ffcd1e';
         this.ctx.beginPath();
         this.ctx.moveTo(x, y - 6);
@@ -771,11 +937,11 @@ class TrainMonitor {
         this.ctx.fill();
     }
     
-    drawBlocks(blocks, cmToX, trackY) {
+    drawBlocks(blocks: BlockDatum[], cmToX: (cm: number) => number, trackY: number) {
         this.blockRects = [];
         const blockHeight = 16;
-        
-        blocks.forEach(block => {
+
+        blocks.forEach((block: BlockDatum) => {
             const startX = cmToX(block.start_cm);
             const endX = cmToX(block.end_cm);
             
@@ -791,8 +957,8 @@ class TrainMonitor {
                 data: block
             });
 
-            const color = getBlockStateColor(block.state);
-            
+            const color = getBlockStateColor(block.state ?? '');
+
             this.ctx.fillStyle = color;
             this.ctx.globalAlpha = 0.3;
             this.ctx.fillRect(startX, trackY - blockHeight/2, blockWidth, blockHeight);
@@ -823,7 +989,7 @@ class TrainMonitor {
             this.ctx.font = '9px Inter, sans-serif';
             if (blockWidth > 30) {
                 const labelMaxWidth = Math.max(0, blockWidth - 6);
-                const displayName = this.fitTextToWidth(name, labelMaxWidth);
+                const displayName = this.fitTextToWidth(String(name), labelMaxWidth);
                 if (displayName) {
                     this.ctx.fillStyle = '#fff';
                     this.ctx.textAlign = 'center';
@@ -852,14 +1018,14 @@ class TrainMonitor {
         });
     }
     
-    drawSignals(signals, cmToX, trackY) {
-        signals.forEach(signal => {
+    drawSignals(signals: SignalDatum[], cmToX: (cm: number) => number, trackY: number) {
+        signals.forEach((signal: SignalDatum) => {
             const x = cmToX(signal.distance_cm);
 
             if (x < 0 || x > this.canvas.width) return;
 
             const state = signal.state ? signal.state.toLowerCase() : null;
-            const color = this.signalColors[state] || '#888';
+            const color = this.signalColors[state ?? ''] || '#888';
 
             // Inline indicator just above the block bar (bar top sits at trackY-8).
             // Filled dot in state color; double-yellow gets an outer ring to
@@ -879,10 +1045,10 @@ class TrainMonitor {
         });
     }
     
-    drawSwitches(switches, cmToX, trackY) {
+    drawSwitches(switches: SwitchDatum[], cmToX: (cm: number) => number, trackY: number) {
         if (!switches) return;
-        
-        switches.forEach(sw => {
+
+        switches.forEach((sw: SwitchDatum) => {
             const x = cmToX(sw.distance_cm);
             
             if (x < 0 || x > this.canvas.width) return;
@@ -918,12 +1084,12 @@ class TrainMonitor {
         });
     }
     
-    drawStations(stations, cmToX, trackY) {
+    drawStations(stations: StationDatum[], cmToX: (cm: number) => number, trackY: number) {
         const RECT_HALF = 7;   // station rect is 14px centered at trackY
         const NAME_GAP  = 1;   // gap between name text baseline and rect top
         const INFO_GAP  = 4;   // gap between rect bottom and info text top
 
-        stations.forEach(station => {
+        stations.forEach((station: StationDatum) => {
             const startX = cmToX(station.distance_cm);
             const stationLength = station.length_cm || 50;
             const endX = cmToX(station.distance_cm + stationLength);
@@ -982,7 +1148,7 @@ class TrainMonitor {
         });
     }
     
-    drawDistanceScale(x, y, width, trainDistCm, rangeCm) {
+    drawDistanceScale(x: number, y: number, width: number, trainDistCm: number, rangeCm: number) {
         this.ctx.font = '9px JetBrains Mono, monospace';
         this.ctx.fillStyle = '#666';
         this.ctx.textBaseline = 'bottom';
@@ -1003,7 +1169,7 @@ class TrainMonitor {
      * at an arbitrary path-cm, matching the polyline drawn by drawSpeedCurves.
      * Clamps to the endpoints outside the curve's range; null if no curve.
      */
-    interpolateCurve(curves, cm, key) {
+    interpolateCurve(curves: CurvePoint[], cm: number, key: 'atc_limit' | 'operational_limit'): number | null {
         if (!curves || curves.length === 0) return null;
         if (cm <= curves[0].distance_cm) return curves[0][key];
         const last = curves[curves.length - 1];
@@ -1020,7 +1186,7 @@ class TrainMonitor {
         return last[key];
     }
 
-    drawReferenceLines(cmToX, xToCm, padding, width, height, data) {
+    drawReferenceLines(cmToX: (cm: number) => number, xToCm: (x: number) => number, padding: MonitorView['padding'], width: number, height: number, data: LookaheadData) {
         const top = padding.top;
         const bottom = height - padding.bottom;
         const { visibleStartCm, visibleEndCm } = this._view;
@@ -1041,7 +1207,14 @@ class TrainMonitor {
         }
     }
 
-    _drawRefMarker(x, top, bottom, cm, data, opts) {
+    _drawRefMarker(
+        x: number,
+        top: number,
+        bottom: number,
+        cm: number,
+        data: LookaheadData,
+        opts: { color: string; dash: number[]; lineWidth: number; anchor: 'top' | 'bottom'; tag: string | null }
+    ) {
         const ctx = this.ctx;
         ctx.save();
 
@@ -1060,7 +1233,7 @@ class TrainMonitor {
         const atc = this.interpolateCurve(data.speed_curves, cm, 'atc_limit');
         const ato = this.interpolateCurve(data.speed_curves, cm, 'operational_limit');
 
-        const lines = [];
+        const lines: string[] = [];
         if (opts.tag) lines.push(opts.tag);
         lines.push(`${distM.toFixed(0)}m`);
         if (atc != null) lines.push(`ATC ${Math.round(atc)}`);
@@ -1141,19 +1314,19 @@ class TrainMonitor {
         });
     }
 
-    drawSpeedCurves(speedCurves, cmToX, currentSpeed, padding, areaHeight) {
+    drawSpeedCurves(speedCurves: CurvePoint[], cmToX: (cm: number) => number, currentSpeed: number, padding: MonitorView['padding'], areaHeight: number) {
         if (!speedCurves || speedCurves.length === 0) return;
         
         const curveTop = padding.top;
         const curveBottom = curveTop + areaHeight;
         
         let maxSpeed = 80;
-        speedCurves.forEach(p => {
+        speedCurves.forEach((p: CurvePoint) => {
             maxSpeed = Math.max(maxSpeed, p.atc_limit, p.operational_limit);
         });
         maxSpeed = Math.ceil(maxSpeed / 10) * 10;
         
-        const speedToY = (speed) => {
+        const speedToY = (speed: number) => {
             const ratio = speed / maxSpeed;
             return curveBottom - ratio * areaHeight;
         };
@@ -1204,7 +1377,7 @@ class TrainMonitor {
         this.ctx.strokeStyle = '#e83f5b';
         this.ctx.lineWidth = 1.5;
         this.ctx.beginPath();
-        speedCurves.forEach((point, i) => {
+        speedCurves.forEach((point: CurvePoint, i: number) => {
             const x = cmToX(point.distance_cm);
             const y = speedToY(point.atc_limit);
             if (x < padding.left || x > this.canvas.width - padding.right) return;
@@ -1216,7 +1389,7 @@ class TrainMonitor {
         this.ctx.strokeStyle = '#04d361';
         this.ctx.lineWidth = 2;
         this.ctx.beginPath();
-        speedCurves.forEach((point, i) => {
+        speedCurves.forEach((point: CurvePoint, i: number) => {
             const x = cmToX(point.distance_cm);
             const y = speedToY(point.operational_limit);
             if (x < padding.left || x > this.canvas.width - padding.right) return;
@@ -1274,3 +1447,18 @@ class TrainMonitor {
         this.ctx.fillText('ATO', legendX + 60, legendY);
     }
 }
+
+declare global {
+  interface Window {
+    TrainMonitor?: typeof TrainMonitor;
+  }
+}
+
+// Browser-global bridge so the still-classic app.js keeps doing
+// `new TrainMonitor()` until app.js migrates. Guarded so the module also
+// imports cleanly under Node (Vitest), where there is no `window`.
+if (typeof window !== 'undefined') {
+  window.TrainMonitor = TrainMonitor;
+}
+
+export { TrainMonitor };

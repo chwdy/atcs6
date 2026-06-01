@@ -58,16 +58,37 @@ class TestAppSmoke:
         assert "<html" in content.lower(), "index.html doesn't look like HTML"
 
     def test_all_required_javascript_files_exist(self):
-        """Test that all required JavaScript files exist"""
-        js_dir = PROJECT_ROOT / "static" / "js"
-        required_files = ["api.js", "renderer.js", "editor.js", "app.js"]
+        """Required frontend entry points exist and are non-empty.
 
-        for filename in required_files:
-            file_path = js_dir / filename
-            assert file_path.exists(), f"Required file {filename} is missing"
+        The frontend is mid-migration to a Vite build (see vite.config.ts):
+        the renderer/foundation cluster moved under frontend/src/ and is
+        bundled into static/dist/main.js, while the editor cluster is still
+        served as classic scripts from static/js/. "Required files" now spans
+        two roots:
+
+          - static/js/editor.js, static/js/app.js — surviving classic
+            scripts, still loaded directly by static/index.html.
+          - frontend/src/main.ts — the Vite entry that builds into
+            static/dist/main.js.
+
+        We assert the committed *source* (main.ts), not the build output:
+        static/dist/ is gitignored (.gitignore) and absent on a fresh
+        checkout until `npm run build` runs, so a pre-commit smoke test must
+        not depend on it. This matches the other frontend-source assertions
+        in this file (the train-monitor tests point at
+        frontend/src/panels/train-monitor.ts).
+        """
+        required_files = [
+            PROJECT_ROOT / "static" / "js" / "editor.js",
+            PROJECT_ROOT / "static" / "js" / "app.js",
+            PROJECT_ROOT / "frontend" / "src" / "main.ts",
+        ]
+
+        for file_path in required_files:
+            assert file_path.exists(), f"Required file {file_path} is missing"
 
             content = file_path.read_text()
-            assert len(content) > 0, f"{filename} is empty"
+            assert len(content) > 0, f"{file_path} is empty"
 
     def test_css_file_exists(self):
         """Test that the CSS file exists"""
@@ -87,11 +108,17 @@ class TestAppSmoke:
         )
 
     def test_index_html_includes_all_scripts(self):
-        """Test that index.html includes all required script tags"""
+        """index.html wires up both the classic scripts and the Vite bundle.
+
+        Post-migration, static/index.html loads the surviving classic editor
+        scripts directly and the bundled modules through the Vite build entry
+        `dist/main.js` (the `<script type="module">` near the bottom of the
+        page). Assert all three are referenced so a dropped tag is caught.
+        """
         index_file = PROJECT_ROOT / "static" / "index.html"
         content = index_file.read_text()
 
-        required_scripts = ["api.js", "renderer.js", "editor.js", "app.js"]
+        required_scripts = ["editor.js", "app.js", "dist/main.js"]
         for script in required_scripts:
             assert script in content, f"index.html missing script tag for {script}"
 
@@ -109,15 +136,16 @@ class TestAppSmoke:
         index_file = PROJECT_ROOT / "static" / "index.html"
         content = index_file.read_text()
 
-        # Find positions of script tags
-        api_pos = content.find('src="js/api.js')
-        renderer_pos = content.find('src="js/renderer.js')
+        # Find positions of script tags. The renderer cluster and the
+        # foundation cluster (constants/api/state-manager/helpers/pathfinders)
+        # are no longer classic scripts — they migrated under frontend/src/ and
+        # are served via the bundle — so they are dropped from the ordering
+        # check. editor.js still loads before app.js, which bootstraps
+        # `new App()` (and with it the Editor) on DOMContentLoaded.
         editor_pos = content.find('src="js/editor.js')
         app_pos = content.find('src="js/app.js')
 
-        # Verify order: api -> renderer -> editor -> app
-        assert api_pos < renderer_pos, "api.js must load before renderer.js"
-        assert renderer_pos < editor_pos, "renderer.js must load before editor.js"
+        # Verify order: editor -> app
         assert editor_pos < app_pos, "editor.js must load before app.js"
 
     def test_server_py_exists(self):
@@ -160,7 +188,9 @@ class TestAppSmoke:
 
     def test_train_monitor_upcoming_has_no_fixed_limit(self):
         """Train monitor upcoming list should not be hard-limited."""
-        monitor_file = PROJECT_ROOT / "static" / "js" / "train-monitor.js"
+        # train-monitor.js migrated to frontend/src/panels/train-monitor.ts
+        # (longterm_todo.md item #7); the source assertion follows it there.
+        monitor_file = PROJECT_ROOT / "frontend" / "src" / "panels" / "train-monitor.ts"
         content = monitor_file.read_text()
 
         assert "elements.slice(0, 3)" not in content, (
@@ -169,7 +199,7 @@ class TestAppSmoke:
 
     def test_train_monitor_block_labels_use_dynamic_fit(self):
         """Train monitor block labels should use dynamic text fitting."""
-        monitor_file = PROJECT_ROOT / "static" / "js" / "train-monitor.js"
+        monitor_file = PROJECT_ROOT / "frontend" / "src" / "panels" / "train-monitor.ts"
         content = monitor_file.read_text()
 
         assert "fitTextToWidth" in content, (

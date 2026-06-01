@@ -10,6 +10,33 @@
  * is structured so that a future entity selector slots in without breaking
  * the train-only path.
  */
+// Shapes of the inspector snapshot the backend returns from
+// GET /api/inspector/entity/train/<id>. Loosely typed — the panel only reads
+// these members and is defensive about missing ones.
+interface InspectorItem {
+    name: string;
+    value: unknown;
+    error?: string | null;
+    source?: string;
+    computed_from?: string[];
+    formula_doc?: string;
+    writer?: string;
+    consumer?: string;
+    type?: string;
+}
+
+interface InspectorGroup {
+    name: string;
+    items?: InspectorItem[];
+}
+
+interface InspectorSnapshot {
+    id?: string;
+    label?: string;
+    fetched_at?: number;
+    groups?: InspectorGroup[];
+}
+
 (function () {
     "use strict";
 
@@ -26,7 +53,7 @@
     const MIN_WIDTH = 320;
     const MAX_WIDTH = 900;
 
-    function clampWidth(w) {
+    function clampWidth(w: number) {
         const max = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - 40));
         return Math.max(MIN_WIDTH, Math.min(max, w));
     }
@@ -41,7 +68,7 @@
         }
     }
 
-    function saveState(state) {
+    function saveState(state: Record<string, unknown>) {
         try {
             localStorage.setItem(STATE_KEY, JSON.stringify(state));
         } catch (e) {
@@ -49,7 +76,7 @@
         }
     }
 
-    function fmtValue(value) {
+    function fmtValue(value: unknown): string {
         if (value === null || value === undefined) return String(value);
         if (typeof value === "string") return value;
         if (typeof value === "number" || typeof value === "boolean") {
@@ -62,17 +89,17 @@
         }
     }
 
-    function shortValue(value) {
+    function shortValue(value: unknown): string {
         const full = fmtValue(value);
         if (full.length <= 80) return full;
         return full.slice(0, 78) + "…";
     }
 
-    function isContainer(v) {
+    function isContainer(v: unknown): v is object {
         return v !== null && typeof v === "object";
     }
 
-    function containerSummary(value) {
+    function containerSummary(value: object): string {
         if (Array.isArray(value)) {
             return `[${value.length}]`;
         }
@@ -84,13 +111,44 @@
     }
 
     class InspectorPanel {
-        constructor() {
-            this._panelEl = null;
-            this._bodyEl = null;
-            this._trainSelectEl = null;
-            this._rateSelectEl = null;
-            this._refreshBtnEl = null;
+        // DOM handles — all assigned by _buildDom(), which init() calls before
+        // any other method runs (see bootstrap: `new InspectorPanel(); .init()`).
+        // Declared definite (!) per the renderer.ts migration idiom.
+        _panelEl!: HTMLElement;
+        _bodyEl!: HTMLElement;
+        _trainSelectEl!: HTMLSelectElement;
+        _rateSelectEl!: HTMLSelectElement;
+        _refreshBtnEl!: HTMLElement;
+        _closeBtnEl!: HTMLElement;
+        _footerEl!: HTMLElement;
+        _expandAllBtnEl!: HTMLElement;
+        _collapseAllBtnEl!: HTMLElement;
+        _sortBtnEl!: HTMLElement;
+        _resizeHandleEl!: HTMLElement;
+        _nameTooltipEl!: HTMLElement;
 
+        _pollHandle: ReturnType<typeof setInterval> | null;
+        _inflight: boolean;
+        _abortController: AbortController | null;
+
+        _lastSnapshot: InspectorSnapshot | null;
+        _collapsedGroups: Set<string>;
+        _currentTrainId: string | null;
+        _refreshHz: number;
+        _visible: boolean;
+        _dragOffset: { x: number; y: number } | null;
+        _position: { x: number; y: number } | null;
+        _knownTrainIds: string[];
+        _jsonExpansion: Map<string, boolean>;
+        _width: number;
+        _resizing: boolean;
+        _sortMode: "asc" | "desc" | null;
+
+        constructor() {
+            // DOM handles (_panelEl, _bodyEl, _trainSelectEl, _rateSelectEl,
+            // _refreshBtnEl, _nameTooltipEl, _expandAllBtnEl, _collapseAllBtnEl,
+            // _resizeHandleEl, _sortBtnEl, _closeBtnEl, _footerEl) are assigned by
+            // _buildDom() during init(); declared definite above.
             this._pollHandle = null;
             this._inflight = false;
             this._abortController = null;
@@ -107,13 +165,8 @@
 
             this._jsonExpansion = new Map(); // pathKey -> bool (in-memory only)
             this._width = DEFAULT_WIDTH;
-            this._nameTooltipEl = null;
             this._resizing = false;
-            this._expandAllBtnEl = null;
-            this._collapseAllBtnEl = null;
-            this._resizeHandleEl = null;
             this._sortMode = "asc"; // null | "asc" | "desc"; default A→Z
-            this._sortBtnEl = null;
         }
 
         init() {
@@ -167,16 +220,16 @@
             document.body.appendChild(panel);
 
             this._panelEl = panel;
-            this._bodyEl = panel.querySelector('[data-role="body"]');
-            this._trainSelectEl = panel.querySelector('[data-role="train-select"]');
-            this._rateSelectEl = panel.querySelector('[data-role="rate-select"]');
-            this._refreshBtnEl = panel.querySelector('[data-role="refresh"]');
-            this._closeBtnEl = panel.querySelector('.inspector-panel-close');
-            this._footerEl = panel.querySelector('[data-role="footer"]');
-            this._expandAllBtnEl = panel.querySelector('[data-role="expand-all"]');
-            this._collapseAllBtnEl = panel.querySelector('[data-role="collapse-all"]');
-            this._sortBtnEl = panel.querySelector('[data-role="sort"]');
-            this._resizeHandleEl = panel.querySelector('[data-role="resize-handle"]');
+            this._bodyEl = panel.querySelector('[data-role="body"]') as HTMLElement;
+            this._trainSelectEl = panel.querySelector('[data-role="train-select"]') as HTMLSelectElement;
+            this._rateSelectEl = panel.querySelector('[data-role="rate-select"]') as HTMLSelectElement;
+            this._refreshBtnEl = panel.querySelector('[data-role="refresh"]') as HTMLElement;
+            this._closeBtnEl = panel.querySelector('.inspector-panel-close') as HTMLElement;
+            this._footerEl = panel.querySelector('[data-role="footer"]') as HTMLElement;
+            this._expandAllBtnEl = panel.querySelector('[data-role="expand-all"]') as HTMLElement;
+            this._collapseAllBtnEl = panel.querySelector('[data-role="collapse-all"]') as HTMLElement;
+            this._sortBtnEl = panel.querySelector('[data-role="sort"]') as HTMLElement;
+            this._resizeHandleEl = panel.querySelector('[data-role="resize-handle"]') as HTMLElement;
 
             const tooltip = document.createElement("div");
             tooltip.className = "inspector-name-tooltip";
@@ -200,10 +253,10 @@
 
         _wireSelectors() {
             this._trainSelectEl.addEventListener("change", (e) => {
-                this._onTrainChange(e.target.value || null);
+                this._onTrainChange((e.target as HTMLSelectElement).value || null);
             });
             this._rateSelectEl.addEventListener("change", (e) => {
-                const hz = Number(e.target.value);
+                const hz = Number((e.target as HTMLSelectElement).value);
                 this._onRateChange(Number.isFinite(hz) ? hz : 1);
             });
             this._refreshBtnEl.addEventListener("click", () => {
@@ -217,17 +270,17 @@
         // ----- Drag ---------------------------------------------------------
 
         _setupDrag() {
-            const handle = this._panelEl.querySelector('[data-role="drag-handle"]');
+            const handle = this._panelEl.querySelector('[data-role="drag-handle"]') as HTMLElement;
 
-            handle.addEventListener("pointerdown", (e) => {
-                if (e.target.closest("button, select, input, textarea")) return;
+            handle.addEventListener("pointerdown", (e: PointerEvent) => {
+                if ((e.target as HTMLElement).closest("button, select, input, textarea")) return;
                 handle.setPointerCapture(e.pointerId);
                 const rect = this._panelEl.getBoundingClientRect();
                 this._dragOffset = { x: e.clientX - rect.left, y: e.clientY - rect.top };
                 this._panelEl.classList.add("inspector-panel-dragging");
             });
 
-            handle.addEventListener("pointermove", (e) => {
+            handle.addEventListener("pointermove", (e: PointerEvent) => {
                 if (!this._dragOffset) return;
                 const x = e.clientX - this._dragOffset.x;
                 const y = e.clientY - this._dragOffset.y;
@@ -257,7 +310,7 @@
             let startX = 0;
             let startWidth = 0;
 
-            handle.addEventListener("pointerdown", (e) => {
+            handle.addEventListener("pointerdown", (e: PointerEvent) => {
                 e.stopPropagation();
                 e.preventDefault();
                 handle.setPointerCapture(e.pointerId);
@@ -267,7 +320,7 @@
                 this._panelEl.classList.add("inspector-panel-resizing");
             });
 
-            handle.addEventListener("pointermove", (e) => {
+            handle.addEventListener("pointermove", (e: PointerEvent) => {
                 if (!this._resizing) return;
                 const newWidth = clampWidth(startWidth + (e.clientX - startX));
                 this._panelEl.style.width = newWidth + "px";
@@ -320,21 +373,22 @@
         _setupNameInteractions() {
             // Click on a name → copy to clipboard + toast.
             this._bodyEl.addEventListener("click", (e) => {
-                const expandBtn = e.target.closest(".inspector-row-expand-btn");
+                const t = e.target as HTMLElement;
+                const expandBtn = t.closest(".inspector-row-expand-btn") as HTMLElement | null;
                 if (expandBtn) {
                     const rowKey = expandBtn.dataset.rowKey;
                     if (rowKey) this._expandRow(rowKey);
                     e.stopPropagation();
                     return;
                 }
-                const collapseBtn = e.target.closest(".inspector-row-collapse-btn");
+                const collapseBtn = t.closest(".inspector-row-collapse-btn") as HTMLElement | null;
                 if (collapseBtn) {
                     const rowKey = collapseBtn.dataset.rowKey;
                     if (rowKey) this._collapseRow(rowKey);
                     e.stopPropagation();
                     return;
                 }
-                const caret = e.target.closest(".inspector-json-caret");
+                const caret = t.closest(".inspector-json-caret") as HTMLElement | null;
                 if (caret) {
                     const pathKey = caret.dataset.pathKey;
                     if (pathKey) {
@@ -344,7 +398,7 @@
                     e.stopPropagation();
                     return;
                 }
-                const nameEl = e.target.closest(".inspector-row-name");
+                const nameEl = t.closest(".inspector-row-name") as HTMLElement | null;
                 if (!nameEl) return;
                 const name = nameEl.dataset.name;
                 if (!name) return;
@@ -359,8 +413,9 @@
 
             // Hover on a name → custom tooltip with full name + metadata.
             // Hover on a truncated scalar value → tooltip with the full value.
-            this._bodyEl.addEventListener("pointerover", (e) => {
-                const nameEl = e.target.closest(".inspector-row-name");
+            this._bodyEl.addEventListener("pointerover", (e: PointerEvent) => {
+                const t = e.target as HTMLElement;
+                const nameEl = t.closest(".inspector-row-name") as HTMLElement | null;
                 if (nameEl) {
                     const truncated = nameEl.scrollWidth > nameEl.clientWidth;
                     const meta = nameEl.dataset.meta || "";
@@ -371,7 +426,7 @@
                     this._showNameTooltip(nameEl, e);
                     return;
                 }
-                const valueEl = e.target.closest(".inspector-row-value[data-full]");
+                const valueEl = t.closest(".inspector-row-value[data-full]") as HTMLElement | null;
                 if (valueEl) {
                     const full = valueEl.dataset.full || "";
                     const cssTrunc = valueEl.scrollWidth > valueEl.clientWidth;
@@ -384,22 +439,23 @@
                 this._hideNameTooltip();
             });
 
-            this._bodyEl.addEventListener("pointerout", (e) => {
-                const target = e.target.closest(".inspector-row-name, .inspector-row-value[data-full]");
+            this._bodyEl.addEventListener("pointerout", (e: PointerEvent) => {
+                const t = e.target as HTMLElement;
+                const target = t.closest(".inspector-row-name, .inspector-row-value[data-full]");
                 if (!target) return;
-                const related = e.relatedTarget;
+                const related = e.relatedTarget as Node | null;
                 if (related && target.contains(related)) return;
                 this._hideNameTooltip();
             });
 
-            this._bodyEl.addEventListener("pointermove", (e) => {
+            this._bodyEl.addEventListener("pointermove", (e: PointerEvent) => {
                 if (!this._nameTooltipEl || this._nameTooltipEl.style.display === "none") return;
-                if (!e.target.closest(".inspector-row-name, .inspector-row-value[data-full]")) return;
+                if (!(e.target as HTMLElement).closest(".inspector-row-name, .inspector-row-value[data-full]")) return;
                 this._positionNameTooltip(e);
             });
         }
 
-        _showNameTooltip(nameEl, evt) {
+        _showNameTooltip(nameEl: HTMLElement, evt: MouseEvent) {
             const tt = this._nameTooltipEl;
             if (!tt) return;
             const name = nameEl.dataset.name || nameEl.textContent;
@@ -413,7 +469,7 @@
             this._positionNameTooltip(evt);
         }
 
-        _showValueTooltip(scalarEl, evt) {
+        _showValueTooltip(scalarEl: HTMLElement, evt: MouseEvent) {
             const tt = this._nameTooltipEl;
             if (!tt) return;
             const full = scalarEl.dataset.full || "";
@@ -427,7 +483,7 @@
             if (this._nameTooltipEl) this._nameTooltipEl.style.display = "none";
         }
 
-        _positionNameTooltip(evt) {
+        _positionNameTooltip(evt: MouseEvent) {
             const tt = this._nameTooltipEl;
             if (!tt) return;
             const offset = 14;
@@ -531,7 +587,9 @@
             try {
                 const network = await window.api.getNetwork();
                 const trains = (network && Array.isArray(network.trains)) ? network.trains : [];
-                this._knownTrainIds = trains.map(t => t.id || t.train_id).filter(Boolean);
+                this._knownTrainIds = trains
+                    .map((t) => t.id || t.train_id)
+                    .filter((id): id is string => !!id);
 
                 const previous = this._currentTrainId;
                 this._trainSelectEl.innerHTML = '<option value="">(select a train)</option>' +
@@ -550,7 +608,7 @@
 
         // ----- Polling lifecycle -------------------------------------------
 
-        _onTrainChange(newId) {
+        _onTrainChange(newId: string | null) {
             this._stopPolling();
             this._currentTrainId = newId || null;
             this._lastSnapshot = null;
@@ -563,7 +621,7 @@
             }
         }
 
-        _onRateChange(hz) {
+        _onRateChange(hz: number) {
             this._refreshHz = hz;
             this._persistState();
             this._stopPolling();
@@ -617,7 +675,7 @@
                     this._stopPolling();
                     return;
                 }
-                this._render(data);
+                this._render(data as InspectorSnapshot);
             } catch (e) {
                 this._renderError(e);
             } finally {
@@ -627,7 +685,7 @@
 
         // ----- Rendering ----------------------------------------------------
 
-        _renderEmpty(text) {
+        _renderEmpty(text: string) {
             this._bodyEl.innerHTML = `<div class="inspector-panel-empty">${text}</div>`;
             this._footerEl.textContent = "";
         }
@@ -638,13 +696,13 @@
             this._footerEl.textContent = "";
         }
 
-        _renderError(err) {
-            const msg = (err && err.message) ? err.message : String(err);
+        _renderError(err: unknown) {
+            const msg = (err as { message?: string })?.message || String(err);
             this._bodyEl.innerHTML =
                 `<div class="inspector-panel-empty inspector-panel-error">Error: ${msg}</div>`;
         }
 
-        _render(snapshot) {
+        _render(snapshot: InspectorSnapshot) {
             // The tooltip references DOM nodes that are about to be replaced.
             this._hideNameTooltip();
 
@@ -660,7 +718,7 @@
             // Wire group collapse/expand.
             this._bodyEl.querySelectorAll(".inspector-group-header").forEach((hdr) => {
                 hdr.addEventListener("click", () => {
-                    const groupName = hdr.dataset.groupName;
+                    const groupName = (hdr as HTMLElement).dataset.groupName!;
                     if (this._collapsedGroups.has(groupName)) {
                         this._collapsedGroups.delete(groupName);
                     } else {
@@ -681,7 +739,7 @@
             this._lastSnapshot = snapshot;
         }
 
-        _indexSnapshot(snapshot) {
+        _indexSnapshot(snapshot: InspectorSnapshot | null) {
             const out = new Map();
             if (!snapshot || !Array.isArray(snapshot.groups)) return out;
             for (const g of snapshot.groups) {
@@ -692,12 +750,12 @@
             return out;
         }
 
-        _renderGroup(group, prevIndex) {
+        _renderGroup(group: InspectorGroup, prevIndex: Map<string, InspectorItem>) {
             const collapsed = this._collapsedGroups.has(group.name);
             const items = this._applySortOrder(group.items || []);
             const rows = collapsed
                 ? ""
-                : items.map(it => {
+                : items.map((it: InspectorItem) => {
                     const prev = prevIndex.get(`${group.name}::${it.name}`);
                     return this._renderItem(it, group, prev);
                 }).join("");
@@ -713,7 +771,7 @@
             `;
         }
 
-        _renderItem(item, group, prev) {
+        _renderItem(item: InspectorItem, group: InspectorGroup, prev: InspectorItem | undefined) {
             const errored = item.error !== undefined && item.error !== null;
             const valueChanged = prev !== undefined && !errored
                 && JSON.stringify(prev.value) !== JSON.stringify(item.value);
@@ -767,7 +825,7 @@
 
         // ----- JSON tree rendering -----------------------------------------
 
-        _renderJsonValue(value, rowKey, path) {
+        _renderJsonValue(value: unknown, rowKey: string, path: string): string {
             if (value === null) {
                 return `<span class="inspector-json-null">null</span>`;
             }
@@ -793,9 +851,9 @@
             return `<span class="inspector-json-scalar">${escapeHtml(String(value))}</span>`;
         }
 
-        _renderJsonContainer(value, rowKey, path, isArray) {
+        _renderJsonContainer(value: object, rowKey: string, path: string, isArray: boolean): string {
             const entries = isArray
-                ? value.map((v, i) => [i, v])
+                ? (value as unknown[]).map((v: unknown, i: number) => [i, v] as [number, unknown])
                 : Object.entries(value);
             const len = entries.length;
             if (len === 0) {
@@ -813,8 +871,8 @@
 
             const open = isArray ? "[" : "{";
             const close = isArray ? "]" : "}";
-            const childPath = (k) => isArray ? `${path}[${k}]` : `${path}.${k}`;
-            const rows = entries.map(([k, v]) => {
+            const childPath = (k: string | number) => isArray ? `${path}[${k}]` : `${path}.${k}`;
+            const rows = entries.map(([k, v]: [string | number, unknown]) => {
                 const keyHtml = isArray
                     ? `<span class="inspector-json-index">${k}:</span>`
                     : `<span class="inspector-json-key">"${escapeHtml(String(k))}":</span>`;
@@ -824,7 +882,7 @@
             return `<span class="inspector-json-node inspector-json-node-expanded">${caret}<span class="inspector-json-bracket">${open}</span><div class="inspector-json-children">${rows}</div><span class="inspector-json-bracket">${close}</span></span>`;
         }
 
-        _walkContainerPaths(value, rowKey, path, callback) {
+        _walkContainerPaths(value: unknown, rowKey: string, path: string, callback: (pathKey: string) => void) {
             if (!isContainer(value)) return;
             const pathKey = `${rowKey}::${path}`;
             callback(pathKey);
@@ -833,8 +891,9 @@
                     this._walkContainerPaths(value[i], rowKey, `${path}[${i}]`, callback);
                 }
             } else {
-                for (const k of Object.keys(value)) {
-                    this._walkContainerPaths(value[k], rowKey, `${path}.${k}`, callback);
+                const obj = value as Record<string, unknown>;
+                for (const k of Object.keys(obj)) {
+                    this._walkContainerPaths(obj[k], rowKey, `${path}.${k}`, callback);
                 }
             }
         }
@@ -845,7 +904,7 @@
                 for (const item of (group.items || [])) {
                     if (!isContainer(item.value)) continue;
                     const rowKey = `${group.name}::${item.name}`;
-                    this._walkContainerPaths(item.value, rowKey, "root", (pk) => {
+                    this._walkContainerPaths(item.value, rowKey, "root", (pk: string) => {
                         this._jsonExpansion.set(pk, true);
                     });
                 }
@@ -853,13 +912,13 @@
             this._render(this._lastSnapshot);
         }
 
-        _expandRow(rowKey) {
+        _expandRow(rowKey: string) {
             if (!this._lastSnapshot) return;
             for (const group of (this._lastSnapshot.groups || [])) {
                 for (const item of (group.items || [])) {
                     if (`${group.name}::${item.name}` !== rowKey) continue;
                     if (!isContainer(item.value)) return;
-                    this._walkContainerPaths(item.value, rowKey, "root", (pk) => {
+                    this._walkContainerPaths(item.value, rowKey, "root", (pk: string) => {
                         this._jsonExpansion.set(pk, true);
                     });
                     this._render(this._lastSnapshot);
@@ -868,13 +927,13 @@
             }
         }
 
-        _collapseRow(rowKey) {
+        _collapseRow(rowKey: string) {
             if (!this._lastSnapshot) return;
             for (const group of (this._lastSnapshot.groups || [])) {
                 for (const item of (group.items || [])) {
                     if (`${group.name}::${item.name}` !== rowKey) continue;
                     if (!isContainer(item.value)) return;
-                    this._walkContainerPaths(item.value, rowKey, "root", (pk) => {
+                    this._walkContainerPaths(item.value, rowKey, "root", (pk: string) => {
                         this._jsonExpansion.delete(pk);
                     });
                     this._render(this._lastSnapshot);
@@ -891,10 +950,10 @@
 
         // ----- Sort ---------------------------------------------------------
 
-        _applySortOrder(items) {
+        _applySortOrder(items: InspectorItem[]): InspectorItem[] {
             if (!this._sortMode) return items;
             const sorted = items.slice();
-            sorted.sort((a, b) => {
+            sorted.sort((a: InspectorItem, b: InspectorItem) => {
                 const an = String(a.name || "").toLowerCase();
                 const bn = String(b.name || "").toLowerCase();
                 if (an < bn) return -1;
@@ -934,7 +993,7 @@
         }
     }
 
-    function escapeHtml(s) {
+    function escapeHtml(s: unknown): string {
         if (s === null || s === undefined) return "";
         return String(s)
             .replace(/&/g, "&amp;")
@@ -956,3 +1015,7 @@
         bootstrap();
     }
 })();
+
+// Marks this file as an ES module so Vite can `import` it for the bootstrap
+// side effect above (the IIFE self-installs window.inspectorPanel).
+export {};

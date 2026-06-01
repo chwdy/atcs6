@@ -115,19 +115,19 @@ class TestJavaScriptSyntax:
 
     def test_all_required_js_files_exist(self):
         """Test that all required JavaScript files exist"""
-        required_files = ["api.js", "renderer.js", "editor.js", "app.js"]
+        required_files = ["editor.js", "app.js"]
 
         for filename in required_files:
             file_path = JS_DIR / filename
             assert file_path.exists(), f"Required file {filename} is missing"
 
     def test_api_js_has_api_class(self):
-        """Test that api.js defines the API class"""
-        api_file = JS_DIR / "api.js"
+        """Test that the migrated api module defines the API class"""
+        api_file = PROJECT_ROOT / "frontend" / "src" / "lib" / "api.ts"
         content = api_file.read_text()
 
-        assert "class API" in content, "api.js must define API class"
-        assert "window.api = new API()" in content, "api.js must export API instance"
+        assert "class API" in content, "api.ts must define API class"
+        assert "window.api = new API()" in content, "api.ts must export API instance"
 
     def test_editor_js_has_editor_class(self):
         """Test that editor.js defines the Editor class"""
@@ -137,8 +137,8 @@ class TestJavaScriptSyntax:
         assert "class Editor" in content, "editor.js must define Editor class"
 
     def test_editor_js_has_helper_class(self):
-        """Test that helpers.js defines the required helper functions"""
-        helpers_file = JS_DIR / "helpers.js"
+        """Test that the migrated helpers module defines the required helper functions"""
+        helpers_file = PROJECT_ROOT / "frontend" / "src" / "lib" / "helpers.ts"
         content = helpers_file.read_text()
 
         # Check for key helper functions
@@ -152,11 +152,11 @@ class TestJavaScriptSyntax:
             assert func in content, f"helpers.js must define {func} function"
 
     def test_renderer_js_has_renderer_class(self):
-        """Test that renderer.js defines the Renderer class"""
-        renderer_file = JS_DIR / "renderer.js"
+        """Test that the migrated renderer module defines the Renderer class"""
+        renderer_file = PROJECT_ROOT / "frontend" / "src" / "renderer" / "renderer.ts"
         content = renderer_file.read_text()
 
-        assert "class Renderer" in content, "renderer.js must define Renderer class"
+        assert "class Renderer" in content, "renderer.ts must define Renderer class"
 
     def test_app_js_has_app_class(self):
         """Test that app.js defines the App class"""

@@ -3,13 +3,61 @@
  *
  * Communicates with /api/debug/inspect to lazily traverse the object graph.
  * Standalone — no dependencies on the main app JS.
+ *
+ * Migrated from static/js/debug-inspector.js to a Vite entry (dist/debug.js)
+ * powering the /debug page (longterm_todo.md item #7). The page's host markup
+ * is static/debug.html, served by debug_inspector.py.
  */
 
 const API_BASE = '';
 
+// A serialized value from debug_inspector.py's serialize_object: either a JSON
+// primitive, or a `{_type, ...}` wrapper describing a Python container/object.
+// Loosely typed — the renderers probe fields defensively.
+type DebugValue =
+    | null
+    | boolean
+    | number
+    | string
+    | DebugWrapper;
+
+interface DebugWrapper {
+    _type?: string;
+    length?: number;
+    maxlen?: number | null;
+    class?: string;
+    name?: string;
+    value?: string;
+    repr?: string;
+    items?: Record<string, DebugValue> | DebugValue[];
+    keys?: string[];
+    fields?: string[] | Record<string, DebugValue>;
+    [key: string]: unknown;
+}
+
+interface InspectResponse {
+    path: string;
+    depth: number;
+    data: DebugValue;
+}
+
+/** Narrow a DebugValue to the object-wrapper form. */
+function asWrapper(val: DebugValue): DebugWrapper | null {
+    return val !== null && typeof val === 'object' ? val : null;
+}
+
+/** getElementById that asserts presence — the /debug page always has these. */
+function $(id: string): HTMLElement {
+    return document.getElementById(id)!;
+}
+
+function errMsg(e: unknown): string {
+    return (e as { message?: string })?.message ?? String(e);
+}
+
 // ── API helpers ───────────────────────────────────────────────────────────
 
-async function fetchJSON(url) {
+async function fetchJSON(url: string): Promise<any> {
     const resp = await fetch(API_BASE + url);
     if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
@@ -18,53 +66,54 @@ async function fetchJSON(url) {
     return resp.json();
 }
 
-async function fetchInspect(path, depth = 1) {
+async function fetchInspect(path: string, depth = 1): Promise<InspectResponse> {
     const params = new URLSearchParams({ path, depth: String(depth) });
     return fetchJSON(`/api/debug/inspect?${params}`);
 }
 
-async function fetchSummary() {
+async function fetchSummary(): Promise<Record<string, unknown>> {
     return fetchJSON('/api/debug/summary');
 }
 
-async function fetchBlockHistory(limit = 30) {
+async function fetchBlockHistory(limit = 30): Promise<any> {
     return fetchJSON(`/api/debug/block-history?limit=${limit}`);
 }
 
 // ── State ─────────────────────────────────────────────────────────────────
 
-let autoRefreshInterval = null;
-const expandedPaths = new Set();
+let autoRefreshInterval: ReturnType<typeof setInterval> | null = null;
+const expandedPaths = new Set<string>();
 
 // ── Summary panel ─────────────────────────────────────────────────────────
 
 async function refreshSummary() {
-    const el = document.getElementById('summary-content');
+    const el = $('summary-content');
     try {
         const data = await fetchSummary();
         el.innerHTML = Object.entries(data)
             .map(([k, v]) => {
                 let cls = 'summary-val';
+                let display: unknown = v;
                 if (k === 'simulation_running') {
                     cls += v ? ' running' : ' stopped';
-                    v = v ? 'running' : 'stopped';
+                    display = v ? 'running' : 'stopped';
                 }
                 return `<div class="summary-item">
                     <span class="summary-key">${k}</span>
-                    <span class="${cls}">${v}</span>
+                    <span class="${cls}">${display}</span>
                 </div>`;
             })
             .join('');
     } catch (e) {
-        el.innerHTML = `<div class="empty-state">Error: ${e.message}</div>`;
+        el.innerHTML = `<div class="empty-state">Error: ${errMsg(e)}</div>`;
     }
 }
 
 // ── Block history panel ───────────────────────────────────────────────────
 
 async function refreshHistory() {
-    const container = document.getElementById('history-container');
-    const badge = document.getElementById('history-count');
+    const container = $('history-container');
+    const badge = $('history-count');
     try {
         const data = await fetchBlockHistory(30);
         badge.textContent = data.total;
@@ -74,7 +123,7 @@ async function refreshHistory() {
         }
         container.innerHTML = data.history
             .slice().reverse()
-            .map(h => {
+            .map((h: any) => {
                 const time = h.timestamp ? h.timestamp.split('T')[1]?.substring(0, 8) : '??';
                 const fromCls = `state-${h.from_state}`;
                 const toCls = `state-${h.to_state}`;
@@ -89,13 +138,13 @@ async function refreshHistory() {
             })
             .join('');
     } catch (e) {
-        container.innerHTML = `<div class="empty-state">Error: ${e.message}</div>`;
+        container.innerHTML = `<div class="empty-state">Error: ${errMsg(e)}</div>`;
     }
 }
 
 // ── Tree rendering ────────────────────────────────────────────────────────
 
-function valueDisplay(val) {
+function valueDisplay(val: DebugValue): { text: string; cls: string } | null {
     if (val === null) return { text: 'null', cls: 'null' };
     if (val === undefined) return { text: 'undefined', cls: 'null' };
     if (typeof val === 'boolean') return { text: String(val), cls: 'boolean' };
@@ -104,43 +153,43 @@ function valueDisplay(val) {
     return null;
 }
 
-function isExpandable(val) {
-    if (val === null || val === undefined) return false;
-    if (typeof val !== 'object') return false;
-    const t = val._type;
+function isExpandable(val: DebugValue): boolean {
+    const w = asWrapper(val);
+    if (!w) return false;
+    const t = w._type;
     return t === 'dict' || t === 'list' || t === 'tuple' || t === 'set' ||
            t === 'frozenset' || t === 'deque' || t === 'object';
 }
 
-function typeSuffix(val) {
-    if (typeof val !== 'object' || val === null) return '';
-    const t = val._type;
+function typeSuffix(val: DebugValue): string {
+    const w = asWrapper(val);
+    if (!w) return '';
+    const t = w._type;
     if (!t) return '';
-    if (t === 'dict') return `dict (${val.length})`;
-    if (t === 'list') return `list (${val.length})`;
-    if (t === 'tuple') return `tuple (${val.length})`;
-    if (t === 'set') return `set (${val.length})`;
-    if (t === 'frozenset') return `frozenset (${val.length})`;
-    if (t === 'deque') return `deque (${val.length}, max=${val.maxlen ?? '?'})`;
-    if (t === 'object') return val.class || 'object';
-    if (t === 'enum') return val.class || 'enum';
-    if (t === 'method') return `fn ${val.name}()`;
+    if (t === 'dict') return `dict (${w.length})`;
+    if (t === 'list') return `list (${w.length})`;
+    if (t === 'tuple') return `tuple (${w.length})`;
+    if (t === 'set') return `set (${w.length})`;
+    if (t === 'frozenset') return `frozenset (${w.length})`;
+    if (t === 'deque') return `deque (${w.length}, max=${w.maxlen ?? '?'})`;
+    if (t === 'object') return w.class || 'object';
+    if (t === 'enum') return w.class || 'enum';
+    if (t === 'method') return `fn ${w.name}()`;
     if (t === 'circular') return 'circular ref';
-    if (t === 'unknown') return val.repr || '?';
+    if (t === 'unknown') return w.repr || '?';
     return t;
 }
 
-function inlineValue(val) {
+function inlineValue(val: DebugValue): { text: string; cls: string } | null {
     // Try to show a compact inline value
     const prim = valueDisplay(val);
     if (prim) return prim;
-    if (typeof val === 'object' && val !== null) {
-        if (val._type === 'enum') return { text: val.value, cls: 'enum' };
-    }
+    const w = asWrapper(val);
+    if (w && w._type === 'enum') return { text: String(w.value), cls: 'enum' };
     return null;
 }
 
-function createTreeNode(key, val, parentPath, indentLevel) {
+function createTreeNode(key: string, val: DebugValue, parentPath: string, indentLevel: number): HTMLElement {
     const fullPath = parentPath ? `${parentPath}.${key}` : key;
     const node = document.createElement('div');
     node.className = 'tree-node';
@@ -227,7 +276,7 @@ function createTreeNode(key, val, parentPath, indentLevel) {
     return node;
 }
 
-async function loadChildren(path, container, indentLevel) {
+async function loadChildren(path: string, container: HTMLElement, indentLevel: number) {
     container.innerHTML = '<div class="tree-loading">Loading...</div>';
     try {
         const resp = await fetchInspect(path, 1);
@@ -257,38 +306,39 @@ async function loadChildren(path, container, indentLevel) {
             container.appendChild(createTreeNode(childKey, childVal, path, indentLevel));
         }
     } catch (e) {
-        container.innerHTML = `<div class="tree-loading">Error: ${e.message}</div>`;
+        container.innerHTML = `<div class="tree-loading">Error: ${errMsg(e)}</div>`;
     }
 }
 
-function getChildEntries(data) {
-    if (!data || typeof data !== 'object') return [];
-    const t = data._type;
+function getChildEntries(data: DebugValue): Array<[string, DebugValue]> {
+    const w = asWrapper(data);
+    if (!w) return [];
+    const t = w._type;
 
-    if (t === 'dict' && data.items) {
-        return Object.entries(data.items);
+    if (t === 'dict' && w.items && !Array.isArray(w.items)) {
+        return Object.entries(w.items);
     }
-    if (t === 'dict' && data.keys) {
+    if (t === 'dict' && w.keys) {
         // depth=0 fallback: show keys as unexpanded
-        return data.keys.map(k => [k, { _type: 'unknown', repr: '...' }]);
+        return w.keys.map((k): [string, DebugValue] => [k, { _type: 'unknown', repr: '...' }]);
     }
-    if ((t === 'list' || t === 'tuple' || t === 'set' || t === 'frozenset' || t === 'deque') && data.items) {
-        return data.items.map((v, i) => [String(i), v]);
+    if ((t === 'list' || t === 'tuple' || t === 'set' || t === 'frozenset' || t === 'deque') && Array.isArray(w.items)) {
+        return w.items.map((v, i): [string, DebugValue] => [String(i), v]);
     }
-    if (t === 'object' && data.fields) {
-        if (Array.isArray(data.fields)) {
+    if (t === 'object' && w.fields) {
+        if (Array.isArray(w.fields)) {
             // depth=0: field names only
-            return data.fields.map(f => [f, { _type: 'unknown', repr: '...' }]);
+            return w.fields.map((f): [string, DebugValue] => [f, { _type: 'unknown', repr: '...' }]);
         }
-        return Object.entries(data.fields);
+        return Object.entries(w.fields);
     }
     return [];
 }
 
 // ── Tree: root load ───────────────────────────────────────────────────────
 
-async function loadTree(path) {
-    const container = document.getElementById('tree-container');
+async function loadTree(path: string) {
+    const container = $('tree-container');
     container.innerHTML = '<div class="tree-loading">Loading...</div>';
     expandedPaths.clear();
 
@@ -307,9 +357,10 @@ async function loadTree(path) {
             return;
         }
 
-        if (typeof data === 'object' && data !== null) {
+        const w = asWrapper(data);
+        if (w) {
             const entries = getChildEntries(data);
-            if (entries.length === 0 && data._type) {
+            if (entries.length === 0 && w._type) {
                 // Single non-expandable (enum, method, etc)
                 const node = createTreeNode('', data, path, 0);
                 container.appendChild(node);
@@ -320,19 +371,19 @@ async function loadTree(path) {
             }
         }
     } catch (e) {
-        container.innerHTML = `<div class="empty-state">Error: ${e.message}</div>`;
+        container.innerHTML = `<div class="empty-state">Error: ${errMsg(e)}</div>`;
     }
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────
 
-function navigateTo(path) {
-    document.getElementById('path-input').value = path;
+function navigateTo(path: string) {
+    ($('path-input') as HTMLInputElement).value = path;
     loadTree(path);
 }
 
 function goUp() {
-    const input = document.getElementById('path-input');
+    const input = $('path-input') as HTMLInputElement;
     const path = input.value.trim();
     if (!path) return;
     const parts = path.split('.');
@@ -350,7 +401,7 @@ function startAutoRefresh() {
         // Re-fetch expanded tree nodes
         refreshExpandedNodes();
     }, 2000);
-    document.getElementById('status-indicator').className = 'status-dot status-on';
+    $('status-indicator').className = 'status-dot status-on';
 }
 
 function stopAutoRefresh() {
@@ -358,12 +409,11 @@ function stopAutoRefresh() {
         clearInterval(autoRefreshInterval);
         autoRefreshInterval = null;
     }
-    document.getElementById('status-indicator').className = 'status-dot status-off';
+    $('status-indicator').className = 'status-dot status-off';
 }
 
-async function refreshExpandedNodes() {
-    // Refresh the root tree at whatever path is currently displayed
-    const path = document.getElementById('path-input').value.trim();
+function refreshExpandedNodes() {
+    // Refresh the root tree at whatever path is currently displayed.
     // Only refresh top-level, don't disturb expanded children
     // (a full re-render would lose expand state; for now just refresh summary/history)
 }
@@ -372,18 +422,18 @@ async function refreshExpandedNodes() {
 
 document.addEventListener('DOMContentLoaded', () => {
     // Path navigation
-    const pathInput = document.getElementById('path-input');
-    document.getElementById('path-go').addEventListener('click', () => {
+    const pathInput = $('path-input') as HTMLInputElement;
+    $('path-go').addEventListener('click', () => {
         navigateTo(pathInput.value.trim());
     });
-    pathInput.addEventListener('keydown', (e) => {
+    pathInput.addEventListener('keydown', (e: KeyboardEvent) => {
         if (e.key === 'Enter') navigateTo(pathInput.value.trim());
     });
-    document.getElementById('path-up').addEventListener('click', goUp);
+    $('path-up').addEventListener('click', goUp);
 
     // Auto-refresh toggle
-    document.getElementById('auto-refresh').addEventListener('change', (e) => {
-        if (e.target.checked) startAutoRefresh();
+    $('auto-refresh').addEventListener('change', (e) => {
+        if ((e.target as HTMLInputElement).checked) startAutoRefresh();
         else stopAutoRefresh();
     });
 
@@ -392,3 +442,6 @@ document.addEventListener('DOMContentLoaded', () => {
     refreshHistory();
     loadTree('');
 });
+
+// Marks this file as an ES module so Vite can use it as the /debug build entry.
+export {};

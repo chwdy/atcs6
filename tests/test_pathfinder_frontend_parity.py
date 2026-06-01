@@ -1,7 +1,7 @@
 """Pin the frontend and backend pathfinders to agree on segment binding
 through switch / crossing tiles.
 
-The two pathfinders solve different problems — `static/js/pathfinders.js`
+The two pathfinders solve different problems — `frontend/src/lib/pathfinders.ts`
 provides editor preview, `railway_pathfinder.py` provides operational
 train routing — and live in different languages. They must still agree
 on one shared rule: entering a tile on one segment of a switch limits
@@ -11,7 +11,7 @@ Drift on this rule was the original motivation. The previous frontend
 `ExistingTrackPathfinder` flattened every segment into a single edge
 set, which let a path "cheat" across disconnected segments inside a
 crossing or switch. The fix added `ConstructionPathfinder.getExitsForEntry`
-in `static/js/pathfinders.js`. This file pins that helper's contract
+in `frontend/src/lib/pathfinders.ts`. This file pins that helper's contract
 against the backend's `TrackSegment.get_exits(entry, use_switch_state=False)`
 so future changes on either side trip CI before drift accumulates.
 
@@ -24,7 +24,7 @@ Covers:
 
 Does not cover:
   * The literal JS BFS code path — running it would require Node. The
-    Python mirror in this file tracks `pathfinders.js` line-for-line and
+    Python mirror in this file tracks `pathfinders.ts` line-for-line and
     must be updated whenever the JS BFS structure changes.
 """
 
@@ -48,7 +48,7 @@ LONG_TO_SHORT = {v: k for k, v in SHORT_TO_LONG.items()}
 # --------------------------------------------------------------- JS primitive
 
 # Direct translation of the SEGMENTS array in
-# `ConstructionPathfinder.getExitsForEntry` (static/js/pathfinders.js).
+# `ConstructionPathfinder.getExitsForEntry` (frontend/src/lib/pathfinders.ts).
 # Each entry is (track_bits bit value, edge_a, edge_b): entering edge_a
 # yields edge_b as the segment's paired exit, and vice-versa. Keep this
 # table aligned with the JS source — that is the whole point of the file.
@@ -120,7 +120,7 @@ def _js_mirror_reachable_tiles(
     network: RailwayNetwork, start_pos: Tuple[int, int]
 ) -> Set[Tuple[int, int]]:
     """Python mirror of `ExistingTrackPathfinder.findPathOnExistingTracks`
-    (static/js/pathfinders.js) after the entry-aware fix. Returns the set
+    (frontend/src/lib/pathfinders.ts) after the entry-aware fix. Returns the set
     of (x, y) reachable from `start_pos`.
 
     Same BFS structure as the JS: state carries the entry edge into the
