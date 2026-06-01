@@ -1,29 +1,12 @@
-// Ambient declarations for the still-classic globals that migrated modules
-// consume until their defining files (constants.js / helpers.js) also migrate
-// off the classic-script soup (longterm_todo.md item #7).
+// Ambient types for the runtime singletons still read off `window` by the
+// migrated modules (longterm_todo.md item #7). These are not module exports —
+// they are live instances installed on the global object at startup: the App
+// bootstrap sets window.app + window.showToast/dismissToast (app.ts), the API
+// client and StateManager bridge themselves (lib/api, lib/state-manager), and
+// the inspector panel self-bootstraps (panels/inspector). Loosely typed — only
+// the members the consumers touch.
 //
-// Each symbol is provided at runtime by a classic <script> in static/index.html
-// and resolved off the global object; these declarations exist only to satisfy
-// `tsc`. As each defining file migrates to a real module, delete the matching
-// line here and import the symbol instead.
-
-declare function trackBitsToEdges(trackBits: number): Set<string>;
-declare function getActiveSegments(trackBits: number): Array<[string, string]>;
-declare function isCrossing(trackBits: number): boolean;
-
-declare const BIT_TO_EDGES: Record<number, [string, string]>;
-declare function getBlockStateColor(state: string, alpha?: number): string;
-declare function getLabelSpacingMultiplier(): number;
-
-declare const TRACK_WIDTH: number;
-declare const DEBUG_BLOCK_WIDTH: number;
-declare const TRACK_BITS: { NS: number; EW: number; NE: number; NW: number; SE: number; SW: number };
-
-// Optional: classic scripts may or may not define it; renderer-trains guards
-// its use with `typeof DIRECTION_PREFERRED_QUADRANTS !== 'undefined'`.
-declare const DIRECTION_PREFERRED_QUADRANTS: Record<string, string[]> | undefined;
-
-// The classic StateManager instance (state-manager.js) exposed on window. The
+// The StateManager instance exposed on window: the
 // renderer-trains snapshot fallback reads a live controller off it; the
 // train-monitor panel additionally reads the live runtime fields
 // (current_speed / state / speed_limit_reason) the TrainController exposes per

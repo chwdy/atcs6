@@ -5,9 +5,11 @@
 // Migrated from static/js/renderer-platforms.js (longterm_todo.md item #7,
 // renderer cluster). Behavior is unchanged; covered by renderer-platforms.test.ts.
 //
-// Consumes the TRACK_BITS and getLabelSpacingMultiplier globals
-// (frontend/src/legacy-globals.d.ts). Part of the Vite bundle; the Renderer
-// constructs it directly (`new RendererPlatformHandler(this)`).
+// Imports TRACK_BITS and getLabelSpacingMultiplier from ../lib/constants.
+// Part of the Vite bundle; the Renderer constructs it directly
+// (`new RendererPlatformHandler(this)`).
+
+import { TRACK_BITS, getLabelSpacingMultiplier } from '../lib/constants';
 
 interface Point {
   x: number;

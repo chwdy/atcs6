@@ -6,10 +6,11 @@
 // Migrated from static/js/renderer-tracks.js (longterm_todo.md item #7,
 // renderer cluster). Behavior is unchanged; covered by renderer-tracks.test.ts.
 //
-// Consumes the getActiveSegments, isCrossing, TRACK_WIDTH globals
-// (frontend/src/legacy-globals.d.ts). Part of the Vite bundle; the Renderer
-// constructs it directly (`new RendererTrackHandler(this)`).
+// Imports getActiveSegments, isCrossing, TRACK_WIDTH from ../lib/constants.
+// Part of the Vite bundle; the Renderer constructs it directly
+// (`new RendererTrackHandler(this)`).
 
+import { getActiveSegments, isCrossing, TRACK_WIDTH } from '../lib/constants';
 import type { Signal } from './renderer-signals';
 
 export interface EdgePoint {

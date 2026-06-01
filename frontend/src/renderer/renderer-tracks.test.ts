@@ -1,5 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+// renderer-tracks imports getActiveSegments/isCrossing from ../lib/constants;
+// mock just those two so drawTrackFromBits's fill-counting is tested in
+// isolation from the real bit math (the rest of constants stays real).
+const mocks = vi.hoisted(() => ({
+  getActiveSegments: vi.fn((): Array<[string, string]> => [['N', 'S']]),
+  isCrossing: vi.fn((): boolean => false),
+}));
+vi.mock('../lib/constants', async (importActual) => {
+  const actual = await importActual<typeof import('../lib/constants')>();
+  return { ...actual, getActiveSegments: mocks.getActiveSegments, isCrossing: mocks.isCrossing };
+});
+
 import { RendererTrackHandler, type TrackHandlerRenderer } from './renderer-tracks';
 
 // renderer-tracks.js had no test before the migration; this is fresh coverage
@@ -44,9 +56,10 @@ function makeRenderer(ctx: ReturnType<typeof makeCtx>): TrackHandlerRenderer {
 }
 
 afterEach(() => {
-  delete (globalThis as { getActiveSegments?: unknown }).getActiveSegments;
-  delete (globalThis as { TRACK_WIDTH?: unknown }).TRACK_WIDTH;
-  delete (globalThis as { isCrossing?: unknown }).isCrossing;
+  mocks.getActiveSegments.mockReset();
+  mocks.getActiveSegments.mockReturnValue([['N', 'S']]);
+  mocks.isCrossing.mockReset();
+  mocks.isCrossing.mockReturnValue(false);
 });
 
 describe('RendererTrackHandler', () => {
@@ -68,14 +81,13 @@ describe('RendererTrackHandler', () => {
   });
 
   it('drawTrackFromBits fills each segment, plus a crossing dot when applicable', () => {
-    (globalThis as { getActiveSegments?: unknown }).getActiveSegments = () => [['N', 'S']];
-    (globalThis as { TRACK_WIDTH?: unknown }).TRACK_WIDTH = 4;
-    (globalThis as { isCrossing?: unknown }).isCrossing = () => false;
+    mocks.getActiveSegments.mockReturnValue([['N', 'S']]);
+    mocks.isCrossing.mockReturnValue(false);
     const ctx = makeCtx();
     new RendererTrackHandler(makeRenderer(ctx)).drawTrackFromBits(1, 40, '#666', []);
     expect(ctx.fill).toHaveBeenCalledTimes(1);
 
-    (globalThis as { isCrossing?: unknown }).isCrossing = () => true;
+    mocks.isCrossing.mockReturnValue(true);
     const ctx2 = makeCtx();
     new RendererTrackHandler(makeRenderer(ctx2)).drawTrackFromBits(3, 40, '#666', []);
     expect(ctx2.fill).toHaveBeenCalledTimes(2); // segment quad + crossing dot

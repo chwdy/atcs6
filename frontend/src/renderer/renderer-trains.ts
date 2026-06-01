@@ -6,10 +6,12 @@
 // renderer cluster — the largest handler). Behavior is unchanged; covered by
 // renderer-trains.test.ts.
 //
-// Consumes the getLabelSpacingMultiplier and optional DIRECTION_PREFERRED_QUADRANTS
-// globals, plus window.stateManager (the snapshot fallback) — see
-// frontend/src/legacy-globals.d.ts. Part of the Vite bundle; the Renderer
-// constructs it directly (`new RendererTrainHandler(this)`).
+// Imports getLabelSpacingMultiplier and DIRECTION_PREFERRED_QUADRANTS from
+// ../lib/constants, and still reads window.stateManager (the snapshot fallback).
+// Part of the Vite bundle; the Renderer constructs it directly
+// (`new RendererTrainHandler(this)`).
+
+import { BIT_TO_EDGES, getLabelSpacingMultiplier, DIRECTION_PREFERRED_QUADRANTS } from '../lib/constants';
 
 interface SpanEndpoint {
   tile: [number, number];

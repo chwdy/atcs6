@@ -7,11 +7,13 @@
 // A canvas-drawing handler owned by the Renderer: renderer.js calls
 // drawSingleSignal() per signal and drawSignalBlockConnections() once per flush.
 // It reaches back through its `renderer` reference for the 2D context, the
-// projection, and the track handler's edge-point geometry, and reads the global
-// trackBitsToEdges() (still-classic constants.js) until that module migrates.
+// projection, and the track handler's edge-point geometry, and imports
+// trackBitsToEdges from ../lib/constants.
 //
 // Part of the Vite bundle; the Renderer constructs it directly
 // (`new RendererSignalHandler(this)`).
+
+import { trackBitsToEdges } from '../lib/constants';
 
 export interface EdgePoint {
   x: number;

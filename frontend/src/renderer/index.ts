@@ -1,11 +1,9 @@
 // renderer/ — renderer-cluster modules migrated off the classic scripts
 // (longterm_todo.md item #7).
 //
-// Each module attaches its browser-global bridge on import, so the
-// not-yet-migrated classic renderer scripts keep finding it on `window`.
-// main.ts imports this barrel for those side effects. The re-exports let
-// future migrated modules import these as real ES symbols instead of via
-// `window`.
+// The barrel re-exports the renderer-cluster classes so consumers (renderer.ts,
+// app.ts) import them as real ES symbols. main.ts also imports it so the whole
+// cluster is pulled into the bundle.
 import './render-snapshot';
 import './renderer-tunnels';
 import './renderer-debug';

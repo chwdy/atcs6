@@ -7,11 +7,8 @@
 // `isSquareCornerSwitch` is pinned line-for-line against the Python backend by
 // tests/test_square_corner_parity.py — keep the two in sync.
 //
-// Bundled into static/dist/main.js and mirrored onto the global object (see the
-// bridge at the bottom) so the still-classic editor scripts (which read these as
-// bare globals) and the already-migrated renderer modules (which read them via
-// the ambient declarations in legacy-globals.d.ts) keep resolving them until
-// they migrate too.
+// Part of the Vite bundle. The editor, app, and renderer modules import the
+// symbols they need directly from this module.
 
 // ============================================================================
 // 6-bit Track Bits System (OpenTTD-style)
@@ -174,38 +171,4 @@ export function isCrossing(trackBits: number): boolean {
 export function getOppositeEdge(edge: string): string | null {
   const e = edge.charAt(0).toUpperCase();
   return OPPOSITE_EDGE[e] || null;
-}
-
-// ----------------------------------------------------------------------------
-// Global bridge — mirror the full public surface onto the global object so the
-// still-classic scripts (editor*, app) and the already-migrated renderer
-// modules keep finding these as bare globals. Guarded for Node (Vitest). This
-// whole block is removed in the Decommission wave once no classic script reads
-// them off the global anymore.
-if (typeof window !== 'undefined') {
-  Object.assign(window as unknown as Record<string, unknown>, {
-    TRACK_NS,
-    TRACK_EW,
-    TRACK_NE,
-    TRACK_NW,
-    TRACK_SE,
-    TRACK_SW,
-    TRACK_BITS,
-    BIT_TO_EDGES,
-    EDGE_MASKS,
-    OPPOSITE_EDGE,
-    TRACK_WIDTH,
-    DEBUG_BLOCK_WIDTH,
-    FORBIDDEN_TRACK_BITS,
-    isSquareCornerSwitch,
-    SEGMENT_QUADRANTS,
-    LABEL_SPACING_PRESETS,
-    getLabelSpacingMultiplier,
-    setLabelSpacing,
-    DIRECTION_PREFERRED_QUADRANTS,
-    trackBitsToEdges,
-    getActiveSegments,
-    isCrossing,
-    getOppositeEdge,
-  });
 }

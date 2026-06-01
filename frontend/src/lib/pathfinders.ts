@@ -7,9 +7,7 @@
 // backend by tests/test_pathfinder_frontend_parity.py — its SEGMENTS table must
 // stay aligned with the backend's segment-binding rule.
 //
-// Bundled into static/dist/main.js and mirrored onto the global object (bridge
-// at the bottom) so the still-classic editor scripts keep finding these as bare
-// globals until they migrate too.
+// Part of the Vite bundle; the editor handlers import these utilities directly.
 
 import {
   TRACK_NS,
@@ -1146,26 +1144,4 @@ export function validateBlockPath(
     blocksInPath: [...blocksInPath],
     signalsInPath,
   };
-}
-
-// ----------------------------------------------------------------------------
-// Global bridge — mirror the full public surface onto the global object so the
-// still-classic editor scripts keep finding these as bare globals. Guarded for
-// Node (Vitest). Removed in the Decommission wave.
-if (typeof window !== 'undefined') {
-  Object.assign(window as unknown as Record<string, unknown>, {
-    pathsToTrackBits,
-    ConstructionPathfinder,
-    FORCED_SEGMENT_PORTS,
-    pathToTracks,
-    computeNonConflictingExit,
-    getDirection,
-    getOpposite,
-    VALID_DETECTION_DIRECTIONS,
-    SWITCH_TRACK_BITS,
-    getValidSignalDirections,
-    isCrossingForBlock,
-    validateBlockTile,
-    validateBlockPath,
-  });
 }

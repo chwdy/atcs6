@@ -1,5 +1,7 @@
 // ── Payload shapes the monitor reads (loosely typed; the server owns them) ──
 
+import { getBlockStateColor } from '../lib/helpers';
+
 interface CurvePoint {
     distance_cm: number;
     atc_limit: number;

@@ -7,8 +7,9 @@
 // ResizeObserver, mouse tracking, and the shared label-placement geometry.
 //
 // app.ts constructs it via `new Renderer('rail-canvas')` (imported directly).
-// Still consumes the BIT_TO_EDGES global (frontend/src/legacy-globals.d.ts).
+// Imports BIT_TO_EDGES from ../lib/constants.
 
+import { BIT_TO_EDGES } from '../lib/constants';
 import { Camera } from '../lib/camera';
 import { buildRenderSnapshot } from './render-snapshot';
 import { RendererTrackHandler, type Track } from './renderer-tracks';

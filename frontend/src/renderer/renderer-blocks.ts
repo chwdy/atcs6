@@ -4,10 +4,19 @@
 // Migrated from static/js/renderer-blocks.js (longterm_todo.md item #7,
 // renderer cluster). Behavior is unchanged; covered by renderer-blocks.test.ts.
 //
-// Consumes several globals (getActiveSegments, trackBitsToEdges,
-// getBlockStateColor, getLabelSpacingMultiplier, TRACK_WIDTH, DEBUG_BLOCK_WIDTH)
-// — see frontend/src/legacy-globals.d.ts. Part of the Vite bundle; the Renderer
-// constructs it directly (`new RendererBlockHandler(this)`).
+// Imports getActiveSegments, trackBitsToEdges, getLabelSpacingMultiplier,
+// TRACK_WIDTH, DEBUG_BLOCK_WIDTH from ../lib/constants and getBlockStateColor
+// from ../lib/helpers. Part of the Vite bundle; the Renderer constructs it
+// directly (`new RendererBlockHandler(this)`).
+
+import {
+  trackBitsToEdges,
+  getActiveSegments,
+  getLabelSpacingMultiplier,
+  TRACK_WIDTH,
+  DEBUG_BLOCK_WIDTH,
+} from '../lib/constants';
+import { getBlockStateColor } from '../lib/helpers';
 
 export interface EdgePoint {
   x: number;

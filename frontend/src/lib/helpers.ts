@@ -6,10 +6,8 @@
 // geometry/utility functions. Behavior is unchanged from the classic file.
 //
 // All functions follow the project's CSS utility class system (see
-// STYLE_GUIDE.md / docs/DESIGN_LANGUAGE.md). Bundled into static/dist/main.js
-// and mirrored onto the global object (bridge at the bottom) so the still-classic
-// editor scripts and the already-migrated modules (getBlockStateColor) keep
-// finding these as bare globals until they migrate too.
+// STYLE_GUIDE.md / docs/DESIGN_LANGUAGE.md). Part of the Vite bundle; the editor
+// panels, app, and renderer modules import these helpers directly.
 
 import {
   TRACK_NS,
@@ -1152,40 +1150,4 @@ export function getBlockStateColor(state?: string, alpha = 1): string {
   const g = parseInt(h.slice(2, 4), 16);
   const b = parseInt(h.slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-// ----------------------------------------------------------------------------
-// Global bridge — mirror the full public surface onto the global object so the
-// still-classic editor scripts (which call these as bare globals) and the
-// already-migrated modules (getBlockStateColor) keep resolving them. Guarded
-// for Node (Vitest). Removed in the Decommission wave.
-if (typeof window !== 'undefined') {
-  Object.assign(window as unknown as Record<string, unknown>, {
-    formatBlockDirection,
-    renderAttributes,
-    getTrackExits,
-    getNeighborPosition,
-    getTrackBitsForOrientation,
-    detectOrientation,
-    calculateNextTile,
-    renderHeaderId,
-    renderPropertyItem,
-    renderReadOnlyValue,
-    showConfirmModal,
-    showFormModal,
-    showPromptModal,
-    renderBitToggle,
-    deriveAvailabilityState,
-    availabilityStateToFlags,
-    renderAvailabilitySegment,
-    validatePriorityInput,
-    bindAvailabilitySegment,
-    deriveDirectionState,
-    directionStateToPayload,
-    renderDirectionSegment,
-    bindDirectionSegment,
-    renderTileItem,
-    renderTileList,
-    getBlockStateColor,
-  });
 }
