@@ -1329,6 +1329,29 @@ class TrainController:
         is no live span."""
         return self._orientation_for_head_end(self._head_end_label())
 
+    def get_span_end_exits(self) -> List[Tuple[Tuple[int, int], str]]:
+        """Both physical span ends as ``(tile, outward_edge)`` pairs.
+
+        ``outward_edge`` is the network edge pointing away from the body at
+        that end — the direction the train would move if it left through that
+        end (forward out of one end, reverse out of the other). Cab-independent:
+        both ends are always reported. Returns an empty list when there is no
+        live span. Used by ``PathDispatcher.get_reachable_endpoints_for_train``
+        to seed span-aware reachability for the Quick Route tool.
+        """
+        span = getattr(self.physics_sync, "current_span", None)
+        if span is None:
+            return []
+        seeds: List[Tuple[Tuple[int, int], str]] = []
+        for label, loc in (("end_a", span.end_a), ("end_b", span.end_b)):
+            if loc is None or getattr(loc, "tile", None) is None:
+                continue
+            direction = self._orientation_for_head_end(label)
+            edge = self._direction_to_edge(direction) if direction is not None else None
+            if edge:
+                seeds.append(((int(loc.tile[0]), int(loc.tile[1])), edge))
+        return seeds
+
     def _get_head_tile(self) -> Optional[Tuple[int, int]]:
         """Head tile, derived from (cab, current_span), or None when no span."""
         loc = self._head_span_locator()
@@ -3163,6 +3186,26 @@ class TrainController:
                 if self.route_executor is not None
                 and self.route_executor.execution_state_for(self.train_id) is not None
                 else None
+            ),
+            # Live "current path error" projection for the train panel badge
+            # and the Quick Route no-path toast. Surfaces the active
+            # RouteRun.last_error ONLY while the train currently has no live
+            # authority (path_backed_run_active is False). A successful
+            # acquisition clears last_error (RouteExecutor), and a live path
+            # suppresses it here, so this reflects a CURRENT inability to route
+            # rather than a stale historical error.
+            "path_error": (
+                (lambda es: (
+                    es.last_error.to_dict()
+                    if es is not None
+                    and getattr(es, "last_error", None) is not None
+                    and not self.path_projection.path_backed_run_active
+                    else None
+                ))(
+                    self.route_executor.execution_state_for(self.train_id)
+                    if self.route_executor is not None
+                    else None
+                )
             ),
         }
 

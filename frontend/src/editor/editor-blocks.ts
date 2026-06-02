@@ -23,7 +23,6 @@ export class BlockEditorHandler {
   _blockId: string | null;
   _unsubscribe: (() => void) | null;
   _localState: any;
-  _isDirty: boolean;
   _isUserInteracting: boolean;
 
   constructor(editor: EditorHost) {
@@ -31,7 +30,6 @@ export class BlockEditorHandler {
     this._blockId = null;
     this._unsubscribe = null;
     this._localState = null;
-    this._isDirty = false;
     this._isUserInteracting = false; // For tile picker drag operations
   }
 
@@ -832,7 +830,6 @@ export class BlockEditorHandler {
     this._cleanup();
     this._blockId = blockId;
     this._localState = JSON.parse(JSON.stringify(blockData));
-    this._isDirty = false;
 
     this._unsubscribe =
       stateManager?.subscribe(
@@ -862,8 +859,6 @@ export class BlockEditorHandler {
       return;
     }
 
-    if (this._isDirty) return;
-
     this._localState = JSON.parse(JSON.stringify(newBlock));
   }
 
@@ -874,7 +869,6 @@ export class BlockEditorHandler {
     }
     this._blockId = null;
     this._localState = null;
-    this._isDirty = false;
     this._isUserInteracting = false;
   }
 }

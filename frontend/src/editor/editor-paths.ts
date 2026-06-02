@@ -154,7 +154,10 @@ export class PathEditorHandler {
 
     try {
       setStatusState('Path: Loading destinations...');
-      const result = await this.api.getReachableEndpoints(blockId);
+      // Span-aware reachability: only tiles the train can actually reach
+      // forward out of its head or in reverse out of its tail, never back
+      // through its own body (e.g. switches the body is spanning in a depot).
+      const result = await this.api.getReachableEndpointsForTrain(this.pathToolState.trainId);
       this.pathToolState.reachableEndpoints = result.reachable_endpoints || [];
 
       this.buildReachablePositionsSet();
@@ -247,12 +250,48 @@ export class PathEditorHandler {
       showToast(`Quick Route assigned to ${trainId}`, 'success', 5000);
       await window.app?.refreshNetwork();
       await this.resetRouteToolState();
+      // The path is acquired asynchronously by the sim loop; if it can't be
+      // found, surface that instead of leaving the train idle with no feedback.
+      void this.watchQuickRoutePathResult(trainId);
     } catch (err: any) {
       if (routeCreated) {
         await this.deleteRouteBestEffort(routeId);
       }
       console.error('[Editor] Quick Route failed:', err);
       showToast('Quick Route failed: ' + err.message, 'error', 5000);
+    }
+  }
+
+  /**
+   * After a Quick Route is assigned, the path is acquired asynchronously in
+   * the simulation loop. Poll the train's live controller state briefly and
+   * toast if a path error appears; stop early once the train has authority.
+   * Best-effort: failures to fetch are ignored, and a paused sim simply times
+   * out without a toast (no tick means no acquisition attempt to report on).
+   */
+  async watchQuickRoutePathResult(trainId: string): Promise<void> {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      let controller: any = null;
+      try {
+        const data = await this.api.getTrain(trainId);
+        controller = data?.controller;
+      } catch {
+        continue;
+      }
+      if (!controller) {
+        continue;
+      }
+      // Train acquired authority — nothing to report.
+      if (controller.path_backed_run_active || controller.assigned_path_id) {
+        return;
+      }
+      const pathError = controller.path_error;
+      if (pathError && pathError.text) {
+        showToast(`${trainId} could not find a path: ${pathError.text}`, 'error', 8000);
+        return;
+      }
     }
   }
 

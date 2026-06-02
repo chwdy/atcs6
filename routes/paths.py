@@ -456,3 +456,32 @@ def register(app, state: AppState) -> None:
                 "count": len(reachable),
             }
         )
+
+    @app.route("/api/dispatcher/reachable-for-train/<train_id>", methods=["GET"])
+    def get_reachable_endpoints_for_train(train_id):
+        """Span-aware reachable endpoints for a placed train.
+
+        Unlike the block-keyed endpoint above (topological, any direction),
+        this answers where the train can actually go from its current span:
+        forward out of its head or in reverse out of its tail, never routing
+        back through its own body. Used by the Quick Route tool.
+        """
+        include_stations = (
+            request.args.get("include_stations", "true").lower() != "false"
+        )
+
+        if train_id not in state.network.trains:
+            return jsonify({"error": f"Train {train_id} not found"}), 404
+
+        with state.simulation_lock:
+            reachable = state.path_dispatcher.get_reachable_endpoints_for_train(
+                train_id, include_stations=include_stations
+            )
+
+        return jsonify(
+            {
+                "train_id": train_id,
+                "reachable_endpoints": reachable,
+                "count": len(reachable),
+            }
+        )

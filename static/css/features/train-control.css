@@ -923,6 +923,12 @@
     border-left-color: var(--warning-color);
 }
 
+.tc-banner-danger {
+    color: var(--danger-color);
+    background-color: rgba(255, 70, 70, 0.10);
+    border-left-color: var(--danger-color);
+}
+
 /* ============================================================================
    MONITOR LINK + DISCLOSURE + DELETE TEXT-ACTION
    ============================================================================ */

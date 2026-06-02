@@ -360,6 +360,36 @@ class PathDispatcher:
             start_block_id, include_stations
         )
 
+    def get_reachable_endpoints_for_train(
+        self, train_id: str, include_stations: bool = True
+    ) -> List[str]:
+        """Span-aware reachable endpoints for a placed train.
+
+        Resolves the train's current span and its two end-outward edges via
+        its ``TrainController`` and delegates to
+        ``RailwayPathfinder.get_reachable_endpoints_for_span``. This is what
+        the Quick Route tool calls: the result is exactly the set of blocks
+        (and stations) the train can reach driving forward out of its head or
+        in reverse out of its tail, never routing back through its own body or
+        through a switch its body is sitting on. Returns an empty list when
+        the train has no controller or no live span.
+        """
+        ctrl = self._get_controller(train_id)
+        if ctrl is None:
+            return []
+        span = ctrl.get_current_span()
+        if span is None:
+            return []
+        seeds = ctrl.get_span_end_exits()
+        if not seeds:
+            return []
+        return self._pathfinder.get_reachable_endpoints_for_span(
+            head_seeds=seeds,
+            occupied_tiles=list(getattr(span, "occupied_tiles", None) or []),
+            occupied_blocks=list(getattr(span, "occupied_blocks", None) or []),
+            include_stations=include_stations,
+        )
+
     def get_reachable_endpoints_for_extension(
         self, path_id: str, include_stations: bool = True
     ) -> Tuple[List[str], Optional[str]]:
@@ -1599,20 +1629,48 @@ class PathDispatcher:
         ResourceCoordinator facade.
 
         Only blocks this path still owns are handed to the coordinator (see
-        `_blocks_still_reserved_by`). Switch rollback is already scoped to
-        path-owned locks by `release_path_locks_for_switches(...)`.
+        `_blocks_still_reserved_by`). Switch rollback is scoped to this
+        segment's primary switches and the flank locks they placed on
+        neighbours, via `SwitchManager.release_segment_locks(...)`.
+
+        Resources already committed to this path's live `resource_sequence` are
+        excluded: a failed acquire/extend rolls back only the holds it newly
+        placed, never the live path's existing authority. A blocked BEST_EFFORT
+        `extend_path(...)` re-walks the seam block — the current authority-end,
+        already reserved and already in `resource_sequence` — inside its
+        extension segment; without this guard the rollback would release that
+        seam's reservation while it stays in the authority, leaving a
+        not-yet-entered authority block unreserved. design_new.md:1059 / :1062
+        require a blocked extend to keep the live path unchanged, and :179 says
+        the dispatcher owns the reservation for every not-yet-entered authority
+        resource. For `create_path(...)` the path record is not yet in
+        `paths_by_id` when its acquire-failure rollback runs, so the exclusion
+        set is empty and the full segment is released as before.
         """
         coordinator = getattr(self.network, "resource_coordinator", None)
         if coordinator is None:
             return
+        committed_resource_ids: Set[str] = set()
+        live_path = self.paths_by_id.get(path_id)
+        if live_path is not None:
+            committed_resource_ids = {
+                entry.resource_id for entry in live_path.resource_sequence
+            }
         switch_ids: List[str] = []
         for pos in segment.required_switches.keys():
             switch_entity = self._resolve_switch_at_position(pos)
             if switch_entity is None:
                 continue
+            if switch_entity.switch_id in committed_resource_ids:
+                continue
             switch_ids.append(switch_entity.switch_id)
+        block_ids = [
+            bid
+            for bid in self._blocks_still_reserved_by(segment.blocks, path_id)
+            if bid not in committed_resource_ids
+        ]
         coordinator.rollback_segment(
-            block_ids=self._blocks_still_reserved_by(segment.blocks, path_id),
+            block_ids=block_ids,
             switch_ids=switch_ids,
             path_id=path_id,
         )
@@ -1693,6 +1751,54 @@ class PathDispatcher:
                 return segment.blocks.index(block_id) + 1
         return None
 
+    def _terminal_traps_reversing_occupant(
+        self,
+        next_block_id: str,
+        terminal_block_id: str,
+        train_id: str,
+    ) -> bool:
+        """True if ending best-effort authority at `terminal_block_id` would
+        trap the train occupying `next_block_id`.
+
+        The trap exists only when `next_block_id` is occupied by a *stopped*
+        train (one with no live authority of its own — a moving occupant
+        vacates forward under its own path) whose next route move leaves
+        `next_block_id` through `terminal_block_id`. In that case the follower
+        would hold the terminal block to go in while the occupant needs that
+        same block to come out, and neither could move. This is the canonical
+        reversal-trap exclusion home cross-referenced from design_new.md
+        best-effort `create_path()` (item 11).
+
+        Only the occupant's *immediate* exit block is tested, so an occupant
+        that leaves `next_block_id` forward (an ordinary platform pass-through)
+        never restricts the follower.
+        """
+        block = self.network.blocks.get(next_block_id)
+        if block is None:
+            return False
+        occ = block.occupied_by
+        if not occ or occ == train_id:
+            return False
+        # A moving occupant already holds authority and will clear forward.
+        if self.get_active_path(occ) is not None:
+            return False
+        sc = self.simulation_controller
+        route_executor = getattr(sc, "route_executor", None) if sc else None
+        if route_executor is None:
+            return False
+        occ_target = route_executor.find_next_move_target(occ)
+        if not occ_target:
+            return False
+        candidates = self._find_walk_candidates(next_block_id, occ_target, occ)
+        if not candidates:
+            return False
+        occ_blocks = candidates[0].walk.blocks
+        try:
+            i = occ_blocks.index(next_block_id)
+        except ValueError:
+            return False
+        return i + 1 < len(occ_blocks) and occ_blocks[i + 1] == terminal_block_id
+
     def _best_effort_truncate(
         self,
         segment: PathSegment,
@@ -1719,6 +1825,23 @@ class PathDispatcher:
             start = max(2, min(start_at_block_count, max_prefix))
         for prefix_block_count in range(start, 1, -1):
             prefix_blocks = segment.blocks[:prefix_block_count]
+            # Reversal-trap exclusion (design_new.md best-effort
+            # `create_path()`, item 11): if the next, blocked block is occupied
+            # by a stopped train whose next route move would leave it back
+            # through this terminal block, parking here would trap the two
+            # trains nose-to-nose. Truncate to a shorter prefix instead.
+            # `prefix_block_count` can exceed the block count when `start` was
+            # clamped up to the 2-block floor on a short segment; there is no
+            # dropped "next" block then, so there is nothing to trap on.
+            if (
+                prefix_block_count < len(segment.blocks)
+                and self._terminal_traps_reversing_occupant(
+                    next_block_id=segment.blocks[prefix_block_count],
+                    terminal_block_id=prefix_blocks[-1],
+                    train_id=train_id,
+                )
+            ):
+                continue
             # Compute prefix tile cutoff. Block tiles are kept while their
             # block_section_id is in `prefix_blocks`. A switch tile is kept
             # only when the next non-switch tile in path order belongs to a

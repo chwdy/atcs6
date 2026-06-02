@@ -163,6 +163,65 @@ class RouteTargetResolver:
             resolved_target=resolved,
         )
 
+    def find_next_move_target(self, train_id: str) -> Optional[str]:
+        """Resolve the block this train will path to on its next *move*,
+        skipping any `dwell` tasks at the current walk position.
+
+        Read-only, like `find_next_task_target(...)`. Returns the resolved
+        target `block_id` of the first `stop` / `waypoint` task at or after the
+        train's next planning index, or `None` when there is no such task or it
+        cannot be resolved. Best-effort truncation uses this to tell whether a
+        stopped occupant's next move would reverse back through a candidate
+        terminal block (see the reversal-trap exclusion under best-effort
+        `create_path()` in design_new.md).
+
+        ROUND_TRIP direction flips at route ends are not modelled here; the
+        walk steps forward (with CIRCULAR wraparound) from the next planning
+        index, which is exact for the common `[stop, dwell, stop, ...]` layout
+        and at worst returns `None`, leaving truncation at today's behavior.
+        """
+        e = self._e
+        train = (
+            e.network.trains.get(train_id)
+            if hasattr(e.network, "trains")
+            else None
+        )
+        if train is None:
+            return None
+        route_id = e.assigned_route_id_for(train_id)
+        if not route_id:
+            return None
+        route = e.route_registry.get(route_id)
+        if route is None:
+            return None
+        exec_state = e.execution_states.get(train_id)
+        if exec_state is None:
+            return None
+        task_count = route.get_task_count() if hasattr(route, "get_task_count") else 0
+        if task_count == 0:
+            return None
+        start = self.compute_next_task_index(route, exec_state, task_count)
+        if start is None:
+            return None
+
+        for step in range(task_count):
+            if route.mode == RouteMode.CIRCULAR:
+                idx = (start + step) % task_count
+            else:
+                idx = start + step
+                if idx >= task_count:
+                    break
+            task = route.get_task_at(idx)
+            if task is None:
+                break
+            if task.task_kind == "dwell":
+                continue
+            block, _reason = self.resolve_task_target_block_detailed(
+                task, train=train
+            )
+            return block
+        return None
+
     # ------------------------------------------------------------------
     # Task-location → block resolution
     # ------------------------------------------------------------------

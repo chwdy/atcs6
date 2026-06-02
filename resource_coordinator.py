@@ -135,14 +135,21 @@ class ResourceCoordinator:
         switch_ids: List[str],
         path_id: str,
     ) -> None:
-        """Release any partial holds placed on a segment that failed mid-flight."""
+        """Release any partial holds placed on a segment that failed mid-flight.
+
+        `switch_ids` are the segment's primary (main-usage) switches; the
+        switch release also drops the flank locks those primaries placed on
+        neighbours, keyed by `(path_id, primary_id)`, via
+        `SwitchManager.release_segment_locks(...)`. A coarse path-wide release
+        would miss flank neighbours (they are not in `switch_ids`).
+        """
         if block_ids:
             self.block_manager.release_path_block_reservations(
                 list(block_ids), path_id, completed=False
             )
         if switch_ids:
-            self.switch_manager.release_path_locks_for_switches(
-                list(switch_ids), path_id
+            self.switch_manager.release_segment_locks(
+                path_id, list(switch_ids)
             )
 
     def release_path_resources(

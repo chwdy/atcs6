@@ -1340,6 +1340,18 @@ class RouteExecutor:
             exec_state.last_error = err
             return False
 
+        # Authority acquisition succeeded for this task. Clear any prior error
+        # on the run and on the just-acquired task row so the live "current
+        # path error" projection (train-panel badge / Quick Route no-path
+        # toast, derived from `RouteRun.last_error` in `TrainController.to_dict`)
+        # reflects only a CURRENT inability to route, not a stale earlier
+        # failure that has since been resolved.
+        if exec_state.last_error is not None:
+            exec_state.last_error = None
+        success_row_idx = projection.walk_position
+        if 0 <= success_row_idx < len(exec_state.task_runs):
+            exec_state.task_runs[success_row_idx].last_error = None
+
         # Fix (deviation guard): insert any start-block tiles that lie between
         # the train's current head tile and the path segment's first tile into
         # the first resource entry's path_tiles, in the correct traversal
@@ -1895,6 +1907,15 @@ class RouteExecutor:
         return self._get_route_target_resolver().find_next_task_target(
             train_id, exclude=exclude
         )
+
+    def find_next_move_target(self, train_id: str) -> Optional[str]:
+        """Forward to `RouteTargetResolver.find_next_move_target(...)`.
+
+        Public because `PathDispatcher` calls it (through
+        `simulation_controller.route_executor`) during best-effort truncation
+        to detect the reversal-trap case.
+        """
+        return self._get_route_target_resolver().find_next_move_target(train_id)
 
     def _resolve_task_target_block(
         self,

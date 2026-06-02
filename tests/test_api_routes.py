@@ -756,6 +756,11 @@ class TestPathRoutes:
         response = client.get("/api/dispatcher/reachable/BLK_001")
         assert response.status_code == 200
 
+    def test_get_reachable_endpoints_for_train_unknown(self, client, app_state, network_with_tracks):
+        """GET /api/dispatcher/reachable-for-train/<train_id> 404s for an unknown train."""
+        response = client.get("/api/dispatcher/reachable-for-train/NO_SUCH_TRAIN")
+        assert response.status_code == 404
+
 
 # ============================================================================
 # Misc Routes Tests (33 routes - testing key endpoints)

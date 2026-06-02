@@ -19,8 +19,6 @@ import {
 } from '../lib/pathfinders';
 import {
   showConfirmModal,
-  renderDirectionSegment,
-  bindDirectionSegment,
   renderBitToggle,
   getBlockStateColor,
 } from '../lib/helpers';
@@ -751,6 +749,13 @@ export class Editor {
 
         this.selectedTool = newTool;
         this.previewPath = null;
+        this.previewTracks = null;
+        // Drop any lingering build/hover ghost from the previous tool.
+        this.renderer.setBuildPreview(null);
+        this.renderer.setHoverPreview(null);
+        this.hoverPosition = null;
+        this.hoverValid = false;
+        this.renderer.requestRedraw();
 
         // Auto-expand the category containing the selected tool
         this.expandCategoryForTool(newTool);
@@ -888,6 +893,19 @@ export class Editor {
       }
     });
 
+    // Mouse leaves the canvas - drop the signal/platform hover ghost so it
+    // doesn't stick at its last position (the renderer holds preview state
+    // now, so it won't clear on its own). A build drag keeps going via the
+    // document-level mouseup, so its preview is intentionally left alone.
+    canvas.addEventListener('mouseleave', () => {
+      if (this.hoverPosition) {
+        this.hoverPosition = null;
+        this.hoverValid = false;
+        this.renderer.setHoverPreview(null);
+        this.renderer.requestRedraw();
+      }
+    });
+
     // Mouse up - commit drag build. Listen on document so an off-canvas
     // release still resets the drag/pan state.
     document.addEventListener('mouseup', async (e) => {
@@ -990,8 +1008,10 @@ export class Editor {
         this.forcedEndSegment = null;
         const hadPreview = this.previewPath !== null;
         this.previewPath = null;
+        this.previewTracks = null;
+        this.renderer.setBuildPreview(null);
 
-        if (!onCanvas && hadPreview && this.cachedNetwork) {
+        if (hadPreview && this.cachedNetwork) {
           this.renderer.requestRedraw();
         }
       }
@@ -1011,6 +1031,7 @@ export class Editor {
         this.previewTracks = null;
         this.lastValidPreviewPath = null;
         this.lastValidPreviewTracks = null;
+        this.renderer.setBuildPreview(null);
         if (this.cachedNetwork) {
           this.renderer.requestRedraw();
         }
@@ -1378,11 +1399,13 @@ export class Editor {
       this.previewTracks = null;
     }
 
-    // Redraw with preview
+    // Push the preview overlay to the renderer and request a redraw. The
+    // renderer paints it in _drawLive, so it survives the rAF-coalesced flush.
+    // (Drawing it synchronously here would be wiped when the flush clears the
+    // live canvas — see renderer setBuildPreview / _drawLive.)
     if (this.cachedNetwork) {
-      this.renderer.requestRedraw();
       if (this.previewTracks && this.previewTracks.length > 0) {
-        this.renderer.trackHandler.drawPreviewTracks(this.previewTracks);
+        this.renderer.setBuildPreview({ kind: 'tracks', tracks: this.previewTracks });
       } else if (
         ['eraser', 'remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool) &&
         this.previewPath
@@ -1390,12 +1413,15 @@ export class Editor {
         const tracks = this.cachedNetwork?.tracks || [];
         const trackKeys = new Set(tracks.map((t: any) => `${t.x},${t.y}`));
         const filtered = this.previewPath.filter((p: any) => trackKeys.has(`${p.x},${p.y}`));
-        this.renderer.trackHandler.drawEraserPreviewPath(filtered);
+        this.renderer.setBuildPreview({ kind: 'eraser', path: filtered });
       } else if (['block', 'extend-block', 'extend-platform'].includes(this.selectedTool) && this.previewPath) {
-        this.renderer.blockHandler.drawBlockPreviewPath(this.previewPath);
+        this.renderer.setBuildPreview({ kind: 'block', path: this.previewPath });
       } else if (this.previewPath) {
-        this.renderer.trackHandler.drawPreviewPath(this.previewPath);
+        this.renderer.setBuildPreview({ kind: 'path', path: this.previewPath });
+      } else {
+        this.renderer.setBuildPreview(null);
       }
+      this.renderer.requestRedraw();
     }
   }
 
@@ -1895,9 +1921,12 @@ export class Editor {
       }
     }
 
-    await this.refreshAndSelect(gridPos);
+    // Clear the placement ghost before the refresh redraw repaints the live
+    // layer, otherwise the stale hover preview would survive the flush.
     this.hoverPosition = null;
     this.hoverValid = false;
+    this.renderer.setHoverPreview(null);
+    await this.refreshAndSelect(gridPos);
   }
 
   // Update hover preview for signal/platform tools
@@ -1905,6 +1934,7 @@ export class Editor {
     if (!['signal', 'platform'].includes(this.selectedTool)) {
       this.hoverPosition = null;
       this.hoverValid = false;
+      this.renderer.setHoverPreview(null);
       return;
     }
 
@@ -2013,10 +2043,10 @@ export class Editor {
     return false;
   }
 
-  // Redraw network with hover preview overlay
+  // Push the hover preview overlay to the renderer (painted in _drawLive so
+  // it survives the rAF-coalesced flush) and request a redraw.
   drawWithHoverPreview(): void {
     if (!this.cachedNetwork) return;
-    this.renderer.requestRedraw();
 
     if (this.hoverPosition) {
       let trackBits = null;
@@ -2027,14 +2057,17 @@ export class Editor {
         trackBits = existingTrack?.track_bits || null;
       }
 
-      this.renderer.trackHandler.drawHoverPreview(
-        this.hoverPosition,
-        this.selectedTool,
-        this.hoverValid,
-        this.previewSignalDirection,
-        trackBits
-      );
+      this.renderer.setHoverPreview({
+        gridPos: this.hoverPosition,
+        toolType: this.selectedTool,
+        isValid: this.hoverValid,
+        signalDirection: this.previewSignalDirection,
+        trackBits,
+      });
+    } else {
+      this.renderer.setHoverPreview(null);
     }
+    this.renderer.requestRedraw();
   }
 
   async handleRightClick(gridPos: any): Promise<void> {
@@ -2209,6 +2242,50 @@ export class Editor {
                 ${isForbidden ? '<div class="text-xs text-danger mt-8 font-bold">⚠ FORBIDDEN CONFIGURATION</div>' : ''}
             </div>
 
+            ${(() => {
+              const trainsAtTile =
+                this.cachedNetwork && this.cachedNetwork.trains
+                  ? this.cachedNetwork.trains.filter((t: any) => {
+                      const span = stateManager?.getController(t.id)?.span;
+                      if (span && span.occupied_tiles) {
+                        return span.occupied_tiles.some((tile: any) => tile[0] === track.x && tile[1] === track.y);
+                      }
+                      return false;
+                    })
+                  : [];
+              if (trainsAtTile.length === 0) return '';
+              return `
+                <div class="property-group-header">Train</div>
+                ${trainsAtTile
+                  .map((train: any) => {
+                    const controller: any = stateManager?.getController(train.id);
+                    const dotColor =
+                      controller?.control_mode === 'manual'
+                        ? 'var(--warning-color)'
+                        : controller?.state === 'running_moving'
+                          ? 'var(--success-color)'
+                          : controller?.state === 'running_at_station'
+                            ? 'var(--info-color)'
+                            : controller?.state === 'idle'
+                              ? 'var(--text-secondary)'
+                              : 'var(--danger-color)';
+                    return `
+                <div class="property-item-row">
+                    <div class="train-summary-row">
+                        <div class="train-status-dot" style="background-color: ${dotColor}"></div>
+                        <div class="train-info">
+                            <span class="train-id">${train.id}</span>
+                            <span class="train-state">${controller?.state || 'unknown'}</span>
+                        </div>
+                        <button class="edit-btn edit-train-btn" data-train-id="${train.id}">Edit</button>
+                    </div>
+                </div>
+                `;
+                  })
+                  .join('')}
+                `;
+            })()}
+
             ${
               track.switch_points && Object.keys(track.switch_points).length > 0
                 ? (() => {
@@ -2284,15 +2361,6 @@ export class Editor {
                         <button class="edit-btn edit-block-btn" data-block-id="${track.block_section_id}">Edit</button>
                     </div>
                 </div>
-                ${
-                  block
-                    ? `
-                <div class="property-item-row">
-                    ${renderDirectionSegment('block', block, { idBase: 'prop-block-direction' })}
-                </div>
-                `
-                    : ''
-                }
                 `;
                   })()
                 : ''
@@ -2321,49 +2389,6 @@ export class Editor {
                 : ''
             }
 
-            ${(() => {
-              const trainsAtTile =
-                this.cachedNetwork && this.cachedNetwork.trains
-                  ? this.cachedNetwork.trains.filter((t: any) => {
-                      const span = stateManager?.getController(t.id)?.span;
-                      if (span && span.occupied_tiles) {
-                        return span.occupied_tiles.some((tile: any) => tile[0] === track.x && tile[1] === track.y);
-                      }
-                      return false;
-                    })
-                  : [];
-              if (trainsAtTile.length === 0) return '';
-              return `
-                <div class="property-group-header">Train</div>
-                ${trainsAtTile
-                  .map((train: any) => {
-                    const controller: any = stateManager?.getController(train.id);
-                    const dotColor =
-                      controller?.control_mode === 'manual'
-                        ? 'var(--warning-color)'
-                        : controller?.state === 'running_moving'
-                          ? 'var(--success-color)'
-                          : controller?.state === 'running_at_station'
-                            ? 'var(--info-color)'
-                            : controller?.state === 'idle'
-                              ? 'var(--text-secondary)'
-                              : 'var(--danger-color)';
-                    return `
-                <div class="property-item-row">
-                    <div class="train-summary-row">
-                        <div class="train-status-dot" style="background-color: ${dotColor}"></div>
-                        <div class="train-info">
-                            <span class="train-id">${train.id}</span>
-                            <span class="train-state">${controller?.state || 'unknown'}</span>
-                        </div>
-                        <button class="edit-btn edit-train-btn" data-train-id="${train.id}">Edit</button>
-                    </div>
-                </div>
-                `;
-                  })
-                  .join('')}
-                `;
-            })()}
             ${
               track.occupied_by
                 ? `
@@ -2422,7 +2447,7 @@ export class Editor {
   }
 
   // Initialize block summary edit button handler
-  async initBlockEditor(track: any): Promise<void> {
+  initBlockEditor(track: any): void {
     if (!track.block_section_id) return;
 
     const editBtn = document.querySelector(
@@ -2433,24 +2458,6 @@ export class Editor {
         this.showBlockEditor(track.block_section_id);
       };
     }
-
-    const blockId = track.block_section_id;
-    bindDirectionSegment('prop-block-direction', async (_state, payload) => {
-      try {
-        const result = await this.api.updateBlock(blockId, payload);
-        if (result && result.error) {
-          showToast(`Cannot change travel direction: ${result.error}`, 'error', 4000);
-          this.updatePropertiesPanel(this.selectedElement);
-        } else {
-          showToast(`Block ${blockId} travel direction updated`, 'info', 1500);
-          await window.app?.refreshNetwork();
-        }
-      } catch (err: any) {
-        console.error('Failed to update block travel direction:', err);
-        showToast(`Cannot change travel direction: ${err.message || err}`, 'error', 4000);
-        this.updatePropertiesPanel(this.selectedElement);
-      }
-    });
   }
 
   // Initialize switch edit button handler

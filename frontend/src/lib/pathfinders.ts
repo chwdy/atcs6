@@ -21,7 +21,7 @@ import {
 
 // ---- Light shapes the pathfinder reads off otherwise-dynamic objects --------
 
-interface Point {
+export interface Point {
   x: number;
   y: number;
 }
@@ -301,6 +301,17 @@ export class ConstructionPathfinder {
       return [start];
     }
 
+    // Bound the search to the start–end bounding box plus a margin. The grid is
+    // unbounded, so a target the square-corner / no-self-intersection rules make
+    // unreachable would otherwise fan A* across the plane forever (open set
+    // grows without limit). The margin dwarfs any 45° easing detour a
+    // point-to-point draw needs; beyond it there is no valid build to find.
+    const SEARCH_MARGIN = 24;
+    const boundMinX = Math.min(startX, endX) - SEARCH_MARGIN;
+    const boundMaxX = Math.max(startX, endX) + SEARCH_MARGIN;
+    const boundMinY = Math.min(startY, endY) - SEARCH_MARGIN;
+    const boundMaxY = Math.max(startY, endY) + SEARCH_MARGIN;
+
     const trackMap = new Map<string, TrackData>();
 
     if (existingTracks) {
@@ -329,25 +340,73 @@ export class ConstructionPathfinder {
       ? this.getExistingTrackDirections(startTrack.track_bits || 0)
       : [];
 
-    const openSet: AStarNode[] = [
-      {
-        pos: start,
-        g: 0,
-        h: this.heuristic(start, end),
-        f: this.heuristic(start, end),
-        parent: null,
-        fromDir: null,
-        prevTurnDir: null,
-      },
-    ];
+    // A* state is (tile, incoming direction): the same tile reached from a
+    // different direction is a distinct state, so the square-corner constraint
+    // below can route a tile a second way instead of dead-ending on the first.
+    const posOf = (x: number, y: number) => `${x},${y}`;
+    const stateOf = (x: number, y: number, dir: string | null) => `${x},${y},${dir ?? '_'}`;
+
+    // Open set as an array (linear extract-min) plus a state->node map for O(1)
+    // lookup. The (x,y,dir) state quadruples the search vs a plain tile A*, so
+    // the old sort-every-pop + linear find would make long drags janky.
+    const startNode: AStarNode = {
+      pos: start,
+      g: 0,
+      h: this.heuristic(start, end),
+      f: this.heuristic(start, end),
+      parent: null,
+      fromDir: null,
+      prevTurnDir: null,
+    };
+    const openSet: AStarNode[] = [startNode];
+    const openMap = new Map<string, AStarNode>([[stateOf(start.x, start.y, null), startNode]]);
     const closedSet = new Set<string>();
 
+    const tileSkipsSegment = (t: TrackData | undefined): boolean =>
+      !!(t && (t.type === 'signal' || t.signal_state || t.type === 'station' || t.station_id));
+
     while (openSet.length > 0) {
-      openSet.sort((a, b) => a.f - b.f);
-      const current = openSet.shift()!;
-      const key = `${current.pos.x},${current.pos.y}`;
+      // Extract-min by linear scan, then swap-remove from the array.
+      let minIdx = 0;
+      for (let i = 1; i < openSet.length; i++) {
+        if (openSet[i].f < openSet[minIdx].f) minIdx = i;
+      }
+      const current = openSet[minIdx];
+      openSet[minIdx] = openSet[openSet.length - 1];
+      openSet.pop();
+      const posKey = posOf(current.pos.x, current.pos.y);
+      const stateKey = stateOf(current.pos.x, current.pos.y, current.fromDir);
+      openMap.delete(stateKey);
 
       if (current.pos.x === end.x && current.pos.y === end.y) {
+        // The end tile lays a connecting segment too; reject this arrival if it
+        // would meet the penultimate tile at a 90° corner. Other arrivals (a
+        // different incoming direction) remain in the open set to be tried.
+        if (current.parent && current.fromDir !== null) {
+          const endTile = trackMap.get(posKey);
+          const penTile = trackMap.get(posOf(current.parent.pos.x, current.parent.pos.y));
+          if (!tileSkipsSegment(endTile) && !tileSkipsSegment(penTile)) {
+            const endAngle = this.endTileScreenAngle(
+              options.forcedEndSegment ?? null,
+              current.fromDir
+            );
+            const penAngle =
+              current.parent.fromDir === null
+                ? this.startTileScreenAngle(
+                    trackMap,
+                    current.parent.pos.x,
+                    current.parent.pos.y,
+                    options.forcedStartSegment ?? null,
+                    current.fromDir
+                  )
+                : this.tileScreenAngle(current.parent.fromDir, current.fromDir);
+            if (this.isSquareCornerAngle(penAngle, endAngle)) {
+              closedSet.add(stateKey);
+              continue;
+            }
+          }
+        }
+
         const path = this.reconstructPath(current);
         // alignZigzagTails inserts a tile adjacent to the end to make
         // zigzag endings look smooth; that insertion ignores R/T
@@ -357,7 +416,7 @@ export class ConstructionPathfinder {
         return this.alignZigzagTails(path, end);
       }
 
-      closedSet.add(key);
+      closedSet.add(stateKey);
 
       const neighbors = [
         { x: current.pos.x, y: current.pos.y + 1, dir: 'NORTH' },
@@ -367,10 +426,22 @@ export class ConstructionPathfinder {
       ];
 
       for (const neighbor of neighbors) {
-        const nKey = `${neighbor.x},${neighbor.y}`;
-        if (closedSet.has(nKey)) continue;
+        // Outside the bounded search region — keeps the search finite.
+        if (
+          neighbor.x < boundMinX ||
+          neighbor.x > boundMaxX ||
+          neighbor.y < boundMinY ||
+          neighbor.y > boundMaxY
+        ) {
+          continue;
+        }
 
-        const existingTrack = trackMap.get(nKey);
+        const nPosKey = posOf(neighbor.x, neighbor.y);
+        // closedSet is keyed on (tile, incoming direction); the neighbor would
+        // be entered moving neighbor.dir.
+        if (closedSet.has(stateOf(neighbor.x, neighbor.y, neighbor.dir))) continue;
+
+        const existingTrack = trackMap.get(nPosKey);
         const entryDir = this.getOppositeDir(neighbor.dir);
 
         // Forced start segment: the first move out of the start
@@ -405,6 +476,46 @@ export class ConstructionPathfinder {
           }
         }
 
+        // Square-corner avoidance: leaving `current` toward this neighbor fixes
+        // current's exit edge and therefore the screen angle of the segment it
+        // lays. Forbid the move if that segment would meet the previous tile's
+        // at a right angle — A* must instead ease the turn through a 45° NS/EW
+        // diagonal. Tiles that lay no segment (signals/stations) are exempt.
+        if (current.parent && current.fromDir !== null) {
+          const curTile = trackMap.get(posKey);
+          const parentTile = trackMap.get(posOf(current.parent.pos.x, current.parent.pos.y));
+          if (!tileSkipsSegment(curTile) && !tileSkipsSegment(parentTile)) {
+            const currentAngle = this.tileScreenAngle(current.fromDir, neighbor.dir);
+            const parentAngle =
+              current.parent.fromDir === null
+                ? this.startTileScreenAngle(
+                    trackMap,
+                    current.parent.pos.x,
+                    current.parent.pos.y,
+                    options.forcedStartSegment ?? null,
+                    current.fromDir
+                  )
+                : this.tileScreenAngle(current.parent.fromDir, current.fromDir);
+            if (this.isSquareCornerAngle(parentAngle, currentAngle)) {
+              continue;
+            }
+          }
+        }
+
+        // No self-intersection: a single drag must not cross its own tiles.
+        // Direction-state search can otherwise loop a tile back over an earlier
+        // one, which renders as a multi-segment switch (and hid a corner). If
+        // the only route would self-cross, A* finds none and the caller treats
+        // the build as not-yet-valid.
+        let ancestorCrosses = false;
+        for (let a: AStarNode | null = current; a; a = a.parent) {
+          if (a.pos.x === neighbor.x && a.pos.y === neighbor.y) {
+            ancestorCrosses = true;
+            break;
+          }
+        }
+        if (ancestorCrosses) continue;
+
         let moveCost = costs.straight;
         let turnDir: string | null = null;
 
@@ -430,7 +541,7 @@ export class ConstructionPathfinder {
         }
 
         if (current.fromDir) {
-          const currentTileTrack = trackMap.get(key);
+          const currentTileTrack = trackMap.get(posKey);
           const currentBits = currentTileTrack ? currentTileTrack.track_bits || 0 : 0;
           const newPathBit = this.getTrackBitForPath(current.fromDir, neighbor.dir);
           const switchType = this.detectSwitchType(currentBits, newPathBit);
@@ -445,7 +556,8 @@ export class ConstructionPathfinder {
         const h = this.heuristic(neighbor, end);
         const f = g + h;
 
-        const existing = openSet.find((n) => n.pos.x === neighbor.x && n.pos.y === neighbor.y);
+        const neighborStateKey = stateOf(neighbor.x, neighbor.y, neighbor.dir);
+        const existing = openMap.get(neighborStateKey);
         if (existing) {
           if (g < existing.g) {
             existing.g = g;
@@ -455,7 +567,7 @@ export class ConstructionPathfinder {
             existing.prevTurnDir = turnDir || current.prevTurnDir;
           }
         } else {
-          openSet.push({
+          const node: AStarNode = {
             pos: { x: neighbor.x, y: neighbor.y },
             g,
             h,
@@ -463,12 +575,29 @@ export class ConstructionPathfinder {
             parent: current,
             fromDir: neighbor.dir,
             prevTurnDir: turnDir || current.prevTurnDir,
-          });
+          };
+          openSet.push(node);
+          openMap.set(neighborStateKey, node);
         }
       }
     }
 
-    return this.diagonalLine(start, end);
+    // A* exhausted without an eased route. The diagonalLine fallback ignores
+    // existing track, so validate it: if it would lay a 90° corner (e.g. a
+    // forced start segment perpendicular to an adjacent target), there is no
+    // valid build — return null so the preview stays invalid.
+    const fallback = this.diagonalLine(start, end);
+    if (
+      this.pathHasSquareCorner(
+        fallback,
+        trackMap,
+        options.forcedStartSegment ?? null,
+        options.forcedEndSegment ?? null
+      )
+    ) {
+      return null;
+    }
+    return fallback;
   }
 
   heuristic(a: Point, b: Point): number {
@@ -523,6 +652,122 @@ export class ConstructionPathfinder {
       return null;
     }
     return turns[fromDir][toDir] || null;
+  }
+
+  // --- 90°-corner avoidance (octilinear easing) -----------------------------
+  // The render grid is rotated 45°, so each laid segment draws as one of four
+  // screen lines: NW/SE => 0° (horizontal), NS => 45° (╱), NE/SW => 90°
+  // (vertical), EW => 135° (╲). Two adjacent path tiles whose segments differ
+  // by 90° render as a "square corner" — the same shape isSquareCornerSwitch
+  // rejects inside one tile (see constants.ts). A* forbids it across tiles too,
+  // so every direction change is eased by a 45° NS/EW diagonal instead.
+
+  // Screen angle (0/45/90/135) of the segment joining two tile edges.
+  segScreenAngle(edgeA: string, edgeB: string): number {
+    const has = (a: string, b: string) =>
+      (edgeA === a && edgeB === b) || (edgeA === b && edgeB === a);
+    if (has('NORTH', 'SOUTH')) return 45; // NS ╱
+    if (has('EAST', 'WEST')) return 135; // EW ╲
+    if (has('NORTH', 'EAST') || has('SOUTH', 'WEST')) return 90; // NE/SW vertical
+    return 0; // NW or SE horizontal
+  }
+
+  // Do two screen angles meet at a right angle? (0↔90 or 45↔135.)
+  isSquareCornerAngle(a: number, b: number): boolean {
+    let d = Math.abs(a - b);
+    if (d > 90) d = 180 - d;
+    return d === 90;
+  }
+
+  // Angle of an interior tile entered by moving inDir and left by moving
+  // outDir: entry edge is opposite the arrival move, exit edge is the
+  // departure move (mirrors pathToTracks' prev&&next branch).
+  tileScreenAngle(inDir: string, outDir: string): number {
+    return this.segScreenAngle(this.getOppositeDir(inDir), outDir);
+  }
+
+  // The existing-track port that binds to an exit edge — mirror of the
+  // getConnectedPort helper inside pathToTracks' !prev&&next branch.
+  bindPortToExit(bits: number, exit: string): string | null {
+    if (bits & 1 && (exit === 'NORTH' || exit === 'SOUTH')) return exit === 'NORTH' ? 'SOUTH' : 'NORTH';
+    if (bits & 2 && (exit === 'EAST' || exit === 'WEST')) return exit === 'EAST' ? 'WEST' : 'EAST';
+    if (bits & 4 && (exit === 'NORTH' || exit === 'EAST')) return exit === 'NORTH' ? 'EAST' : 'NORTH';
+    if (bits & 8 && (exit === 'NORTH' || exit === 'WEST')) return exit === 'NORTH' ? 'WEST' : 'NORTH';
+    if (bits & 16 && (exit === 'SOUTH' || exit === 'EAST')) return exit === 'SOUTH' ? 'EAST' : 'SOUTH';
+    if (bits & 32 && (exit === 'SOUTH' || exit === 'WEST')) return exit === 'SOUTH' ? 'WEST' : 'SOUTH';
+    return null;
+  }
+
+  // Angle of the START tile's connecting segment when the path leaves via
+  // outDir. Mirrors pathToTracks' !prev&&next branch: a forced segment, else
+  // the existing track's port that binds to outDir, else the default
+  // opposite-edge stub (always a 45° diagonal, which never corners).
+  startTileScreenAngle(
+    trackMap: Map<string, TrackData>,
+    x: number,
+    y: number,
+    forcedStart: string | null,
+    outDir: string
+  ): number {
+    if (forcedStart && FORCED_SEGMENT_PORTS[forcedStart]) {
+      const [p1, p2] = FORCED_SEGMENT_PORTS[forcedStart];
+      return this.segScreenAngle(p1, p2);
+    }
+    const existing = trackMap.get(`${x},${y}`);
+    if (existing && existing.track_bits) {
+      const port = this.bindPortToExit(existing.track_bits, outDir);
+      if (port) return this.segScreenAngle(port, outDir);
+    }
+    return this.segScreenAngle(this.getOppositeDir(outDir), outDir);
+  }
+
+  // Angle of the END tile's connecting segment, arrived at by moving arriveDir.
+  // Mirrors pathToTracks' prev&&!next branch's forced/default cases (the
+  // opposite-edge stub is a 45° diagonal).
+  endTileScreenAngle(forcedEnd: string | null, arriveDir: string): number {
+    if (forcedEnd && FORCED_SEGMENT_PORTS[forcedEnd]) {
+      const [p1, p2] = FORCED_SEGMENT_PORTS[forcedEnd];
+      return this.segScreenAngle(p1, p2);
+    }
+    const entryEdge = this.getOppositeDir(arriveDir);
+    return this.segScreenAngle(entryEdge, this.getOppositeDir(entryEdge));
+  }
+
+  // Does a finished path lay any two adjacent tiles at a 90° screen corner?
+  // Uses each tile's path-local segment (in/out moves, or the junction segment
+  // at the ends), so it is the ground-truth gate for fallbacks that the
+  // constrained search does not produce (e.g. diagonalLine). Tiles that lay no
+  // segment (signals/stations) break the run, matching pathToTracks.
+  pathHasSquareCorner(
+    path: Point[],
+    trackMap: Map<string, TrackData>,
+    forcedStart: string | null,
+    forcedEnd: string | null
+  ): boolean {
+    let prevAngle: number | null = null;
+    for (let i = 0; i < path.length; i++) {
+      const p = path[i];
+      const tile = trackMap.get(`${p.x},${p.y}`);
+      if (tile && (tile.type === 'signal' || tile.signal_state || tile.type === 'station' || tile.station_id)) {
+        prevAngle = null;
+        continue;
+      }
+      const prev = i > 0 ? path[i - 1] : null;
+      const next = i < path.length - 1 ? path[i + 1] : null;
+      let angle: number;
+      if (prev && next) {
+        angle = this.tileScreenAngle(getDirection(prev, p)!, getDirection(p, next)!);
+      } else if (next) {
+        angle = this.startTileScreenAngle(trackMap, p.x, p.y, forcedStart, getDirection(p, next)!);
+      } else if (prev) {
+        angle = this.endTileScreenAngle(forcedEnd, getDirection(prev, p)!);
+      } else {
+        continue;
+      }
+      if (prevAngle !== null && this.isSquareCornerAngle(prevAngle, angle)) return true;
+      prevAngle = angle;
+    }
+    return false;
   }
 
   reconstructPath(node: AStarNode): Point[] {

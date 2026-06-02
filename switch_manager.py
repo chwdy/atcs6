@@ -20,7 +20,7 @@ release, and physical-entry handling. It mirrors `BlockManager`'s contract:
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, Set, TYPE_CHECKING
 
 from runtime_payloads import (
     FatalPhysicalEntryConflict,
@@ -168,6 +168,38 @@ class SwitchManager:
         primary_switch_ids = {
             req.switch_id for req in requests if req.source_switch_id is None
         }
+
+        # Same-path conflict exemption (the switch-"triangle" case). Pre-compute
+        # the safe_state that each primary's flank protection would demand of
+        # each non-route-point neighbour. When two primaries on THIS path demand
+        # opposite states of the same neighbour, no single position aims that
+        # neighbour away from both route points: it sits at the apex of a switch
+        # triangle with one route point on each of its two diverging legs (e.g.
+        # the depot-lead crossover apex, whose legs reach SW_LEAD on the
+        # mainline and SW_8_10 on the N track). It therefore cannot flank-protect
+        # this path at all, and locking it to either state would reject one
+        # route point's own primary. Leave it unlocked rather than fail the
+        # segment — the path's own block and switch reservations still keep a
+        # second train from intruding through it. This generalises the
+        # route-point exemption below (design_new.md "switch-first acquisition
+        # step"): a path is never blocked by its own flank protection.
+        flank_demands: Dict[str, Set[int]] = {}
+        for req in requests:
+            if req.source_switch_id is not None:
+                continue
+            main_switch = self._switch_registry.get(req.switch_id)
+            if main_switch is None:
+                continue
+            for neighbour_switch_id, blocking_state in main_switch.flank_protection:
+                if neighbour_switch_id in primary_switch_ids:
+                    continue
+                flank_demands.setdefault(neighbour_switch_id, set()).add(
+                    1 - blocking_state
+                )
+        conflicted_neighbours = {
+            nid for nid, states in flank_demands.items() if len(states) > 1
+        }
+
         expanded: List[SwitchLockRequest] = []
         for req in requests:
             expanded.append(req)
@@ -179,9 +211,15 @@ class SwitchManager:
                 continue
             for neighbour_switch_id, blocking_state in main_switch.flank_protection:
                 if neighbour_switch_id in primary_switch_ids:
-                    # This neighbour is a route point on the same path; its own
-                    # main claim governs its state. Flank-locking it here would
-                    # make the path self-conflict. Skip.
+                    # Route-point exemption: this neighbour is a route point on
+                    # the same path; its own main claim governs its state.
+                    # Flank-locking it here would make the path self-conflict.
+                    continue
+                if neighbour_switch_id in conflicted_neighbours:
+                    # Same-path conflict exemption (triangle apex): two route
+                    # points on this path demand opposite states of this
+                    # neighbour, so it cannot protect the path. Leave it
+                    # unlocked rather than fail the segment (see above).
                     continue
                 # design_new.md:687/990: lock the neighbour to the SAFE state,
                 # which is the binary complement of the blocking_state (the
@@ -317,6 +355,46 @@ class SwitchManager:
             for (_pid, source_id) in keys:
                 switch.release_lock(path_id, source_id)
             released.append(sid)
+        return released
+
+    def release_segment_locks(
+        self, path_id: str, primary_switch_ids: List[str]
+    ) -> List[str]:
+        """Release the locks one segment acquired for `path_id`, scoped to the
+        segment's primary (main-usage) switches AND the flank locks those
+        primaries placed on neighbours.
+
+        This is the precise inverse of the acquire-time expansion in
+        `acquire_locks_for_segment(...)`: for each primary switch P, release
+        P's own main claim `(path_id, None)` and every flank claim
+        `(path_id, P)` on P's `flank_protection` neighbours. Unlike
+        `release_path_locks_for_switches(...)`, which drops every `path_id`
+        key on each listed switch, this releases by exact `(path_id, source)`
+        key — so it can never drop a lock keyed by a different source (e.g. a
+        committed segment's flank lock that happens to sit on the same
+        neighbour). `release_lock` no-ops on a missing key, so a
+        route-point-exempted neighbour (no flank lock placed) is harmless.
+
+        Used by segment rollback, where only the still-future holds this
+        failed segment placed must be released and the live path's committed
+        authority must be left untouched (the caller excludes committed
+        primaries from `primary_switch_ids`).
+
+        Returns the switch_ids that had at least one lock removed.
+        """
+        released: List[str] = []
+        for pid in primary_switch_ids:
+            primary = self._switch_registry.get(pid)
+            if primary is None:
+                continue
+            if primary.release_lock(path_id, None):
+                released.append(pid)
+            for neighbour_switch_id, _blocking_state in primary.flank_protection:
+                neighbour = self._switch_registry.get(neighbour_switch_id)
+                if neighbour is None:
+                    continue
+                if neighbour.release_lock(path_id, pid):
+                    released.append(neighbour_switch_id)
         return released
 
     # ------------------------------------------------------------------

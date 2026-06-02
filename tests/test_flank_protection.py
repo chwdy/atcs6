@@ -224,6 +224,159 @@ class TestRoutePointExemption:
         assert flank_locks[0][1] == expected_safe
 
 
+class TestSegmentRollbackReleasesFlankLocks:
+    """A segment rollback is scoped to the segment's primary switches, but the
+    acquire-time flank expansion also placed flank locks on NEIGHBOUR switches
+    that are not in that list. `SwitchManager.release_segment_locks(...)` must
+    drop those flank locks too, keyed by `(path_id, primary_id)` -- a coarse
+    path-wide release on the primary list alone would strand them. The release
+    is per-exact-key, so a lock keyed by a different source on the same
+    neighbour (e.g. a committed segment's flank lock) is left intact.
+    """
+
+    def test_rollback_releases_primary_and_flank_not_other_source(self):
+        net = _demo5()
+        sm = net.switch_manager
+        coord = net.resource_coordinator
+        lead = net.switches["SW_LEAD"]
+        xn = net.switches["SW_XOVER_N"]
+
+        assert "SW_XOVER_N" in {nb for nb, _ in lead.flank_protection}
+
+        route = frozenset(list(net.get_track(lead.x, lead.y).edges)[:2])
+        req = SwitchLockRequest(
+            switch_id="SW_LEAD", locked_state=int(lead.position),
+            source_switch_id=None, route=route)
+        assert sm.acquire_locks_for_segment([req], "P", "T1").success
+        assert ("P", None) in lead.locks
+        assert ("P", "SW_LEAD") in xn.locks, "precondition: flank lock placed"
+
+        # A second lock on the same neighbour keyed by a DIFFERENT source must
+        # survive rollback (proves per-key release, not a coarse path_id sweep).
+        xn.locks[("P", "SW_OTHER")] = ("T1", int(xn.position))
+
+        # The dispatcher passes ONLY the primary switch id; the flank neighbour
+        # SW_XOVER_N is not in the list.
+        coord.rollback_segment(block_ids=[], switch_ids=["SW_LEAD"], path_id="P")
+
+        assert ("P", None) not in lead.locks, "primary lock must be released"
+        assert ("P", "SW_LEAD") not in xn.locks, (
+            "flank lock on the neighbour must be released even though it was "
+            "not in the rolled-back switch list"
+        )
+        assert ("P", "SW_OTHER") in xn.locks, (
+            "a lock keyed by a different source must NOT be over-released"
+        )
+
+    def test_rollback_leaves_committed_primary_untouched(self):
+        """The caller excludes committed primaries from the list, so their
+        locks (and the flank locks they placed) are never rolled back."""
+        net = _demo5()
+        sm = net.switch_manager
+        lead = net.switches["SW_LEAD"]
+        xn = net.switches["SW_XOVER_N"]
+
+        route = frozenset(list(net.get_track(lead.x, lead.y).edges)[:2])
+        req = SwitchLockRequest(
+            switch_id="SW_LEAD", locked_state=int(lead.position),
+            source_switch_id=None, route=route)
+        assert sm.acquire_locks_for_segment([req], "P", "T1").success
+
+        # Excluding SW_LEAD (it is committed) means release_segment_locks is
+        # called with an empty primary list -> nothing released.
+        released = sm.release_segment_locks("P", [])
+        assert released == []
+        assert ("P", None) in lead.locks
+        assert ("P", "SW_LEAD") in xn.locks
+
+
+class TestTailVacateReleasesFlankProtection:
+    """Head-entry converts a path-owned flank lock into a train-owned
+    `train_protection_claims` entry on the neighbour (design_new.md:678, :700).
+    The source switch's tail-vacate is the ONLY event that clears it --
+    cancellation/completion never do, they only touch path-owned `locks`
+    (design_new.md:1069-1070). The release must iterate the SOURCE switch's own
+    `flank_protection` list, mirroring the create side
+    (`SwitchManager._convert_locks_on_entry`).
+
+    Regression for the asymmetric pair: SW_LEAD flank-protects SW_XOVER_N, but
+    SW_XOVER_N does NOT flank-protect SW_LEAD (the in-series degenerate
+    direction, pinned by
+    TestFlankProducer.test_in_series_through_line_pair_drops_degenerate). A
+    release that scanned the neighbour's list for a back-reference to SW_LEAD
+    would never find one and would strand the claim, pinning SW_XOVER_N to its
+    safe state until reload.
+    """
+
+    def test_asymmetric_pair_tail_vacate_releases_train_protection(self):
+        net = _demo5()
+        sm = net.switch_manager
+        lead = net.switches["SW_LEAD"]
+        xn = net.switches["SW_XOVER_N"]
+
+        # Precondition: the relationship is asymmetric.
+        lead_flank = dict(lead.flank_protection)
+        assert "SW_XOVER_N" in lead_flank
+        assert "SW_LEAD" not in {nb for nb, _ in xn.flank_protection}
+        expected_safe = 1 - lead_flank["SW_XOVER_N"]
+
+        # Acquire SW_LEAD alone: SW_XOVER_N is a non-route flank neighbour here,
+        # so the route-point exemption does not apply and the flank lock is
+        # issued on it.
+        ltrack = net.get_track(lead.x, lead.y)
+        route = frozenset(list(ltrack.edges)[:2])
+        req = SwitchLockRequest(
+            switch_id="SW_LEAD", locked_state=int(lead.position),
+            source_switch_id=None, route=route)
+        assert sm.acquire_locks_for_segment(
+            [req], path_id="P_TV", train_id="T1").success
+        assert ("P_TV", "SW_LEAD") in xn.locks, "precondition: flank lock placed"
+
+        # Head entry: primary consumed, flank lock -> train-owned protection.
+        assert sm.on_physical_entry("SW_LEAD", "T1", "P_TV", route=route)
+        assert ("T1", "SW_LEAD", expected_safe) in xn.train_protection_claims, (
+            "head entry must convert the flank lock into a train_protection claim"
+        )
+
+        # Tail-vacate of the SOURCE switch is the only release for that claim.
+        sm.on_switch_tail_vacated("SW_LEAD", "T1", route=route)
+        assert xn.train_protection_claims == [], (
+            "SW_LEAD tail-vacate must release the train protection it created on "
+            f"SW_XOVER_N; got {xn.train_protection_claims}"
+        )
+        # The neighbour is free again: it can be thrown to the other state.
+        other = 1 - int(xn.position)
+        ok, msg = xn.apply_position_change(other)
+        assert ok, f"SW_XOVER_N should be throwable after release; got: {msg}"
+
+    def test_symmetric_pair_tail_vacate_still_releases(self):
+        """The fix is a strict superset: the mutually-flanking throat pair
+        (SW_XOVER_N <-> SW_XOVER_S) still releases cleanly on tail-vacate."""
+        net = _demo5()
+        sm = net.switch_manager
+        xn = net.switches["SW_XOVER_N"]
+        s = net.switches["SW_XOVER_S"]
+
+        assert "SW_XOVER_S" in {nb for nb, _ in xn.flank_protection}
+        assert "SW_XOVER_N" in {nb for nb, _ in s.flank_protection}
+
+        route = frozenset({"W", "N"})
+        req = SwitchLockRequest(
+            switch_id="SW_XOVER_N", locked_state=int(xn.position),
+            source_switch_id=None, route=route)
+        assert sm.acquire_locks_for_segment(
+            [req], path_id="P_SYM", train_id="T1").success
+        assert sm.on_physical_entry("SW_XOVER_N", "T1", "P_SYM", route=route)
+        assert any(c[1] == "SW_XOVER_N" for c in s.train_protection_claims), (
+            "precondition: SW_XOVER_S protected by SW_XOVER_N after entry"
+        )
+
+        sm.on_switch_tail_vacated("SW_XOVER_N", "T1", route=route)
+        assert s.train_protection_claims == [], (
+            f"symmetric pair must still release; got {s.train_protection_claims}"
+        )
+
+
 class TestFlankRecompute:
     def test_remove_switch_drops_stale_flank_entries(self):
         """Removing a switch must recompute neighbours so no stale

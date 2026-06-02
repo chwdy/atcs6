@@ -93,6 +93,29 @@ interface RequestRedrawOpts {
   network?: NetworkPayload;
 }
 
+/**
+ * The editor's drag-build preview overlay (the "potential tracks" ghost while
+ * a track/eraser/block drag is in progress). Pushed by the editor via
+ * setBuildPreview and painted in _drawLive — same idiom as box/lasso/tunnel
+ * overlays. Drawing it synchronously after requestRedraw() no longer works:
+ * the paint is deferred to the next rAF flush, which clears the live canvas
+ * first and would wipe an overlay drawn ahead of it.
+ */
+type BuildPreview =
+  | { kind: 'tracks'; tracks: Track[] }
+  | { kind: 'eraser'; path: Array<{ x: number; y: number }> }
+  | { kind: 'block'; path: Array<{ x: number; y: number }> }
+  | { kind: 'path'; path: Array<{ x: number; y: number }> };
+
+/** The editor's signal/platform placement hover ghost. See BuildPreview. */
+interface HoverPreview {
+  gridPos: { x: number; y: number };
+  toolType: string;
+  isValid: boolean;
+  signalDirection: string | null;
+  trackBits: number | null;
+}
+
 class Renderer {
   liveCanvas: HTMLCanvasElement | null;
   worldCanvas: HTMLCanvasElement | null;
@@ -113,6 +136,8 @@ class Renderer {
   boxSelection!: Set<string>;
   boxSelectRect!: { startX: number; startY: number; endX: number; endY: number } | null;
   lassoPath!: Array<{ x: number; y: number }> | null;
+  buildPreview!: BuildPreview | null;
+  hoverPreview!: HoverPreview | null;
   trackHandler!: RendererTrackHandler;
   signalHandler!: RendererSignalHandler;
   platformHandler!: RendererPlatformHandler;
@@ -195,6 +220,11 @@ class Renderer {
     // Lasso-select overlay state (driven by the lasso-select editor tool).
     // Array of {x, y} screen-space points being drawn, or null when idle.
     this.lassoPath = null;
+    // Editor drag-build preview ("potential tracks" ghost) and signal/platform
+    // hover ghost. Driven by the editor via setBuildPreview / setHoverPreview;
+    // null when no preview is active. Painted in _drawLive (see BuildPreview).
+    this.buildPreview = null;
+    this.hoverPreview = null;
 
     this.trackHandler = new RendererTrackHandler(this);
     this.signalHandler = new RendererSignalHandler(this);
@@ -701,6 +731,11 @@ class Renderer {
     this.drawBoxSelection();
     this.drawBoxSelectRect();
     this.drawLassoPath();
+
+    // Editor build/hover previews, painted last so the ghost sits on top of
+    // the live layer (as it did when the editor drew it after a redraw).
+    this._drawBuildPreview();
+    this._drawHoverPreview();
   }
 
   setBoxSelection(keysSet: Set<string> | null): void {
@@ -713,6 +748,39 @@ class Renderer {
 
   setLassoPath(points: Array<{ x: number; y: number }> | null): void {
     this.lassoPath = points;
+  }
+
+  setBuildPreview(preview: BuildPreview | null): void {
+    this.buildPreview = preview;
+  }
+
+  setHoverPreview(hover: HoverPreview | null): void {
+    this.hoverPreview = hover;
+  }
+
+  _drawBuildPreview(): void {
+    const p = this.buildPreview;
+    if (!p) return;
+    switch (p.kind) {
+      case 'tracks':
+        this.trackHandler.drawPreviewTracks(p.tracks);
+        break;
+      case 'eraser':
+        this.trackHandler.drawEraserPreviewPath(p.path);
+        break;
+      case 'block':
+        this.blockHandler.drawBlockPreviewPath(p.path);
+        break;
+      case 'path':
+        this.trackHandler.drawPreviewPath(p.path);
+        break;
+    }
+  }
+
+  _drawHoverPreview(): void {
+    const h = this.hoverPreview;
+    if (!h) return;
+    this.trackHandler.drawHoverPreview(h.gridPos, h.toolType, h.isValid, h.signalDirection, h.trackBits);
   }
 
   setPendingTunnelEndpoint(endpoint: { x: number; y: number; edge: string } | null): void {

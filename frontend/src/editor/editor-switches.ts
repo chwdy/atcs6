@@ -298,6 +298,9 @@ export class SwitchEditorHandler {
 
         try {
           await this.api.updateSwitch(switchData.switch_id, updates);
+          // Saved: the form now matches the server, so drop the dirty guard
+          // and let the live panel re-render again on the refresh below.
+          this._isDirty = false;
           showToast('Switch properties saved', 'success', 2000);
           await window.app?.refreshNetwork();
         } catch (err: any) {
@@ -346,6 +349,21 @@ export class SwitchEditorHandler {
           this.showEditor(targetId);
         }
       };
+    });
+
+    // Mark the panel dirty on the first edit to any editable field. While
+    // dirty, _onSwitchUpdate skips its re-render (see the `_isDirty` guard
+    // there) so a sim tick can't rebuild the panel and wipe what the user is
+    // typing. The flag is cleared after a save and on every re-render (the
+    // `_isDirty = false` reset in the subscription setup below).
+    ['switch-name', 'switch-notes', 'switch-main-length', 'switch-diverge-length',
+     'switch-main-radius', 'switch-diverge-radius'].forEach((id) => {
+      const field = document.getElementById(id);
+      if (field) {
+        field.oninput = () => {
+          this._isDirty = true;
+        };
+      }
     });
 
     // ═══════════════════════════════════════════════════════════════
