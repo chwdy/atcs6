@@ -1984,12 +1984,19 @@ class RailwayNetwork:
     def _neighbour_blocking_state(
         self, neighbour: "Switch", *, toward: Tuple[int, int]
     ) -> Optional[int]:
-        """Return the neighbour switch state (0/1) whose active branch exit
-        points back toward the `toward` tile through the connecting edge —
-        the `blocking_state` for flank protection (design_new.md:990).
+        """Return the neighbour switch state (0/1) whose active branch points
+        back toward the `toward` tile through the connecting edge — the
+        `blocking_state` for flank protection (design_new.md:990).
 
         Returns None when the neighbour is not track-connected toward the
-        origin or no single state aligns a branch along that edge.
+        origin, or when the connecting edge is active in BOTH states. The
+        latter is the in-series-on-a-through-line case (e.g. a depot-throat
+        pair where the connecting edge carries the main route in either
+        position): the neighbour always points at the origin, so no setting
+        of it provides flank protection — there is no safe state to lock — and
+        recording an arbitrary one would be both meaningless and
+        iteration-order-dependent. Flank protection is meaningful only when the
+        neighbour points at the origin in exactly one state.
         """
         ncoords = (neighbour.x, neighbour.y)
         ntrack = self.get_track(*ncoords)
@@ -2004,13 +2011,24 @@ class RailwayNetwork:
         facing_edge = self._edge_from_neighbour_toward(neighbour, toward)
         if facing_edge is None:
             return None
-        # A state "blocks" when one of its branch traversals exits through the
-        # facing edge (the branch points back at us). enumerate_traversals
-        # yields (exit_edge, required_state) per legal traversal.
+        # Collect the states in which an active branch is connected through the
+        # facing edge — i.e. a train on the neighbour set to that state could
+        # run out through that edge into the protected switch.
+        # enumerate_traversals(entry) yields (exit_edge, required_state) per
+        # legal traversal, so the facing edge is "active in state S" when it
+        # appears as either the entry or the exit of a traversal legal in S.
+        states_pointing: Set[int] = set()
         for entry in ntrack.edges:
             for exit_edge, required_state in ntrack.enumerate_traversals(entry):
-                if exit_edge == facing_edge and required_state is not None:
-                    return required_state
+                if required_state is None:
+                    continue
+                if entry == facing_edge or exit_edge == facing_edge:
+                    states_pointing.add(int(required_state))
+        # Exactly one state points at the origin -> that is the blocking state
+        # (its binary complement is the safe state to lock). Both states (no
+        # safe state) or neither (not a hazard) -> no flank relationship.
+        if len(states_pointing) == 1:
+            return next(iter(states_pointing))
         return None
 
     def _edge_from_neighbour_toward(

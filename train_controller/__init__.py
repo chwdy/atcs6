@@ -2250,12 +2250,39 @@ class TrainController:
             if path_direction == facing.opposite():
                 return "B" if current_cab == "A" else "A"
 
-        # 90 degrees or path direction unknown — use overall path vector
+        # 90 degrees or path direction unknown — the overall start->end vector
+        # heuristic. This only makes sense at the START of a path: it picks the
+        # initial cab for a fresh return trip whose first move is 90° from
+        # facing (the diagonal-staircase reversal). Once the train is already
+        # moving ALONG the path (head past the first tile) the cab was fixed at
+        # the start, and v1 paths are monotonic forward (a path never revisits a
+        # resource), so a 90° turn is just a bend, not a reversal. Applying the
+        # gross-displacement heuristic mid-path would flip the cab at every bend
+        # of a winding approach (e.g. the depot lead climbing north then the
+        # ladder doubling back), spuriously tripping WRONG_DIRECTION_CAB. A real
+        # mid-path wrong cab (operator flipped to the wrong end) reverses the
+        # per-tile direction at the head and is already caught by the opposite
+        # check above, which runs regardless of position. So restrict the gross
+        # vector flip to the path-start (head-at-first-tile) case.
         path_tiles = self._get_effective_path_tiles()
         if path_tiles and len(path_tiles) >= 2:
-            overall = self._dominant_direction_from_tiles(path_tiles[0], path_tiles[-1])
-            if overall is not None and overall == facing.opposite():
-                return "B" if current_cab == "A" else "A"
+            head_tile = self._get_head_tile()
+            head_index = -1
+            if head_tile is not None:
+                for i, entry in enumerate(path_tiles):
+                    if (entry[0], entry[1]) == head_tile:
+                        head_index = i
+                        break
+            # head_index <= 0 means the head is at the path's first tile (fresh
+            # path) or could not be located (path prepended from elsewhere —
+            # keep the original conservative behaviour). head_index > 0 means
+            # the train is mid-path, so the bend is not a reversal.
+            if head_index <= 0:
+                overall = self._dominant_direction_from_tiles(
+                    path_tiles[0], path_tiles[-1]
+                )
+                if overall is not None and overall == facing.opposite():
+                    return "B" if current_cab == "A" else "A"
 
         return current_cab
 

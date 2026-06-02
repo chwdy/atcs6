@@ -152,6 +152,22 @@ class SwitchManager:
         # `source_switch_id = main_switch.switch_id`. The existing
         # `acquire_locks_for_segment` already handles flank claims
         # (source_switch_id != None); only the producer was missing.
+        #
+        # A switch the path traverses as a primary (a route point) is set and
+        # locked by its own main claim; it must NOT also be flank-locked by a
+        # sibling switch on the same path. When two switches sit in series on a
+        # route (e.g. the demo throat SW_XOVER_N -> SW_LEAD onto the depot
+        # lead), each is in the other's flank_protection list, so without this
+        # guard one switch's flank claim pins the other to the opposite state
+        # and `Switch.acquire_lock` then rejects that switch's own primary
+        # claim — the whole path acquisition fails and no route through the
+        # throat can ever form. A route point provides its own flank protection
+        # by being correctly thrown, so skip flank claims that target another
+        # primary on this same request set (design_new.md "Flank Protection
+        # Computation").
+        primary_switch_ids = {
+            req.switch_id for req in requests if req.source_switch_id is None
+        }
         expanded: List[SwitchLockRequest] = []
         for req in requests:
             expanded.append(req)
@@ -162,6 +178,11 @@ class SwitchManager:
             if main_switch is None:
                 continue
             for neighbour_switch_id, blocking_state in main_switch.flank_protection:
+                if neighbour_switch_id in primary_switch_ids:
+                    # This neighbour is a route point on the same path; its own
+                    # main claim governs its state. Flank-locking it here would
+                    # make the path self-conflict. Skip.
+                    continue
                 # design_new.md:687/990: lock the neighbour to the SAFE state,
                 # which is the binary complement of the blocking_state (the
                 # state that would aim the neighbour's branch toward this
