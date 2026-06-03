@@ -21,7 +21,6 @@ and deterministic.
 
 import pytest
 
-from bootstrap import get_current_scene_id
 from tests.journey.events import Event, Journey
 from tests.journey.harness import JourneyHarness
 from tests.journey.invariants import active_path_blocks_held_or_owned
@@ -29,12 +28,7 @@ from tests.journey.scenes.demo_5_scene import Demo5Scene
 from tests.journey.triggers import at_tick
 
 
-if get_current_scene_id() != "demo_5":
-    pytest.skip(
-        f"Test built for scene 'demo_5'; active scene is "
-        f"{get_current_scene_id()!r}.",
-        allow_module_level=True,
-    )
+pytestmark = pytest.mark.scene("demo_5")
 
 
 @pytest.mark.parametrize("dt,label", [(0.1, "1x"), (0.2, "2x"), (0.3, "3x")])

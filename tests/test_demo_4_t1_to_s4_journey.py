@@ -81,7 +81,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pytest
 
-from bootstrap import get_current_scene_id
 
 from tests.journey.events import Event, Invariant, Journey
 from tests.journey.harness import JourneyHarness, Snapshot
@@ -89,12 +88,7 @@ from tests.journey.scenes.base import SceneFixture
 from tests.journey.scenes.demo_4_scene import Demo4Scene
 
 
-if get_current_scene_id() != "demo_4":
-    pytest.skip(
-        f"Test built for scene 'demo_4'; active scene is "
-        f"{get_current_scene_id()!r}.",
-        allow_module_level=True,
-    )
+pytestmark = pytest.mark.scene("demo_4")
 
 
 # Post-fix, T1's outbound trip is dominated by the daisy-chain contention

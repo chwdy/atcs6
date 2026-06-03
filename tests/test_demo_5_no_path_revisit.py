@@ -65,15 +65,10 @@ import time
 
 import pytest
 
-from bootstrap import get_current_scene_id, bootstrap_runtime
+from bootstrap import bootstrap_runtime
 
 
-if get_current_scene_id() != "demo_5":
-    pytest.skip(
-        f"Test built for scene 'demo_5'; active scene is "
-        f"{get_current_scene_id()!r}.",
-        allow_module_level=True,
-    )
+pytestmark = pytest.mark.scene("demo_5")
 
 
 # Maximum legitimate single-extend resource_sequence growth on demo_5's

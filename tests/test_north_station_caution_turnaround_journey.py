@@ -19,7 +19,6 @@ Parametrized over three playback speeds (dt = 0.1 / 0.2 / 0.3).
 
 import pytest
 
-from bootstrap import get_current_scene_id
 from tests.journey.harness import JourneyHarness
 from tests.journey.journeys.north_station_caution_turnaround_journey import (
     build_north_station_caution_turnaround_journey,
@@ -28,12 +27,7 @@ from tests.journey.scenes.north_station_caution_turnaround_scene import (
     NorthStationCautionTurnaroundScene,
 )
 
-if get_current_scene_id() != "demo_main":
-    pytest.skip(
-        f"Test built for scene 'demo_main'; active scene is "
-        f"{get_current_scene_id()!r}.",
-        allow_module_level=True,
-    )
+pytestmark = pytest.mark.scene("demo_main")
 
 
 @pytest.mark.parametrize(

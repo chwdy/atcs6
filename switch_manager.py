@@ -196,6 +196,35 @@ class SwitchManager:
                 flank_demands.setdefault(neighbour_switch_id, set()).add(
                     1 - blocking_state
                 )
+
+        # The two route points whose flank claims conflict at the apex need not
+        # arrive in the same call. In best_effort the switch-first probe
+        # truncates a path into separately-acquired segments (design_new.md
+        # "switch-first acquisition step"), so the earlier route point may
+        # already be committed, with its flank claim recorded on the apex — as
+        # a future flank lock keyed (path_id, earlier_route_point) before the
+        # train reaches it, or as a train_protection_claim owned by this train
+        # once the train has physically entered it. Fold those already-held
+        # opposite-state demands in so a later segment recognises the apex
+        # conflict and exempts it, exactly as the single-call case does.
+        # Without this, segment 1's flank lock pins the apex and segment 2's
+        # route point is rejected on it — a depot-lead return leg that
+        # truncates between its two crossover route points could never
+        # traverse the second one.
+        for neighbour_switch_id in list(flank_demands.keys()):
+            neighbour = self._switch_registry.get(neighbour_switch_id)
+            if neighbour is None:
+                continue
+            for (lock_path_id, lock_source), (_lt, lock_state) in (
+                neighbour.locks.items()
+            ):
+                if lock_path_id == path_id and lock_source is not None:
+                    flank_demands[neighbour_switch_id].add(int(lock_state))
+            for (claim_train_id, _src, claim_state) in (
+                neighbour.train_protection_claims
+            ):
+                if claim_train_id == train_id:
+                    flank_demands[neighbour_switch_id].add(int(claim_state))
         conflicted_neighbours = {
             nid for nid, states in flank_demands.items() if len(states) > 1
         }

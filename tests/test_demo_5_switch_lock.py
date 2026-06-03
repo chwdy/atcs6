@@ -24,19 +24,13 @@ switch_manager.py:187-188) and the train responsible.
 
 import pytest
 
-from bootstrap import get_current_scene_id
 from tests.journey.events import Event, Invariant, Journey
 from tests.journey.harness import JourneyHarness
 from tests.journey.scenes.demo_5_scene import Demo5Scene
 from tests.journey.triggers import at_tick
 
 
-if get_current_scene_id() != "demo_5":
-    pytest.skip(
-        f"Test built for scene 'demo_5'; active scene is "
-        f"{get_current_scene_id()!r}.",
-        allow_module_level=True,
-    )
+pytestmark = pytest.mark.scene("demo_5")
 
 
 # Under post-fix BEST_EFFORT semantics with strict (single-owner) switch

@@ -6,14 +6,15 @@ This module provides functions to initialize the RailwayNetwork with either
 demo data (default) or an empty state, based on configuration flags.
 
 Scene selection:
-The demo network is built from a *scene module* (currently `demo_main` or
-`demo_3`). Each scene module exports a `SCENE_ID` constant, a
-`create_comprehensive_demo()` factory, and a `setup_demo_train()` helper.
-The active scene is the value of `CURRENT_SCENE` below; callers may override
-per call by passing `scene="..."` to any of the bootstrap entry points.
-Tests that are tied to a specific scene should call `get_current_scene_id()`
-and `pytest.skip(...)` (typically at module level) when the active scene
-does not match.
+The demo network is built from a *scene module* (one of `demo_main`,
+`demo_3`, `demo_4`, `demo_5`). Each scene module exports a `SCENE_ID`
+constant, a `create_comprehensive_demo()` factory, and a `setup_demo_train()`
+helper. The active scene is the value of `CURRENT_SCENE` below; callers may
+override per call by passing `scene="..."` to any of the bootstrap entry
+points. Tests tied to a specific scene tag themselves with
+`pytestmark = pytest.mark.scene("...")`; the tests/conftest.py hook then
+activates that scene for the test (via `set_current_scene`) so it runs under
+its own scene instead of being skipped.
 
 TODO List:
 - [ ] Add support for loading from autosave on startup
@@ -33,8 +34,9 @@ from simulation import SimulationController
 
 # Environment variable that overrides the default scene. `set_current_scene()`
 # (called e.g. by `server.py --scene ...`) exports it so a subprocess pytest
-# run inherits the same scene and its scene-gated tests select correctly. You
-# can also export it directly: `ATCS_SCENE=demo_4 python -m pytest tests/`.
+# run inherits the same default for its *unmarked* tests. You can also export
+# it directly: `ATCS_SCENE=demo_4 python -m pytest tests/`. Tests tagged with
+# `@pytest.mark.scene(...)` force their own scene regardless of this default.
 SCENE_ENV_VAR = "ATCS_SCENE"
 
 # The default scene when ATCS_SCENE is unset. Edit this line to change which

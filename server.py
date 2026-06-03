@@ -256,8 +256,9 @@ def main() -> None:
         choices=available_scenes(),
         help=(
             f"Scene to boot and gate startup tests to (default: "
-            f"{get_current_scene_id()}). Sets ATCS_SCENE for the run, so the "
-            "subprocess test suite selects the matching scene-gated tests."
+            f"{get_current_scene_id()}). Sets ATCS_SCENE so the bootstrap, "
+            "the block-validation gate, and unmarked tests default to it; "
+            "scene-tagged tests force their own scene via @pytest.mark.scene."
         ),
     )
     args = parser.parse_args()

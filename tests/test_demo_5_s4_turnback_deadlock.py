@@ -23,18 +23,13 @@ import time
 
 import pytest
 
-from bootstrap import bootstrap_runtime, get_current_scene_id
+from bootstrap import bootstrap_runtime
 from runtime_payloads import AcquisitionMode
 from route_executor import RouteExecutionState, RouteRunStatus
 from train_route import RouteTaskRun
 
 
-if get_current_scene_id() != "demo_5":
-    pytest.skip(
-        f"Test built for scene 'demo_5'; active scene is "
-        f"{get_current_scene_id()!r}.",
-        allow_module_level=True,
-    )
+pytestmark = pytest.mark.scene("demo_5")
 
 
 # Loop route task index 7 is the STN_4 dwell; index 8 is the stop at PLT_S3_N.

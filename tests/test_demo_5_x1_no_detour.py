@@ -43,16 +43,11 @@ import io
 
 import pytest
 
-from bootstrap import get_current_scene_id, bootstrap_runtime
+from bootstrap import bootstrap_runtime
 from runtime_payloads import AcquisitionMode
 
 
-if get_current_scene_id() != "demo_5":
-    pytest.skip(
-        f"Test built for scene 'demo_5'; active scene is "
-        f"{get_current_scene_id()!r}.",
-        allow_module_level=True,
-    )
+pytestmark = pytest.mark.scene("demo_5")
 
 
 # Any of these appearing in an acquired authority means the dispatcher routed

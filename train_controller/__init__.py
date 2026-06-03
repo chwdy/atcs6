@@ -1338,19 +1338,65 @@ class TrainController:
         both ends are always reported. Returns an empty list when there is no
         live span. Used by ``PathDispatcher.get_reachable_endpoints_for_train``
         to seed span-aware reachability for the Quick Route tool.
+
+        The end tile's outward edge is read from its real track edges, not from
+        the straight-line body heading: on a curved end tile the heading points
+        at an edge the tile does not have (the rail bends away), so the seed has
+        to follow the curve. See ``_outward_edge_for_end_tile``.
         """
         span = getattr(self.physics_sync, "current_span", None)
         if span is None:
             return []
+        occupied = {
+            (int(x), int(y))
+            for x, y in (getattr(span, "occupied_tiles", None) or [])
+        }
         seeds: List[Tuple[Tuple[int, int], str]] = []
         for label, loc in (("end_a", span.end_a), ("end_b", span.end_b)):
             if loc is None or getattr(loc, "tile", None) is None:
                 continue
+            tile = (int(loc.tile[0]), int(loc.tile[1]))
             direction = self._orientation_for_head_end(label)
-            edge = self._direction_to_edge(direction) if direction is not None else None
+            straight = (
+                self._direction_to_edge(direction) if direction is not None else None
+            )
+            edge = self._outward_edge_for_end_tile(tile, straight, occupied)
             if edge:
-                seeds.append(((int(loc.tile[0]), int(loc.tile[1])), edge))
+                seeds.append((tile, edge))
         return seeds
+
+    def _outward_edge_for_end_tile(
+        self,
+        tile: Tuple[int, int],
+        straight_edge: Optional[str],
+        occupied: set,
+    ) -> Optional[str]:
+        """The track edge a span end actually exits through.
+
+        ``straight_edge`` is the straight-line heading derived from the body's
+        grid vector. On a straight or switch end tile that heading is a real
+        track edge, so we keep it — a train sitting across a switch leaves along
+        its straight-through route, never the diverge its own body is blocking.
+        On a curved end tile the heading points at an edge the tile does not
+        have (the rail bends), so the real exit is the tile's other track edge:
+        the one whose neighbour is not part of the train's own body. Falls back
+        to ``straight_edge`` when there is no track or the choice is ambiguous.
+        """
+        if self.network is None:
+            return straight_edge
+        track = self.network.get_track(tile[0], tile[1])
+        if track is None:
+            return straight_edge
+        candidates: List[str] = []
+        for e in getattr(track, "edges", None) or ():
+            nb = self.network.get_neighbor(tile[0], tile[1], e)
+            if nb is not None and (nb.x, nb.y) not in occupied:
+                candidates.append(e)
+        if straight_edge in candidates:
+            return straight_edge
+        if len(candidates) == 1:
+            return candidates[0]
+        return straight_edge
 
     def _get_head_tile(self) -> Optional[Tuple[int, int]]:
         """Head tile, derived from (cab, current_span), or None when no span."""

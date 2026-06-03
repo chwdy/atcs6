@@ -25,11 +25,14 @@ import pytest
 
 from bootstrap import bootstrap_runtime
 from app_state import AppState
+from block_manager import ReservedBlockTraversal
 from speed_profile import SpeedProfileRegistry
 from services import train_route_service, train_service
 
 # S2-N platform tiles (PLT_S2_N): arrival is "stopped with head on one of them".
 S2_N_TILES = [(3, 4), (3, 5), (4, 5)]
+# Block B_1, one tile past SW_8_10 and right before SW_LEAD (7,9).
+B_1_TILE = (8, 9)
 # PLT_DEPOT_3 platform tiles (base (3,12) + the two extension tiles).
 DEPOT_3_TILES = [(3, 12), (3, 13), (2, 13)]
 
@@ -178,4 +181,82 @@ def test_quick_route_s2n_then_depot_3_arrives_without_eb():
     assert reached_depot, (
         "T3 did not reach depot platform 3. Final head="
         f"{sim.get_or_create_controller('T3')._get_head_tile()}."
+    )
+
+
+def test_best_effort_return_leg_truncated_at_b1_still_crosses_sw_lead():
+    """Regression: a BEST_EFFORT return leg that truncates BETWEEN its two
+    crossover route points must still traverse the second one.
+
+    The return leg S3-N -> S2-N runs route points SW_8_10 then SW_LEAD, which
+    flank-protect the lead-crossover apex SW_7_10 to OPPOSITE states. We reserve
+    corridor block A ahead so the path can only acquire as far as B_1 — over
+    SW_8_10 (which flank-locks SW_7_10), stopping before SW_LEAD. T3 drives to
+    B_1 and physically enters SW_8_10, converting that flank lock into train
+    protection on the apex. When block A frees, the later extend through SW_LEAD
+    used to be rejected on the still-pinned apex (the same-path conflict
+    exemption only fired when both route points were in one acquisition call),
+    leaving the train stuck at B_1 forever. With the cross-segment exemption it
+    crosses SW_LEAD and reaches S2-N.
+    """
+    state = _single_train_demo5("PLT_S3_N_BLOCK", "WEST")
+    sim = state.sim_controller
+    bm = sim.block_manager
+    for _ in range(15):
+        sim.update(0.1)
+
+    # Reserve block A so the return-leg path must truncate at B_1.
+    res = bm.reserve_blocks_for_path(
+        block_ids=["BLK_S2_N_TO_S3_N_A"], path_id="DUMMY_BLOCKER", train_id="BLK",
+        directions={"BLK_S2_N_TO_S3_N_A":
+                    ReservedBlockTraversal(exit_edge="E", block_direction="forward")},
+    )
+    assert res.success, f"could not reserve block A: {res.failure_reason}"
+
+    # Same three-call Quick Route flow as `_quick_route`, but BEST_EFFORT so the
+    # path truncates at B_1 (over SW_8_10) instead of failing the whole acquire.
+    train_route_service.create_route(
+        state, route_id="ROUTE_QR_TRUNC", name="Quick: T3 -> S2_N (best effort)",
+        mode="one_off",
+        tasks=[{"task_kind": "stop",
+                "task_location": {"block_id": "PLT_S2_N_BLOCK"},
+                "task_direction": "forward"}],
+        acquisition_mode="best_effort",
+    )
+    train_route_service.activate_route(state, "ROUTE_QR_TRUNC")
+    train_service.assign_route(state, "T3", route_id="ROUTE_QR_TRUNC", force=True)
+
+    released = False
+    arrived = False
+    for t in range(1, 1400):
+        sim.update(0.1)
+        ctrl = sim.get_or_create_controller("T3")
+        assert not ctrl.eb.active, (
+            f"T3 emergency-braked at tick {t} (head {ctrl._get_head_tile()})"
+        )
+        head = ctrl._get_head_tile()
+        spd = ctrl.physics_sync.current_speed_kmh
+        if not released and t > 80 and head == B_1_TILE and spd < 0.2:
+            # Confirm the split state: apex pinned by T3's own SW_8_10 protection.
+            apex = state.network.switches["SW_7_10"]
+            assert apex.train_protection_claims or apex.locks, (
+                "expected the apex to be pinned by SW_8_10 before block A frees"
+            )
+            bm.release_path_block_reservations(
+                ["BLK_S2_N_TO_S3_N_A"], "DUMMY_BLOCKER"
+            )
+            released = True
+        if released and head in S2_N_TILES and spd < 0.5 and t > 25:
+            arrived = True
+            break
+
+    assert released, (
+        "T3 never settled at B_1 behind the reserved block A — the truncation "
+        "split was not exercised."
+    )
+    assert arrived, (
+        "T3 stuck after block A freed — it could not extend through SW_LEAD. "
+        f"Final head={sim.get_or_create_controller('T3')._get_head_tile()}. The "
+        f"cross-segment same-path conflict exemption regressed: the apex SW_7_10 "
+        f"stayed pinned by T3's own SW_8_10 protection and SW_LEAD was rejected."
     )

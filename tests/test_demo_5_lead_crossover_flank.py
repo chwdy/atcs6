@@ -25,16 +25,11 @@ import io
 
 import pytest
 
-from bootstrap import get_current_scene_id, bootstrap_runtime
+from bootstrap import bootstrap_runtime
 from switch_manager import SwitchLockRequest
 
 
-if get_current_scene_id() != "demo_5":
-    pytest.skip(
-        f"Test built for scene 'demo_5'; active scene is "
-        f"{get_current_scene_id()!r}.",
-        allow_module_level=True,
-    )
+pytestmark = pytest.mark.scene("demo_5")
 
 
 def _build():
@@ -98,3 +93,91 @@ def test_crossover_traversal_acquires():
         f"crossover acquisition rejected: {res.reason} @ {res.failed_switch_id}"
     )
     assert ("P_x", "SW_7_10") in net.switches["SW_LEAD"].locks
+
+
+def test_split_segments_future_lock_timing_acquires():
+    """The two route points whose flank claims conflict at the apex arrive in
+    SEPARATE acquisition calls (what BEST_EFFORT truncation produces): segment 1
+    locks SW_8_10 (flank-locking the apex SW_7_10), segment 2 locks SW_LEAD.
+
+    Before the cross-segment fix the same-path conflict exemption only fired
+    when both route points were in one call, so segment 2's SW_LEAD flank claim
+    was rejected on the still-held SW_7_10 flank lock and the train could never
+    traverse SW_LEAD. The exemption must also recognise the opposite-state
+    demand already held on the apex by this same path."""
+    net, _, _ = _build()
+    sm = net.resource_coordinator.switch_manager
+    pid = "P_split"
+
+    seg1 = [SwitchLockRequest("SW_8_10", 1, None, frozenset({"E", "S"}))]
+    r1 = sm.acquire_locks_for_segment(seg1, path_id=pid, train_id="T1")
+    assert r1.success, f"segment 1 (SW_8_10) rejected: {r1.reason} @ {r1.failed_switch_id}"
+    # Segment 1 flank-locked the apex (a future lock keyed by this path).
+    assert (pid, "SW_8_10") in net.switches["SW_7_10"].locks
+
+    seg2 = [SwitchLockRequest("SW_LEAD", 1, None, frozenset({"E", "S"}))]
+    r2 = sm.acquire_locks_for_segment(seg2, path_id=pid, train_id="T1")
+    assert r2.success, (
+        f"segment 2 (SW_LEAD) rejected: {r2.reason} @ {r2.failed_switch_id} — "
+        f"the cross-segment same-path conflict exemption regressed"
+    )
+    # SW_LEAD's own primary is locked; the apex keeps only SW_8_10's protection.
+    assert (pid, None) in net.switches["SW_LEAD"].locks
+    assert (pid, "SW_8_10") in net.switches["SW_7_10"].locks
+
+
+def test_split_segments_train_protection_timing_acquires():
+    """Same split, but the earlier route point (SW_8_10) has been physically
+    entered before segment 2 runs, so its flank lock on the apex has converted
+    to a train_protection_claim. Segment 2 (SW_LEAD) must still acquire — the
+    exemption recognises the opposite-state demand held by this same train."""
+    net, _, _ = _build()
+    sm = net.resource_coordinator.switch_manager
+    pid = "P_split2"
+
+    seg1 = [SwitchLockRequest("SW_8_10", 1, None, frozenset({"E", "S"}))]
+    assert sm.acquire_locks_for_segment(seg1, path_id=pid, train_id="T1").success
+
+    # Train head enters SW_8_10: consumes its primary lock and converts the
+    # apex's flank lock into train-owned protection.
+    sm.on_physical_entry("SW_8_10", "T1", pid, frozenset({"E", "S"}))
+    apex = net.switches["SW_7_10"]
+    assert not apex.locks, "apex flank lock should have converted on entry"
+    assert any(c[0] == "T1" and c[1] == "SW_8_10"
+               for c in apex.train_protection_claims), (
+        f"expected SW_8_10 protection on apex, got {apex.train_protection_claims}"
+    )
+
+    seg2 = [SwitchLockRequest("SW_LEAD", 1, None, frozenset({"E", "S"}))]
+    r2 = sm.acquire_locks_for_segment(seg2, path_id=pid, train_id="T1")
+    assert r2.success, (
+        f"segment 2 (SW_LEAD) rejected: {r2.reason} @ {r2.failed_switch_id} — "
+        f"the exemption must fold in train-owned protection from this train's "
+        f"already-entered route point"
+    )
+    assert (pid, None) in net.switches["SW_LEAD"].locks
+
+
+def test_split_segments_preserve_cross_train_flank_protection():
+    """The cross-segment fold must NOT exempt the apex from a DIFFERENT train's
+    genuine flank demand. If another train already protects the apex at one
+    state, this train's opposing route-point flank claim is still rejected
+    (real flank protection between trains is preserved)."""
+    net, _, _ = _build()
+    sm = net.resource_coordinator.switch_manager
+
+    # Another train's path flank-locks the apex SW_7_10 via its SW_8_10 route
+    # point at state 0.
+    other = [SwitchLockRequest("SW_8_10", 1, None, frozenset({"E", "S"}))]
+    assert sm.acquire_locks_for_segment(other, path_id="P_other", train_id="T2").success
+    assert net.switches["SW_7_10"].locks[("P_other", "SW_8_10")][1] == 0
+
+    # T1's SW_LEAD route point demands the opposite apex state. Because the
+    # held demand belongs to a DIFFERENT path/train, it is a genuine conflict
+    # and must be rejected (not exempted).
+    mine = [SwitchLockRequest("SW_LEAD", 1, None, frozenset({"E", "S"}))]
+    r = sm.acquire_locks_for_segment(mine, path_id="P_mine", train_id="T1")
+    assert not r.success and r.failed_switch_id == "SW_7_10", (
+        f"cross-train flank protection should block here, got "
+        f"success={r.success} @ {r.failed_switch_id}"
+    )
