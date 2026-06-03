@@ -31,9 +31,9 @@ from network import RailwayNetwork
 from train import Train, TrainCar
 from enums import TrainState, Direction
 from block_power import BlockPowerController
+from switch_power import SwitchPowerController
 from notification_center import NotificationCenter, Severity
 from route_executor import RouteExecutor
-from speed_profile import SpeedProfileRegistry
 
 from train_controller import TrainController, create_controller_for_train
 from train_physics import TrainPhysics, create_physics_for_train
@@ -91,8 +91,10 @@ class SimulationController:
         # Initialize components with shared controllers
         self.power_controller = BlockPowerController(network)
         network.power_controller = self.power_controller
+        self.switch_power_controller = SwitchPowerController(network)
+        network.switch_power_controller = self.switch_power_controller
         self.route_executor = RouteExecutor(network, path_dispatcher, self.controllers)
-        self.speed_profile_registry = SpeedProfileRegistry()
+        self.speed_profile_registry = network.speed_profiles
         self.simulation_time: float = 0.0
 
         # Wire back-references so peer components can reach the notification

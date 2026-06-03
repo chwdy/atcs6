@@ -19,7 +19,6 @@ from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
-from speed_profile import SpeedProfileRegistry
 from track import TrackSegment
 from train import Train, TrainCar
 from train_route import RouteTask
@@ -28,7 +27,6 @@ from services import ConflictError, GoneError, NotFoundError, ValidationError
 from services import (
     block_service,
     platform_service,
-    schedule_service,
     speed_profile_service,
     switch_service,
     track_service,
@@ -44,14 +42,12 @@ def state():
     path_dispatcher = PathDispatcher(network)
     sim_controller = SimulationController(network, path_dispatcher)
     persistence_manager = PersistenceManager(storage_dir="layouts")
-    speed_profile_registry = SpeedProfileRegistry()
 
     return AppState(
         network=network,
         path_dispatcher=path_dispatcher,
         sim_controller=sim_controller,
         persistence_manager=persistence_manager,
-        speed_profile_registry=speed_profile_registry,
         simulation_lock=threading.Lock(),
         simulation_running=False,
         simulation_speed=1.0,
@@ -135,46 +131,6 @@ class TestTrainRouteService:
             train_route_service.activate_route(state, "ROUTE_EMPTY")
 
 
-# ----------------------------------------------------- schedule_service ----
-
-
-class TestScheduleService:
-    def test_create_schedule_attaches_to_train(self, state_with_train):
-        """`create_schedule` adds to network.schedules and sets train.schedule."""
-        schedule = schedule_service.create_schedule(
-            state_with_train,
-            train_id="TRAIN_A",
-            stops=[
-                {
-                    "station_name": "Stop 1",
-                    "station_pos": [0, 0],
-                    "arrival_time": "2026-01-01T10:00:00",
-                    "departure_time": "2026-01-01T10:05:00",
-                }
-            ],
-            priority=3,
-        )
-
-        assert schedule.schedule_id in state_with_train.network.schedules
-        assert schedule.priority == 3
-        assert len(schedule.stops) == 1
-
-        train = state_with_train.network.trains["TRAIN_A"]
-        assert train.schedule is schedule
-
-    def test_create_schedule_unknown_train_raises_not_found(self, state):
-        """An unknown train_id surfaces as NotFoundError."""
-        with pytest.raises(NotFoundError):
-            schedule_service.create_schedule(
-                state, train_id="GHOST_TRAIN", stops=[]
-            )
-
-    def test_create_schedule_missing_train_id_raises_validation(self, state):
-        """A blank train_id is a validation error, not a not-found."""
-        with pytest.raises(ValidationError):
-            schedule_service.create_schedule(state, train_id="", stops=[])
-
-
 # ------------------------------------------------- speed_profile_service ----
 
 
@@ -191,6 +147,22 @@ class TestSpeedProfileService:
         )
         assert profile.profile_id == "P1"
         assert speed_profile_service.get_profile(state, "P1") is not None
+
+    def test_registry_is_the_network_store(self, state):
+        """The service registry and the physics store are one object.
+
+        `AppState.speed_profile_registry` returns `network.speed_profiles`,
+        which is what `TrainPhysics`/`TrainController._get_speed_profile`
+        read. A profile created through the service must therefore be visible
+        on that read path immediately -- no second store to sync.
+        """
+        assert state.speed_profile_registry is state.network.speed_profiles
+        created = speed_profile_service.create_profile(
+            state, data={"profile_id": "P_PHYS", "name": "Physics", "acceleration_rate": 7.77}
+        )
+        seen_by_physics = state.network.speed_profiles.get("P_PHYS")
+        assert seen_by_physics is created
+        assert seen_by_physics.acceleration_rate == 7.77
 
     def test_create_duplicate_raises_conflict(self, state):
         """A repeated profile_id surfaces as ConflictError (HTTP 409)."""

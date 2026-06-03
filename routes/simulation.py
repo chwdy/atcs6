@@ -154,7 +154,6 @@ def register(app, state: AppState) -> None:
                 if hasattr(state.network, "station_groups"):
                     state.network.station_groups.clear()
                 state.network.trains.clear()
-                state.network.schedules.clear()
 
                 # Update simulation controller reference
                 state.sim_controller.network = state.network

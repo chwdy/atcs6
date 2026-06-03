@@ -35,9 +35,11 @@ class SpeedProfile:
         voltage_power_curve: List of (voltage, power_percent) calibration points
             for the first stage (`track_voltage <-> power_percent`). Voltage
             ascending, power_percent ascending. Default is linear across the
-            usable range: startup_voltage (2 V) -> 0%, max_voltage (12 V) -> 100%.
-        startup_voltage: Minimum voltage to overcome static friction
-        lighting_voltage: Voltage for lights without movement (READY state)
+            usable range: lighting_voltage (2 V) -> 0%, max_voltage (12 V) -> 100%.
+        lighting_voltage: Voltage at which the train is lit but still holds
+            (the stopped-but-lit states use it) and the 0%-power point of
+            voltage_power_curve. At exactly this voltage power is 0 and the
+            train does not move; just above it the train begins to move.
         acceleration_rate: Speed increase rate (km/h per second)
         deceleration_rate: Service brake rate (km/h per second)
         emergency_brake_rate: Emergency brake rate (km/h per second)
@@ -53,8 +55,7 @@ class SpeedProfile:
         default_factory=lambda: [(2.0, 0.0), (12.0, 100.0)]
     )
 
-    startup_voltage: float = 2.0  # Voltage to overcome static friction
-    lighting_voltage: float = 2.5  # Voltage for lights without movement
+    lighting_voltage: float = 2.0  # Lit-but-stationary voltage; also the 0%-power anchor of voltage_power_curve
     acceleration_rate: float = 10.0  # km/h per second
     deceleration_rate: float = 15.0  # km/h per second (service brake)
     emergency_brake_rate: float = 30.0  # km/h per second
@@ -178,7 +179,8 @@ class SpeedProfile:
         Stage 1: power_percent -> voltage (voltage_power_curve inverted).
 
         A commanded speed of 0 (or below) means the train is not being driven
-        forward, so the output is 0 V regardless of `startup_voltage`.
+        forward, so the output is 0 V (the `lighting_voltage` floor applies
+        only to the stopped-but-lit states, not to this driven path).
 
         Args:
             speed_kmh: Target speed in km/h.
@@ -244,8 +246,8 @@ class SpeedProfile:
             "name": self.name,
             "power_speed_curve": [[p, s] for p, s in self.power_speed_curve],
             "voltage_power_curve": [[v, p] for v, p in self.voltage_power_curve],
-            "startup_voltage": self.startup_voltage,
             "lighting_voltage": self.lighting_voltage,
+            "max_voltage": self.max_voltage,
             "acceleration_rate": self.acceleration_rate,
             "deceleration_rate": self.deceleration_rate,
             "emergency_brake_rate": self.emergency_brake_rate,
@@ -278,8 +280,7 @@ class SpeedProfile:
             name=data.get("name", ""),
             power_speed_curve=power_tuples,
             voltage_power_curve=voltage_power_tuples,
-            startup_voltage=float(data.get("startup_voltage", 2.0)),
-            lighting_voltage=float(data.get("lighting_voltage", 2.5)),
+            lighting_voltage=float(data.get("lighting_voltage", 2.0)),
             acceleration_rate=float(data.get("acceleration_rate", 10.0)),
             deceleration_rate=float(data.get("deceleration_rate", 15.0)),
             emergency_brake_rate=float(data.get("emergency_brake_rate", 30.0)),
@@ -295,8 +296,7 @@ class SpeedProfile:
 DEFAULT_SPEED_PROFILE = SpeedProfile(
     profile_id="default",
     name="Default HO Scale",
-    startup_voltage=2.0,
-    lighting_voltage=2.5,
+    lighting_voltage=2.0,
     acceleration_rate=10.0,
     deceleration_rate=15.0,
     emergency_brake_rate=30.0,

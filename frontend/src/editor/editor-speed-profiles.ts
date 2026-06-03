@@ -1,0 +1,988 @@
+// editor-speed-profiles.ts — Speed Profile Editor Handler.
+//
+// A standalone manager for `SpeedProfile` records (speed_profile.py): a list
+// panel plus a per-profile curve editor. Each calibration curve is edited two
+// ways at once — a draggable canvas plot and a numeric point list — both routed
+// through one auto-saving commit path (DESIGN_LANGUAGE.md §4 "Two views of one
+// value"). A converter section does y=f(x) and x=f^-1(y) for all three
+// relations (voltage↔power, power↔speed, voltage↔speed).
+//
+// Owned by the Editor (`new SpeedProfileEditorHandler(this)`).
+
+import { showToast } from '../lib/toast';
+import { showConfirmModal, showFormModal } from '../lib/helpers';
+import type { EditorHost } from './types';
+import {
+  type Curve,
+  type CurvePoint,
+  voltageToPower,
+  powerToVoltage,
+  powerPercentToSpeed,
+  speedToPower,
+  voltageToSpeedTwoStage,
+  speedToVoltageTwoStage,
+  topSpeed,
+  maxVoltage,
+  lightingVoltage,
+} from '../lib/speed-profile-curve';
+
+interface SpeedProfileData {
+  profile_id: string;
+  name: string;
+  power_speed_curve: CurvePoint[];
+  voltage_power_curve: CurvePoint[];
+  lighting_voltage: number;
+  max_voltage: number;
+  acceleration_rate: number;
+  deceleration_rate: number;
+  emergency_brake_rate: number;
+  friction_rate: number;
+  operational_decel_ratio: number;
+  air_resistance_enabled: boolean;
+  drag_coefficient: number;
+  reference_speed_kmh: number;
+}
+
+interface PlotAxis {
+  yMin: number;
+  yMax: number;
+}
+
+interface CurvePlotOptions {
+  canvas: HTMLCanvasElement;
+  color: string;
+  /** Lock the left endpoint in Y too (plot-2 origin (0,0)). X of both endpoints is always locked. */
+  lockLeftY: boolean;
+  onChange: (points: CurvePoint[], dragging: boolean) => void;
+}
+
+const EPS_X = 0.5; // min power gap between adjacent points (keeps X strictly ascending)
+const EPS_Y = 0.02; // min gap to keep Y strictly ascending (invertibility)
+const HIT_R = 9; // px hit radius for grabbing a point handle
+const PAD = { left: 40, right: 14, top: 14, bottom: 26 };
+
+/** Round for display without trailing-zero noise. */
+function fmt(n: number, digits = 2): string {
+  return String(Number(n.toFixed(digits)));
+}
+
+/**
+ * One draggable piecewise-linear plot over a `<canvas>`. Axis-agnostic: it works
+ * in plot space `[x, y]` (x = power 0..100 here) and reports edits back through
+ * `onChange`. The handler owns translation to/from backend curve storage and the
+ * commit. Both X and Y are kept strictly ascending so the curve stays invertible
+ * (the backend's reverse lookups assume monotonicity).
+ */
+class CurvePlot {
+  private canvas: HTMLCanvasElement;
+  private ctx: CanvasRenderingContext2D;
+  private color: string;
+  private lockLeftY: boolean;
+  private onChange: (points: CurvePoint[], dragging: boolean) => void;
+  private points: CurvePoint[] = [];
+  private axis: PlotAxis = { yMin: 0, yMax: 1 };
+  private xMin = 0;
+  private xMax = 100;
+  private dragIndex: number | null = null;
+  private hoverIndex: number | null = null;
+  private ro: ResizeObserver | null = null;
+  private onDown: (e: MouseEvent) => void;
+  private onMove: (e: MouseEvent) => void;
+  private onUp: (e: MouseEvent) => void;
+  private onLeave: (e: MouseEvent) => void;
+
+  constructor(opts: CurvePlotOptions) {
+    this.canvas = opts.canvas;
+    this.ctx = opts.canvas.getContext('2d')!;
+    this.color = opts.color;
+    this.lockLeftY = opts.lockLeftY;
+    this.onChange = opts.onChange;
+
+    this.onDown = (e) => this.handleDown(e);
+    this.onMove = (e) => this.handleMove(e);
+    this.onUp = () => this.handleUp();
+    this.onLeave = () => {
+      this.hoverIndex = null;
+      if (this.dragIndex === null) this.draw();
+    };
+    this.canvas.addEventListener('mousedown', this.onDown);
+    window.addEventListener('mousemove', this.onMove);
+    window.addEventListener('mouseup', this.onUp);
+    this.canvas.addEventListener('mouseleave', this.onLeave);
+
+    this.ro = new ResizeObserver(() => this.resize());
+    this.ro.observe(this.canvas);
+  }
+
+  /** Replace the plotted points and axis, then redraw at device resolution. */
+  setData(points: CurvePoint[], axis: PlotAxis): void {
+    this.points = points.map((p) => [p[0], p[1]] as CurvePoint);
+    this.axis = axis;
+    this.resize();
+  }
+
+  destroy(): void {
+    this.canvas.removeEventListener('mousedown', this.onDown);
+    window.removeEventListener('mousemove', this.onMove);
+    window.removeEventListener('mouseup', this.onUp);
+    this.canvas.removeEventListener('mouseleave', this.onLeave);
+    this.ro?.disconnect();
+    this.ro = null;
+  }
+
+  // --- geometry ---
+  private plotW(rect: DOMRect): number {
+    return rect.width - PAD.left - PAD.right;
+  }
+  private plotH(rect: DOMRect): number {
+    return rect.height - PAD.top - PAD.bottom;
+  }
+  private xToPx(x: number, rect: DOMRect): number {
+    return PAD.left + ((x - this.xMin) / (this.xMax - this.xMin)) * this.plotW(rect);
+  }
+  private yToPx(y: number, rect: DOMRect): number {
+    const { yMin, yMax } = this.axis;
+    const span = yMax - yMin || 1;
+    return PAD.top + (1 - (y - yMin) / span) * this.plotH(rect);
+  }
+  private pxToX(px: number, rect: DOMRect): number {
+    return this.xMin + ((px - PAD.left) / this.plotW(rect)) * (this.xMax - this.xMin);
+  }
+  private pxToY(py: number, rect: DOMRect): number {
+    const { yMin, yMax } = this.axis;
+    return yMin + (1 - (py - PAD.top) / this.plotH(rect)) * (yMax - yMin);
+  }
+
+  /** Size the backing store to device pixels (crisp on retina), draw in CSS px. */
+  resize(): void {
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) {
+      // Not laid out yet — retry next frame.
+      requestAnimationFrame(() => this.resize());
+      return;
+    }
+    const dpr = window.devicePixelRatio || 1;
+    this.canvas.width = Math.round(rect.width * dpr);
+    this.canvas.height = Math.round(rect.height * dpr);
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.scale(dpr, dpr);
+    this.draw();
+  }
+
+  private draw(): void {
+    const ctx = this.ctx;
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width < 2) return;
+    ctx.clearRect(0, 0, rect.width, rect.height);
+
+    const css = getComputedStyle(document.documentElement);
+    const border = css.getPropertyValue('--border-color').trim() || '#333';
+    const textMuted = css.getPropertyValue('--text-secondary').trim() || '#999';
+
+    const x0 = PAD.left;
+    const y0 = rect.height - PAD.bottom;
+    const x1 = rect.width - PAD.right;
+    const y1 = PAD.top;
+
+    // gridlines + ticks
+    ctx.font = '9px ui-monospace, monospace';
+    ctx.fillStyle = textMuted;
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 1;
+    // X gridlines (power 0..100 every 25)
+    for (let gx = 0; gx <= 100; gx += 25) {
+      const px = this.xToPx(gx, rect);
+      ctx.globalAlpha = 0.4;
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath();
+      ctx.moveTo(px, y1);
+      ctx.lineTo(px, y0);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      ctx.textAlign = 'center';
+      ctx.fillText(String(gx), px, y0 + 12);
+    }
+    // Y gridlines (axis range, 4 divisions)
+    const { yMin, yMax } = this.axis;
+    ctx.textAlign = 'right';
+    for (let i = 0; i <= 4; i++) {
+      const yv = yMin + ((yMax - yMin) * i) / 4;
+      const py = this.yToPx(yv, rect);
+      ctx.globalAlpha = 0.4;
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x0, py);
+      ctx.lineTo(x1, py);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      ctx.fillText(fmt(yv, 1), x0 - 5, py + 3);
+    }
+
+    // axes (solid)
+    ctx.beginPath();
+    ctx.moveTo(x0, y1);
+    ctx.lineTo(x0, y0);
+    ctx.lineTo(x1, y0);
+    ctx.stroke();
+
+    if (this.points.length === 0) return;
+
+    // polyline — the affordance reads brighter than the chrome (§4)
+    ctx.strokeStyle = this.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    this.points.forEach((p, i) => {
+      const px = this.xToPx(p[0], rect);
+      const py = this.yToPx(p[1], rect);
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+
+    // handles
+    this.points.forEach((p, i) => {
+      const px = this.xToPx(p[0], rect);
+      const py = this.yToPx(p[1], rect);
+      const isEnd = i === 0 || i === this.points.length - 1;
+      const active = i === this.dragIndex || i === this.hoverIndex;
+      ctx.beginPath();
+      ctx.arc(px, py, active ? 6.5 : 5, 0, Math.PI * 2);
+      ctx.fillStyle = this.color;
+      ctx.fill();
+      if (isEnd) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#fff';
+        ctx.stroke();
+      }
+      if (active) {
+        ctx.beginPath();
+        ctx.arc(px, py, 10, 0, Math.PI * 2);
+        ctx.strokeStyle = this.color;
+        ctx.globalAlpha = 0.4;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    });
+  }
+
+  private localPoint(e: MouseEvent): { px: number; py: number; rect: DOMRect } {
+    const rect = this.canvas.getBoundingClientRect();
+    return { px: e.clientX - rect.left, py: e.clientY - rect.top, rect };
+  }
+
+  private handleAt(px: number, py: number, rect: DOMRect): number | null {
+    let best: number | null = null;
+    let bestD = HIT_R * HIT_R;
+    this.points.forEach((p, i) => {
+      const dx = this.xToPx(p[0], rect) - px;
+      const dy = this.yToPx(p[1], rect) - py;
+      const d = dx * dx + dy * dy;
+      if (d <= bestD) {
+        bestD = d;
+        best = i;
+      }
+    });
+    return best;
+  }
+
+  private handleDown(e: MouseEvent): void {
+    const { px, py, rect } = this.localPoint(e);
+    const idx = this.handleAt(px, py, rect);
+    if (idx === null) return;
+    e.preventDefault();
+    this.dragIndex = idx;
+    this.draw();
+  }
+
+  private handleMove(e: MouseEvent): void {
+    const { px, py, rect } = this.localPoint(e);
+    if (this.dragIndex === null) {
+      const idx = this.handleAt(px, py, rect);
+      this.canvas.style.cursor = idx === null ? 'default' : 'grab';
+      if (idx !== this.hoverIndex) {
+        this.hoverIndex = idx;
+        this.draw();
+      }
+      return;
+    }
+    this.canvas.style.cursor = 'grabbing';
+    const i = this.dragIndex;
+    const last = this.points.length - 1;
+    const isLeft = i === 0;
+    const isRight = i === last;
+
+    // X: endpoints locked; interior strictly between neighbours.
+    let nx = this.points[i][0];
+    if (!isLeft && !isRight) {
+      const lo = this.points[i - 1][0] + EPS_X;
+      const hi = this.points[i + 1][0] - EPS_X;
+      nx = Math.min(hi, Math.max(lo, this.pxToX(px, rect)));
+    }
+
+    // Y: clamp to axis, then keep strictly ascending vs neighbours.
+    let ny = this.points[i][1];
+    if (!(isLeft && this.lockLeftY)) {
+      ny = Math.min(this.axis.yMax, Math.max(this.axis.yMin, this.pxToY(py, rect)));
+      const lo = isLeft ? this.axis.yMin : this.points[i - 1][1] + EPS_Y;
+      const hi = isRight ? this.axis.yMax : this.points[i + 1][1] - EPS_Y;
+      ny = Math.min(hi, Math.max(lo, ny));
+    }
+
+    this.points[i] = [nx, ny];
+    this.draw();
+    this.onChange(this.points, true);
+  }
+
+  private handleUp(): void {
+    if (this.dragIndex === null) return;
+    this.dragIndex = null;
+    this.canvas.style.cursor = 'grab';
+    this.draw();
+    this.onChange(this.points, false);
+  }
+}
+
+export class SpeedProfileEditorHandler {
+  editor: EditorHost;
+  private _profile: SpeedProfileData | null = null;
+  private _lastSaved: SpeedProfileData | null = null;
+  private _vpPlot: CurvePlot | null = null;
+  private _psPlot: CurvePlot | null = null;
+  private _saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private _statusTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(editor: EditorHost) {
+    this.editor = editor;
+  }
+
+  get api(): any {
+    return this.editor.api;
+  }
+
+  // === Manager list ===
+
+  async showProfilesPanel(): Promise<void> {
+    this._teardownPlots();
+    this.editor._currentEditorType = 'speed-profiles-list';
+    this.editor._currentEditorId = null;
+
+    let profiles: any[] = [];
+    try {
+      profiles = await this.api.getSpeedProfiles();
+    } catch (err: any) {
+      console.error('[SpeedProfileEditorHandler] Failed to load profiles:', err);
+      showToast('Failed to load speed profiles: ' + err.message, 'error', 5000);
+    }
+
+    let content = `
+            <div class="sp-list-panel">
+                <div class="routes-toolbar mb-16">
+                    <button id="sp-new-btn" class="btn btn-primary btn-sm flex-1">+ New Profile</button>
+                </div>`;
+    if (!profiles.length) {
+      content += '<div class="trains-empty">No speed profiles</div>';
+    } else {
+      content += '<div class="sp-list">';
+      for (const p of profiles) content += this._renderProfileRow(p);
+      content += '</div>';
+    }
+    content += '</div>';
+
+    this.editor.showSecondarySidebar('Speed Profiles', content);
+    setTimeout(() => this._bindListHandlers(), 0);
+  }
+
+  private _renderProfileRow(p: any): string {
+    const id = p.profile_id;
+    const isDefault = id === 'default';
+    const top = topSpeed(p.power_speed_curve || []);
+    const pts =
+      (p.voltage_power_curve?.length || 0) + (p.power_speed_curve?.length || 0);
+    return `
+            <div class="rr-card accent-info mb-8" data-profile-id="${id}">
+                <div class="rr-card-head">
+                    <div class="rr-card-title-col">
+                        <div class="rr-card-train font-mono">${id}</div>
+                    </div>
+                    <div class="route-row-actions">
+                        <button class="rr-flat-btn sp-edit-btn" data-profile-id="${id}">Edit</button>
+                        <button class="rr-flat-btn rr-flat-btn-danger sp-delete-btn" data-profile-id="${id}" ${isDefault ? 'disabled title="The default profile cannot be deleted"' : ''}>Delete</button>
+                    </div>
+                </div>
+                <div class="chip-row">
+                    <span class="chip">${fmt(top, 0)} km/h top</span>
+                    <span class="chip">${pts} pts</span>
+                </div>
+                <div class="rr-card-foot">${p.name || ''}</div>
+            </div>`;
+  }
+
+  private _bindListHandlers(): void {
+    const newBtn = document.getElementById('sp-new-btn');
+    if (newBtn) newBtn.onclick = () => this._createProfile();
+
+    document.querySelectorAll<HTMLButtonElement>('.sp-edit-btn').forEach((btn) => {
+      btn.onclick = () => this.showProfileEditor(btn.dataset.profileId || '');
+    });
+    document.querySelectorAll<HTMLButtonElement>('.sp-delete-btn').forEach((btn) => {
+      if (btn.disabled) return;
+      btn.onclick = () => this._deleteProfile(btn.dataset.profileId || '');
+    });
+  }
+
+  private async _createProfile(): Promise<void> {
+    const values = await showFormModal({
+      title: 'New Speed Profile',
+      fields: [
+        { name: 'profile_id', label: 'Profile ID', required: true, placeholder: 'e.g. shinkansen_n700' },
+        { name: 'name', label: 'Name', required: true, placeholder: 'Display name' },
+      ],
+      confirmText: 'Create',
+    });
+    if (!values) return;
+    try {
+      const created = await this.api.createSpeedProfile({
+        profile_id: String(values.profile_id).trim(),
+        name: String(values.name).trim(),
+      });
+      showToast('Speed profile created', 'success', 2000);
+      await this.showProfileEditor(created.profile_id);
+    } catch (err: any) {
+      showToast('Failed to create profile: ' + err.message, 'error', 5000);
+    }
+  }
+
+  private async _deleteProfile(id: string): Promise<void> {
+    const confirmed = await showConfirmModal({
+      title: 'Delete Speed Profile',
+      message: `Delete speed profile "${id}"?`,
+      detail: 'Profiles assigned to a train, and the default profile, cannot be deleted.',
+      confirmText: 'Delete',
+      confirmVariant: 'danger',
+    });
+    if (!confirmed) return;
+    try {
+      await this.api.deleteSpeedProfile(id);
+      showToast('Speed profile deleted', 'success', 2000);
+      await this.showProfilesPanel();
+    } catch (err: any) {
+      showToast(err.message || 'Failed to delete profile', 'error', 5000);
+    }
+  }
+
+  // === Per-profile editor ===
+
+  async showProfileEditor(profileId: string): Promise<void> {
+    this._teardownPlots();
+    this.editor._currentEditorType = 'speed-profile';
+    this.editor._currentEditorId = profileId;
+
+    let data: any;
+    try {
+      data = await this.api.getSpeedProfile(profileId);
+      if (!data || data.error) {
+        showToast('Speed profile not found', 'error', 5000);
+        return;
+      }
+    } catch (err: any) {
+      showToast('Failed to load speed profile: ' + err.message, 'error', 5000);
+      return;
+    }
+
+    this._profile = this._normalize(data);
+    this._lastSaved = this._clone(this._profile);
+
+    this.editor.showSecondarySidebar(profileId, this._editorHtml(this._profile));
+    // Wider canvas room — same affordance the route editor uses.
+    document.getElementById('secondary-sidebar')?.classList.add('route-editor-wide');
+    setTimeout(() => this._initEditor(), 0);
+  }
+
+  private _normalize(d: any): SpeedProfileData {
+    const vp: CurvePoint[] = (d.voltage_power_curve || []).map((p: number[]) => [p[0], p[1]] as CurvePoint);
+    const ps: CurvePoint[] = (d.power_speed_curve || []).map((p: number[]) => [p[0], p[1]] as CurvePoint);
+    return {
+      profile_id: d.profile_id,
+      name: d.name || '',
+      voltage_power_curve: vp,
+      power_speed_curve: ps,
+      // max_voltage may be absent on older GETs — fall back to the curve top.
+      max_voltage: typeof d.max_voltage === 'number' ? d.max_voltage : maxVoltage(vp, 12),
+      // lighting_voltage mirrors the 0%-power point of the curve.
+      lighting_voltage:
+        typeof d.lighting_voltage === 'number' ? d.lighting_voltage : lightingVoltage(vp, 2),
+      acceleration_rate: d.acceleration_rate ?? 10,
+      deceleration_rate: d.deceleration_rate ?? 15,
+      emergency_brake_rate: d.emergency_brake_rate ?? 30,
+      friction_rate: d.friction_rate ?? 0.5,
+      operational_decel_ratio: d.operational_decel_ratio ?? 0.8,
+      air_resistance_enabled: d.air_resistance_enabled ?? true,
+      drag_coefficient: d.drag_coefficient ?? 0.001,
+      reference_speed_kmh: d.reference_speed_kmh ?? 100,
+    };
+  }
+
+  private _clone(p: SpeedProfileData): SpeedProfileData {
+    return JSON.parse(JSON.stringify(p));
+  }
+
+  // Plot-space points (x = power 0..100). Plot-1 maps [v,p]→[p,v]; plot-2 uses [p,s].
+  private _vpPlotPoints(): CurvePoint[] {
+    return (this._profile!.voltage_power_curve || []).map((pt) => [pt[1], pt[0]] as CurvePoint);
+  }
+  private _psPlotPoints(): CurvePoint[] {
+    return (this._profile!.power_speed_curve || []).map((pt) => [pt[0], pt[1]] as CurvePoint);
+  }
+  private _vpAxis(): PlotAxis {
+    return { yMin: 0, yMax: Math.max(16, Math.ceil(this._profile!.max_voltage + 3)) };
+  }
+  private _psAxis(): PlotAxis {
+    const top = topSpeed(this._profile!.power_speed_curve || []);
+    return { yMin: 0, yMax: Math.max(30, Math.ceil(top * 1.25)) };
+  }
+
+  private _editorHtml(p: SpeedProfileData): string {
+    return `
+            <div class="sp-editor">
+                <div class="sp-toolbar">
+                    <button id="sp-back-btn" class="rr-flat-btn">← Speed Profiles</button>
+                    <span class="sp-spacer"></span>
+                    <span id="sp-save-status" class="sp-save-status"></span>
+                </div>
+
+                <div class="control-section">
+                    <div class="control-section-header">Voltage ↔ Power</div>
+                    <div class="text-muted text-xs mb-8">X = power %, Y = track voltage. Drag points or edit the list.</div>
+                    <div class="sp-plot-block">
+                        <div class="sp-point-list" id="sp-vp-list"></div>
+                        <canvas class="sp-canvas" id="sp-vp-canvas"></canvas>
+                    </div>
+                </div>
+
+                <div class="control-section">
+                    <div class="control-section-header">Power ↔ Speed</div>
+                    <div class="text-muted text-xs mb-8">X = power %, Y = speed (km/h). Left point is pinned at the origin.</div>
+                    <div class="sp-plot-block">
+                        <div class="sp-point-list" id="sp-ps-list"></div>
+                        <canvas class="sp-canvas" id="sp-ps-canvas"></canvas>
+                    </div>
+                </div>
+
+                <div class="control-section">
+                    <div class="control-section-header">Converter</div>
+                    <div class="sp-converter">
+                        <div class="sp-converter-row">
+                            <label>Voltage</label>
+                            <input type="number" id="cv-vp-v" class="property-input" step="0.1">
+                            <span class="sp-conv-sep">↔</span>
+                            <input type="number" id="cv-vp-p" class="property-input" step="1">
+                            <label>Power %</label>
+                        </div>
+                        <div class="sp-converter-row">
+                            <label>Power %</label>
+                            <input type="number" id="cv-ps-p" class="property-input" step="1">
+                            <span class="sp-conv-sep">↔</span>
+                            <input type="number" id="cv-ps-s" class="property-input" step="1">
+                            <label>Speed</label>
+                        </div>
+                        <div class="sp-converter-row">
+                            <label>Voltage</label>
+                            <input type="number" id="cv-vs-v" class="property-input" step="0.1">
+                            <span class="sp-conv-sep">↔</span>
+                            <input type="number" id="cv-vs-s" class="property-input" step="1">
+                            <label>Speed</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="control-section">
+                    <div class="control-section-header">Calibration</div>
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="sp-lighting">Lighting voltage (0% power)</label>
+                        <input type="number" id="sp-lighting" class="input-small-field input-small-field-compact" value="${fmt(p.lighting_voltage)}" min="0" step="0.1">
+                    </div>
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="sp-maxv">Max voltage (100% power)</label>
+                        <input type="number" id="sp-maxv" class="input-small-field input-small-field-compact" value="${fmt(p.max_voltage)}" min="0" step="0.1">
+                    </div>
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="sp-topspeed">Top speed (100% power)</label>
+                        <input type="number" id="sp-topspeed" class="input-small-field input-small-field-compact" value="${fmt(topSpeed(p.power_speed_curve))}" min="0" step="1">
+                    </div>
+                </div>
+
+                <details class="tc-disclosure">
+                    <summary>Motion &amp; drag</summary>
+                    ${this._rateRow('Acceleration (km/h/s)', 'sp-accel', p.acceleration_rate)}
+                    ${this._rateRow('Deceleration (km/h/s)', 'sp-decel', p.deceleration_rate)}
+                    ${this._rateRow('Emergency brake (km/h/s)', 'sp-eb', p.emergency_brake_rate)}
+                    ${this._rateRow('Friction (km/h/s)', 'sp-friction', p.friction_rate)}
+                    ${this._rateRow('Operational decel ratio', 'sp-opdecel', p.operational_decel_ratio)}
+                    ${this._rateRow('Drag coefficient', 'sp-drag', p.drag_coefficient)}
+                    ${this._rateRow('Reference speed (km/h)', 'sp-refspeed', p.reference_speed_kmh)}
+                </details>
+
+                ${
+                  p.profile_id === 'default'
+                    ? ''
+                    : `<div class="flex mt-16"><button id="sp-delete-btn" class="btn btn-danger btn-sm">Delete profile</button></div>`
+                }
+            </div>`;
+  }
+
+  private _rateRow(label: string, id: string, value: number): string {
+    return `
+                    <div class="input-small-row mb-8">
+                        <label class="input-small-label input-small-label-inline" for="${id}">${label}</label>
+                        <input type="number" id="${id}" class="input-small-field input-small-field-compact" value="${fmt(value, 4)}" step="0.1">
+                    </div>`;
+  }
+
+  private _initEditor(): void {
+    if (!this._profile) return;
+
+    const vpCanvas = document.getElementById('sp-vp-canvas') as HTMLCanvasElement | null;
+    const psCanvas = document.getElementById('sp-ps-canvas') as HTMLCanvasElement | null;
+    if (vpCanvas) {
+      this._vpPlot = new CurvePlot({
+        canvas: vpCanvas,
+        color: getComputedStyle(document.documentElement).getPropertyValue('--info-color').trim() || '#4aa3ff',
+        lockLeftY: false,
+        onChange: (pts, dragging) => this._applyVpPlot(pts, dragging),
+      });
+      this._vpPlot.setData(this._vpPlotPoints(), this._vpAxis());
+    }
+    if (psCanvas) {
+      this._psPlot = new CurvePlot({
+        canvas: psCanvas,
+        color: getComputedStyle(document.documentElement).getPropertyValue('--success-color').trim() || '#4ade80',
+        lockLeftY: true,
+        onChange: (pts, dragging) => this._applyPsPlot(pts, dragging),
+      });
+      this._psPlot.setData(this._psPlotPoints(), this._psAxis());
+    }
+
+    this._rebuildPointList('vp');
+    this._rebuildPointList('ps');
+    this._bindScalars();
+    this._bindConverter();
+    this._recomputeConverter();
+
+    const back = document.getElementById('sp-back-btn');
+    if (back) back.onclick = () => this.showProfilesPanel();
+    const del = document.getElementById('sp-delete-btn');
+    if (del) del.onclick = () => this._deleteProfile(this._profile!.profile_id);
+  }
+
+  // --- plot edits → working profile ---
+  private _applyVpPlot(plotPts: CurvePoint[], dragging: boolean): void {
+    // plot space [power, voltage] → storage [voltage, power], voltage-ascending.
+    const storage = plotPts
+      .map((pt) => [pt[1], pt[0]] as CurvePoint)
+      .sort((a, b) => a[0] - b[0]);
+    this._profile!.voltage_power_curve = storage;
+    this._profile!.lighting_voltage = storage[0][0];
+    this._profile!.max_voltage = storage[storage.length - 1][0];
+    this._syncValues();
+    if (dragging) this._setSaveStatus('');
+    else this._commitDebounced(0);
+  }
+
+  private _applyPsPlot(plotPts: CurvePoint[], dragging: boolean): void {
+    const storage = plotPts.map((pt) => [pt[0], pt[1]] as CurvePoint).sort((a, b) => a[0] - b[0]);
+    this._profile!.power_speed_curve = storage;
+    this._syncValues();
+    if (!dragging) this._commitDebounced(0);
+  }
+
+  // --- numeric point list ---
+  private _rebuildPointList(which: 'vp' | 'ps'): void {
+    const container = document.getElementById(which === 'vp' ? 'sp-vp-list' : 'sp-ps-list');
+    if (!container || !this._profile) return;
+    const isVp = which === 'vp';
+    const plotPts = isVp ? this._vpPlotPoints() : this._psPlotPoints();
+    const yLabel = isVp ? 'V' : 'km/h';
+    let html = `<div class="sp-point-head"><span>P%</span><span>${yLabel}</span><span></span></div>`;
+    plotPts.forEach((pt, i) => {
+      const isEnd = i === 0 || i === plotPts.length - 1;
+      const lockX = isEnd; // endpoints' power is fixed at 0 / 100
+      const lockY = !isVp && i === 0; // plot-2 origin Y locked
+      html += `
+                <div class="sp-point-row" data-i="${i}">
+                    <input type="number" class="property-input sp-px" data-which="${which}" data-i="${i}" value="${fmt(pt[0])}" step="1" ${lockX ? 'disabled' : ''}>
+                    <input type="number" class="property-input sp-py" data-which="${which}" data-i="${i}" value="${fmt(pt[1])}" step="${isVp ? '0.1' : '1'}" ${lockY ? 'disabled' : ''}>
+                    <button class="rr-flat-btn sp-pt-del" data-which="${which}" data-i="${i}" ${isEnd ? 'disabled title="Endpoints cannot be removed"' : ''}>✕</button>
+                </div>`;
+    });
+    html += `<button class="rr-flat-btn sp-pt-add" data-which="${which}">+ add point</button>`;
+    container.innerHTML = html;
+
+    container.querySelectorAll<HTMLInputElement>('.sp-px, .sp-py').forEach((el) => {
+      el.oninput = () => this._onPointInput(which);
+    });
+    container.querySelectorAll<HTMLButtonElement>('.sp-pt-del').forEach((btn) => {
+      if (btn.disabled) return;
+      btn.onclick = () => this._removePoint(which, Number(btn.dataset.i));
+    });
+    const addBtn = container.querySelector<HTMLButtonElement>('.sp-pt-add');
+    if (addBtn) addBtn.onclick = () => this._addPoint(which);
+  }
+
+  private _onPointInput(which: 'vp' | 'ps'): void {
+    const container = document.getElementById(which === 'vp' ? 'sp-vp-list' : 'sp-ps-list');
+    if (!container || !this._profile) return;
+    const isVp = which === 'vp';
+    const count = container.querySelectorAll('.sp-point-row').length;
+    const plotPts: CurvePoint[] = [];
+    for (let i = 0; i < count; i++) {
+      const xEl = container.querySelector<HTMLInputElement>(`.sp-px[data-i="${i}"]`);
+      const yEl = container.querySelector<HTMLInputElement>(`.sp-py[data-i="${i}"]`);
+      const x = parseFloat(xEl?.value ?? '');
+      const y = parseFloat(yEl?.value ?? '');
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return; // wait for valid input
+      plotPts.push([x, y]);
+    }
+    if (isVp) this._applyVpPlot(plotPts, false);
+    else this._applyPsPlot(plotPts, false);
+    // redraw the plot to match the typed values
+    (isVp ? this._vpPlot : this._psPlot)?.setData(
+      isVp ? this._vpPlotPoints() : this._psPlotPoints(),
+      isVp ? this._vpAxis() : this._psAxis(),
+    );
+  }
+
+  private _addPoint(which: 'vp' | 'ps'): void {
+    if (!this._profile) return;
+    const isVp = which === 'vp';
+    const pts = isVp ? this._vpPlotPoints() : this._psPlotPoints();
+    // Insert at the midpoint of the widest power gap, y on the line between.
+    let gapAt = 0;
+    let gap = -1;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const g = pts[i + 1][0] - pts[i][0];
+      if (g > gap) {
+        gap = g;
+        gapAt = i;
+      }
+    }
+    if (gap < 2 * EPS_X) {
+      showToast('No room to add another point here', 'warning', 2500);
+      return;
+    }
+    const a = pts[gapAt];
+    const b = pts[gapAt + 1];
+    const nx = (a[0] + b[0]) / 2;
+    const ny = (a[1] + b[1]) / 2;
+    pts.splice(gapAt + 1, 0, [nx, ny]);
+    if (isVp) this._applyVpPlot(pts, false);
+    else this._applyPsPlot(pts, false);
+    this._rebuildPointList(which);
+    (isVp ? this._vpPlot : this._psPlot)?.setData(pts, isVp ? this._vpAxis() : this._psAxis());
+  }
+
+  private _removePoint(which: 'vp' | 'ps', index: number): void {
+    if (!this._profile) return;
+    const isVp = which === 'vp';
+    const pts = isVp ? this._vpPlotPoints() : this._psPlotPoints();
+    if (index <= 0 || index >= pts.length - 1) return; // never the endpoints
+    pts.splice(index, 1);
+    if (isVp) this._applyVpPlot(pts, false);
+    else this._applyPsPlot(pts, false);
+    this._rebuildPointList(which);
+    (isVp ? this._vpPlot : this._psPlot)?.setData(pts, isVp ? this._vpAxis() : this._psAxis());
+  }
+
+  // --- scalar fields ---
+  private _bindScalars(): void {
+    const lighting = document.getElementById('sp-lighting') as HTMLInputElement | null;
+    const maxv = document.getElementById('sp-maxv') as HTMLInputElement | null;
+    const top = document.getElementById('sp-topspeed') as HTMLInputElement | null;
+
+    if (lighting)
+      lighting.oninput = () => this._onScalar(lighting, (v) => {
+        const vp = this._profile!.voltage_power_curve;
+        if (v >= vp[vp.length - 1][0]) return; // keep below max_voltage
+        vp[0][0] = v;
+        this._profile!.lighting_voltage = v;
+        this._vpPlot?.setData(this._vpPlotPoints(), this._vpAxis());
+      });
+    if (maxv)
+      maxv.oninput = () => this._onScalar(maxv, (v) => {
+        const vp = this._profile!.voltage_power_curve;
+        if (v <= vp[0][0]) return; // keep above lighting_voltage
+        vp[vp.length - 1][0] = v;
+        this._profile!.max_voltage = v;
+        this._vpPlot?.setData(this._vpPlotPoints(), this._vpAxis());
+      });
+    if (top)
+      top.oninput = () => this._onScalar(top, (v) => {
+        const ps = this._profile!.power_speed_curve;
+        if (ps.length >= 2 && v <= ps[ps.length - 2][1]) return; // above previous point
+        ps[ps.length - 1][1] = v;
+        this._psPlot?.setData(this._psPlotPoints(), this._psAxis());
+      });
+
+    const rates: Array<[string, keyof SpeedProfileData]> = [
+      ['sp-accel', 'acceleration_rate'],
+      ['sp-decel', 'deceleration_rate'],
+      ['sp-eb', 'emergency_brake_rate'],
+      ['sp-friction', 'friction_rate'],
+      ['sp-opdecel', 'operational_decel_ratio'],
+      ['sp-drag', 'drag_coefficient'],
+      ['sp-refspeed', 'reference_speed_kmh'],
+    ];
+    rates.forEach(([id, key]) => {
+      const el = document.getElementById(id) as HTMLInputElement | null;
+      if (el) el.oninput = () => this._onScalar(el, (v) => ((this._profile as any)[key] = v));
+    });
+  }
+
+  private _onScalar(el: HTMLInputElement, apply: (v: number) => void): void {
+    const v = parseFloat(el.value);
+    if (!Number.isFinite(v)) return;
+    apply(v);
+    this._recomputeConverter();
+    this._commitDebounced(250);
+  }
+
+  // --- converter ---
+  private _bindConverter(): void {
+    const bind = (id: string, compute: (val: number) => void) => {
+      const el = document.getElementById(id) as HTMLInputElement | null;
+      if (el)
+        el.oninput = () => {
+          const v = parseFloat(el.value);
+          if (Number.isFinite(v)) compute(v);
+        };
+    };
+    const vp = () => this._profile!.voltage_power_curve;
+    const ps = () => this._profile!.power_speed_curve;
+    const set = (id: string, val: number, digits = 2) => {
+      const el = document.getElementById(id) as HTMLInputElement | null;
+      if (el && document.activeElement !== el) el.value = fmt(val, digits);
+    };
+    bind('cv-vp-v', (v) => set('cv-vp-p', voltageToPower(vp(), v), 1));
+    bind('cv-vp-p', (p) => set('cv-vp-v', powerToVoltage(vp(), p), 2));
+    bind('cv-ps-p', (p) => set('cv-ps-s', powerPercentToSpeed(ps(), p), 1));
+    bind('cv-ps-s', (s) => set('cv-ps-p', speedToPower(ps(), s), 1));
+    bind('cv-vs-v', (v) => set('cv-vs-s', voltageToSpeedTwoStage(vp(), ps(), v), 1));
+    bind('cv-vs-s', (s) => set('cv-vs-v', speedToVoltageTwoStage(vp(), ps(), s), 2));
+  }
+
+  /** Seed the converter with a representative operating point (50% power). */
+  private _recomputeConverter(): void {
+    if (!this._profile) return;
+    const vp = this._profile.voltage_power_curve;
+    const ps = this._profile.power_speed_curve;
+    const setIfBlank = (id: string, val: number, digits = 2) => {
+      const el = document.getElementById(id) as HTMLInputElement | null;
+      if (el && document.activeElement !== el) el.value = fmt(val, digits);
+    };
+    setIfBlank('cv-vp-v', powerToVoltage(vp, 50), 2);
+    setIfBlank('cv-vp-p', 50, 0);
+    setIfBlank('cv-ps-p', 50, 0);
+    setIfBlank('cv-ps-s', powerPercentToSpeed(ps, 50), 1);
+    setIfBlank('cv-vs-v', powerToVoltage(vp, 50), 2);
+    setIfBlank('cv-vs-s', voltageToSpeedTwoStage(vp, ps, powerToVoltage(vp, 50)), 1);
+  }
+
+  /** Refresh point-list inputs + scalar inputs + converter from the working
+   *  profile without rebuilding DOM. Skips whatever input has focus. */
+  private _syncValues(): void {
+    if (!this._profile) return;
+    const setVal = (el: Element | null, val: string) => {
+      const input = el as HTMLInputElement | null;
+      if (input && document.activeElement !== input) input.value = val;
+    };
+    const refill = (which: 'vp' | 'ps', plotPts: CurvePoint[], yDigits: number) => {
+      const c = document.getElementById(which === 'vp' ? 'sp-vp-list' : 'sp-ps-list');
+      if (!c) return;
+      plotPts.forEach((pt, i) => {
+        setVal(c.querySelector(`.sp-px[data-i="${i}"]`), fmt(pt[0]));
+        setVal(c.querySelector(`.sp-py[data-i="${i}"]`), fmt(pt[1], yDigits));
+      });
+    };
+    refill('vp', this._vpPlotPoints(), 2);
+    refill('ps', this._psPlotPoints(), 1);
+    setVal(document.getElementById('sp-lighting'), fmt(this._profile.lighting_voltage));
+    setVal(document.getElementById('sp-maxv'), fmt(this._profile.max_voltage));
+    setVal(document.getElementById('sp-topspeed'), fmt(topSpeed(this._profile.power_speed_curve)));
+    this._recomputeConverter();
+  }
+
+  // --- commit / auto-save ---
+  private _commitDebounced(ms: number): void {
+    if (this._saveTimer) clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => this._commit(), ms);
+  }
+
+  private async _commit(): Promise<void> {
+    if (!this._profile) return;
+    this._setSaveStatus('saving');
+    try {
+      const updated = await this.api.updateSpeedProfile(this._profile.profile_id, this._profile);
+      this._profile = this._normalize(updated);
+      this._lastSaved = this._clone(this._profile);
+      this._vpPlot?.setData(this._vpPlotPoints(), this._vpAxis());
+      this._psPlot?.setData(this._psPlotPoints(), this._psAxis());
+      this._syncValues();
+      this._setSaveStatus('saved');
+    } catch (err: any) {
+      console.error('[SpeedProfileEditorHandler] save failed:', err);
+      showToast('Failed to save profile: ' + (err.message || err), 'error', 5000);
+      // Revert optimistic edits to the last server-confirmed state.
+      if (this._lastSaved) this._profile = this._clone(this._lastSaved);
+      this._rebuildPointList('vp');
+      this._rebuildPointList('ps');
+      this._vpPlot?.setData(this._vpPlotPoints(), this._vpAxis());
+      this._psPlot?.setData(this._psPlotPoints(), this._psAxis());
+      this._syncValues();
+      this._setSaveStatus('error');
+    }
+  }
+
+  private _setSaveStatus(state: '' | 'saving' | 'saved' | 'error'): void {
+    const el = document.getElementById('sp-save-status');
+    if (!el) return;
+    if (this._statusTimer) clearTimeout(this._statusTimer);
+    if (state === 'saving') {
+      el.textContent = '● saving…';
+      el.className = 'sp-save-status sp-save-saving';
+    } else if (state === 'saved') {
+      el.textContent = 'Saved ✓';
+      el.className = 'sp-save-status sp-save-saved';
+      this._statusTimer = setTimeout(() => {
+        if (el.textContent === 'Saved ✓') el.textContent = '';
+      }, 1500);
+    } else if (state === 'error') {
+      el.textContent = '● save failed';
+      el.className = 'sp-save-status sp-save-error';
+    } else {
+      el.textContent = '';
+      el.className = 'sp-save-status';
+    }
+  }
+
+  private _teardownPlots(): void {
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    if (this._statusTimer) {
+      clearTimeout(this._statusTimer);
+      this._statusTimer = null;
+    }
+    this._vpPlot?.destroy();
+    this._psPlot?.destroy();
+    this._vpPlot = null;
+    this._psPlot = null;
+  }
+
+  _cleanup(): void {
+    this._teardownPlots();
+    this._profile = null;
+    this._lastSaved = null;
+  }
+}

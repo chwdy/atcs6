@@ -192,39 +192,6 @@
     border-color: var(--accent-color) !important;
 }
 
-/* Schedule List Styles */
-.schedule-list-display {
-    max-height: 120px; 
-    overflow-y: auto; 
-    border: 1px solid var(--border-color); 
-    padding: 8px; 
-    font-family: var(--font-mono);
-    background-color: var(--bg-input);
-    border-radius: 6px;
-}
-
-.schedule-stop-list-compact {
-    max-height: 80px; 
-    overflow-y: auto; 
-    margin-top: 4px;
-}
-
-.schedule-list-display {
-    max-height: 120px; 
-    overflow-y: auto; 
-    border: 1px solid var(--border-color); 
-    padding: 8px; 
-    font-family: var(--font-mono);
-    background-color: var(--bg-input);
-    border-radius: 6px;
-}
-
-.schedule-stop-list-compact {
-    max-height: 80px; 
-    overflow-y: auto; 
-    margin-top: 4px;
-}
-
 /* Full-width range slider */
 .slider-full {
     width: 100%;

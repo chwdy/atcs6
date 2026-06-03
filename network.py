@@ -3,7 +3,7 @@ Railway Network Management
 
 Definition:
 This module provides the RailwayNetwork class which manages the complete railway infrastructure
-including tracks, trains, block sections, and schedules. It serves as the central repository and
+including tracks, trains, and block sections. It serves as the central repository and
 coordinator for all railway system components.
 """
 
@@ -12,7 +12,7 @@ import logging
 from typing import Dict, List, Optional, Set, Tuple, Any, Union
 import uuid
 from track import TrackSegment, EDGE_MASKS, BIT_TO_EDGES
-from train import Train, TrainSchedule
+from train import Train
 from block import Block
 from block_manager import BlockManager
 from switch_manager import SwitchManager
@@ -27,6 +27,7 @@ from constants import FLANK_PROTECTION_DISTANCE_CM
 from railway_signal import Signal, SignalType, SignalState
 from station import Station
 from railway_platform import Platform
+from speed_profile import SpeedProfileRegistry
 from signal_validation import (
     validate_signal_placement,
     get_valid_directions,
@@ -60,7 +61,7 @@ class RailwayNetwork:
     Central railway network management system.
 
     Manages all railway infrastructure components including tracks, trains,
-    block sections, and schedules.
+    and block sections.
     """
 
     def __init__(self):
@@ -72,9 +73,14 @@ class RailwayNetwork:
         self.stations = self.platforms
         self.station_groups: Dict[str, Station] = {}
         self.switches: Dict[str, "Switch"] = {}  # NEW: Switch entity management
-        self.schedules: Dict[str, TrainSchedule] = {}
 
-        self.speed_profiles: Dict[str, "SpeedProfile"] = {}
+        # The one speed-profile store for the whole runtime. TrainPhysics /
+        # TrainController._get_speed_profile read it to drive trains, and the
+        # REST API + services read and write the same object through
+        # AppState.speed_profile_registry (a property that returns this
+        # registry). SpeedProfileRegistry seeds it with the undeletable
+        # "default" profile.
+        self.speed_profiles: SpeedProfileRegistry = SpeedProfileRegistry()
 
         # Symmetric map of tunnel endpoints. A tunnel pairs two dead-end
         # edges so they behave as a single tile-to-tile connection. Keyed
@@ -89,6 +95,7 @@ class RailwayNetwork:
         self.switch_manager: Optional[SwitchManager] = None
         self.resource_coordinator: Optional[ResourceCoordinator] = None
         self.power_controller: Optional["BlockPowerController"] = None
+        self.switch_power_controller: Optional["SwitchPowerController"] = None
 
         # Reverse indices from tile -> owning block / platform.
         # Maintained in sync by network mutators (block creation, deletion,
@@ -1561,10 +1568,6 @@ class RailwayNetwork:
     def get_train(self, train_id: str) -> Optional[Train]:
         return self.trains.get(train_id)
 
-    def add_schedule(self, schedule: TrainSchedule):
-        """Add a train schedule to the network"""
-        self.schedules[schedule.schedule_id] = schedule
-
     def visualization(self):
         """Simple text-based visualization of the network"""
         if not self.tracks:
@@ -2164,7 +2167,6 @@ class RailwayNetwork:
         self.platforms.clear()
         self.station_groups.clear()
         self.switches.clear()  # NEW: Clear switches
-        self.schedules.clear()
         self.tunnels.clear()
 
         for block_id, block_data in data.get("blocks", {}).items():

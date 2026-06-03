@@ -1,0 +1,130 @@
+/* Speed Profile editor — manager list + per-profile curve editor.
+ *
+ * Follows DESIGN_LANGUAGE.md §4 "Two views of one value": each plot section is
+ * one container holding a narrow numeric control column beside a wide canvas,
+ * with the values laid straight into the section body (no nested cards). The
+ * save-status pill replaces a manual Save button (auto-save contract, §5C). */
+
+/* ---- per-profile editor toolbar (§12 editor toolbar) ---- */
+.sp-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+.sp-toolbar .sp-spacer {
+    flex: 1;
+}
+.sp-save-status {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-tertiary);
+    min-width: 70px;
+    text-align: right;
+}
+.sp-save-status.sp-save-saving {
+    color: var(--warning-color);
+}
+.sp-save-status.sp-save-saved {
+    color: var(--success-color);
+}
+.sp-save-status.sp-save-error {
+    color: var(--danger-color);
+}
+
+/* ---- plot block: narrow control column + wide canvas ---- */
+.sp-plot-block {
+    display: grid;
+    grid-template-columns: minmax(108px, 30%) 1fr;
+    gap: 10px;
+    align-items: start;
+}
+
+.sp-canvas {
+    display: block;
+    width: 100%;
+    height: 220px;
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    touch-action: none;
+}
+
+/* ---- numeric point list (the precise control set) ---- */
+.sp-point-list {
+    display: flex;
+    flex-direction: column;
+}
+.sp-point-head,
+.sp-point-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 22px;
+    gap: 4px;
+    align-items: center;
+}
+.sp-point-head {
+    margin-bottom: 4px;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+    text-align: center;
+}
+.sp-point-row {
+    margin-bottom: 4px;
+}
+.sp-point-row input.property-input {
+    height: 26px;
+    padding: 0 4px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-align: center;
+}
+.sp-point-row input.property-input:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+.sp-pt-del {
+    padding: 0;
+    width: 22px;
+    text-align: center;
+    line-height: 24px;
+}
+.sp-pt-del:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+.sp-pt-add {
+    margin-top: 2px;
+    width: 100%;
+    text-align: center;
+}
+
+/* ---- converter: paired forward / inverse inputs per relation ---- */
+.sp-converter {
+    display: flex;
+    flex-direction: column;
+}
+.sp-converter-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto 1fr auto;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+}
+.sp-converter-row label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+.sp-converter-row input.property-input {
+    height: 28px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    text-align: center;
+}
+.sp-conv-sep {
+    color: var(--text-tertiary);
+    text-align: center;
+    font-size: 13px;
+}

@@ -757,12 +757,15 @@ export async function showPromptModal(options: PromptModalOptions = {}): Promise
 // ============================================================================
 
 export function renderBitToggle(bit: number, name: string, trackBits: number): string {
-  const isActive = trackBits & bit;
-  const activeClass = isActive ? 'active' : 'inactive';
+  const isActive = (trackBits & bit) !== 0;
+  // Canonical checkbox chrome (DESIGN_LANGUAGE.md §4) — accent-purple custom
+  // box, dark-theme safe. The label is just the segment name (NS, EW, …); the
+  // bit weight is implicit in the readout's binary string, not the label.
   return `
-        <label class="bit-toggle-label ${activeClass} flex items-center p-4 rounded-sm text-xxs">
-            <input type="checkbox" data-bit="${bit}" ${isActive ? 'checked' : ''} />
-            <span class="bit-name ${activeClass}">${name} | ${bit}</span>
+        <label class="checkbox-wrapper">
+            <input type="checkbox" class="checkbox-input" data-bit="${bit}" ${isActive ? 'checked' : ''} />
+            <span class="checkbox-custom"></span>
+            <span class="checkbox-label">${name}</span>
         </label>
     `;
 }

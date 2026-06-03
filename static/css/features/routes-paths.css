@@ -50,84 +50,21 @@
     gap: 8px;
 }
 
-.route-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 8px 10px;
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    background: #171925;
-}
-
-.route-row:hover {
-    border-color: #5a5a7e;
-    background: #1a1c2a;
-}
-
-.route-row-main {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+/* Route list row — reuses the canonical .rr-card list-card shell
+   (DESIGN_LANGUAGE.md §11), exactly like the active-paths list (.path-row)
+   and the route-runs list. The container is `rr-card route-row accent-*`:
+   .rr-card gives the card shell, .accent-{success,muted} draws the §6 status
+   left border, and the matching .chip-{success,muted} colors the state chip.
+   Only the title differs from .rr-card-train — a route name is a human-
+   readable display name, so it wraps instead of ellipsising (§5 "Overflow"). */
+.route-row-title {
     min-width: 0;
-    flex: 1;
-}
-
-.route-row-status {
-    min-width: 56px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 3px;
-}
-
-.route-status-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-}
-
-.route-status-label {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-}
-
-.route-row-status.is-active {
-    color: var(--success-color);
-}
-
-.route-row-status.is-inactive {
-    color: #888;
-}
-
-.route-row-content {
-    min-width: 0;
-    flex: 1;
-}
-
-.route-row-name {
     font-size: 12px;
-    font-weight: 700;
-    color: #fff;
+    font-weight: 600;
+    color: var(--text-primary);
     line-height: 1.25;
     word-break: break-word;
-}
-
-.route-row-meta {
-    margin-top: 4px;
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 6px;
-}
-
-/* Size deltas layered over the canonical .chip (DESIGN_LANGUAGE.md §7); the
-   shell — bg, border, radius, color, mono font — comes from .chip. */
-.route-mode-pill {
-    padding: 1px 6px;
-    font-size: 9px;
+    overflow-wrap: anywhere;
 }
 
 .route-row-actions {
@@ -159,6 +96,9 @@
 }
 
 .route-status-box .route-status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
     background: currentColor;
 }
 
@@ -331,6 +271,17 @@
     gap: 6px;
 }
 
+/* The §6 .accent-* helpers (components/status-blocks.css) and .rr-card's own
+   neutral border-left have equal specificity, but .rr-card loads later — so a
+   bare `.rr-card.accent-*` keeps the neutral border and loses the status hue.
+   Re-assert the accent color here at (0,2,0) so the left-border accent shows
+   for every .rr-card list (route runs, routes, …). */
+.rr-card.accent-success { border-left-color: var(--success-color); }
+.rr-card.accent-info { border-left-color: var(--info-color); }
+.rr-card.accent-warn { border-left-color: var(--warning-color); }
+.rr-card.accent-danger { border-left-color: var(--danger-color); }
+.rr-card.accent-muted { border-left-color: var(--border-color); }
+
 .rr-card-head {
     display: flex;
     align-items: flex-start;
@@ -392,6 +343,19 @@
 .rr-flat-btn:hover {
     background-color: var(--bg-hover);
     color: var(--accent-hover);
+}
+
+/* Destructive flat action inside a card (§11): danger text, danger-tinted bg
+   on hover — never a solid fill. The .secondary-sidebar-content scope matches
+   the specificity of the base .rr-flat-btn rule above so the danger text color
+   wins inside the sidebar (the base rule is also scoped that way). */
+.secondary-sidebar-content .rr-flat-btn-danger,
+.rr-flat-btn-danger {
+    color: var(--danger-color);
+}
+.rr-flat-btn-danger:hover {
+    background-color: rgba(232, 63, 91, 0.10);
+    color: var(--danger-color);
 }
 
 /* ---- Single-run editor ---- */
@@ -1392,41 +1356,6 @@
     min-width: 0;
 }
 
-/* Floating resource picker shown when a clicked tile has >1 targetable
-   resource (platform / block / station). Matches the panel language. */
-.route-resource-picker {
-    position: fixed;
-    z-index: 1000;
-    min-width: 160px;
-    padding: 4px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    background: var(--bg-panel);
-    border: 1px solid var(--border-color);
-    border-radius: var(--control-radius-sm);
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
-}
-
-.route-resource-option {
-    height: var(--control-height-xs);
-    padding: 0 10px;
-    text-align: left;
-    white-space: nowrap;
-    font-size: 12px;
-    color: var(--text-primary);
-    background: var(--bg-dark);
-    border: 1px solid var(--border-color);
-    border-radius: var(--control-radius-sm);
-    cursor: pointer;
-    transition: color 0.15s, border-color 0.15s;
-}
-
-.route-resource-option:hover {
-    border-color: var(--accent-color);
-    color: var(--accent-hover);
-}
-
 .waypoint-flex-toggle {
     height: var(--control-height-sm);
     padding: 0 10px;
@@ -1482,6 +1411,10 @@
 }
 
 .signal-state-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
     background: var(--signal-state-color);
     box-shadow: 0 0 8px var(--signal-state-color);
 }
@@ -1662,133 +1595,81 @@
     max-height: 80px;
 }
 
-.path-priority-value {
-    min-width: 30px;
-    text-align: center;
-}
+/* ----------------------------------------------------------------------------
+   Paths list — §11 standard card + §6 status left-border accent.
 
-.path-row {
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    background: #171925;
-    padding: 8px 10px;
-}
+   The card shell (bg, border, radius, padding, column flow) is the shared
+   .rr-card defined above; .path-row only layers the status-colored 3px left
+   border. The status hue is one token, set on --path-status-accent by the
+   .path-status-* class on the row, and reused by the progress meter and the
+   detail-view status title. The list reuses .rr-card-head / -title-col /
+   -train / -route / -foot, .chip-row / .chip, and .rr-flat-btn so the paths
+   list and the route-runs list share one list-card vocabulary
+   (DESIGN_LANGUAGE.md §11–12). No hex literals — all colors are tokens.
+   ---------------------------------------------------------------------------- */
 
-.path-row:hover {
-    border-color: #5a5a7e;
-    background: #1a1c2a;
-}
-
-.path-row-main {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    width: 100%;
-}
-
-.path-row-status {
-    min-width: 46px;
+.paths-list {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 2px;
+    gap: 8px;
 }
 
-.path-status-label {
-    font-size: 0.65rem;
-    line-height: 1;
-    padding: 4px 0;
-    margin-top: 2px;
+/* .path-row rides on .rr-card; it only recolors the left border to the status
+   accent. Declared after .rr-card so this border-left wins. */
+.path-row {
+    border-left: 3px solid var(--path-status-accent, var(--border-color));
 }
 
-.path-priority-tag {
-    line-height: 1;
-    padding-top: 2px;
+.path-card-actions {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
 }
 
-.path-row-content {
-    min-width: 0;
-}
-
-.path-id-text {
-    word-break: break-all;
-    line-height: 1.2;
-}
-
-.path-meta-col {
-    min-width: 0;
-}
-
-.path-endpoints-stack {
-    word-break: break-word;
-    line-height: 1.4;
-    margin-bottom: 6px;
-}
-
-.path-arrow-divider {
-    text-align: center;
-    width: 20px;
-}
-
-.path-progress-compact {
+/* Thin progress meter (active paths only). Replaces the old 20px bordered
+   .progress-container box with a 3px rounded bar whose value tracks the
+   status accent. */
+.path-meter {
     width: 100%;
-    max-width: 120px;
-    height: 4px;
-}
-
-.path-progress-full {
-    width: 100%;
-    max-width: 150px;
-    height: 6px;
-}
-
-.path-row,
-.path-status-title {
-    --path-status-accent: #888;
-}
-
-.path-status-dot {
-    background-color: var(--path-status-accent);
-}
-
-.path-status-label,
-.path-status-title {
-    color: var(--path-status-accent);
-}
-
-.path-progress-meter {
-    width: 100%;
-    height: 100%;
+    height: 3px;
     display: block;
     appearance: none;
     -webkit-appearance: none;
     border: none;
+    border-radius: 999px;
     background: transparent;
 }
-
-.path-progress-meter::-webkit-progress-bar {
-    background-color: #2a2d3d;
+.path-meter::-webkit-progress-bar {
+    background-color: var(--bg-hover);
     border-radius: 999px;
 }
-
-.path-progress-meter::-webkit-progress-value {
+.path-meter::-webkit-progress-value {
+    background-color: var(--path-status-accent);
+    border-radius: 999px;
+}
+.path-meter::-moz-progress-bar {
     background-color: var(--path-status-accent);
     border-radius: 999px;
 }
 
-.path-progress-meter::-moz-progress-bar {
-    background-color: var(--path-status-accent);
-    border-radius: 999px;
+/* Status → accent token. One source of truth for the row's left border, the
+   progress meter value, and the detail-view status title. */
+.path-row,
+.path-status-title {
+    --path-status-accent: var(--text-tertiary);
 }
+.path-status-pending   { --path-status-accent: var(--text-tertiary); }
+.path-status-setting   { --path-status-accent: var(--warning-color); }
+.path-status-set        { --path-status-accent: var(--info-color); }
+.path-status-active      { --path-status-accent: var(--success-color); }
+.path-status-clearing   { --path-status-accent: var(--warning-color); }
+.path-status-completed  { --path-status-accent: var(--text-tertiary); }
+.path-status-cancelled  { --path-status-accent: var(--danger-color); }
 
-.path-status-pending { --path-status-accent: #888; }
-.path-status-setting { --path-status-accent: #ffd93d; }
-.path-status-set { --path-status-accent: #04d361; }
-.path-status-active { --path-status-accent: #00ff88; }
-.path-status-clearing { --path-status-accent: #ff9500; }
-.path-status-completed { --path-status-accent: #666; }
-.path-status-cancelled { --path-status-accent: #e83f5b; }
+/* Detail-view status title (showPathEditor) — colored by the same accent. */
+.path-status-title {
+    color: var(--path-status-accent);
+}
 
 .path-route-stack {
     line-height: 1.4;
@@ -1890,43 +1771,6 @@
     display: flex;
     gap: 8px;
     margin-top: 8px;
-}
-
-/* Progress Bar */
-.progress-container {
-    background: #0d0d1a;
-    border-radius: 4px;
-    height: 20px;
-    position: relative;
-    overflow: hidden;
-    margin-top: 8px;
-    border: 1px solid #2a2a3e;
-}
-
-.progress-bar {
-    background: linear-gradient(90deg, #04d361, #00ff88);
-    height: 100%;
-    transition: width 0.3s ease;
-    border-radius: 3px;
-}
-
-.progress-text {
-    position: absolute;
-    right: 8px;
-    top: 50%;
-    transform: translateY(-50%);
-    font-size: 11px;
-    font-weight: 600;
-    color: #fff;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
-}
-
-/* Status Dot */
-.status-dot {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    display: inline-block;
 }
 
 /* Route Setup Panel (during route creation) */

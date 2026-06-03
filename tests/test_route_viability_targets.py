@@ -22,7 +22,6 @@ from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from persistence import PersistenceManager
-from speed_profile import SpeedProfileRegistry
 from track import TrackSegment
 
 
@@ -36,7 +35,6 @@ def app_state():
         path_dispatcher=path_dispatcher,
         sim_controller=sim_controller,
         persistence_manager=PersistenceManager(storage_dir="layouts"),
-        speed_profile_registry=SpeedProfileRegistry(),
         simulation_lock=threading.Lock(),
         simulation_running=False,
         simulation_speed=1.0,

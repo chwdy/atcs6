@@ -7,6 +7,7 @@ This file collects directives for working in this repo. Most rules below apply O
 - All rules in this file that govern document edits apply ONLY to `design_new.md` for now.
 - Other files (code, current docs, implementation index) follow their own conventions.
 - The "Running Python in this repo" section below is global — it applies to every Python invocation, not just `design_new.md` work.
+- The "Browser preview" section below is also global — it applies whenever you use the `preview_*` tools.
 
 ## Running Python in this repo
 
@@ -26,6 +27,12 @@ This project requires the `general` conda environment. Run Python through it for
 - **Why this matters.** `general` provides Python 3.11.6 with flask, pytest, and the project's other deps installed. Code in this repo uses 3.10+ syntax (e.g. `Flask | None` in `server.py:66`); running under 3.9 raises `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'` at import time.
 - **How to apply.** Anywhere a tool call would invoke `python`, `python3`, `pytest`, `flask`, or run `server.py` / `demo_main.py` / any project script, prefix it with `conda run -n general`. When `pytest` or similar is reported as "not found," it's the env, not a missing install — re-run via `conda run -n general`.
 - **Don't "fix" the 3.10+ syntax.** Modern union syntax (`X | None`, etc.) is intentional. Do not change it to `Optional[X]` or add `from __future__ import annotations` just because a wrong-Python invocation surfaced an error — fix the invocation instead.
+
+## Browser preview
+
+The preview window opens at a tiny default size (around 2px wide), so the very first `preview_screenshot` comes out as a useless thin sliver.
+
+- **Resize first, before the first screenshot.** As soon as you start a preview session, call `preview_resize` to a normal desktop size (e.g. 1440×900). Do this up front — don't take a broken sliver screenshot, notice it's wrong, and only then resize.
 
 ## Authoring rules for `design_new.md`
 

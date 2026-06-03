@@ -19,7 +19,7 @@ is migrating the other route modules onto the same pattern.
 multi-entity operations:
 
 - A multi-step domain operation (e.g. "delete a layout and stop all
-  schedules tied to it") lives inline in the HTTP handler and cannot be
+  route runs tied to it") lives inline in the HTTP handler and cannot be
   reused by `demo_main.py`, journey tests, or future CLI tools.
 - Unit tests for domain rules require constructing a Flask test client.
 - Future cross-cutting concerns (authorization, audit logging,
@@ -40,7 +40,6 @@ services/
     exceptions.py            # the typed ServiceError hierarchy
     layout_service.py        # save/load/delete; owns the pause-and-lock multi-write
     train_route_service.py   # route CRUD + activate/deactivate; RouteRun lifecycle
-    schedule_service.py      # schedule CRUD; coordinates with train routes
     speed_profile_service.py # profile CRUD; owns simulation_lock + default/in-use guards
     switch_service.py        # switch CRUD + availability flags + SwitchManager position changes
     train_service.py         # train CRUD + placement + route assignment + operator commands
@@ -49,7 +48,7 @@ services/
     platform_service.py      # platform CRUD + tile membership + placement predicates
 ```
 
-Migrated routes: `layouts`, `schedules`, `train_routes`, `speed_profiles`,
+Migrated routes: `layouts`, `train_routes`, `speed_profiles`,
 `switches`, `trains`, `blocks`, `tracks`, `platforms`.
 
 **Remaining.** `signals`, `stations`, `paths`, `route_runs`, `tunnels`,

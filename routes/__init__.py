@@ -18,7 +18,6 @@ Module map:
 - paths: /api/paths/* pathfinding and management
 - train_routes: /api/train-routes/* route definitions + lifecycle + viability
 - route_runs: /api/route-runs/* read-only live + historical run records
-- schedules: /api/schedules/*
 - speed_profiles: /api/speed-profiles/*
 - switches: /api/switches/* and /api/tracks/<x>/<y>/switch
 - inspector: debug / inspector endpoints
@@ -37,7 +36,6 @@ from routes import (
     paths,
     train_routes,
     route_runs,
-    schedules,
     speed_profiles,
     switches,
     tunnels,
@@ -64,7 +62,6 @@ def register_all(app, state) -> None:
     paths.register(app, state)
     train_routes.register(app, state)
     route_runs.register(app, state)
-    schedules.register(app, state)
     speed_profiles.register(app, state)
     switches.register(app, state)
     tunnels.register(app, state)

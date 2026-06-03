@@ -20,6 +20,9 @@ import { showConfirmModal } from '../lib/helpers';
 interface SelectionSummary {
   tiles: any[];
   blockIds: Set<string>;
+  platformIds: Set<string>;
+  switchIds: Set<string>;
+  signalIds: Set<string>;
 }
 
 export class MultiSelectActionsHandler {
@@ -61,7 +64,13 @@ export class MultiSelectActionsHandler {
     if (this.propertiesPanel) this.propertiesPanel.hidden = true;
 
     const summary = this._summarize(selectedKeys);
-    const sig = `${summary.tiles.length}|${[...summary.blockIds].sort().join(',')}`;
+    const sig = [
+      summary.tiles.length,
+      [...summary.blockIds].sort().join(','),
+      [...summary.platformIds].sort().join(','),
+      [...summary.switchIds].sort().join(','),
+      [...summary.signalIds].sort().join(','),
+    ].join('|');
     if (sig === this._lastSignature) return;
     this._lastSignature = sig;
 
@@ -75,13 +84,21 @@ export class MultiSelectActionsHandler {
 
     const tiles: any[] = [];
     const blockIds = new Set<string>();
+    const platformIds = new Set<string>();
+    const switchIds = new Set<string>();
+    const signalIds = new Set<string>();
     for (const key of selectedKeys) {
       const t = byKey.get(key);
       if (!t) continue;
       tiles.push(t);
       if (t.block_section_id) blockIds.add(t.block_section_id);
+      // A tile's `station_id` holds the platform it belongs to (the field is
+      // historically named; see editor.ts removePlatformTile(track.station_id)).
+      if (t.station_id) platformIds.add(t.station_id);
+      if (t.switch_id) switchIds.add(t.switch_id);
+      for (const sid of t.signal_ids || []) signalIds.add(sid);
     }
-    return { tiles, blockIds };
+    return { tiles, blockIds, platformIds, switchIds, signalIds };
   }
 
   _affectedBlocks(blockIdSet: Set<string>): any[] {
@@ -95,17 +112,6 @@ export class MultiSelectActionsHandler {
     const blockCount = summary.blockIds.size;
     const tileWord = tileCount === 1 ? 'tile' : 'tiles';
     const blockWord = blockCount === 1 ? 'block' : 'blocks';
-
-    const blockChips =
-      blockCount === 0
-        ? '<span class="multi-select-empty">No blocks touched</span>'
-        : [...summary.blockIds]
-            .sort()
-            .map(
-              (id) =>
-                `<span class="multi-select-block-chip" title="Block ${this._escape(id)}">${this._escape(id)}</span>`
-            )
-            .join('');
 
     const cachedBlocks = this.editor.cachedBlocks || [];
     const blockOptions =
@@ -130,60 +136,115 @@ export class MultiSelectActionsHandler {
       affectedBlocks.length === 0 ? '' : this._renderPropertiesSection(affectedBlocks);
 
     panel.innerHTML = `
-            <h3>Selection</h3>
-            <div class="multi-select-counts">
-                <strong>${tileCount}</strong> ${tileWord}
-                <span class="multi-select-sep">·</span>
-                <strong>${blockCount}</strong> ${blockWord} affected
+            <div class="ms-header">
+                <h3>Selection</h3>
+                <button type="button" class="btn btn-flat ms-clear" data-action="clear" title="Clear selection">Clear</button>
             </div>
-            <div class="multi-select-blocks">${blockChips}</div>
-
-            <div class="multi-select-group">
-                <div class="multi-select-group-label">Block membership</div>
-                <div class="multi-select-toolbar">
-                    <button type="button" class="btn btn-primary btn-size-sm" data-action="create-block">
-                        New block from selection
-                    </button>
-                </div>
-                <div class="multi-select-row">
-                    <select class="multi-select-input" data-field="add-target-block" ${addDisabled}>
-                        ${blockOptions}
-                    </select>
-                    <button type="button" class="btn btn-secondary btn-size-sm" data-action="add-to-block" ${addDisabled}>
-                        Add
-                    </button>
-                </div>
-                <div class="multi-select-toolbar">
-                    <button type="button" class="btn btn-secondary btn-size-sm" data-action="remove-from-blocks" ${removeDisabled}>
-                        Remove from ${blockCount === 1 ? 'block' : 'blocks'}
-                    </button>
-                </div>
+            <div class="status-header accent-accent ms-summary">
+                <div class="ms-counts">${this._countsHtml(summary)}</div>
+                <div class="chip-row ms-chips">${this._chipsHtml(summary)}</div>
             </div>
 
             ${propertiesSection}
 
-            <div class="multi-select-group">
-                <div class="multi-select-group-label">Destructive</div>
-                <div class="multi-select-toolbar">
-                    <button type="button" class="btn btn-danger btn-size-sm" data-action="delete-tiles">
+            <div class="ms-group">
+                <div class="ms-group-label">Block membership</div>
+                <button type="button" class="btn btn-outline ms-btn-block" data-action="create-block">
+                    New block from selection
+                </button>
+                <div class="ms-row">
+                    <select class="ms-input" data-field="add-target-block" ${addDisabled}>
+                        ${blockOptions}
+                    </select>
+                    <button type="button" class="btn btn-outline" data-action="add-to-block" ${addDisabled}>
+                        Add
+                    </button>
+                </div>
+                <button type="button" class="btn btn-outline ms-btn-block" data-action="remove-from-blocks" ${removeDisabled}>
+                    Remove from ${blockCount === 1 ? 'block' : 'blocks'}
+                </button>
+            </div>
+
+            <div class="ms-group">
+                <div class="ms-group-label">Destructive</div>
+                <div class="ms-row ms-row-equal">
+                    <button type="button" class="btn btn-danger" data-action="delete-tiles">
                         Delete ${tileCount} ${tileWord}
                     </button>
-                    <button type="button" class="btn btn-danger btn-size-sm" data-action="delete-blocks" ${blockCount === 0 ? 'disabled' : ''}>
+                    <button type="button" class="btn btn-danger" data-action="delete-blocks" ${blockCount === 0 ? 'disabled' : ''}>
                         Delete ${blockCount} ${blockWord}
                     </button>
                 </div>
-                <p class="multi-select-hint">
+                <p class="ms-hint">
                     "Delete tiles" removes the tracks. "Delete blocks" tears down the block grouping but keeps the tiles.
                 </p>
-            </div>
-
-            <div class="multi-select-toolbar">
-                <button type="button" class="btn btn-secondary btn-size-sm" data-action="clear">Clear selection</button>
             </div>
         `;
 
     this._wireActions(panel);
     if (affectedBlocks.length > 0) this._wirePropertyInputs(panel, affectedBlocks);
+  }
+
+  // One count segment per entity type present in the selection. Each number is
+  // tinted with the same hue as that type's chips below, so the colour itself
+  // acts as the legend. Types with a zero count are dropped.
+  _countsHtml(summary: SelectionSummary): string {
+    const segs: string[] = [];
+    const add = (n: number, sing: string, plur: string, cls: string): void => {
+      if (n <= 0) return;
+      segs.push(`<strong class="ms-count ${cls}">${n}</strong> ${n === 1 ? sing : plur}`);
+    };
+    add(summary.tiles.length, 'tile', 'tiles', 'ms-count-tile');
+    add(summary.blockIds.size, 'block', 'blocks', 'ms-count-block');
+    add(summary.platformIds.size, 'platform', 'platforms', 'ms-count-platform');
+    add(summary.switchIds.size, 'switch', 'switches', 'ms-count-switch');
+    add(summary.signalIds.size, 'signal', 'signals', 'ms-count-signal');
+    // Each segment keeps its number + word together (nowrap) and carries its
+    // own trailing separator. Segments are joined by a real space — the only
+    // break opportunity — so a long line wraps between segments with the · at
+    // the end of a line, never orphaned at the start of the next, and never
+    // overflowing.
+    return segs
+      .map(
+        (s, i) =>
+          `<span class="ms-count-seg">${s}${i < segs.length - 1 ? '<span class="ms-sep"> ·</span>' : ''}</span>`
+      )
+      .join(' ');
+  }
+
+  // Color-coded chips for every entity the selection touches. Structural
+  // entities (block / platform / switch / signal) come first so their hues are
+  // visible without scrolling; the raw track tiles follow, capped so a large
+  // box-select can't render thousands of chips.
+  _chipsHtml(summary: SelectionSummary): string {
+    const TILE_CAP = 50;
+    const chip = (label: string, cls: string, title: string): string =>
+      `<span class="chip ${cls}" title="${this._escape(title)}">${this._escape(label)}</span>`;
+    const parts: string[] = [];
+
+    [...summary.blockIds].sort().forEach((id) => parts.push(chip(id, 'chip-accent', `Block ${id}`)));
+    [...summary.platformIds]
+      .sort()
+      .forEach((id) => parts.push(chip(id, 'chip-info', `Platform ${id}`)));
+    [...summary.switchIds]
+      .sort()
+      .forEach((id) => parts.push(chip(id, 'chip-warn', `Switch ${id}`)));
+    [...summary.signalIds]
+      .sort()
+      .forEach((id) => parts.push(chip(id, 'chip-success', `Signal ${id}`)));
+
+    summary.tiles
+      .slice(0, TILE_CAP)
+      .forEach((t) => parts.push(chip(`${t.x},${t.y}`, 'chip-muted', `Tile (${t.x}, ${t.y})`)));
+    const overflow = summary.tiles.length - TILE_CAP;
+    if (overflow > 0) {
+      parts.push(
+        `<span class="chip chip-muted" title="${overflow} more tile${overflow !== 1 ? 's' : ''}">+${overflow}</span>`
+      );
+    }
+
+    if (parts.length === 0) return '<span class="ms-empty">No entities</span>';
+    return parts.join('');
   }
 
   _renderPropertiesSection(blocks: any[]): string {
@@ -206,31 +267,39 @@ export class MultiSelectActionsHandler {
     const manualChecked = !manualSet.has(true) ? '' : manualSet.size === 1 ? 'checked' : '';
 
     return `
-            <div class="multi-select-group">
-                <div class="multi-select-group-label">Block properties (${blocks.length} block${blocks.length !== 1 ? 's' : ''})</div>
-                <div class="multi-select-field">
-                    <label for="ms-speed">Max speed (km/h)</label>
-                    <input id="ms-speed" type="number" class="multi-select-input" data-field="speed_limit_kmh"
-                           value="${speedValue}" placeholder="${speedPlaceholder}" min="0" step="1" />
+            <div class="ms-group">
+                <div class="ms-group-label">Block properties (${blocks.length} block${blocks.length !== 1 ? 's' : ''})</div>
+                <div class="ms-field">
+                    <label class="ms-field-label" for="ms-speed">Max speed</label>
+                    <div class="ms-field-control">
+                        <input id="ms-speed" type="number" class="ms-input ms-input-num" data-field="speed_limit_kmh"
+                               value="${speedValue}" placeholder="${speedPlaceholder}" min="0" step="1" />
+                        <span class="ms-unit">km/h</span>
+                    </div>
                 </div>
-                <div class="multi-select-field">
-                    <label for="ms-radius">Min radius (cm)</label>
-                    <input id="ms-radius" type="number" class="multi-select-input" data-field="min_radius_cm"
-                           value="${radiusValue}" placeholder="${radiusPlaceholder}" min="0" step="1" />
+                <div class="ms-field">
+                    <label class="ms-field-label" for="ms-radius">Min radius</label>
+                    <div class="ms-field-control">
+                        <input id="ms-radius" type="number" class="ms-input ms-input-num" data-field="min_radius_cm"
+                               value="${radiusValue}" placeholder="${radiusPlaceholder}" min="0" step="1" />
+                        <span class="ms-unit">cm</span>
+                    </div>
                 </div>
-                <div class="multi-select-field multi-select-field-checkbox">
-                    <label for="ms-disabled">Disabled</label>
-                    <input id="ms-disabled" type="checkbox" data-field="disabled" ${disabledChecked} />
+                <div class="ms-flags">
+                    <label class="checkbox-wrapper">
+                        <input type="checkbox" class="checkbox-input" data-field="disabled" ${disabledChecked} />
+                        <span class="checkbox-custom"></span>
+                        <span class="checkbox-label">Disabled</span>
+                    </label>
+                    <label class="checkbox-wrapper">
+                        <input type="checkbox" class="checkbox-input" data-field="manual" ${manualChecked} />
+                        <span class="checkbox-custom"></span>
+                        <span class="checkbox-label">Manual</span>
+                    </label>
                 </div>
-                <div class="multi-select-field multi-select-field-checkbox">
-                    <label for="ms-manual">Manual</label>
-                    <input id="ms-manual" type="checkbox" data-field="manual" ${manualChecked} />
-                </div>
-                <div class="multi-select-toolbar">
-                    <button type="button" class="btn btn-primary btn-size-sm" data-action="apply-properties">
-                        Apply to ${blocks.length} block${blocks.length !== 1 ? 's' : ''}
-                    </button>
-                </div>
+                <button type="button" class="btn btn-accent ms-btn-block" data-action="apply-properties">
+                    Apply to ${blocks.length} block${blocks.length !== 1 ? 's' : ''}
+                </button>
             </div>
         `;
   }

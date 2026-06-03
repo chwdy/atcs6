@@ -142,6 +142,23 @@
     line-height: 1.5;
 }
 
+/* Settings modal — sections that host the moved Display + Debug Info controls.
+   Each section is a titled block; consecutive sections get a hairline divider. */
+.settings-section + .settings-section {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border-color);
+}
+
+.settings-section-title {
+    margin: 0 0 12px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+}
+
 /* Reusable confirm dialog (used by route/path editors) */
 .app-modal-overlay {
     position: fixed;

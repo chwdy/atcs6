@@ -139,7 +139,6 @@ class ScenarioRunner:
         from path_dispatcher import PathDispatcher
         from persistence import PersistenceManager
         from simulation import SimulationController, build_network_payload
-        from speed_profile import SpeedProfileRegistry
         from step_player import StepPlayer
 
         result = ScenarioResult(name=self.data.get("name", "unnamed"))
@@ -151,14 +150,12 @@ class ScenarioRunner:
         if sim_controller.power_controller:
             sim_controller.power_controller._sim_controller = sim_controller
         persistence_manager = PersistenceManager()
-        speed_registry = SpeedProfileRegistry()
 
         state = AppState(
             network=network,
             path_dispatcher=path_dispatcher,
             sim_controller=sim_controller,
             persistence_manager=persistence_manager,
-            speed_profile_registry=speed_registry,
             simulation_lock=threading.Lock(),
             simulation_running=False,
             simulation_speed=1.0,

@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "atcs6-dev",
-      "runtimeExecutable": "/opt/homebrew/anaconda3/bin/conda",
-      "runtimeArgs": ["run", "-n", "general", "--no-capture-output", "python", "server.py", "--skip-startup-tests", "--port", "5007"],
+      "runtimeExecutable": "/opt/homebrew/anaconda3/envs/general/bin/python",
+      "runtimeArgs": ["server.py", "--skip-startup-tests", "--port", "5007"],
       "port": 5007
     }
   ]

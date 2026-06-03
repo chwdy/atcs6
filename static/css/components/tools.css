@@ -94,8 +94,8 @@
     justify-content: center;
     gap: 1px;
     padding: 2px;
-    width: 38px;
-    height: 38px;
+    width: 45px;
+    height: 45px;
     background-color: var(--bg-dark);
     border: none;
     border-radius: var(--control-radius-sm);
@@ -111,12 +111,23 @@
     color: var(--accent-hover);
 }
 
+/* Disabled in Simulation mode: layout-editing tools are gated off. */
+.tool-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.tool-btn:disabled:hover {
+    background-color: var(--bg-dark);
+    color: var(--text-secondary);
+}
+
 .tool-btn.active {
     background-color: rgba(130, 87, 229, 0.18);
     color: var(--accent-hover);
 }
 
 .tool-icon {
-    font-size: 1rem;
+    font-size: 1.2rem;
     line-height: 1;
 }

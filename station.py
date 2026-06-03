@@ -15,8 +15,8 @@ class Station:
     """
     Logical grouping of railway Platforms under a single station name.
 
-    A Station has no physical tiles - it groups Platforms for unified naming,
-    flexible routing, and schedule display. A single Platform can belong to
+    A Station has no physical tiles - it groups Platforms for unified naming
+    and flexible routing. A single Platform can belong to
     at most one Station.
 
     Attributes:

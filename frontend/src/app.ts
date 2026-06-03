@@ -30,6 +30,7 @@ class App {
   hasInitiallyCentered: boolean;
   hasInitiallySelected: boolean;
   isSimulationRunning: boolean;
+  editorMode: 'edit' | 'sim' = 'edit';
   selectedTrainId: string | null;
   lastLookaheadFetch: number;
   lookaheadThrottleMs: number;
@@ -48,6 +49,7 @@ class App {
     this.hasInitiallyCentered = false;
     this.hasInitiallySelected = false;
     this.isSimulationRunning = false;
+    this.editorMode = 'edit';
     this.selectedTrainId = null;
     this.lastLookaheadFetch = 0;
     this.lookaheadThrottleMs = 100;
@@ -145,19 +147,56 @@ class App {
     });
 
     document.getElementById('mode-edit')!.addEventListener('click', () => {
-      document.getElementById('mode-edit')!.classList.add('active');
-      document.getElementById('mode-sim')!.classList.remove('active');
-      // Enable editor tools
+      this.setEditorMode('edit');
     });
 
     document.getElementById('mode-sim')!.addEventListener('click', () => {
-      document.getElementById('mode-sim')!.classList.add('active');
-      document.getElementById('mode-edit')!.classList.remove('active');
-      // Disable editor tools
+      this.setEditorMode('sim');
     });
+
+    // Apply the initial (Editor) tool-availability state.
+    this.setEditorMode('edit');
 
     // Layout controls
     this.setupLayoutControls();
+  }
+
+  /**
+   * Switch the header Editor/Simulation toggle and gate the tool palette.
+   *
+   * In Simulation mode the layout must not change, so every tool that builds
+   * or deletes track, blocks, paths, platforms, trains or routes is disabled.
+   * Only the plain Select tool (to pick/inspect entities, including trains)
+   * and the read-only viewer panels (data-tool ending in `-panel`) stay live.
+   * The rule keys off the tool name so new `-panel` viewers stay enabled and
+   * any new build tool is disabled by default.
+   */
+  setEditorMode(mode: 'edit' | 'sim'): void {
+    const isSim = mode === 'sim';
+    this.editorMode = mode;
+
+    document.getElementById('mode-edit')!.classList.toggle('active', !isSim);
+    document.getElementById('mode-sim')!.classList.toggle('active', isSim);
+
+    let activeToolDisabled = false;
+    document.querySelectorAll<HTMLButtonElement>('.tool-btn').forEach((btn) => {
+      const tool = btn.dataset.tool || '';
+      const allowedInSim = tool === 'inspect' || tool.endsWith('-panel');
+      const disabled = isSim && !allowedInSim;
+      btn.disabled = disabled;
+      if (disabled && btn.classList.contains('active')) activeToolDisabled = true;
+    });
+
+    // If the tool we were holding just got disabled, fall back to Select and
+    // leave any active build mode so the editor is not stuck mid-build.
+    if (activeToolDisabled && this.editor) {
+      const revert = () => this.editor._setSelectedTool('select');
+      if (this.editor.activeMode) {
+        Promise.resolve(this.editor.exitMode()).then(revert);
+      } else {
+        revert();
+      }
+    }
   }
 
 
@@ -223,6 +262,17 @@ class App {
       loadBtn.addEventListener('click', async () => {
         this.openModal(loadModal);
         await this.loadLayoutsList();
+      });
+    }
+
+    // Open settings modal (hosts the Display + Debug Info controls). Closing is
+    // handled by the generic modal machinery below (close button, backdrop,
+    // Escape), so only the open handler is wired here.
+    const settingsBtn = document.getElementById('btn-settings');
+    const settingsModal = document.getElementById('settings-modal');
+    if (settingsBtn) {
+      settingsBtn.addEventListener('click', () => {
+        this.openModal(settingsModal);
       });
     }
 

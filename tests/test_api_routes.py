@@ -21,7 +21,6 @@ from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from persistence import PersistenceManager
-from speed_profile import SpeedProfileRegistry
 from track import TrackSegment
 from block import Block
 from railway_signal import Signal, SignalType
@@ -39,14 +38,12 @@ def app_state():
     path_dispatcher = PathDispatcher(network)
     sim_controller = SimulationController(network, path_dispatcher)
     persistence_manager = PersistenceManager(storage_dir="layouts")
-    speed_profile_registry = SpeedProfileRegistry()
 
     state = AppState(
         network=network,
         path_dispatcher=path_dispatcher,
         sim_controller=sim_controller,
         persistence_manager=persistence_manager,
-        speed_profile_registry=speed_profile_registry,
         simulation_lock=threading.Lock(),
         simulation_running=False,
         simulation_speed=1.0,
@@ -1156,7 +1153,6 @@ Total: 60+ tests covering the most critical functionality of all 108 routes.
 Additional tests can be added for:
 - Train control commands (ATO, manual control, speed control, etc.)
 - Switch operations
-- Schedule management
 - Train route management
 - Speed profile management
 - Extended error cases

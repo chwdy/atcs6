@@ -1,10 +1,9 @@
 """
-Train and Schedule Management
+Train Management
 
 Definition:
-This module defines train entities and their scheduling system. It includes
-train properties, operational status, and time-based scheduling with stops and
-routing information.
+This module defines train entities: their physical properties, consist, and
+persistent configuration.
 
 Live physical position/span is NOT stored on `Train` in v1 — it lives on
 `TrainController.physics_sync.current_span` (`TrainSpan`), seeded at placement
@@ -13,80 +12,7 @@ persistent/configuration state.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, Dict, Any
-from datetime import datetime
-
-
-@dataclass
-class ScheduleStop:
-    """
-    Individual stop in a train's schedule.
-
-    Represents a planned stop at a station with arrival and departure times.
-    """
-
-    station_pos: Tuple[int, int]
-    station_name: str
-    arrival_time: datetime
-    departure_time: datetime
-    platform: Optional[str] = None
-
-    def get_dwell_time(self) -> float:
-        """Get dwell time in minutes"""
-        return (self.departure_time - self.arrival_time).total_seconds() / 60
-
-    def is_arrival_time_passed(self, current_time: datetime) -> bool:
-        """Check if scheduled arrival time has passed"""
-        return current_time > self.arrival_time
-
-    def is_departure_time_passed(self, current_time: datetime) -> bool:
-        """Check if scheduled departure time has passed"""
-        return current_time > self.departure_time
-
-
-@dataclass
-class TrainSchedule:
-    """
-    Complete schedule for a train including all stops and timing.
-
-    Manages the planned journey of a train with multiple stops,
-    timing requirements, and priority levels.
-    """
-
-    train_id: str
-    schedule_id: str
-    stops: List[ScheduleStop] = field(default_factory=list)
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
-    priority: int = 0  # Higher number = higher priority
-
-    def get_current_target(self, current_time: datetime) -> Optional[ScheduleStop]:
-        """Get the next scheduled stop based on current time"""
-        for stop in self.stops:
-            if current_time < stop.arrival_time:
-                return stop
-        return None
-
-    def is_delayed(self, current_time: datetime, current_pos: Tuple[int, int]) -> bool:
-        """Check if train is currently delayed"""
-        target = self.get_current_target(current_time)
-        if target and target.station_pos == current_pos:
-            return current_time > target.arrival_time
-        return False
-
-    def get_delay_minutes(
-        self, current_time: datetime, target_stop: ScheduleStop
-    ) -> float:
-        """Calculate delay in minutes for a specific stop"""
-        if current_time > target_stop.arrival_time:
-            delay = current_time - target_stop.arrival_time
-            return delay.total_seconds() / 60
-        return 0
-
-    def add_stop(self, stop: ScheduleStop):
-        """Add a new stop to the schedule"""
-        self.stops.append(stop)
-        self.stops.sort(key=lambda s: s.arrival_time)
+from typing import List, Optional
 
 
 @dataclass
@@ -106,8 +32,8 @@ class Train:
     """
     Railway train with physical properties and operational state.
 
-    Represents a complete train with its persistent/configuration state and
-    assigned schedule. Live physical position/span, speed, ATO/ATC/path-runtime
+    Represents a complete train with its persistent/configuration state. Live
+    physical position/span, speed, ATO/ATC/path-runtime
     state, power/cab state, and operational state are NOT stored here — they
     live on `TrainController` (the live span is
     `TrainController.physics_sync.current_span`). See design_new.md
@@ -144,9 +70,6 @@ class Train:
     # Braking
     max_braking_rate: float = 3.0  # Maximum braking deceleration in m/s²
 
-    # Schedule management
-    schedule: Optional[TrainSchedule] = None
-
     # ========================================================================
     # TRAIN PROPERTIES (Phase 1 - Train System)
     # ========================================================================
@@ -182,12 +105,6 @@ class Train:
         """Total length of train in centimetres."""
         return sum(car.length_cm for car in self.consist) if self.consist else 50.0
 
-    def get_next_scheduled_stop(self, current_time: datetime) -> Optional[ScheduleStop]:
-        """Get the next stop in the train's schedule"""
-        if self.schedule:
-            return self.schedule.get_current_target(current_time)
-        return None
-
     def to_dict(self, network=None) -> dict:
         """Convert train to dictionary (persistent/configuration only).
 
@@ -210,20 +127,6 @@ class Train:
             "min_radius_cm": self.min_radius_cm,
             "speed_profile_id": self.speed_profile_id,
         }
-
-        if self.schedule:
-            # Simple schedule info
-            data["schedule"] = {"id": self.schedule.schedule_id, "next_stop": None}
-            stops = []
-            for stop in self.schedule.stops:
-                stops.append(
-                    {
-                        "station": stop.station_name,
-                        "arrival": stop.arrival_time.isoformat(),
-                        "departure": stop.departure_time.isoformat(),
-                    }
-                )
-            data["schedule"]["stops"] = stops
 
         return data
 

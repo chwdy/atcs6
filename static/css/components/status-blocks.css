@@ -65,16 +65,6 @@
 .chip-muted   { color: var(--text-tertiary); background-color: var(--bg-hover); }
 .chip-accent  { color: var(--accent-hover);  background-color: rgba(130, 87, 229, 0.18); }
 
-/* ---- §6 Status accent left-border helpers ----
-   Apply on a container that already has `border-left: 3px solid …` (or a
-   status-header / standard card) to override only the color. */
-
-.accent-success { border-left-color: var(--success-color); }
-.accent-info    { border-left-color: var(--info-color); }
-.accent-warn    { border-left-color: var(--warning-color); }
-.accent-danger  { border-left-color: var(--danger-color); }
-.accent-muted   { border-left-color: var(--border-color); }
-
 /* ---- §11 Status header block ----
    `--bg-hover` bg + dynamic 3px left accent. Compose with one of the
    .accent-* classes above. */
@@ -144,6 +134,19 @@
 .status-sep {
     color: var(--text-tertiary);
 }
+
+/* ---- §6 Status accent left-border helpers ----
+   Override only the left-border color on a container that already sets
+   `border-left: 3px solid …` — a .status-header or standard card. Declared
+   AFTER .status-header on purpose: that rule sets the color through the
+   `border-left` shorthand, so an override must come later in the cascade to
+   win (equal specificity → source order decides). */
+.accent-success { border-left-color: var(--success-color); }
+.accent-info    { border-left-color: var(--info-color); }
+.accent-warn    { border-left-color: var(--warning-color); }
+.accent-danger  { border-left-color: var(--danger-color); }
+.accent-muted   { border-left-color: var(--border-color); }
+.accent-accent  { border-left-color: var(--accent-color); }  /* purple = selected / active (§6) */
 
 /* ---- §6 / §10 Banner ----
    Single-line (or label+value) diagnostic strip. 3px left accent + tinted

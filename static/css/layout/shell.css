@@ -118,6 +118,17 @@ textarea {
     cursor: default;
 }
 
+/* ---- Icon-only ghost button (e.g. the Settings gear) — square, larger glyph ---- */
+.app-header .btn-icon-only {
+    width: var(--control-height-xs);
+    padding: 0;
+}
+
+.app-header .btn-icon-only .ti {
+    font-size: 15px;
+    line-height: 1;
+}
+
 /* ---- Primary CTA: Play / Pause (the one filled accent button) ---- */
 .app-header #btn-play-pause.btn-primary {
     min-width: 78px;
@@ -512,6 +523,12 @@ textarea {
     user-select: none;
 }
 
+/* Standalone list/collection tabs (all trains, all routes, …) read bolder than
+   per-instance tabs, so the two kinds are easy to tell apart at a glance. */
+.secondary-tab--list .secondary-tab-label {
+    font-weight: 700;
+}
+
 .secondary-tab-close {
     border: none;
     background: none;
@@ -679,141 +696,217 @@ textarea {
     font-style: italic;
 }
 
-/* Multi-tile selection panel (box/lasso/brush select) */
-.multi-select-panel .multi-select-counts {
-    font-size: 12px;
-    color: var(--text-primary);
-    margin-bottom: 6px;
-}
+/* ============================================================================
+   Multi-tile selection panel (box / lasso / brush select)
 
-.multi-select-panel .multi-select-counts strong {
-    color: var(--accent-color);
-}
+   A batch-action panel: a §11 status-header summary callout (purple = selected)
+   over grouped action sections (§15 sidebar-form). Block properties lead (the
+   primary task); membership and destructive follow. Buttons are ghost /
+   accent-tint / danger-tint per §3 — no solid fills. Entity chips reuse the
+   canonical §7 .chip with palette variants; the number tints match those hues
+   so the count line reads as the legend.
+   ============================================================================ */
 
-.multi-select-panel .multi-select-sep {
-    color: var(--text-secondary);
-    margin: 0 4px;
-}
-
-.multi-select-panel .multi-select-blocks {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin-bottom: 8px;
-    max-height: 80px;
-    overflow-y: auto;
-}
-
-.multi-select-panel .multi-select-block-chip {
-    font-size: 10px;
-    padding: 2px 6px;
-    border-radius: 10px;
-    background: var(--bg-hover);
-    color: var(--text-primary);
-    border: 1px solid var(--border-color);
-    white-space: nowrap;
-}
-
-.multi-select-panel .multi-select-toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin-bottom: 4px;
-}
-
-.multi-select-panel .multi-select-empty {
-    color: var(--text-secondary);
-    font-size: 10px;
-    font-style: italic;
-    margin: 4px 0 0;
-}
-
-.multi-select-panel .multi-select-group {
-    margin: 8px 0 6px;
-    padding-top: 6px;
-    border-top: 1px solid var(--border-color);
-}
-
-.multi-select-panel .multi-select-group-label {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-secondary);
-    margin-bottom: 4px;
-}
-
-.multi-select-panel .multi-select-row {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    margin-bottom: 4px;
-}
-
-.multi-select-panel .multi-select-input {
-    flex: 1;
-    min-width: 0;
-    padding: 3px 6px;
-    font-size: 11px;
-    border-radius: 4px;
-    border: 1px solid var(--border-color);
-    background: var(--bg-input, var(--bg-panel));
-    color: var(--text-primary);
-}
-
-.multi-select-panel .multi-select-input:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-.multi-select-panel .multi-select-field {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 4px;
-}
-
-.multi-select-panel .multi-select-field label {
-    flex: 0 0 auto;
-    min-width: 110px;
-    font-size: 11px;
-    color: var(--text-secondary);
-}
-
-.multi-select-panel .multi-select-field .multi-select-input {
-    flex: 1;
-    min-width: 0;
-}
-
-.multi-select-panel .multi-select-field-checkbox label {
-    flex: 1;
-}
-
-.multi-select-panel .multi-select-field-checkbox input[type="checkbox"] {
-    flex: 0 0 auto;
-    width: 14px;
-    height: 14px;
-    cursor: pointer;
-}
-
-.multi-select-panel .multi-select-hint {
-    color: var(--text-secondary);
-    font-size: 10px;
-    line-height: 1.3;
-    margin: 4px 0 0;
-}
-
-.multi-select-panel .btn-danger {
-    background-color: var(--danger-color, #d33b3b);
-    color: white;
-}
-
-.multi-select-panel .btn-danger:hover:not(:disabled) {
-    background-color: var(--danger-hover, #b32b2b);
+/* Every button / input / select in the panel is the 28px panel control
+   height (§4). The .ms-clear dismiss in the summary header is the exception. */
+.multi-select-panel .btn {
+    height: var(--control-height-xs);
+    padding: 0 10px;
 }
 
 .multi-select-panel .btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+}
+
+/* Title row — section heading + the Clear dismiss (§12 principle 6: top-right
+   is action territory). Kept off the count line so the counts get the full
+   callout width. */
+.ms-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.ms-header h3 {
+    margin-bottom: 0;
+}
+
+/* ---- Summary callout — reuses the §11 .status-header shell; layers only the
+   count line + chip row on top. ---- */
+.ms-summary {
+    margin-bottom: 10px;
+    gap: 8px;
+}
+
+.ms-counts {
+    min-width: 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+/* Keep each "5 blocks" segment together; only the · separators may wrap. */
+.ms-count-seg {
+    white-space: nowrap;
+}
+
+.ms-count {
+    font-family: var(--font-mono);
+    font-weight: 700;
+}
+
+/* Per-entity-type number tints — match the chip hues below so the colour reads
+   as the legend. Tile is the neutral substrate. */
+.ms-count-tile { color: var(--text-primary); }
+.ms-count-block { color: var(--accent-hover); }
+.ms-count-platform { color: var(--info-color); }
+.ms-count-switch { color: var(--warning-color); }
+.ms-count-signal { color: var(--success-color); }
+
+.ms-sep {
+    color: var(--text-tertiary);
+}
+
+/* Clear sits top-right of the summary as a quiet dismiss (§12 principle 6:
+   top-right is action territory). Flat ghost, smaller than the 28px CTAs. */
+.multi-select-panel .ms-clear {
+    flex: 0 0 auto;
+    height: auto;
+    padding: 2px 8px;
+    font-size: 10px;
+}
+
+/* Structural chips (block/platform/switch/signal) come first, tiles last, so a
+   taller cap keeps the meaningful entities visible; only the bulk tile chips
+   scroll out of view. */
+.ms-chips {
+    max-height: 160px;
+    overflow-y: auto;
+}
+
+/* Long opaque ids ellipsise inside the chip; the title tooltip keeps the full
+   id reachable (§5 Overflow: identifiers). */
+.ms-chips .chip {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ms-empty {
+    font-size: 10px;
+    font-style: italic;
+    color: var(--text-tertiary);
+}
+
+/* ---- Grouped action sections — hairline divider + uppercase label, like the
+   train-control sidebar form (§15). ---- */
+.ms-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-color);
+}
+
+.ms-group-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+
+.ms-btn-block {
+    width: 100%;
+}
+
+.ms-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.ms-row-equal > * {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+/* ---- Inputs — match the ghost button family at 28px (§4). ---- */
+.ms-input {
+    height: var(--control-height-xs);
+    flex: 1;
+    min-width: 0;
+    padding: 0 8px;
+    font-size: 12px;
+    border-radius: var(--control-radius-sm);
+    border: 1px solid var(--border-color);
+    background: var(--bg-dark);
+    color: var(--text-primary);
+}
+
+.ms-input:focus {
+    outline: none;
+    border-color: var(--accent-color);
+}
+
+.ms-input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Number inputs — mono, centered (§4). */
+.ms-input-num {
+    padding: 0 6px;
+    font-family: var(--font-mono);
+    text-align: center;
+}
+
+/* ---- Property field row — dim uppercase label (§1 --text-tertiary) beside its
+   control + unit suffix (§5A). ---- */
+.ms-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ms-field-label {
+    flex: 0 0 78px;
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+}
+
+.ms-field-control {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.ms-unit {
+    flex: 0 0 auto;
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+
+/* Two flags side by side (§4 "a set of flags stacks into a grid"). */
+.ms-flags {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 12px;
+}
+
+.ms-hint {
+    margin: 0;
+    font-size: 10px;
+    line-height: 1.35;
+    color: var(--text-tertiary);
 }
 
 .collapsible-sidebar-section {

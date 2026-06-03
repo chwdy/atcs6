@@ -1199,7 +1199,7 @@ class TestForwardSimulation:
             operational_decel_ratio=0.6,
             air_resistance_enabled=False,  # Disable for predictable tests
         )
-        network.speed_profiles["test_sim"] = profile
+        network.speed_profiles.register(profile)
         train.speed_profile_id = "test_sim"
 
         controller = TrainController(train_id="sim_test", network=network)

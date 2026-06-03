@@ -21,6 +21,7 @@ import {
   showConfirmModal,
   renderBitToggle,
   getBlockStateColor,
+  getTrackExits,
 } from '../lib/helpers';
 import { FORBIDDEN_TRACK_BITS, isSquareCornerSwitch } from '../lib/constants';
 import { BlockEditorHandler } from './editor-blocks';
@@ -31,8 +32,10 @@ import { PathEditorHandler } from './editor-paths';
 import { RouteEditorHandler } from './editor-routes';
 import { RouteRunEditorHandler } from './editor-route-runs';
 import { SwitchEditorHandler } from './editor-switches';
+import { SpeedProfileEditorHandler } from './editor-speed-profiles';
 import { EditorUIHandler } from './editor-ui';
 import { MultiSelectActionsHandler } from './editor-multi-select';
+import { showResourcePicker, dismissResourcePicker } from './resource-picker';
 
 export class Editor {
   renderer: any;
@@ -65,6 +68,7 @@ export class Editor {
   boxSelectState: any;
   lassoSelectState: any;
   paintSelectState: any;
+  traceSelectState: any;
   activeMode: any;
   pathfinder: ConstructionPathfinder;
   blockHandler: BlockEditorHandler;
@@ -76,6 +80,7 @@ export class Editor {
   routeHandler: RouteEditorHandler;
   routeRunHandler: RouteRunEditorHandler;
   switchHandler: SwitchEditorHandler;
+  speedProfileHandler: SpeedProfileEditorHandler;
   uiHandler: EditorUIHandler;
   multiSelectHandler: MultiSelectActionsHandler;
   _currentEditorType: string | null;
@@ -86,11 +91,15 @@ export class Editor {
   signalValidationTimeout: any = null;
   _lastValidatedPosition: any = null;
   _pendingTunnelEndpoint: any = null;
+  // Resolves on the first setCachedNetwork; deferred init awaits it so it can
+  // validate against the loaded scene. See whenNetworkReady.
+  _networkReady: Promise<void>;
+  _resolveNetworkReady: (() => void) | null = null;
 
   constructor(renderer: any, api: any) {
     this.renderer = renderer;
     this.api = api;
-    this.selectedTool = 'select';
+    this.selectedTool = 'inspect';
     this.isPanning = false;
     this.isDraggingBuild = false;
     this.dragStart = null;
@@ -102,6 +111,13 @@ export class Editor {
     this.lastMouseY = 0;
     this.selectedElement = null;
     this.cachedNetwork = null;
+    // Resolves the first time a network load populates cachedNetwork.
+    // Deferred init (restoring persisted inspector tabs) awaits this so it
+    // checks each tab's entity against the loaded scene instead of firing a
+    // request for something this scene may not have.
+    this._networkReady = new Promise<void>((resolve) => {
+      this._resolveNetworkReady = resolve;
+    });
     this.cachedBlocks = []; // Block Manager cache
     this.selectedBlockId = null; // Currently selected block in Block Manager
 
@@ -148,6 +164,10 @@ export class Editor {
       shiftRemoving: false,
       lastKey: null,
     };
+    // Trace select: remembers the first clicked track while waiting for the second.
+    this.traceSelectState = {
+      firstPoint: null,
+    };
 
     // Active editor mode (EditorMode contract documented in the original).
     this.activeMode = null;
@@ -162,6 +182,7 @@ export class Editor {
     this.routeHandler = new RouteEditorHandler(this);
     this.routeRunHandler = new RouteRunEditorHandler(this);
     this.switchHandler = new SwitchEditorHandler(this);
+    this.speedProfileHandler = new SpeedProfileEditorHandler(this);
     this.uiHandler = new EditorUIHandler(this);
     this.multiSelectHandler = new MultiSelectActionsHandler(this);
 
@@ -259,9 +280,6 @@ export class Editor {
       case 'trains-list':
         await this.showTrainsPanel();
         return true;
-      case 'schedules-list':
-        await this.showSchedulesPanel();
-        return true;
       case 'paths-list':
         await this.showPathsPanel();
         return true;
@@ -292,6 +310,13 @@ export class Editor {
       case 'route-run-editor':
         if (!id) return false;
         await this.routeRunHandler.showRouteRunEditor(parseInt(id, 10));
+        return true;
+      case 'speed-profiles-list':
+        await this.showSpeedProfilesPanel();
+        return true;
+      case 'speed-profile':
+        if (!id) return false;
+        await this.showSpeedProfileEditor(id);
         return true;
       default:
         return false;
@@ -330,8 +355,6 @@ export class Editor {
           { label: 'Trains', editorType: 'trains-list', editorId: null },
           { label: id || 'Train', editorType: 'train-control', editorId: id },
         ];
-      case 'schedules-list':
-        return [{ label: 'Schedules', editorType: 'schedules-list', editorId: null }];
       case 'paths-list':
         return [{ label: 'Paths', editorType: 'paths-list', editorId: null }];
       case 'path':
@@ -366,6 +389,13 @@ export class Editor {
       case 'station-group-list':
       case 'station-group':
         return [{ label: 'Stations', editorType: 'station-group-list', editorId: null }];
+      case 'speed-profiles-list':
+        return [{ label: 'Speed Profiles', editorType: 'speed-profiles-list', editorId: null }];
+      case 'speed-profile':
+        return [
+          { label: 'Speed Profiles', editorType: 'speed-profiles-list', editorId: null },
+          { label: id || 'Profile', editorType: 'speed-profile', editorId: id },
+        ];
       default:
         return [{ label: entityView?.title || 'Editor', editorType: type, editorId: id }];
     }
@@ -429,17 +459,18 @@ export class Editor {
         itemExists = this.cachedNetwork?.switches && id in this.cachedNetwork.switches;
         break;
       case 'trains-list':
-      case 'schedules-list':
       case 'path-setup':
       case 'extend-path-setup':
       case 'paths-list':
       case 'routes-list':
       case 'route-runs-list':
+      case 'speed-profiles-list':
         itemExists = true;
         break;
       case 'path':
       case 'route-editor':
       case 'route-run-editor':
+      case 'speed-profile':
         if (!id) return;
         itemExists = true;
         break;
@@ -540,8 +571,12 @@ export class Editor {
     return this.trainHandler.showTrainsPanel();
   }
 
-  async showSchedulesPanel(): Promise<any> {
-    return this.trainHandler.showSchedulesPanel();
+  async showSpeedProfilesPanel(): Promise<any> {
+    return this.speedProfileHandler.showProfilesPanel();
+  }
+
+  async showSpeedProfileEditor(profileId: string): Promise<any> {
+    return this.speedProfileHandler.showProfileEditor(profileId);
   }
 
   async showTrainControlPanel(trainId: any): Promise<any> {
@@ -557,6 +592,8 @@ export class Editor {
       'box-select': () => this._buildBoxSelectMode(),
       'lasso-select': () => this._buildLassoSelectMode(),
       'paint-select': () => this._buildPaintSelectMode(),
+      'entity-select': () => this._buildEntitySelectMode(),
+      trace: () => this._buildTraceSelectMode(),
     };
   }
 
@@ -578,7 +615,8 @@ export class Editor {
         resetState();
         const status = document.getElementById('status-state');
         if (status)
-          status.textContent = 'Box: drag to add, Shift+drag to remove, Space clears, Delete removes tracks';
+          status.textContent =
+            'Box: drag to add, Shift+drag to remove, Space/right-click clears, Delete removes tracks';
       },
       onClick: () => true,
       onExit: () => {
@@ -622,7 +660,8 @@ export class Editor {
         resetState();
         const status = document.getElementById('status-state');
         if (status)
-          status.textContent = 'Lasso: draw a shape to add, Shift to remove, Space clears, Delete removes tracks';
+          status.textContent =
+            'Lasso: draw a shape to add, Shift to remove, Space/right-click clears, Delete removes tracks';
       },
       onClick: () => true,
       onExit: () => {
@@ -650,7 +689,8 @@ export class Editor {
         resetState();
         const status = document.getElementById('status-state');
         if (status)
-          status.textContent = 'Brush: click or drag to add, Shift to remove, Space clears, Delete removes tracks';
+          status.textContent =
+            'Brush: click or drag to add, Shift to remove, Space/right-click clears, Delete removes tracks';
       },
       onClick: () => true,
       onExit: () => {
@@ -660,6 +700,251 @@ export class Editor {
         this.renderer.requestRedraw();
       },
     };
+  }
+
+  // Entity select: click a tile, then choose which entity there — a block,
+  // platform, or station — to add ALL of that entity's tiles to the shared
+  // selection set. A tile with one entity selects it directly; a tile carrying
+  // several opens the resource picker (the same menu the route waypoint flow
+  // uses) with an extra "select all of them" row. Delete / Space / ESC act on
+  // the selection exactly as they do for box / lasso / brush / trace.
+  _buildEntitySelectMode(): any {
+    const resetState = () => {
+      this.boxSelectState.selectedKeys = new Set();
+      this._applyBoxSelection(new Set());
+    };
+    const setStatus = (text: string) => {
+      const status = document.getElementById('status-state');
+      if (status) status.textContent = text;
+    };
+    // Union a set of tiles into the selection and repaint.
+    const addTiles = (tiles: Set<string>) => {
+      tiles.forEach((k) => this.boxSelectState.selectedKeys.add(k));
+      this._applyBoxSelection(this.boxSelectState.selectedKeys);
+      this.renderer.requestRedraw();
+    };
+    return {
+      name: 'Entity select',
+      toolName: 'entity-select',
+      cancelMessage: 'Entity select cancelled',
+      onEnter: () => {
+        resetState();
+        setStatus(
+          'Entity: click a tile, then pick a block / platform / station — or all. Space/right-click clears, Delete removes tracks'
+        );
+      },
+      onClick: ({ gridPos, screenX, screenY }: any) => {
+        const track = this.cachedNetwork?.tracks?.find(
+          (t: any) => t.x === gridPos.x && t.y === gridPos.y
+        );
+        const options = this.routeHandler._resourceOptionsAtTile(gridPos, track);
+        if (options.length === 0) {
+          setStatus('Entity: nothing here — click a track, platform, or station tile');
+          return true;
+        }
+        const selectOne = (opt: any) => {
+          const tiles = this._entityTileSet(opt);
+          addTiles(tiles);
+          showToast(
+            `Selected ${opt.label} — ${tiles.size} tile${tiles.size === 1 ? '' : 's'}`,
+            'success',
+            1800
+          );
+        };
+        // One entity on the tile: take it directly. Several: open the picker
+        // with each entity plus a "select all of them" row.
+        if (options.length === 1) {
+          selectOne(options[0]);
+          return true;
+        }
+        const pickerOptions = [
+          ...options,
+          { type: '__all__', label: 'Select all of them', variant: 'all' },
+        ];
+        showResourcePicker(screenX, screenY, pickerOptions, (opt: any) => {
+          if (opt.type !== '__all__') {
+            selectOne(opt);
+            return;
+          }
+          const union = new Set<string>();
+          options.forEach((o: any) => this._entityTileSet(o).forEach((k) => union.add(k)));
+          addTiles(union);
+          showToast(
+            `Selected all here — ${union.size} tile${union.size === 1 ? '' : 's'}`,
+            'success',
+            1800
+          );
+        });
+        return true;
+      },
+      onExit: () => {
+        dismissResourcePicker();
+        resetState();
+        setStatus('Ready');
+        this.renderer.requestRedraw();
+      },
+    };
+  }
+
+  // All "x,y" tiles that belong to a {type,id} resource, for entity-select.
+  // Reuses the route handler's position-set helpers so there is one source of
+  // truth for what a block / platform / station covers.
+  _entityTileSet(opt: any): Set<string> {
+    const rh = this.routeHandler;
+    if (opt.type === 'block') return rh.getBlockPositionSet(opt.id);
+    if (opt.type === 'platform') return rh.getPlatformPositionSet([opt.id]);
+    if (opt.type === 'station') {
+      const group = rh.getStationGroups().find((g: any) => g.station_id === opt.id);
+      return rh.getPlatformPositionSet(group?.platform_ids || []);
+    }
+    return new Set();
+  }
+
+  // Trace select: click a first track, then a second; selects every existing
+  // track on the path between them (found via the construction pathfinder) and
+  // adds them to the shared box-select selection set. Delete / Space / ESC act
+  // on that set exactly as they do for box / lasso / brush.
+  _buildTraceSelectMode(): any {
+    const resetState = () => {
+      this.boxSelectState.selectedKeys = new Set();
+      this.traceSelectState.firstPoint = null;
+      this._applyBoxSelection(new Set());
+    };
+    const setStatus = (text: string) => {
+      const status = document.getElementById('status-state');
+      if (status) status.textContent = text;
+    };
+    return {
+      name: 'Trace select',
+      toolName: 'trace',
+      cancelMessage: 'Trace select cancelled',
+      onEnter: () => {
+        resetState();
+        setStatus('Trace: click the first track, then the second. Space/right-click clears, Delete removes tracks');
+      },
+      onClick: ({ gridPos }: any) => {
+        // If the selection was cleared (Space / ESC), the pending anchor is stale.
+        if (this.boxSelectState.selectedKeys.size === 0) {
+          this.traceSelectState.firstPoint = null;
+        }
+        const tracks = this.cachedNetwork?.tracks || [];
+        const trackKeys = new Set(tracks.map((t: any) => `${t.x},${t.y}`));
+        const here = `${gridPos.x},${gridPos.y}`;
+
+        // Both endpoints must sit on an existing track.
+        if (!trackKeys.has(here)) {
+          setStatus(
+            this.traceSelectState.firstPoint
+              ? 'Trace: click the second track (must be on a track)'
+              : 'Trace: click a track to start'
+          );
+          return true;
+        }
+
+        if (!this.traceSelectState.firstPoint) {
+          // First endpoint: anchor it and highlight it so the pick is visible.
+          this.traceSelectState.firstPoint = { x: gridPos.x, y: gridPos.y };
+          this.boxSelectState.selectedKeys.add(here);
+          this._applyBoxSelection(this.boxSelectState.selectedKeys);
+          this.renderer.requestRedraw();
+          setStatus('Trace: click the second track');
+          return true;
+        }
+
+        // Second endpoint: trace the path and add every existing track on it.
+        const a = this.traceSelectState.firstPoint;
+        const path = this._traceTrackPath(a, { x: gridPos.x, y: gridPos.y });
+        this.traceSelectState.firstPoint = null;
+        if (path && path.length) {
+          for (const p of path) {
+            // Every tile on the path is an existing track by construction.
+            this.boxSelectState.selectedKeys.add(`${p.x},${p.y}`);
+          }
+          this._applyBoxSelection(this.boxSelectState.selectedKeys);
+          this.renderer.requestRedraw();
+          setStatus('Trace: click the first track, then the second');
+        } else {
+          showToast('No track path between those two tiles', 'info', 2500);
+          setStatus('Trace: no path found — click a new first track');
+        }
+        return true;
+      },
+      onExit: () => {
+        resetState();
+        setStatus('Ready');
+        this.renderer.requestRedraw();
+      },
+    };
+  }
+
+  // Walk the existing-track network from `start` to `goal`, following real
+  // segment connectivity (switch-aware), and return the ordered list of track
+  // tiles on the shortest connecting path — or null if they are not connected.
+  // Directed BFS keyed on (tile, entry edge): a tile is left only through the
+  // exits its track bits actually bind for the edge it was entered by, so the
+  // path cannot cheat across the disconnected segments of a switch.
+  _traceTrackPath(start: any, goal: any): Array<{ x: number; y: number }> | null {
+    const tracks = this.cachedNetwork?.tracks || [];
+    const byKey = new Map<string, any>(tracks.map((t: any) => [`${t.x},${t.y}`, t]));
+    const startKey = `${start.x},${start.y}`;
+    const goalKey = `${goal.x},${goal.y}`;
+    if (!byKey.has(startKey) || !byKey.has(goalKey)) return null;
+    if (startKey === goalKey) return [{ x: start.x, y: start.y }];
+
+    const STEP: Record<string, [number, number]> = {
+      NORTH: [0, 1], SOUTH: [0, -1], EAST: [1, 0], WEST: [-1, 0],
+    };
+    const OPP: Record<string, string> = {
+      NORTH: 'SOUTH', SOUTH: 'NORTH', EAST: 'WEST', WEST: 'EAST',
+    };
+    const SHORT2FULL: Record<string, string> = { N: 'NORTH', S: 'SOUTH', E: 'EAST', W: 'WEST' };
+    const portsOf = (bits: number) => getTrackExits(bits || 0).map((s) => SHORT2FULL[s]);
+
+    // BFS state = `${tileKey}|${entryEdge}` (entryEdge '' for the start tile).
+    const startState = `${startKey}|`;
+    const queue: Array<{ x: number; y: number; entry: string; state: string }> = [
+      { x: start.x, y: start.y, entry: '', state: startState },
+    ];
+    const prev = new Map<string, { state: string; x: number; y: number }>();
+    const seen = new Set<string>([startState]);
+
+    while (queue.length) {
+      const cur = queue.shift()!;
+      const bits = byKey.get(`${cur.x},${cur.y}`)?.track_bits ?? 0;
+      // From the start tile any exposed edge is fair game; afterwards the entry
+      // edge constrains the exits to the segment(s) that actually bind it.
+      const exits =
+        cur.entry === '' ? portsOf(bits) : this.pathfinder.getExitsForEntry(bits, cur.entry);
+      for (const exit of exits) {
+        const step = STEP[exit];
+        if (!step) continue;
+        const nx = cur.x + step[0];
+        const ny = cur.y + step[1];
+        const nKey = `${nx},${ny}`;
+        const nTrack = byKey.get(nKey);
+        if (!nTrack) continue;
+        const back = OPP[exit];
+        // The neighbour must carry track on the facing edge to be connected.
+        if (!portsOf(nTrack.track_bits).includes(back)) continue;
+        const nState = `${nKey}|${back}`;
+        if (seen.has(nState)) continue;
+        seen.add(nState);
+        prev.set(nState, { state: cur.state, x: cur.x, y: cur.y });
+        if (nKey === goalKey) {
+          const out = [{ x: nx, y: ny }];
+          let s = nState;
+          while (prev.has(s)) {
+            const p = prev.get(s)!;
+            out.push({ x: p.x, y: p.y });
+            s = p.state;
+          }
+          out.reverse();
+          return out;
+        }
+        queue.push({ x: nx, y: ny, entry: back, state: nState });
+      }
+    }
+    return null;
   }
 
   // Apply a single tile to the brush-select set.
@@ -684,11 +969,11 @@ export class Editor {
       'paths-panel': () => this.showPathsPanel(),
       'add-train': () => this.showAddTrainDialog(),
       'train-panel': () => this.showTrainsPanel(),
-      'schedules-panel': () => this.showSchedulesPanel(),
       'routes-panel': () => this.showRoutesPanel(),
       'route-runs-panel': () => this.routeRunHandler.showRouteRunsPanel(),
       'new-route': () => this.routeHandler.createNewRoute(),
       'stations-panel': () => this.showStationsPanel(),
+      'speed-profiles-panel': () => this.showSpeedProfilesPanel(),
     };
   }
 
@@ -779,7 +1064,7 @@ export class Editor {
       const pathTools = ['path', 'extend-path', 'cancel-path'];
       if (
         e.button === 1 ||
-        (e.button === 0 && this.selectedTool === 'select') ||
+        (e.button === 0 && this.selectedTool === 'inspect') ||
         (e.button === 0 && pathTools.includes(this.selectedTool))
       ) {
         this.isPanning = true;
@@ -791,7 +1076,7 @@ export class Editor {
       // Left mouse + path-based tools = start drag
       else if (
         e.button === 0 &&
-        ['track', 'block', 'eraser', 'extend-block', 'extend-platform', 'remove-platform-tile', 'remove-block-tile'].includes(
+        ['track', 'block', 'extend-block', 'extend-platform', 'remove-platform-tile', 'remove-block-tile'].includes(
           this.selectedTool
         )
       ) {
@@ -986,15 +1271,13 @@ export class Editor {
         if (onCanvas) {
           const isSingleClick = this.dragStart.x === this.dragEnd.x && this.dragStart.y === this.dragEnd.y;
 
-          if (this.selectedTool === 'eraser' && isSingleClick) {
-            await this.handleErase(this.dragStart);
-          } else if (
+          if (
             ['remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool) &&
             isSingleClick
           ) {
             await this.handleRemovalClick(this.dragStart);
           } else if (
-            ['eraser', 'block', 'track', 'extend-block', 'extend-platform', 'remove-platform-tile', 'remove-block-tile'].includes(
+            ['block', 'track', 'extend-block', 'extend-platform', 'remove-platform-tile', 'remove-block-tile'].includes(
               this.selectedTool
             )
           ) {
@@ -1088,7 +1371,7 @@ export class Editor {
       }
 
       // Only handle selection with select tool
-      if (this.selectedTool !== 'select') return;
+      if (this.selectedTool !== 'inspect') return;
 
       this.selectElement(gridPos);
     });
@@ -1184,7 +1467,9 @@ export class Editor {
         const isMarkSelectTool =
           this.selectedTool === 'box-select' ||
           this.selectedTool === 'lasso-select' ||
-          this.selectedTool === 'paint-select';
+          this.selectedTool === 'paint-select' ||
+          this.selectedTool === 'entity-select' ||
+          this.selectedTool === 'trace';
         if (isMarkSelectTool && this.boxSelectState.selectedKeys.size > 0) {
           this.boxSelectState.selectedKeys = new Set();
           this._applyBoxSelection(new Set());
@@ -1196,14 +1481,14 @@ export class Editor {
         if (this.activeMode) {
           const m = this.activeMode;
           await this.exitMode();
-          if (this.selectedTool !== 'select') this._setSelectedTool('select');
+          if (this.selectedTool !== 'inspect') this._setSelectedTool('inspect');
           showToast(m.cancelMessage ?? `${m.name} cancelled`, 'info', 3000);
           return;
         }
 
         // Otherwise revert any non-mode tool back to select.
-        if (this.selectedTool !== 'select') {
-          this._setSelectedTool('select');
+        if (this.selectedTool !== 'inspect') {
+          this._setSelectedTool('inspect');
         }
       }
     });
@@ -1214,7 +1499,9 @@ export class Editor {
       if (
         this.selectedTool !== 'box-select' &&
         this.selectedTool !== 'lasso-select' &&
-        this.selectedTool !== 'paint-select'
+        this.selectedTool !== 'paint-select' &&
+        this.selectedTool !== 'entity-select' &&
+        this.selectedTool !== 'trace'
       )
         return;
       const inInput =
@@ -1250,14 +1537,10 @@ export class Editor {
     });
 
     // Space key - clear the current selection without exiting the tool.
+    // Right-click does the same thing; see handleRightClick.
     document.addEventListener('keydown', (e) => {
       if (e.key !== ' ' && e.code !== 'Space') return;
-      if (
-        this.selectedTool !== 'box-select' &&
-        this.selectedTool !== 'lasso-select' &&
-        this.selectedTool !== 'paint-select'
-      )
-        return;
+      if (!this._isSelectionTool(this.selectedTool)) return;
       const inInput =
         document.activeElement &&
         (document.activeElement.tagName === 'INPUT' ||
@@ -1268,9 +1551,7 @@ export class Editor {
       e.preventDefault();
 
       if (this.boxSelectState.selectedKeys.size === 0) return;
-      this.boxSelectState.selectedKeys = new Set();
-      this._applyBoxSelection(new Set());
-      this.renderer.requestRedraw();
+      this.clearMultiSelection();
     });
   }
 
@@ -1278,7 +1559,7 @@ export class Editor {
 
   async enterMode(mode: any): Promise<void> {
     if (this.activeMode) await this.exitMode();
-    this._setSelectedTool(mode.toolName ?? 'select');
+    this._setSelectedTool(mode.toolName ?? 'inspect');
     this.activeMode = mode;
     if (mode.onEnter) {
       try {
@@ -1312,6 +1593,18 @@ export class Editor {
   _applyBoxSelection(keys: any): void {
     this.renderer.setBoxSelection(keys);
     this.multiSelectHandler?.update(this.boxSelectState.selectedKeys);
+  }
+
+  // The tools that share the box-select selection set. Space and right-click
+  // both clear that set without leaving the active tool.
+  _isSelectionTool(tool: string): boolean {
+    return (
+      tool === 'box-select' ||
+      tool === 'lasso-select' ||
+      tool === 'paint-select' ||
+      tool === 'entity-select' ||
+      tool === 'trace'
+    );
   }
 
   clearMultiSelection(): void {
@@ -1358,7 +1651,7 @@ export class Editor {
     if (!this.dragStart || !this.dragEnd) return;
 
     const dragToolSet = [
-      'track', 'block', 'extend-block', 'extend-platform', 'eraser', 'remove-platform-tile', 'remove-block-tile',
+      'track', 'block', 'extend-block', 'extend-platform', 'remove-platform-tile', 'remove-block-tile',
     ];
     if (dragToolSet.includes(this.selectedTool)) {
       const existingTracks = this.cachedNetwork ? this.cachedNetwork.tracks : [];
@@ -1407,7 +1700,7 @@ export class Editor {
       if (this.previewTracks && this.previewTracks.length > 0) {
         this.renderer.setBuildPreview({ kind: 'tracks', tracks: this.previewTracks });
       } else if (
-        ['eraser', 'remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool) &&
+        ['remove-platform-tile', 'remove-block-tile'].includes(this.selectedTool) &&
         this.previewPath
       ) {
         const tracks = this.cachedNetwork?.tracks || [];
@@ -1604,15 +1897,6 @@ export class Editor {
           showToast('Failed to extend platform: ' + err.message, 'error', 5000);
           return;
         }
-      } else if (this.selectedTool === 'eraser') {
-        if (!this.previewPath || this.previewPath.length === 0) return;
-        const tracks = this.cachedNetwork?.tracks || [];
-        const trackKeys = new Set(tracks.map((t: any) => `${t.x},${t.y}`));
-        const positions = this.previewPath
-          .filter((p: any) => trackKeys.has(`${p.x},${p.y}`))
-          .map((p: any) => [p.x, p.y]);
-        if (positions.length === 0) return;
-        await this._bulkDeleteWithConfirm(positions);
       } else if (this.selectedTool === 'remove-platform-tile') {
         if (!this.previewPath || this.previewPath.length === 0) return;
 
@@ -1727,56 +2011,6 @@ export class Editor {
       });
       if (!confirmed) return null;
       return await this.api.deleteTracksBulk(positions, { force: true });
-    }
-  }
-
-  async handleErase(gridPos: any): Promise<void> {
-    try {
-      const existingTrack = this.cachedNetwork?.tracks?.find(
-        (t: any) => t.x === gridPos.x && t.y === gridPos.y
-      );
-
-      if (!existingTrack) {
-        return;
-      }
-
-      const hasSignal = existingTrack.signal_id || existingTrack.signal_state || existingTrack.type === 'signal';
-      const hasPlatform = existingTrack.station_id || existingTrack.station_name || existingTrack.type === 'station';
-
-      if (hasSignal || hasPlatform) {
-        const items = [];
-        if (hasSignal) items.push(`Signal ${existingTrack.signal_id || 'at this location'}`);
-        if (hasPlatform)
-          items.push(`Platform ${existingTrack.station_name || existingTrack.station_id || 'at this location'}`);
-
-        const confirmed = await showConfirmModal({
-          title: 'Delete Objects',
-          message: `Delete ${items.join(' and ')}?`,
-          detail: 'The track will remain in place.',
-          confirmText: 'Delete',
-          confirmVariant: 'danger',
-        });
-        if (!confirmed) return;
-
-        if (hasSignal) {
-          if (existingTrack.signal_id) {
-            await this.api.deleteSignal(existingTrack.signal_id);
-          } else {
-            await this.api.deleteSignalAt(gridPos.x, gridPos.y);
-          }
-        }
-        if (hasPlatform) {
-          if (existingTrack.station_id) {
-            await this.api.deletePlatform(existingTrack.station_id);
-          }
-        }
-      } else {
-        await this.api.deleteTrack(gridPos.x, gridPos.y);
-      }
-
-      await this.refreshAndSelect(null);
-    } catch (err) {
-      console.error('[Editor] Failed to erase:', err);
     }
   }
 
@@ -2071,6 +2305,14 @@ export class Editor {
   }
 
   async handleRightClick(gridPos: any): Promise<void> {
+    // Selection tools: right-click clears the current selection without leaving
+    // the tool — same as the Space key (see _setupEventListeners). It does not
+    // fall through to switch toggling while a selection tool is active.
+    if (this._isSelectionTool(this.selectedTool)) {
+      if (this.boxSelectState.selectedKeys.size > 0) this.clearMultiSelection();
+      return;
+    }
+
     if (this.activeMode?.name === 'Route creation' && this.pathToolState?.active) {
       await this.resetRouteToolState();
       showToast('Route creation cancelled', 'info', 3000);
@@ -2217,8 +2459,12 @@ export class Editor {
 
     const isForbidden = FORBIDDEN_TRACK_BITS.has(trackBits) || isSquareCornerSwitch(trackBits);
 
-    const binaryStr = trackBits.toString(2).padStart(6, '0');
-    const binaryHTML = binaryStr
+    // Binary string for the read-only Track Bits summary in the Properties
+    // panel below (active bits get an accent span). The Track Bits editor panel
+    // computes its own plain binary independently.
+    const binaryHTML = trackBits
+      .toString(2)
+      .padStart(6, '0')
       .split('')
       .map((bit) => (bit === '1' ? `<span class="text-track-bit-active">${bit}</span>` : bit))
       .join('');
@@ -2234,8 +2480,8 @@ export class Editor {
             </div>
 
             <div class="info-box-track info-display-large">
-                <label class="text-track font-bold block mb-4">Track Bits</label>
-                <div class="text-2xl font-bold mb-2 text-track font-mono">${trackBits} <span class="text-lg text-muted">(0b${binaryHTML})</span></div>
+                <label class="text-secondary font-bold block mb-4">Track Bits</label>
+                <div class="text-2xl font-bold mb-2 text-primary font-mono">${trackBits} <span class="text-lg text-muted">(0b${binaryHTML})</span></div>
                 <div class="text-muted text-base mb-8 info-meta">
                     ${shapeDesc} • ${numSegments} segment${numSegments !== 1 ? 's' : ''} • ${activeSegments.length > 0 ? activeSegments.join(', ') : 'No segments'} ${edges.length > 0 ? '• Edges: ' + edges.join(', ') : ''}
                 </div>
@@ -2271,11 +2517,11 @@ export class Editor {
                               : 'var(--danger-color)';
                     return `
                 <div class="property-item-row">
-                    <div class="train-summary-row">
-                        <div class="train-status-dot" style="background-color: ${dotColor}"></div>
-                        <div class="train-info">
-                            <span class="train-id">${train.id}</span>
-                            <span class="train-state">${controller?.state || 'unknown'}</span>
+                    <div class="entity-card" style="--card-accent: var(--accent-color)">
+                        <div class="entity-card-dot" style="background-color: ${dotColor}"></div>
+                        <div class="entity-card-body">
+                            <span class="entity-card-id">${train.id}</span>
+                            <span class="entity-card-state">${controller?.state || 'unknown'}</span>
                         </div>
                         <button class="edit-btn edit-train-btn" data-train-id="${train.id}">Edit</button>
                     </div>
@@ -2297,11 +2543,11 @@ export class Editor {
                     return `
                 <div class="property-group-header">Switch</div>
                 <div class="property-item-row">
-                    <div class="switch-summary-row" style="border-left: 3px solid ${switchStateColor}">
-                        <div class="switch-status-dot" style="background-color: ${switchStateColor};"></div>
-                        <div class="switch-info">
-                            <span class="switch-id">${track.switch_id || 'Switch'}</span>
-                            <span class="switch-state" style="color: ${switchStateColor}">${switchStateText}${isLocked ? ' 🔒' : ''}</span>
+                    <div class="entity-card" style="--card-accent: ${switchStateColor}">
+                        <div class="entity-card-dot" style="background-color: ${switchStateColor};"></div>
+                        <div class="entity-card-body">
+                            <span class="entity-card-id">${track.switch_id || 'Switch'}</span>
+                            <span class="entity-card-state" style="color: ${switchStateColor}">${switchStateText}${isLocked ? ' <i class="ti ti-lock"></i>' : ''}</span>
                         </div>
                         ${
                           hasSwitchId
@@ -2319,26 +2565,26 @@ export class Editor {
                 ? `
             <div class="property-group-header">Signals</div>
             ${track.signals
-              .map(
-                (signal: any) => `
+              .map((signal: any) => {
+                const signalColor =
+                  signal.signal_state === 'green' || signal.signal_state === 'GREEN'
+                    ? 'var(--success-color)'
+                    : signal.signal_state === 'yellow' || signal.signal_state === 'YELLOW'
+                      ? 'var(--warning-color)'
+                      : 'var(--danger-color)';
+                return `
             <div class="property-item-row">
-                <div class="signal-summary-row">
-                    <div class="signal-status-dot" style="background-color: ${
-                      signal.signal_state === 'green' || signal.signal_state === 'GREEN'
-                        ? 'var(--success-color)'
-                        : signal.signal_state === 'yellow' || signal.signal_state === 'YELLOW'
-                          ? 'var(--warning-color)'
-                          : 'var(--danger-color)'
-                    }"></div>
-                    <div class="signal-info">
-                        <span class="signal-id">${signal.signal_id}</span>
-                        <span class="signal-dir">→${signal.detection_direction}</span>
+                <div class="entity-card" style="--card-accent: ${signalColor}">
+                    <div class="entity-card-dot" style="background-color: ${signalColor}"></div>
+                    <div class="entity-card-body">
+                        <span class="entity-card-id">${signal.signal_id}</span>
+                        <span class="entity-card-meta">→${signal.detection_direction}</span>
                     </div>
                     <button class="edit-btn edit-signal-btn" data-signal-id="${signal.signal_id}">Edit</button>
                 </div>
             </div>
-            `
-              )
+            `;
+              })
               .join('')}
             `
                 : ''
@@ -2353,10 +2599,10 @@ export class Editor {
                     return `
                 <div class="property-group-header">Block</div>
                 <div class="property-item-row">
-                    <div class="block-summary-row" style="border-left: 3px solid ${blockColor}">
-                        <div class="block-info">
-                            <span class="block-id">${track.block_section_id}</span>
-                            <span class="block-state" style="color: ${stateColor}">${block ? block.state : 'UNKNOWN'}</span>
+                    <div class="entity-card" style="--card-accent: ${blockColor}">
+                        <div class="entity-card-body">
+                            <span class="entity-card-id">${track.block_section_id}</span>
+                            <span class="entity-card-state" style="color: ${stateColor}">${block ? block.state : 'UNKNOWN'}</span>
                         </div>
                         <button class="edit-btn edit-block-btn" data-block-id="${track.block_section_id}">Edit</button>
                     </div>
@@ -2376,10 +2622,10 @@ export class Editor {
                     return `
                 <div class="property-group-header">Platform</div>
                 <div class="property-item-row">
-                    <div class="station-summary-row">
-                        <div class="station-info">
-                            <span class="station-id">${track.station_id}</span>
-                            ${platform && platform.name ? `<span class="station-name">${platform.name}</span>` : ''}
+                    <div class="entity-card" style="--card-accent: var(--info-color)">
+                        <div class="entity-card-body">
+                            <span class="entity-card-id">${track.station_id}</span>
+                            ${platform && platform.name ? `<span class="entity-card-meta" style="color: var(--info-color)">${platform.name}</span>` : ''}
                         </div>
                         <button class="edit-btn edit-platform-btn" data-platform-id="${track.station_id}">Edit</button>
                     </div>
@@ -2413,12 +2659,12 @@ export class Editor {
             }
 
             <button id="view-full-json-btn" class="btn btn-primary btn-full text-sm mt-12">
-                📄 View Full JSON
+                <i class="ti ti-braces"></i> View Full JSON
             </button>
         `;
 
     // Render bit editor into its dedicated sidebar section
-    this.updateTrackBitsPanel(track, editorId, trackBits, binaryHTML, isForbidden);
+    this.updateTrackBitsPanel(track, editorId, trackBits, isForbidden);
 
     setTimeout(() => this.initBitEditor(track), 0);
     setTimeout(() => this.initVisualTrackEditor(editorId, track), 0);
@@ -2475,15 +2721,20 @@ export class Editor {
   }
 
   // Populate the dedicated Track Bits sidebar section.
-  updateTrackBitsPanel(track: any, editorId: string, trackBits: number, binaryHTML: string, isForbidden: boolean): void {
+  updateTrackBitsPanel(track: any, editorId: string, trackBits: number, isForbidden: boolean): void {
     const body = document.getElementById('track-bits-panel-body');
     if (!body) return;
 
+    // Two views of one 6-bit value: the clickable compass and a single vertical
+    // column of segment checkboxes beside it, with the readout full-width below.
+    // The Track Bits section is the only container — no sub-boxes, no sub-headings,
+    // no Apply button (every toggle/click auto-applies).
+    const binary = trackBits.toString(2).padStart(6, '0');
     body.innerHTML = `
-            <div class="combined-editor">
-                <div id="bit-editor" class="bg-section p-8 rounded">
-                    <h4 class="text-track text-xs mb-8">Bit Editor</h4>
-                    <div class="flex flex-col gap-4">
+            <div class="track-bits-editor">
+                <div class="track-bits-main">
+                    <canvas id="${editorId}" class="track-bits-canvas" width="200" height="200"></canvas>
+                    <div class="track-bits-grid">
                         ${renderBitToggle(1, 'NS', trackBits)}
                         ${renderBitToggle(2, 'EW', trackBits)}
                         ${renderBitToggle(4, 'NE', trackBits)}
@@ -2491,19 +2742,10 @@ export class Editor {
                         ${renderBitToggle(16, 'SE', trackBits)}
                         ${renderBitToggle(32, 'SW', trackBits)}
                     </div>
-                    <div class="bit-info bg-hover rounded-sm text-tiny">
-                        <p><span id="bit-total" class="font-bold text-track">${trackBits}</span> <span class="text-muted">(0b${binaryHTML})</span></p>
-                        <p class="bit-warning font-bold text-danger mt-2" style="display: ${isForbidden ? 'block' : 'none'};">
-                            ⚠ Forbidden
-                        </p>
-                    </div>
-                    <button id="apply-bits" class="btn btn-primary btn-full text-xxs mt-6">Apply</button>
                 </div>
-
-                <div class="visual-editor bg-section p-8 rounded">
-                    <label class="text-track font-bold text-xs mb-6 block">Visual Editor</label>
-                    <canvas id="${editorId}" width="200" height="200" class="block w-full rounded"></canvas>
-                    <div class="helper-text text-center">Click segments to toggle</div>
+                <div class="track-bits-readout">
+                    <span class="tb-raw">bits <b id="bit-total">${trackBits}</b> · 0b<span id="bit-binary">${binary}</span></span>
+                    <span class="track-bits-forbidden" id="bit-forbidden" style="display: ${isForbidden ? 'inline' : 'none'};">forbidden</span>
                 </div>
             </div>
         `;
@@ -2563,9 +2805,28 @@ export class Editor {
   setCachedNetwork(network: any): void {
     this.cachedNetwork = network;
 
+    // First load satisfies anything awaiting the network (see whenNetworkReady).
+    if (this._resolveNetworkReady) {
+      this._resolveNetworkReady();
+      this._resolveNetworkReady = null;
+    }
+
     if (this.hoverPosition && ['signal', 'platform'].includes(this.selectedTool)) {
       this.updateHoverPreview(this.hoverPosition);
     }
+  }
+
+  /** Resolves once the first network load has populated cachedNetwork, so
+   *  deferred init can validate entities against the loaded scene. */
+  whenNetworkReady(): Promise<void> {
+    return this._networkReady;
+  }
+
+  /** Close the secondary-inspector tab for a now-missing entity (matched by
+   *  type + id). Used when a panel-open request finds its entity gone, so a
+   *  stale restored tab clears itself instead of surfacing an error. */
+  closeStaleEditorTab(editorType: string, id: string): Promise<void> {
+    return this.uiHandler.closeStaleSecondaryTab(editorType, id);
   }
 
   enterRouteToolMode(): any {

@@ -15,7 +15,6 @@ import pytest
 
 from app_factory import create_app
 from app_state import AppState
-from speed_profile import SpeedProfileRegistry
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -31,7 +30,6 @@ class TestAppSmoke:
             path_dispatcher=object(),
             sim_controller=object(),
             persistence_manager=object(),
-            speed_profile_registry=SpeedProfileRegistry(),
             simulation_lock=threading.Lock(),
             simulation_running=False,
             simulation_speed=1.0,

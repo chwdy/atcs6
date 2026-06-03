@@ -44,7 +44,6 @@ The `snapshot` object is a complete serialization of the `RailwayNetwork` state:
     "switches": { ... },
     "trains": { ... },
     "speed_profiles": { ... },
-    "schedules": { ... },
     "train_routes": { ... }
   }
 }
@@ -71,7 +70,6 @@ Steps serve as a **fallback recovery mechanism** if the snapshot becomes corrupt
 
 **Known gap:** Steps do not capture all entity types. The following are missing from step recording:
 - Station groups / platform assignments
-- Train schedules
 - Train routes
 - Speed profiles
 - Some block/signal configuration changes

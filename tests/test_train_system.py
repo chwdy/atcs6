@@ -71,13 +71,12 @@ class TestSpeedProfile:
 
         Uses the default two-stage calibration (power_speed_curve
         [(0,0),(100,100)] + voltage_power_curve [(2,0),(12,100)] linear from
-        startup_voltage to max_voltage), which maps 30 -> 5 V, 60 -> 8 V,
+        lighting_voltage to max_voltage), which maps 30 -> 5 V, 60 -> 8 V,
         120 -> 12 V.
         """
         return SpeedProfile(
             profile_id="test_profile",
             name="Test Profile",
-            startup_voltage=2.0,
             lighting_voltage=2.5,
             acceleration_rate=10.0,
             deceleration_rate=15.0,

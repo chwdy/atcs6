@@ -588,7 +588,6 @@ def setup_demo_train(
         name="Demo Profile",
         power_speed_curve=list(DEFAULT_SPEED_PROFILE.power_speed_curve),
         voltage_power_curve=list(DEFAULT_SPEED_PROFILE.voltage_power_curve),
-        startup_voltage=DEFAULT_SPEED_PROFILE.startup_voltage,
         lighting_voltage=DEFAULT_SPEED_PROFILE.lighting_voltage,
         acceleration_rate=3.0,
         deceleration_rate=4.2,
@@ -599,7 +598,7 @@ def setup_demo_train(
         drag_coefficient=0.001,
         reference_speed_kmh=100.0,
     )
-    network.speed_profiles[demo_profile.profile_id] = demo_profile
+    network.speed_profiles.register(demo_profile)
     demo_train.speed_profile_id = demo_profile.profile_id
 
     # 4. Look up stations by name. The demo network builds them in

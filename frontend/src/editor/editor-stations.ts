@@ -59,7 +59,7 @@ export class PlatformEditorHandler {
                     <div class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm font-mono">
                         <div>
                             <span class="text-muted text-xs block">Tile Count</span>
-                            <span class="text-track font-bold">${sortedPositions.length} tiles</span>
+                            <span class="text-primary font-bold">${sortedPositions.length} tiles</span>
                         </div>
                         <div>
                             <span class="text-muted text-xs block">Length</span>
@@ -114,8 +114,8 @@ export class PlatformEditorHandler {
                     ${renderAvailabilitySegment('platform', platform, { idBase: 'platform-availability' })}
 
                     <div class="flex gap-8">
-                        <button id="save-platform-btn" class="btn btn-primary btn-sm flex-1">💾 Save</button>
-                        <button id="delete-platform-btn" class="btn btn-danger btn-sm flex-1">🗑 Delete</button>
+                        <button id="save-platform-btn" class="btn btn-primary btn-sm flex-1"><i class="ti ti-device-floppy"></i> Save</button>
+                        <button id="delete-platform-btn" class="btn btn-danger btn-sm flex-1"><i class="ti ti-trash"></i> Delete</button>
                     </div>
                 </div>
 
@@ -125,7 +125,7 @@ export class PlatformEditorHandler {
             </div>
         `;
 
-    this.editor.showSecondarySidebar('🚉 Platform Editor', content);
+    this.editor.showSecondarySidebar('Platform Editor', content);
     setTimeout(() => this.initEditorHandlers(platformId), 0);
   }
 
@@ -322,10 +322,8 @@ export class StationGroupEditorHandler {
     this.editor._currentEditorType = 'station-group-list';
     this.editor._currentEditorId = null;
 
-    const [stationsResp, platforms] = await Promise.all([
-      this.api.listStationGroups(),
-      window.app?.getPlatforms(),
-    ]);
+    const stationsResp = await this.api.listStationGroups();
+    const platforms = window.app?.currentNetwork?.platforms || [];
 
     const stations = stationsResp?.stations || [];
     const platformOptions = (platforms || [])
@@ -334,39 +332,43 @@ export class StationGroupEditorHandler {
 
     const content = `
             <div class="station-groups-panel">
-                <div class="mb-12">
-                    <div class="text-xs text-muted mb-8">Create Logical Station</div>
-                    <input id="new-station-group-id" class="property-input mb-8" placeholder="Station ID (optional)">
-                    <input id="new-station-group-name" class="property-input mb-8" placeholder="Name">
-                    <select id="new-station-group-platform" class="property-input mb-8">
+                <div class="station-create-form">
+                    <div class="control-section-header">Create Logical Station</div>
+                    <input id="new-station-group-id" class="property-input" placeholder="Station ID (optional)">
+                    <input id="new-station-group-name" class="property-input" placeholder="Name">
+                    <select id="new-station-group-platform" class="property-input">
                         <option value="">No initial platform</option>
                         ${platformOptions}
                     </select>
-                    <button id="create-station-group-btn" class="btn btn-primary btn-sm btn-full">Create Station</button>
+                    <button id="create-station-group-btn" class="btn btn-outline btn-full">Create Station</button>
                 </div>
-                <div class="text-xs text-muted mb-8">Existing Stations</div>
-                ${stations.length === 0 ? '<div class="text-muted text-sm">No logical stations yet.</div>' : ''}
+                <div class="control-section-header">Existing Stations</div>
+                ${stations.length === 0 ? '<div class="station-list-empty">No logical stations yet.</div>' : ''}
                 ${stations
-                  .map(
-                    (s: any) => `
-                    <div class="property-item mb-8" data-station-id="${s.station_id}">
-                        <div class="flex justify-between items-center mb-4">
-                            <span class="font-mono">${s.name || s.station_id}</span>
-                            <button class="btn btn-sm btn-danger delete-station-group-btn" data-station-id="${s.station_id}">Delete</button>
+                  .map((s: any) => {
+                    const platformIds = s.platform_ids || [];
+                    const platformChips = platformIds.length
+                      ? platformIds.map((pid: string) => `<span class="chip">${pid}</span>`).join('')
+                      : '<span class="text-muted text-xs">No platforms</span>';
+                    return `
+                    <div class="station-row" data-station-id="${s.station_id}">
+                        <div class="station-row-head">
+                            <span class="station-row-name">${s.name || s.station_id}</span>
+                            <button class="btn btn-danger delete-station-group-btn" data-station-id="${s.station_id}">Delete</button>
                         </div>
-                        <div class="text-xs text-muted mb-6">Platforms: ${(s.platform_ids || []).join(', ') || '(none)'}</div>
-                        <div class="flex gap-8">
-                            <button class="btn btn-sm btn-secondary add-platform-to-station-btn" data-station-id="${s.station_id}">Add Platform</button>
-                            <button class="btn btn-sm btn-secondary remove-platform-from-station-btn" data-station-id="${s.station_id}">Remove Platform</button>
+                        <div class="station-row-platforms">${platformChips}</div>
+                        <div class="station-row-actions">
+                            <button class="btn add-platform-to-station-btn" data-station-id="${s.station_id}">Add Platform</button>
+                            <button class="btn remove-platform-from-station-btn" data-station-id="${s.station_id}">Remove Platform</button>
                         </div>
                     </div>
-                `
-                  )
+                `;
+                  })
                   .join('')}
             </div>
         `;
 
-    this.editor.showSecondarySidebar('🏛️ Stations', content);
+    this.editor.showSecondarySidebar('Stations', content);
     setTimeout(() => this.initHandlers(platforms || []), 0);
   }
 
@@ -525,7 +527,7 @@ export class StationGroupEditorHandler {
             </div>
         `;
 
-    this.editor.showSecondarySidebar(`🏛️ ${station.name || station.station_id}`, content);
+    this.editor.showSecondarySidebar(`${station.name || station.station_id}`, content);
     setTimeout(() => this._initStationDetailHandlers(station), 0);
   }
 

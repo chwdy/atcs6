@@ -7,10 +7,9 @@
 - Keep these fields on `SpeedProfile`:
   - `profile_id`: unique profile identifier.
   - `name`: display name for UI/debug/profile selection.
-  - `startup_voltage`: minimum `track_voltage` that produces movement. Below this threshold the train remains stopped.
   - `max_voltage`: top of the usable `track_voltage` range for the first mapping stage.
   - `power_speed_curve`: stored calibration mapping `(power_percent, speed_kmh)` for the second stage.
-  - `lighting_voltage`: voltage used for stopped lit states.
+  - `lighting_voltage`: the single voltage at which the train is lit but not yet moving. The stopped-but-lit states output it, and it is also the 0%-power point of the `track_voltage <-> power_percent` mapping: at exactly this voltage power is 0 and the train holds, and just above it the train begins to move. It is therefore the minimum `track_voltage` that produces movement.
   - `acceleration_rate`: service acceleration rate in `km/h/s`.
   - `deceleration_rate`: service braking rate in `km/h/s`.
   - `emergency_brake_rate`: emergency-brake deceleration rate in `km/h/s`.
@@ -22,7 +21,7 @@
 
 **SpeedProfile constraint**
 
-- `SpeedProfile` is still not a speed limit object under the desired model. It expresses motion-rate data and per-train calibration (`startup_voltage`, `max_voltage`, `power_speed_curve`), not any form of speed ceiling. Train maximum speed and block maximum speed remain separate, independently enforced constraints.
+- `SpeedProfile` is still not a speed limit object under the desired model. It expresses motion-rate data and per-train calibration (`lighting_voltage`, `max_voltage`, `power_speed_curve`), not any form of speed ceiling. Train maximum speed and block maximum speed remain separate, independently enforced constraints.
 
 **Speed-profile addition**
 
@@ -30,7 +29,7 @@
 - The calibration has two bidirectional mappings and both should be stated directly in the doc:
   1. `track_voltage <-> power_percent`
   2. `power_percent <-> speed_kmh`
-- `startup_voltage` and `max_voltage` define the voltage range used by the first mapping. Below `startup_voltage`, the train does not move. `max_voltage` is the top of the usable range. In v1, `track_voltage <-> power_percent` is linear across that usable range, so reversing from `power_percent` back to `track_voltage` uses the same linear interpolation.
+- `lighting_voltage` and `max_voltage` define the voltage range used by the first mapping. Below `lighting_voltage`, the train does not move (and it is the voltage the stopped-but-lit states output). `max_voltage` is the top of the usable range. In v1, `track_voltage <-> power_percent` is linear across that usable range, from `lighting_voltage` (0%) to `max_voltage` (100%), so reversing from `power_percent` back to `track_voltage` uses the same linear interpolation.
 - `power_speed_curve` is the stored `(power_percent, speed_kmh)` mapping used by the second step. `power_percent` is the intermediate normalized control value between voltage and speed; it is not a second name for either of them. In v1 this may be linear by default, but it is still stored explicitly as profile calibration data rather than inferred ad hoc elsewhere. Reverse lookup from `speed_kmh` to `power_percent` uses the inverse interpolation of this same stored curve.
 - The motion-rate fields (`acceleration_rate`, `deceleration_rate`) govern ATO, manual `simulation` handle integration, service/emergency braking, and coasting; they do not shape manual `power_percent` response (that submode applies the calibrated speed immediately, see TrainPhysics).
 - Every train should have a default `SpeedProfile` carrying these calibration fields so the `power_percent` manual mode always has a defined voltage/power/speed mapping, even before per-train tuning is customized.

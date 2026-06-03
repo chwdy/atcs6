@@ -370,9 +370,33 @@ control."
 Reference: `.secondary-sidebar-tabs` / `.secondary-tab` in
 [layout/shell.css](../static/css/layout/shell.css).
 
+### Accent-tint CTA (the panel-safe "primary")
+
+The one button in a section that should draw the eye — Apply, Save — without
+a solid fill. Same ghost shape as the others, but the accent shows as a ~18%
+tint that reads as "attention," not "shout." A transparent border keeps it
+the same height as a `.btn-outline` beside it; hover deepens the tint and
+adds the accent border.
+
+```css
+background-color: rgba(130, 87, 229, 0.18);
+color: var(--accent-hover);
+border: 1px solid transparent;
+
+/* hover */
+background-color: rgba(130, 87, 229, 0.28);
+border-color: var(--accent-color);
+```
+
+Use at most one per section, on that section's main action; everything else
+stays a plain ghost (`.btn-outline`), and destructive actions use the
+danger-tint `.btn-danger`. This is the shared class for the §12 "Save"
+treatment. Reference: `.btn-accent` in
+[components/common.css](../static/css/components/common.css).
+
 ### Don't use solid-color filled buttons in panels.
 
-Reserve filled `var(--accent-color)` buttons for top-level page CTAs, not panel toolbars. The ghost + accent-tint pattern keeps panels visually quiet.
+Reserve filled `var(--accent-color)` buttons for top-level page CTAs, not panel toolbars. The ghost + accent-tint pattern (above) keeps panels visually quiet.
 
 ---
 
@@ -515,10 +539,62 @@ drops the whole control to 40% opacity.
   default, which ignores the token palette and breaks the dark theme. (The
   Assign-row "Force" checkbox is still bare native and should adopt
   `.checkbox-custom`.)
+- **Mixed / "some but not all" → indeterminate.** When a checkbox edits a
+  flag across a multi-item selection and the items disagree, set the input's
+  `indeterminate` property: `.checkbox-custom` fills with a horizontal accent
+  dash (the standard tri-state). The first explicit click clears it and
+  commits a definite value — and only that click marks the field "touched,"
+  so an untouched mixed flag is never written back to the selection.
 
 Reference: `.checkbox-wrapper` / `.checkbox-custom` / `.checkbox-label` in
 [components/design-system.css](../static/css/components/design-system.css);
 the multi-flag grid is `.debug-controls` in the same file.
+
+### Two views of one value (visual editor + control set)
+
+Some values get edited two ways at once — a spatial **visual editor** (a
+clickable diagram) beside a precise **control set** (a column of
+checkboxes), both writing the same value. The track-bits editor pairs a
+clickable compass with six segment checkboxes over one 6-bit value. Four
+rules keep the pairing clean:
+
+- **One container, not one box per view.** The section the pair lives in
+  *is* the container. Don't wrap each view in its own titled, bordered
+  card — that is boxes-inside-boxes (§14 "No nested panels" / "Don't
+  border the container *and* every child") and the sub-headings only
+  repeat the section title (§12 principle 8). Lay the two views straight
+  into the section body.
+- **The narrow control column hands the spatial view its width.** Stack
+  the controls in a single narrow column — about one label wide — not the
+  2-column flag grid the Checkbox rule above defaults to. The diagram then
+  takes the rest of the row and reads large, which is the whole point of a
+  spatial editor. Put any value readout full-width *below* the pair so its
+  length can't widen the column and squeeze the diagram.
+- **One validated commit path for both views.** Route a checkbox toggle
+  and a diagram click through the same commit function, so the same guards
+  and the same "this removes a dependent entity" confirmation fire
+  whichever view the user touched. Separate paths drift — ours had the
+  diagram auto-saving while the checkboxes waited for an Apply button, and
+  the diagram's path silently skipped the confirmation the button's path
+  ran. Auto-apply every edit and drop the Apply button (the auto-save
+  contract, §5C "Avoid per-field Save buttons"); a rejected edit
+  re-renders from the server, which reverts the optimistic view.
+- **An in-panel editor canvas is not a map label.** §16 governs labels
+  drawn on the map; an editor canvas inside a panel has two rules of its
+  own. (1) The clickable line must read at least as bright as the
+  decoration around it — the toggle-able segments were drawn dimmer than
+  the diagram's own frame, so they looked un-clickable; the affordance
+  outranks the chrome. (2) Render at device resolution when the canvas is
+  a focal element — set the backing store to `size * devicePixelRatio`
+  with `ctx.scale(dpr, dpr)` so a larger diagram stays crisp on retina;
+  keep drawing in logical units and map clicks back through
+  `logicalSize / rect.width`.
+
+Reference: the Track Bits editor — `.track-bits-*` in
+[components/design-system.css](../static/css/components/design-system.css);
+`updateTrackBitsPanel`, `initBitEditor` + `_commitTrackBits` (the shared
+commit path), and `initVisualTrackEditor` (canvas) in
+[frontend/src/editor/](../frontend/src/editor/).
 
 ### Slider / handle
 
@@ -847,10 +923,21 @@ border-left: 3px solid var(--info-color);
 background: linear-gradient(180deg, rgba(0, 212, 255, 0.04), var(--bg-dark) 70%);
 ```
 
-References: `.tc-card-destination` (full card), `.station-summary-row`
-and `.train-summary-row` (compact 4px-padding variants for the Properties
-pane in the editor's left sidebar — same `--bg-dark` fill, same border,
-shorter padding for dense stacks).
+References: `.tc-card-destination` (full card), and the **`.entity-card`
+family** in [components/common.css](../static/css/components/common.css) —
+the compact (4–6px padding) card used for every entity readout in the
+Properties pane (block / signal / switch / station / train) and the
+train-editor header. It is **one** shared container, not five per-entity
+classes: the 3px left-border is driven by a `--card-accent` custom property
+the renderer sets inline — a dynamic state color for block / switch / signal
+(aspect), or a static palette value for fixed identities (station =
+`--info-color`, train = `--accent-color`). Inner parts: `.entity-card-dot`
+(10px status dot — named for the family so it doesn't collide with the 8px
+debug `.status-dot`), `.entity-card-body`, `.entity-card-id` (mono
+identifier), `.entity-card-meta` (secondary line, e.g. station name),
+`.entity-card-state` (uppercase state). These are **cards, not §12 rows**:
+each entity is a distinct object acted on as a whole (its own Edit button),
+not a homogeneous record compared down a column.
 
 ### Status header block
 
@@ -953,10 +1040,56 @@ height with no dotted leaders.
 Reference: the canonical header block lives in
 [components/status-blocks.css](../static/css/components/status-blocks.css)
 as `.status-header` + `.status-header-{row,id,name,ident,role}` +
-`.status-sep`, with the `.accent-{success,info,warn,danger,muted}`
-left-border helpers from the same file. The stats block (route-runs
+`.status-sep`, with the `.accent-{success,info,warn,danger,muted,accent}`
+left-border helpers from the same file (`accent` = purple, for a selected /
+active record). Those helpers must be declared **after** `.status-header` in
+the stylesheet: `.status-header` sets its border color through the
+`border-left` shorthand, so a same-specificity `.accent-*` override only
+wins when it comes later in source order. The stats block (route-runs
 specific) is `.rr-summary` in
 [features/routes-paths.css](../static/css/features/routes-paths.css).
+
+### Composing a multi-select / batch-action panel
+
+When the panel acts on a **set** of selected entities at once — a drag-select
+in the editor grabbing many tiles that span several blocks, platforms,
+switches, and signals — the top is a selection-summary callout and the body
+is grouped action sections. It is the multi-entity sibling of "Composing a
+detail page top": the same `.status-header` callout, but it describes a
+selection rather than one record.
+
+**1. Title row** — the section heading (`SELECTION`) with a flat-ghost
+`Clear` dismiss top-right (§12 principle 6). Keep `Clear` off the count line
+so the counts get the full callout width.
+
+**2. Summary callout** — a `.status-header` block with the `.accent-accent`
+(purple = selected) left-border, holding two stacked rows:
+
+- **Count line** — one `N type` segment per entity kind present, joined by
+  `·`, zero-count kinds dropped. Each number is tinted to match that kind's
+  chip hue, so the colour itself is the legend. Keep each `N type` segment
+  un-breakable (`white-space: nowrap`) and put a **real space** around each
+  separator — with no break opportunity between glued segments the line
+  overflows instead of wrapping. Bind the `·` to the end of its segment so a
+  wrap never orphans a separator at the start of the next line.
+- **Chip row** — one §7 chip per entity, reusing the canonical variants by
+  kind: block = `.chip-accent`, platform = `.chip-info`, switch =
+  `.chip-warn`, signal = `.chip-success`, raw tile = `.chip-muted`. List the
+  meaningful structural entities first and the bulk (tiles) last, then cap
+  the row height and scroll — the structural chips stay visible; only the
+  substrate scrolls out.
+
+**3. Action sections** — stacked groups (hairline divider + 10px uppercase
+label), ordered by the user's primary task on this selection. Each group's
+main action is a single accent-tint `.btn-accent` CTA (§3); supporting
+actions are plain `.btn-outline` ghosts; irreversible actions are the
+danger-tint `.btn-danger`, kept together in a `Destructive` group at the
+bottom. Batch property edits use one `Apply to N` button for the whole group
+rather than per-field saves (§5C); an untouched or mixed field is left out of
+the write (see §4 indeterminate checkbox).
+
+Reference: `.ms-*` in [layout/shell.css](../static/css/layout/shell.css),
+consumed by `editor-multi-select.ts`.
 
 ---
 

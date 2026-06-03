@@ -9,122 +9,77 @@
     border-radius: 4px;
 }
 
-.track-bits-display {
-    background: #2a3a2e;
-    padding: 12px;
-    border-radius: 4px;
-    margin: 8px 0;
-}
-
-.track-bits-display label {
-    color: #00ff88;
-    font-weight: bold;
-    display: block;
-    margin-bottom: 4px;
-}
-
-.combined-editor {
+/* ============================================================================
+   TRACK BITS editor — two views of one 6-bit value (compass canvas + checkbox
+   grid), side by side inside the Track Bits sidebar section. The section IS the
+   container: no sub-boxes, no sub-headings (DESIGN_LANGUAGE.md §14 — container
+   OR children bordered, never both). Every toggle/click auto-applies; there is
+   no Apply button.
+   ============================================================================ */
+.track-bits-editor {
     display: flex;
+    flex-direction: column;
     gap: 8px;
-    margin: 8px 0;
+    margin: 4px 0;
 }
 
-#bit-editor {
-    flex: 0 0 33%;
-    background: #1a1a2e;
-    padding: 8px;
-    border-radius: 4px;
+/* Compass + the single checkbox column share a row; the readout sits full-width
+   below. The compass takes all the width the narrow checkbox column leaves, so
+   it reads large. */
+.track-bits-main {
+    display: flex;
+    gap: 12px;
+    align-items: center;
 }
 
-#bit-editor h4 {
-    color: #00ff88;
-    font-size: 11px;
-    margin: 0 0 8px 0;
+.track-bits-canvas {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 200px;
+    aspect-ratio: 1 / 1;
+    height: auto;
+    cursor: pointer;
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    background: var(--bg-dark);
 }
 
-.bit-toggles {
+/* The six segment flags as one vertical column (§4) — a small fixed width so
+   the labels have room, while the compass still takes the rest of the row. */
+.track-bits-grid {
+    flex: 0 0 auto;
+    min-width: 62px;
     display: flex;
     flex-direction: column;
     gap: 4px;
 }
 
-.bit-toggle-label {
+.track-bits-grid .checkbox-label {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    letter-spacing: 0.02em;
+}
+
+.track-bits-readout {
     display: flex;
-    align-items: center;
-    padding: 4px;
-    border-radius: 3px;
-    cursor: pointer;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 8px;
+    font-family: var(--font-mono);
     font-size: 10px;
-    transition: background-color 0.2s;
+    color: var(--text-tertiary);
 }
 
-.bit-toggle-label:hover {
-    opacity: 0.9;
+.track-bits-readout b {
+    font-weight: 600;
+    color: var(--text-primary);
 }
 
-.bit-toggle-label input[type="checkbox"] {
-    margin-right: 4px;
-    width: 12px;
-    height: 12px;
-    cursor: pointer;
-}
-
-.bit-info {
-    margin: 8px 0 0 0;
-    padding: 4px;
-    background: var(--bg-hover);
-    border-radius: 3px;
-    font-size: 9px;
-}
-
-.bit-warning {
-    margin: 2px 0 0 0;
+.track-bits-forbidden {
     color: var(--danger-color);
-    font-weight: bold;
-    font-size: 8px;
-}
-
-.visual-editor {
-    flex: 1;
-    background: #1a1a2e;
-    padding: 8px;
-    border-radius: 4px;
-}
-
-.visual-editor label {
-    color: #00ff88;
-    font-weight: bold;
-    font-size: 11px;
-    margin-bottom: 6px;
-    display: block;
-}
-
-.visual-editor canvas {
-    display: block;
-    width: 100%;
-    height: auto;
-    cursor: pointer;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    background: #0a0a14;
-}
-
-/* Station Tile List */
-.station-tile-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 4px 8px;
-    border-bottom: 1px solid #2a2a3e;
-    transition: background-color 0.2s;
-}
-
-.station-tile-item:hover {
-    background-color: rgba(130, 87, 229, 0.1);
-}
-
-.station-tile-item:last-child {
-    border-bottom: none;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
 }
 
 .delete-tile-btn {
@@ -241,12 +196,9 @@
 
 .text-accent { color: var(--accent-color); }      /* #8257e5 - purple */
 .text-success { color: var(--success-color); }    /* #04d361 - green */
-.text-track { color: #00ff88; }                   /* bright green for tracks */
 .text-danger { color: var(--danger-color); }      /* var(--danger-color) - red */
 .text-warning { color: var(--warning-color); }    /* #ffcd1e - yellow */
 .text-info { color: var(--info-color); }                    /* cyan/blue */
-.text-station { color: #ffd93d; }                 /* yellow for stations */
-.text-block { color: #ff79c6; }                   /* pink for blocks */
 
 /* ============================================================================
    DESIGN SYSTEM - Background Colors
@@ -255,10 +207,7 @@
 .bg-panel { background: var(--bg-panel); }        /* #1e1e24 - panel bg */
 .bg-hover { background: var(--bg-hover); }        /* #2a2a35 - hover state */
 .bg-input { background: var(--bg-dark); }                /* input fields */
-.bg-section { background: #1a1a2e; }              /* section containers */
-.bg-track { background: #2a3a2e; }                /* track-related */
-.bg-signal { background: #2a2a3e; }               /* signal-related */
-.bg-warning { background: #3a2a1a; }              /* warning boxes */
+.bg-section { background: var(--bg-dark); }              /* section containers */
 
 /* ============================================================================
    DESIGN SYSTEM - Component Classes
@@ -577,7 +526,6 @@
 .font-normal { font-weight: normal; }
 
 /* Border Utilities */
-.border-track { border: 1px solid #00ff88; }
 .border-l-warning { border-left: 3px solid var(--warning-color); }
 .border-l-success { border-left: 3px solid var(--success-color); }
 .border-l-danger { border-left: 3px solid var(--danger-color); }
@@ -803,39 +751,6 @@
 .switch-group.fluid .switch-btn {
     flex: 1 0 auto;
     min-width: max-content;
-}
-
-/* ============================================================================
-   BIT TOGGLE COMPONENT
-   ============================================================================ */
-.bit-toggle-label {
-    cursor: pointer;
-    transition: all 0.2s ease;
-}
-
-.bit-toggle-label.active {
-    background: #2a4a3e;
-    border: 1px solid var(--success-color);
-}
-
-.bit-toggle-label.inactive {
-    background: var(--bg-hover);
-    border: 1px solid transparent;
-}
-
-.bit-toggle-label input[type="checkbox"] {
-    margin-right: 4px;
-    width: 12px;
-    height: 12px;
-    cursor: pointer;
-}
-
-.bit-toggle-label .bit-name.active {
-    color: var(--success-color);
-}
-
-.bit-toggle-label .bit-name.inactive {
-    color: var(--text-secondary);
 }
 
 /* ============================================================================
@@ -1100,6 +1015,25 @@
 
 .checkbox-input:checked + .checkbox-custom::after {
     transform: rotate(45deg) scale(1);
+}
+
+/* Mixed / "some but not all" state for batch edits — a horizontal dash on the
+   accent fill (the standard tri-state checkbox). Set el.indeterminate in JS
+   when the selected items disagree on the flag. */
+.checkbox-input:indeterminate + .checkbox-custom {
+    background: var(--accent-color);
+    border-color: var(--accent-color);
+}
+
+.checkbox-input:indeterminate + .checkbox-custom::after {
+    content: '';
+    width: 8px;
+    height: 0;
+    border: none;
+    border-top: 2px solid white;
+    border-radius: 1px;
+    transform: none;
+    margin: 0;
 }
 
 .checkbox-input:focus + .checkbox-custom {

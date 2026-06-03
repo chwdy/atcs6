@@ -11,6 +11,7 @@
 import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import { showConfirmModal, validatePriorityInput } from '../lib/helpers';
+import { showResourcePicker, dismissResourcePicker } from './resource-picker';
 
 export class RouteEditorHandler {
   editor: EditorHost;
@@ -20,8 +21,6 @@ export class RouteEditorHandler {
   viabilityResults: Map<number, any>;
   locationHighlightTimeout: ReturnType<typeof setTimeout> | null;
   _waypointReachablePositions: Set<string> | null;
-  _resourcePicker: HTMLElement | null;
-  _resourcePickerDismiss: ((e: MouseEvent) => void) | null;
   _assignForce: boolean;
   _assignTileTrainMap: Map<string, any> | null;
   _historyExpanded: boolean;
@@ -30,6 +29,8 @@ export class RouteEditorHandler {
   _taskExpanded: WeakMap<object, boolean>;
   _routeSyncInterval: ReturnType<typeof setInterval> | null;
   _routeSyncIntervalMs: number;
+  _routesListInterval: ReturnType<typeof setInterval> | null;
+  _routesListIntervalMs: number;
   _savedTasksSerialized: string | null;
 
   constructor(editor: EditorHost) {
@@ -40,8 +41,6 @@ export class RouteEditorHandler {
     this.viabilityResults = new Map(); // row index -> viability result
     this.locationHighlightTimeout = null;
     this._waypointReachablePositions = null;
-    this._resourcePicker = null;
-    this._resourcePickerDismiss = null;
     this._assignForce = false;
     this._assignTileTrainMap = null;
     this._historyExpanded = true;
@@ -50,6 +49,8 @@ export class RouteEditorHandler {
     this._taskExpanded = new WeakMap();
     this._routeSyncInterval = null;
     this._routeSyncIntervalMs = 500;
+    this._routesListInterval = null;
+    this._routesListIntervalMs = 1500;
     this._savedTasksSerialized = null;
   }
 
@@ -73,6 +74,8 @@ export class RouteEditorHandler {
   /** Start the route-editor's server-sync poller. */
   _startRouteSyncPoller(): void {
     this._stopRouteSyncPoller();
+    // The editor and the list poller never run at the same time.
+    this._stopRoutesListPoller();
     if (!this.currentRoute?.route_id) return;
     this._routeSyncInterval = setInterval(
       () =>
@@ -88,6 +91,86 @@ export class RouteEditorHandler {
       clearInterval(this._routeSyncInterval);
       this._routeSyncInterval = null;
     }
+  }
+
+  /** Start the routes-list background poller. Keeps the list live (active
+   *  state, assigned trains, task counts) without a manual refresh. */
+  _startRoutesListPoller(): void {
+    this._stopRoutesListPoller();
+    // The list and the per-route editor poller never run at the same time.
+    this._stopRouteSyncPoller();
+    this._routesListInterval = setInterval(
+      () =>
+        this._syncRoutesListFromServer().catch((err) => {
+          console.debug('[RouteEditor] routes-list sync failed:', err);
+        }),
+      this._routesListIntervalMs
+    );
+  }
+
+  _stopRoutesListPoller(): void {
+    if (this._routesListInterval) {
+      clearInterval(this._routesListInterval);
+      this._routesListInterval = null;
+    }
+  }
+
+  /** Pull the latest routes and re-render only when something the list
+   *  shows actually changed. Skips the DOM swap while the user is hovering
+   *  the list so a re-render can't steal an Edit/Delete click. */
+  async _syncRoutesListFromServer(): Promise<void> {
+    // Panel changed under us (navigated to an editor / closed) — stop.
+    // Checked before the tab-visibility gate so a stale poller is cleared
+    // even while the tab is backgrounded.
+    if (this.editor._currentEditorType !== 'routes-list') {
+      this._stopRoutesListPoller();
+      return;
+    }
+    // Tab hidden — pause fetching but keep the timer alive so it resumes
+    // promptly when the tab is foregrounded again.
+    if (typeof document !== 'undefined' && document.hidden) return;
+    if (this._isRoutesListHovered()) return;
+
+    const result = await this.api.getRoutes();
+    const next = Array.isArray(result) ? result : result?.routes || [];
+    if (this._routesListSignature(next) === this._routesListSignature(this.routes)) {
+      return;
+    }
+    this.routes = next;
+    this._renderRoutesListSidebar();
+  }
+
+  /** Signature of just the fields the routes list renders, so unrelated
+   *  payload churn doesn't trigger a needless re-render. */
+  _routesListSignature(routes: any[]): string {
+    return JSON.stringify(
+      (routes || []).map((r) => [
+        r.route_id,
+        r.is_active,
+        r.name,
+        r.mode,
+        r.assigned_train_ids || [],
+        r.tasks?.length || 0,
+      ])
+    );
+  }
+
+  /** True when the cursor is over the open routes list. */
+  _isRoutesListHovered(): boolean {
+    const el = document.querySelector('.routes-panel');
+    if (!el || typeof el.matches !== 'function') return false;
+    try {
+      return el.matches(':hover');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /** Called by `editor-ui.cleanupSecondaryPanelSubscriptions` when the
+   *  secondary sidebar hides or switches to a different panel. */
+  _cleanup(): void {
+    this._stopRouteSyncPoller();
+    this._stopRoutesListPoller();
   }
 
   /** Pull server-truth for the currently-open route. */
@@ -209,14 +292,19 @@ export class RouteEditorHandler {
       this.routes = [];
     }
 
+    this._renderRoutesListSidebar();
+    this._startRoutesListPoller();
+  }
+
+  /** Re-render the routes list from `this.routes` without re-fetching.
+   *  Shared by showRoutesPanel and the background list poller so the
+   *  list stays live without a manual refresh button. */
+  _renderRoutesListSidebar(): void {
     let content = `
             <div class="routes-panel">
                 <div class="routes-toolbar mb-16">
                     <button id="create-route-btn" class="btn btn-primary btn-sm flex-1">
                         + New Route
-                    </button>
-                    <button id="refresh-routes-btn" class="btn btn-secondary btn-sm btn-icon-only" title="Refresh routes" aria-label="Refresh routes">
-                        <i class="ti ti-refresh"></i>
                     </button>
                 </div>
         `;
@@ -245,39 +333,37 @@ export class RouteEditorHandler {
   renderRouteListItem(route: any): string {
     const isActive = route.is_active;
     const statusText = isActive ? 'ACTIVE' : 'INACTIVE';
+    const accent = isActive ? 'success' : 'muted';
     const trainIds = Array.isArray(route.assigned_train_ids) ? route.assigned_train_ids : [];
     const trainCount = trainIds.length;
     const taskCount = route.tasks?.length || 0;
-    const statusClass = isActive ? 'is-active' : 'is-inactive';
     const modeText = (route.mode || 'one_off').replaceAll('_', ' ');
     const routeName = route.name || route.route_id;
+    const trainsChip =
+      trainCount === 0 ? 'no trains' : trainCount === 1 ? '1 train' : `${trainCount} trains`;
+    const trainsTitle = trainIds.join(', ') || 'no trains assigned';
 
-    const trainsLabel =
-      trainCount === 0
-        ? 'No trains'
-        : trainCount <= 3
-          ? trainIds.join(', ')
-          : `${trainIds.slice(0, 2).join(', ')} +${trainCount - 2}`;
-
+    // Reuses the canonical .rr-card list-card shell (DESIGN_LANGUAGE.md §11),
+    // matching the active-paths list (.path-row): a title row (route name +
+    // flat-ghost Edit/Delete) then a chip row (state · mode · trains · tasks).
+    // The §6 status accent is the 3px left border via .accent-{success,muted};
+    // the route name wraps because it is a display name (§5 "Overflow").
     return `
-            <div class="route-row" data-route-id="${route.route_id}">
-                <div class="route-row-main">
-                    <div class="route-row-status ${statusClass}">
-                        <span class="route-status-dot"></span>
-                        <span class="route-status-label">${statusText}</span>
+            <div class="rr-card route-row accent-${accent}" data-route-id="${this._esc(route.route_id)}">
+                <div class="rr-card-head">
+                    <div class="rr-card-title-col">
+                        <div class="route-row-title">${this._esc(routeName)}</div>
                     </div>
-                    <div class="route-row-content">
-                        <div class="route-row-name font-mono">${routeName}</div>
-                        <div class="route-row-meta text-xs text-muted info-meta">
-                            <span title="${trainIds.join(', ') || 'no trains assigned'}" class="font-mono">${trainsLabel}</span>
-                            <span>${taskCount} task${taskCount !== 1 ? 's' : ''}</span>
-                            <span class="chip route-mode-pill uppercase">${modeText}</span>
-                        </div>
+                    <div class="route-row-actions">
+                        <button class="rr-flat-btn edit-route-btn" data-route-id="${this._esc(route.route_id)}">Edit</button>
+                        <button class="rr-flat-btn rr-flat-btn-danger delete-route-btn" data-route-id="${this._esc(route.route_id)}">Delete</button>
                     </div>
                 </div>
-                <div class="route-row-actions">
-                    <button class="edit-btn btn-sm edit-route-btn" data-route-id="${route.route_id}">Edit</button>
-                    <button class="btn btn-sm btn-danger delete-route-btn" data-route-id="${route.route_id}">Delete</button>
+                <div class="chip-row">
+                    <span class="chip chip-state chip-${accent}">${statusText}</span>
+                    <span class="chip uppercase">${this._esc(modeText)}</span>
+                    <span class="chip" title="${this._esc(trainsTitle)}">${trainsChip}</span>
+                    <span class="chip">${taskCount} task${taskCount !== 1 ? 's' : ''}</span>
                 </div>
             </div>
         `;
@@ -287,11 +373,6 @@ export class RouteEditorHandler {
     const createBtn = document.getElementById('create-route-btn') as HTMLButtonElement | null;
     if (createBtn) {
       createBtn.onclick = () => this.createNewRoute();
-    }
-
-    const refreshBtn = document.getElementById('refresh-routes-btn') as HTMLButtonElement | null;
-    if (refreshBtn) {
-      refreshBtn.onclick = () => this.showRoutesPanel();
     }
 
     const editBtns = document.querySelectorAll<HTMLElement>('.edit-route-btn');
@@ -435,12 +516,6 @@ export class RouteEditorHandler {
                             : ''
                         }
                     </div>
-                    <button id="refresh-route-btn"
-                            class="btn btn-secondary btn-sm btn-icon-only"
-                            title="Pull the latest server state for this route"
-                            aria-label="Refresh route">
-                        <i class="ti ti-refresh"></i>
-                    </button>
                     <button id="save-route-btn"
                             class="btn btn-primary btn-sm ${isDirty ? 're-toolbar-save-dirty' : ''}"
                             title="Save name, mode, tasks, and policy edits">
@@ -1231,20 +1306,6 @@ export class RouteEditorHandler {
       saveBtn.onclick = () => this.saveRoute();
     }
 
-    const refreshBtn = document.getElementById('refresh-route-btn') as HTMLButtonElement | null;
-    if (refreshBtn) {
-      refreshBtn.onclick = async () => {
-        const routeId = this.currentRoute?.route_id;
-        if (!routeId) return;
-        refreshBtn.disabled = true;
-        try {
-          await this.showRouteEditor(routeId);
-        } finally {
-          // showRouteEditor() rebuilds the panel, so this button reference is stale.
-        }
-      };
-    }
-
     const deleteRouteBtn = document.getElementById('delete-route-btn') as HTMLButtonElement | null;
     if (deleteRouteBtn) {
       deleteRouteBtn.onclick = async () => {
@@ -1623,52 +1684,19 @@ export class RouteEditorHandler {
     showToast(`Added stop: ${opt.label}`, 'success', 2000);
   }
 
-  /** Floating menu to pick which resource on a tile to add. */
+  /** Floating menu to pick which resource on a tile to add. Backed by the
+   *  shared resource-picker module (see ./resource-picker). */
   _showResourcePicker(
     screenX: any,
     screenY: any,
     options: Array<{ type: string; id: string; label: string }>,
     onPick: (opt: any) => void
   ): void {
-    this._dismissResourcePicker();
-    const menu = document.createElement('div');
-    menu.className = 'route-resource-picker';
-    menu.style.left = `${screenX}px`;
-    menu.style.top = `${screenY}px`;
-
-    options.forEach((opt) => {
-      const btn = document.createElement('button');
-      btn.className = 'route-resource-option';
-      btn.textContent = opt.label;
-      btn.onclick = (e) => {
-        e.stopPropagation();
-        this._dismissResourcePicker();
-        onPick(opt);
-      };
-      menu.appendChild(btn);
-    });
-
-    document.body.appendChild(menu);
-    this._resourcePicker = menu;
-
-    this._resourcePickerDismiss = (e: MouseEvent) => {
-      if (this._resourcePicker && !this._resourcePicker.contains(e.target as Node)) {
-        this._dismissResourcePicker();
-      }
-    };
-    // Defer so the click that opened the menu doesn't immediately close it.
-    setTimeout(() => document.addEventListener('mousedown', this._resourcePickerDismiss!), 0);
+    showResourcePicker(screenX, screenY, options, onPick);
   }
 
   _dismissResourcePicker(): void {
-    if (this._resourcePicker) {
-      this._resourcePicker.remove();
-      this._resourcePicker = null;
-    }
-    if (this._resourcePickerDismiss) {
-      document.removeEventListener('mousedown', this._resourcePickerDismiss);
-      this._resourcePickerDismiss = null;
-    }
+    dismissResourcePicker();
   }
 
   // ===================================================================

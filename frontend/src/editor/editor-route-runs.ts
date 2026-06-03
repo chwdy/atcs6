@@ -71,11 +71,6 @@ export class RouteRunEditorHandler {
   _renderRunsListSidebar(): void {
     let content = `
             <div class="rr-panel">
-                <div class="routes-toolbar mb-12">
-                    <button id="refresh-route-runs-btn" class="btn btn-secondary btn-sm flex-1" title="Refresh runs" aria-label="Refresh runs">
-                        ↻ Refresh
-                    </button>
-                </div>
         `;
 
     if (!this.runs.length) {
@@ -136,8 +131,6 @@ export class RouteRunEditorHandler {
   }
 
   initRunsPanelHandlers(): void {
-    const refresh = document.getElementById('refresh-route-runs-btn') as HTMLButtonElement | null;
-    if (refresh) refresh.onclick = () => this.showRouteRunsPanel();
     document.querySelectorAll<HTMLElement>('.view-run-btn').forEach((btn) => {
       btn.onclick = () => this.showRouteRunEditor(parseInt(btn.dataset.runNumber ?? '', 10));
     });
@@ -297,7 +290,6 @@ export class RouteRunEditorHandler {
                     <h4 class="rr-section-title">Actions</h4>
                     <div class="flex gap-8 mb-8">
                         <button id="open-route-from-run-btn" class="btn btn-secondary btn-sm flex-1">Open route</button>
-                        <button id="refresh-route-run-btn" class="btn btn-secondary btn-sm flex-1">Refresh</button>
                     </div>
                     ${
                       isRunning
@@ -486,9 +478,6 @@ export class RouteRunEditorHandler {
   initRunEditorHandlers(): void {
     const back = document.getElementById('back-to-route-runs-btn') as HTMLButtonElement | null;
     if (back) back.onclick = () => this.showRouteRunsPanel();
-
-    const refresh = document.getElementById('refresh-route-run-btn') as HTMLButtonElement | null;
-    if (refresh) refresh.onclick = () => this.showRouteRunEditor(this.currentRun.run_number);
 
     // Per-run overrides apply immediately on segment click / input change.
     const runNumber = this.currentRun?.run_number;

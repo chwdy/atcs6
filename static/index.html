@@ -42,6 +42,9 @@
                 </div>
                 <div class="inspector-controls">
                     <button id="btn-inspector-toggle" class="btn" title="Toggle Inspector">Inspector</button>
+                    <button id="btn-settings" class="btn btn-icon-only" title="Settings &amp; Debug Info" aria-label="Open settings">
+                        <i class="ti ti-settings"></i>
+                    </button>
                 </div>
             </div>
         </header>
@@ -61,12 +64,21 @@
                 <div class="sidebar-tools-section" id="tools-panel">
                     <h3>Tools</h3>
                     
-                    <!-- Row 1: General -->
+                    <!-- Default tool — ungrouped, no category label, sits under the Tools heading -->
                     <div class="tool-category">
-                        <div class="tool-category-label">General</div>
                         <div class="tool-row">
-                            <button class="tool-btn active" data-tool="select" title="Select">
-                                <i class="ti ti-pointer tool-icon"></i> Select
+                            <button class="tool-btn active" data-tool="inspect" title="Inspect — click a tile to view its properties">
+                                <i class="ti ti-pointer tool-icon"></i> Inspect
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Row 1: Selection -->
+                    <div class="tool-category">
+                        <div class="tool-category-label">Selection</div>
+                        <div class="tool-row">
+                            <button class="tool-btn" data-tool="trace" title="Trace (click two tracks to select the connecting path. Space clears, Delete removes tracks)">
+                                <i class="ti ti-line tool-icon"></i> Trace
                             </button>
                             <button class="tool-btn" data-tool="box-select" title="Box Select (drag a rectangle to mark tracks. Shift = remove. Space clears, Delete removes tracks)">
                                 <i class="ti ti-box-multiple tool-icon"></i> Box
@@ -76,6 +88,9 @@
                             </button>
                             <button class="tool-btn" data-tool="paint-select" title="Brush Select (click or drag to paint tracks into the selection. Shift = remove. Space clears, Delete removes tracks)">
                                 <i class="ti ti-brush tool-icon"></i> Brush
+                            </button>
+                            <button class="tool-btn" data-tool="entity-select" title="Entity Select (click a tile, then pick a block / platform / station — or all of them — to add its tracks to the selection. Space clears, Delete removes tracks)">
+                                <i class="ti ti-click tool-icon"></i> Entity
                             </button>
                         </div>
                     </div>
@@ -92,9 +107,6 @@
                             </button>
                             <button class="tool-btn" data-tool="tunnel" title="Tunnel — click two dead-end edges to pair them">
                                 <i class="ti ti-arrows-join tool-icon"></i> Tunnel
-                            </button>
-                            <button class="tool-btn" data-tool="eraser" title="Eraser">
-                                <i class="ti ti-eraser tool-icon"></i> Eraser
                             </button>
                         </div>
                     </div>
@@ -163,6 +175,9 @@
                             <button class="tool-btn" data-tool="train-panel" title="Train Management">
                                 <i class="ti ti-train tool-icon"></i> Trains
                             </button>
+                            <button class="tool-btn" data-tool="speed-profiles-panel" title="Speed Profiles — voltage/speed calibration curves">
+                                <i class="ti ti-chart-line tool-icon"></i> Profiles
+                            </button>
                         </div>
                     </div>
 
@@ -178,9 +193,6 @@
                             </button>
                             <button class="tool-btn" data-tool="route-runs-panel" title="View Route Runs">
                                 <i class="ti ti-list-details tool-icon"></i> Runs
-                            </button>
-                            <button class="tool-btn" data-tool="schedules-panel" title="View Schedules">
-                                <i class="ti ti-calendar tool-icon"></i> Schedules
                             </button>
                         </div>
                     </div>
@@ -205,99 +217,6 @@
                     <div class="sidebar-section multi-select-panel" id="multi-select-panel" hidden>
                         <h3>Selection</h3>
                         <p class="properties-empty">No tiles selected</p>
-                    </div>
-
-                    <div class="sidebar-section debug-panel collapsible-sidebar-section collapsed" id="debug-panel" data-section="debug">
-                        <button class="sidebar-section-toggle" type="button" aria-expanded="false" aria-controls="debug-panel-body">
-                            <h3>Debug Info</h3>
-                        </button>
-                        <div class="sidebar-section-body" id="debug-panel-body">
-                            <div class="debug-controls">
-                                <label class="checkbox-wrapper" title="Show Track Bits">
-                                    <input type="checkbox" id="debug-show-bits" class="checkbox-input" />
-                                    <span class="checkbox-custom"></span>
-                                    <span class="checkbox-label">Track Bits</span>
-                                </label>
-                                <label class="checkbox-wrapper" title="Show Coordinates">
-                                    <input type="checkbox" id="debug-show-coords" class="checkbox-input" />
-                                    <span class="checkbox-custom"></span>
-                                    <span class="checkbox-label">Coordinates</span>
-                                </label>
-                                <label class="checkbox-wrapper" title="Show Switch States">
-                                    <input type="checkbox" id="debug-show-switches" class="checkbox-input" />
-                                    <span class="checkbox-custom"></span>
-                                    <span class="checkbox-label">Switch States</span>
-                                </label>
-                                <label class="checkbox-wrapper" title="Show Edge Labels (N/E/S/W)">
-                                    <input type="checkbox" id="debug-show-edges" class="checkbox-input" />
-                                    <span class="checkbox-custom"></span>
-                                    <span class="checkbox-label">Edge Labels</span>
-                                </label>
-                                <label class="checkbox-wrapper" title="Show Block Details">
-                                    <input type="checkbox" id="debug-show-blocks" class="checkbox-input" />
-                                    <span class="checkbox-custom"></span>
-                                    <span class="checkbox-label">Blocks</span>
-                                </label>
-                                <label class="checkbox-wrapper" title="Show Signal Details">
-                                    <input type="checkbox" id="debug-show-signals" class="checkbox-input" />
-                                    <span class="checkbox-custom"></span>
-                                    <span class="checkbox-label">Signals</span>
-                                </label>
-                                <label class="checkbox-wrapper" title="Draw a dotted line between paired tunnel mouths">
-                                    <input type="checkbox" id="debug-show-tunnel-links" class="checkbox-input" />
-                                    <span class="checkbox-custom"></span>
-                                    <span class="checkbox-label">Tunnel links</span>
-                                </label>
-                                <label class="checkbox-wrapper" title="When a train is stuck waiting for a block, draw an orange dotted arrow from it to the block it is waiting for">
-                                    <input type="checkbox" id="debug-show-stuck" class="checkbox-input" />
-                                    <span class="checkbox-custom"></span>
-                                    <span class="checkbox-label">Show stuck</span>
-                                </label>
-
-                                <label class="checkbox-wrapper" title="Show Train Position Details">
-                                    <input type="checkbox" id="debug-show-train-position" class="checkbox-input" checked />
-                                    <span class="checkbox-custom"></span>
-                                    <span class="checkbox-label">Show Train Position Details</span>
-                                </label>
-
-                            </div>
-                        
-                            <!-- Train Position Debug Panel is now in secondary sidebar -->
-                        </div>
-
-                    </div>
-
-                    <div class="sidebar-section settings-panel collapsible-sidebar-section collapsed" id="settings-panel" data-section="settings">
-                        <button class="sidebar-section-toggle" type="button" aria-expanded="false" aria-controls="settings-panel-body">
-                            <h3>Settings</h3>
-                        </button>
-                        <div class="sidebar-section-body" id="settings-panel-body">
-                            <div class="settings-controls">
-                            <div class="setting-row">
-                                <span class="setting-label-compact settings-label-inline">Labels</span>
-                                <select id="label-spacing-select" class="setting-select setting-input-compact settings-select-fill">
-                                    <option value="tight">Tight</option>
-                                    <option value="mid" selected>Mid</option>
-                                    <option value="cozy">Cozy</option>
-                                </select>
-                            </div>
-                            <div class="setting-row">
-                                <span id="scale-current-display" class="setting-label-compact settings-label-inline">Current: 1:1</span>
-                                <select id="scale-select" class="setting-select setting-input-compact settings-select-fill">
-                                    <option value="1">1:1 (Full)</option>
-                                    <option value="22.5">1:22.5 (G)</option>
-                                    <option value="43.5">1:43.5 (O)</option>
-                                    <option value="64">1:64 (S)</option>
-                                    <option value="87">1:87 (HO)</option>
-                                    <option value="120">1:120 (TT)</option>
-                                    <option value="148">1:148 (N UK)</option>
-                                    <option value="160">1:160 (N)</option>
-                                    <option value="220">1:220 (Z)</option>
-                                </select>
-                                <button id="scale-apply-custom" class="btn btn-sm btn-secondary">Set</button>
-                            </div>
-                            </div>
-                        </div>
                     </div>
                 </div>
             </aside>
@@ -496,6 +415,98 @@
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" data-close-modal>Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal — opened by the toolbar gear button. Hosts the Display
+         settings and Debug Info controls that used to live in the sidebar. -->
+    <div id="settings-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Settings</h3>
+                <button class="close-btn" data-close-modal>&times;</button>
+            </div>
+            <div class="modal-body">
+                <section class="settings-section">
+                    <h4 class="settings-section-title">Display</h4>
+                    <div class="settings-controls">
+                        <div class="setting-row">
+                            <span class="setting-label-compact settings-label-inline">Labels</span>
+                            <select id="label-spacing-select" class="setting-select setting-input-compact settings-select-fill">
+                                <option value="tight">Tight</option>
+                                <option value="mid" selected>Mid</option>
+                                <option value="cozy">Cozy</option>
+                            </select>
+                        </div>
+                        <div class="setting-row">
+                            <span id="scale-current-display" class="setting-label-compact settings-label-inline">Current: 1:1</span>
+                            <select id="scale-select" class="setting-select setting-input-compact settings-select-fill">
+                                <option value="1">1:1 (Full)</option>
+                                <option value="22.5">1:22.5 (G)</option>
+                                <option value="43.5">1:43.5 (O)</option>
+                                <option value="64">1:64 (S)</option>
+                                <option value="87">1:87 (HO)</option>
+                                <option value="120">1:120 (TT)</option>
+                                <option value="148">1:148 (N UK)</option>
+                                <option value="160">1:160 (N)</option>
+                                <option value="220">1:220 (Z)</option>
+                            </select>
+                            <button id="scale-apply-custom" class="btn btn-sm btn-secondary">Set</button>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="settings-section">
+                    <h4 class="settings-section-title">Debug Info</h4>
+                    <div class="debug-controls">
+                        <label class="checkbox-wrapper" title="Show Track Bits">
+                            <input type="checkbox" id="debug-show-bits" class="checkbox-input" />
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-label">Track Bits</span>
+                        </label>
+                        <label class="checkbox-wrapper" title="Show Coordinates">
+                            <input type="checkbox" id="debug-show-coords" class="checkbox-input" />
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-label">Coordinates</span>
+                        </label>
+                        <label class="checkbox-wrapper" title="Show Switch States">
+                            <input type="checkbox" id="debug-show-switches" class="checkbox-input" />
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-label">Switch States</span>
+                        </label>
+                        <label class="checkbox-wrapper" title="Show Edge Labels (N/E/S/W)">
+                            <input type="checkbox" id="debug-show-edges" class="checkbox-input" />
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-label">Edge Labels</span>
+                        </label>
+                        <label class="checkbox-wrapper" title="Show Block Details">
+                            <input type="checkbox" id="debug-show-blocks" class="checkbox-input" />
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-label">Blocks</span>
+                        </label>
+                        <label class="checkbox-wrapper" title="Show Signal Details">
+                            <input type="checkbox" id="debug-show-signals" class="checkbox-input" />
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-label">Signals</span>
+                        </label>
+                        <label class="checkbox-wrapper" title="Draw a dotted line between paired tunnel mouths">
+                            <input type="checkbox" id="debug-show-tunnel-links" class="checkbox-input" />
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-label">Tunnel links</span>
+                        </label>
+                        <label class="checkbox-wrapper" title="When a train is stuck waiting for a block, draw an orange dotted arrow from it to the block it is waiting for">
+                            <input type="checkbox" id="debug-show-stuck" class="checkbox-input" />
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-label">Show stuck</span>
+                        </label>
+                        <label class="checkbox-wrapper debug-control-span-2" title="Show Train Position Details">
+                            <input type="checkbox" id="debug-show-train-position" class="checkbox-input" checked />
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-label">Show Train Position Details</span>
+                        </label>
+                    </div>
+                </section>
             </div>
         </div>
     </div>

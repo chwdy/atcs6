@@ -21,9 +21,13 @@ function setStatusState(text: string): void {
 
 export class PathEditorHandler {
   editor: EditorHost;
+  _pathsListInterval: ReturnType<typeof setInterval> | null;
+  _pathsListIntervalMs: number;
 
   constructor(editor: EditorHost) {
     this.editor = editor;
+    this._pathsListInterval = null;
+    this._pathsListIntervalMs = 1500;
   }
 
   get api(): any {
@@ -61,7 +65,6 @@ export class PathEditorHandler {
       startPosition: null,
       reachableEndpoints: [],
       reachablePositions: new Set(),
-      requestedDirection: 'forward',
       trainId: null,
     };
     setStatusState('Path: Click train (start) block');
@@ -94,7 +97,6 @@ export class PathEditorHandler {
       startPosition: null,
       reachableEndpoints: [],
       reachablePositions: new Set(),
-      requestedDirection: 'forward',
       trainId: null,
     };
     if (this.renderer.setReachableHighlights) {
@@ -104,12 +106,9 @@ export class PathEditorHandler {
       this.renderer.clearRoutePreview();
     }
     if (this.editor._currentEditorType === 'path-setup') {
-      await this.editor.goBackSecondaryPanel();
-      // If history was empty (no panel before path tool), goBack does nothing.
-      // In that case _currentEditorType is still 'path-setup', so close the sidebar.
-      if (this.editor._currentEditorType === 'path-setup') {
-        this.editor.hideSecondarySidebar();
-      }
+      // Exiting the route tool closes its panel outright — don't restore a
+      // panel that happened to be open before, so the sidebar never lingers.
+      await this.editor.hideSecondarySidebar();
     }
     if (this.cachedNetwork) {
       this.renderer.requestRedraw();
@@ -214,7 +213,6 @@ export class PathEditorHandler {
     }
 
     const trainId = this.pathToolState.trainId;
-    const direction = this.pathToolState.requestedDirection || 'forward';
     const routeId = `ROUTE_QR_${Date.now()}`;
 
     setStatusState('Path: Creating...');
@@ -230,7 +228,12 @@ export class PathEditorHandler {
           {
             task_kind: 'stop',
             task_location: { block_id: endBlockId },
-            task_direction: direction,
+            // Auto: let the route resolver pick whichever block-relative
+            // direction can actually reach the block (resolve_task_direction
+            // probes both). A pinned direction the train can't satisfy would
+            // strand it — the stop never completes — so the quick tool never
+            // asks the operator to guess.
+            task_direction: 'either',
           },
         ],
         acquisition_mode: 'all_or_nothing',
@@ -334,12 +337,10 @@ export class PathEditorHandler {
       ? `
                 <div class="info-display-row info-display-small">
                     <span class="info-label">Train</span>
-                    <span class="info-value text-info">🚂 ${this.pathToolState.trainId}</span>
+                    <span class="info-value text-info"><i class="ti ti-train"></i> ${this.pathToolState.trainId}</span>
                 </div>
             `
       : '<div class="text-muted text-sm py-8">No train at start block</div>';
-
-    const direction = this.pathToolState.requestedDirection || 'forward';
 
     const content = `
             <div class="path-setup-panel">
@@ -347,16 +348,9 @@ export class PathEditorHandler {
 
                 <div class="property-item">
                     <label class="property-label">Direction</label>
-                    <div class="switch-group">
-                        <button id="path-direction-forward-btn"
-                                class="switch-btn ${direction === 'forward' ? 'active' : ''}"
-                                data-direction="forward">▶ Forward</button>
-                        <button id="path-direction-reverse-btn"
-                                class="switch-btn ${direction === 'reverse' ? 'active' : ''}"
-                                data-direction="reverse">◀ Reverse</button>
-                    </div>
+                    <div class="value-display text-info">Auto</div>
                     <div class="text-xxs text-muted mt-4">
-                        Direction the train should travel away from its current position.
+                        The train picks whichever direction can reach the destination.
                     </div>
                 </div>
 
@@ -370,22 +364,12 @@ export class PathEditorHandler {
             </div>
         `;
 
-    this.editor.showSecondarySidebar('🛤️ Create Path', content);
+    this.editor.showSecondarySidebar('Create Path', content);
 
     const sidebar = document.getElementById('secondary-sidebar');
     if (sidebar) {
       sidebar.classList.add('compact');
     }
-
-    setTimeout(() => {
-      const dirButtons = document.querySelectorAll<HTMLElement>('[data-direction]');
-      dirButtons.forEach((btn) => {
-        btn.addEventListener('click', () => {
-          this.pathToolState.requestedDirection = btn.dataset.direction;
-          dirButtons.forEach((b) => b.classList.toggle('active', b === btn));
-        });
-      });
-    }, 0);
   }
 
   async showPathsPanel(): Promise<void> {
@@ -397,16 +381,19 @@ export class PathEditorHandler {
     } catch (err: any) {
       console.error('[Editor] Failed to load paths:', err);
       showToast('Failed to load paths: ' + err.message, 'error', 5000);
-      return;
+      this.cachedPaths = [];
     }
 
+    this._renderPathsListSidebar();
+    this._startPathsListPoller();
+  }
+
+  /** Re-render the active-paths list from `this.cachedPaths` without
+   *  re-fetching. Shared by showPathsPanel and the background poller so
+   *  the list stays live without a manual refresh button. */
+  _renderPathsListSidebar(): void {
     let content = `
             <div class="paths-panel">
-                <div class="flex gap-8 mb-16">
-                    <button id="refresh-paths-btn" class="btn btn-secondary btn-sm flex-1">
-                        🔄 Refresh
-                    </button>
-                </div>
         `;
 
     if (this.cachedPaths.length === 0) {
@@ -421,13 +408,91 @@ export class PathEditorHandler {
 
     content += '</div>';
 
-    this.editor.showSecondarySidebar('📋 Active Paths', content);
+    this.editor.showSecondarySidebar('Active Paths', content);
 
     setTimeout(() => this.initRoutesPanelHandlers(), 0);
   }
 
+  /** Start the active-paths-list background poller. */
+  _startPathsListPoller(): void {
+    this._stopPathsListPoller();
+    this._pathsListInterval = setInterval(
+      () =>
+        this._syncPathsListFromServer().catch((err) => {
+          console.debug('[Editor] paths-list sync failed:', err);
+        }),
+      this._pathsListIntervalMs
+    );
+  }
+
+  _stopPathsListPoller(): void {
+    if (this._pathsListInterval) {
+      clearInterval(this._pathsListInterval);
+      this._pathsListInterval = null;
+    }
+  }
+
+  /** Pull the latest active paths and re-render only when a field the list
+   *  shows changed. Skips the DOM swap while the user is hovering the list
+   *  so a re-render can't steal a View/Cancel click. */
+  async _syncPathsListFromServer(): Promise<void> {
+    // Panel changed under us (opened a path / closed) — stop polling.
+    // Checked before the tab-visibility gate so a stale poller is cleared
+    // even while the tab is backgrounded.
+    if (this.editor._currentEditorType !== 'paths-list') {
+      this._stopPathsListPoller();
+      return;
+    }
+    // Tab hidden — pause fetching but keep the timer alive so it resumes
+    // promptly when the tab is foregrounded again.
+    if (typeof document !== 'undefined' && document.hidden) return;
+    if (this._isPathsListHovered()) return;
+
+    const result = await this.api.getPaths();
+    const next = Array.isArray(result) ? result : [];
+    if (this._pathsListSignature(next) === this._pathsListSignature(this.cachedPaths || [])) {
+      return;
+    }
+    this.cachedPaths = next;
+    this._renderPathsListSidebar();
+  }
+
+  /** Signature of just the fields the paths list renders, so unrelated
+   *  payload churn doesn't trigger a needless re-render. */
+  _pathsListSignature(paths: any[]): string {
+    return JSON.stringify(
+      (paths || []).map((p) => [
+        p.path_id,
+        p.status,
+        p.current_resource_index,
+        p.resource_sequence?.length || 0,
+        p.train_id,
+        p.authority_end_block_id,
+        p.requested_destination_block_id,
+      ])
+    );
+  }
+
+  /** True when the cursor is over the open active-paths list. */
+  _isPathsListHovered(): boolean {
+    const el = document.querySelector('.paths-panel');
+    if (!el || typeof el.matches !== 'function') return false;
+    try {
+      return el.matches(':hover');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /** Called by `editor-ui.cleanupSecondaryPanelSubscriptions` when the
+   *  secondary sidebar hides or switches to a different panel. */
+  _cleanup(): void {
+    this._stopPathsListPoller();
+  }
+
   renderPathListItem(path: any): string {
     const statusClass = this.getPathStatusClass(path.status);
+    const accent = this.getPathAccent(path.status);
     const resources = path.resource_sequence || [];
     const totalSteps = resources.length;
     const currentIndex = path.current_resource_index ?? 0;
@@ -440,61 +505,50 @@ export class PathEditorHandler {
     const dirHeading = path.terminal_heading || null;
     const directionLabel = formatBlockDirection(direction, dirTile, dirHeading);
     const directionFull = formatBlockDirection(direction, dirTile, dirHeading, { form: 'full' });
+    const isActive = path.status === 'active';
 
+    // Reuses the canonical .rr-card list-card shell (DESIGN_LANGUAGE.md §11):
+    // title row (mono path id + flat-ghost View/Cancel), a "→ destination"
+    // caption, a chip row (state · direction · progress), an optional thin
+    // progress meter for active paths, and a foot caption naming the train.
+    // The §6 status accent is the 3px left border, colored via .path-status-*.
     return `
-            <div class="path-row ${statusClass} mb-8">
-                <div class="path-row-main">
-                    <div class="path-row-status">
-                        <div class="train-status-dot path-status-dot"></div>
-                        <div class="text-xxs font-bold uppercase tracking-wider path-status-label">
-                            ${statusText}
-                        </div>
-                        <div class="text-xxs font-bold text-muted path-priority-tag font-mono" title="Direction: ${directionFull} · raw=${direction}">${directionLabel}</div>
+            <div class="rr-card path-row ${statusClass}" data-path-id="${path.path_id}">
+                <div class="rr-card-head">
+                    <div class="rr-card-title-col">
+                        <div class="rr-card-train font-mono" title="${path.path_id}">${path.path_id}</div>
+                        <div class="rr-card-route" title="→ ${destination}">→ ${destination}</div>
                     </div>
-                    <div class="train-info flex-1 path-row-content">
-                        <div class="flex flex-col gap-1 mb-6">
-                            <div class="flex justify-between items-start gap-2">
-                                <span class="train-id font-mono font-bold text-white path-id-text">${path.path_id}</span>
-                            </div>
-                        </div>
-                        <div class="flex justify-between items-end gap-2">
-                            <div class="text-xs text-muted flex-1 path-meta-col">
-                                <div class="path-endpoints-stack">
-                                    <div class="font-mono text-white opacity-90">→ ${destination}</div>
-                                </div>
-                                <div class="mb-4">${path.train_id ? `🚂 ${path.train_id}` : 'No Train'}</div>
-                                ${
-                                  path.status === 'active'
-                                    ? `
-                                    <div class="progress-container mt-1 path-progress-compact">
-                                        <progress class="path-progress-meter" value="${progress}" max="100"></progress>
-                                    </div>
-                                `
-                                    : ''
-                                }
-                            </div>
-                            <div class="flex gap-4 flex-shrink-0">
-                                <button class="edit-btn btn-sm view-path-btn" data-path-id="${path.path_id}">View</button>
-                                <button class="btn btn-sm btn-danger btn-danger-solid cancel-path-btn" data-path-id="${path.path_id}">Cancel</button>
-                            </div>
-                        </div>
+                    <div class="path-card-actions">
+                        <button class="rr-flat-btn view-path-btn" data-path-id="${path.path_id}">View</button>
+                        <button class="rr-flat-btn rr-flat-btn-danger cancel-path-btn" data-path-id="${path.path_id}">Cancel</button>
                     </div>
                 </div>
+                <div class="chip-row">
+                    <span class="chip chip-state chip-${accent}">${statusText}</span>
+                    <span class="chip" title="Direction: ${directionFull} · raw=${direction}">${directionLabel}</span>
+                    ${isActive ? `<span class="chip" title="resources cleared">${currentIndex}/${totalSteps}</span>` : ''}
+                </div>
+                ${isActive ? `<progress class="path-meter" value="${progress}" max="100"></progress>` : ''}
+                <div class="rr-card-foot">${path.train_id ? `assigned to ${path.train_id}` : 'no train'}</div>
             </div>
         `;
   }
 
   getPathStatusColor(status: string): string {
+    // Returns a CSS color token (used inline by renderHeaderId for the detail
+    // header border). Mirrors the .path-status-* → accent mapping in
+    // routes-paths.css. No hex literals (DESIGN_LANGUAGE.md §1).
     const colors: Record<string, string> = {
-      pending: '#888',
-      setting: '#ffd93d',
-      set: '#04d361',
-      active: '#00ff88',
-      clearing: '#ff9500',
-      completed: '#666',
-      cancelled: '#e83f5b',
+      pending: 'var(--text-tertiary)',
+      setting: 'var(--warning-color)',
+      set: 'var(--info-color)',
+      active: 'var(--success-color)',
+      clearing: 'var(--warning-color)',
+      completed: 'var(--text-tertiary)',
+      cancelled: 'var(--danger-color)',
     };
-    return colors[status] || '#888';
+    return colors[status] || 'var(--text-tertiary)';
   }
 
   getPathStatusClass(status: string): string {
@@ -510,14 +564,23 @@ export class PathEditorHandler {
     return map[status] || 'path-status-pending';
   }
 
-  initRoutesPanelHandlers(): void {
-    const refreshBtn = document.getElementById('refresh-paths-btn') as HTMLButtonElement | null;
-    if (refreshBtn) {
-      refreshBtn.onclick = async () => {
-        await this.showPathsPanel();
-      };
-    }
+  /** Map a path status to a shared chip/accent name (DESIGN_LANGUAGE.md §6/§7):
+   *  success / info / warn / danger / muted. Drives the state chip color in the
+   *  list card; the matching left-border + meter hue comes from .path-status-*. */
+  getPathAccent(status: string): string {
+    const map: Record<string, string> = {
+      pending: 'muted',
+      setting: 'warn',
+      set: 'info',
+      active: 'success',
+      clearing: 'warn',
+      completed: 'muted',
+      cancelled: 'danger',
+    };
+    return map[status] || 'muted';
+  }
 
+  initRoutesPanelHandlers(): void {
     const viewBtns = document.querySelectorAll<HTMLElement>('.view-path-btn');
     viewBtns.forEach((btn) => {
       btn.onclick = async () => {
@@ -647,16 +710,14 @@ export class PathEditorHandler {
                         </div>
                         <div>
                             <span class="info-label text-muted block">Train</span>
-                            <span class="info-value ${path.train_id ? 'text-info' : 'text-muted'}">${path.train_id ? `🚂 ${path.train_id}` : 'None assigned'}</span>
+                            <span class="info-value ${path.train_id ? 'text-info' : 'text-muted'}">${path.train_id ? `<i class="ti ti-train"></i> ${path.train_id}` : 'None assigned'}</span>
                         </div>
                         ${
                           path.status === 'active'
                             ? `
                         <div>
                             <span class="info-label text-muted block mb-1">Progress</span>
-                            <div class="progress-container path-progress-full">
-                                <progress class="path-progress-meter ${statusClass}" value="${progress}" max="100"></progress>
-                            </div>
+                            <progress class="path-meter ${statusClass}" value="${progress}" max="100"></progress>
                             <span class="info-meta mt-1">${progress}% (${currentIndex}/${totalSteps})</span>
                         </div>
                         `
@@ -673,13 +734,13 @@ export class PathEditorHandler {
                           path.status === 'set' || path.status === 'active'
                             ? `
                             <button id="extend-path-btn" class="btn btn-primary btn-sm flex-1">
-                                ➕ Extend
+                                <i class="ti ti-arrows-horizontal"></i> Extend
                             </button>
                         `
                             : ''
                         }
                         <button id="cancel-path-btn" class="btn btn-danger btn-sm flex-1 btn-danger-solid">
-                            ❌ Cancel
+                            <i class="ti ti-x"></i> Cancel
                         </button>
                     </div>
                 </div>
@@ -698,7 +759,7 @@ export class PathEditorHandler {
             </div>
         `;
 
-    this.editor.showSecondarySidebar('🛤️ Path Details', content);
+    this.editor.showSecondarySidebar('Path Details', content);
 
     setTimeout(() => this.initPathEditorHandlers(pathId, path), 0);
 

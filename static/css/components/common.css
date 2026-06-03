@@ -51,31 +51,6 @@
     gap: 4px; /* Reduced gap between label and input */
 }
 
-/* Signal Summary Row */
-.signal-summary-row {
-    gap: 4px; /* Reduced gap */
-}
-
-/* Block Summary Row */
-.block-summary-row {
-    gap: 4px; /* Reduced gap */
-}
-
-/* Station Summary Row */
-.station-summary-row {
-    gap: 4px; /* Reduced gap */
-}
-
-/* Switch Summary Row */
-.switch-summary-row {
-    gap: 4px; /* Reduced gap */
-}
-
-/* Train Summary Row */
-.train-summary-row {
-    gap: 4px; /* Reduced gap */
-}
-
 /* Input Group */
 .input-group {
     gap: 2px; /* Reduced gap */
@@ -88,6 +63,21 @@
 
 .btn-primary:hover {
     background-color: var(--accent-hover);
+}
+
+/* Accent-tint CTA — the panel-safe "primary". Per DESIGN_LANGUAGE.md §3/§12
+   (Save), panels never use a solid accent fill; the accent shows as a ~18%
+   tint that reads as "attention" without shouting. Transparent border keeps
+   the box the same height as a .btn-outline sitting beside it. */
+.btn-accent {
+    background-color: rgba(130, 87, 229, 0.18);
+    color: var(--accent-hover);
+    border: 1px solid transparent;
+}
+
+.btn-accent:hover:not(:disabled) {
+    background-color: rgba(130, 87, 229, 0.28);
+    border-color: var(--accent-color);
 }
 
 .btn-secondary {
@@ -230,171 +220,56 @@
     margin-bottom: 4px;
 }
 
-/* Signal Summary Row */
-.signal-summary-row {
-    background-color: var(--bg-dark);
-    padding: 4px 6px;
-    border-radius: var(--control-radius-sm);
+/* Entity summary card — one shared family for the Properties-pane entity
+   readouts (signal/block/station/switch) and the train editor header card.
+   Per DESIGN_LANGUAGE.md §11 (status-accented card). The left-border accent
+   is driven by --card-accent: dynamic state colors (block/switch/signal
+   aspect) are set inline by the renderer; static identities default in the
+   per-card markup (station = info, train = accent). */
+.entity-card {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 6px;
+    padding: 4px 6px;
+    background-color: var(--bg-dark);
     border: 1px solid var(--border-color);
+    border-left: 3px solid var(--card-accent, var(--border-color));
+    border-radius: var(--control-radius-sm);
 }
 
-.signal-status-dot {
+/* Status dot for the entity-card family — 10px shape; color is set inline by
+   the renderer. Named for the family (not a generic .status-dot) to avoid
+   colliding with the 8px debug .status-dot in debug.css. */
+.entity-card-dot {
     width: 10px;
     height: 10px;
     border-radius: 50%;
     flex-shrink: 0;
 }
 
-.signal-info {
+.entity-card-body {
     flex: 1;
     display: flex;
     flex-direction: column;
 }
 
-.signal-id {
+.entity-card-id {
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--text-primary);
 }
 
-.signal-dir {
+/* Secondary line (signal direction, station name, …) — quiet by default;
+   color can be overridden inline (e.g. station name = info). */
+.entity-card-meta {
     font-size: 10px;
     color: var(--text-secondary);
 }
 
-/* Block Summary Row */
-.block-summary-row {
-    background-color: var(--bg-dark);
-    padding: 4px 6px;
-    border-radius: var(--control-radius-sm);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 6px;
-    border: 1px solid var(--border-color);
-}
-
-.block-info {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-}
-
-.block-id {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-primary);
-}
-
-.block-state {
-    font-size: 10px;
-    font-weight: bold;
-    text-transform: uppercase;
-}
-
-/* Station Summary Row */
-.station-summary-row {
-    background-color: var(--bg-dark);
-    padding: 4px 6px;
-    border-radius: var(--control-radius-sm);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 6px;
-    border: 1px solid var(--border-color);
-    border-left: 3px solid var(--info-color);
-}
-
-.station-info {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-}
-
-.station-id {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-primary);
-}
-
-.station-name {
-    font-size: 11px;
-    color: var(--info-color);
-}
-
-/* Switch Summary Row */
-.switch-summary-row {
-    background-color: var(--bg-dark);
-    padding: 4px 6px;
-    border-radius: var(--control-radius-sm);
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    border: 1px solid var(--border-color);
-}
-
-.switch-status-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    flex-shrink: 0;
-}
-
-.switch-info {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-}
-
-.switch-id {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--text-primary);
-}
-
-.switch-state {
-    font-size: 10px;
-    font-weight: bold;
-    text-transform: uppercase;
-}
-
-/* Train Summary Row */
-.train-summary-row {
-    background-color: var(--bg-dark);
-    padding: 4px 6px;
-    border-radius: var(--control-radius-sm);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 6px;
-    border: 1px solid var(--border-color);
-    /* Fixed identity color: purple = train (matches the map's train label),
-       independent of run state. Status is shown by the dot, not the bar. */
-    border-left: 3px solid var(--accent-color);
-}
-
-.train-status-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    flex-shrink: 0;
-}
-
-.train-info {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-}
-
-.train-id {
-    font-family: var(--font-mono);
-    font-size: 11px;
-}
-
-.train-state {
+/* State line (block/switch/train state) — uppercase, bold; color set inline
+   from the state palette. */
+.entity-card-state {
     font-size: 10px;
     font-weight: bold;
     text-transform: uppercase;
@@ -424,30 +299,17 @@
 /* Flat actions inside bordered cards — per DESIGN_LANGUAGE.md §3 / §11.
    The card is bordered, so the action buttons inside go flat (no border,
    transparent bg); affordance comes from the hover bg-tint. Covers the
-   summary-row family (Properties pane in the editor sidebar) and the
-   route-row / path-row list cards. */
-.signal-summary-row .edit-btn,
-.block-summary-row .edit-btn,
-.station-summary-row .edit-btn,
-.switch-summary-row .edit-btn,
-.train-summary-row .edit-btn,
-.route-row .edit-btn,
-.route-row .btn,
-.path-row .edit-btn,
-.path-row .btn {
+   entity-card family (Properties pane in the editor sidebar) and the
+   station-row list cards. (The routes and paths lists use .rr-flat-btn —
+   see routes-paths.css — so they aren't covered here.) */
+.entity-card .edit-btn,
+.station-row .btn {
     background-color: transparent;
     border: none;
 }
 
-.signal-summary-row .edit-btn:hover,
-.block-summary-row .edit-btn:hover,
-.station-summary-row .edit-btn:hover,
-.switch-summary-row .edit-btn:hover,
-.train-summary-row .edit-btn:hover,
-.route-row .edit-btn:hover,
-.route-row .btn:hover:not(:disabled),
-.path-row .edit-btn:hover,
-.path-row .btn:hover:not(:disabled) {
+.entity-card .edit-btn:hover,
+.station-row .btn:hover:not(:disabled) {
     background-color: var(--bg-hover);
     color: var(--accent-hover);
     border-color: transparent;
@@ -455,24 +317,92 @@
 
 /* Destructive actions inside cards keep their danger hue (so they still read
    as "this deletes things") but lose the solid danger fill. */
-.route-row .btn-danger,
-.path-row .btn-danger {
+.station-row .btn-danger {
     color: var(--danger-color);
     background-color: transparent;
 }
 
-.route-row .btn-danger:hover:not(:disabled),
-.path-row .btn-danger:hover:not(:disabled) {
+.station-row .btn-danger:hover:not(:disabled) {
     background-color: rgba(232, 63, 91, 0.10);
     color: var(--danger-color);
 }
 
-/* Trains Panel */
+/* Stations panel (logical-station list + create form) — DESIGN_LANGUAGE.md §11
+   status-accented card. Each station is a card carrying the --info-color accent
+   stations use (§1); the create form sits above, divided by a hairline. The
+   action buttons inside the cards go flat via the shared card-button rule
+   above. */
+.station-create-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.station-create-form .control-section-header {
+    margin-bottom: 0;
+}
+
+.station-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--info-color);
+    border-radius: var(--control-radius-sm);
+}
+
+.station-row-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.station-row-name {
+    min-width: 0;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-primary);
+    word-break: break-word;
+}
+
+.station-row-platforms {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.station-row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+/* Plain (non-variant) flat buttons inherit no color from .btn, so give the
+   Add/Remove actions a default text color; hover lifts to accent via the shared
+   card-button rule above. (Delete keeps its danger hue — it's a .btn-danger.) */
+.station-row-actions .btn {
+    color: var(--text-secondary);
+}
+
+.station-list-empty {
+    padding: 16px 12px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-style: italic;
+    font-size: 11px;
+}
+
+/* Trains Panel — fills the panel; the .secondary-sidebar-content wrapper owns
+   the scroll, so the list itself is not a capped inner scrollbox. */
 .trains-list {
-    max-height: 200px;
-    overflow-y: auto;
     margin-bottom: 10px;
-    border-radius: 4px;
 }
 
 .train-item:hover {
@@ -790,53 +720,6 @@
     font-weight: bold;
 }
 
-/* ============= Bit Editor Styles ============= */
-.bit-toggles {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 4px;
-    margin: 8px 0;
-}
-
-.bit-toggles label {
-    display: flex;
-    align-items: center;
-    padding: 4px;
-    background: var(--bg-dark);
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background 0.2s;
-    font-size: 10px;
-}
-
-.bit-toggles label:hover {
-    background: var(--bg-hover);
-}
-
-.bit-toggles input[type="checkbox"] {
-    margin-right: 8px;
-    cursor: pointer;
-}
-
-.bit-info {
-    margin: 12px 0;
-    padding: 8px;
-    background: var(--bg-dark);
-    border-radius: 4px;
-}
-
-.bit-info p {
-    margin: 0;
-    font-size: 11px;
-    color: var(--text-primary);
-}
-
-.bit-warning {
-    font-weight: bold;
-    animation: pulse 1s infinite;
-    margin-top: 4px !important;
-}
-
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
@@ -1111,6 +994,8 @@
 }
 
 .block-selection-item .block-id {
+    font-family: var(--font-mono);
+    font-size: 11px;
     font-weight: bold;
     color: var(--text-primary);
 }
@@ -1333,5 +1218,49 @@
         opacity: 0;
         transform: translateX(400px);
     }
+}
+
+/* Floating resource picker — a small menu of labeled options shown at a screen
+   position (see frontend/src/editor/resource-picker.ts). Shared by the route
+   waypoint-add flow and the entity-select tool. Matches the panel language. */
+.resource-picker {
+    position: fixed;
+    z-index: 1000;
+    min-width: 160px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.resource-option {
+    height: var(--control-height-xs);
+    padding: 0 10px;
+    text-align: left;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--text-primary);
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.resource-option:hover {
+    border-color: var(--accent-color);
+    color: var(--accent-hover);
+}
+
+/* "Select all of them" row — set off from the individual entity rows above. */
+.resource-option-all {
+    margin-top: 4px;
+    font-weight: 600;
+    color: var(--accent-color);
+    border-style: dashed;
 }
 

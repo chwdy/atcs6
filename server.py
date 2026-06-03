@@ -47,7 +47,6 @@ from persistence import PersistenceManager
 from railway_signal import Signal, SignalType, SignalState
 from signal_validation import validate_signal_placement, get_valid_directions
 from simulation import SimulationController, build_network_payload
-from speed_profile import SpeedProfile, SpeedProfileRegistry
 from track import (
     TrackSegment,
     FORBIDDEN_TRACK_BITS,
@@ -58,13 +57,12 @@ from track import (
     TRACK_SE,
     TRACK_SW,
 )
-from train import Train, TrainSchedule, ScheduleStop, TrainCar
+from train import Train, TrainCar
 from train_controller import TrainController
 from train_route import Route, RouteMode
 
 # Global state
 network = RailwayNetwork()
-speed_profile_registry = SpeedProfileRegistry()
 # Initialize with demo data for now so it's not empty
 # In a real app, we might want to start empty or load from save
 app: Flask | None = None
@@ -182,7 +180,6 @@ def _build_state_and_app() -> tuple[AppState, Flask]:
         path_dispatcher=path_dispatcher,
         sim_controller=sim_controller,
         persistence_manager=persistence_manager,
-        speed_profile_registry=speed_profile_registry,
         simulation_lock=simulation_lock,
         simulation_running=simulation_running,
         simulation_speed=simulation_speed,
@@ -302,16 +299,11 @@ def main() -> None:
     simulation_speed = 1.0
     last_update_time = datetime.now()
 
-    from speed_profile import SpeedProfileRegistry
-
-    speed_profile_registry = SpeedProfileRegistry()
-
     state = AppState(
         network=network,
         path_dispatcher=path_dispatcher,
         sim_controller=sim_controller,
         persistence_manager=persistence_manager,
-        speed_profile_registry=speed_profile_registry,
         simulation_lock=simulation_lock,
         simulation_running=simulation_running,
         simulation_speed=simulation_speed,

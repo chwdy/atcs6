@@ -1,4 +1,4 @@
-// editor-trains.ts — Train Editor Handler (trains list, schedules, the train
+// editor-trains.ts — Train Editor Handler (trains list, the train
 // control panel + its live HMI updates).
 //
 // Migrated from static/js/editor-trains.js (longterm_todo.md item #7, Wave 2).
@@ -23,12 +23,18 @@ export class TrainEditorHandler {
   _trainId: string | null;
   _unsubscribe: (() => void) | null;
   _dwellLookahead: any;
+  _trainsListInterval: ReturnType<typeof setInterval> | null;
+  _trainsListIntervalMs: number;
+  _trainsListCache: any[];
 
   constructor(editor: EditorHost) {
     this.editor = editor;
     this._trainId = null; // Currently displayed train ID
     this._unsubscribe = null; // Unsubscribe function for StateManager
     this._dwellLookahead = null;
+    this._trainsListInterval = null;
+    this._trainsListIntervalMs = 1500;
+    this._trainsListCache = [];
   }
 
   get api(): any {
@@ -67,11 +73,11 @@ export class TrainEditorHandler {
                     <label for="train-length">Length (units)</label>
                     <input type="number" id="train-length" value="1" min="1" max="10">
                 </div>
-                <button id="btn-confirm-add-train" class="btn btn-primary btn-full mt-16">🚂 Add Train</button>
+                <button id="btn-confirm-add-train" class="btn btn-primary btn-full mt-16">Add Train</button>
             </div>
         `;
 
-    this.editor.showSecondarySidebar('🚂 Add Train', content);
+    this.editor.showSecondarySidebar('Add Train', content);
 
     setTimeout(() => {
       const addBtn = document.getElementById('btn-confirm-add-train') as HTMLButtonElement | null;
@@ -116,35 +122,47 @@ export class TrainEditorHandler {
   }
 
   async showTrainsPanel(): Promise<void> {
+    // Leaving any open train detail view — tear down its subscription before
+    // the list poller starts (only one of the two is ever active).
+    this._cleanup();
+
     this.editor._currentEditorType = 'trains-list';
     this.editor._currentEditorId = null;
 
-    let trains = [];
     try {
-      trains = await this.api.getTrains();
+      this._trainsListCache = await this.api.getTrains();
     } catch (err: any) {
       console.error('[TrainEditorHandler] Failed to load trains:', err);
       showToast('Failed to load trains: ' + err.message, 'error', 5000);
-      return;
+      this._trainsListCache = [];
     }
 
+    this._renderTrainsListSidebar();
+    this._startTrainsListPoller();
+  }
+
+  /** Re-render the trains list from `this._trainsListCache` without
+   *  re-fetching. Shared by showTrainsPanel and the background poller so the
+   *  list stays live (state, position, speed) without a manual refresh. */
+  _renderTrainsListSidebar(): void {
     let content = `
             <div class="trains-panel">
-                <div class="flex gap-8 mb-16">
-                    <button id="refresh-trains-btn" class="btn btn-secondary btn-sm flex-1">
-                        🔄 Refresh
-                    </button>
+                <!-- Reuses the routes list panel's .routes-toolbar treatment so the
+                     "+ New Train" CTA reads as a flat-ghost accent button instead of a
+                     solid fill (DESIGN_LANGUAGE.md §3 "Don't use solid-color filled
+                     buttons in panels"), matching "+ New Route". -->
+                <div class="routes-toolbar mb-16">
                     <button id="add-new-train-btn" class="btn btn-primary btn-sm flex-1">
-                        🚂 Add
+                        + New Train
                     </button>
                 </div>
         `;
 
-    if (trains.length === 0) {
+    if (this._trainsListCache.length === 0) {
       content += '<div class="trains-empty">No trains in network</div>';
     } else {
       content += '<div class="trains-list">';
-      for (const train of trains) {
+      for (const train of this._trainsListCache) {
         content += this.renderTrainListItem(train);
       }
       content += '</div>';
@@ -152,49 +170,128 @@ export class TrainEditorHandler {
 
     content += '</div>';
 
-    this.editor.showSecondarySidebar('🚂 Trains', content);
+    this.editor.showSecondarySidebar('Trains', content);
 
     setTimeout(() => this.initTrainsPanelHandlers(), 0);
+  }
+
+  /** Start the trains-list background poller. */
+  _startTrainsListPoller(): void {
+    this._stopTrainsListPoller();
+    this._trainsListInterval = setInterval(
+      () =>
+        this._syncTrainsListFromServer().catch((err) => {
+          console.debug('[TrainEditorHandler] trains-list sync failed:', err);
+        }),
+      this._trainsListIntervalMs
+    );
+  }
+
+  _stopTrainsListPoller(): void {
+    if (this._trainsListInterval) {
+      clearInterval(this._trainsListInterval);
+      this._trainsListInterval = null;
+    }
+  }
+
+  /** Pull the latest trains and re-render only when a field the list shows
+   *  changed (membership, state, position, speed). Skips the DOM swap while
+   *  the user is hovering the list so a re-render can't steal an Edit/Delete
+   *  click. */
+  async _syncTrainsListFromServer(): Promise<void> {
+    // Panel changed under us (opened a train / closed) — stop polling.
+    // Checked before the tab-visibility gate so a stale poller is cleared
+    // even while the tab is backgrounded.
+    if (this.editor._currentEditorType !== 'trains-list') {
+      this._stopTrainsListPoller();
+      return;
+    }
+    // Tab hidden — pause fetching but keep the timer alive so it resumes
+    // promptly when the tab is foregrounded again.
+    if (typeof document !== 'undefined' && document.hidden) return;
+    if (this._isTrainsListHovered()) return;
+
+    const trains = await this.api.getTrains();
+    const next = Array.isArray(trains) ? trains : [];
+    if (this._trainsListSignature(next) === this._trainsListSignature(this._trainsListCache)) {
+      return;
+    }
+    this._trainsListCache = next;
+    this._renderTrainsListSidebar();
+  }
+
+  /** Signature of just the fields the trains list renders, so unrelated
+   *  payload churn doesn't trigger a needless re-render. Controller state,
+   *  head position, and speed come from the live StateManager cache. */
+  _trainsListSignature(trains: any[]): string {
+    return JSON.stringify(
+      (trains || []).map((t) => {
+        const c: any = stateManager?.getController(t.id);
+        const span = c?.span;
+        let pos = '0,0';
+        if (span?.end_a) {
+          const headEnd = span.leading_end === 'a' ? span.end_a : span.end_b;
+          pos = `${headEnd.tile[0]},${headEnd.tile[1]}`;
+        }
+        return [
+          t.id,
+          c?.state || 'off',
+          c?.facing_direction || '',
+          pos,
+          Math.round((c?.current_speed || 0) * 10),
+        ];
+      })
+    );
+  }
+
+  /** True when the cursor is over the open trains list. */
+  _isTrainsListHovered(): boolean {
+    const el = document.querySelector('.trains-panel');
+    if (!el || typeof el.matches !== 'function') return false;
+    try {
+      return el.matches(':hover');
+    } catch (_) {
+      return false;
+    }
   }
 
   renderTrainListItem(train: any): string {
     const controller: any = stateManager?.getController(train.id);
     const state = controller?.state || 'off';
-    const stateClass = this.getTrainStateVisualClass(state);
+    const accent = this.getTrainAccent(state);
+    const stateLabel = state.toUpperCase().replace('RUNNING_', '');
 
-    // Get head position from controller span
+    // Head position from the controller span (leading end).
     let position = { x: 0, y: 0 };
     const span = controller?.span;
     if (span && span.end_a) {
       const headEnd = span.leading_end === 'a' ? span.end_a : span.end_b;
       position = { x: headEnd.tile[0], y: headEnd.tile[1] };
     }
+    const heading = controller?.facing_direction ? ` → ${controller.facing_direction}` : '';
+    const speed = (controller?.current_speed || 0).toFixed(1);
 
+    // Reuses the canonical .rr-card list-card shell (DESIGN_LANGUAGE.md §11),
+    // matching the routes/paths lists: a title row (train id + flat-ghost
+    // Edit/Delete), a chip row (state · speed), and a foot caption with the
+    // live position/heading. The §6 status accent is the 3px left border via
+    // .accent-{success,info,muted}; the matching .chip-* colors the state chip.
     return `
-            <div class="train-summary-row mb-8">
-                <div class="flex items-center gap-12 w-full p-2">
-                    <div class="flex flex-col items-center gap-1">
-                        <div class="train-status-dot train-state-dot ${stateClass}"></div>
+            <div class="rr-card train-row accent-${accent} mb-8" data-train-id="${train.id}">
+                <div class="rr-card-head">
+                    <div class="rr-card-title-col">
+                        <div class="rr-card-train font-mono">${train.id}</div>
                     </div>
-                    <div class="train-info flex-1">
-                        <div class="flex items-center gap-2 mb-1">
-                            <span class="train-id font-mono font-bold text-white">${train.id}</span>
-                            <span class="text-xs font-bold uppercase tracking-wider train-state-text ${stateClass}">
-                                ${state.toUpperCase().replace('RUNNING_', '')}
-                            </span>
-                        </div>
-                        <div class="flex justify-between items-end">
-                            <div class="text-xs text-muted">
-                                <div>📍 (${position.x}, ${position.y}) ${controller?.facing_direction ? `→ ${controller.facing_direction}` : ''}</div>
-                                <div>🚀 ${(controller?.current_speed || 0).toFixed(1)} km/h</div>
-                            </div>
-                            <div class="flex gap-4">
-                                <button class="edit-btn btn-sm" onclick="window.app.selectTrain('${train.id}')">Edit</button>
-                                <button class="btn btn-sm btn-danger btn-danger-solid delete-train-btn" data-train-id="${train.id}">Delete</button>
-                            </div>
-                        </div>
+                    <div class="route-row-actions">
+                        <button class="rr-flat-btn" onclick="window.app.selectTrain('${train.id}')">Edit</button>
+                        <button class="rr-flat-btn rr-flat-btn-danger delete-train-btn" data-train-id="${train.id}">Delete</button>
                     </div>
                 </div>
+                <div class="chip-row">
+                    <span class="chip chip-state chip-${accent}">${stateLabel}</span>
+                    <span class="chip">${speed} km/h</span>
+                </div>
+                <div class="rr-card-foot"><i class="ti ti-map-pin"></i> (${position.x}, ${position.y})${heading}</div>
             </div>
         `;
   }
@@ -208,6 +305,21 @@ export class TrainEditorHandler {
       running_at_station: 'train-state-station',
     };
     return map[state] || 'train-state-off';
+  }
+
+  /** Map a controller state to a §6 status-accent / §7 chip variant for the
+   *  trains-list card (3px left border + state chip). Mirrors the token-based
+   *  .tc-state-badge semantics: running = success, at-station = info, every
+   *  not-running state (off / idle / standby) = muted. */
+  getTrainAccent(state: string): string {
+    const map: Record<string, string> = {
+      off: 'muted',
+      idle: 'muted',
+      standby: 'muted',
+      running_moving: 'success',
+      running_at_station: 'info',
+    };
+    return map[state] || 'muted';
   }
 
   getHandleVisualClass(handlePosition: string): string {
@@ -302,13 +414,6 @@ export class TrainEditorHandler {
   }
 
   initTrainsPanelHandlers(): void {
-    const refreshBtn = document.getElementById('refresh-trains-btn') as HTMLButtonElement | null;
-    if (refreshBtn) {
-      refreshBtn.onclick = async () => {
-        await this.showTrainsPanel();
-      };
-    }
-
     const addBtn = document.getElementById('add-new-train-btn') as HTMLButtonElement | null;
     if (addBtn) {
       addBtn.onclick = () => {
@@ -352,120 +457,6 @@ export class TrainEditorHandler {
     });
   }
 
-  async showSchedulesPanel(): Promise<void> {
-    this.editor._currentEditorType = 'schedules-list';
-    this.editor._currentEditorId = null;
-
-    let schedules = [];
-    try {
-      schedules = await this.api.getSchedules();
-    } catch (err: any) {
-      console.error('[TrainEditorHandler] Failed to load schedules:', err);
-      showToast('Failed to load schedules: ' + err.message, 'error', 5000);
-      return;
-    }
-
-    let content = `
-            <div class="schedules-panel">
-                <div class="flex gap-8 mb-16">
-                    <button id="create-route-btn" class="btn btn-primary btn-sm flex-1">
-                        + Create Route
-                    </button>
-                    <button id="refresh-schedules-btn" class="btn btn-secondary btn-sm">
-                        🔄
-                    </button>
-                </div>
-        `;
-
-    if (schedules.length === 0) {
-      content += '<div class="empty-state text-muted text-center">No schedules defined</div>';
-    } else {
-      content += '<div class="schedules-list">';
-      for (const schedule of schedules) {
-        content += this.renderScheduleListItem(schedule);
-      }
-      content += '</div>';
-    }
-
-    content += '</div>';
-
-    this.editor.showSecondarySidebar('📅 Schedules', content);
-
-    setTimeout(() => this.initSchedulesPanelHandlers(), 0);
-  }
-
-  renderScheduleListItem(schedule: any): string {
-    const trainId = schedule.train_id || 'Unknown';
-    const stopCount = (schedule.stops && schedule.stops.length) || 0;
-    const priority = schedule.priority || 0;
-    const scheduleId = schedule.schedule_id || schedule.id || 'unknown';
-
-    return `
-            <div class="schedule-item" data-schedule-id="${scheduleId}">
-                <div class="schedule-header">
-                    <span class="schedule-train text-sm font-bold">🚂 ${trainId}</span>
-                    <span class="schedule-priority text-xs text-muted">Priority: ${priority}</span>
-                </div>
-                <div class="schedule-stops text-xs text-muted">
-                    ${stopCount} stop(s)
-                </div>
-                ${
-                  schedule.stops && schedule.stops.length > 0
-                    ? `
-                <div class="schedule-stop-list-compact text-xs schedule-stop-list">
-                    ${schedule.stops.map((stop: any, idx: number) => `<div>${idx + 1}. ${stop.platform_id || stop.station_id || stop}</div>`).join('')}
-                </div>
-                `
-                    : ''
-                }
-                <div class="schedule-actions mt-8">
-                    <button class="btn btn-sm btn-danger delete-schedule-btn" data-schedule-id="${scheduleId}">Delete</button>
-                </div>
-            </div>
-        `;
-  }
-
-  initSchedulesPanelHandlers(): void {
-    const createRouteBtn = document.getElementById('create-route-btn') as HTMLButtonElement | null;
-    if (createRouteBtn) {
-      createRouteBtn.onclick = async () => {
-        await this.editor.showRoutesPanel();
-      };
-    }
-
-    const refreshBtn = document.getElementById('refresh-schedules-btn') as HTMLButtonElement | null;
-    if (refreshBtn) {
-      refreshBtn.onclick = async () => {
-        await this.showSchedulesPanel();
-      };
-    }
-
-    const deleteBtns = document.querySelectorAll<HTMLElement>('.delete-schedule-btn');
-    deleteBtns.forEach((btn) => {
-      btn.onclick = async () => {
-        const scheduleId = btn.dataset.scheduleId;
-        const confirmed = await showConfirmModal({
-          title: 'Delete Schedule',
-          message: `Delete schedule "${scheduleId}"?`,
-          detail: 'All stops in this schedule will be removed.',
-          confirmText: 'Delete',
-          confirmVariant: 'danger',
-        });
-        if (!confirmed) return;
-
-        try {
-          const api: any = this.api;
-          await api.deleteSchedule(scheduleId);
-          showToast(`Schedule "${scheduleId}" deleted`, 'success', 3000);
-          await this.showSchedulesPanel();
-        } catch (err: any) {
-          console.error('[TrainEditorHandler] Failed to delete schedule:', err);
-          showToast('Failed to delete schedule: ' + err.message, 'error', 5000);
-        }
-      };
-    });
-  }
-
   async showTrainControlPanel(trainId: string): Promise<void> {
     this.editor._currentEditorType = 'train-control';
     this.editor._currentEditorId = trainId;
@@ -479,14 +470,22 @@ export class TrainEditorHandler {
       controller = trainResp?.controller;
       dispatcher = trainResp?.dispatcher_progress;
     } catch (err: any) {
+      // A 404 means this train isn't in the current scene (typically a
+      // persisted tab restored against a scene that lacks it). That's not an
+      // error worth a toast — quietly close the stale tab.
+      if (err?.status === 404) {
+        await this.editor.closeStaleEditorTab('train-control', trainId);
+        return;
+      }
       console.error('[TrainEditorHandler] Failed to fetch train:', err);
       showToast(`Failed to load train: ${err.message}`, 'error', 5000);
       return;
     }
 
     if (!train) {
+      // Endpoint returned a body without a train — treat as gone, like a 404.
       console.warn('[TrainEditorHandler] Train not found:', trainId);
-      showToast(`Train ${trainId} not found`, 'error', 5000);
+      await this.editor.closeStaleEditorTab('train-control', trainId);
       return;
     }
 
@@ -640,7 +639,7 @@ export class TrainEditorHandler {
                 <!-- ZONE 1: TASK -->
                 <section class="tc-section tc-section-task ${obcStateClass}">
                     <header class="tc-status-headline">
-                        <span class="tc-train-id train-id">${trainId}</span>
+                        <span class="tc-train-id">${trainId}</span>
                         <span class="tc-state-badge train-state-display ${trainStateClass}">${trainState.toUpperCase().replace('_', ' ')}</span>
                         <span id="obc-ato-running-badge" class="tc-running-badge ${atoRunning ? '' : 'hidden'}">▶ ATO</span>
                         <span id="train-eb-badge" class="tc-eb-badge tc-status-emergency ${emergencyActive ? '' : 'hidden'}">EB ACTIVE</span>
@@ -846,6 +845,14 @@ export class TrainEditorHandler {
                                 <dt class="tc-field-label">Max Speed</dt>
                                 <dd class="tc-field-value" id="train-status-maxspeed-val">${train.max_speed || 100} km/h</dd>
                             </div>
+                            <div class="tc-field">
+                                <dt class="tc-field-label">Speed Profile</dt>
+                                <dd class="tc-field-value flex gap-8">
+                                    <span class="font-mono">${train.speed_profile_id || 'default'}</span>
+                                    <span class="flex-1"></span>
+                                    <button id="train-edit-profile-btn" class="rr-flat-btn" data-profile-id="${train.speed_profile_id || 'default'}">Edit profile →</button>
+                                </dd>
+                            </div>
                         </dl>
                     </div>
 
@@ -873,7 +880,7 @@ export class TrainEditorHandler {
             </div>
         `;
 
-    this.editor.showSecondarySidebar('🚂 Train Control', content);
+    this.editor.showSecondarySidebar(`${trainId}`, content);
 
     // Check debug checkbox immediately and update visibility
     const debugCheckbox = document.getElementById('debug-show-train-position') as HTMLInputElement | null;
@@ -1161,6 +1168,12 @@ export class TrainEditorHandler {
       };
     }
 
+    const editProfileBtn = document.getElementById('train-edit-profile-btn') as HTMLButtonElement | null;
+    if (editProfileBtn) {
+      editProfileBtn.onclick = () =>
+        this.editor.showSpeedProfileEditor(editProfileBtn.dataset.profileId || 'default');
+    }
+
     const monitorBtn = document.getElementById('train-monitor-btn') as HTMLButtonElement | null;
     if (monitorBtn) {
       monitorBtn.onclick = () => {
@@ -1293,6 +1306,7 @@ export class TrainEditorHandler {
 
   /** Cleanup subscription when panel is hidden or train changes. */
   _cleanup(): void {
+    this._stopTrainsListPoller();
     if (this._unsubscribe) {
       this._unsubscribe();
       this._unsubscribe = null;

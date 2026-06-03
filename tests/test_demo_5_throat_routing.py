@@ -26,7 +26,6 @@ import pytest
 from bootstrap import bootstrap_runtime
 from app_state import AppState
 from block_manager import ReservedBlockTraversal
-from speed_profile import SpeedProfileRegistry
 from services import train_route_service, train_service
 
 # S2-N platform tiles (PLT_S2_N): arrival is "stopped with head on one of them".
@@ -53,7 +52,6 @@ def _single_train_demo5(start_block, facing):
     state = AppState(
         network=network, path_dispatcher=dispatcher, sim_controller=sim,
         persistence_manager=persistence,
-        speed_profile_registry=SpeedProfileRegistry(),
         simulation_lock=threading.Lock(), simulation_running=True,
         simulation_speed=1.0, last_update_time=datetime.now(),
     )

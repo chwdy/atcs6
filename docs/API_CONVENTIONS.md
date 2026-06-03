@@ -42,9 +42,9 @@ def register_all(app, state):
 | `platforms` | `routes/platforms.py` | Platform management | Platform management |
 | `trains` | `routes/trains.py` | Train CRUD, consist management | Train management |
 | `paths` | `routes/paths.py` | Pathfinding, dispatcher | Path/dispatch operations |
-| `misc` | `routes/misc.py` | Switches, speed profiles, schedules, layouts, routes, simulation, static files | Everything else |
+| `misc` | `routes/misc.py` | Switches, speed profiles, layouts, routes, simulation, static files | Everything else |
 
-**Note:** `misc.py` (~1300 lines) is a catch-all that handles switches, speed profiles, schedules, layouts, train routes, simulation control, and static file serving. It should be decomposed into focused modules (e.g., `routes/switches.py`, `routes/simulation.py`, `routes/layouts.py`).
+**Note:** `misc.py` (~1300 lines) is a catch-all that handles switches, speed profiles, layouts, train routes, simulation control, and static file serving. It should be decomposed into focused modules (e.g., `routes/switches.py`, `routes/simulation.py`, `routes/layouts.py`).
 
 ## Response Format
 
@@ -201,6 +201,6 @@ def get_block(block_id):
 | `routes/platforms.py` | Platform management |
 | `routes/trains.py` | Train management |
 | `routes/paths.py` | Pathfinding + dispatcher |
-| `routes/misc.py` | Switches, layouts, simulation, schedules, routes, speed profiles |
+| `routes/misc.py` | Switches, layouts, simulation, routes, speed profiles |
 | `app_factory.py` | Flask app creation + route registration call |
 | `app_state.py` | AppState dataclass (dependency injection container) |

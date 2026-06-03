@@ -148,7 +148,7 @@ export class BlockEditorHandler {
                 <div class="info-box-track mb-12">
                     <div class="flex justify-between items-start mb-2">
                         <span class="text-xs text-muted uppercase tracking-wider">State</span>
-                        ${block.occupied_by ? `<span class="badge badge-warning text-xxs">🚂 ${block.occupied_by}</span>` : ''}
+                        ${block.occupied_by ? `<span class="badge badge-warning text-xxs"><i class="ti ti-train"></i> ${block.occupied_by}</span>` : ''}
                     </div>
 
                     <div class="text-2xl font-bold mb-4 font-mono block-state-display ${blockStateClass}" id="block-state-display">
@@ -158,7 +158,7 @@ export class BlockEditorHandler {
                     <div class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm font-mono">
                         <div>
                             <span class="text-muted text-xs block">Track Count</span>
-                            <span class="text-track font-bold">${block.track_count || 0} tiles</span>
+                            <span class="text-primary font-bold">${block.track_count || 0} tiles</span>
                         </div>
                         <div>
                             <span class="text-muted text-xs block">Length</span>
@@ -207,14 +207,14 @@ export class BlockEditorHandler {
                     ${renderDirectionSegment('block', block, { idBase: 'block-direction' })}
 
                     <div class="flex gap-8">
-                        <button id="save-block-btn" class="btn btn-primary btn-sm flex-1">💾 Save</button>
-                        <button id="delete-block-btn" class="btn btn-danger btn-sm flex-1">🗑 Delete</button>
+                        <button id="save-block-btn" class="btn btn-primary btn-sm flex-1"><i class="ti ti-device-floppy"></i> Save</button>
+                        <button id="delete-block-btn" class="btn btn-danger btn-sm flex-1"><i class="ti ti-trash"></i> Delete</button>
                     </div>
                 </div>
             </div>
         `;
 
-    this.editor.showSecondarySidebar(`📦 Block Editor`, content);
+    this.editor.showSecondarySidebar(`Block Editor`, content);
 
     // Draw the forward / reverse arrows on the map for this block.
     if (this.editor.renderer?.setBlockDirectionOverlay) {

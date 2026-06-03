@@ -9,6 +9,19 @@ import type { EditorHost } from './types';
 import { showConfirmModal } from '../lib/helpers';
 import { FORBIDDEN_TRACK_BITS, isSquareCornerSwitch } from '../lib/constants';
 
+/** Editor types whose panel is a standalone collection/list — not the detail
+ *  view of one entity. Their secondary-sidebar tabs get a bold label so a list
+ *  tab (e.g. all trains) reads differently from an instance tab (e.g. one
+ *  specific train). */
+const LIST_PANEL_EDITOR_TYPES = new Set([
+  'trains-list',
+  'paths-list',
+  'routes-list',
+  'route-runs-list',
+  'station-group-list',
+  'speed-profiles-list',
+]);
+
 export class EditorUIHandler {
   editor: EditorHost;
   secondaryPanelHistoryBack: any[];
@@ -491,8 +504,9 @@ export class EditorUIHandler {
       .map((tab) => {
         const safeTitle = this.escapeHtml(tab.title || 'Editor');
         const activeClass = tab.tabId === this.activeSecondaryTabId ? ' active' : '';
+        const listClass = LIST_PANEL_EDITOR_TYPES.has(tab.editorType) ? ' secondary-tab--list' : '';
         return (
-          `<div class="secondary-tab${activeClass}" title="${safeTitle}">` +
+          `<div class="secondary-tab${activeClass}${listClass}" title="${safeTitle}">` +
           `<button class="secondary-tab-label btn-size-tight" data-tab-id="${tab.tabId}">${safeTitle}</button>` +
           `<button class="secondary-tab-close" data-tab-id="${tab.tabId}" title="Close tab">×</button>` +
           `</div>`
@@ -646,12 +660,98 @@ export class EditorUIHandler {
       return;
     }
 
+    // Persisted tabs are global, not per-scene: an entity that existed when a
+    // tab was saved may be absent from the scene now loaded. Wait for the
+    // first network load, then drop tabs whose entity is gone before
+    // restoring — otherwise restoring fires a request for a missing entity
+    // (e.g. GET /api/trains/DEMO_TRAIN -> 404 in a scene without that train).
+    await this.editor.whenNetworkReady();
+    this.pruneStaleSecondaryTabs();
+
+    if (!this.activeSecondaryTabId || this.secondaryTabs.length === 0) {
+      return;
+    }
+
     const activeTab = this.secondaryTabs.find((tab) => tab.tabId === this.activeSecondaryTabId);
     if (!activeTab) {
       return;
     }
 
     await this.restoreSecondaryTabPanel(activeTab);
+  }
+
+  /** A persisted tab is stale when it points at an entity absent from the
+   *  loaded network. List/tool-setup panels and id-only editors (paths,
+   *  routes) aren't tied to a network entity and are always kept. */
+  isSecondaryTabStale(tab: any, network: any): boolean {
+    const id = tab?.editorId;
+    switch (tab?.editorType) {
+      case 'train':
+      case 'train-control':
+        return !(
+          Array.isArray(network?.trains) && network.trains.some((t: any) => t.id === id)
+        );
+      case 'block':
+        return !(network?.blocks && id in network.blocks);
+      case 'signal':
+        return !(network?.signals && id in network.signals);
+      case 'switch':
+        return !(network?.switches && id in network.switches);
+      case 'platform':
+        return !(
+          Array.isArray(network?.platforms) &&
+          network.platforms.some((p: any) => p.platform_id === id)
+        );
+      case 'station-group':
+        return !(
+          Array.isArray(network?.station_groups) &&
+          network.station_groups.some((s: any) => s.station_id === id)
+        );
+      default:
+        return false;
+    }
+  }
+
+  /** Drop persisted tabs whose entity no longer exists in the loaded network,
+   *  re-point the active tab, and persist if anything changed. */
+  pruneStaleSecondaryTabs(): void {
+    if (this.secondaryTabs.length === 0) {
+      return;
+    }
+    const network = this.editor.cachedNetwork;
+    const kept = this.secondaryTabs.filter((tab) => !this.isSecondaryTabStale(tab, network));
+    if (kept.length === this.secondaryTabs.length) {
+      return;
+    }
+
+    this.secondaryTabs = kept;
+    if (kept.length === 0) {
+      this.activeSecondaryTabId = null;
+    } else if (!kept.some((tab) => tab.tabId === this.activeSecondaryTabId)) {
+      this.activeSecondaryTabId = kept[0].tabId;
+    }
+    this.persistSecondaryInspectorState();
+    this.renderSecondaryTabs();
+    this.updateSecondaryNavigationState();
+  }
+
+  /** Close the tab pointing at a now-missing entity (matched by type + id).
+   *  No-op when no such tab is open; if it was the current editor, hide the
+   *  panel so the missing entity doesn't linger on screen. */
+  async closeStaleSecondaryTab(editorType: string, editorId: string): Promise<void> {
+    const tab = this.secondaryTabs.find(
+      (t) => t.editorType === editorType && t.editorId === editorId
+    );
+    if (tab) {
+      await this.closeSecondaryTab(tab.tabId);
+      return;
+    }
+    if (
+      this.editor._currentEditorType === editorType &&
+      this.editor._currentEditorId === editorId
+    ) {
+      await this.hideSecondarySidebar();
+    }
   }
 
   clearSecondaryInspectorState(): void {
@@ -675,6 +775,9 @@ export class EditorUIHandler {
     if (this.editor.platformHandler?._cleanup) this.editor.platformHandler._cleanup();
     if (this.editor.stationGroupHandler?._cleanup) this.editor.stationGroupHandler._cleanup();
     if (this.editor.routeRunHandler?._cleanup) this.editor.routeRunHandler._cleanup();
+    if (this.editor.routeHandler?._cleanup) this.editor.routeHandler._cleanup();
+    if (this.editor.pathHandler?._cleanup) this.editor.pathHandler._cleanup();
+    if (this.editor.speedProfileHandler?._cleanup) this.editor.speedProfileHandler._cleanup();
   }
 
   renderSecondaryBreadcrumb(): void {
@@ -754,7 +857,7 @@ export class EditorUIHandler {
             <div class="json-viewer-panel">
                 <div class="json-viewer-toolbar">
                     <button id="copy-json-btn" class="btn btn-primary btn-full text-sm">
-                        📋 Copy to Clipboard
+                        <i class="ti ti-copy"></i> Copy to Clipboard
                     </button>
                 </div>
 
@@ -774,11 +877,11 @@ export class EditorUIHandler {
             .writeText(jsonString)
             .then(() => {
               showToast('JSON copied to clipboard', 'success', 2000);
-              copyBtn.textContent = '✓ Copied!';
+              copyBtn.innerHTML = '<i class="ti ti-check"></i> Copied!';
               copyBtn.classList.remove('btn-primary');
               copyBtn.classList.add('btn-success');
               setTimeout(() => {
-                copyBtn.textContent = '📋 Copy to Clipboard';
+                copyBtn.innerHTML = '<i class="ti ti-copy"></i> Copy to Clipboard';
                 copyBtn.classList.remove('btn-success');
                 copyBtn.classList.add('btn-primary');
               }, 2000);
@@ -867,7 +970,7 @@ export class EditorUIHandler {
     const viewJsonBtn = document.getElementById('view-full-json-btn') as HTMLButtonElement | null;
     if (viewJsonBtn) {
       viewJsonBtn.onclick = () => {
-        this.showFullJSONViewer(track, `📄 JSON: (${track.x}, ${track.y})`);
+        this.showFullJSONViewer(track, `JSON: (${track.x}, ${track.y})`);
       };
     }
   }
@@ -885,125 +988,124 @@ export class EditorUIHandler {
   }
 
   initBitEditor(track: any): void {
-    const bitEditor = document.getElementById('bit-editor');
-    if (!bitEditor) return;
+    const body = document.getElementById('track-bits-panel-body');
+    if (!body) return;
 
-    const api: any = this.editor.api;
+    const checkboxes = body.querySelectorAll<HTMLInputElement>('input[type="checkbox"][data-bit]');
 
-    const calculateBitsFromCheckboxes = () => {
+    const calculateBits = () => {
       let bits = 0;
-      document
-        .querySelectorAll<HTMLInputElement>('#bit-editor input[type="checkbox"]')
-        .forEach((cb) => {
-          if (cb.checked) {
-            bits |= parseInt(cb.dataset.bit ?? '');
-          }
-        });
+      checkboxes.forEach((cb) => {
+        if (cb.checked) bits |= parseInt(cb.dataset.bit ?? '0');
+      });
       return bits;
     };
 
-    const updateBitDisplay = () => {
-      const bits = calculateBitsFromCheckboxes();
-      const totalSpan = document.getElementById('bit-total');
-      const binarySpan = document.getElementById('bit-binary');
-      if (totalSpan) totalSpan.textContent = String(bits);
-      if (binarySpan) binarySpan.textContent = bits.toString(2).padStart(6, '0');
-
-      document
-        .querySelectorAll<HTMLInputElement>('#bit-editor input[type="checkbox"]')
-        .forEach((cb) => {
-          const label = cb.parentElement as HTMLElement;
-          const span = label.querySelector('span') as HTMLElement | null;
-          const isChecked = cb.checked;
-          label.style.background = isChecked ? '#2a4a3e' : '#2a2a34';
-          label.style.borderColor = isChecked ? '#00ff88' : 'transparent';
-          if (span) span.style.color = isChecked ? '#00ff88' : '#ccc';
-        });
-
-      const warning = document.querySelector('.bit-warning') as HTMLElement | null;
-      if (warning) {
-        warning.style.display =
-          FORBIDDEN_TRACK_BITS.has(bits) || isSquareCornerSwitch(bits) ? 'block' : 'none';
+    // Optimistic readout update for instant feedback; the authoritative state
+    // lands when _commitTrackBits re-renders the panel from the server. The
+    // checked/unchecked chrome is pure CSS (.checkbox-custom :checked) now, so
+    // there is nothing to repaint here beyond the numeric readout.
+    const updateReadout = () => {
+      const bits = calculateBits();
+      const total = document.getElementById('bit-total');
+      const binary = document.getElementById('bit-binary');
+      const forbidden = document.getElementById('bit-forbidden');
+      if (total) total.textContent = String(bits);
+      if (binary) binary.textContent = bits.toString(2).padStart(6, '0');
+      if (forbidden) {
+        forbidden.style.display =
+          FORBIDDEN_TRACK_BITS.has(bits) || isSquareCornerSwitch(bits) ? 'inline' : 'none';
       }
     };
 
-    const checkboxes = bitEditor.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+    // Every toggle auto-applies through the one validated commit path — there is
+    // no Apply button. Forbidden / square-corner / destructive combinations are
+    // all handled (toast, confirm-modal, or revert) inside _commitTrackBits.
     checkboxes.forEach((cb) => {
-      cb.addEventListener('change', () => updateBitDisplay());
+      cb.addEventListener('change', async () => {
+        updateReadout();
+        await this._commitTrackBits(track, calculateBits());
+      });
     });
+  }
 
-    const applyButton = document.getElementById('apply-bits') as HTMLButtonElement | null;
-    if (applyButton) {
-      const applyBits = async (newBits: number, force: boolean) => {
-        if (track.isVirtual) {
-          const newTrack = {
-            x: track.x,
-            y: track.y,
-            track_bits: newBits,
-            directed_paths: [],
-          };
-          await api.addTracksBulk([newTrack]);
-        } else {
-          const body: Record<string, unknown> = { track_bits: newBits };
-          if (force) body.force = true;
-          await api.updateTrack(track.x, track.y, body);
-        }
+  // The single validated path that writes track_bits to the server. Both the
+  // checkbox grid and the visual compass route through here so the forbidden /
+  // square-corner guards and the "this removes a switch/signal/platform"
+  // confirmation modal apply identically to both. On any rejection or failure
+  // the panel is re-rendered from server state, which reverts the optimistic UI.
+  async _commitTrackBits(track: any, newBits: number): Promise<void> {
+    const api: any = this.editor.api;
+    const resync = () => this.editor.selectElement({ x: track.x, y: track.y });
 
-        const updatedTrack = await api.getTrack(track.x, track.y);
-        if (updatedTrack && updatedTrack.is_switch && !updatedTrack.switch_id) {
-          try {
-            await api.createSwitchAt(track.x, track.y, {
-              main_length_cm: 0,
-              diverge_length_cm: 0,
-              main_radius_cm: null,
-              diverge_radius_cm: null,
-            });
-            console.log(`[Editor] Auto-created switch entity at (${track.x}, ${track.y})`);
-          } catch (switchErr) {
-            console.warn('[Editor] Failed to auto-create switch:', switchErr);
-          }
-        }
+    if (FORBIDDEN_TRACK_BITS.has(newBits)) {
+      showToast('Cannot apply forbidden configuration', 'error', 3000);
+      await resync();
+      return;
+    }
+    if (isSquareCornerSwitch(newBits)) {
+      showToast(
+        'Invalid switch: a branch is 90° to a connecting segment ' +
+          '(square corner). Add a diagonal (NS/EW) leg to ease it.',
+        'error',
+        5000
+      );
+      await resync();
+      return;
+    }
 
-        await window.app?.refreshNetwork();
-        await this.editor.selectElement({ x: track.x, y: track.y });
-      };
+    const applyBits = async (force: boolean) => {
+      if (track.isVirtual) {
+        await api.addTracksBulk([
+          { x: track.x, y: track.y, track_bits: newBits, directed_paths: [] },
+        ]);
+      } else {
+        const reqBody: Record<string, unknown> = { track_bits: newBits };
+        if (force) reqBody.force = true;
+        await api.updateTrack(track.x, track.y, reqBody);
+      }
 
-      applyButton.onclick = async () => {
-        const newBits = calculateBitsFromCheckboxes();
-
-        if (FORBIDDEN_TRACK_BITS.has(newBits)) {
-          showToast('Cannot apply forbidden configuration', 'error', 3000);
-          return;
-        }
-        if (isSquareCornerSwitch(newBits)) {
-          showToast(
-            'Invalid switch: a branch is 90° to a connecting segment ' +
-              '(square corner). Add a diagonal (NS/EW) leg to ease it.',
-            'error',
-            5000
-          );
-          return;
-        }
-
+      const updatedTrack = await api.getTrack(track.x, track.y);
+      if (updatedTrack && updatedTrack.is_switch && !updatedTrack.switch_id) {
         try {
-          await applyBits(newBits, false);
-        } catch (err: any) {
-          const data = err && err.data;
-          if (data && data.requires_confirmation) {
-            const proceed = await this._confirmBitChangeImpact(data.impact);
-            if (!proceed) return;
-            try {
-              await applyBits(newBits, true);
-            } catch (err2: any) {
-              console.error('Failed to update track bits (forced):', err2);
-              showToast('Failed to update track bits: ' + err2.message, 'error', 5000);
-            }
-            return;
-          }
-          console.error('Failed to update track bits:', err);
-          showToast('Failed to update track bits: ' + err.message, 'error', 5000);
+          await api.createSwitchAt(track.x, track.y, {
+            main_length_cm: 0,
+            diverge_length_cm: 0,
+            main_radius_cm: null,
+            diverge_radius_cm: null,
+          });
+          console.log(`[Editor] Auto-created switch entity at (${track.x}, ${track.y})`);
+        } catch (switchErr) {
+          console.warn('[Editor] Failed to auto-create switch:', switchErr);
         }
-      };
+      }
+
+      await window.app?.refreshNetwork();
+      await this.editor.selectElement({ x: track.x, y: track.y });
+    };
+
+    try {
+      await applyBits(false);
+    } catch (err: any) {
+      const data = err && err.data;
+      if (data && data.requires_confirmation) {
+        const proceed = await this._confirmBitChangeImpact(data.impact);
+        if (!proceed) {
+          await resync();
+          return;
+        }
+        try {
+          await applyBits(true);
+        } catch (err2: any) {
+          console.error('Failed to update track bits (forced):', err2);
+          showToast('Failed to update track bits: ' + err2.message, 'error', 5000);
+          await resync();
+        }
+        return;
+      }
+      console.error('Failed to update track bits:', err);
+      showToast('Failed to update track bits: ' + err.message, 'error', 5000);
+      await resync();
     }
   }
 
@@ -1036,16 +1138,20 @@ export class EditorUIHandler {
     if (!canvas) return;
 
     const ctx = canvas.getContext('2d')!;
-    canvas.width = 200;
-    canvas.height = 200;
-    const size = 200;
+    const size = 200; // logical drawing units
+    // Render at device resolution so the (now larger) compass stays crisp on
+    // retina. All drawing below stays in logical 0..200 coordinates.
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
+    ctx.scale(dpr, dpr);
     const half = size / 2;
     const quarter = size / 4;
 
     const segments: Record<number, { edges: [string, string]; label: string; color: string }> = {
-      1: { edges: ['N', 'S'], label: 'NS', color: '#00ff88' },
-      2: { edges: ['E', 'W'], label: 'EW', color: '#00ff88' },
-      4: { edges: ['N', 'E'], label: 'NE', color: '#00d4ff' },
+      1: { edges: ['N', 'S'], label: 'NS', color: '#04d361' }, // --success-color (straight)
+      2: { edges: ['E', 'W'], label: 'EW', color: '#04d361' },
+      4: { edges: ['N', 'E'], label: 'NE', color: '#00d4ff' }, // --info-color (diagonal)
       8: { edges: ['N', 'W'], label: 'NW', color: '#00d4ff' },
       16: { edges: ['S', 'E'], label: 'SE', color: '#00d4ff' },
       32: { edges: ['S', 'W'], label: 'SW', color: '#00d4ff' },
@@ -1063,10 +1169,10 @@ export class EditorUIHandler {
     const drawEditor = () => {
       ctx.clearRect(0, 0, size, size);
 
-      ctx.fillStyle = '#111';
+      ctx.fillStyle = '#121214'; // --bg-dark
       ctx.fillRect(0, 0, size, size);
 
-      ctx.strokeStyle = '#333';
+      ctx.strokeStyle = '#333340'; // --border-color — outer diamond, the quietest line
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(half, 10);
@@ -1076,9 +1182,11 @@ export class EditorUIHandler {
       ctx.closePath();
       ctx.stroke();
 
-      ctx.setLineDash([2, 4]);
-      ctx.strokeStyle = '#222';
-      ctx.lineWidth = 1;
+      // Ghost (inactive) segments are the click affordance, so they must read
+      // clearly — a visible muted gray, a step brighter than the diamond above.
+      ctx.setLineDash([3, 4]);
+      ctx.strokeStyle = '#5a5a66';
+      ctx.lineWidth = 1.5;
       for (const seg of Object.values(segments)) {
         const [e1, e2] = seg.edges;
         const start = edgePositions[e1];
@@ -1125,15 +1233,15 @@ export class EditorUIHandler {
           }
         }
 
-        ctx.fillStyle = isConnected ? '#00ff88' : '#444';
-        ctx.strokeStyle = isConnected ? '#fff' : '#666';
+        ctx.fillStyle = isConnected ? '#04d361' : '#2a2a35'; // --success-color / --bg-hover
+        ctx.strokeStyle = isConnected ? '#e1e1e6' : '#5a5a66'; // --text-primary / muted gray
         ctx.lineWidth = isConnected ? 3 : 2;
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, 12, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
-        ctx.fillStyle = isConnected ? '#000' : '#ccc';
+        ctx.fillStyle = isConnected ? '#10101a' : '#a8a8b3'; // dark-on-green / --text-secondary
         ctx.font = 'bold 10px sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
@@ -1151,51 +1259,20 @@ export class EditorUIHandler {
         ctx.textBaseline = 'middle';
         ctx.fillText('!', half, half);
       }
-
-      const numSegments = Object.keys(segments).filter((bit) => currentBits & parseInt(bit)).length;
-      ctx.fillStyle =
-        FORBIDDEN_TRACK_BITS.has(currentBits) || isSquareCornerSwitch(currentBits)
-          ? '#e83f5b'
-          : '#aaa';
-      ctx.font = 'bold 12px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(
-        `${numSegments} segment${numSegments !== 1 ? 's' : ''} (bits: ${currentBits})`,
-        half,
-        size - 10
-      );
-    };
-
-    const saveToServer = async () => {
-      if (FORBIDDEN_TRACK_BITS.has(currentBits)) {
-        console.warn('Cannot save forbidden configuration');
-        return;
-      }
-      if (isSquareCornerSwitch(currentBits)) {
-        showToast(
-          'Invalid switch: a branch is 90° to a connecting segment ' +
-            '(square corner). Add a diagonal (NS/EW) leg to ease it.',
-          'error',
-          5000
-        );
-        return;
-      }
-
-      try {
-        await this.editor.api.updateTrack(track.x, track.y, { track_bits: currentBits });
-        await window.app?.refreshNetwork();
-        await this.editor.selectElement({ x: track.x, y: track.y });
-      } catch (err) {
-        console.error('Failed to update track bits:', err);
-      }
     };
 
     drawEditor();
 
+    // Click the nearest segment to toggle it. The compass shares the one
+    // validated commit path with the checkbox grid (_commitTrackBits): the
+    // optimistic redraw is instant, then the commit re-renders both views from
+    // server state — which also pops the confirmation modal when the change
+    // would remove a switch / signal / platform.
     canvas.addEventListener('click', async (e) => {
       const rect = canvas.getBoundingClientRect();
-      const scaleX = canvas.width / rect.width;
-      const scaleY = canvas.height / rect.height;
+      // Map the click into logical 0..200 space (independent of dpr / display size).
+      const scaleX = size / rect.width;
+      const scaleY = size / rect.height;
       const x = (e.clientX - rect.left) * scaleX;
       const y = (e.clientY - rect.top) * scaleY;
 
@@ -1215,17 +1292,8 @@ export class EditorUIHandler {
 
       if (closestBit !== null) {
         currentBits ^= closestBit;
-
-        const checkbox = document.querySelector(
-          `#bit-editor input[data-bit="${closestBit}"]`
-        ) as HTMLInputElement | null;
-        if (checkbox) {
-          checkbox.checked = !!(currentBits & closestBit);
-          checkbox.dispatchEvent(new Event('change'));
-        }
-
         drawEditor();
-        await saveToServer();
+        await this._commitTrackBits(track, currentBits);
       }
     });
   }

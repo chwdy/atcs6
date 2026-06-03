@@ -587,7 +587,7 @@ class RouteExecutor:
             route_registry_index = list(self.route_registry.keys()).index(route_id)
         except ValueError:
             route_registry_index = 0
-        return route_registry_index * 1_000_000 + run_count
+        return route_registry_index * 100 + run_count
 
     def _get_active_path_id(self, train_id: str) -> Optional[str]:
         """Return the dispatcher's currently active path id for train_id."""

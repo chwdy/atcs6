@@ -79,7 +79,7 @@ export class SignalEditorHandler {
                     <!-- Large State Display (Left-aligned) -->
                     <div class="mb-12">
                         <div class="signal-state-row">
-                            <span class="train-status-dot signal-state-dot"></span>
+                            <span class="signal-state-dot"></span>
                             <span class="signal-state-title">${state}</span>
                         </div>
                     </div>
@@ -243,7 +243,7 @@ export class SignalEditorHandler {
                 <!-- Large State Display (Left-aligned) -->
                 <div class="mb-12">
                     <div class="signal-state-row">
-                        <span class="train-status-dot signal-state-dot"></span>
+                        <span class="signal-state-dot"></span>
                         <span class="signal-state-title">${stateText}</span>
                     </div>
                 </div>
@@ -264,7 +264,7 @@ export class SignalEditorHandler {
                     </div>
                     <div class="property-item">
                         <label class="property-label">Monitored Block</label>
-                        <div class="value-display text-track">${signal.monitored_block_id || 'None'}</div>
+                        <div id="monitored-block-display" class="value-display text-primary">${signal.monitored_block_id || 'None'}</div>
                     </div>
                 </div>
             </div>
@@ -433,7 +433,7 @@ export class SignalEditorHandler {
     const stateCard = document.querySelector('.signal-panel-card');
     this._replaceSignalStateClass(stateCard, stateClass);
 
-    const stateDot = document.querySelector('.train-status-dot');
+    const stateDot = document.querySelector('.signal-state-dot');
     this._replaceSignalStateClass(stateDot, stateClass);
 
     const stateSpan = stateDot?.nextElementSibling;
@@ -443,7 +443,7 @@ export class SignalEditorHandler {
     }
 
     // Update monitored block display
-    const monitoredBlockDisplay = document.querySelector('.value-display.text-track');
+    const monitoredBlockDisplay = document.getElementById('monitored-block-display');
     if (monitoredBlockDisplay) {
       monitoredBlockDisplay.textContent = signal.monitored_block_id || 'None';
     }

@@ -837,157 +837,6 @@ Pause route execution.
 
 ---
 
-## Schedule Endpoints
-
-Schedules define time-based plans for trains, consisting of a list of station stops with arrival/departure times. Schedules are stored in the network and can be assigned to a train.
-
-### Schedule Object Format
-
-Schedules are returned in the following JSON format:
-
-```json
-{
-  "schedule_id": "SCH-ABC123",
-  "train_id": "train_1",
-  "stops": [
-    {
-      "station_pos": [0, 0],
-      "station_name": "Station A",
-      "arrival_time": "2024-01-03T12:00:00",
-      "departure_time": "2024-01-03T12:02:00",
-      "platform": null
-    }
-  ],
-  "start_time": "2024-01-03T12:00:00",
-  "end_time": "2024-01-03T14:00:00",
-  "priority": 0
-}
-```
-
-**Stop Object:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| station_pos | array | `[x, y]` coordinates of the station tile |
-| station_name | string | Human-readable station name |
-| arrival_time | string \| null | ISO 8601 arrival timestamp |
-| departure_time | string \| null | ISO 8601 departure timestamp |
-| platform | string \| null | Optional platform identifier |
-
-**Notes:**
-- Timestamps use ISO 8601 strings (parsed by Python `datetime.fromisoformat()`).
-- If `arrival_time`/`departure_time` are omitted or invalid when creating a schedule, the server assigns defaults (current time for arrival, and +2 minutes for departure).
-
-### GET /api/schedules
-
-List all train schedules.
-
-**Response:**
-
-```json
-{
-  "schedules": [
-    {
-      "schedule_id": "SCH-ABC123",
-      "train_id": "train_1",
-      "stops": [
-        {
-          "station_pos": [0, 0],
-          "station_name": "Station A",
-          "arrival_time": "2024-01-03T12:00:00",
-          "departure_time": "2024-01-03T12:02:00",
-          "platform": null
-        }
-      ],
-      "start_time": "2024-01-03T12:00:00",
-      "end_time": "2024-01-03T14:00:00",
-      "priority": 0
-    }
-  ]
-}
-```
-
-### POST /api/schedules
-
-Create a new schedule and assign it to a train.
-
-**Request:**
-
-```json
-{
-  "train_id": "train_1",
-  "schedule_id": "SCH-ABC123",
-  "priority": 0,
-  "stops": [
-    {
-      "station_name": "Station A",
-      "station_pos": [0, 0],
-      "arrival_time": "2024-01-03T12:00:00",
-      "departure_time": "2024-01-03T12:02:00",
-      "platform": null
-    }
-  ]
-}
-```
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| train_id | string | Yes | - | Train to assign the schedule to |
-| schedule_id | string | No | Auto | Custom schedule identifier (e.g., `SCH-ABC123`) |
-| priority | int | No | 0 | Schedule priority |
-| stops | array | No | [] | List of stop objects |
-
-**Response:**
-
-```json
-{
-  "status": "success",
-  "schedule_id": "SCH-ABC123",
-  "message": "Schedule created and assigned to train train_1"
-}
-```
-
-**Error (400):**
-
-```json
-{
-  "error": "train_id is required"
-}
-```
-
-**Error (404):**
-
-```json
-{
-  "error": "Train 'train_1' not found"
-}
-```
-
-### GET /api/schedules/{schedule_id}
-
-Get a specific schedule by ID.
-
-**Response:** Schedule object (JSON)
-
-**Error (404):** `{"error": "Schedule not found"}`
-
-### DELETE /api/schedules/{schedule_id}
-
-Delete a schedule. If the schedule is currently assigned to its train, the train's schedule assignment is cleared.
-
-**Response:**
-
-```json
-{
-  "status": "success",
-  "message": "Schedule SCH-ABC123 deleted"
-}
-```
-
-**Error (404):** `{"error": "Schedule not found"}`
-
----
-
 ## Simulation Endpoints
 
 ### POST /api/simulation/control
@@ -2024,8 +1873,8 @@ List all registered speed profiles.
       "name": "Default Profile",
       "power_speed_curve": [[0, 0], [100, 100]],
       "voltage_power_curve": [[2, 0], [12, 100]],
-      "min_start_voltage": 2.0,
-      "lighting_voltage": 2.5,
+      "lighting_voltage": 2.0,
+      "max_voltage": 12.0,
       "acceleration_rate": 10.0,
       "deceleration_rate": 15.0,
       "emergency_brake_rate": 30.0
@@ -2047,8 +1896,8 @@ Create a new speed profile.
   "name": "Shinkansen N700",
   "power_speed_curve": [[0, 0], [100, 270]],
   "voltage_power_curve": [[3, 0], [12, 100]],
-  "min_start_voltage": 3.0,
-  "lighting_voltage": 3.5,
+  "lighting_voltage": 3.0,
+  "max_voltage": 12.0,
   "acceleration_rate": 8.0,
   "deceleration_rate": 12.0,
   "emergency_brake_rate": 25.0
@@ -2061,8 +1910,8 @@ Create a new speed profile.
 | name | string | Yes | - | Human-readable name |
 | power_speed_curve | array | No | [[0,0],[100,100]] | (power_percent, speed_kmh) second-stage mapping |
 | voltage_power_curve | array | No | [[2,0],[12,100]] | (track_voltage, power_percent) first-stage mapping |
-| min_start_voltage | float | No | 2.0 | Minimum voltage to start moving |
-| lighting_voltage | float | No | 2.5 | Voltage for lights when stopped |
+| lighting_voltage | float | No | 2.0 | Lit-but-stationary voltage; also the 0%-power point of voltage_power_curve and the minimum voltage that moves the train |
+| max_voltage | float | No | 12.0 | Top of the usable track_voltage range (100%-power point) |
 | acceleration_rate | float | No | 10.0 | Acceleration in km/h/s |
 | deceleration_rate | float | No | 15.0 | Normal deceleration in km/h/s |
 | emergency_brake_rate | float | No | 30.0 | Emergency brake rate in km/h/s |

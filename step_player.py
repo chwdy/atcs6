@@ -39,7 +39,6 @@ class StepPlayer:
             network.signals.clear()
             network.platforms.clear()
             network.station_groups.clear()
-            network.schedules.clear()
 
         steps = step_data.get("steps", [])
         errors = []
@@ -90,7 +89,6 @@ class StepPlayer:
             network.signals.clear()
             network.platforms.clear()
             network.station_groups.clear()
-            network.schedules.clear()
 
         errors = []
         self.context = {}

@@ -29,9 +29,19 @@ class AppState:
     path_dispatcher: PathDispatcher
     sim_controller: SimulationController
     persistence_manager: PersistenceManager
-    speed_profile_registry: SpeedProfileRegistry
     simulation_lock: threading.Lock
     simulation_running: bool
     simulation_speed: float
     last_update_time: datetime
     last_autosave_time: float = 0.0
+
+    @property
+    def speed_profile_registry(self) -> SpeedProfileRegistry:
+        """The single speed-profile store, owned by the network.
+
+        Returns ``network.speed_profiles`` so the REST API, the services
+        (``speed_profile_service`` / ``train_service``), and the running
+        simulation (``TrainPhysics`` / ``TrainController``) all read and
+        write one object. There is no separate copy to keep in sync.
+        """
+        return self.network.speed_profiles

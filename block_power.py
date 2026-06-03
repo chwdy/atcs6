@@ -23,7 +23,7 @@ DEFAULT_LIGHTING_VOLTAGE = 2.5
 if TYPE_CHECKING:
     from network import RailwayNetwork
     from train import Train
-    from speed_profile import SpeedProfile
+    from speed_profile import SpeedProfile, SpeedProfileRegistry
 
 
 class OutputInterface(ABC):
@@ -272,24 +272,24 @@ class BlockPowerController:
         self.set_block_voltage(block_id, 0.0)
 
     def update_all_trains(
-        self, speed_profiles: Optional[Dict[str, "SpeedProfile"]] = None
+        self, speed_profiles: Optional["SpeedProfileRegistry"] = None
     ) -> None:
         """
         Update voltages for all trains in the network.
 
         Args:
-            speed_profiles: Dictionary of profile_id -> SpeedProfile
+            speed_profiles: The shared ``SpeedProfileRegistry`` (or any
+                profile_id -> SpeedProfile mapping). Looked up with ``.get()``,
+                so both a registry and a plain dict work.
         """
         if not self.network:
             return
 
-        speed_profiles = speed_profiles or {}
-
         for train in self.network.trains.values():
-            # Get train's speed profile
+            # Get train's speed profile from the shared store, if assigned.
             profile = None
-            if train.speed_profile_id and train.speed_profile_id in speed_profiles:
-                profile = speed_profiles[train.speed_profile_id]
+            if train.speed_profile_id and speed_profiles is not None:
+                profile = speed_profiles.get(train.speed_profile_id)
 
             self.update_for_train(train, profile)
 

@@ -786,25 +786,6 @@ export class API {
     );
   }
 
-  // === Schedule API ===
-
-  /** Get all schedules. */
-  async getSchedules(): Promise<any> {
-    const result = await this._request('/schedules', {}, 'getSchedules');
-    return result.schedules || [];
-  }
-
-  /** Delete a schedule. */
-  async deleteSchedule(scheduleId: string): Promise<any> {
-    return this._request(
-      `/schedules/${encodeURIComponent(scheduleId)}`,
-      {
-        method: 'DELETE',
-      },
-      'deleteSchedule'
-    );
-  }
-
   // === Layout Persistence API ===
 
   /** Get list of saved layouts. */
@@ -1275,6 +1256,53 @@ export class API {
         body: { x, y, edge },
       },
       'deleteTunnel'
+    );
+  }
+
+  // === Speed Profiles ===
+
+  async getSpeedProfiles(): Promise<any[]> {
+    const result = await this._request('/speed-profiles', {}, 'getSpeedProfiles');
+    return result?.profiles || [];
+  }
+
+  async getSpeedProfile(profileId: string): Promise<any> {
+    return this._request(
+      `/speed-profiles/${encodeURIComponent(profileId)}`,
+      {},
+      'getSpeedProfile'
+    );
+  }
+
+  async createSpeedProfile(data: unknown): Promise<any> {
+    return this._request(
+      '/speed-profiles',
+      {
+        method: 'POST',
+        body: data,
+      },
+      'createSpeedProfile'
+    );
+  }
+
+  async updateSpeedProfile(profileId: string, data: unknown): Promise<any> {
+    return this._request(
+      `/speed-profiles/${encodeURIComponent(profileId)}`,
+      {
+        method: 'PUT',
+        body: data,
+      },
+      'updateSpeedProfile'
+    );
+  }
+
+  async deleteSpeedProfile(profileId: string): Promise<any> {
+    return this._request(
+      `/speed-profiles/${encodeURIComponent(profileId)}`,
+      {
+        method: 'DELETE',
+      },
+      'deleteSpeedProfile'
     );
   }
 }
