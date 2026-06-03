@@ -559,23 +559,30 @@ class Switch(TrackResource):
         if any_routes_remaining_for_train:
             return
 
-        # Walk neighbour switches and release train-owned protection sourced
-        # from this switch. Without a network reference we cannot discover
+        # Release the train-owned protection that head-entry created on each
+        # flank neighbour. This walks THIS switch's own `flank_protection`
+        # list — the same list the create side (`_convert_locks_on_entry`)
+        # iterates to build the claims. The relationship is directional: a
+        # neighbour can be in `self.flank_protection` while `self` is absent
+        # from the neighbour's list (one points at the other in exactly one
+        # state, the reverse in both/neither — see `_neighbour_blocking_state`).
+        # Iterating the neighbour's list instead would strand the claim on any
+        # asymmetric pair. `release_train_protection_from` is idempotent, so a
+        # neighbour that got the route-point exemption (no claim created) is a
+        # harmless no-op. Without a network reference we cannot resolve
         # neighbours.
         if network is None:
             return
         switches = getattr(network, "switches", None)
         if not switches:
             return
-        for neighbour in switches.values():
-            if neighbour is self:
+        for neighbour_switch_id, _blocking_state in self.flank_protection:
+            neighbour = switches.get(neighbour_switch_id)
+            if neighbour is None:
                 continue
-            for entry in neighbour.flank_protection:
-                if entry[0] == self.switch_id:
-                    neighbour.release_train_protection_from(
-                        source_switch_id=self.switch_id, train_id=train_id
-                    )
-                    break
+            neighbour.release_train_protection_from(
+                source_switch_id=self.switch_id, train_id=train_id
+            )
 
     def apply_position_change(
         self, new_position: int, manual_override: bool = False

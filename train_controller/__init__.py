@@ -1329,6 +1329,75 @@ class TrainController:
         is no live span."""
         return self._orientation_for_head_end(self._head_end_label())
 
+    def get_span_end_exits(self) -> List[Tuple[Tuple[int, int], str]]:
+        """Both physical span ends as ``(tile, outward_edge)`` pairs.
+
+        ``outward_edge`` is the network edge pointing away from the body at
+        that end — the direction the train would move if it left through that
+        end (forward out of one end, reverse out of the other). Cab-independent:
+        both ends are always reported. Returns an empty list when there is no
+        live span. Used by ``PathDispatcher.get_reachable_endpoints_for_train``
+        to seed span-aware reachability for the Quick Route tool.
+
+        The end tile's outward edge is read from its real track edges, not from
+        the straight-line body heading: on a curved end tile the heading points
+        at an edge the tile does not have (the rail bends away), so the seed has
+        to follow the curve. See ``_outward_edge_for_end_tile``.
+        """
+        span = getattr(self.physics_sync, "current_span", None)
+        if span is None:
+            return []
+        occupied = {
+            (int(x), int(y))
+            for x, y in (getattr(span, "occupied_tiles", None) or [])
+        }
+        seeds: List[Tuple[Tuple[int, int], str]] = []
+        for label, loc in (("end_a", span.end_a), ("end_b", span.end_b)):
+            if loc is None or getattr(loc, "tile", None) is None:
+                continue
+            tile = (int(loc.tile[0]), int(loc.tile[1]))
+            direction = self._orientation_for_head_end(label)
+            straight = (
+                self._direction_to_edge(direction) if direction is not None else None
+            )
+            edge = self._outward_edge_for_end_tile(tile, straight, occupied)
+            if edge:
+                seeds.append((tile, edge))
+        return seeds
+
+    def _outward_edge_for_end_tile(
+        self,
+        tile: Tuple[int, int],
+        straight_edge: Optional[str],
+        occupied: set,
+    ) -> Optional[str]:
+        """The track edge a span end actually exits through.
+
+        ``straight_edge`` is the straight-line heading derived from the body's
+        grid vector. On a straight or switch end tile that heading is a real
+        track edge, so we keep it — a train sitting across a switch leaves along
+        its straight-through route, never the diverge its own body is blocking.
+        On a curved end tile the heading points at an edge the tile does not
+        have (the rail bends), so the real exit is the tile's other track edge:
+        the one whose neighbour is not part of the train's own body. Falls back
+        to ``straight_edge`` when there is no track or the choice is ambiguous.
+        """
+        if self.network is None:
+            return straight_edge
+        track = self.network.get_track(tile[0], tile[1])
+        if track is None:
+            return straight_edge
+        candidates: List[str] = []
+        for e in getattr(track, "edges", None) or ():
+            nb = self.network.get_neighbor(tile[0], tile[1], e)
+            if nb is not None and (nb.x, nb.y) not in occupied:
+                candidates.append(e)
+        if straight_edge in candidates:
+            return straight_edge
+        if len(candidates) == 1:
+            return candidates[0]
+        return straight_edge
+
     def _get_head_tile(self) -> Optional[Tuple[int, int]]:
         """Head tile, derived from (cab, current_span), or None when no span."""
         loc = self._head_span_locator()
@@ -3163,6 +3232,26 @@ class TrainController:
                 if self.route_executor is not None
                 and self.route_executor.execution_state_for(self.train_id) is not None
                 else None
+            ),
+            # Live "current path error" projection for the train panel badge
+            # and the Quick Route no-path toast. Surfaces the active
+            # RouteRun.last_error ONLY while the train currently has no live
+            # authority (path_backed_run_active is False). A successful
+            # acquisition clears last_error (RouteExecutor), and a live path
+            # suppresses it here, so this reflects a CURRENT inability to route
+            # rather than a stale historical error.
+            "path_error": (
+                (lambda es: (
+                    es.last_error.to_dict()
+                    if es is not None
+                    and getattr(es, "last_error", None) is not None
+                    and not self.path_projection.path_backed_run_active
+                    else None
+                ))(
+                    self.route_executor.execution_state_for(self.train_id)
+                    if self.route_executor is not None
+                    else None
+                )
             ),
         }
 

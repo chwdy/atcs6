@@ -990,12 +990,26 @@ export class API {
     );
   }
 
-  /** Get all blocks reachable from a starting block. */
+  /** Get all blocks reachable from a starting block (topological, any
+   * direction, no train). Used by the route editor's feasibility highlighting. */
   async getReachableEndpoints(blockId: string, includeStations = true): Promise<any> {
     return this._request(
       `/dispatcher/reachable/${encodeURIComponent(blockId)}?include_stations=${includeStations}`,
       {},
       'getReachableEndpoints'
+    );
+  }
+
+  /**
+   * Span-aware reachable endpoints for a placed train: where it can actually
+   * go forward out of its head or in reverse out of its tail, never routing
+   * back through its own body. Used by the Quick Route tool.
+   */
+  async getReachableEndpointsForTrain(trainId: string, includeStations = true): Promise<any> {
+    return this._request(
+      `/dispatcher/reachable-for-train/${encodeURIComponent(trainId)}?include_stations=${includeStations}`,
+      {},
+      'getReachableEndpointsForTrain'
     );
   }
 

@@ -620,6 +620,10 @@ export class TrainEditorHandler {
     const fullRunId = controller?.route_run_id || null;
     const planId = fullRunId ? fullRunId.split('#')[0] : train.assigned_route_id || null;
     const runId = fullRunId ? `#${fullRunId.split('#')[1] || ''}` : null;
+    // Live path-acquisition error: present only while the train is route-
+    // assigned but currently has no path (e.g. a Quick Route destination it
+    // cannot actually reach). Cleared once it acquires authority.
+    const pathError = controller?.path_error || null;
     const requiredCab = controller?.ato_info?.required_cab || '—';
     const pathHeading = controller?.ato_info?.path_heading || '—';
     const truncatedPath = pathName ? this._middleTruncate(pathName, 22) : '—';
@@ -663,6 +667,7 @@ export class TrainEditorHandler {
                             <dd class="tc-field-value train-ato-destination-display" title="${destinationName || ''}">${destinationName}</dd>
                         </div>
                     </dl>
+                    <div id="train-path-error-banner" class="tc-banner tc-banner-danger ${pathError && pathError.text ? '' : 'hidden'}">${pathError && pathError.text ? `⚠ No path: ${pathError.text}` : ''}</div>
                 </section>
 
                 <!-- ZONE 2: TRAIN STATUS — HMI (cab-style display) -->
@@ -1495,6 +1500,20 @@ export class TrainEditorHandler {
       if (runEl) {
         runEl.textContent = liveRunSuffix || '—';
         runEl.title = fullRunId || '';
+      }
+
+      // Path-acquisition error banner — appears when the train is route-
+      // assigned but cannot acquire a path, clears once it has authority.
+      const pathErrorEl = panel.querySelector('#train-path-error-banner') as HTMLElement | null;
+      if (pathErrorEl) {
+        const livePathError = controller.path_error;
+        if (livePathError && livePathError.text) {
+          pathErrorEl.textContent = `⚠ No path: ${livePathError.text}`;
+          pathErrorEl.classList.remove('hidden');
+        } else {
+          pathErrorEl.textContent = '';
+          pathErrorEl.classList.add('hidden');
+        }
       }
 
       const handleSlider = document.getElementById('train-handle-slider') as HTMLInputElement | null;

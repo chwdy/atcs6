@@ -56,7 +56,6 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import pytest
 
-from bootstrap import get_current_scene_id
 from runtime_payloads import AcquisitionMode, PathAcquisitionResultKind
 
 from tests.journey.events import Event, Invariant, Journey
@@ -65,16 +64,7 @@ from tests.journey.scenes.demo_5_scene import Demo5Scene
 from tests.journey.triggers import at_tick
 
 
-# Skip when the active scene is not demo_5. The scene itself
-# bypasses `CURRENT_SCENE` (it passes `scene="demo_5"` to
-# bootstrap), but pre-existing per-module caches could behave oddly under
-# another active scene; this gate keeps the test honest about its target.
-if get_current_scene_id() != "demo_5":
-    pytest.skip(
-        f"Test built for scene 'demo_5'; active scene is "
-        f"{get_current_scene_id()!r}.",
-        allow_module_level=True,
-    )
+pytestmark = pytest.mark.scene("demo_5")
 
 
 # The 8 switch-adjacent blocks listed in the user's question.

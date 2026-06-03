@@ -12,14 +12,12 @@ export class SignalEditorHandler {
   _signalId: string | null;
   _unsubscribe: (() => void) | null;
   _localState: any;
-  _isDirty: boolean;
 
   constructor(editor: EditorHost) {
     this.editor = editor;
     this._signalId = null; // Currently displayed signal ID
     this._unsubscribe = null; // Unsubscribe function for StateManager
     this._localState = null; // Local copy for editing
-    this._isDirty = false; // True if user has unsaved changes
   }
 
   get api(): any {
@@ -388,7 +386,6 @@ export class SignalEditorHandler {
     // Store current signal ID and initial state
     this._signalId = signalId;
     this._localState = JSON.parse(JSON.stringify(signal));
-    this._isDirty = false;
 
     // Subscribe to signal updates
     this._unsubscribe =
@@ -418,12 +415,6 @@ export class SignalEditorHandler {
         activeElement.tagName === 'SELECT')
     ) {
       // User is typing - don't interrupt
-      return;
-    }
-
-    if (this._isDirty) {
-      // User has unsaved changes - don't overwrite
-      // Could show an indicator here in the future
       return;
     }
 
@@ -466,7 +457,6 @@ export class SignalEditorHandler {
     }
     this._signalId = null;
     this._localState = null;
-    this._isDirty = false;
   }
 
   renderSignalList(signals: any[]): string {

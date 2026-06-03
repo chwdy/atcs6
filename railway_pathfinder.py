@@ -505,6 +505,79 @@ class RailwayPathfinder:
                         break
         return result
 
+    def get_reachable_endpoints_for_span(
+        self,
+        head_seeds: List[Tuple[Tuple[int, int], str]],
+        occupied_tiles: List[Tuple[int, int]],
+        occupied_blocks: List[str],
+        include_stations: bool = True,
+    ) -> List[str]:
+        """Span-aware reachability for a placed train.
+
+        Unlike ``get_reachable_endpoints`` (which fans out from every edge
+        of every tile of a block), this walk starts ONLY from the train's
+        two physical span ends, each in its outward direction, and never
+        steps onto a tile the train's own body occupies. So it answers the
+        real question the Quick Route tool asks: where can this train go,
+        driving forward out of its head or in reverse out of its tail,
+        without routing back through itself or through a switch its body is
+        sitting on.
+
+        ``head_seeds`` is the list of ``(tile, outward_edge)`` pairs for the
+        two span ends (``outward_edge`` is the network edge pointing away
+        from the body at that end). The tile-by-tile switch traversal is the
+        same as ``get_reachable_endpoints``: it steps through switch tiles
+        without consulting current switch state. ``occupied_blocks`` are
+        removed from the result so the train's own blocks are never offered
+        as destinations.
+        """
+        occupied_tile_set: Set[Tuple[int, int]] = {
+            (int(x), int(y)) for x, y in occupied_tiles
+        }
+        occupied_block_set: Set[str] = {b for b in occupied_blocks if b}
+
+        reachable_blocks: Set[str] = set()
+        visited: Set[Tuple[int, int, str]] = set()
+
+        for (seed_tile, out_edge) in head_seeds:
+            if not out_edge:
+                continue
+            queue: deque = deque([(int(seed_tile[0]), int(seed_tile[1]), out_edge)])
+            while queue:
+                curr_x, curr_y, exit_edge = queue.popleft()
+                step = (curr_x, curr_y, exit_edge)
+                if step in visited:
+                    continue
+                visited.add(step)
+                if len(visited) > 1000:
+                    break
+                next_track = self.network.get_neighbor(curr_x, curr_y, exit_edge)
+                if not next_track:
+                    continue
+                next_x, next_y = next_track.x, next_track.y
+                if (next_x, next_y) in occupied_tile_set:
+                    continue  # never route back through our own body
+                next_block_id = next_track.block_section_id
+                if next_block_id and next_block_id not in occupied_block_set:
+                    reachable_blocks.add(next_block_id)
+                entry_edge = OPPOSITE_EDGE.get(exit_edge)
+                if not entry_edge or entry_edge not in next_track.edges:
+                    continue
+                all_exits = next_track.get_exits(entry_edge, use_switch_state=False)
+                for next_exit in all_exits:
+                    queue.append((next_x, next_y, next_exit))
+
+        result = list(reachable_blocks)
+        if include_stations:
+            for station_id, station in self.network.stations.items():
+                for pos in station.positions:
+                    track = self.network.get_track(*pos)
+                    if track and track.block_section_id in reachable_blocks:
+                        if station_id not in result:
+                            result.append(station_id)
+                        break
+        return result
+
     # ------------------------------------------------------------------ private
 
     def _enumerate_walks(

@@ -38,16 +38,10 @@ from tests.journey.invariants import (
     no_pending_route_abort,
     state_cab_pair_valid,
 )
-from bootstrap import get_current_scene_id
 from tests.journey.scenes.demo_scene import DemoScene
 from tests.journey.triggers import predicate, train_stopped_for
 
-if get_current_scene_id() != "demo_main":
-    pytest.skip(
-        f"Test built for scene 'demo_main'; active scene is "
-        f"{get_current_scene_id()!r}.",
-        allow_module_level=True,
-    )
+pytestmark = pytest.mark.scene("demo_main")
 
 
 def _enqueue_set_cab(cab: str):
