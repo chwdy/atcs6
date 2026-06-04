@@ -10,7 +10,7 @@
 // Imports BIT_TO_EDGES from ../lib/constants.
 
 import { stateManager } from '../lib/state-manager';
-import { BIT_TO_EDGES } from '../lib/constants';
+import { BIT_TO_EDGES, getActiveSegments, getOppositeEdge } from '../lib/constants';
 import { Camera } from '../lib/camera';
 import { buildRenderSnapshot } from './render-snapshot';
 import { RendererTrackHandler, type Track } from './renderer-tracks';
@@ -20,7 +20,7 @@ import { RendererStationHandler, type Station } from './renderer-stations';
 import { RendererBlockHandler, type BlockInfo } from './renderer-blocks';
 import { RendererRouteHandler } from './renderer-routes';
 import { RendererTrainHandler, type TrainSnap } from './renderer-trains';
-import { RendererTunnelHandler } from './renderer-tunnels';
+import { RendererTunnelHandler, type TunnelPair } from './renderer-tunnels';
 import { RendererDebugHandler } from './renderer-debug';
 
 const COLORS = {
@@ -62,9 +62,126 @@ const IsometricGeometry = {
   },
 };
 
-interface DirectionInfo {
-  terminal_tile: number[];
-  terminal_heading: string;
+// Compass heading of one grid step. Matches block.py `_compass_from_delta`
+// (Y positive is north): a +Y step reads N, +X reads E.
+function compassFromDelta(dx: number, dy: number): string | null {
+  if (dx === 0 && dy > 0) return 'N';
+  if (dx === 0 && dy < 0) return 'S';
+  if (dy === 0 && dx > 0) return 'E';
+  if (dy === 0 && dx < 0) return 'W';
+  return null;
+}
+
+// Edges a tile's track actually connects (from its active segments).
+function trackEdgeSet(trackBits: number): Set<string> {
+  const set = new Set<string>();
+  for (const [a, b] of getActiveSegments(trackBits || 0)) {
+    set.add(a);
+    set.add(b);
+  }
+  return set;
+}
+
+// The other end of the track segment that `edge` belongs to. `preferDir` breaks
+// ties on switch tiles where `edge` partners with more than one edge.
+function segmentPartner(trackBits: number, edge: string, preferDir: string | null): string | null {
+  const partners: string[] = [];
+  for (const [a, b] of getActiveSegments(trackBits || 0)) {
+    if (a === edge) partners.push(b);
+    else if (b === edge) partners.push(a);
+  }
+  if (partners.length === 0) return null;
+  if (preferDir && partners.includes(preferDir)) return preferDir;
+  return partners[0];
+}
+
+// The [entry, exit] track edges for a forward arrow across one block tile.
+// Direction comes from the tile's place in `ordered_tiles` (the step to the
+// next tile, or from the previous one), and both edges are taken from the
+// tile's own track geometry — so the arrow always lies on the track even when a
+// block's stored first-tile `entry_edge` is wrong. (Known data quirk:
+// block_geometry_manager._external_entry_edge only derives entry_edge for the
+// first tile and can name an edge the tile doesn't have, or "".) `arrivalDir`
+// is the step in from the previous ordered tile, `departDir` the step to the next.
+function forwardArrowEdges(
+  trackBits: number,
+  storedEntry: string,
+  arrivalDir: string | null,
+  departDir: string | null
+): [string, string] | null {
+  const edges = trackEdgeSet(trackBits);
+  const fromPrev = arrivalDir ? getOppositeEdge(arrivalDir) : null;
+
+  let exitEdge: string | null = null;
+  if (departDir && edges.has(departDir)) {
+    // Interior / first tile: forward leaves toward the next ordered tile.
+    exitEdge = departDir;
+  } else {
+    // Last / single / non-adjacent tile: leave through the partner of the entry
+    // side — from the previous tile when there is one, else the stored entry.
+    let entrySide: string | null = null;
+    if (fromPrev && edges.has(fromPrev)) entrySide = fromPrev;
+    else if (storedEntry && edges.has(storedEntry)) entrySide = storedEntry;
+    if (entrySide) exitEdge = segmentPartner(trackBits, entrySide, null);
+    else {
+      const seg = getActiveSegments(trackBits || 0)[0];
+      exitEdge = seg ? seg[1] : null;
+    }
+  }
+  if (!exitEdge) return null;
+
+  const entryEdge = segmentPartner(
+    trackBits,
+    exitEdge,
+    fromPrev && edges.has(fromPrev) ? fromPrev : null
+  );
+  if (!entryEdge) return null;
+  return [entryEdge, exitEdge];
+}
+
+// Where to draw a block's forward / reverse terminal arrow, pointing OUT of the
+// block at that end. `end` is 'forward' (last ordered tile) or 'reverse' (first
+// ordered tile). The exit edge is the terminal tile's track edge facing outside
+// the block; entry is its segment partner — all from track geometry, so the
+// arrow lies on the track like the per-tile ones.
+function blockTerminalArrowSpec(
+  orderedTiles: Array<[number, number, string]>,
+  trackMap: Record<string, any>,
+  end: 'forward' | 'reverse'
+): { x: number; y: number; entryEdge: string; exitEdge: string } | null {
+  const n = orderedTiles.length;
+  if (n === 0) return null;
+  const tileIdx = end === 'forward' ? n - 1 : 0;
+  const x = orderedTiles[tileIdx][0];
+  const y = orderedTiles[tileIdx][1];
+  const track = trackMap[`${x},${y}`];
+  if (!track) return null;
+  const bits = track.track_bits || 0;
+
+  if (n > 1) {
+    // Multi-tile: the in-block neighbour gives the internal edge; the terminal
+    // exits through that edge's track partner.
+    const nbrIdx = end === 'forward' ? n - 2 : 1;
+    const internalEdge = compassFromDelta(
+      orderedTiles[nbrIdx][0] - x,
+      orderedTiles[nbrIdx][1] - y
+    );
+    if (!internalEdge) return null;
+    const exitEdge = segmentPartner(bits, internalEdge, null);
+    return exitEdge ? { x, y, entryEdge: internalEdge, exitEdge } : null;
+  }
+
+  // Single-tile block: anchor on the (corrected) stored entry edge. Reverse
+  // exits through the entry edge; forward through its partner.
+  const edgesSet = trackEdgeSet(bits);
+  const stored = String(orderedTiles[0][2] || '').toUpperCase();
+  const entry = edgesSet.has(stored) ? stored : Array.from(edgesSet)[0];
+  if (!entry) return null;
+  const other = segmentPartner(bits, entry, null);
+  if (!other) return null;
+  return end === 'reverse'
+    ? { x, y, entryEdge: other, exitEdge: entry }
+    : { x, y, entryEdge: entry, exitEdge: other };
 }
 
 interface LabelBound {
@@ -151,14 +268,17 @@ class Renderer {
   _pendingFlush!: { world: boolean; live: boolean; reason: string } | null;
   _flushFrame!: number | null;
   _lastFlushReason!: string;
-  debugFlags!: { showBlocks: boolean; showSignals: boolean; showTunnelLinks: boolean; showStuck?: boolean };
+  debugFlags!: { showBlocks: boolean; showSignals: boolean; showTunnelLinks: boolean; showStuck?: boolean; showTileDirections?: boolean; showBlockDirections?: boolean };
   _resizeObserver?: ResizeObserver;
   // Derived per-network state, set by _updateNetworkState.
   currentPlatforms!: Platform[];
   trackMap!: Record<string, Track>;
   currentSnapshot?: { trains?: Record<string, TrainSnap> };
   _pendingTunnelEndpoint?: { x: number; y: number; edge: string } | null;
-  _blockDirectionOverlay?: { forward?: DirectionInfo | null; reverse?: DirectionInfo | null } | null;
+  // The tunnel pair selected with the Inspect tool, drawn highlighted by the
+  // tunnel handler. Set via setSelectedTunnel(); null when nothing is selected.
+  selectedTunnel?: TunnelPair | null;
+  _blockDirectionFocusId?: string | null;
 
   constructor(canvasId: string) {
     // Phase 5: two stacked canvases — world (static map shape) below,
@@ -422,11 +542,18 @@ class Renderer {
     const showSignals = document.getElementById('debug-show-signals') as HTMLInputElement | null;
     const showTunnelLinks = document.getElementById('debug-show-tunnel-links') as HTMLInputElement | null;
     const showStuck = document.getElementById('debug-show-stuck') as HTMLInputElement | null;
+    const showTileDirections = document.getElementById('debug-show-tile-directions') as HTMLInputElement | null;
+    const showBlockDirections = document.getElementById('debug-show-block-dir') as HTMLInputElement | null;
     this.debugFlags = {
       showBlocks: showBlocks ? !!showBlocks.checked : false,
       showSignals: showSignals ? !!showSignals.checked : false,
       showTunnelLinks: showTunnelLinks ? !!showTunnelLinks.checked : false,
       showStuck: showStuck ? !!showStuck.checked : false,
+      // Default ON when the checkbox is absent so painted marks are visible
+      // immediately; the checkbox (default checked) lets the operator hide them.
+      showTileDirections: showTileDirections ? !!showTileDirections.checked : true,
+      // Block F/R arrows are additive and busy, so default OFF (opt-in).
+      showBlockDirections: showBlockDirections ? !!showBlockDirections.checked : false,
     };
   }
 
@@ -670,7 +797,7 @@ class Renderer {
     this.tunnelHandler.drawTunnels(
       network.tunnels,
       this._pendingTunnelEndpoint || null,
-      { showLinks: !!this.debugFlags?.showTunnelLinks },
+      { showLinks: !!this.debugFlags?.showTunnelLinks, selected: this.selectedTunnel || null },
     );
 
     // Other debug overlays.
@@ -723,6 +850,11 @@ class Renderer {
         this.trainHandler.drawTrain(train);
       });
     }
+
+    // Per-tile absolute-direction debug arrows (operator-painted, inspection
+    // only). Drawn above trains so a parked train can't hide a mark the
+    // operator set on that tile.
+    this.drawTileDirectionDebug();
 
     // Hovered station overlay (full name + platform highlights).
     this.stationHandler.drawHoverOverlay();
@@ -786,6 +918,11 @@ class Renderer {
   setPendingTunnelEndpoint(endpoint: { x: number; y: number; edge: string } | null): void {
     this._pendingTunnelEndpoint = endpoint;
     this.requestRedraw({ world: true, live: true, reason: 'tunnel-pending' });
+  }
+
+  setSelectedTunnel(pair: TunnelPair | null): void {
+    this.selectedTunnel = pair || null;
+    this.requestRedraw({ world: true, live: true, reason: 'tunnel-select' });
   }
 
   drawBoxSelection(): void {
@@ -882,80 +1019,204 @@ class Renderer {
   }
 
   /**
-   * Show / hide the forward + reverse direction arrows for the block being
-   * edited. The block editor pushes the resolved geometry here so the
-   * operator sees on the map what "forward" and "reverse" mean physically,
-   * instead of decoding `F-(8,7)-E` from the panel.
+   * Focus the block direction arrows on one block (the one the block editor is
+   * editing) so its forward / reverse arrows show on the map even when the
+   * Debug panel's "Block dir" toggle is off. Pass null to clear.
    */
-  setBlockDirectionOverlay(overlay: { forward?: DirectionInfo | null; reverse?: DirectionInfo | null } | null): void {
-    this._blockDirectionOverlay = overlay || null;
-    this.requestRedraw({ world: false, live: true, reason: 'block-direction-overlay' });
+  setBlockDirectionFocus(blockId: string | null): void {
+    this._blockDirectionFocusId = blockId || null;
+    this.requestRedraw({ world: false, live: true, reason: 'block-direction-focus' });
   }
 
-  clearBlockDirectionOverlay(): void {
-    if (!this._blockDirectionOverlay) return;
-    this._blockDirectionOverlay = null;
-    this.requestRedraw({ world: false, live: true, reason: 'block-direction-overlay-clear' });
-  }
-
-  drawBlockDirectionOverlay(): void {
-    const overlay = this._blockDirectionOverlay;
-    if (!overlay) return;
-    // forward = success-green (the "enter / proceed" hue, per the block
-    // palette), reverse = info-cyan. Two distinct accents so the two arrows
-    // never read as one gesture.
-    this._drawDirectionArrow(overlay.forward, 'F', '#04d361');
-    this._drawDirectionArrow(overlay.reverse, 'R', '#00d4ff');
+  clearBlockDirectionFocus(): void {
+    if (!this._blockDirectionFocusId) return;
+    this._blockDirectionFocusId = null;
+    this.requestRedraw({ world: false, live: true, reason: 'block-direction-focus-clear' });
   }
 
   /**
-   * Draw one labelled direction arrow centered on a terminal tile, pointing
-   * out the tile's compass exit edge. Reuses the same edge-point geometry the
-   * signal renderer uses (`getEdgePoints`), so the screen vector is correct
-   * under the isometric projection at any zoom / pan.
+   * Block forward / reverse direction arrows. For each block in scope, draw a
+   * green F arrow at the forward terminal and a cyan R arrow at the reverse
+   * terminal — each tracing that terminal tile's track segment and pointing out
+   * of the block, the same edge-to-edge style as the per-tile arrows. A
+   * direction not in the block's `allowed_travel_directions` is drawn dimmed.
+   * Scope is every block when the Debug panel's "Block dir" toggle is on,
+   * otherwise just the block the editor is focused on (if any).
    */
-  _drawDirectionArrow(info: DirectionInfo | null | undefined, letter: string, color: string): void {
-    if (!info) return;
-    const tile = info.terminal_tile;
-    const heading = info.terminal_heading;
-    if (!Array.isArray(tile) || tile.length !== 2 || !heading) return;
+  drawBlockDirectionOverlay(): void {
+    const blocks = this.currentBlocks;
+    if (!blocks || !this.trackMap) return;
+    let ids: string[];
+    if (this.debugFlags?.showBlockDirections) {
+      ids = Object.keys(blocks);
+    } else if (this._blockDirectionFocusId && blocks[this._blockDirectionFocusId]) {
+      ids = [this._blockDirectionFocusId];
+    } else {
+      return;
+    }
+    for (const id of ids) {
+      const block: any = blocks[id];
+      const ordered = block && block.ordered_tiles;
+      if (!Array.isArray(ordered) || ordered.length === 0) continue;
+      const allowed: string[] = Array.isArray(block.allowed_travel_directions)
+        ? block.allowed_travel_directions
+        : ['forward', 'reverse'];
+      // forward = success-green, reverse = info-cyan — two distinct accents.
+      const fwd = blockTerminalArrowSpec(ordered, this.trackMap, 'forward');
+      const rev = blockTerminalArrowSpec(ordered, this.trackMap, 'reverse');
+      // A single-tile block's forward and reverse arrows trace the same segment
+      // in opposite directions, so they would land on top of each other. Shift
+      // each into its own lane to pull them apart. Multi-tile blocks put F and R
+      // on different tiles already, so they need no shift.
+      const lane = ordered.length === 1 ? ((this.gridSize * this.scale) / 2) * 0.4 : 0;
+      if (fwd) {
+        this._drawTileForwardArrow(fwd.x, fwd.y, fwd.entryEdge, fwd.exitEdge, '#04d361', {
+          letter: 'F',
+          dimmed: !allowed.includes('forward'),
+          laneOffset: lane,
+        });
+      }
+      if (rev) {
+        this._drawTileForwardArrow(rev.x, rev.y, rev.entryEdge, rev.exitEdge, '#00d4ff', {
+          letter: 'R',
+          dimmed: !allowed.includes('reverse'),
+          laneOffset: lane,
+        });
+      }
+    }
+  }
 
-    const cx = this.gridToScreenX(tile[0], tile[1]);
-    const cy = this.gridToScreenY(tile[0], tile[1]);
-    const half = this.gridSize * this.scale / 2;
+  /**
+   * Per-tile forward-direction debug arrows. For every block, draw a green
+   * arrow along each of its tiles, running from the edge forward travel enters
+   * to the edge it exits — the per-tile realization of the block's forward /
+   * reverse. Direction comes from the tile's place in `ordered_tiles`, and the
+   * arrow traces the tile's actual track segment, so it sits on the track,
+   * follows its direction, and is inset so it never crosses the tile boundary.
+   * Backward is simply the opposite. Inspection only, gated by the Debug
+   * panel's "Forward dir" toggle, and only drawn for tiles in the network.
+   */
+  drawTileDirectionDebug(): void {
+    if (!this.debugFlags?.showTileDirections) return;
+    const blocks = this.currentBlocks;
+    if (!blocks || !this.trackMap) return;
+    for (const block of Object.values(blocks) as any[]) {
+      const ordered = block && block.ordered_tiles;
+      if (!Array.isArray(ordered) || ordered.length === 0) continue;
+      // These arrows show the forward direction, so dim them where the block
+      // does not allow forward travel.
+      const allowed: string[] = Array.isArray(block.allowed_travel_directions)
+        ? block.allowed_travel_directions
+        : ['forward', 'reverse'];
+      const dimmed = !allowed.includes('forward');
+      const n = ordered.length;
+      for (let i = 0; i < n; i++) {
+        const x = ordered[i][0];
+        const y = ordered[i][1];
+        const track = this.trackMap[`${x},${y}`];
+        if (!track) continue;
+        const storedEntry = String(ordered[i][2] || '').toUpperCase();
+        const arrivalDir =
+          i > 0 ? compassFromDelta(x - ordered[i - 1][0], y - ordered[i - 1][1]) : null;
+        const departDir =
+          i < n - 1 ? compassFromDelta(ordered[i + 1][0] - x, ordered[i + 1][1] - y) : null;
+        const edges = forwardArrowEdges(track.track_bits || 0, storedEntry, arrivalDir, departDir);
+        if (!edges) continue;
+        this._drawTileForwardArrow(x, y, edges[0], edges[1], '#04d361', { dimmed });
+      }
+    }
+  }
 
-    // Screen-space unit vector toward the exit edge.
-    const edge = this.trackHandler.getEdgePoints(half)[String(heading).toUpperCase()];
-    if (!edge) return;
-    const len = Math.hypot(edge.x, edge.y) || 1;
-    const ux = edge.x / len;
-    const uy = edge.y / len;
+  /**
+   * Draw one direction arrow along a tile's track segment: a shaft from the
+   * entry-edge midpoint to the exit-edge midpoint with the arrowhead at the
+   * exit end. Endpoints are the exact edge midpoints — the same geometry the
+   * track renderer uses — so the arrow lies on the track centerline and meets
+   * the neighbouring tiles' arrows at the shared edge, keeping a straight run's
+   * arrows collinear instead of bobbing tile to tile. `opts.letter` adds a
+   * centered F / R pill (for the block arrows); `opts.dimmed` fades the whole
+   * arrow (a direction the block does not allow).
+   */
+  _drawTileForwardArrow(
+    x: number,
+    y: number,
+    entryEdge: string,
+    exitEdge: string,
+    color: string,
+    opts: { letter?: string; dimmed?: boolean; laneOffset?: number } = {}
+  ): void {
+    const cx = this.gridToScreenX(x, y);
+    const cy = this.gridToScreenY(x, y);
+    const half = (this.gridSize * this.scale) / 2;
+    const edges = this.trackHandler.getEdgePoints(half);
+    const e1 = edges[String(entryEdge).toUpperCase()];
+    const e2 = edges[String(exitEdge).toUpperCase()];
+    if (!e1 || !e2) return;
 
-    // Shaft from tile center toward the edge; arrowhead at the tip.
-    const shaft = half * 0.8;
-    const tipX = cx + ux * shaft;
-    const tipY = cy + uy * shaft;
-    const headLen = Math.max(6, half * 0.35);
-    const headW = headLen * 0.6;
-    // Perpendicular for the two barbs.
+    // Direction + perpendicular from the edge offsets alone. A lane shift below
+    // slides the arrow sideways without rotating it, so these stay valid.
+    const dx = e2.x - e1.x;
+    const dy = e2.y - e1.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
     const px = -uy;
     const py = ux;
-    const lineW = Math.min(Math.max(1.5, this.scale * 0.6), 3);
 
     this.ctx.save();
+
+    // F / R pill box, measured up front because its size also sets the minimum
+    // lane shift below. Stays zero when there is no letter (the plain per-tile
+    // arrows). Measuring needs the font, so set it here, inside the save().
+    const fontPx = Math.max(8, 9 * this.scale);
+    const padX = 3 * this.scale;
+    const padY = 2 * this.scale;
+    let boxW = 0;
+    let boxH = 0;
+    if (opts.letter) {
+      this.ctx.font = `bold ${fontPx}px sans-serif`;
+      this.ctx.textAlign = 'center';
+      this.ctx.textBaseline = 'middle';
+      boxW = this.ctx.measureText(opts.letter).width + padX * 2;
+      boxH = fontPx + padY * 2;
+    }
+
+    // Optional sideways shift, perpendicular to the arrow's own heading. Callers
+    // pass the same positive offset to a single-tile block's forward and reverse
+    // arrows — which trace one segment in opposite directions — so they slide to
+    // opposite sides instead of landing on top of each other. When a pill rides
+    // along, widen the shift so the two pills can't overlap: they sit symmetric
+    // about the tile center (so 2*lane apart), and a pill-diagonal of separation
+    // clears them at any track angle. The pill is a fixed pixel size, so this
+    // floor — not a fraction of the tile — is what keeps them apart when zoomed
+    // out. Zero offset keeps the arrow on the track centerline, so a straight
+    // run's per-tile arrows stay collinear.
+    let lane = opts.laneOffset || 0;
+    if (lane > 0 && opts.letter) lane = Math.max(lane, Math.hypot(boxW, boxH) / 2);
+    const ox = px * lane;
+    const oy = py * lane;
+    const tailX = cx + e1.x + ox;
+    const tailY = cy + e1.y + oy;
+    const tipX = cx + e2.x + ox;
+    const tipY = cy + e2.y + oy;
+    const headLen = Math.min(Math.max(5, half * 0.3), len * 0.6);
+    const headW = headLen * 0.52;
+    const lineW = Math.min(Math.max(2, this.scale * 0.9), 4);
+
+    if (opts.dimmed) this.ctx.globalAlpha = 0.25;
     this.ctx.strokeStyle = color;
     this.ctx.fillStyle = color;
     this.ctx.lineWidth = lineW;
     this.ctx.lineCap = 'round';
     this.ctx.lineJoin = 'round';
 
-    // Shaft.
+    // Shaft (stops just short of the tip so the arrowhead caps it cleanly).
     this.ctx.beginPath();
-    this.ctx.moveTo(cx, cy);
-    this.ctx.lineTo(tipX, tipY);
+    this.ctx.moveTo(tailX, tailY);
+    this.ctx.lineTo(tipX - ux * headLen * 0.9, tipY - uy * headLen * 0.9);
     this.ctx.stroke();
 
-    // Arrowhead.
+    // Arrowhead at the forward (exit) end.
     this.ctx.beginPath();
     this.ctx.moveTo(tipX, tipY);
     this.ctx.lineTo(tipX - ux * headLen + px * headW, tipY - uy * headLen + py * headW);
@@ -963,36 +1224,32 @@ class Renderer {
     this.ctx.closePath();
     this.ctx.fill();
 
-    // F / R glyph in an opaque dark pill just past the arrowhead, so it
-    // stays legible over tracks and block fills (canvas-label opacity rule).
-    const labelX = tipX + ux * headLen * 0.9;
-    const labelY = tipY + uy * headLen * 0.9;
-    const fontPx = Math.max(8, 9 * this.scale);
-    this.ctx.font = `bold ${fontPx}px sans-serif`;
-    this.ctx.textAlign = 'center';
-    this.ctx.textBaseline = 'middle';
-    const tw = this.ctx.measureText(letter).width;
-    const padX = 3 * this.scale;
-    const padY = 2 * this.scale;
-    const boxW = tw + padX * 2;
-    const boxH = fontPx + padY * 2;
-    this.ctx.fillStyle = 'rgba(15, 15, 18, 0.9)';
-    if (this.ctx.roundRect) {
-      this.ctx.beginPath();
-      this.ctx.roundRect(labelX - boxW / 2, labelY - boxH / 2, boxW, boxH, 3);
-      this.ctx.fill();
-    } else {
-      this.ctx.fillRect(labelX - boxW / 2, labelY - boxH / 2, boxW, boxH);
+    // Optional F / R glyph in a dark pill at the tile center, so the block's
+    // forward / reverse arrows read distinctly from the plain per-tile ones.
+    if (opts.letter) {
+      // Pill rides in the same lane as its arrow, so a single-tile block's F and
+      // R glyphs separate instead of overlapping at the tile center. Font and box
+      // metrics were set above (they also sized the lane shift).
+      const lx = cx + ox;
+      const ly = cy + oy;
+      this.ctx.fillStyle = 'rgba(15, 15, 18, 0.9)';
+      if (this.ctx.roundRect) {
+        this.ctx.beginPath();
+        this.ctx.roundRect(lx - boxW / 2, ly - boxH / 2, boxW, boxH, 3);
+        this.ctx.fill();
+      } else {
+        this.ctx.fillRect(lx - boxW / 2, ly - boxH / 2, boxW, boxH);
+      }
+      this.ctx.strokeStyle = color;
+      this.ctx.lineWidth = Math.min(Math.max(1, this.scale * 0.4), 1.5);
+      if (this.ctx.roundRect) {
+        this.ctx.beginPath();
+        this.ctx.roundRect(lx - boxW / 2, ly - boxH / 2, boxW, boxH, 3);
+        this.ctx.stroke();
+      }
+      this.ctx.fillStyle = color;
+      this.ctx.fillText(opts.letter, lx, ly);
     }
-    this.ctx.strokeStyle = color;
-    this.ctx.lineWidth = Math.min(Math.max(1, this.scale * 0.4), 1.5);
-    if (this.ctx.roundRect) {
-      this.ctx.beginPath();
-      this.ctx.roundRect(labelX - boxW / 2, labelY - boxH / 2, boxW, boxH, 3);
-      this.ctx.stroke();
-    }
-    this.ctx.fillStyle = color;
-    this.ctx.fillText(letter, labelX, labelY);
     this.ctx.restore();
   }
 

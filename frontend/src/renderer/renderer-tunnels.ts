@@ -29,6 +29,16 @@ export interface TunnelPair {
 
 export interface DrawTunnelsOptions {
   showLinks?: boolean;
+  /** The currently selected pair, drawn highlighted. */
+  selected?: TunnelPair | null;
+}
+
+/** A cached on-screen click target for one tunnel mouth. */
+interface TunnelPlacement {
+  pair: TunnelPair;
+  x: number;
+  y: number;
+  r: number;
 }
 
 /** The slice of the Renderer the tunnel handler reads through its back-reference. */
@@ -45,6 +55,10 @@ export interface TunnelHandlerRenderer {
 
 export class RendererTunnelHandler {
   renderer: TunnelHandlerRenderer;
+  // Click targets for tunnel mouths, rebuilt every drawTunnels() so a
+  // hit-test runs against what is actually on screen. Mirrors the
+  // `_placements` cache the station label handler keeps for stationAt().
+  _placements: TunnelPlacement[] = [];
 
   constructor(renderer: TunnelHandlerRenderer) {
     this.renderer = renderer;
@@ -73,7 +87,10 @@ export class RendererTunnelHandler {
     opts: DrawTunnelsOptions = {},
   ): void {
     const pairs: TunnelPair[] = Array.isArray(tunnels) ? tunnels : [];
-    const { showLinks = false } = opts;
+    const { showLinks = false, selected = null } = opts;
+
+    // Rebuild the click-target registry from scratch each draw.
+    this._placements = [];
 
     if (showLinks) {
       pairs.forEach((pair) => this._drawLink(pair.a, pair.b));
@@ -84,13 +101,58 @@ export class RendererTunnelHandler {
     // dict into one record per pair.
     pairs.forEach((pair, idx) => {
       const label = `T${idx + 1}`;
-      this._drawMouth(pair.a, label, '#9b59ff');
-      this._drawMouth(pair.b, label, '#9b59ff');
+      const isSelected = selected != null && this._samePair(pair, selected);
+      const color = isSelected ? '#ffffff' : '#9b59ff';
+      this._drawMouth(pair.a, label, color, { selected: isSelected });
+      this._drawMouth(pair.b, label, color, { selected: isSelected });
+      // Both mouths select the same pair.
+      this._registerPlacement(pair, pair.a);
+      this._registerPlacement(pair, pair.b);
     });
 
     if (pendingEndpoint) {
       this._drawMouth(pendingEndpoint, '?', '#ffd93d', { pending: true });
     }
+  }
+
+  /** Cache one tunnel mouth as a circular click target in screen space. */
+  _registerPlacement(pair: TunnelPair, ep: TunnelEndpoint): void {
+    const pos = this._endpointScreenPos(ep);
+    this._placements.push({
+      pair,
+      x: pos.x,
+      y: pos.y,
+      // A touch larger than the 9·scale glyph ring so the mouth is easy to hit.
+      r: Math.max(12, 11 * this.scale),
+    });
+  }
+
+  /**
+   * Resolve the tunnel pair whose mouth is under a canvas-relative point, or
+   * null. When mouths overlap, the nearest one wins. Used for click-to-select.
+   */
+  tunnelAt(x: number, y: number): TunnelPair | null {
+    let best: TunnelPair | null = null;
+    let bestDist = Infinity;
+    for (const pl of this._placements) {
+      const dx = x - pl.x;
+      const dy = y - pl.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist <= pl.r && dist < bestDist) {
+        best = pl.pair;
+        bestDist = dist;
+      }
+    }
+    return best;
+  }
+
+  /** True when two pair records describe the same tunnel, ignoring A/B order. */
+  _samePair(a: TunnelPair, b: TunnelPair): boolean {
+    const eq = (p: TunnelEndpoint, q: TunnelEndpoint) =>
+      Number(p.x) === Number(q.x) &&
+      Number(p.y) === Number(q.y) &&
+      String(p.edge).toUpperCase() === String(q.edge).toUpperCase();
+    return (eq(a.a, b.a) && eq(a.b, b.b)) || (eq(a.a, b.b) && eq(a.b, b.a));
   }
 
   _drawLink(epA: TunnelEndpoint, epB: TunnelEndpoint): void {
@@ -122,9 +184,9 @@ export class RendererTunnelHandler {
     ep: TunnelEndpoint,
     label: string,
     color: string,
-    opts: { pending?: boolean } = {},
+    opts: { pending?: boolean; selected?: boolean } = {},
   ): void {
-    const { pending = false } = opts;
+    const { pending = false, selected = false } = opts;
     const cellSize = this.gridSize * this.scale;
     const half = cellSize / 2;
     const cx = this.gridToScreenX(ep.x, ep.y);
@@ -141,13 +203,17 @@ export class RendererTunnelHandler {
     this.ctx.save();
     this.ctx.translate(cx + edgePoint.x, cy + edgePoint.y);
 
-    // Outer ring.
+    // Outer ring — a selected mouth gets a larger, brighter, thicker ring.
     this.ctx.beginPath();
-    this.ctx.arc(0, 0, 9 * this.scale, 0, Math.PI * 2);
-    this.ctx.fillStyle = pending ? 'rgba(255, 217, 61, 0.25)' : 'rgba(155, 89, 255, 0.18)';
+    this.ctx.arc(0, 0, (selected ? 11 : 9) * this.scale, 0, Math.PI * 2);
+    this.ctx.fillStyle = pending
+      ? 'rgba(255, 217, 61, 0.25)'
+      : selected
+        ? 'rgba(155, 89, 255, 0.45)'
+        : 'rgba(155, 89, 255, 0.18)';
     this.ctx.fill();
     this.ctx.strokeStyle = color;
-    this.ctx.lineWidth = Math.max(1.5, 2 * this.scale);
+    this.ctx.lineWidth = selected ? Math.max(2.5, 3 * this.scale) : Math.max(1.5, 2 * this.scale);
     this.ctx.stroke();
 
     // Label.

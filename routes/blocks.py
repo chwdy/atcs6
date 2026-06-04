@@ -339,34 +339,6 @@ def register(app, state: AppState) -> None:
 
         return jsonify({"start_tile": start_tile, "end_tile": end_tile})
 
-    @app.route("/api/blocks/<block_id>/direction-info", methods=["GET"])
-    def get_block_direction_info(block_id):
-        """Resolve a block-relative direction to the concrete terminal tile
-        and cardinal exit heading.
-
-        Query params:
-            direction: "forward" or "reverse" (required).
-
-        Returns:
-            200 OK with ``{"terminal_tile": [x, y], "terminal_heading": "N|E|S|W"}``.
-            400 when the direction is missing or unrecognised.
-            404 when the block is unknown or lacks geometry to disambiguate.
-
-        Backed by ``BlockManager.direction_info`` (per design_new.md
-        "Block model"): forward terminal = last entry in ``Block.ordered_tiles``,
-        reverse terminal = first entry, heading derived from adjacency.
-        """
-        direction = (request.args.get("direction") or "").strip().lower()
-        if direction not in ("forward", "reverse"):
-            return jsonify({"error": "direction must be 'forward' or 'reverse'"}), 400
-
-        info = state.network.block_manager.direction_info(block_id, direction)
-        if info is None:
-            return jsonify({"error": "Unknown block or missing geometry"}), 404
-        info["block_id"] = block_id
-        info["direction"] = direction
-        return jsonify(info)
-
     @app.route("/api/blocks/<block_id>/can_extend", methods=["POST"])
     def can_extend_block(block_id):
         """Check if a position can be added to the block (validation without mutation)"""

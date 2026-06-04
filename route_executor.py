@@ -29,9 +29,9 @@ from train_controller import TrainController, create_controller_for_train
 from train_route import (
     RouteMode,
     RouteRunStatus,
+    RouteStartMode,
     RouteTask,
     RouteTaskRun,
-    WaypointUnreachableAction,
 )
 from runtime_payloads import (
     AcquisitionMode,
@@ -43,6 +43,7 @@ from runtime_payloads import (
     PendingPathCancelRequest,
     ResolvedRouteTarget,
     ResourceEvent,
+    TargetResolutionFailureKind,
 )
 
 if TYPE_CHECKING:
@@ -99,6 +100,13 @@ class ResolvedNextTaskProjection:
     direction: str  # "forward" | "reverse"
     resolved_target: Optional[ResolvedRouteTarget] = None
     failure_reason: Optional[str] = None
+    # Structured cause when `resolved_target is None` for a non-dwell task:
+    # `MISSING_TARGET` (broken — target ID absent from the network) drives the
+    # broken-task skip; `TARGET_UNAVAILABLE` (present but disabled/manual, or
+    # all station platforms filtered/held) drives the unreachable-task wait.
+    # Per design_new.md "Unreachable and broken task handling". `None` for
+    # dwell projections and the same-tick exclude sentinel.
+    failure_kind: Optional["TargetResolutionFailureKind"] = None
 
 
 # =============================================================================
@@ -134,6 +142,13 @@ class RouteExecutionState:
     # v1 latch consumed by Phase-1 route-deviation cleanup. Also drives the
     # derived `display_state` projection (DEVIATED while True).
     path_cancelled: bool = False
+    # Phase-1-maintained flag (NOT a latch): set when every task on a
+    # CIRCULAR / ROUND_TRIP walk is broken (target ID missing from the
+    # network), cleared by the next Phase 1 pass that finds a valid task.
+    # Drives the derived `display_state == "STALLED"` projection. Always
+    # False for ONE_OFF runs (they finish instead). Per design_new.md
+    # "Unreachable and broken task handling".
+    no_reachable_task: bool = False
     # Per-run lifecycle state. Stored as the canonical `RouteRunStatus` enum
     # (RUNNING / FINISHED / DEACTIVATED). Deviation is NOT a stored state;
     # consumers that need the diagnostic read `display_state` instead.
@@ -148,7 +163,7 @@ class RouteExecutionState:
     # Sparse per-run overrides of allowlisted route-level operational fields.
     # Per design_new.md "RouteRun overrides" canonical home: keys are field
     # names from the v1 override allowlist
-    # (`"priority"`, `"acquisition_mode"`, `"action_on_waypoint_unreachable"`);
+    # (`"priority"`, `"acquisition_mode"`);
     # a key being absent means "use the shared `Route` value for that field."
     # Reads go through the effective_* helpers below, which resolve the shared
     # Route live each access so later operator edits to either the run-level
@@ -157,6 +172,12 @@ class RouteExecutionState:
     # Diagnostic-only audit timestamp; bumped by RouteExecutor.set_run_override /
     # clear_run_override per design_new.md. Not consumed for control flow.
     overrides_updated_at: Optional[float] = None
+    # Resolved start mode actually used to seed this run's starting walk-position
+    # (per design_new.md "Run start-mode seeding"). Written once at allocation by
+    # `RouteExecutor._seed_start_position(...)`; diagnostic only (surfaced in the
+    # run-record payload). NOT a live override — start mode has no meaning after
+    # the run's starting position is seeded.
+    start_mode: Optional[RouteStartMode] = None
 
     # ------------------------------------------------------------------
     # Effective-value read helpers (per design_new.md "RouteRun overrides")
@@ -165,7 +186,6 @@ class RouteExecutionState:
     OVERRIDE_ALLOWLIST: ClassVar[Tuple[str, ...]] = (
         "priority",
         "acquisition_mode",
-        "action_on_waypoint_unreachable",
     )
 
     def _resolve_route(self, route_executor: Optional[object] = None) -> Optional["Route"]:
@@ -221,31 +241,6 @@ class RouteExecutionState:
             return getattr(resolved, "acquisition_mode", AcquisitionMode.BEST_EFFORT)
         return AcquisitionMode.BEST_EFFORT
 
-    def effective_action_on_waypoint_unreachable(
-        self,
-        route: Optional["Route"] = None,
-        route_executor: Optional[object] = None,
-    ) -> WaypointUnreachableAction:
-        """Per-run action_on_waypoint_unreachable: override if present, else
-        shared Route's, else WAIT. See design_new.md "Action on waypoint
-        unreachable" + "RouteRun overrides"."""
-        if "action_on_waypoint_unreachable" in self.overrides:
-            val = self.overrides["action_on_waypoint_unreachable"]
-            if isinstance(val, WaypointUnreachableAction):
-                return val
-            try:
-                return WaypointUnreachableAction(val)
-            except Exception:
-                return WaypointUnreachableAction.WAIT
-        resolved = route if route is not None else self._resolve_route(route_executor)
-        if resolved is not None:
-            return getattr(
-                resolved,
-                "action_on_waypoint_unreachable",
-                WaypointUnreachableAction.WAIT,
-            )
-        return WaypointUnreachableAction.WAIT
-
     def task_started_at(self, i: int) -> Optional[float]:
         """Derived per design_new.md ``RouteTaskRun.started_at`` rule.
 
@@ -265,13 +260,16 @@ class RouteExecutionState:
     def display_state(self) -> str:
         """UI-only diagnostic projection.
 
-        Per design_new.md ``current_route_status`` schema: returns
-        ``"DEVIATED"`` whenever ``path_cancelled`` is true; otherwise the
+        Per design_new.md ``current_route_status`` schema, in priority
+        order: ``"DEVIATED"`` whenever ``path_cancelled`` is true; else
+        ``"STALLED"`` whenever ``no_reachable_task`` is true; otherwise the
         stored ``current_route_status.value``. Not a stored field; no
         writers. Runtime branching never keys on this value.
         """
         if self.path_cancelled:
             return "DEVIATED"
+        if self.no_reachable_task:
+            return "STALLED"
         return self.current_route_status.value
 
     @property
@@ -429,6 +427,13 @@ class RouteExecutor:
         self._shared_controllers = shared_controllers  # kept for test compat
         # Per-route run-instance counter (1-based). diagnostic only.
         self._run_count_for_route: Dict[str, int] = {}
+        # Per-assignment one-shot start-mode input (per design_new.md "Run
+        # start-mode seeding"). Keyed by train_id; populated by
+        # `train_service.assign_route(...)` when the operator picks a start mode
+        # for a specific assignment, consumed+cleared by the next fresh
+        # `_ensure_run_for(...)`. Set/cleared on every assign/retarget/unassign
+        # so a choice can never leak onto a different route's run.
+        self._pending_start_overrides: Dict[str, Dict[str, Any]] = {}
 
         # Helper modules — lazy-init on first access. The actual logic lives
         # in `route_target_resolver.RouteTargetResolver` and
@@ -653,7 +658,7 @@ class RouteExecutor:
         """Set one allowlisted override on the train's currently RUNNING run.
 
         Per design_new.md "RouteRun overrides" canonical home: only the v1
-        allowlist (`priority`, `acquisition_mode`, `action_on_waypoint_unreachable`)
+        allowlist (`priority`, `acquisition_mode`)
         is accepted. Validation is per-field. Historical (FINISHED / DEACTIVATED)
         runs reject override edits because their snapshot is part of the
         historical record.
@@ -683,18 +688,6 @@ class RouteExecutor:
                     run.overrides[field_name] = AcquisitionMode(value)
                 except (TypeError, ValueError):
                     return (False, f"acquisition_mode must be one of {[m.value for m in AcquisitionMode]}")
-        elif field_name == "action_on_waypoint_unreachable":
-            if isinstance(value, WaypointUnreachableAction):
-                run.overrides[field_name] = value
-            else:
-                try:
-                    run.overrides[field_name] = WaypointUnreachableAction(value)
-                except (TypeError, ValueError):
-                    return (
-                        False,
-                        f"action_on_waypoint_unreachable must be one of "
-                        f"{[a.value for a in WaypointUnreachableAction]}",
-                    )
         run.overrides_updated_at = self._now()
         return (True, f"override {field_name} set on run {run.run_number}")
 
@@ -773,7 +766,8 @@ class RouteExecutor:
     ) -> RouteExecutionState:
         """Get or create the RouteExecutionState for (train, route)."""
         exec_state = self.execution_states.get(train.train_id)
-        if exec_state is None or exec_state.route_id != route.route_id:
+        is_fresh = exec_state is None or exec_state.route_id != route.route_id
+        if is_fresh:
             now = self._now()
             run_count = self._run_count_for_route.get(route.route_id, 0) + 1
             self._run_count_for_route[route.route_id] = run_count
@@ -786,6 +780,11 @@ class RouteExecutor:
             self.execution_states[train.train_id] = exec_state
         # Ensure task_runs is sized to the current Route.tasks list.
         self._sync_task_runs(route, exec_state)
+        # Seed the starting walk-position per the run's effective start mode
+        # (design_new.md "Run start-mode seeding"). Only for a freshly-allocated
+        # run, and only after _sync_task_runs has populated task_runs.
+        if is_fresh:
+            self._seed_start_position(train, route, exec_state)
         return exec_state
 
     def _sync_task_runs(
@@ -800,6 +799,82 @@ class RouteExecutor:
         while len(exec_state.task_runs) < len(tasks):
             i = len(exec_state.task_runs)
             exec_state.task_runs.append(RouteTaskRun(task_index=i))
+
+    # ------------------------------------------------------------------ start mode
+    def _resolve_start_policy(
+        self, train_id: str, route: "Route"
+    ) -> Tuple[RouteStartMode, Optional[int]]:
+        """Resolve `(start_mode, start_task_index)` for a fresh run.
+
+        Per design_new.md "Run start-mode seeding": the per-assignment one-shot
+        input wins if present, else the route-level default. Consumes (pops) the
+        pending bundle so a per-assignment choice applies to exactly one run.
+        """
+        pending = self._pending_start_overrides.pop(train_id, None)
+        if pending and isinstance(pending.get("start_mode"), RouteStartMode):
+            return pending["start_mode"], pending.get("start_task_index")
+        return (
+            getattr(route, "start_mode", RouteStartMode.FIRST),
+            getattr(route, "start_task_index", None),
+        )
+
+    def _compute_start_task_index(
+        self,
+        train: "Train",
+        route: "Route",
+        mode: RouteStartMode,
+        specific_index: Optional[int],
+    ) -> Optional[int]:
+        """Task index the run should start at, or `None` to fall back to FIRST.
+
+        NEAREST defers to `RouteTargetResolver.nearest_start_stop_index(...)`.
+        SPECIFIC accepts the given index only when it is in range and names a
+        `task_kind == "stop"` task. Per design_new.md "Run start-mode seeding".
+        """
+        if mode == RouteStartMode.NEAREST:
+            return self._get_route_target_resolver().nearest_start_stop_index(
+                train, route
+            )
+        if mode == RouteStartMode.SPECIFIC:
+            tasks = getattr(route, "tasks", []) or []
+            if (
+                specific_index is not None
+                and 0 <= specific_index < len(tasks)
+                and getattr(tasks[specific_index], "task_kind", None) == "stop"
+            ):
+                return specific_index
+            return None
+        return None
+
+    def _seed_start_position(
+        self, train: "Train", route: "Route", exec_state: RouteExecutionState
+    ) -> None:
+        """Seed a fresh run's starting walk-position per its effective start
+        mode (design_new.md "Run start-mode seeding").
+
+        FIRST leaves the run at `task_runs[0]`. NEAREST / SPECIFIC pre-finish
+        the skipped prefix `[0, s)` by setting each row's `finished_at` to the
+        run's `started_at`, so `next_planning_index` lands on the chosen stop.
+        The chosen index `s` is always a forward-leg position (`s <=
+        len(tasks) - 1`), so the apex is never pre-finished, no walk-append
+        fires, and `direction` stays `"forward"`. Records the resolved mode on
+        the run for the run-record payload; falls back to FIRST (no seeding)
+        when NEAREST finds no reachable stop or SPECIFIC names an invalid index.
+        """
+        mode, specific_index = self._resolve_start_policy(exec_state.train_id, route)
+        exec_state.start_mode = mode
+        if mode == RouteStartMode.FIRST:
+            return
+        s = self._compute_start_task_index(train, route, mode, specific_index)
+        if s is None:
+            # NEAREST found no reachable stop, or SPECIFIC named an invalid
+            # index — fall back to FIRST.
+            exec_state.start_mode = RouteStartMode.FIRST
+            return
+        # s is a valid in-range index; s == 0 means the chosen stop is already
+        # the first task, so no prefix needs skipping (mode stays as resolved).
+        for i in range(s):
+            exec_state.task_runs[i].finished_at = exec_state.started_at
 
     def _resolve_run_route(
         self, train_id: str
@@ -927,20 +1002,28 @@ class RouteExecutor:
         exclude: List[ResolvedRouteTarget] = []
         _max_iterations = 8
         # Track the walk-position of the first attempted target so we can
-        # apply the action_on_waypoint_unreachable policy below if the whole
-        # retry loop exhausts without acquiring authority.
+        # apply the broken-vs-unreachable policy below if the whole retry loop
+        # exhausts without acquiring authority. Per design_new.md "Unreachable
+        # and broken task handling".
         failed_walk_position: Optional[int] = projection.walk_position
+        # A BROKEN task has its target ID absent from the network (resolver
+        # failure_kind == MISSING_TARGET). Captured from the initial projection
+        # before the retry loop reassigns `projection`.
+        initial_broken = (
+            projection.resolved_target is None
+            and projection.failure_kind == TargetResolutionFailureKind.MISSING_TARGET
+        )
         any_success = False
         for _attempt in range(_max_iterations):
             if projection is None or projection.task_kind == "dwell":
                 break
             # Per design_new.md "RouteTaskRun.last_error canonical writer":
-            # a sentinel projection (resolved_target=None) means
-            # `route_target_resolver` filtered out every candidate (manual /
-            # disabled flag, no platforms, etc.). Write last_error from the
-            # resolver's failure_reason BEFORE breaking the loop, so a SKIP
-            # action_on_waypoint_unreachable doesn't advance the cursor past
-            # the task with an empty last_error.
+            # a sentinel projection (resolved_target=None) means the resolver
+            # filtered out every candidate (missing target, or disabled /
+            # manual / all-platforms-unavailable). Write last_error from the
+            # resolver's failure_reason BEFORE breaking the loop so a
+            # broken-task skip does not advance the cursor past the task with
+            # an empty last_error.
             if projection.resolved_target is None:
                 if projection.failure_reason and 0 <= projection.walk_position < len(exec_state.task_runs):
                     now = self._now()
@@ -966,49 +1049,155 @@ class RouteExecutor:
                 # Terminal walk — no later task on the directed walk.
                 break
 
-        # Per design_new.md "Action on waypoint unreachable": when every
-        # same-tick candidate failed without creating or growing live
-        # authority, consult the effective policy for this run. WAIT
-        # (default) preserves the existing v1 behaviour — leave the task
-        # armed, retry on the next eligible tick. SKIP advances the cursor
-        # past the failed task so a later Phase 1 tries the following one.
+        if any_success:
+            # A valid task was served this tick → the walk is not all-broken.
+            exec_state.no_reachable_task = False
+            return
+
+        # No live authority was created. Apply the broken-vs-unreachable policy
+        # (design_new.md "Unreachable and broken task handling"). It fires only
+        # when there is no active path and the failed walk-position is still
+        # unfinished.
         if (
-            not any_success
-            and failed_walk_position is not None
-            and 0 <= failed_walk_position < len(exec_state.task_runs)
-            and exec_state.task_runs[failed_walk_position].finished_at is None
+            failed_walk_position is None
+            or not (0 <= failed_walk_position < len(exec_state.task_runs))
+            or exec_state.task_runs[failed_walk_position].finished_at is not None
         ):
+            return
+        try:
+            has_active_path = (
+                controller.path_projection.received_path_plan is not None
+            )
+        except Exception:
+            has_active_path = False
+        if has_active_path:
+            return
+
+        if not initial_broken:
+            # Unreachable task (target present but disabled / manual / blocked):
+            # WAIT — leave the task armed. last_error was already written by the
+            # resolver sentinel branch or the acquisition step. The current task
+            # is itself a valid (present) task, so the walk is not all-broken.
+            exec_state.no_reachable_task = False
+            return
+
+        # Broken task (target missing from the network).
+        if self._walk_has_valid_task(exec_state, route, failed_walk_position):
+            # A valid task remains ahead → skip the broken one toward it.
+            exec_state.no_reachable_task = False
+            self._skip_broken_task(exec_state, route, failed_walk_position)
+            return
+
+        if route is not None and route.mode == RouteMode.ONE_OFF:
+            # No valid task left: skip the broken task; the next Phase 1 sees
+            # the terminal walk and finishes the run (having served nothing).
+            exec_state.no_reachable_task = False
+            self._skip_broken_task(exec_state, route, failed_walk_position)
+            return
+
+        # CIRCULAR / ROUND_TRIP with no valid task anywhere on the walk: the
+        # walk never goes terminal, so do not keep skipping / appending. Stall:
+        # hold idle, record the diagnostic, and warn on the False->True edge.
+        if not exec_state.no_reachable_task:
+            now = self._now()
+            stall_err = ErrorRecord(
+                text=(
+                    "route run stalled: no reachable task "
+                    "(every task target is missing)"
+                ),
+                time=now,
+            )
+            failed_row = exec_state.task_runs[failed_walk_position]
+            if failed_row.last_error is None:
+                failed_row.last_error = stall_err
+            exec_state.last_error = stall_err
+            exec_state.no_reachable_task = True
+            self._emit_route_warning(
+                exec_state.train_id,
+                "no_reachable_task",
+                "every task target on the route is missing from the network",
+            )
+
+    def _walk_has_valid_task(
+        self,
+        exec_state: "RouteExecutionState",
+        route: "Route",
+        from_walk_position: int,
+    ) -> bool:
+        """True when the directed walk still contains a *valid* task — one
+        whose `task_location` target ID is present in the network (broken or
+        not). For ONE_OFF, scans `Route.tasks` from the current task_index
+        onward; for CIRCULAR / ROUND_TRIP, scans all of `Route.tasks` because
+        the walk cycles. Per design_new.md "Unreachable and broken task
+        handling".
+        """
+        tasks = getattr(route, "tasks", None) if route is not None else None
+        if not tasks:
+            return False
+        resolver = self._get_route_target_resolver()
+        if route.mode == RouteMode.ONE_OFF:
             try:
-                has_active_path = (
-                    controller.path_projection.received_path_plan is not None
-                )
+                start_idx = exec_state.task_runs[from_walk_position].task_index
             except Exception:
-                has_active_path = False
-            if not has_active_path:
-                action = exec_state.effective_action_on_waypoint_unreachable(
-                    route=route, route_executor=self
+                start_idx = 0
+            candidates = tasks[start_idx:]
+        else:
+            candidates = tasks
+        return any(resolver.task_target_present(task) for task in candidates)
+
+    def _skip_broken_task(
+        self,
+        exec_state: "RouteExecutionState",
+        route: "Route",
+        walk_position: int,
+    ) -> None:
+        """Skip a broken task (target ID missing from the network): record
+        last_error, set finished_at, and append the next walk task. Per
+        design_new.md "Unreachable and broken task handling".
+        """
+        now = self._now()
+        failed_row = exec_state.task_runs[walk_position]
+        if failed_row.last_error is None:
+            err = ErrorRecord(
+                text="task skipped: target missing from network", time=now
+            )
+            failed_row.last_error = err
+            exec_state.last_error = err
+        failed_row.finished_at = now
+        try:
+            exec_state._append_next_walk_task(route)
+        except Exception:
+            pass
+        self._emit_route_warning(
+            exec_state.train_id,
+            "task_skipped",
+            f"task {walk_position} skipped: target missing from network",
+        )
+
+    def _emit_route_warning(self, train_id: str, kind: str, reason: str) -> None:
+        """Emit an operator-facing warning via NotificationCenter, falling back
+        to a logger warning when the center is unavailable. Used by the
+        broken-task skip and the no-reachable-task stall (design_new.md
+        "Unreachable and broken task handling").
+        """
+        sc = getattr(self, "simulation_controller", None)
+        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        if nc is not None:
+            try:
+                from notification_center import Severity as _Severity
+
+                nc.emit(
+                    source="RouteExecutor",
+                    kind=kind,
+                    severity=_Severity.WARNING,
+                    event_time=time.time(),
+                    train_id=train_id,
+                    payload={"reason": reason},
                 )
-                if action == WaypointUnreachableAction.SKIP:
-                    now = self._now()
-                    # Per design_new.md "RouteTaskRun.last_error canonical
-                    # writer": SKIP must not advance past a task with an
-                    # empty last_error. Resolver-side and acquisition-side
-                    # failures above should have already written last_error;
-                    # write a fallback record here only when neither did.
-                    failed_row = exec_state.task_runs[failed_walk_position]
-                    if failed_row.last_error is None:
-                        fallback_err = ErrorRecord(
-                            text="task target unreachable: no candidates",
-                            time=now,
-                        )
-                        failed_row.last_error = fallback_err
-                        exec_state.last_error = fallback_err
-                    exec_state.task_runs[failed_walk_position].finished_at = now
-                    # Bookkeeping per the canonical append rule.
-                    try:
-                        exec_state._append_next_walk_task(route)
-                    except Exception:
-                        pass
+                return
+            except Exception:
+                pass
+        logger.warning("route warning for %s (%s): %s", train_id, kind, reason)
 
     # ----- Phase 1 sub-steps ------------------------------------------------
     def _deviation_cleanup_eligible(self, controller: TrainController) -> bool:

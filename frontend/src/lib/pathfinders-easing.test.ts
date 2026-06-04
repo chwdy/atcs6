@@ -85,6 +85,41 @@ describe('track-construction octilinear easing', () => {
     }
   });
 
+  // A forced END segment is an explicit pin: unlike the start (which can always
+  // ease cleanly), some end orientations cannot be reached without a 90° meet.
+  // The pin overrides corner-easing there, so the end tile always lays exactly
+  // the forced segment — it is never silently dropped or re-eased into a
+  // different shape.
+  const SEG_BIT: Record<string, number> = { NS: 1, EW: 2, NE: 4, NW: 8, SE: 16, SW: 32 };
+
+  it('forced end segments are honored — the end tile lays exactly the forced segment', () => {
+    const pf = new ConstructionPathfinder();
+    for (const [seg, bit] of Object.entries(SEG_BIT)) {
+      for (let ex = -9; ex <= 9; ex++) {
+        for (let ey = -9; ey <= 9; ey++) {
+          if (ex === 0 && ey === 0) continue;
+          const path = pf.findPath(0, 0, ex, ey, [], { forcedEndSegment: seg });
+          if (!path || path.length < 2) continue;
+          const tracks = pathToTracks(path, { tracks: [] }, { forcedEndSegment: seg });
+          const endTrack = tracks.find((t) => t.x === ex && t.y === ey);
+          const endBits = endTrack ? pathsToTrackBits(endTrack.directed_paths) : 0;
+          expect(endBits, `forcedEnd=${seg} -> (${ex},${ey})`).toBe(bit);
+        }
+      }
+    }
+  });
+
+  it('a forced end that the easing could not reach now places directly (no silent drop)', () => {
+    const pf = new ConstructionPathfinder();
+    // forceEnd=SW on a NE-diagonal drag used to return null: the SW end (90°
+    // vertical) could not be approached without a square corner, so the pin was
+    // silently dropped and the preview fell back to the last valid path. The
+    // pin now overrides the corner rule and the build reaches the target.
+    const path = pf.findPath(0, 0, 5, 5, [], { forcedEndSegment: 'SW' });
+    expect(path).not.toBeNull();
+    expect(path![path!.length - 1]).toEqual({ x: 5, y: 5 });
+  });
+
   it('avoid-connect (crossover) mode stays corner-free', () => {
     const horizontal = [{ x: 0, y: 0, type: 'STRAIGHT', track_bits: 8 | 16 }];
     const r = sweep(horizontal, { avoidConnect: true });

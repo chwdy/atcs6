@@ -20,6 +20,7 @@ const LIST_PANEL_EDITOR_TYPES = new Set([
   'route-runs-list',
   'station-group-list',
   'speed-profiles-list',
+  'switches-list',
 ]);
 
 export class EditorUIHandler {
@@ -312,6 +313,9 @@ export class EditorUIHandler {
       sidebar.classList.remove('route-editor-wide');
 
       sidebar.classList.add('visible');
+      // Opening an editor is an explicit intent to see it, so clear any
+      // header-toggle collapse (see App.setupPanelToggles).
+      sidebar.classList.remove('user-hidden');
 
       this.currentSecondaryPanel = {
         title,
@@ -333,6 +337,8 @@ export class EditorUIHandler {
       sidebar.classList.remove('visible');
       sidebar.classList.remove('compact');
       sidebar.classList.remove('route-editor-wide');
+      // Reset the header-toggle collapse so a reopened panel starts shown.
+      sidebar.classList.remove('user-hidden');
     }
 
     this.cleanupSecondaryPanelSubscriptions();

@@ -445,9 +445,11 @@ def test_best_effort_crossover_block_states(dt, label, capsys):
         f"by T2, so the full target cannot be reached). "
         f"Got: {probe_result['result_kind']!r}"
     )
-    assert probe_result["authority_end_block_id"] == "BLK_X1_TO_S2_S", (
-        f"Expected truncation to BLK_X1_TO_S2_S (the block just before the "
-        f"OCCUPIED PLT_S2_S_BLOCK, per design_new.md:884-911 / :938). "
+    assert probe_result["authority_end_block_id"] == "BLK_S1_S_TO_X1", (
+        f"Expected truncation to BLK_S1_S_TO_X1 (held back before SW_X1). The "
+        f"furthest acquirable prefix, BLK_X1_TO_S2_S, is a two-way block "
+        f"straight off SW_X1, so the junction-fouling exclusion (item 11) "
+        f"holds the authority one block back to keep the crossover clear. "
         f"Got: {probe_result['authority_end_block_id']!r}"
     )
     assert probe_result["resource_sequence_len"] >= 1, (

@@ -249,6 +249,11 @@ export class RouteRunEditorHandler {
                     →
                     next <span class="rr-summary-idx">${run.next_planning_index != null ? '#' + run.next_planning_index : '—'}</span>
                 </div>
+                ${
+                  run.start_mode
+                    ? `<div class="rr-summary-meta" title="Resolved start mode this run was seeded with at allocation (read-only — set on the route or at assignment).">start: ${this._esc(run.start_mode)}</div>`
+                    : ''
+                }
             </div>
         `;
 
@@ -308,7 +313,7 @@ export class RouteRunEditorHandler {
 
   /**
    * Per design_new.md "RouteRun overrides": the three allowlisted policy
-   * fields (priority, acquisition_mode, action_on_waypoint_unreachable)
+   * fields (priority, acquisition_mode)
    * may be overridden per-run.
    */
   renderOverridesSection(run: any): string {
@@ -327,7 +332,6 @@ export class RouteRunEditorHandler {
             </div>
         `;
     const acqEff = run.effective_acquisition_mode || 'best_effort';
-    const actEff = run.effective_action_on_waypoint_unreachable || 'WAIT';
     const priEff = Number.isInteger(run.effective_priority) ? run.effective_priority : 5;
     const resetBtn = (field: string) => `
             <button type="button" class="btn btn-xs btn-secondary rr-override-reset-btn"
@@ -356,18 +360,6 @@ export class RouteRunEditorHandler {
                           acqEff
                         )}
                         ${has('acquisition_mode') ? resetBtn('acquisition_mode') : ''}
-                    </div>
-                    <div class="route-header-col">
-                        <label class="property-label">On waypoint unreachable</label>
-                        ${seg(
-                          'rr-action-seg',
-                          [
-                            { value: 'WAIT', label: 'Wait' },
-                            { value: 'SKIP', label: 'Skip' },
-                          ],
-                          actEff
-                        )}
-                        ${has('action_on_waypoint_unreachable') ? resetBtn('action_on_waypoint_unreachable') : ''}
                     </div>
                     <div class="route-header-col narrow">
                         <label class="property-label">Priority (0-9)</label>
@@ -498,7 +490,6 @@ export class RouteRunEditorHandler {
 
       const segFields: Record<string, string> = {
         'rr-acq-seg': 'acquisition_mode',
-        'rr-action-seg': 'action_on_waypoint_unreachable',
       };
       Object.entries(segFields).forEach(([segId, field]) => {
         document.querySelectorAll<HTMLElement>(`#${segId} .switch-btn`).forEach((btn) => {
@@ -666,6 +657,8 @@ export class RouteRunEditorHandler {
       case 'DEACTIVATED':
         return 'muted';
       case 'DEVIATED':
+        return 'warn';
+      case 'STALLED':
         return 'warn';
       default:
         return 'muted';

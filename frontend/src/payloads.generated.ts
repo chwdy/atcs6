@@ -9,6 +9,8 @@ export type PathAcquisitionResultKind = "reached_requested_target" | "truncated_
 
 export type PathAcquisitionFailureKind = "no_viable_path" | "blocked_before_target" | "invalid_reverse" | "invalid_request" | "head_on_switch_no_block_authority" | "missing_or_inactive_path" | "train_already_has_active_path";
 
+export type TargetResolutionFailureKind = "missing_target" | "target_unavailable";
+
 export type FatalConflictKind = "occupied_by_other_train" | "reserved_for_other_train" | "switch_occupied_by_other_train" | "disabled_resource_entry" | "malformed_route_key" | "switch_intrusion";
 
 export type ValidationErrorType = "unblocked_tile" | "block_occupied" | "block_reserved" | "block_disabled" | "block_manual" | "switch_locked" | "switch_manual" | "switch_disabled" | "flank_switch_conflict";

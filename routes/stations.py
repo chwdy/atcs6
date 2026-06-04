@@ -56,6 +56,7 @@ def register(app, state: AppState) -> None:
                 station_id=data.get("station_id"),
                 name=data.get("name", ""),
                 platform_ids=data.get("platform_ids", []),
+                force=bool(data.get("force", False)),
             )
             return jsonify(_build_station_response(state.network, station))
         except ValueError as e:
@@ -95,6 +96,7 @@ def register(app, state: AppState) -> None:
             station.manual = bool(data["manual"])
 
         if "platform_ids" in data:
+            force = bool(data.get("force", False))
             try:
                 platform_ids = list(data.get("platform_ids") or [])
                 unique_platform_ids = []
@@ -105,10 +107,23 @@ def register(app, state: AppState) -> None:
                         raise ValueError(f"Platform {platform_id} not found")
                     owner = state.network.get_station_for_platform(platform_id)
                     if owner and owner != station_id:
-                        raise ValueError(
-                            f"Platform {platform_id} already belongs to station {owner}"
+                        if not force:
+                            raise ValueError(
+                                f"Platform {platform_id} already belongs to station {owner}"
+                            )
+                        # Force-reassign: detach from the old station first
+                        # (auto-prunes the old station when it becomes empty).
+                        state.network.remove_platform_from_station_group(
+                            owner, platform_id
                         )
                     unique_platform_ids.append(platform_id)
+                # Non-empty parent rule: a station group must keep at least
+                # one platform. To empty a group, remove its last platform
+                # (which auto-deletes it) or DELETE the group outright.
+                if not unique_platform_ids:
+                    raise ValueError(
+                        "A station group must contain at least one platform"
+                    )
                 station.platform_ids = unique_platform_ids
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
@@ -129,7 +144,9 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": "Missing platform_id"}), 400
 
         try:
-            added = state.network.add_platform_to_station_group(station_id, platform_id)
+            added = state.network.add_platform_to_station_group(
+                station_id, platform_id, force=bool(data.get("force", False))
+            )
             station = state.network.station_groups.get(station_id)
             response = _build_station_response(state.network, station)
             response["added"] = added
@@ -151,8 +168,20 @@ def register(app, state: AppState) -> None:
                 station_id, platform_id
             )
             station = state.network.station_groups.get(station_id)
+            if station is None:
+                # Non-empty parent rule: removing the last platform
+                # auto-deleted the group. Report the deletion rather than
+                # rendering a group that no longer exists.
+                return jsonify(
+                    {
+                        "station_id": station_id,
+                        "removed": removed,
+                        "station_deleted": True,
+                    }
+                )
             response = _build_station_response(state.network, station)
             response["removed"] = removed
+            response["station_deleted"] = False
             return jsonify(response)
         except ValueError as e:
             if "not found" in str(e).lower():

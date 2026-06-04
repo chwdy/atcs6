@@ -211,6 +211,13 @@ def test_best_effort_return_leg_truncated_at_b1_still_crosses_sw_lead():
     )
     assert res.success, f"could not reserve block A: {res.failure_reason}"
 
+    # B_1 sits straight off SW_8_10, so the junction-fouling exclusion would
+    # normally hold a truncated authority BACK before SW_8_10 (at B_2). Marking
+    # B_1 one-way exempts it (a one-way block can host no opposing move), so the
+    # path truncates ONTO B_1 over SW_8_10 — the split this test exercises. The
+    # return leg enters B_1 from the SW_8_10 edge, its forward frame.
+    state.network.blocks["BLK_S2_N_TO_S3_N_B_1"].allowed_travel_directions = {"forward"}
+
     # Same three-call Quick Route flow as `_quick_route`, but BEST_EFFORT so the
     # path truncates at B_1 (over SW_8_10) instead of failing the whole acquire.
     train_route_service.create_route(

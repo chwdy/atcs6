@@ -126,21 +126,31 @@ class BlockGeometryManager:
     ) -> str:
         """Pick the entry edge for the first tile in `ordered_tiles`.
 
-        For multi-tile blocks the first tile has at most one external
-        neighbouring track tile in the right direction; we use the edge
-        facing that neighbour. For single-tile blocks we fall back to the
-        first external direction with a connecting track. Returns an empty
-        string if no external connection exists.
+        Forward traversal enters the block through this tile's track edge that
+        does NOT face another tile in the same block. The choice is made only
+        from the tile's real track edges, so we never name an edge the tile's
+        geometry lacks: for a linear block's endpoint exactly one edge is
+        external; for a single-tile block (both edges external) we break ties
+        by compass order. Returns "" only when the tile has no track edges.
         """
         x, y = tile
-        for edge, (dx, dy) in self._EDGE_OFFSETS.items():
-            nbr = (x + dx, y + dy)
-            if nbr in in_block_set:
-                continue
-            nbr_track = self._n.get_track(nbr[0], nbr[1])
-            if nbr_track is not None:
-                return edge
-        return ""
+        track = self._n.get_track(x, y)
+        if track is None:
+            return ""
+        tile_edges = sorted(
+            e
+            for e in (str(p).upper() for p in track.edges)
+            if e in self._EDGE_OFFSETS
+        )
+        external = [
+            e
+            for e in tile_edges
+            if (x + self._EDGE_OFFSETS[e][0], y + self._EDGE_OFFSETS[e][1])
+            not in in_block_set
+        ]
+        if external:
+            return external[0]
+        return tile_edges[0] if tile_edges else ""
 
     def _edge_for_delta(self, dx: int, dy: int) -> Optional[str]:
         if dx == 0 and dy > 0:

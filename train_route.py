@@ -15,6 +15,7 @@ The module provides:
 - RouteRunStatus: enum of run-level diagnostic states.
 - Route: shared travel plan (ordered tasks + route-level policy).
 - RouteMode: ONE_OFF, CIRCULAR, ROUND_TRIP.
+- RouteStartMode: FIRST, NEAREST, SPECIFIC (which stop a fresh run begins at).
 """
 
 import time
@@ -126,24 +127,32 @@ class RouteMode(Enum):
     ROUND_TRIP = "round_trip"  # A -> B -> C -> B -> A -> B -> ...
 
 
-class WaypointUnreachableAction(Enum):
-    """Policy for how a route reacts when a task target cannot be resolved or
-    acquired for an entire Phase 1 pass.
+class RouteStartMode(Enum):
+    """Policy for which stop a fresh route run begins at.
 
-    Per design_new.md "Action on waypoint unreachable" canonical home.
+    Per design_new.md "Run start-mode seeding" canonical home. Consulted once,
+    when Phase 1 allocates a fresh RouteRun; it seeds the run's starting
+    walk-position and is never re-read after that. This is why it is a
+    route-level default plus a per-assignment input, not a live RouteRun
+    override.
 
     Values:
-        WAIT: (default) leave the task armed; the next eligible Phase 1 tick
-            reruns the same target resolution against current live conditions.
-            Preserves the existing v1 contract.
-        SKIP: record the failure on RouteTaskRun.last_error, set
-            RouteTaskRun.finished_at = current_time for the failed walk-
-            position, advance the route-progress cursor past this task, and
-            let the next eligible Phase 1 try the following task.
+        FIRST: (default) start at the first task (``task_runs[0]``) — the train
+            then auto-advances past already-covered waypoints exactly as it
+            does today.
+        NEAREST: start at the ``task_kind == "stop"`` task closest to the
+            train's current position by track distance, skipping stops whose
+            platform is occupied by another train. Falls back to the nearest
+            stop regardless of occupancy when every candidate is occupied, and
+            to FIRST when no stop resolves.
+        SPECIFIC: start at the stop named by ``Route.start_task_index`` (or the
+            per-assignment override). Falls back to FIRST when the index is out
+            of range or does not name a ``stop`` task.
     """
 
-    WAIT = "WAIT"
-    SKIP = "SKIP"
+    FIRST = "first"
+    NEAREST = "nearest"
+    SPECIFIC = "specific"
 
 
 class RouteRunStatus(Enum):
@@ -336,6 +345,9 @@ class Route:
         acquisition_mode: Default route path-acquisition policy
             ("all_or_nothing" or "best_effort"). Default is ``best_effort``
             per design_new.md line 1052.
+        start_mode: Which stop a fresh run begins at (FIRST / NEAREST /
+            SPECIFIC). Default FIRST. See "Run start-mode seeding".
+        start_task_index: Stop index used only when ``start_mode == SPECIFIC``.
     """
 
     route_id: str
@@ -353,24 +365,18 @@ class Route:
     # Route-level policy (v1)
     priority: int = 5
     acquisition_mode: AcquisitionMode = AcquisitionMode.BEST_EFFORT
-    action_on_waypoint_unreachable: WaypointUnreachableAction = (
-        WaypointUnreachableAction.WAIT
-    )
-    """Policy for how the route reacts when a task target cannot be resolved or
-    acquired for an entire Phase 1 pass. v1 values: WAIT (default) — leave the
-    task armed, retry on the next eligible Phase 1 tick, never advance past it.
-    SKIP — record the failure, set RouteTaskRun.finished_at = current_time,
-    advance the route-progress cursor past this task, and let the next eligible
-    Phase 1 try the following task. See the "Action on waypoint unreachable"
-    canonical home in design_new.md.
-
-    This field is one of the v1 RouteRun override allowlist; per-run override
-    is read through `RouteRun.effective_action_on_waypoint_unreachable`."""
+    # Start-mode default (per design_new.md "Run start-mode seeding"). Read once
+    # when Phase 1 allocates a fresh RouteRun to seed its starting walk-position;
+    # NOT a live RouteRun override (it has no meaning after allocation). A
+    # per-assignment choice can override this for a single run. `start_task_index`
+    # is the stop index used only when `start_mode == SPECIFIC`.
+    start_mode: RouteStartMode = RouteStartMode.FIRST
+    start_task_index: Optional[int] = None
 
     # Edit timestamps (per design_new.md "Route edit timestamps"). `created_at`
     # is sampled once in `__post_init__`; `last_edited_at` is written by the
     # POST/PUT route-definition handlers when name/tasks/mode/priority/
-    # acquisition_mode/action_on_waypoint_unreachable is mutated. Neither field
+    # acquisition_mode is mutated. Neither field
     # is touched by assign/unassign or activate/deactivate.
     created_at: float = 0.0
     last_edited_at: Optional[float] = None
@@ -489,7 +495,8 @@ class Route:
             "last_edited_at": self.last_edited_at,
             "priority": self.priority,
             "acquisition_mode": self.acquisition_mode.value,
-            "action_on_waypoint_unreachable": self.action_on_waypoint_unreachable.value,
+            "start_mode": self.start_mode.value,
+            "start_task_index": self.start_task_index,
         }
 
     @classmethod
@@ -512,16 +519,20 @@ class Route:
             except ValueError:
                 acquisition_mode = AcquisitionMode.BEST_EFFORT
 
-        raw_action = data.get(
-            "action_on_waypoint_unreachable", WaypointUnreachableAction.WAIT
-        )
-        if isinstance(raw_action, WaypointUnreachableAction):
-            action_on_waypoint_unreachable = raw_action
+        raw_start = data.get("start_mode", RouteStartMode.FIRST)
+        if isinstance(raw_start, RouteStartMode):
+            start_mode = raw_start
         else:
             try:
-                action_on_waypoint_unreachable = WaypointUnreachableAction(raw_action)
+                start_mode = RouteStartMode(raw_start)
             except ValueError:
-                action_on_waypoint_unreachable = WaypointUnreachableAction.WAIT
+                start_mode = RouteStartMode.FIRST
+
+        raw_start_index = data.get("start_task_index")
+        try:
+            start_task_index = None if raw_start_index is None else int(raw_start_index)
+        except (TypeError, ValueError):
+            start_task_index = None
 
         return cls(
             route_id=str(data.get("route_id", "")),
@@ -533,7 +544,8 @@ class Route:
             started_at=data.get("started_at"),
             priority=int(data.get("priority", 5)),
             acquisition_mode=acquisition_mode,  # type: ignore[arg-type]
-            action_on_waypoint_unreachable=action_on_waypoint_unreachable,
+            start_mode=start_mode,
+            start_task_index=start_task_index,
             created_at=float(data.get("created_at") or 0.0),
             last_edited_at=data.get("last_edited_at"),
         )

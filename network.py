@@ -1683,9 +1683,13 @@ class RailwayNetwork:
         """Forward to `StationRegistry.delete_station_group(station_id)`."""
         return self._get_station_registry().delete_station_group(station_id)
 
-    def add_platform_to_station_group(self, station_id: str, platform_id: str) -> bool:
+    def add_platform_to_station_group(
+        self, station_id: str, platform_id: str, force: bool = False
+    ) -> bool:
         """Forward to `StationRegistry.add_platform_to_station_group(...)`."""
-        return self._get_station_registry().add_platform_to_station_group(station_id, platform_id)
+        return self._get_station_registry().add_platform_to_station_group(
+            station_id, platform_id, force=force
+        )
 
     def remove_platform_from_station_group(self, *args, **kwargs):
         """Forward to `StationRegistry.remove_platform_from_station_group(...)`."""

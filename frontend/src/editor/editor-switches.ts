@@ -21,6 +21,11 @@ export class SwitchEditorHandler {
   _unsubscribe: (() => void) | null;
   _localState: any;
   _isDirty: boolean;
+  // Switches-list panel (showSwitchesPanel): the last-fetched list plus its
+  // background poller, mirroring the routes-list panel in editor-routes.ts.
+  switches: any[];
+  _switchesListInterval: ReturnType<typeof setInterval> | null;
+  _switchesListIntervalMs: number;
 
   constructor(editor: EditorHost) {
     this.editor = editor;
@@ -28,6 +33,9 @@ export class SwitchEditorHandler {
     this._unsubscribe = null;
     this._localState = null;
     this._isDirty = false;
+    this.switches = [];
+    this._switchesListInterval = null;
+    this._switchesListIntervalMs = 1500;
   }
 
   // Convenience getters for common editor properties
@@ -416,7 +424,196 @@ export class SwitchEditorHandler {
     await this.showEditor(switchData.switch_id);
   }
 
+  // === Switches List Panel ===
+
+  /** Show the switches list panel — every switch on the layout. */
+  async showSwitchesPanel(): Promise<void> {
+    // Leaving any per-switch editor — drop its live subscription and any
+    // running list poller before we (re)build the list.
+    this._cleanup();
+
+    this.editor._currentEditorType = 'switches-list';
+    this.editor._currentEditorId = null;
+
+    try {
+      const result = await this.api.getSwitches();
+      this.switches = Array.isArray(result) ? result : [];
+    } catch (err: any) {
+      console.error('[SwitchEditorHandler] Failed to load switches:', err);
+      showToast('Failed to load switches: ' + err.message, 'error', 5000);
+      this.switches = [];
+    }
+
+    this._renderSwitchesListSidebar();
+    this._startSwitchesListPoller();
+  }
+
+  /** Re-render the switches list from `this.switches` without re-fetching.
+   *  Shared by showSwitchesPanel and the background list poller so the list
+   *  stays live (position, lock, occupancy) without a manual refresh. */
+  _renderSwitchesListSidebar(): void {
+    const switches = [...this.switches].sort((a, b) =>
+      String(a.switch_id).localeCompare(String(b.switch_id), undefined, { numeric: true }),
+    );
+
+    let content = '<div class="switches-panel">';
+
+    if (switches.length === 0) {
+      content += `
+            <div class="empty-state">
+                <div class="mb-8">No switches on the layout</div>
+                <div class="text-sm">Switches appear here when you place switch track.</div>
+            </div>`;
+    } else {
+      const n = switches.length;
+      content += `<div class="switches-count text-muted text-xs mb-8">${n} switch${n !== 1 ? 'es' : ''}</div>`;
+      content += '<div class="switches-list">';
+      for (const sw of switches) {
+        content += this.renderSwitchListItem(sw);
+      }
+      content += '</div>';
+    }
+
+    content += '</div>';
+
+    this.editor.showSecondarySidebar('Switches', content);
+    setTimeout(() => this.initSwitchesPanelHandlers(), 0);
+  }
+
+  renderSwitchListItem(sw: any): string {
+    const position = Number(sw.position) || 0;
+    const stateText = position === 0 ? 'MAIN' : 'DIVERGE';
+    const stateChip = position === 0 ? 'chip-success' : 'chip-warn';
+
+    const isLocked = Array.isArray(sw.locks) && sw.locks.length > 0;
+    const isOccupied = sw.occupied_by != null && sw.occupied_by !== '';
+    const isDisabled = !!sw.disabled;
+    const isManual = !!sw.manual;
+
+    // §6 left-border accent: a disabled switch reads as muted; otherwise the
+    // accent mirrors the per-switch editor (MAIN → success, DIVERGE → warn).
+    const accent = isDisabled ? 'accent-muted' : position === 0 ? 'accent-success' : 'accent-warn';
+
+    const name = sw.name && String(sw.name).trim() ? String(sw.name).trim() : '';
+    const title = name || sw.switch_id;
+    // With a display name the id drops to the secondary caption; without one the
+    // id is the title and the caption is just the tile coordinates.
+    const caption = name ? `${sw.switch_id} · (${sw.x}, ${sw.y})` : `(${sw.x}, ${sw.y})`;
+
+    const chips = [`<span class="chip chip-state ${stateChip}">${stateText}</span>`];
+    if (isLocked) chips.push('<span class="chip chip-danger">Locked</span>');
+    if (isOccupied)
+      chips.push(`<span class="chip chip-warn">Occupied · ${this._esc(sw.occupied_by)}</span>`);
+    if (isDisabled) chips.push('<span class="chip chip-muted">Disabled</span>');
+    if (isManual) chips.push('<span class="chip chip-muted">Manual</span>');
+
+    return `
+            <div class="rr-card switch-row ${accent}" data-switch-id="${this._esc(sw.switch_id)}" role="button" tabindex="0" title="Open ${this._esc(title)}">
+                <div class="rr-card-head">
+                    <div class="rr-card-title-col">
+                        <div class="rr-card-train">${this._esc(title)}</div>
+                        <div class="rr-card-route font-mono">${this._esc(caption)}</div>
+                    </div>
+                </div>
+                <div class="chip-row">${chips.join('')}</div>
+            </div>`;
+  }
+
+  initSwitchesPanelHandlers(): void {
+    document.querySelectorAll<HTMLElement>('.switch-row').forEach((row) => {
+      const open = () => {
+        const id = row.dataset.switchId;
+        if (id) this.showEditor(id);
+      };
+      row.onclick = open;
+      row.onkeydown = (e: KeyboardEvent) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          open();
+        }
+      };
+    });
+  }
+
+  /** Start the switches-list background poller. Keeps the list live (position,
+   *  lock, occupancy) without a manual refresh. */
+  _startSwitchesListPoller(): void {
+    this._stopSwitchesListPoller();
+    this._switchesListInterval = setInterval(
+      () =>
+        this._syncSwitchesListFromServer().catch((err) => {
+          console.debug('[SwitchEditorHandler] switches-list sync failed:', err);
+        }),
+      this._switchesListIntervalMs,
+    );
+  }
+
+  _stopSwitchesListPoller(): void {
+    if (this._switchesListInterval) {
+      clearInterval(this._switchesListInterval);
+      this._switchesListInterval = null;
+    }
+  }
+
+  /** Pull the latest switches and re-render only when something the list shows
+   *  actually changed. Skips the DOM swap while the cursor is over the list so a
+   *  re-render can't steal a row click. */
+  async _syncSwitchesListFromServer(): Promise<void> {
+    // Panel changed under us (navigated to a switch editor / closed) — stop.
+    if (this.editor._currentEditorType !== 'switches-list') {
+      this._stopSwitchesListPoller();
+      return;
+    }
+    if (typeof document !== 'undefined' && document.hidden) return;
+    if (this._isSwitchesListHovered()) return;
+
+    const result = await this.api.getSwitches();
+    const next = Array.isArray(result) ? result : [];
+    if (this._switchesListSignature(next) === this._switchesListSignature(this.switches)) {
+      return;
+    }
+    this.switches = next;
+    this._renderSwitchesListSidebar();
+  }
+
+  /** Signature of just the fields the list renders, so unrelated payload churn
+   *  doesn't trigger a needless DOM swap. */
+  _switchesListSignature(switches: any[]): string {
+    return JSON.stringify(
+      (switches || []).map((s) => [
+        s.switch_id,
+        s.name,
+        s.position,
+        Array.isArray(s.locks) ? s.locks.length : 0,
+        s.occupied_by ?? null,
+        !!s.disabled,
+        !!s.manual,
+      ]),
+    );
+  }
+
+  /** True when the cursor is over the open switches list. */
+  _isSwitchesListHovered(): boolean {
+    const el = document.querySelector('.switches-panel');
+    if (!el || typeof el.matches !== 'function') return false;
+    try {
+      return el.matches(':hover');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  _esc(s: any): string {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
   _cleanup(): void {
+    this._stopSwitchesListPoller();
     if (this._unsubscribe) {
       this._unsubscribe();
       this._unsubscribe = null;

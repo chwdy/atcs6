@@ -144,6 +144,8 @@ def register(app, state: AppState) -> None:
                     "platforms": len(getattr(state.network, "platforms", {})),
                     "stations": len(state.network.station_groups),
                     "trains": len(state.network.trains),
+                    "switches": len(state.network.switches),
+                    "tunnels": len(state.network.tunnels_to_list()),
                 }
 
                 # Clear everything
@@ -154,6 +156,8 @@ def register(app, state: AppState) -> None:
                 if hasattr(state.network, "station_groups"):
                     state.network.station_groups.clear()
                 state.network.trains.clear()
+                state.network.switches.clear()
+                state.network.tunnels.clear()
 
                 # Update simulation controller reference
                 state.sim_controller.network = state.network
@@ -176,6 +180,8 @@ def register(app, state: AppState) -> None:
                     "platforms": len(getattr(state.network, "platforms", {})),
                     "stations": len(state.network.station_groups),
                     "trains": len(state.network.trains),
+                    "switches": len(state.network.switches),
+                    "tunnels": len(state.network.tunnels_to_list()),
                     "is_empty": len(state.network.tracks) == 0,
                 }
             )

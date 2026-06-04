@@ -78,13 +78,34 @@ Initial placement (the demo_5.1 change). All five trains start stabled in the
 depot, one per platform, parked at the platform mouth (the base tile, where the
 stub meets its ladder turnout) facing EAST — i.e. nose pointed out toward the
 ladder, body trailing up the stub. On tick 0 each train plans a path down the
-lead and out onto the loop. Their first loop stop is phase-shifted so the fleet
-fans out around the loop instead of all converging on STN_1:
-  T1 in depot platform 1 (base (1,10), facing E) → first stop STN_1
+lead and out onto the loop.
+
+The depot necks down to ONE lead that joins the N-track return leg PAST the
+one-way throat, so a depot train can only reach an S-track (outbound) stop by
+running to a terminus and reversing. With five trains that pressures the S1/X1
+reversal pocket: a train crossing the X1 scissors to reverse through S1 can
+foul the junction nose-to-nose with a train sitting at S1. Two things keep that
+from deadlocking:
+
+  1. The dispatcher's "stay back one switch" rule (the junction-fouling
+     truncation exclusion in design_new.md item 11): a best-effort authority
+     that cannot reach its target never stops on a TWO-WAY block straight off a
+     switch — it holds one block back, before the switch, leaving the crossover
+     clear. So a train bound for S1 waits before X1 instead of fouling it.
+  2. One-way track policy (`_set_one_way_tracks`): the S2<->S3 corridor and the
+     two N-track crossover approaches are marked one-way, which both lets trains
+     pack tight there (no head-on is possible on a one-way block, so rule 1
+     exempts it) and stops the pathfinder running a train the wrong way.
+
+On top of that the trains pull out as a "parade" — each assigned consecutive
+loop stops in the loop's travel direction from the depot exit, ordered so the
+platform nearest the lead (D5) leaves first — so they follow each other onto the
+line in a sensible order rather than all racing for the same first stop:
+  T5 in depot platform 5 (base (5,14), facing E) → first stop PLT_S3_N  (pulls out first)
+  T4 in depot platform 4 (base (4,13), facing E) → first stop PLT_S2_N
+  T3 in depot platform 3 (base (3,12), facing E) → first stop STN_1
   T2 in depot platform 2 (base (2,11), facing E) → first stop PLT_S2_S
-  T3 in depot platform 3 (base (3,12), facing E) → first stop PLT_S3_S
-  T4 in depot platform 4 (base (4,13), facing E) → first stop STN_4
-  T5 in depot platform 5 (base (5,14), facing E) → first stop PLT_S3_N
+  T1 in depot platform 1 (base (1,10), facing E) → first stop PLT_S3_S  (pulls out last)
 Depot platform 6 (nearest the throat) is left empty. Because the depot necks
 down to a single lead, the five trains serialise through the throat under the
 BEST_EFFORT daisy-chain — they leave the depot a few seconds apart, not all at
@@ -467,40 +488,44 @@ def _add_depot(network: RailwayNetwork) -> None:
 # counts; length_cm is tunable and kept equal here for simplicity.
 _CORRIDOR_BLOCK_CM = 110.0
 
+# Uniform max speed (km/h) for demo_5.1: every train and every track block and
+# platform runs at this cap. One constant so the whole line stays in sync.
+_MAX_SPEED_KMH = 70.0
+
 BLOCKS = [
     # Plain blocks bracketing X1
-    ("BLK_S1_S_TO_X1", [(2, 2)], "S1-S → X1", 30.0, 50.0),
-    ("BLK_S1_N_TO_X1", [(1, 3)], "S1-N → X1", 30.0, 50.0),
-    ("BLK_X1_TO_S2_S", [(3, 3)], "X1 → S2-S", 30.0, 50.0),
-    ("BLK_X1_TO_S2_N", [(2, 4)], "X1 → S2-N", 30.0, 50.0),
+    ("BLK_S1_S_TO_X1", [(2, 2)], "S1-S → X1", 30.0, _MAX_SPEED_KMH),
+    ("BLK_S1_N_TO_X1", [(1, 3)], "S1-N → X1", 30.0, _MAX_SPEED_KMH),
+    ("BLK_X1_TO_S2_S", [(3, 3)], "X1 → S2-S", 30.0, _MAX_SPEED_KMH),
+    ("BLK_X1_TO_S2_N", [(2, 4)], "X1 → S2-N", 30.0, _MAX_SPEED_KMH),
     # S2↔S3 corridor — equal-length split, throat switches are boundaries.
     ("BLK_S2_S_TO_S3_S_A", [(5, 5), (6, 5), (6, 6), (7, 6), (7, 7), (8, 7)],
-     "S2-S → S3-S (A)", _CORRIDOR_BLOCK_CM, 50.0),
+     "S2-S → S3-S (A)", _CORRIDOR_BLOCK_CM, _MAX_SPEED_KMH),
     ("BLK_S2_S_TO_S3_S_B", [(9, 8), (9, 9), (10, 9), (10, 10)],
-     "S2-S → S3-S (B)", _CORRIDOR_BLOCK_CM, 50.0),
+     "S2-S → S3-S (B)", _CORRIDOR_BLOCK_CM, _MAX_SPEED_KMH),
     ("BLK_S2_N_TO_S3_N_A", [(4, 6), (5, 6), (5, 7), (6, 7), (6, 8)],
-     "S2-N → S3-N (A)", _CORRIDOR_BLOCK_CM, 50.0),
+     "S2-N → S3-N (A)", _CORRIDOR_BLOCK_CM, _MAX_SPEED_KMH),
     # Block B is split around the lead-crossover switch SW_8_10 at (8,10):
     # B_1 is the single tile before it, B_2 the two tiles after. The 110 cm
     # corridor length is split by tile count (1/3 + 2/3) so the total is kept.
     ("BLK_S2_N_TO_S3_N_B_1", [(8, 9)],
-     "S2-N → S3-N (B1)", _CORRIDOR_BLOCK_CM / 3, 50.0),
+     "S2-N → S3-N (B1)", _CORRIDOR_BLOCK_CM / 3, _MAX_SPEED_KMH),
     ("BLK_S2_N_TO_S3_N_B_2", [(9, 10), (9, 11)],
-     "S2-N → S3-N (B2)", _CORRIDOR_BLOCK_CM * 2 / 3, 50.0),
+     "S2-N → S3-N (B2)", _CORRIDOR_BLOCK_CM * 2 / 3, _MAX_SPEED_KMH),
     # Plain blocks bracketing X2 (shifted)
-    ("BLK_S3_S_TO_X2", [(12, 12)], "S3-S → X2", 30.0, 50.0),
-    ("BLK_S3_N_TO_X2", [(11, 13)], "S3-N → X2", 30.0, 50.0),
-    ("BLK_X2_TO_S4_S", [(13, 13)], "X2 → S4-S", 30.0, 50.0),
-    ("BLK_X2_TO_S4_N", [(12, 14)], "X2 → S4-N", 30.0, 50.0),
+    ("BLK_S3_S_TO_X2", [(12, 12)], "S3-S → X2", 30.0, _MAX_SPEED_KMH),
+    ("BLK_S3_N_TO_X2", [(11, 13)], "S3-N → X2", 30.0, _MAX_SPEED_KMH),
+    ("BLK_X2_TO_S4_S", [(13, 13)], "X2 → S4-S", 30.0, _MAX_SPEED_KMH),
+    ("BLK_X2_TO_S4_N", [(12, 14)], "X2 → S4-N", 30.0, _MAX_SPEED_KMH),
     # Depot lead (throat → ladder near-end) + the five plain ladder connectors
     # (the turnouts SW_LADk are switch boundaries, no block).
     ("BLK_DEPOT_LEAD", [(7, 11), (7, 12), (7, 13), (8, 13), (8, 14), (8, 15)],
-     "Depot lead", 70.0, 30.0),
-    ("BLK_DEPOT_CT0", [(3, 10)], "Depot ladder 0", 20.0, 30.0),
-    ("BLK_DEPOT_CT1", [(4, 11)], "Depot ladder 1", 20.0, 30.0),
-    ("BLK_DEPOT_CT2", [(5, 12)], "Depot ladder 2", 20.0, 30.0),
-    ("BLK_DEPOT_CT3", [(6, 13)], "Depot ladder 3", 20.0, 30.0),
-    ("BLK_DEPOT_CT4", [(7, 14)], "Depot ladder 4", 20.0, 30.0),
+     "Depot lead", 70.0, _MAX_SPEED_KMH),
+    ("BLK_DEPOT_CT0", [(3, 10)], "Depot ladder 0", 20.0, _MAX_SPEED_KMH),
+    ("BLK_DEPOT_CT1", [(4, 11)], "Depot ladder 1", 20.0, _MAX_SPEED_KMH),
+    ("BLK_DEPOT_CT2", [(5, 12)], "Depot ladder 2", 20.0, _MAX_SPEED_KMH),
+    ("BLK_DEPOT_CT3", [(6, 13)], "Depot ladder 3", 20.0, _MAX_SPEED_KMH),
+    ("BLK_DEPOT_CT4", [(7, 14)], "Depot ladder 4", 20.0, _MAX_SPEED_KMH),
 ]
 
 
@@ -516,6 +541,31 @@ def _add_blocks(network: RailwayNetwork) -> None:
         if speed is not None:
             kwargs["speed_limit_kmh"] = speed
         network.create_block_with_tracks(**kwargs)
+
+
+# One-way travel policy. The S2<->S3 corridor and the crossover approaches on
+# the N (return) track each carry traffic in a single direction, so marking
+# them one-way (a) lets trains pack tight there with no head-on risk and (b)
+# lets the dispatcher's "stay back one switch" rule keep the bidirectional
+# junction blocks (the crossovers and depot lead) clear: a truncated authority
+# may pack right up to a one-way block but holds back from a two-way block that
+# sits straight off a switch. For all four blocks the desired flow is the
+# block's own "forward" traversal (verified against each block's ordered_tiles):
+#   BLK_S2_S_TO_S3_S_A / _B : S corridor, outbound (S2-S -> S3-S)
+#   BLK_X1_TO_S2_N          : N return leg, S2-N -> X1
+#   BLK_S3_N_TO_X2          : N return leg, X2 -> S3-N
+_ONE_WAY_FORWARD_BLOCKS = [
+    "BLK_S2_S_TO_S3_S_A",
+    "BLK_S2_S_TO_S3_S_B",
+    "BLK_X1_TO_S2_N",
+    "BLK_S3_N_TO_X2",
+]
+
+
+def _set_one_way_tracks(network: RailwayNetwork) -> None:
+    """Restrict the corridor + crossover-approach blocks to one-way travel."""
+    for block_id in _ONE_WAY_FORWARD_BLOCKS:
+        network.blocks[block_id].allowed_travel_directions = {"forward"}
 
 
 # Each station entry: (station_id, name, first_tile, extra_tiles, platform_side)
@@ -564,7 +614,7 @@ def _add_stations(network: RailwayNetwork) -> None:
                 name=name,
                 length_cm=60.0,
                 platform_side=side,
-                top_speed_kmh=40.0,
+                top_speed_kmh=_MAX_SPEED_KMH,
             )
             for extra in extra_xys:
                 network.extend_station(platform.platform_id, [extra])
@@ -607,6 +657,7 @@ def create_comprehensive_demo() -> RailwayNetwork:
     _add_lead_crossover(network)
     _add_depot(network)
     _add_blocks(network)
+    _set_one_way_tracks(network)
     _add_stations(network)
     _add_tunnels(network)
 
@@ -726,21 +777,31 @@ def setup_demo_train(
     )
     network.speed_profiles.register(demo_profile)
 
-    # ---- Stable the five trains in the depot, phase-shifted by loop stop ----
+    # ---- Stable the five trains in the depot as a pull-out "parade" ----
     # (train_id, starting_block, initial_direction, planning-task-index, start_tile)
     # Each train sits on a depot platform's MOUTH tile (the base, where the stub
     # meets its ladder turnout) facing EAST, so its nose points out toward the
     # ladder and its body trails up the stub. The planning index is an even
-    # ("stop") task in the shared loop, so on tick 0 each train plans a path
-    # out of the depot to a different first stop and the fleet fans out instead
-    # of all heading for STN_1. Depot platform 6 (nearest the throat) is left
-    # empty. Base tiles match DEPOT_PLATFORM_BASES = (1+k, 10+k).
+    # ("stop") task in the shared loop; on tick 0 each train plans a path out of
+    # the depot to its first stop.
+    #
+    # The depot necks down to ONE lead that joins the N-track return leg PAST the
+    # one-way throat, so a depot train can only reach an S-track (outbound) stop
+    # by detouring to a terminus and reversing. If two trains aim for the S1
+    # reversal pocket at once — one dwelling at S1, one crossing X1 to reverse
+    # through it — they meet head-on over the X1 scissors and deadlock. To avoid
+    # that, the trains are assigned consecutive loop stops in the loop's travel
+    # direction from the depot exit, ordered so the platform nearest the lead
+    # (D5) pulls out first: D5→S3_N, D4→S2_N, D3→S1, D2→S2_S, D1→S3_S. They then
+    # follow each other onto the line like a real depot pull-out instead of
+    # converging on S1. Depot platform 6 (nearest the throat) is left empty.
+    # Base tiles match DEPOT_PLATFORM_BASES = (1+k, 10+k).
     train_specs = [
-        ("T1", "PLT_DEPOT_1_BLOCK", "EAST", 0, (1, 10)),  # → stop STN_1
-        ("T2", "PLT_DEPOT_2_BLOCK", "EAST", 2, (2, 11)),  # → stop PLT_S2_S
-        ("T3", "PLT_DEPOT_3_BLOCK", "EAST", 4, (3, 12)),  # → stop PLT_S3_S
-        ("T4", "PLT_DEPOT_4_BLOCK", "EAST", 6, (4, 13)),  # → stop STN_4
-        ("T5", "PLT_DEPOT_5_BLOCK", "EAST", 8, (5, 14)),  # → stop PLT_S3_N
+        ("T1", "PLT_DEPOT_1_BLOCK", "EAST", 4,  (1, 10)),  # D1 (last out) → PLT_S3_S
+        ("T2", "PLT_DEPOT_2_BLOCK", "EAST", 2,  (2, 11)),  # D2 → PLT_S2_S
+        ("T3", "PLT_DEPOT_3_BLOCK", "EAST", 0,  (3, 12)),  # D3 → STN_1
+        ("T4", "PLT_DEPOT_4_BLOCK", "EAST", 10, (4, 13)),  # D4 → PLT_S2_N
+        ("T5", "PLT_DEPOT_5_BLOCK", "EAST", 8,  (5, 14)),  # D5 (first out) → PLT_S3_N
     ]
 
     import time as _time
@@ -753,7 +814,7 @@ def setup_demo_train(
             train_id=train_id,
             starting_block_id=block_id,
             initial_direction=direction,
-            max_speed_kmh=40.0,
+            max_speed_kmh=_MAX_SPEED_KMH,
             length_cm=50.0,
             train_type="LOCOMOTIVE",
             initial_cab="A",

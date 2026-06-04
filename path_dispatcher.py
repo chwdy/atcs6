@@ -1822,6 +1822,48 @@ class PathDispatcher:
             return False
         return i + 1 < len(occ_blocks) and occ_blocks[i + 1] == terminal_block_id
 
+    def _terminal_fouls_two_way_switch_block(
+        self, segment: "PathSegment", terminal_block_id: str
+    ) -> bool:
+        """True if ending truncated best-effort authority at
+        `terminal_block_id` would leave the train stopped on a TWO-WAY block
+        that the path enters directly off a switch — fouling the junction.
+
+        A block is "one-way" when its `allowed_travel_directions` is restricted
+        to a single direction; such a block can never host an opposing
+        traversal, so stopping right after the switch is safe and returns
+        False. A two-way block entered straight off a switch returns True, so
+        `_best_effort_truncate` holds the authority back to a shorter, switch-
+        clear prefix. This is the occupancy-independent companion to
+        `_terminal_traps_reversing_occupant`.
+        """
+        block = self.network.blocks.get(terminal_block_id)
+        if block is None:
+            return False
+        atd = getattr(block, "allowed_travel_directions", None)
+        if atd is not None and len(atd) < 2:
+            return False  # one-way: no opposing move possible, safe to stop
+        # Locate the terminal block's first non-switch tile in path order.
+        first_idx: Optional[int] = None
+        for idx, tile in enumerate(segment.tiles):
+            track = self.network.get_track(*tile)
+            if track is None or track.is_switch:
+                continue
+            if track.block_section_id == terminal_block_id:
+                first_idx = idx
+                break
+        if first_idx is None:
+            return False
+        # Foul only if the immediately preceding tile in the path is a switch.
+        k = first_idx - 1
+        while k >= 0:
+            prev = self.network.get_track(*segment.tiles[k])
+            if prev is None:
+                k -= 1
+                continue
+            return bool(prev.is_switch)
+        return False
+
     def _best_effort_truncate(
         self,
         segment: PathSegment,
@@ -1871,6 +1913,26 @@ class PathDispatcher:
                     next_block_id=segment.blocks[prefix_block_count],
                     terminal_block_id=prefix_blocks[-1],
                     train_id=train_id,
+                )
+            ):
+                continue
+            # "Stay back one switch" exclusion: never park a truncated
+            # best-effort authority on a TWO-WAY block that the path enters
+            # straight off a switch. Stopping there fouls the junction and
+            # invites a head-on (an opposing move can still come through that
+            # switch). A ONE-WAY block (`allowed_travel_directions` restricted
+            # to a single direction) is exempt — no opposing traversal is
+            # allowed, so trains may pack tight right up to it (e.g. the
+            # one-way S2<->S3 corridor). Unlike `_terminal_traps_reversing_
+            # occupant`, this is occupancy-independent: it holds back from the
+            # junction even before any opposing train has arrived, so it has no
+            # timing window. Only applies when a further block was dropped
+            # (`prefix_block_count < len(segment.blocks)`); the requested target
+            # itself is never reached through this truncation branch.
+            if (
+                prefix_block_count < len(segment.blocks)
+                and self._terminal_fouls_two_way_switch_block(
+                    segment, prefix_blocks[-1]
                 )
             ):
                 continue

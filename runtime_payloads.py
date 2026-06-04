@@ -409,6 +409,19 @@ class PathAcquisitionFailureKind(Enum):
     TRAIN_ALREADY_HAS_ACTIVE_PATH = "train_already_has_active_path"
 
 
+class TargetResolutionFailureKind(Enum):
+    """Why route target resolution produced no concrete block.
+
+    Canonical v1 values per design_new.md "Unreachable and broken task
+    handling". Classifies resolution failures only; a target that resolves
+    but whose authority cannot be acquired is classified by
+    `PathAcquisitionFailureKind` instead.
+    """
+
+    MISSING_TARGET = "missing_target"
+    TARGET_UNAVAILABLE = "target_unavailable"
+
+
 @dataclass
 class PathAcquisitionResult:
     """Structured result for create_path / extend_path.

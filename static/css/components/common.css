@@ -299,39 +299,27 @@
 /* Flat actions inside bordered cards — per DESIGN_LANGUAGE.md §3 / §11.
    The card is bordered, so the action buttons inside go flat (no border,
    transparent bg); affordance comes from the hover bg-tint. Covers the
-   entity-card family (Properties pane in the editor sidebar) and the
-   station-row list cards. (The routes and paths lists use .rr-flat-btn —
+   entity-card family (Properties pane in the editor sidebar). (The routes,
+   paths, switches and stations lists use the .rr-card shell + .rr-flat-btn —
    see routes-paths.css — so they aren't covered here.) */
-.entity-card .edit-btn,
-.station-row .btn {
+.entity-card .edit-btn {
     background-color: transparent;
     border: none;
 }
 
-.entity-card .edit-btn:hover,
-.station-row .btn:hover:not(:disabled) {
+.entity-card .edit-btn:hover {
     background-color: var(--bg-hover);
     color: var(--accent-hover);
     border-color: transparent;
 }
 
-/* Destructive actions inside cards keep their danger hue (so they still read
-   as "this deletes things") but lose the solid danger fill. */
-.station-row .btn-danger {
-    color: var(--danger-color);
-    background-color: transparent;
-}
-
-.station-row .btn-danger:hover:not(:disabled) {
-    background-color: rgba(232, 63, 91, 0.10);
-    color: var(--danger-color);
-}
-
-/* Stations panel (logical-station list + create form) — DESIGN_LANGUAGE.md §11
-   status-accented card. Each station is a card carrying the --info-color accent
-   stations use (§1); the create form sits above, divided by a hairline. The
-   action buttons inside the cards go flat via the shared card-button rule
-   above. */
+/* Stations panel (logical-station list + create form). The list reuses the
+   shared .rr-card list-card shell (DESIGN_LANGUAGE.md §11/§12), exactly like
+   the switches list: `rr-card station-row accent-info` gives the card shell and
+   the §1 station --info-color left accent, .chip-row colours the member-platform
+   pills. The create form sits above, divided by a hairline. The only station-
+   specific rule is the title: a station name is a human-readable display name,
+   so it wraps instead of ellipsising like .rr-card-train (§5 "Overflow"). */
 .station-create-form {
     display: flex;
     flex-direction: column;
@@ -345,50 +333,24 @@
     margin-bottom: 0;
 }
 
-.station-row {
+.station-list {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 8px 10px;
-    margin-bottom: 8px;
-    background-color: var(--bg-dark);
-    border: 1px solid var(--border-color);
-    border-left: 3px solid var(--info-color);
-    border-radius: var(--control-radius-sm);
+    gap: 8px;
 }
 
-.station-row-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+.station-row {
+    cursor: pointer;
 }
 
 .station-row-name {
     min-width: 0;
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 600;
+    line-height: 1.25;
     color: var(--text-primary);
     word-break: break-word;
-}
-
-.station-row-platforms {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-}
-
-.station-row-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-}
-
-/* Plain (non-variant) flat buttons inherit no color from .btn, so give the
-   Add/Remove actions a default text color; hover lifts to accent via the shared
-   card-button rule above. (Delete keeps its danger hue — it's a .btn-danger.) */
-.station-row-actions .btn {
-    color: var(--text-secondary);
+    overflow-wrap: anywhere;
 }
 
 

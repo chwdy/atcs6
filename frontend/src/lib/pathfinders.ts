@@ -54,6 +54,7 @@ interface CostTable {
   sameTurn: number;
   createSwitch: number;
   createCrossover: number;
+  createParallel: number;
   reverse: number;
 }
 
@@ -124,6 +125,12 @@ export class ConstructionPathfinder {
       sameTurn: 3,
       createSwitch: 5,
       createCrossover: 7,
+      // A parallel crossing (laying NE|SW or NW|SE over an existing track that
+      // already holds the other half) is a benign double-track, not a junction:
+      // the two segments run parallel on screen and never meet. Charge nothing
+      // extra so it costs the same as a normal zigzag move (its base diagonal
+      // cost), instead of being avoided like the perpendicular crossover.
+      createParallel: 0,
       reverse: 100,
     };
 
@@ -134,7 +141,9 @@ export class ConstructionPathfinder {
     // negative cost so A* actively prefers cutting through over
     // sidestepping. The -2 value is tuned so A* crosses when the path
     // naturally would pass through existing track, but does not detour
-    // to chase a crossing when none is needed.
+    // to chase a crossing when none is needed. A parallel crossing gets the
+    // same negative incentive, so it too costs less than a plain zigzag move
+    // and the path lays a parallel double-track rather than merging in.
     this.avoidConnectCosts = {
       useExisting: 50,
       extend: 50,
@@ -143,6 +152,7 @@ export class ConstructionPathfinder {
       sameTurn: 3,
       createSwitch: 200,
       createCrossover: -2,
+      createParallel: -2,
       reverse: 100,
     };
 
@@ -195,17 +205,25 @@ export class ConstructionPathfinder {
 
     if (newCount <= existingCount) return 'none';
 
-    const crossovers = [
-      [this.TRACK_NS, this.TRACK_EW],
+    // Two segments that share no edge make a multi-path tile. They split by how
+    // they sit on the 45°-rotated screen:
+    //   - parallel: same screen angle, offset, never touching — NE|SW (both
+    //     vertical) and NW|SE (both horizontal). Laying one over the other is a
+    //     benign double-track.
+    //   - crossover: perpendicular, meeting at the tile centre — NS (╱) + EW (╲).
+    const matches = (a: number, b: number) =>
+      (existingBits & a && newBit & b) || (existingBits & b && newBit & a);
+
+    const parallelPairs = [
       [this.TRACK_NE, this.TRACK_SW],
       [this.TRACK_NW, this.TRACK_SE],
     ];
+    for (const [a, b] of parallelPairs) {
+      if (combined & a && combined & b && matches(a, b)) return 'parallel';
+    }
 
-    for (const [a, b] of crossovers) {
-      if (combined & a && combined & b) {
-        if (existingBits & a && newBit & b) return 'crossover';
-        if (existingBits & b && newBit & a) return 'crossover';
-      }
+    if (combined & this.TRACK_NS && combined & this.TRACK_EW && matches(this.TRACK_NS, this.TRACK_EW)) {
+      return 'crossover';
     }
 
     if (existingCount >= 1 && newCount > existingCount) {
@@ -382,7 +400,10 @@ export class ConstructionPathfinder {
         // The end tile lays a connecting segment too; reject this arrival if it
         // would meet the penultimate tile at a 90° corner. Other arrivals (a
         // different incoming direction) remain in the open set to be tried.
-        if (current.parent && current.fromDir !== null) {
+        // A forced end segment (T key) is the user's explicit choice for this
+        // tile, so honor it directly instead of detouring — or failing — to
+        // dodge the corner: skip the rejection when endEdges is set.
+        if (!endEdges && current.parent && current.fromDir !== null) {
           const endTile = trackMap.get(posKey);
           const penTile = trackMap.get(posOf(current.parent.pos.x, current.parent.pos.y));
           if (!tileSkipsSegment(endTile) && !tileSkipsSegment(penTile)) {
@@ -547,6 +568,8 @@ export class ConstructionPathfinder {
           const switchType = this.detectSwitchType(currentBits, newPathBit);
           if (switchType === 'crossover') {
             moveCost += costs.createCrossover;
+          } else if (switchType === 'parallel') {
+            moveCost += costs.createParallel;
           } else if (switchType === 'switch') {
             moveCost += costs.createSwitch;
           }

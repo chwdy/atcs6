@@ -120,12 +120,23 @@ class RouteTargetResolver:
             task, train=train
         )
         if target_block is None:
+            from runtime_payloads import TargetResolutionFailureKind
+
+            # BROKEN (target ID absent) vs UNAVAILABLE (present but unusable):
+            # the broken-vs-unreachable split per design_new.md "Unreachable
+            # and broken task handling".
+            failure_kind = (
+                TargetResolutionFailureKind.MISSING_TARGET
+                if not self.task_target_present(task)
+                else TargetResolutionFailureKind.TARGET_UNAVAILABLE
+            )
             return ResolvedNextTaskProjection(
                 walk_position=walk_position,
                 task_kind=task.task_kind,
                 direction=direction_str,
                 resolved_target=None,
                 failure_reason=failure_reason,
+                failure_kind=failure_kind,
             )
 
         resolved_dir = self.resolve_task_direction(
@@ -241,6 +252,25 @@ class RouteTargetResolver:
         """
         block_id, _reason = self.resolve_task_target_block_detailed(task, train=train)
         return block_id
+
+    def task_target_present(self, task: "RouteTask") -> bool:
+        """True when `task.task_location`'s target ID is present in the network
+        — the "valid task" / non-broken test used by the broken-vs-unreachable
+        split. A task whose ID is absent is BROKEN
+        (failure_kind == MISSING_TARGET); a present-but-unusable target is
+        UNAVAILABLE. Per design_new.md "Unreachable and broken task handling".
+        """
+        loc = getattr(task, "task_location", None)
+        net = getattr(self._e, "network", None)
+        if loc is None or net is None:
+            return False
+        if isinstance(loc, BlockTarget):
+            return loc.block_id in (getattr(net, "blocks", {}) or {})
+        if isinstance(loc, PlatformTarget):
+            return loc.platform_id in (getattr(net, "platforms", {}) or {})
+        if isinstance(loc, StationTarget):
+            return loc.station_id in (getattr(net, "station_groups", {}) or {})
+        return False
 
     def resolve_task_target_block_detailed(
         self,
@@ -567,6 +597,43 @@ class RouteTargetResolver:
                 return track.block_section_id
         return None
 
+    def _walk_metric_to_block(
+        self, train: Optional["Train"], target_block_id: str
+    ) -> Optional[Tuple[int, float]]:
+        """Best graph-walk metric `(tile_count, walk_length_cm)` from the
+        train's current block to `target_block_id`, or `None` when no walk
+        reaches it.
+
+        Canonical "distance from the train head to a block" query, shared by
+        `_closer_platform_end` (nearer multi-block platform end) and
+        `nearest_start_stop_index` (NEAREST start-mode seeding). Uses the same
+        `PathDispatcher.find_paths(...)` walk that `create_path(...)` uses;
+        candidates come back pre-sorted in winning order, so `[0]` is the best
+        walk. Direction is left unconstrained — block-relative direction is
+        resolved separately by `resolve_task_direction(...)`; this only ranks
+        reach distance, mirroring the no-direction-filter start-side comparison
+        `create_path(...)` runs. Returns `None` when there is no train, no
+        dispatcher, no resolvable start block, or the target is unreachable.
+        """
+        if train is None:
+            return None
+        dispatcher = getattr(self._e, "path_dispatcher", None)
+        start_block_id = self._current_block_id(train)
+        if dispatcher is None or not start_block_id:
+            return None
+        train_id = getattr(train, "train_id", None)
+        try:
+            walks = dispatcher.find_paths(
+                start_block_id, target_block_id, train_id=train_id
+            )
+        except Exception:
+            return None
+        if not walks:
+            return None
+        best = walks[0]
+        tiles = getattr(best, "tiles", None) or []
+        return (len(tiles), float(getattr(best, "distance_cm", 0.0) or 0.0))
+
     def _closer_platform_end(
         self,
         train: Optional["Train"],
@@ -575,49 +642,18 @@ class RouteTargetResolver:
     ) -> Optional[str]:
         """Pick the nearer of a multi-block platform's two end blocks.
 
-        Computes the graph-walk distance from the train's current start block
-        to each end via `PathDispatcher.find_paths(...)` (the same shared
-        walk query `create_path(...)` uses) and returns the end with the
-        shorter walk, comparing by the canonical candidate metrics
-        `(tile_count, walk_length_cm)`. `find_paths(...)` already returns
-        candidates pre-sorted in winning order, so `[0]` is each end's best
-        walk. Ties — including the case where both ends are equidistant —
-        resolve to `end_a` (the platform's `ordered_blocks[0]`), matching the
-        canonical `end_a` dead-heat tie-break. Returns `None` when the
-        comparison cannot be evaluated (no train, no dispatcher, no resolvable
-        start block, or neither end is reachable); the caller then falls back
-        to `ordered_blocks[0]`.
+        Compares the graph-walk distance from the train's current block to each
+        end via the shared `_walk_metric_to_block(...)` query and returns the
+        end with the shorter walk (canonical metrics `(tile_count,
+        walk_length_cm)`). Ties — including both ends equidistant — resolve to
+        `end_a` (the platform's `ordered_blocks[0]`), matching the canonical
+        `end_a` dead-heat tie-break. Returns `None` when the comparison cannot
+        be evaluated (no train, no dispatcher, no resolvable start block, or
+        neither end is reachable); the caller then falls back to
+        `ordered_blocks[0]`.
         """
-        if train is None:
-            return None
-        dispatcher = getattr(self._e, "path_dispatcher", None)
-        start_block_id = self._current_block_id(train)
-        if dispatcher is None or not start_block_id:
-            return None
-
-        train_id = getattr(train, "train_id", None)
-
-        def _best(end_block_id: str) -> Optional[Tuple[int, float]]:
-            """Best candidate's `(tile_count, walk_length_cm)` for this end,
-            or None when no walk reaches it. Direction is left unconstrained:
-            block-relative direction is resolved separately by
-            `resolve_task_direction(...)`; this comparison only ranks reach
-            distance, mirroring the no-direction-filter start-side comparison
-            `create_path(...)` runs."""
-            try:
-                walks = dispatcher.find_paths(
-                    start_block_id, end_block_id, train_id=train_id
-                )
-            except Exception:
-                return None
-            if not walks:
-                return None
-            best = walks[0]
-            tiles = getattr(best, "tiles", None) or []
-            return (len(tiles), float(getattr(best, "distance_cm", 0.0) or 0.0))
-
-        key_a = _best(end_a)
-        key_b = _best(end_b)
+        key_a = self._walk_metric_to_block(train, end_a)
+        key_b = self._walk_metric_to_block(train, end_b)
         if key_a is None and key_b is None:
             return None
         if key_b is None:
@@ -626,3 +662,48 @@ class RouteTargetResolver:
             return end_b
         # Both reachable: shorter walk wins; exact tie -> end_a.
         return end_b if key_b < key_a else end_a
+
+    def nearest_start_stop_index(
+        self, train: Optional["Train"], route: "Route"
+    ) -> Optional[int]:
+        """Task index of the stop nearest the train, for NEAREST start-mode
+        seeding (per design_new.md "Run start-mode seeding").
+
+        Considers only `task_kind == "stop"` tasks. For each, resolves the
+        target block via `resolve_task_target_block_detailed(...)` and measures
+        track distance with the shared `_walk_metric_to_block(...)` query.
+        Prefers stops whose resolved block is not occupied by another train;
+        falls back to the nearest stop regardless of occupancy when every
+        reachable stop is occupied. Ties break to the lowest task index.
+        Returns `None` when no stop resolves to a reachable block (the caller
+        then falls back to FIRST).
+        """
+        tasks = getattr(route, "tasks", []) or []
+        train_id = getattr(train, "train_id", None) if train is not None else None
+        blocks_registry = getattr(self._e.network, "blocks", {}) or {}
+
+        # Each candidate is ((tile_count, walk_length_cm), task_index); tuple
+        # ordering gives "shorter walk wins, lowest index breaks ties" for free.
+        best_free: Optional[Tuple[Tuple[int, float], int]] = None
+        best_any: Optional[Tuple[Tuple[int, float], int]] = None
+
+        for idx, task in enumerate(tasks):
+            if getattr(task, "task_kind", None) != "stop":
+                continue
+            bid, _reason = self.resolve_task_target_block_detailed(task, train=train)
+            if not bid:
+                continue
+            metric = self._walk_metric_to_block(train, bid)
+            if metric is None:
+                continue
+            cand = (metric, idx)
+            if best_any is None or cand < best_any:
+                best_any = cand
+            block = blocks_registry.get(bid)
+            occupant = getattr(block, "occupied_by", None) if block is not None else None
+            occupied_by_other = bool(occupant) and occupant != train_id
+            if not occupied_by_other and (best_free is None or cand < best_free):
+                best_free = cand
+
+        chosen = best_free if best_free is not None else best_any
+        return None if chosen is None else chosen[1]

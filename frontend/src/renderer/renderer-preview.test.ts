@@ -106,6 +106,7 @@ describe('_drawLive paints the previews as part of the live-layer flush', () => 
       routeHandler: { drawRouteOverlays: vi.fn() },
       trainHandler: { drawTrain: vi.fn() },
       drawBlockDirectionOverlay: vi.fn(),
+      drawTileDirectionDebug: vi.fn(),
       drawBoxSelection: vi.fn(),
       drawBoxSelectRect: vi.fn(),
       drawLassoPath: vi.fn(),

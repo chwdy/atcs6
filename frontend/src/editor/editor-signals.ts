@@ -33,17 +33,14 @@ export class SignalEditorHandler {
     return this.editor.selectedElement;
   }
 
-  getSignalStateClass(state: string): string {
+  // Map a signal aspect to the §11 status-header left accent and the §7
+  // state-chip variant. Green is the clear/default aspect → accent-success
+  // (never --border-color, §11); yellow → warn; red → danger.
+  getSignalStateAccent(state: string): { accentClass: string; chipClass: string } {
     const normalized = (state || 'green').toLowerCase();
-    if (normalized === 'yellow') return 'signal-state-yellow';
-    if (normalized === 'red') return 'signal-state-red';
-    return 'signal-state-green';
-  }
-
-  _replaceSignalStateClass(element: Element | null, nextClass: string): void {
-    if (!element) return;
-    element.classList.remove('signal-state-green', 'signal-state-yellow', 'signal-state-red');
-    element.classList.add(nextClass);
+    if (normalized === 'yellow') return { accentClass: 'accent-warn', chipClass: 'chip-warn' };
+    if (normalized === 'red') return { accentClass: 'accent-danger', chipClass: 'chip-danger' };
+    return { accentClass: 'accent-success', chipClass: 'chip-success' };
   }
 
   async showSignalsEditorForTile(track: any): Promise<void> {
@@ -68,56 +65,51 @@ export class SignalEditorHandler {
 
       signalDetails.push({ signal, index: i });
       const state = (signal.state || signal.signal_state || 'green').toUpperCase();
-      const signalStateClass = this.getSignalStateClass(state);
-      const directionClass = signal.detection_direction ? 'text-white' : 'text-danger';
+      const { accentClass, chipClass } = this.getSignalStateAccent(state);
+      const directionText = signal.detection_direction
+        ? `<span class="font-mono">${signal.detection_direction}</span>`
+        : `<span class="text-danger">no direction</span>`;
 
       signalsContent += `
-                <div class="info-box signal-panel-card ${signalStateClass} mb-16">
-                    <!-- Header with signal number -->
-                    ${signals.length > 1 ? `<div class="text-muted text-xs mb-8">Signal ${i + 1} of ${signals.length}</div>` : ''}
-
-                    <!-- Large State Display (Left-aligned) -->
-                    <div class="mb-12">
-                        <div class="signal-state-row">
-                            <span class="signal-state-dot"></span>
-                            <span class="signal-state-title">${state}</span>
+                <div${i > 0 ? ' class="control-section-divider mt-12 pt-12"' : ''}>
+                    <!-- §11 Status header — identity + aspect pill, dynamic accent. -->
+                    <div class="status-header ${accentClass}">
+                        <div class="status-header-row">
+                            <div class="status-header-id font-mono" title="${signal.signal_id}">${signal.signal_id}</div>
+                            <span class="chip chip-state ${chipClass}">${state}</span>
                         </div>
-                    </div>
-
-                    <!-- Info Grid -->
-                    <div class="property-grid signal-grid-tight mb-16">
-                        <div class="property-item">
-                            <label class="property-label">Signal ID</label>
-                            <div class="value-display text-info">${signal.signal_id}</div>
-                        </div>
-                        <div class="property-item">
-                            <label class="property-label">Direction</label>
-                            <div class="value-display ${directionClass}">${signal.detection_direction || '???'}</div>
+                        <div class="status-header-ident">
+                            <span class="status-header-role">Signal</span>
+                            <span class="status-sep">·</span>
+                            ${directionText}
+                            ${signals.length > 1 ? `<span class="status-sep">·</span><span>${i + 1} of ${signals.length}</span>` : ''}
                         </div>
                     </div>
 
                     <!-- Editable Fields -->
-                    <div class="property-grid signal-grid-standard">
-                        <div class="property-item">
-                            <label class="property-label">Signal Name</label>
-                            <input type="text" class="signal-name-input property-input" data-signal-id="${signal.signal_id}" value="${signal.name || ''}" placeholder="Enter signal name...">
-                        </div>
-                        <div class="property-item">
-                            <label class="property-label">Block to Monitor</label>
-                            <select class="signal-block-select property-input ${signal.monitored_block_id ? '' : 'property-input-warning'}" data-signal-id="${signal.signal_id}">
-                                <option value="">-- None (Manual Control) --</option>
-                                <option value="${signal.monitored_block_id || ''}" selected>${signal.monitored_block_id || 'None'} (Loading...)</option>
-                            </select>
-                            <div class="block-select-hint text-muted text-xs mt-4" data-signal-id="${signal.signal_id}">
-                                Signal shows RED when monitored block is occupied
+                    <div class="control-section">
+                        <div class="property-grid signal-grid-standard">
+                            <div class="property-item">
+                                <label class="property-label">Signal Name</label>
+                                <input type="text" class="signal-name-input property-input" data-signal-id="${signal.signal_id}" value="${signal.name || ''}" placeholder="Enter signal name...">
+                            </div>
+                            <div class="property-item">
+                                <label class="property-label">Block to Monitor</label>
+                                <select class="signal-block-select property-input ${signal.monitored_block_id ? '' : 'property-input-warning'}" data-signal-id="${signal.signal_id}">
+                                    <option value="">-- None (Manual Control) --</option>
+                                    <option value="${signal.monitored_block_id || ''}" selected>${signal.monitored_block_id || 'None'} (Loading...)</option>
+                                </select>
+                                <div class="block-select-hint text-muted text-xs mt-4" data-signal-id="${signal.signal_id}">
+                                    Signal shows RED when monitored block is occupied
+                                </div>
                             </div>
                         </div>
-                    </div>
 
-                    <div class="mt-16">
-                        <button class="save-signal-btn btn btn-accent btn-full text-base" data-signal-id="${signal.signal_id}">
-                            Save Signal Properties
-                        </button>
+                        <div class="mt-16">
+                            <button class="save-signal-btn btn btn-accent btn-full text-base" data-signal-id="${signal.signal_id}">
+                                Save Signal Properties
+                            </button>
+                        </div>
                     </div>
                 </div>
             `;
@@ -233,39 +225,25 @@ export class SignalEditorHandler {
     }
 
     const state = (signal.state || signal.signal_state || 'green').toLowerCase();
-    const signalStateClass = this.getSignalStateClass(state);
+    const { accentClass, chipClass } = this.getSignalStateAccent(state);
     const stateText = state.toUpperCase();
-    const directionClass = signal.detection_direction ? 'text-white' : 'text-danger';
+    const directionText = signal.detection_direction
+      ? `<span class="font-mono">${signal.detection_direction}</span>`
+      : `<span class="text-danger">no direction</span>`;
 
     const content = `
-            <!-- INFO SECTION (Read-only, styled like Train Control) -->
-            <div class="info-box signal-panel-card ${signalStateClass}">
-                <!-- Large State Display (Left-aligned) -->
-                <div class="mb-12">
-                    <div class="signal-state-row">
-                        <span class="signal-state-dot"></span>
-                        <span class="signal-state-title">${stateText}</span>
-                    </div>
+            <!-- §11 Status header — identity + aspect pill, dynamic accent. -->
+            <div class="status-header ${accentClass}" id="signal-status-header">
+                <div class="status-header-row">
+                    <div class="status-header-id font-mono" title="${signal.signal_id}">${signal.signal_id}</div>
+                    <span class="chip chip-state ${chipClass}" id="signal-state-chip">${stateText}</span>
                 </div>
-
-                <!-- Info Grid -->
-                <div class="property-grid signal-grid-tight">
-                    <div class="property-item">
-                        <label class="property-label">Signal ID</label>
-                        <div class="value-display text-info">${signal.signal_id}</div>
-                    </div>
-                    <div class="property-item">
-                        <label class="property-label">Direction</label>
-                        <div class="value-display ${directionClass}">${signal.detection_direction || '???'}</div>
-                    </div>
-                    <div class="property-item">
-                        <label class="property-label">Position</label>
-                        <div class="value-display text-muted">(${signal.x}, ${signal.y})</div>
-                    </div>
-                    <div class="property-item">
-                        <label class="property-label">Monitored Block</label>
-                        <div id="monitored-block-display" class="value-display text-primary">${signal.monitored_block_id || 'None'}</div>
-                    </div>
+                <div class="status-header-ident">
+                    <span class="status-header-role">Signal</span>
+                    <span class="status-sep">·</span>
+                    ${directionText}
+                    <span class="status-sep">·</span>
+                    <span class="font-mono">(${signal.x}, ${signal.y})</span>
                 </div>
             </div>
 
@@ -425,27 +403,31 @@ export class SignalEditorHandler {
 
   /** Update signal display values without rebuilding the entire panel. */
   _updateSignalDisplay(signal: any): void {
-    // Update state display
     const state = (signal.state || signal.signal_state || 'green').toLowerCase();
-    const stateClass = this.getSignalStateClass(state);
+    const { accentClass, chipClass } = this.getSignalStateAccent(state);
     const stateText = state.toUpperCase();
 
-    const stateCard = document.querySelector('.signal-panel-card');
-    this._replaceSignalStateClass(stateCard, stateClass);
-
-    const stateDot = document.querySelector('.signal-state-dot');
-    this._replaceSignalStateClass(stateDot, stateClass);
-
-    const stateSpan = stateDot?.nextElementSibling;
-    if (stateSpan) {
-      this._replaceSignalStateClass(stateSpan, stateClass);
-      stateSpan.textContent = stateText;
+    // Re-drive the §11 status-header left accent and the §7 state chip in
+    // place. The single-signal editor is the only path with a live
+    // subscription; the multi-signal tile view has none.
+    const header = document.getElementById('signal-status-header');
+    if (header) {
+      header.classList.remove('accent-success', 'accent-warn', 'accent-danger');
+      header.classList.add(accentClass);
+    }
+    const chip = document.getElementById('signal-state-chip');
+    if (chip) {
+      chip.classList.remove('chip-success', 'chip-warn', 'chip-danger');
+      chip.classList.add(chipClass);
+      chip.textContent = stateText;
     }
 
-    // Update monitored block display
-    const monitoredBlockDisplay = document.getElementById('monitored-block-display');
-    if (monitoredBlockDisplay) {
-      monitoredBlockDisplay.textContent = signal.monitored_block_id || 'None';
+    // The monitored block now lives only in the editable select; keep it in
+    // sync when the value changes server-side. _onSignalUpdate already bails
+    // when a form control is focused, so this never clobbers an active edit.
+    const blockSelect = document.getElementById('signal-block-select') as HTMLSelectElement | null;
+    if (blockSelect && signal.monitored_block_id) {
+      blockSelect.value = signal.monitored_block_id;
     }
   }
 

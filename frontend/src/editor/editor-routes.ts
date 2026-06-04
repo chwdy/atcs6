@@ -765,12 +765,65 @@ export class RouteEditorHandler {
                 </div>
 
                 ${this.renderRoutePolicyRow(route)}
+                ${this.renderRouteStartModeRow(route)}
+            </div>
+        `;
+  }
+
+  /** `<option>`s for each `stop` task in the route, for a start-stop picker. */
+  _renderStopOptions(route: any, selectedIndex: number | null): string {
+    const tasks = (route && route.tasks) || [];
+    let html = '';
+    tasks.forEach((t: any, i: number) => {
+      if (t.task_kind !== 'stop') return;
+      const loc = t.task_location || {};
+      let label = '';
+      if (loc.block_id) label = this.getTargetDisplayName('block', loc.block_id);
+      else if (loc.station_id) label = this.getTargetDisplayName('station', loc.station_id);
+      else if (loc.platform_id) label = this.getTargetDisplayName('platform', loc.platform_id);
+      const sel = selectedIndex === i ? 'selected' : '';
+      html += `<option value="${i}" ${sel}>Stop ${i + 1}${label ? ': ' + label : ''}</option>`;
+    });
+    return html || '<option value="">(no stops in route)</option>';
+  }
+
+  /**
+   * Route-level default for which stop a freshly-assigned train begins at
+   * (per design_new.md "Run start-mode seeding"). FIRST keeps the current
+   * behavior; NEAREST auto-picks the closest non-occupied stop; SPECIFIC uses
+   * the chosen stop. This is a route default — a per-assignment override is
+   * offered in the train-assignment section.
+   */
+  renderRouteStartModeRow(route: any): string {
+    const start = route.start_mode || 'first';
+    const isSpecific = start === 'specific';
+    const seg = ['first', 'nearest', 'specific']
+      .map((v) => {
+        const label = v === 'first' ? 'First stop' : v === 'nearest' ? 'Nearest' : 'Specific';
+        return `<button type="button" class="switch-btn ${v === start ? 'active' : ''}"
+                        data-value="${v}" data-seg="route-start-mode-seg">${label}</button>`;
+      })
+      .join('');
+    return `
+            <div class="route-header-row" data-route-start-mode-row>
+                <div class="route-header-col">
+                    <label class="property-label">Start at</label>
+                    <div id="route-start-mode-seg" class="switch-group compact route-seg" role="radiogroup">
+                        ${seg}
+                    </div>
+                    <div class="text-xxs text-muted mt-4">Which stop a freshly-assigned train begins from.</div>
+                </div>
+                <div class="route-header-col" id="route-start-specific-col" style="${isSpecific ? '' : 'display:none'}">
+                    <label class="property-label">Specific stop</label>
+                    <select id="route-start-task-index-select" class="property-input">
+                        ${this._renderStopOptions(route, Number.isInteger(route.start_task_index) ? route.start_task_index : null)}
+                    </select>
+                </div>
             </div>
         `;
   }
 
   renderRoutePolicyRow(route: any): string {
-    const action = route.action_on_waypoint_unreachable || 'WAIT';
     const priority = Number.isInteger(route.priority) ? route.priority : 5;
     const acq = route.acquisition_mode || 'best_effort';
     const seg = (id: string, options: Array<{ value: string; label: string }>, current: string) => {
@@ -810,19 +863,6 @@ export class RouteEditorHandler {
                     )}
                     <div class="text-xxs text-muted mt-4">Push to runs:</div>
                     ${pushSeg('route-acq-push-seg', 'soft')}
-                </div>
-                <div class="route-header-col">
-                    <label class="property-label">On waypoint unreachable</label>
-                    ${seg(
-                      'route-action-seg',
-                      [
-                        { value: 'WAIT', label: 'Wait' },
-                        { value: 'SKIP', label: 'Skip' },
-                      ],
-                      action
-                    )}
-                    <div class="text-xxs text-muted mt-4">Push to runs:</div>
-                    ${pushSeg('route-action-push-seg', 'soft')}
                 </div>
                 <div class="route-header-col">
                     <label class="property-label">Priority (0-9)</label>
@@ -907,6 +947,10 @@ export class RouteEditorHandler {
     const targetName = isDwell
       ? 'Dwell'
       : this.getTargetDisplayName(targetType, targetId) || targetId || 'No target';
+    // Per design_new.md "Unreachable and broken task handling": red cross when
+    // the target ID is missing from the network (broken), grey when the target
+    // exists but is disabled/manual (unavailable).
+    const targetStatus = isDwell ? 'ok' : this.getTargetStatus(targetType, targetId);
     const hasTime = task.task_time !== null && task.task_time !== undefined && task.task_time !== '';
     const timeText = hasTime ? `${task.task_time}s ${isDwell ? 'dwell' : 'travel'}` : '';
 
@@ -921,8 +965,8 @@ export class RouteEditorHandler {
                   isDwell
                     ? ''
                     : `
-                    <span class="chip task-summary-chip task-summary-target" title="${targetName}">
-                        ${ti(TYPE_ICON[targetType])}
+                    <span class="chip task-summary-chip task-summary-target task-target-${targetStatus}" title="${targetStatus === 'missing' ? 'Target missing from network — task will be skipped' : targetStatus === 'unavailable' ? 'Target disabled or set to manual — train will wait' : targetName}">
+                        ${targetStatus === 'missing' ? ti('circle-x') : ti(TYPE_ICON[targetType])}
                         <span class="task-summary-target-name">${targetName}</span>
                     </span>
                     <span class="chip task-summary-chip task-summary-direction">
@@ -1070,6 +1114,28 @@ export class RouteEditorHandler {
           Array.isArray(group?.platform_ids) && group.platform_ids.includes(platformId)
       ) || null
     );
+  }
+
+  /**
+   * Status of a task's target for editor rendering, per design_new.md
+   * "Unreachable and broken task handling":
+   *   'missing'     — target ID is not in the network (broken → red cross)
+   *   'unavailable' — target exists but is disabled/manual (grey out)
+   *   'ok'          — present and available
+   */
+  getTargetStatus(targetType: string, targetId: string): 'ok' | 'missing' | 'unavailable' {
+    if (!targetId) return 'ok';
+    let entity: any;
+    if (targetType === 'block') {
+      entity = this.getBlocks().find((b: any) => b.block_id === targetId);
+    } else if (targetType === 'station') {
+      entity = this.getStationGroups().find((s: any) => s.station_id === targetId);
+    } else {
+      entity = this.getPlatforms().find((p: any) => this.getPlatformId(p) === targetId);
+    }
+    if (!entity) return 'missing';
+    if (entity.disabled || entity.manual) return 'unavailable';
+    return 'ok';
   }
 
   getTargetDisplayName(targetType: string, targetId: string): string {
@@ -1289,6 +1355,18 @@ export class RouteEditorHandler {
                 </label>
                 <button id="assign-train-btn" class="btn btn-sm btn-primary">Assign</button>
             </div>
+            <div class="atr-assign-row mt-4">
+                <select id="assign-start-mode" class="property-input route-input-compact atr-assign-select"
+                        title="Which stop this train starts from. 'Route default' uses the route's Start at setting.">
+                    <option value="">Start: route default</option>
+                    <option value="first">Start: first stop</option>
+                    <option value="nearest">Start: nearest stop</option>
+                    <option value="specific">Start: specific stop</option>
+                </select>
+                <select id="assign-start-task-index" class="property-input route-input-compact atr-assign-select" style="display:none">
+                    ${this._renderStopOptions(route, null)}
+                </select>
+            </div>
             <div class="flex gap-8 mt-8">
                 <button id="assign-train-map-btn" class="btn btn-sm btn-secondary flex-1" title="Click trains on the layout to assign them; eligible trains light up. Esc to finish.">Assign on map</button>
             </div>
@@ -1370,7 +1448,7 @@ export class RouteEditorHandler {
     });
 
     // Route-policy + per-field push segmented controls.
-    ['route-acq-seg', 'route-acq-push-seg', 'route-action-seg', 'route-action-push-seg', 'route-priority-push-seg'].forEach(
+    ['route-acq-seg', 'route-acq-push-seg', 'route-priority-push-seg'].forEach(
       (segId) => {
         document.querySelectorAll<HTMLElement>(`#${segId} .switch-btn`).forEach((btn) => {
           btn.onclick = (e) => {
@@ -1381,6 +1459,17 @@ export class RouteEditorHandler {
         });
       }
     );
+
+    // Route start-mode segmented control — also toggles the Specific-stop col.
+    document.querySelectorAll<HTMLElement>('#route-start-mode-seg .switch-btn').forEach((btn) => {
+      btn.onclick = (e) => {
+        const target = e.currentTarget as HTMLElement;
+        const seg = target.parentElement;
+        seg?.querySelectorAll('.switch-btn').forEach((b) => b.classList.toggle('active', b === target));
+        const col = document.getElementById('route-start-specific-col');
+        if (col) col.style.display = target.dataset.value === 'specific' ? '' : 'none';
+      };
+    });
 
     // Task reorder/delete/locate buttons
     document.querySelectorAll<HTMLElement>('.move-task-up').forEach((btn) => {
@@ -1514,6 +1603,15 @@ export class RouteEditorHandler {
         if (this.editor.activeMode?.name === 'route-train-assign') {
           this.refreshAssignCandidates();
         }
+      };
+    }
+
+    // Per-assignment start mode: reveal the Specific-stop picker only for 'specific'.
+    const assignStartMode = document.getElementById('assign-start-mode') as HTMLSelectElement | null;
+    if (assignStartMode) {
+      assignStartMode.onchange = () => {
+        const idxSel = document.getElementById('assign-start-task-index') as HTMLSelectElement | null;
+        if (idxSel) idxSel.style.display = assignStartMode.value === 'specific' ? '' : 'none';
       };
     }
 
@@ -1946,8 +2044,6 @@ export class RouteEditorHandler {
 
     const acqValue = segValue('route-acq-seg');
     const acqPush = segValue('route-acq-push-seg') || 'soft';
-    const actionValue = segValue('route-action-seg');
-    const actionPush = segValue('route-action-push-seg') || 'soft';
     const priorityRaw = (document.getElementById('route-priority-input') as HTMLInputElement | null)?.value;
     const priorityPush = segValue('route-priority-push-seg') || 'soft';
 
@@ -1959,9 +2055,6 @@ export class RouteEditorHandler {
     if (acqValue) {
       payload.acquisition_mode = { value: acqValue, push: acqPush };
     }
-    if (actionValue) {
-      payload.action_on_waypoint_unreachable = { value: actionValue, push: actionPush };
-    }
     // Priority via the shared validator (helpers#validatePriorityInput).
     const priorityCheck = validatePriorityInput(priorityRaw);
     if (priorityCheck.kind === 'error') {
@@ -1970,6 +2063,19 @@ export class RouteEditorHandler {
     }
     if (priorityCheck.kind === 'ok') {
       payload.priority = { value: priorityCheck.value, push: priorityPush };
+    }
+
+    // Start-mode route default (per design_new.md "Run start-mode seeding").
+    // Not an override — plain value, no push policy.
+    const startModeValue = segValue('route-start-mode-seg') || 'first';
+    payload.start_mode = startModeValue;
+    if (startModeValue === 'specific') {
+      const idxRaw = (
+        document.getElementById('route-start-task-index-select') as HTMLSelectElement | null
+      )?.value;
+      payload.start_task_index = idxRaw ? parseInt(idxRaw, 10) : null;
+    } else {
+      payload.start_task_index = null;
     }
 
     // Warn if the route has no Stop tasks.
@@ -2089,6 +2195,19 @@ export class RouteEditorHandler {
     const trainId = select.value;
     const forceAssign = !!(document.getElementById('assign-train-force') as HTMLInputElement | null)?.checked;
 
+    // Per-assignment start-mode override (empty = use the route default).
+    const startMode = (document.getElementById('assign-start-mode') as HTMLSelectElement | null)?.value || '';
+    const assignOpts: { force: boolean; startMode?: string; startTaskIndex?: number | null } = {
+      force: forceAssign,
+    };
+    if (startMode) {
+      assignOpts.startMode = startMode;
+      if (startMode === 'specific') {
+        const idxRaw = (document.getElementById('assign-start-task-index') as HTMLSelectElement | null)?.value;
+        assignOpts.startTaskIndex = idxRaw ? parseInt(idxRaw, 10) : null;
+      }
+    }
+
     const dirtyOk = await this._promptSaveIfDirty('Assign train');
     if (!dirtyOk) return;
 
@@ -2096,9 +2215,7 @@ export class RouteEditorHandler {
     if (!ok) return;
 
     try {
-      await this.api.assignRoute(trainId, this.currentRoute.route_id, {
-        force: forceAssign,
-      });
+      await this.api.assignRoute(trainId, this.currentRoute.route_id, assignOpts);
 
       await this._refetchRouteAfterLifecycleOp();
       showToast(`Train ${trainId} assigned`, 'success', 3000);

@@ -100,3 +100,59 @@ describe('RendererTunnelHandler.drawTunnels', () => {
     expect(ctx.translate).toHaveBeenCalledWith(21, 40);
   });
 });
+
+describe('RendererTunnelHandler.tunnelAt', () => {
+  const pair = { a: { x: 0, y: 0, edge: 'N' }, b: { x: 5, y: 5, edge: 'S' } };
+
+  it('resolves the pair under either mouth, null elsewhere', () => {
+    const ctx = makeCtx();
+    const handler = new RendererTunnelHandler(makeRenderer(ctx));
+    // After a draw, mouth A sits at (0,-1) and mouth B at (50,51).
+    handler.drawTunnels([pair], null);
+    expect(handler.tunnelAt(0, -1)).toBe(pair);
+    expect(handler.tunnelAt(50, 51)).toBe(pair);
+    expect(handler.tunnelAt(200, 200)).toBeNull();
+  });
+
+  it('returns null before any draw (empty registry)', () => {
+    const ctx = makeCtx();
+    const handler = new RendererTunnelHandler(makeRenderer(ctx));
+    expect(handler.tunnelAt(0, -1)).toBeNull();
+  });
+
+  it('drops stale targets when a pair is no longer drawn', () => {
+    const ctx = makeCtx();
+    const handler = new RendererTunnelHandler(makeRenderer(ctx));
+    handler.drawTunnels([pair], null);
+    expect(handler.tunnelAt(0, -1)).toBe(pair);
+    handler.drawTunnels([], null);
+    expect(handler.tunnelAt(0, -1)).toBeNull();
+  });
+});
+
+describe('RendererTunnelHandler selected highlight', () => {
+  const pair = { a: { x: 0, y: 0, edge: 'N' }, b: { x: 5, y: 5, edge: 'S' } };
+  const radiiOf = (ctx: ReturnType<typeof makeCtx>) => ctx.arc.mock.calls.map((c) => c[2]);
+
+  it('draws the selected pair with the larger ring', () => {
+    const ctx = makeCtx();
+    const handler = new RendererTunnelHandler(makeRenderer(ctx));
+    handler.drawTunnels([pair], null, { selected: pair });
+    expect(radiiOf(ctx)).toEqual([11, 11]);
+  });
+
+  it('draws an unselected pair with the default ring', () => {
+    const ctx = makeCtx();
+    const handler = new RendererTunnelHandler(makeRenderer(ctx));
+    handler.drawTunnels([pair], null);
+    expect(radiiOf(ctx)).toEqual([9, 9]);
+  });
+
+  it('matches the selected pair regardless of A/B order or edge case', () => {
+    const ctx = makeCtx();
+    const handler = new RendererTunnelHandler(makeRenderer(ctx));
+    const flipped = { a: { x: 5, y: 5, edge: 's' }, b: { x: 0, y: 0, edge: 'n' } };
+    handler.drawTunnels([pair], null, { selected: flipped });
+    expect(radiiOf(ctx)).toEqual([11, 11]);
+  });
+});

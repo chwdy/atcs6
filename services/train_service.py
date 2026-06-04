@@ -28,6 +28,7 @@ from app_state import AppState
 from enums import CommandResult, Direction, HandlePosition
 from services.exceptions import ConflictError, NotFoundError, ValidationError
 from train import Train, TrainCar
+from train_route import RouteStartMode
 
 
 # --------------------------------------------------------------- lookups ----
@@ -274,7 +275,13 @@ def assign_speed_profile(
 
 
 def assign_route(
-    state: AppState, train_id: str, *, route_id: Optional[str], force: bool = False
+    state: AppState,
+    train_id: str,
+    *,
+    route_id: Optional[str],
+    force: bool = False,
+    start_mode: Optional[str] = None,
+    start_task_index: Optional[Any] = None,
 ) -> Train:
     """Assign, retarget, or clear a train's route.
 
@@ -287,9 +294,18 @@ def assign_route(
     ``route_id`` None clears the current assignment. A non-None route_id
     assigns/retargets.
 
+    ``start_mode`` / ``start_task_index`` are an optional per-assignment
+    one-shot start-mode input (per design_new.md "Run start-mode seeding").
+    When provided on a genuine assign/retarget, they are stashed on
+    ``RouteExecutor._pending_start_overrides[train_id]`` and consumed by the
+    next fresh ``RouteRun`` allocation; ``None`` means "use the route default."
+    The pending bundle is cleared at the top of every call so a stale choice
+    can never leak onto a different route's run.
+
     Raises:
         NotFoundError when the train or the target route does not exist.
-        ValidationError when the target route has no tasks.
+        ValidationError when the target route has no tasks or start_mode is
+            invalid.
         ConflictError when the train is already on a route and ``force`` is
             False.
     """
@@ -298,6 +314,12 @@ def assign_route(
     route_executor = (
         state.sim_controller.route_executor if state.sim_controller else None
     )
+    # Clear any stale per-assignment start input before doing anything else, so
+    # an unassign — or a reassign to a different route — never reuses a choice
+    # made for an earlier assignment (per design_new.md "Run start-mode
+    # seeding").
+    if route_executor is not None:
+        route_executor._pending_start_overrides.pop(train_id, None)
     route_registry = route_executor.route_registry if route_executor else {}
     current_route_id = (
         route_executor.assigned_route_id_for(train_id) if route_executor else None
@@ -360,6 +382,26 @@ def assign_route(
         previous_route = route_registry.get(current_route_id)
         if previous_route:
             previous_route.unassign_train(train_id)
+
+    # Stash the per-assignment start-mode input (if any) for the next fresh
+    # RouteRun allocation. Only set on a genuine assign/retarget that reaches
+    # this point; the same-route no-op above returned early. Per design_new.md
+    # "Run start-mode seeding".
+    if route_executor is not None and start_mode is not None:
+        try:
+            resolved_start_mode = RouteStartMode(start_mode)
+        except ValueError:
+            raise ValidationError(f"Invalid start_mode {start_mode!r}")
+        try:
+            resolved_start_index = (
+                None if start_task_index is None else int(start_task_index)
+            )
+        except (TypeError, ValueError):
+            raise ValidationError("start_task_index must be an integer or null")
+        route_executor._pending_start_overrides[train_id] = {
+            "start_mode": resolved_start_mode,
+            "start_task_index": resolved_start_index,
+        }
 
     route.assign_train(train_id)
     return train

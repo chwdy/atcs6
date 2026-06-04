@@ -303,10 +303,17 @@ class StationRegistry:
         # Delete from storage
         del self._n.platforms[station_id]
 
-        # Remove this platform from any logical station groups
-        for station_group in self._n.station_groups.values():
+        # Remove this platform from any logical station groups, then drop any
+        # group left with no platforms (Non-empty parent rule). Collect the
+        # affected group ids first so we never mutate station_groups while
+        # iterating it.
+        emptied_group_ids = []
+        for group_id, station_group in self._n.station_groups.items():
             if station_id in station_group.platform_ids:
                 station_group.remove_platform(station_id)
+                emptied_group_ids.append(group_id)
+        for group_id in emptied_group_ids:
+            self._prune_station_group_if_empty(group_id)
         return True
 
     def delete_platform(self, platform_id: str) -> bool:
@@ -459,8 +466,15 @@ class StationRegistry:
         station_id: Optional[str] = None,
         name: str = "",
         platform_ids: Optional[List[str]] = None,
+        force: bool = False,
     ) -> Station:
-        """Create a logical station group for one or more platforms."""
+        """Create a logical station group for one or more platforms.
+
+        When ``force`` is True, a platform that already belongs to another
+        station is reassigned: it is detached from its old station first, which
+        auto-deletes that old station when it becomes empty (Non-empty parent
+        rule). When ``force`` is False, such a platform raises.
+        """
         if station_id is None:
             station_id = f"STA_{uuid.uuid4().hex[:6].upper()}"
         if station_id in self._n.station_groups:
@@ -472,11 +486,25 @@ class StationRegistry:
                 raise ValueError(f"Platform {platform_id} not found")
             existing_station_id = self.get_station_for_platform(platform_id)
             if existing_station_id:
-                raise ValueError(
-                    f"Platform {platform_id} already belongs to station {existing_station_id}"
+                if not force:
+                    raise ValueError(
+                        f"Platform {platform_id} already belongs to station {existing_station_id}"
+                    )
+                # Force-reassign: detach from the old station (auto-prunes the
+                # old station when it becomes empty).
+                self.remove_platform_from_station_group(
+                    existing_station_id, platform_id
                 )
             if platform_id not in normalized_platform_ids:
                 normalized_platform_ids.append(platform_id)
+
+        # Non-empty parent rule (design_new.md, TrackSegment ownership list):
+        # a Station always owns at least one Platform, so a group is never
+        # created empty.
+        if not normalized_platform_ids:
+            raise ValueError(
+                "A station group must contain at least one platform"
+            )
 
         station = Station(
             station_id=station_id,
@@ -493,8 +521,31 @@ class StationRegistry:
         del self._n.station_groups[station_id]
         return True
 
-    def add_platform_to_station_group(self, station_id: str, platform_id: str) -> bool:
-        """Add a platform to a logical station group."""
+    def _prune_station_group_if_empty(self, station_id: str) -> bool:
+        """Delete a logical station group when it has no platforms left.
+
+        Enforces the Non-empty parent rule (design_new.md, TrackSegment
+        ownership list): a Station always owns at least one Platform, so a
+        group whose last platform just left is removed rather than persisted
+        empty. No-op (returns False) when the group is missing or still has
+        platforms. This is the single place that deletes an emptied group;
+        the removal callers route through it.
+        """
+        group = self._n.station_groups.get(station_id)
+        if group is not None and not group.platform_ids:
+            del self._n.station_groups[station_id]
+            return True
+        return False
+
+    def add_platform_to_station_group(
+        self, station_id: str, platform_id: str, force: bool = False
+    ) -> bool:
+        """Add a platform to a logical station group.
+
+        When ``force`` is True and the platform belongs to another station, it
+        is reassigned (detached from its old station first, which auto-deletes
+        the old station when it becomes empty, per the Non-empty parent rule).
+        """
         station = self._n.station_groups.get(station_id)
         if not station:
             raise ValueError(f"Station {station_id} not found")
@@ -503,18 +554,28 @@ class StationRegistry:
 
         existing_station_id = self.get_station_for_platform(platform_id)
         if existing_station_id and existing_station_id != station_id:
-            raise ValueError(
-                f"Platform {platform_id} already belongs to station {existing_station_id}"
-            )
+            if not force:
+                raise ValueError(
+                    f"Platform {platform_id} already belongs to station {existing_station_id}"
+                )
+            self.remove_platform_from_station_group(existing_station_id, platform_id)
 
         return station.add_platform(platform_id)
 
     def remove_platform_from_station_group(
         self, station_id: str, platform_id: str
     ) -> bool:
-        """Remove a platform from a logical station group."""
+        """Remove a platform from a logical station group.
+
+        Non-empty parent rule (design_new.md, TrackSegment ownership list):
+        if this removes the group's last platform, the now-empty group is
+        deleted in the same call rather than left empty.
+        """
         station = self._n.station_groups.get(station_id)
         if not station:
             raise ValueError(f"Station {station_id} not found")
-        return station.remove_platform(platform_id)
+        removed = station.remove_platform(platform_id)
+        if removed:
+            self._prune_station_group_if_empty(station_id)
+        return removed
 

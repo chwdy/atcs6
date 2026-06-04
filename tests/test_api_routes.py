@@ -558,7 +558,10 @@ class TestStationGroupRoutes:
         assert "PLT_B" not in remove_resp.get_json()["platform_ids"]
 
     def test_list_station_groups(self, client, app_state, network_with_tracks):
-        app_state.network.create_station_group("STA_MAIN", "Main", [])
+        # A station group must own at least one platform (Non-empty parent
+        # rule), so seed one before listing.
+        app_state.network.add_platform(0, 0, platform_id="PLT_A", name="A")
+        app_state.network.create_station_group("STA_MAIN", "Main", ["PLT_A"])
         response = client.get("/api/station")
         assert response.status_code == 200
         data = response.get_json()

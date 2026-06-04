@@ -133,13 +133,19 @@ def test_reversing_occupant_blocks_follower_before_crossover():
     assert le_ok, "LEAD turn-back must be creatable once FOLLOW stays before X2"
 
 
-def test_non_reversing_occupant_allows_tight_follow():
-    """Route-aware, not geometric: an occupant with no resolvable reversing
-    next move (here, no route) does NOT restrict the follower, which still
-    truncates onto BLK_X2_TO_S4_S (past X2) as it does today.
+def test_non_reversing_occupant_still_held_back_by_junction_rule():
+    """The junction-fouling exclusion is occupancy-independent. Even with NO
+    reversing occupant (so the reversal-trap does not apply), the follower
+    still holds back before X2 rather than parking on the two-way block past
+    it. BLK_X2_TO_S4_S is two-way and sits straight off SW_X2, so a truncated
+    authority stops at BLK_S3_S_TO_X2 (before X2), keeping the crossover clear.
+    This is what makes the rule deadlock-proof without a timing window: the
+    follower never fouls the junction, whether or not an opposing train is
+    already there.
     """
     network, dispatcher, sim = _stage(assign_lead_route=False)
 
+    # No reversing occupant: the reversal-trap exclusion does NOT fire here.
     assert sim.route_executor.find_next_move_target("LEAD") is None
     assert dispatcher._terminal_traps_reversing_occupant(
         "PLT_S4_S_BLOCK", "BLK_X2_TO_S4_S", "FOLLOW") is False
@@ -147,7 +153,12 @@ def test_non_reversing_occupant_allows_tight_follow():
     res = _follow_best_effort_to_s4(dispatcher)
     assert res.success
     auth_end = dispatcher.get_active_path("FOLLOW").get_authority_end_block_id()
-    assert auth_end == "BLK_X2_TO_S4_S", (
-        f"With no reversing occupant the follower keeps today's tight-follow "
-        f"truncation; got {auth_end!r}."
+    assert auth_end == "BLK_S3_S_TO_X2", (
+        f"The junction-fouling exclusion must hold FOLLOW before X2 even with "
+        f"no reversing occupant (BLK_X2_TO_S4_S is a two-way block off SW_X2); "
+        f"got {auth_end!r}."
     )
+    # The exit and crossover stay clear, exactly as in the reversing case.
+    seq = [getattr(e, "resource_id", None)
+           for e in dispatcher.get_active_path("FOLLOW").resource_sequence]
+    assert "SW_X2" not in seq and "BLK_X2_TO_S4_S" not in seq

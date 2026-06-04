@@ -7,7 +7,6 @@ import { stateManager } from '../lib/state-manager';
 import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import {
-  renderHeaderId,
   renderTileList,
   renderAvailabilitySegment,
   renderDirectionSegment,
@@ -88,14 +87,21 @@ export class BlockEditorHandler {
     return `hsl(${hue}, 70%, 50%)`;
   }
 
-  getBlockStateClass(state: string): string {
-    const map: Record<string, string> = {
-      free: 'block-state-free',
-      reserved: 'block-state-reserved',
-      occupied: 'block-state-occupied',
-      caution: 'block-state-caution',
+  // Map a block's runtime state to the §11 status-header left accent and the
+  // §7 state-chip variant. The block's runtime state is always one of
+  // free / reserved / occupied / caution (block.py:198); disabled / manual are
+  // separate availability flags edited by the segment below, not states here.
+  // FREE inherits cyan (--info-color) per the §1 block-state palette; RESERVED
+  // is the green "enter" state. The default is a meaningful palette color
+  // (info), never --border-color (§11 "Status header block").
+  getBlockStateAccent(state: string): { accentClass: string; chipClass: string } {
+    const map: Record<string, { accentClass: string; chipClass: string }> = {
+      free: { accentClass: 'accent-info', chipClass: 'chip-info' },
+      reserved: { accentClass: 'accent-success', chipClass: 'chip-success' },
+      occupied: { accentClass: 'accent-danger', chipClass: 'chip-danger' },
+      caution: { accentClass: 'accent-warn', chipClass: 'chip-warn' },
     };
-    return map[(state || '').toLowerCase()] || 'block-state-unknown';
+    return map[(state || '').toLowerCase()] || { accentClass: 'accent-info', chipClass: 'chip-info' };
   }
 
   // === Block Editor Panel ===
@@ -122,50 +128,39 @@ export class BlockEditorHandler {
       }
     }
 
-    // Resolve what forward / reverse mean physically for this block so the
-    // map can draw F / R arrows at the block's terminal tiles while this
-    // editor is open. The direction-info endpoint 404s (→ null) when a block
-    // lacks geometry to disambiguate; we tolerate that.
-    let directionGeometry = null;
-    try {
-      const [forward, reverse] = await Promise.all([
-        this.api.getBlockDirectionInfo(blockId, 'forward'),
-        this.api.getBlockDirectionInfo(blockId, 'reverse'),
-      ]);
-      directionGeometry = { forward: forward || null, reverse: reverse || null };
-    } catch (err) {
-      console.warn('[BlockEditorHandler] direction-info fetch failed:', err);
-    }
-
-    const blockColor = this.getColor(blockId);
-    const blockStateClass = this.getBlockStateClass(block.state);
+    const stateText = (block.state || 'free').toUpperCase();
+    const { accentClass, chipClass } = this.getBlockStateAccent(block.state);
+    const trackCount = block.track_count || 0;
+    const lengthCm = block.length_cm || 0;
 
     const content = `
             <div class="block-editor-panel" data-block-id="${blockId}">
-                ${renderHeaderId(blockId, blockColor)}
-
-                <!-- INFO SECTION (Read-only, styled like Train Control) -->
-                <div class="info-box mb-12">
-                    <div class="flex justify-between items-start mb-2">
-                        <span class="text-xs text-muted uppercase tracking-wider">State</span>
-                        ${block.occupied_by ? `<span class="badge badge-warning text-xxs"><i class="ti ti-train"></i> ${block.occupied_by}</span>` : ''}
+                <!-- §11 Status header — identity + state pill, dynamic accent. -->
+                <div class="status-header ${accentClass}">
+                    <div class="status-header-row">
+                        <div class="status-header-id font-mono" title="${blockId}">${blockId}</div>
+                        <span class="chip chip-state ${chipClass}">${stateText}</span>
                     </div>
-
-                    <div class="text-2xl font-bold mb-4 font-mono block-state-display ${blockStateClass}" id="block-state-display">
-                        ${(block.state || 'free').toUpperCase()}
-                    </div>
-
-                    <div class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm font-mono">
-                        <div>
-                            <span class="text-muted text-xs block">Track Count</span>
-                            <span class="text-primary font-bold">${block.track_count || 0} tiles</span>
-                        </div>
-                        <div>
-                            <span class="text-muted text-xs block">Length</span>
-                            <span class="text-info">${block.length_cm || 0} cm</span>
-                        </div>
+                    <div class="status-header-ident">
+                        <span class="status-header-role">Block</span>
+                        <span class="status-sep">·</span>
+                        <span class="font-mono">${trackCount} tile${trackCount === 1 ? '' : 's'}</span>
+                        <span class="status-sep">·</span>
+                        <span class="font-mono">${lengthCm} cm</span>
                     </div>
                 </div>
+
+                <!-- §6 banner — surfaces the occupying train. Hidden when clear. -->
+                ${
+                  block.occupied_by
+                    ? `
+                <div class="banner banner-danger">
+                    <div class="banner-label">Occupied by</div>
+                    <div class="banner-value banner-text">${block.occupied_by}</div>
+                </div>
+                `
+                    : ''
+                }
 
                 <!-- TILES LIST (Scrollable with extend buttons) -->
                 <div class="control-section mt-12">
@@ -216,9 +211,11 @@ export class BlockEditorHandler {
 
     this.editor.showSecondarySidebar(`Block Editor`, content);
 
-    // Draw the forward / reverse arrows on the map for this block.
-    if (this.editor.renderer?.setBlockDirectionOverlay) {
-      this.editor.renderer.setBlockDirectionOverlay(directionGeometry);
+    // Focus the block direction arrows on this block so its F / R arrows show
+    // on the map while the editor is open (the renderer derives them from the
+    // block's tile geometry).
+    if (this.editor.renderer?.setBlockDirectionFocus) {
+      this.editor.renderer.setBlockDirectionFocus(blockId);
     }
 
     // Setup subscription before handlers

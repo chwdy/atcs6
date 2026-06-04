@@ -1133,6 +1133,21 @@
     white-space: nowrap;
 }
 
+/* Broken-vs-unreachable task target status (design_new.md "Unreachable and
+   broken task handling"): red cross when the target ID is missing from the
+   network (broken -> skipped), greyed out when the target is disabled/manual
+   (present but unavailable -> train waits). */
+.task-summary-target.task-target-missing {
+    color: var(--danger, #e5484d);
+}
+.task-summary-target.task-target-missing .ti,
+.task-summary-target.task-target-missing .task-summary-target-name {
+    color: var(--danger, #e5484d);
+}
+.task-summary-target.task-target-unavailable {
+    opacity: 0.45;
+}
+
 .task-summary-time {
     margin-left: auto;
     color: var(--text-secondary);
@@ -1609,6 +1624,27 @@
 /* Detail-view status title (showPathEditor) — colored by the same accent. */
 .path-status-title {
     color: var(--path-status-accent);
+}
+
+/* ----------------------------------------------------------------------------
+   Switches list (showSwitchesPanel) — §11 standard card + §6 status accent.
+
+   Reuses the shared .rr-card shell and .rr-card-head / -title-col / -train /
+   -route, .chip-row / .chip vocabulary, exactly like the routes and paths
+   lists. .switch-row carries no inline buttons — the whole card opens that
+   switch's editor — so it only adds the click affordance.
+   ---------------------------------------------------------------------------- */
+.switches-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.switch-row {
+    cursor: pointer;
+}
+.switch-row:hover {
+    background-color: var(--bg-hover);
 }
 
 .path-route-stack {

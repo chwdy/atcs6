@@ -65,6 +65,7 @@ class App {
     this.setupDebugPanel();
     this.setupSettingsPanel();
     this.setupViewControls();
+    this.setupPanelToggles();
     this.refreshNetwork();
   }
 
@@ -321,6 +322,63 @@ class App {
     });
   }
 
+  // Header toggles for the two docked panels. The tools sidebar is always
+  // present, so its toggle just collapses/restores it. The secondary sidebar
+  // is content-driven (editor-ui adds/removes `.visible`), so its toggle is
+  // a separate `.user-hidden` override that hides the panel without clearing
+  // the open editor — and is disabled when no panel is open.
+  setupPanelToggles(): void {
+    const toolsBtn = document.getElementById('btn-toggle-tools');
+    const sidebar = document.querySelector('.sidebar') as HTMLElement | null;
+    if (toolsBtn && sidebar) {
+      toolsBtn.addEventListener('click', () => {
+        sidebar.classList.toggle('collapsed');
+        this.updateToolsToggle(toolsBtn, sidebar);
+      });
+      this.updateToolsToggle(toolsBtn, sidebar);
+    }
+
+    const secBtn = document.getElementById('btn-toggle-secondary') as HTMLButtonElement | null;
+    const secSidebar = document.getElementById('secondary-sidebar');
+    if (secBtn && secSidebar) {
+      secBtn.addEventListener('click', () => {
+        secSidebar.classList.toggle('user-hidden');
+        this.updateSecondaryToggle(secBtn, secSidebar);
+      });
+      // editor-ui opens/closes the panel (toggling .visible / .user-hidden)
+      // from elsewhere; mirror those changes onto the button.
+      const obs = new MutationObserver(() => this.updateSecondaryToggle(secBtn, secSidebar));
+      obs.observe(secSidebar, { attributes: true, attributeFilter: ['class'] });
+      this.updateSecondaryToggle(secBtn, secSidebar);
+    }
+  }
+
+  updateToolsToggle(btn: HTMLElement, sidebar: HTMLElement): void {
+    const collapsed = sidebar.classList.contains('collapsed');
+    const icon = btn.querySelector('i');
+    if (icon) icon.className = `ti ti-layout-sidebar-left-${collapsed ? 'expand' : 'collapse'}`;
+    const label = collapsed ? 'Show tools panel' : 'Hide tools panel';
+    btn.setAttribute('title', label);
+    btn.setAttribute('aria-label', label);
+    btn.setAttribute('aria-pressed', String(collapsed));
+  }
+
+  updateSecondaryToggle(btn: HTMLButtonElement, sidebar: HTMLElement): void {
+    const open = sidebar.classList.contains('visible');
+    const hidden = sidebar.classList.contains('user-hidden');
+    btn.disabled = !open;
+    const icon = btn.querySelector('i');
+    if (icon) icon.className = `ti ti-layout-sidebar-right-${hidden ? 'expand' : 'collapse'}`;
+    const label = !open
+      ? 'No secondary panel open'
+      : hidden
+        ? 'Show secondary panel'
+        : 'Hide secondary panel';
+    btn.setAttribute('title', label);
+    btn.setAttribute('aria-label', label);
+    btn.setAttribute('aria-pressed', String(hidden));
+  }
+
   openModal(modal: Element | null): void {
     if (modal) modal.classList.add('active');
   }
@@ -513,7 +571,9 @@ class App {
         if (stats.tracks > 0) items.push(`${stats.tracks} track(s)`);
         if (stats.blocks > 0) items.push(`${stats.blocks} block(s)`);
         if (stats.signals > 0) items.push(`${stats.signals} signal(s)`);
+        if (stats.switches > 0) items.push(`${stats.switches} switch(es)`);
         if (stats.stations > 0) items.push(`${stats.stations} station(s)`);
+        if (stats.tunnels > 0) items.push(`${stats.tunnels} tunnel(s)`);
         if (stats.trains > 0) items.push(`${stats.trains} train(s)`);
 
         const summary = items.join(', ');
@@ -1123,6 +1183,24 @@ class App {
     if (stuckCheckbox) {
       stuckCheckbox.addEventListener('change', () => {
         this.renderer.requestRedraw({ world: true, live: true, reason: 'debug-toggle' });
+      });
+    }
+
+    // Per-tile direction arrows draw on the live layer, so toggling them needs
+    // a live redraw — a world-only redraw would refresh the flag but not
+    // repaint the arrows.
+    const tileDirCheckbox = document.getElementById('debug-show-tile-directions');
+    if (tileDirCheckbox) {
+      tileDirCheckbox.addEventListener('change', () => {
+        this.renderer.requestRedraw({ world: false, live: true, reason: 'debug-toggle' });
+      });
+    }
+
+    // Block F/R direction arrows are also a live-layer overlay.
+    const blockDirCheckbox = document.getElementById('debug-show-block-dir');
+    if (blockDirCheckbox) {
+      blockDirCheckbox.addEventListener('change', () => {
+        this.renderer.requestRedraw({ world: false, live: true, reason: 'debug-toggle' });
       });
     }
 

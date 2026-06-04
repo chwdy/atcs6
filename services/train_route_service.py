@@ -25,7 +25,12 @@ from typing import Any, Dict, Iterable, List, Optional
 from app_state import AppState
 from runtime_payloads import AcquisitionMode
 from services.exceptions import NotFoundError, ValidationError
-from train_route import Route, RouteMode, RouteTask, WaypointUnreachableAction
+from train_route import (
+    Route,
+    RouteMode,
+    RouteStartMode,
+    RouteTask,
+)
 
 
 _MODE_ALIASES = {
@@ -39,7 +44,8 @@ EDIT_FIELDS = (
     "mode",
     "priority",
     "acquisition_mode",
-    "action_on_waypoint_unreachable",
+    "start_mode",
+    "start_task_index",
 )
 
 # Per design_new.md "RouteRun overrides" — fields that may carry per-field
@@ -50,7 +56,6 @@ EDIT_FIELDS = (
 OVERRIDE_ALLOWLIST = (
     "priority",
     "acquisition_mode",
-    "action_on_waypoint_unreachable",
 )
 
 
@@ -62,6 +67,27 @@ def _coerce_mode(mode_str: str) -> RouteMode:
         if mode_str in _MODE_ALIASES:
             return _MODE_ALIASES[mode_str]
         raise ValidationError(f"Invalid mode {mode_str!r}")
+
+
+def _coerce_start_mode(value: Any) -> RouteStartMode:
+    """Convert a wire-string into RouteStartMode. Per design_new.md "Run
+    start-mode seeding"."""
+    if isinstance(value, RouteStartMode):
+        return value
+    try:
+        return RouteStartMode(value)
+    except ValueError:
+        raise ValidationError(f"Invalid start_mode {value!r}")
+
+
+def _coerce_start_task_index(value: Any) -> Optional[int]:
+    """Convert a wire value into an Optional[int] start_task_index."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValidationError("start_task_index must be an integer or null")
 
 
 def _coerce_route_task(item: Any) -> RouteTask:
@@ -117,7 +143,8 @@ def create_route(
     assigned_train_ids: Optional[Iterable[str]] = None,
     priority: Optional[int] = None,
     acquisition_mode: Optional[str] = None,
-    action_on_waypoint_unreachable: Optional[str] = None,
+    start_mode: Optional[str] = None,
+    start_task_index: Optional[Any] = None,
     edit_fields_present: Optional[bool] = None,
 ) -> Route:
     """Create and register a new Route.
@@ -155,16 +182,11 @@ def create_route(
                 f"Invalid acquisition_mode {acquisition_mode!r}"
             )
 
-    if action_on_waypoint_unreachable is not None:
-        try:
-            route.action_on_waypoint_unreachable = WaypointUnreachableAction(
-                action_on_waypoint_unreachable
-            )
-        except ValueError:
-            raise ValidationError(
-                f"Invalid action_on_waypoint_unreachable "
-                f"{action_on_waypoint_unreachable!r}"
-            )
+    if start_mode is not None:
+        route.start_mode = _coerce_start_mode(start_mode)
+
+    if start_task_index is not None:
+        route.start_task_index = _coerce_start_task_index(start_task_index)
 
     for task_data in tasks or ():
         route.add_task(_coerce_route_task(task_data))
@@ -189,7 +211,9 @@ def update_route(
     tasks: Optional[Iterable[Any]] = None,
     priority: Optional[Any] = None,
     acquisition_mode: Optional[str] = None,
-    action_on_waypoint_unreachable: Optional[str] = None,
+    start_mode: Optional[str] = None,
+    start_task_index: Optional[Any] = None,
+    start_task_index_present: bool = False,
     assigned_train_ids: Optional[Iterable[str]] = None,
     push_policies: Optional[Dict[str, str]] = None,
 ) -> Route:
@@ -201,7 +225,7 @@ def update_route(
     assigned. Unknown trains are silently dropped.
 
     `push_policies` is an optional dict mapping allowlisted field names
-    (`"priority"`, `"acquisition_mode"`, `"action_on_waypoint_unreachable"`)
+    (`"priority"`, `"acquisition_mode"`)
     to `"force"` or `"soft"`. When omitted the default per design_new.md
     "RouteRun overrides" is `"soft"`. Force pushes clear the corresponding
     `RouteRun.overrides[field]` on every currently RUNNING run for this
@@ -279,18 +303,18 @@ def update_route(
         definition_edit_touched = True
         changed_overridable.append("acquisition_mode")
 
-    if action_on_waypoint_unreachable is not None:
-        try:
-            route.action_on_waypoint_unreachable = WaypointUnreachableAction(
-                action_on_waypoint_unreachable
-            )
-        except ValueError:
-            raise ValidationError(
-                f"Invalid action_on_waypoint_unreachable "
-                f"{action_on_waypoint_unreachable!r}"
-            )
+    # start_mode / start_task_index are definition edits (bump last_edited_at),
+    # but they are NOT structural (no RouteRun teardown) and NOT live overrides
+    # (no push). They are consulted only when a fresh run is allocated, so an
+    # edit here changes the default for future runs and leaves already-running
+    # runs alone. Per design_new.md "Run start-mode seeding".
+    if start_mode is not None:
+        route.start_mode = _coerce_start_mode(start_mode)
         definition_edit_touched = True
-        changed_overridable.append("action_on_waypoint_unreachable")
+
+    if start_task_index_present:
+        route.start_task_index = _coerce_start_task_index(start_task_index)
+        definition_edit_touched = True
 
     # Apply per-field push policies to currently RUNNING RouteRuns for
     # this route per design_new.md "RouteRun overrides". Only look up the

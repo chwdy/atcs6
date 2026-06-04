@@ -524,6 +524,8 @@ def register(app, state: AppState) -> None:
                 train_id,
                 route_id=data.get("route_id"),
                 force=bool(data.get("force", False)),
+                start_mode=data.get("start_mode"),
+                start_task_index=data.get("start_task_index"),
             )
         except NotFoundError as exc:
             return jsonify({"error": str(exc)}), 404

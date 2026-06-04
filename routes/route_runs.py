@@ -59,9 +59,10 @@ def _route_run_summary(route, run) -> dict:
         "effective_acquisition_mode": (
             run.effective_acquisition_mode(route=route).value
         ),
-        "effective_action_on_waypoint_unreachable": (
-            run.effective_action_on_waypoint_unreachable(route=route).value
-        ),
+        # Per design_new.md "Run start-mode seeding": the resolved start mode
+        # this run was seeded with (diagnostic; read-only — start mode is an
+        # allocation-time input, not a live override).
+        "start_mode": run.start_mode.value if run.start_mode is not None else None,
     }
 
 

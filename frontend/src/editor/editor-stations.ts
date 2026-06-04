@@ -7,7 +7,6 @@
 import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';
 import {
-  renderHeaderId,
   renderTileList,
   renderAvailabilitySegment,
   bindAvailabilitySegment,
@@ -15,6 +14,11 @@ import {
   showPromptModal,
   showConfirmModal,
 } from '../lib/helpers';
+
+/** Escape a string for safe use inside an HTML attribute value. */
+function escAttr(s: unknown): string {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
 
 /** Read the value of a text/number/select input by id. */
 function inputValue(id: string): string | undefined {
@@ -46,25 +50,35 @@ export class PlatformEditorHandler {
       (a, b) => a[0] - b[0] || a[1] - b[1]
     );
 
+    // §11 status-header chrome: platform identity is the static --info-color
+    // (§1), dropping to muted when disabled. The availability state surfaces as
+    // a state chip (§7) only when it deviates from the normal "Available"; the
+    // segmented control below is the editor for it.
+    const isDisabled = !!platform.disabled;
+    const isManual = !!platform.manual;
+    const tileCount = sortedPositions.length;
+    const side = platform.platform_side || 'both';
+    const accentClass = isDisabled ? 'accent-muted' : 'accent-info';
+    const stateChip = isDisabled
+      ? '<span class="chip chip-state chip-muted">DISABLED</span>'
+      : isManual
+        ? '<span class="chip chip-state chip-warn">MANUAL</span>'
+        : '';
+
     const content = `
             <div class="platform-editor" data-platform-id="${platformId}">
-                ${renderHeaderId(platformId, 'var(--info-color)')}
-
-                <!-- INFO SECTION (Read-only, styled like Block Editor) -->
-                <div class="info-box mb-12">
-                    <div class="flex justify-between items-start mb-2">
-                        <span class="text-xs text-muted uppercase tracking-wider">Info</span>
+                <!-- §11 Status header — identity + availability pill, dynamic accent. -->
+                <div class="status-header ${accentClass}">
+                    <div class="status-header-row">
+                        <div class="status-header-id font-mono" title="${escAttr(platformId)}">${platformId}</div>
+                        ${stateChip}
                     </div>
-
-                    <div class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm font-mono">
-                        <div>
-                            <span class="text-muted text-xs block">Tile Count</span>
-                            <span class="text-primary font-bold">${sortedPositions.length} tiles</span>
-                        </div>
-                        <div>
-                            <span class="text-muted text-xs block">Length</span>
-                            <span class="text-info">${platform.length_cm || 0} cm</span>
-                        </div>
+                    <div class="status-header-ident">
+                        <span class="status-header-role">Platform</span>
+                        <span class="status-sep">·</span>
+                        <span class="font-mono">${tileCount} tile${tileCount === 1 ? '' : 's'}</span>
+                        <span class="status-sep">·</span>
+                        <span>${side}</span>
                     </div>
                 </div>
 
@@ -330,6 +344,33 @@ export class StationGroupEditorHandler {
       .map((p: any) => `<option value="${p.platform_id}">${p.name || p.platform_id}</option>`)
       .join('');
 
+    // Each station is a card on the shared .rr-card list skeleton (§11/§12),
+    // the same shell the switches list consumes — station identity carries the
+    // --info-color left accent (§1/§6). The whole card is click-to-open; Delete
+    // lives inside the station editor, mirroring the switches list.
+    const stationCards = stations
+      .map((s: any) => {
+        const platformIds = s.platform_ids || [];
+        const platformChips = platformIds.length
+          ? platformIds.map((pid: string) => `<span class="chip">${escAttr(pid)}</span>`).join('')
+          : '<span class="text-muted text-xs">No platforms</span>';
+        const name = s.name && String(s.name).trim() ? String(s.name).trim() : '';
+        const title = name || s.station_id;
+        // Display name is the title (wraps per §5); the opaque id drops to a
+        // mono caption only when a name exists.
+        return `
+                    <div class="rr-card station-row accent-info" data-station-id="${escAttr(s.station_id)}" role="button" tabindex="0" title="Open ${escAttr(title)}">
+                        <div class="rr-card-head">
+                            <div class="rr-card-title-col">
+                                <div class="station-row-name">${title}</div>
+                                ${name ? `<div class="rr-card-route font-mono">${escAttr(s.station_id)}</div>` : ''}
+                            </div>
+                        </div>
+                        <div class="chip-row">${platformChips}</div>
+                    </div>`;
+      })
+      .join('');
+
     const content = `
             <div class="station-groups-panel">
                 <div class="station-create-form">
@@ -344,27 +385,7 @@ export class StationGroupEditorHandler {
                 </div>
                 <div class="control-section-header">Existing Stations</div>
                 ${stations.length === 0 ? '<div class="empty-state">No logical stations yet.</div>' : ''}
-                ${stations
-                  .map((s: any) => {
-                    const platformIds = s.platform_ids || [];
-                    const platformChips = platformIds.length
-                      ? platformIds.map((pid: string) => `<span class="chip">${pid}</span>`).join('')
-                      : '<span class="text-muted text-xs">No platforms</span>';
-                    return `
-                    <div class="station-row" data-station-id="${s.station_id}">
-                        <div class="station-row-head">
-                            <span class="station-row-name">${s.name || s.station_id}</span>
-                            <button class="btn btn-danger delete-station-group-btn" data-station-id="${s.station_id}">Delete</button>
-                        </div>
-                        <div class="station-row-platforms">${platformChips}</div>
-                        <div class="station-row-actions">
-                            <button class="btn add-platform-to-station-btn" data-station-id="${s.station_id}">Add Platform</button>
-                            <button class="btn remove-platform-from-station-btn" data-station-id="${s.station_id}">Remove Platform</button>
-                        </div>
-                    </div>
-                `;
-                  })
-                  .join('')}
+                <div class="station-list">${stationCards}</div>
             </div>
         `;
 
@@ -380,10 +401,20 @@ export class StationGroupEditorHandler {
           const stationId = inputValue('new-station-group-id') || undefined;
           const name = inputValue('new-station-group-name') || '';
           const initialPlatform = inputValue('new-station-group-platform') || null;
+          // A station group must contain at least one platform (Non-empty
+          // parent rule), so the first platform is required at creation.
+          if (!initialPlatform) {
+            showToast(
+              'Pick an initial platform — a station group must have at least one platform.',
+              'error',
+              5000
+            );
+            return;
+          }
           const payload = {
             station_id: stationId,
             name,
-            platform_ids: initialPlatform ? [initialPlatform] : [],
+            platform_ids: [initialPlatform],
           };
           await this.api.createStationGroup(payload);
           await this.showPanel();
@@ -393,61 +424,19 @@ export class StationGroupEditorHandler {
       };
     }
 
-    document.querySelectorAll<HTMLElement>('.delete-station-group-btn').forEach((btn) => {
-      btn.onclick = async () => {
-        const stationId = btn.dataset.stationId;
-        const confirmed = await showConfirmModal({
-          title: 'Delete Logical Station',
-          message: `Delete logical station "${stationId}"?`,
-          detail: 'This removes only the grouping; platform tracks remain unchanged.',
-          confirmText: 'Delete',
-          confirmVariant: 'danger',
-        });
-        if (!confirmed) {
-          return;
-        }
-        await this.api.deleteStationGroup(stationId);
-        await this.showPanel();
+    // Whole card opens the station editor (where Delete lives) — same
+    // click-to-open affordance as the switches list.
+    document.querySelectorAll<HTMLElement>('.station-row').forEach((row) => {
+      const open = () => {
+        const id = row.dataset.stationId;
+        if (id) this.showStationDetail(id);
       };
-    });
-
-    document.querySelectorAll<HTMLElement>('.add-platform-to-station-btn').forEach((btn) => {
-      btn.onclick = async () => {
-        const stationId = btn.dataset.stationId;
-        const platformId = await showPromptModal({
-          title: 'Add Platform to Station',
-          label: `Platform ID to add to station "${stationId}"`,
-          defaultValue: platforms[0]?.platform_id || '',
-          required: true,
-          confirmText: 'Add',
-          confirmVariant: 'primary',
-        });
-        const normalizedPlatformId = String(platformId || '').trim();
-        if (!normalizedPlatformId) {
-          return;
+      row.onclick = open;
+      row.onkeydown = (e: KeyboardEvent) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          open();
         }
-        await this.api.addPlatformToStation(stationId, normalizedPlatformId);
-        await this.showPanel();
-      };
-    });
-
-    document.querySelectorAll<HTMLElement>('.remove-platform-from-station-btn').forEach((btn) => {
-      btn.onclick = async () => {
-        const stationId = btn.dataset.stationId;
-        const platformId = await showPromptModal({
-          title: 'Remove Platform from Station',
-          label: `Platform ID to remove from station "${stationId}"`,
-          defaultValue: '',
-          required: true,
-          confirmText: 'Remove',
-          confirmVariant: 'danger',
-        });
-        const normalizedPlatformId = String(platformId || '').trim();
-        if (!normalizedPlatformId) {
-          return;
-        }
-        await this.api.removePlatformFromStation(stationId, normalizedPlatformId);
-        await this.showPanel();
       };
     });
   }
@@ -473,8 +462,24 @@ export class StationGroupEditorHandler {
 
     const memberIds = station.platform_ids || [];
     const nonMembers = (platforms || []).filter((p: any) => !memberIds.includes(p.platform_id));
+    // Owner index so the add-select can tag a platform that already belongs to
+    // another station, and the Force flow can warn about cascade deletes.
+    const ownerByPlatform: Record<string, { id: string; name: string; count: number }> = {};
+    for (const s of stationsResp?.stations || []) {
+      for (const pid of s.platform_ids || []) {
+        ownerByPlatform[pid] = {
+          id: s.station_id,
+          name: s.name || s.station_id,
+          count: (s.platform_ids || []).length,
+        };
+      }
+    }
     const nonMemberOptions = nonMembers
-      .map((p: any) => `<option value="${p.platform_id}">${p.name || p.platform_id}</option>`)
+      .map((p: any) => {
+        const owner = ownerByPlatform[p.platform_id];
+        const tag = owner && owner.id !== stationId ? ` — in ${owner.name}` : '';
+        return `<option value="${p.platform_id}">${p.name || p.platform_id}${tag}</option>`;
+      })
       .join('');
 
     const memberRows = (station.platforms || [])
@@ -491,10 +496,15 @@ export class StationGroupEditorHandler {
 
     const content = `
             <div class="station-detail-panel">
-                <div class="text-xs text-muted mb-4">Station ID</div>
-                <div class="font-mono mb-12">${station.station_id}</div>
+                <div class="entity-card" style="--card-accent: var(--info-color)">
+                    <div class="entity-card-dot" style="background-color: var(--info-color)"></div>
+                    <div class="entity-card-body">
+                        <span class="entity-card-id">${station.station_id}</span>
+                        <span class="entity-card-meta" style="color: var(--info-color)">${memberIds.length} platform${memberIds.length === 1 ? '' : 's'}</span>
+                    </div>
+                </div>
 
-                <div class="text-xs text-muted mb-4">Name</div>
+                <label class="property-label">Name</label>
                 <div class="flex gap-8 mb-12">
                     <input id="station-detail-name" class="property-input" value="${(station.name || '').replace(/"/g, '&quot;')}">
                     <button id="station-detail-save-name-btn" class="btn btn-sm btn-accent">Save</button>
@@ -502,12 +512,12 @@ export class StationGroupEditorHandler {
 
                 ${renderAvailabilitySegment('station', station, { idBase: 'station-availability' })}
 
-                <div class="text-xs text-muted mb-8">Member Platforms (${memberIds.length})</div>
+                <div class="control-section-header">Member Platforms (${memberIds.length})</div>
                 ${memberRows || '<div class="text-muted text-sm mb-8">No platforms in this station.</div>'}
 
                 <div class="mt-12 mb-8">
-                    <div class="text-xs text-muted mb-4">Add Platform</div>
-                    <div class="flex gap-8">
+                    <div class="control-section-header">Add Platform</div>
+                    <div class="flex gap-8 items-center">
                         <select id="station-detail-add-platform" class="property-input" ${nonMembers.length === 0 ? 'disabled' : ''}>
                             ${
                               nonMembers.length === 0
@@ -515,6 +525,11 @@ export class StationGroupEditorHandler {
                                 : nonMemberOptions
                             }
                         </select>
+                        <label class="checkbox-wrapper" title="Reassign the platform from its current station. If that empties the other station, it is deleted.">
+                            <input type="checkbox" id="station-detail-add-force" class="checkbox-input">
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-label">Force</span>
+                        </label>
                         <button id="station-detail-add-platform-btn" class="btn btn-sm btn-accent"
                                 ${nonMembers.length === 0 ? 'disabled' : ''}>Add</button>
                     </div>
@@ -527,11 +542,14 @@ export class StationGroupEditorHandler {
             </div>
         `;
 
-    this.editor.showSecondarySidebar(`${station.name || station.station_id}`, content);
-    setTimeout(() => this._initStationDetailHandlers(station), 0);
+    this.editor.showSecondarySidebar('Station Editor', content);
+    setTimeout(() => this._initStationDetailHandlers(station, ownerByPlatform), 0);
   }
 
-  _initStationDetailHandlers(station: any): void {
+  _initStationDetailHandlers(
+    station: any,
+    ownerByPlatform: Record<string, { id: string; name: string; count: number }> = {}
+  ): void {
     const stationId = station.station_id;
 
     // Availability segment (disabled / manual). Per docs/DESIGN_LANGUAGE.md
@@ -574,8 +592,49 @@ export class StationGroupEditorHandler {
       addBtn.onclick = async () => {
         const platformId = inputValue('station-detail-add-platform');
         if (!platformId) return;
+        const force =
+          (document.getElementById('station-detail-add-force') as HTMLInputElement | null)?.checked ||
+          false;
+        const owner = ownerByPlatform[platformId];
+        const conflict = !!owner && owner.id !== stationId;
+        if (conflict && !force) {
+          showToast(`Platform is in "${owner.name}". Tick Force to reassign it.`, 'error', 5000);
+          return;
+        }
+        // Cascade warn: forcing the last platform out of its station deletes
+        // that station; name any routes whose StationTarget tasks would break
+        // (design_new.md "Unreachable and broken task handling").
+        if (conflict && force && owner.count === 1) {
+          const affected: string[] = [];
+          try {
+            const routesResp = await this.api.getRoutes();
+            const routes = routesResp?.routes || routesResp?.train_routes || [];
+            for (const r of routes) {
+              if (
+                (r.tasks || []).some(
+                  (t: any) => t.task_location && t.task_location.station_id === owner.id
+                )
+              ) {
+                affected.push(r.name || r.route_id);
+              }
+            }
+          } catch {
+            /* best-effort cascade detection */
+          }
+          const confirmed = await showConfirmModal({
+            title: 'Reassign will delete a station',
+            message: `Moving this platform empties and deletes "${owner.name}".`,
+            detail:
+              affected.length > 0
+                ? `Routes that stop there will break (tasks become "broken" and get skipped): ${affected.join(', ')}.`
+                : 'No routes reference the deleted station.',
+            confirmText: 'Delete and reassign',
+            confirmVariant: 'danger',
+          });
+          if (!confirmed) return;
+        }
         try {
-          await this.api.addPlatformToStation(stationId, platformId);
+          await this.api.addPlatformToStation(stationId, platformId, force);
           await window.app?.refreshNetwork();
           await this.showStationDetail(stationId);
         } catch (err: any) {
@@ -588,9 +647,15 @@ export class StationGroupEditorHandler {
       btn.onclick = async () => {
         const platformId = btn.dataset.platformId;
         try {
-          await this.api.removePlatformFromStation(stationId, platformId);
+          const resp = await this.api.removePlatformFromStation(stationId, platformId);
           await window.app?.refreshNetwork();
-          await this.showStationDetail(stationId);
+          if (resp?.station_deleted) {
+            // Removing the last platform auto-deleted the group; its detail
+            // view no longer exists, so fall back to the station list.
+            await this.showPanel();
+          } else {
+            await this.showStationDetail(stationId);
+          }
         } catch (err: any) {
           showToast(`Failed to remove: ${err.message}`, 'error', 5000);
         }
@@ -619,4 +684,6 @@ export class StationGroupEditorHandler {
       backBtn.onclick = () => this.showPanel();
     }
   }
+
+
 }

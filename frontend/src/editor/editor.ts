@@ -32,6 +32,7 @@ import { PathEditorHandler } from './editor-paths';
 import { RouteEditorHandler } from './editor-routes';
 import { RouteRunEditorHandler } from './editor-route-runs';
 import { SwitchEditorHandler } from './editor-switches';
+import { TunnelEditorHandler } from './editor-tunnels';
 import { SpeedProfileEditorHandler } from './editor-speed-profiles';
 import { EditorUIHandler } from './editor-ui';
 import { MultiSelectActionsHandler } from './editor-multi-select';
@@ -80,6 +81,7 @@ export class Editor {
   routeHandler: RouteEditorHandler;
   routeRunHandler: RouteRunEditorHandler;
   switchHandler: SwitchEditorHandler;
+  tunnelEditorHandler: TunnelEditorHandler;
   speedProfileHandler: SpeedProfileEditorHandler;
   uiHandler: EditorUIHandler;
   multiSelectHandler: MultiSelectActionsHandler;
@@ -182,6 +184,7 @@ export class Editor {
     this.routeHandler = new RouteEditorHandler(this);
     this.routeRunHandler = new RouteRunEditorHandler(this);
     this.switchHandler = new SwitchEditorHandler(this);
+    this.tunnelEditorHandler = new TunnelEditorHandler(this);
     this.speedProfileHandler = new SpeedProfileEditorHandler(this);
     this.uiHandler = new EditorUIHandler(this);
     this.multiSelectHandler = new MultiSelectActionsHandler(this);
@@ -227,16 +230,20 @@ export class Editor {
   }
 
   showSecondarySidebar(title: string, content: string): any {
-    // Any editor opening clears a stale block-direction overlay.
-    if (this.renderer?.clearBlockDirectionOverlay) {
-      this.renderer.clearBlockDirectionOverlay();
+    // Any editor opening clears a stale block-direction focus and a stale
+    // tunnel highlight. The tunnel handler re-sets its highlight right after
+    // this call when it is the panel being opened.
+    if (this.renderer?.clearBlockDirectionFocus) {
+      this.renderer.clearBlockDirectionFocus();
     }
+    this.renderer?.setSelectedTunnel?.(null);
     return this.uiHandler.showSecondarySidebar(title, content);
   }
 
   hideSecondarySidebar(options: any = {}): any {
     // uiHandler.hideSecondarySidebar() takes no args (it ignored `options` in
     // the classic code too); keep the param on the facade for callers.
+    this.renderer?.setSelectedTunnel?.(null);
     return this.uiHandler.hideSecondarySidebar();
   }
 
@@ -273,6 +280,9 @@ export class Editor {
         if (!id) return false;
         await this.showSwitchEditor(id);
         return true;
+      case 'switches-list':
+        await this.showSwitchesPanel();
+        return true;
       case 'train-control':
         if (!id) return false;
         await this.showTrainControlPanel(id);
@@ -292,6 +302,10 @@ export class Editor {
         return true;
       case 'extend-path-setup':
         this.showExtendRoutePanel();
+        return true;
+      case 'station-group-detail':
+        if (!id) return false;
+        await this.stationGroupHandler.showStationDetail(id);
         return true;
       case 'station-group':
       case 'station-group-list':
@@ -343,9 +357,11 @@ export class Editor {
           { label: 'Platforms', editorType: null, editorId: null },
           { label: id || 'Platform', editorType: 'platform', editorId: id },
         ];
+      case 'switches-list':
+        return [{ label: 'Switches', editorType: 'switches-list', editorId: null }];
       case 'switch':
         return [
-          { label: 'Switches', editorType: null, editorId: null },
+          { label: 'Switches', editorType: 'switches-list', editorId: null },
           { label: id || 'Switch', editorType: 'switch', editorId: id },
         ];
       case 'trains-list':
@@ -385,6 +401,11 @@ export class Editor {
         return [
           { label: 'Route Runs', editorType: 'route-runs-list', editorId: null },
           { label: id ? `#${id}` : 'Run', editorType: 'route-run-editor', editorId: id },
+        ];
+      case 'station-group-detail':
+        return [
+          { label: 'Stations', editorType: 'station-group-list', editorId: null },
+          { label: id || 'Station', editorType: 'station-group-detail', editorId: id },
         ];
       case 'station-group-list':
       case 'station-group':
@@ -442,6 +463,7 @@ export class Editor {
           this.cachedNetwork.platforms.some((p: any) => p.platform_id === id);
         break;
       case 'station-group':
+      case 'station-group-detail':
         if (!id) return;
         itemExists =
           Array.isArray(this.cachedNetwork?.station_groups) &&
@@ -465,6 +487,7 @@ export class Editor {
       case 'routes-list':
       case 'route-runs-list':
       case 'speed-profiles-list':
+      case 'switches-list':
         itemExists = true;
         break;
       case 'path':
@@ -537,7 +560,8 @@ export class Editor {
       this._currentEditorType === 'switch' ||
       this._currentEditorType === 'block' ||
       this._currentEditorType === 'platform' ||
-      this._currentEditorType === 'station-group'
+      this._currentEditorType === 'station-group' ||
+      this._currentEditorType === 'station-group-detail'
     ) {
       return;
     }
@@ -569,6 +593,10 @@ export class Editor {
 
   async showTrainsPanel(): Promise<any> {
     return this.trainHandler.showTrainsPanel();
+  }
+
+  async showSwitchesPanel(): Promise<any> {
+    return this.switchHandler.showSwitchesPanel();
   }
 
   async showSpeedProfilesPanel(): Promise<any> {
@@ -807,7 +835,7 @@ export class Editor {
   _buildTraceSelectMode(): any {
     const resetState = () => {
       this.boxSelectState.selectedKeys = new Set();
-      this.traceSelectState.firstPoint = null;
+      this._resetTraceAnchor();
       this._applyBoxSelection(new Set());
     };
     const setStatus = (text: string) => {
@@ -825,7 +853,7 @@ export class Editor {
       onClick: ({ gridPos }: any) => {
         // If the selection was cleared (Space / ESC), the pending anchor is stale.
         if (this.boxSelectState.selectedKeys.size === 0) {
-          this.traceSelectState.firstPoint = null;
+          this._resetTraceAnchor();
         }
         const tracks = this.cachedNetwork?.tracks || [];
         const trackKeys = new Set(tracks.map((t: any) => `${t.x},${t.y}`));
@@ -842,12 +870,23 @@ export class Editor {
         }
 
         if (!this.traceSelectState.firstPoint) {
-          // First endpoint: anchor it and highlight it so the pick is visible.
+          // First endpoint: anchor it (yellow box-select) and light up every
+          // track tile reachable from it (orange) so the operator can see which
+          // tiles are valid second endpoints — the same "reachable" cue the
+          // Create / Extend Path tools paint via setReachableHighlights.
           this.traceSelectState.firstPoint = { x: gridPos.x, y: gridPos.y };
           this.boxSelectState.selectedKeys.add(here);
           this._applyBoxSelection(this.boxSelectState.selectedKeys);
+          const reachable = this._traceReachableTiles(this.traceSelectState.firstPoint);
+          if (this.renderer.setReachableHighlights) {
+            this.renderer.setReachableHighlights(reachable);
+          }
           this.renderer.requestRedraw();
-          setStatus('Trace: click the second track');
+          setStatus(
+            reachable.size === 0
+              ? 'Trace: this track has no connected neighbours — Space to pick another'
+              : `Trace: click a highlighted track to select the path (${reachable.size} reachable)`
+          );
           return true;
         }
 
@@ -855,6 +894,10 @@ export class Editor {
         const a = this.traceSelectState.firstPoint;
         const path = this._traceTrackPath(a, { x: gridPos.x, y: gridPos.y });
         this.traceSelectState.firstPoint = null;
+        // The pick is resolved — drop the orange reachable overlay either way.
+        if (this.renderer.setReachableHighlights) {
+          this.renderer.setReachableHighlights(new Set());
+        }
         if (path && path.length) {
           for (const p of path) {
             // Every tile on the path is an existing track by construction.
@@ -947,6 +990,68 @@ export class Editor {
     return null;
   }
 
+  // Flood the existing-track network from `start` — same switch-aware directed
+  // BFS as _traceTrackPath, but without a goal — and return the set of "x,y"
+  // keys for every track tile reachable from it. These are exactly the valid
+  // second endpoints of a trace; the start tile is excluded since it already
+  // carries the yellow anchor highlight.
+  _traceReachableTiles(start: any): Set<string> {
+    const tracks = this.cachedNetwork?.tracks || [];
+    const byKey = new Map<string, any>(tracks.map((t: any) => [`${t.x},${t.y}`, t]));
+    const startKey = `${start.x},${start.y}`;
+    const reachable = new Set<string>();
+    if (!byKey.has(startKey)) return reachable;
+
+    const STEP: Record<string, [number, number]> = {
+      NORTH: [0, 1], SOUTH: [0, -1], EAST: [1, 0], WEST: [-1, 0],
+    };
+    const OPP: Record<string, string> = {
+      NORTH: 'SOUTH', SOUTH: 'NORTH', EAST: 'WEST', WEST: 'EAST',
+    };
+    const SHORT2FULL: Record<string, string> = { N: 'NORTH', S: 'SOUTH', E: 'EAST', W: 'WEST' };
+    const portsOf = (bits: number) => getTrackExits(bits || 0).map((s) => SHORT2FULL[s]);
+
+    const startState = `${startKey}|`;
+    const queue: Array<{ x: number; y: number; entry: string }> = [
+      { x: start.x, y: start.y, entry: '' },
+    ];
+    const seen = new Set<string>([startState]);
+
+    while (queue.length) {
+      const cur = queue.shift()!;
+      const bits = byKey.get(`${cur.x},${cur.y}`)?.track_bits ?? 0;
+      const exits =
+        cur.entry === '' ? portsOf(bits) : this.pathfinder.getExitsForEntry(bits, cur.entry);
+      for (const exit of exits) {
+        const step = STEP[exit];
+        if (!step) continue;
+        const nx = cur.x + step[0];
+        const ny = cur.y + step[1];
+        const nKey = `${nx},${ny}`;
+        const nTrack = byKey.get(nKey);
+        if (!nTrack) continue;
+        const back = OPP[exit];
+        if (!portsOf(nTrack.track_bits).includes(back)) continue;
+        const nState = `${nKey}|${back}`;
+        if (seen.has(nState)) continue;
+        seen.add(nState);
+        if (nKey !== startKey) reachable.add(nKey);
+        queue.push({ x: nx, y: ny, entry: back });
+      }
+    }
+    return reachable;
+  }
+
+  // Drop the pending trace anchor and clear the orange reachable-tile overlay.
+  // Safe to call from the shared selection-clear paths (Space / Esc): for the
+  // other mark-select tools the anchor is already null and the overlay empty.
+  _resetTraceAnchor(): void {
+    this.traceSelectState.firstPoint = null;
+    if (this.renderer.setReachableHighlights) {
+      this.renderer.setReachableHighlights(new Set());
+    }
+  }
+
   // Apply a single tile to the brush-select set.
   _applyPaintTile(gridPos: any, removing: boolean): boolean {
     const tracks = this.cachedNetwork?.tracks || [];
@@ -973,6 +1078,7 @@ export class Editor {
       'route-runs-panel': () => this.routeRunHandler.showRouteRunsPanel(),
       'new-route': () => this.routeHandler.createNewRoute(),
       'stations-panel': () => this.showStationsPanel(),
+      'switches-panel': () => this.showSwitchesPanel(),
       'speed-profiles-panel': () => this.showSpeedProfilesPanel(),
     };
   }
@@ -1265,7 +1371,10 @@ export class Editor {
         this.paintSelectState.isPainting = false;
         this.paintSelectState.shiftRemoving = false;
         this.paintSelectState.lastKey = null;
-      } else if (this.isDraggingBuild && this.dragStart && this.dragEnd) {
+      } else if (e.button === 0 && this.isDraggingBuild && this.dragStart && this.dragEnd) {
+        // Left-button release commits the build. A right-button release must
+        // NOT land here — it falls through to the contextmenu handler, which
+        // cancels the in-progress drag instead of committing it.
         this.isDraggingBuild = false;
 
         if (onCanvas) {
@@ -1373,6 +1482,14 @@ export class Editor {
       // Only handle selection with select tool
       if (this.selectedTool !== 'inspect') return;
 
+      // Tunnel mouths are overlay glyphs sitting on a tile's edge — give them
+      // first shot before tile selection, mirroring station labels above.
+      const tunnelPair = this.renderer.tunnelHandler?.tunnelAt?.(x, y);
+      if (tunnelPair) {
+        await this.tunnelEditorHandler.showEditor(tunnelPair);
+        return;
+      }
+
       this.selectElement(gridPos);
     });
 
@@ -1473,6 +1590,7 @@ export class Editor {
         if (isMarkSelectTool && this.boxSelectState.selectedKeys.size > 0) {
           this.boxSelectState.selectedKeys = new Set();
           this._applyBoxSelection(new Set());
+          this._resetTraceAnchor();
           this.renderer.requestRedraw();
           return;
         }
@@ -1534,6 +1652,23 @@ export class Editor {
         console.error('[Editor] Box-select delete failed:', err);
         showToast('Failed to delete: ' + err.message, 'error', 5000);
       }
+    });
+
+    // Delete / Backspace key - remove the tunnel selected with the Inspect tool.
+    document.addEventListener('keydown', async (e) => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      if (this.selectedTool !== 'inspect') return;
+      const pair = this.renderer?.selectedTunnel;
+      if (!pair) return;
+      const inInput =
+        document.activeElement &&
+        (document.activeElement.tagName === 'INPUT' ||
+          document.activeElement.tagName === 'TEXTAREA' ||
+          document.activeElement.tagName === 'SELECT');
+      const inModal = document.querySelector('.block-modal-overlay, .modal-overlay') !== null;
+      if (inInput || inModal) return;
+      e.preventDefault();
+      await this.tunnelEditorHandler.delete(pair, { confirm: true });
     });
 
     // Space key - clear the current selection without exiting the tool.
@@ -1610,6 +1745,7 @@ export class Editor {
   clearMultiSelection(): void {
     this.boxSelectState.selectedKeys = new Set();
     this._applyBoxSelection(new Set());
+    this._resetTraceAnchor();
     this.renderer.requestRedraw();
   }
 
@@ -2376,6 +2512,8 @@ export class Editor {
   }
 
   async selectElement(gridPos: any): Promise<void> {
+    // Selecting a tile entity drops any tunnel highlight from a prior click.
+    this.tunnelEditorHandler?.clearSelection();
     try {
       const track = await this.api.getTrack(gridPos.x, gridPos.y);
       if (!track.error) {
@@ -2636,6 +2774,33 @@ export class Editor {
             }
 
             ${
+              track.station_id
+                ? (() => {
+                    const groups = Array.isArray(this.cachedNetwork?.station_groups)
+                      ? this.cachedNetwork.station_groups
+                      : [];
+                    const group = groups.find((g: any) =>
+                      (g.platform_ids || []).includes(track.station_id)
+                    );
+                    if (!group) return '';
+                    return `
+                <div class="property-group-header">Station</div>
+                <div class="property-item-row">
+                    <div class="entity-card" style="--card-accent: var(--info-color)">
+                        <div class="entity-card-dot" style="background-color: var(--info-color)"></div>
+                        <div class="entity-card-body">
+                            <span class="entity-card-id">${group.station_id}</span>
+                            ${group.name ? `<span class="entity-card-meta" style="color: var(--info-color)">${group.name}</span>` : ''}
+                        </div>
+                        <button class="edit-btn edit-station-btn" data-station-id="${group.station_id}">Edit</button>
+                    </div>
+                </div>
+                `;
+                  })()
+                : ''
+            }
+
+            ${
               track.occupied_by
                 ? `
             <div class="property-item">
@@ -2671,6 +2836,7 @@ export class Editor {
     setTimeout(() => this.initSignalEditor(track), 0);
     setTimeout(() => this.initBlockEditor(track), 0);
     setTimeout(() => this.initSwitchEditor(track), 0);
+    setTimeout(() => this.initStationCardButton(), 0);
     setTimeout(() => this.initPlatformButtonHandlers(), 0);
     setTimeout(() => this.initTrainEditor(track), 0);
     setTimeout(() => this.initViewFullJSONButton(track), 0);
@@ -2718,6 +2884,17 @@ export class Editor {
         this.showSwitchEditor(track.switch_id);
       };
     }
+  }
+
+  // Initialize the logical-station card Edit button shown on a platform tile —
+  // jumps to the Station Editor for the station that owns the platform.
+  initStationCardButton(): void {
+    document.querySelectorAll<HTMLElement>('.edit-station-btn').forEach((btn) => {
+      btn.onclick = () => {
+        const sid = btn.dataset.stationId;
+        if (sid) this.stationGroupHandler.showStationDetail(sid);
+      };
+    });
   }
 
   // Populate the dedicated Track Bits sidebar section.

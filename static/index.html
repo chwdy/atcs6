@@ -40,6 +40,14 @@
                     <button id="btn-save-layout" class="btn" title="Save Layout">Save</button>
                     <button id="btn-load-layout" class="btn" title="Load Layout">Load</button>
                 </div>
+                <div class="panel-toggles" role="group" aria-label="Panel visibility">
+                    <button id="btn-toggle-tools" class="btn btn-icon-only" title="Hide tools panel" aria-label="Hide tools panel" aria-pressed="false">
+                        <i class="ti ti-layout-sidebar-left-collapse"></i>
+                    </button>
+                    <button id="btn-toggle-secondary" class="btn btn-icon-only" title="No secondary panel open" aria-label="No secondary panel open" aria-pressed="false" disabled>
+                        <i class="ti ti-layout-sidebar-right-collapse"></i>
+                    </button>
+                </div>
                 <div class="inspector-controls">
                     <button id="btn-inspector-toggle" class="btn" title="Toggle Inspector">Inspector</button>
                     <button id="btn-settings" class="btn btn-icon-only" title="Settings &amp; Debug Info" aria-label="Open settings">
@@ -107,6 +115,9 @@
                             </button>
                             <button class="tool-btn" data-tool="tunnel" title="Tunnel — click two dead-end edges to pair them">
                                 <i class="ti ti-arrows-join tool-icon"></i> Tunnel
+                            </button>
+                            <button class="tool-btn" data-tool="switches-panel" title="List All Switches">
+                                <i class="ti ti-arrows-split-2 tool-icon"></i> Switches
                             </button>
                         </div>
                     </div>
@@ -474,6 +485,16 @@
                             <input type="checkbox" id="debug-show-edges" class="checkbox-input" />
                             <span class="checkbox-custom"></span>
                             <span class="checkbox-label">Edge Labels</span>
+                        </label>
+                        <label class="checkbox-wrapper" title="Draw each track tile's internal forward-travel direction, derived from its block's tile order. Backward is the opposite. Visual debug only.">
+                            <input type="checkbox" id="debug-show-tile-directions" class="checkbox-input" />
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-label">Forward dir</span>
+                        </label>
+                        <label class="checkbox-wrapper" title="Show each block's forward (F, green) and reverse (R, cyan) terminal arrows for all blocks, even with no editor open. A direction the block disallows is dimmed.">
+                            <input type="checkbox" id="debug-show-block-dir" class="checkbox-input" />
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-label">Block dir</span>
                         </label>
                         <label class="checkbox-wrapper" title="Show Block Details">
                             <input type="checkbox" id="debug-show-blocks" class="checkbox-input" />

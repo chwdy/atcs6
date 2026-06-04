@@ -51,9 +51,8 @@ def register(app, state: AppState) -> None:
                 assigned_train_ids=data.get("assigned_train_ids", []),
                 priority=data.get("priority"),
                 acquisition_mode=data.get("acquisition_mode"),
-                action_on_waypoint_unreachable=data.get(
-                    "action_on_waypoint_unreachable"
-                ),
+                start_mode=data.get("start_mode"),
+                start_task_index=data.get("start_task_index"),
                 edit_fields_present=edit_fields_present,
             )
         except ValidationError as exc:
@@ -113,14 +112,11 @@ def register(app, state: AppState) -> None:
 
         priority_value, priority_push = _unpack("priority")
         acq_value, acq_push = _unpack("acquisition_mode")
-        action_value, action_push = _unpack("action_on_waypoint_unreachable")
         push_policies = {}
         if "priority" in data:
             push_policies["priority"] = priority_push
         if "acquisition_mode" in data:
             push_policies["acquisition_mode"] = acq_push
-        if "action_on_waypoint_unreachable" in data:
-            push_policies["action_on_waypoint_unreachable"] = action_push
 
         with state.simulation_lock:
             try:
@@ -132,11 +128,9 @@ def register(app, state: AppState) -> None:
                     tasks=data["tasks"] if "tasks" in data else None,
                     priority=priority_value if "priority" in data else None,
                     acquisition_mode=acq_value if "acquisition_mode" in data else None,
-                    action_on_waypoint_unreachable=(
-                        action_value
-                        if "action_on_waypoint_unreachable" in data
-                        else None
-                    ),
+                    start_mode=data["start_mode"] if "start_mode" in data else None,
+                    start_task_index=data.get("start_task_index"),
+                    start_task_index_present=("start_task_index" in data),
                     assigned_train_ids=(
                         data["assigned_train_ids"]
                         if "assigned_train_ids" in data

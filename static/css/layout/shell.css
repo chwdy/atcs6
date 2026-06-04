@@ -358,6 +358,12 @@ textarea {
     display: flex;
 }
 
+/* User-collapsed via the header toggle. Overrides .visible (same specificity,
+   declared later) so the panel hides while keeping its tabs/content state. */
+.secondary-sidebar.user-hidden {
+    display: none;
+}
+
 /* Compact mode for secondary sidebar (e.g., route creation panel) */
 .secondary-sidebar.compact {
     width: auto;
@@ -619,6 +625,13 @@ textarea {
     overflow: hidden;
     position: relative;
     flex-shrink: 0;
+}
+
+/* Collapsed via the header toggle — drops out of the flex flow so the canvas
+   reclaims the space. Width lives on the class, not inline style, so the
+   user's resized width is preserved across hide/show. */
+.sidebar.collapsed {
+    display: none;
 }
 
 /* Split sidebar: Fixed tools at top, scrollable content below */

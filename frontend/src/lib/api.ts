@@ -304,20 +304,6 @@ export class API {
     return this._request(`/blocks/${encodeURIComponent(blockId)}`, {}, 'getBlock');
   }
 
-  /**
-   * Resolve what a block-relative direction means physically — the terminal
-   * tile and compass exit heading — so the UI can render `F-(x,y)-E` labels.
-   * @returns { terminal_tile: [x,y], terminal_heading: "N|E|S|W" }, or null when
-   *   the block lacks geometry to disambiguate that direction.
-   */
-  async getBlockDirectionInfo(blockId: string, direction: string): Promise<any> {
-    return this._request(
-      `/blocks/${encodeURIComponent(blockId)}/direction-info?direction=${encodeURIComponent(direction)}`,
-      { returnNullOn404: true },
-      'getBlockDirectionInfo'
-    );
-  }
-
   /** Update block properties. */
   async updateBlock(blockId: string, data: unknown): Promise<any> {
     return this._request(
@@ -604,12 +590,16 @@ export class API {
     );
   }
 
-  async addPlatformToStation(stationId: string, platformId: string): Promise<any> {
+  async addPlatformToStation(
+    stationId: string,
+    platformId: string,
+    force = false
+  ): Promise<any> {
     return this._request(
       `/station/${encodeURIComponent(stationId)}/add-platform`,
       {
         method: 'POST',
-        body: { platform_id: platformId },
+        body: { platform_id: platformId, force },
       },
       'addPlatformToStation'
     );
@@ -1009,6 +999,11 @@ export class API {
 
   // === Switch Management API ===
 
+  /** Get every switch on the layout. */
+  async getSwitches(): Promise<any> {
+    return this._request('/switches', {}, 'getSwitches');
+  }
+
   /** Get a specific switch. */
   async getSwitch(switchId: string): Promise<any> {
     return this._request(`/switches/${encodeURIComponent(switchId)}`, {}, 'getSwitch');
@@ -1204,8 +1199,7 @@ export class API {
    * Clear one per-run override on a currently RUNNING RouteRun. Restores
    * the shared-route value for that field via the effective_* helpers.
    *
-   * @param field - One of `priority` / `acquisition_mode` /
-   *     `action_on_waypoint_unreachable`.
+   * @param field - One of `priority` / `acquisition_mode`.
    */
   async clearRouteRunOverride(runNumber: number, field: string): Promise<any> {
     return this._request(
@@ -1218,16 +1212,30 @@ export class API {
   /**
    * Assign/unassign a train to/from a route.
    * @param routeId - Route ID or null to unassign
+   * @param options.startMode - Optional per-assignment start mode
+   *     ('first' | 'nearest' | 'specific'); omit to use the route default.
+   * @param options.startTaskIndex - Stop index when startMode is 'specific'.
    */
-  async assignRoute(trainId: string, routeId: string | null, options: { force?: boolean } = {}): Promise<any> {
+  async assignRoute(
+    trainId: string,
+    routeId: string | null,
+    options: { force?: boolean; startMode?: string; startTaskIndex?: number | null } = {}
+  ): Promise<any> {
+    const body: Record<string, unknown> = {
+      route_id: routeId,
+      force: options.force || false,
+    };
+    if (options.startMode !== undefined) {
+      body.start_mode = options.startMode;
+    }
+    if (options.startTaskIndex !== undefined) {
+      body.start_task_index = options.startTaskIndex;
+    }
     return this._request(
       `/trains/${encodeURIComponent(trainId)}/assign-route`,
       {
         method: 'PUT',
-        body: {
-          route_id: routeId,
-          force: options.force || false,
-        },
+        body,
       },
       'assignRoute'
     );

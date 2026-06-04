@@ -80,15 +80,17 @@ def _build_demo4(setup_train):
 
 
 def _lock_x1_diverge_via_train_a(dispatcher, network):
-    """Train A (T1, at PLT_S1_S) runs straight S1S->S2S, locking SW_X1 in its
+    """Train A (T1, at PLT_S1_S) runs straight through SW_X1, locking it in its
     straight (DIVERGE) state - the 'another train going straight' from the
-    report. The straight route arrives at S2-S in the 'forward' block frame;
-    we verify the lock actually took (not just that some path was created)."""
+    report. We target BLK_X1_TO_S2_S, the block just past X1 on the S track:
+    that is the requested target, so it is reached (and X1 locked) even though
+    the junction-fouling exclusion would otherwise hold a path SHORT of the
+    occupied PLT_S2_S back before X1. We verify the lock actually took."""
     x1 = network.get_track(2, 3)
     for dirc in ("forward", "reverse"):
         res = dispatcher.create_path(
             train_id="T1",
-            requested_destination_block_id="PLT_S2_S_BLOCK",
+            requested_destination_block_id="BLK_X1_TO_S2_S",
             requested_destination_direction=dirc,
             acquisition_mode=AcquisitionMode.BEST_EFFORT,
         )
