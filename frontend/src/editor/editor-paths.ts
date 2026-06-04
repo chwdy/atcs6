@@ -344,7 +344,7 @@ export class PathEditorHandler {
 
     const content = `
             <div class="path-setup-panel">
-                ${renderHeaderId(this.pathToolState.startBlockId, '#00d4ff')}
+                ${renderHeaderId(this.pathToolState.startBlockId, 'var(--info-color)')}
 
                 <div class="property-item">
                     <label class="property-label">Direction</label>
@@ -397,7 +397,7 @@ export class PathEditorHandler {
         `;
 
     if (this.cachedPaths.length === 0) {
-      content += '<div class="text-muted text-center routes-empty-state">No active paths</div>';
+      content += '<div class="empty-state">No active paths</div>';
     } else {
       content += '<div class="paths-list">';
       for (const path of this.cachedPaths) {
@@ -691,7 +691,7 @@ export class PathEditorHandler {
                 ${renderHeaderId(path.path_id, statusColor)}
 
                 <!-- INFO SECTION (Read-only, styled like Train Control) -->
-                <div class="info-box-track mb-12 info-display-large">
+                <div class="info-box mb-12 info-display-large">
                     <div class="flex justify-between items-start mb-4">
                         <span class="info-label text-muted">Status</span>
                         <span class="info-meta font-mono" title="Direction: ${detailDirFull} · raw=${direction}">${detailDirCompact}</span>
@@ -733,13 +733,13 @@ export class PathEditorHandler {
                         ${
                           path.status === 'set' || path.status === 'active'
                             ? `
-                            <button id="extend-path-btn" class="btn btn-primary btn-sm flex-1">
+                            <button id="extend-path-btn" class="btn btn-accent btn-sm flex-1">
                                 <i class="ti ti-arrows-horizontal"></i> Extend
                             </button>
                         `
                             : ''
                         }
-                        <button id="cancel-path-btn" class="btn btn-danger btn-sm flex-1 btn-danger-solid">
+                        <button id="cancel-path-btn" class="btn btn-danger btn-sm flex-1">
                             <i class="ti ti-x"></i> Cancel
                         </button>
                     </div>

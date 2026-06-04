@@ -288,9 +288,9 @@ class SimulationController:
             # design_new.md fix #18: emit INFO notification instead of logger.debug.
             self.notification_center.emit(
                 source="SimulationController",
-                kind="latched_cancel_skipped",
+                kind="diagnostic",
                 severity=Severity.INFO,
-                event_time=self.simulation_time,
+                event_time=time.time(),
                 train_id=train.train_id,
                 payload={"initiator": payload.initiator},
             )
@@ -612,7 +612,7 @@ class SimulationController:
                     source="SimulationController",
                     kind="signal_refresh_failed",
                     severity=Severity.WARNING,
-                    event_time=self.simulation_time,
+                    event_time=time.time(),
                     train_id=train_id,
                     payload={"context": "add_train", "reason": str(exc)},
                 )
@@ -647,7 +647,7 @@ class SimulationController:
             source="SimulationController",
             kind="train_added",
             severity=Severity.INFO,
-            event_time=self.simulation_time,
+            event_time=time.time(),
             train_id=train_id,
             payload={
                 "starting_block_id": starting_block_id,
@@ -677,7 +677,7 @@ class SimulationController:
             source="SimulationController",
             kind="fatal_runtime",
             severity=Severity.FATAL,
-            event_time=self.simulation_time,
+            event_time=time.time(),
             train_id=payload.incoming_train_id,
             payload={
                 "resource_type": payload.resource_type,
@@ -716,7 +716,7 @@ class SimulationController:
                 source="SimulationController",
                 kind="failed_runtime_release_rejected",
                 severity=Severity.WARNING,
-                event_time=self.simulation_time,
+                event_time=time.time(),
                 payload={"reason": "missing_fatal_payload"},
             )
             return False
@@ -727,7 +727,7 @@ class SimulationController:
                 source="SimulationController",
                 kind="failed_runtime_release_rejected",
                 severity=Severity.WARNING,
-                event_time=self.simulation_time,
+                event_time=time.time(),
                 train_id=payload.incoming_train_id,
                 payload={
                     "resource_type": payload.resource_type,
@@ -745,7 +745,7 @@ class SimulationController:
             source="SimulationController",
             kind="failed_runtime_released",
             severity=Severity.INFO,
-            event_time=self.simulation_time,
+            event_time=time.time(),
         )
         return True
 
@@ -842,9 +842,10 @@ class SimulationController:
         ``"deviation"``, ``"revoked"``, …); routing/planning layers must not
         branch on it.
         """
-        self.route_executor.handle_path_cancellation(
-            train_id, path_id, initiator, reason
-        )
+        # Per design_new.md line 1559: the diagnostic `initiator` does not cross
+        # the route callback boundary; it is carried only on the notification
+        # emitted below.
+        self.route_executor.handle_path_cancellation(train_id, path_id, reason)
         self.notification_center.emit(
             source="SimulationController",
             kind="path_cancellation",

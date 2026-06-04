@@ -145,6 +145,19 @@ def update_switch(
                     block_manager.on_switch_position_changed(switch_id)
                 except Exception:
                     pass
+            # design_new.md line 708: the disabled toggle is a topology-
+            # availability change, so neighbouring switches' stored
+            # flank_protection can go stale against the opened/closed circuit.
+            # Recompute network-wide (the same recompute the add/remove/update-
+            # switch topology paths run; cheap and only fires on this edit).
+            recompute = getattr(
+                state.network, "recompute_all_flank_protection", None
+            )
+            if callable(recompute):
+                try:
+                    recompute()
+                except Exception:
+                    pass
 
     if manual_change is not None:
         switch.manual = bool(manual_change)

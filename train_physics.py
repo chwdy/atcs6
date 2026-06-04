@@ -551,6 +551,10 @@ class TrainPhysics:
         manual-mode policy decisions itself.
         """
         # OFF or no controller: 0V.
+        # Read the operational state through `controller.state`, which is a
+        # property proxying `ops.state` (TrainController has no stored top-level
+        # `state`). Per design_new.md "SpeedProfile", the stopped-but-lit states
+        # (READY / RUNNING_AT_STATION) output `lighting_voltage`.
         operational_state = (
             getattr(controller, "state", None) if controller is not None else None
         )

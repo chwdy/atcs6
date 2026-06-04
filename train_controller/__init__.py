@@ -469,6 +469,17 @@ class TrainController:
     # `controller.path_projection.<name>` directly.
 
     @property
+    def state(self) -> TrainState:
+        """Operational state, owned by the `ops` sub-state-machine.
+
+        Exposed at the controller level so external readers (e.g.
+        `TrainPhysics.compute_track_voltage`) and test doubles can read
+        `controller.state` uniformly. The canonical store remains
+        `self.ops.state`; this is a read-only projection of it.
+        """
+        return self.ops.state
+
+    @property
     def travel_direction(self) -> Optional[str]:
         """Read-only derived value computed each read from (self.commands.cab, self.physics_sync.current_span).
 
@@ -914,9 +925,14 @@ class TrainController:
             pct = float(self.manual.manual_power_percent or 0.0)
             target = profile.power_percent_to_speed(pct) if profile else 0.0
             atc = float(self.atc.speed_limit or 0.0)
-            if atc > 0 and target > atc:
-                # Per design_new.md line 1755: ATC override clamps target and
-                # writes manual_power_percent = 0 (set-and-forget).
+            if target > atc:
+                # Per design_new.md: when ATC intervenes — including a zero
+                # authority cap (no cab, wrong-direction cab, or no/at-end
+                # authority, all of which set atc.speed_limit = 0 earlier this
+                # tick) — the controller clamps the target to the ATC limit and
+                # forces manual_power_percent = 0 for the tick (set-and-forget).
+                # A zero cap therefore holds the train at rest instead of letting
+                # the stored percent command motion.
                 target = atc
                 self.manual.manual_power_percent = 0.0
             target = max(0.0, target)
@@ -3232,6 +3248,13 @@ class TrainController:
                 if self.route_executor is not None
                 and self.route_executor.execution_state_for(self.train_id) is not None
                 else None
+            ),
+            # UI projection: True while an operator route teardown (abort or
+            # deactivate) is latched but not yet consumed in Phase 3. The layout
+            # renderer tints the train light purple during this window. Excludes
+            # power_off (ends in OFF, not a route teardown).
+            "route_teardown_pending": (
+                self.route_hooks.phase_latches.is_route_teardown_pending()
             ),
             # Live "current path error" projection for the train panel badge
             # and the Quick Route no-path toast. Surfaces the active

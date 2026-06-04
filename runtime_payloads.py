@@ -299,6 +299,17 @@ class PhaseLatches:
             or self.route_deactivate
         )
 
+    def is_route_teardown_pending(self) -> bool:
+        """True while an operator route teardown (abort or deactivate) is
+        latched but not yet consumed in Phase 3.
+
+        Excludes `power_off` (that path ends in OFF, not a route teardown)
+        and the inclusive `path_cancel_request` leaf. Used only as a UI
+        projection on `TrainController.to_dict()`; runtime branching never
+        keys on it.
+        """
+        return self.route_abort or self.route_deactivate
+
     # ------------------------------------------------------------------
     # Consumers (read-and-clear)
     # ------------------------------------------------------------------
@@ -496,9 +507,10 @@ class FatalConflictKind(Enum):
     Per design_new.md "Fatal physical-entry conflict procedure" v1 values:
     a train tried to enter a block already held by another train, a block
     reserved for another train, a switch already occupied by another train,
-    a resource (block/switch) flagged disabled, or a switch physical-entry
+    a resource (block/switch) flagged disabled, a switch physical-entry
     event arrived without a route key (which the dispatcher must always
-    supply for an interior-switch tile).
+    supply for an interior-switch tile), or a train physically entered a
+    switch for which it holds no compatible main lock (a switch intrusion).
     """
 
     OCCUPIED_BY_OTHER_TRAIN = "occupied_by_other_train"
@@ -506,6 +518,10 @@ class FatalConflictKind(Enum):
     SWITCH_OCCUPIED_BY_OTHER_TRAIN = "switch_occupied_by_other_train"
     DISABLED_RESOURCE_ENTRY = "disabled_resource_entry"
     MALFORMED_ROUTE_KEY = "malformed_route_key"
+    # design_new.md line 663: a train physically on a switch must hold a
+    # compatible main lock for the route it occupies; entering with no such lock
+    # (and not a same-train already-covered seeded span) is a fatal intrusion.
+    SWITCH_INTRUSION = "switch_intrusion"
 
 
 @dataclass

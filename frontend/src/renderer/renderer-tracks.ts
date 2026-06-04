@@ -45,12 +45,36 @@ export interface TrackHandlerRenderer {
   ctx: CanvasRenderingContext2D;
   scale: number;
   gridSize: number;
-  currentBlocks?: Record<string, { state?: string } | undefined> | null;
+  currentBlocks?: Record<string, { state?: string; disabled?: boolean; manual?: boolean } | undefined> | null;
   currentNetwork?: { switches?: Record<string, SwitchEntity | undefined> } | null;
   gridToScreenX(x: number, y: number): number;
   gridToScreenY(x: number, y: number): number;
   signalHandler: { drawSingleSignal(signal: unknown, trackBits: number | undefined, half: number): void };
   debugHandler: { highlightDeadEnds(x: number, y: number, deadEnds: string[], trackBits?: number): void };
+}
+
+/**
+ * Track fill color for a block, by availability then live state. Availability
+ * (disabled/manual) is a separate axis that overrides live state: a disabled
+ * block reads grey and a manual-mode block reads orange regardless of
+ * occupancy/reservation. Disabled wins over manual, matching
+ * deriveAvailabilityState; the grey/orange match the --block-disabled /
+ * --block-manual design tokens. Returns null when the block is absent or its
+ * state is unrecognized, so the caller keeps its default track color.
+ */
+export function blockTrackColor(
+  block: { state?: string; disabled?: boolean; manual?: boolean } | undefined | null,
+): string | null {
+  if (!block) return null;
+  if (block.disabled) return '#6c6c78';
+  if (block.manual) return '#ff9500';
+  switch ((block.state || 'free').toLowerCase()) {
+    case 'occupied': return '#e83f5b';
+    case 'reserved': return '#04d361';
+    case 'free': return '#4285f4';
+    case 'caution': return '#ffcd1e';
+    default: return null;
+  }
 }
 
 export class RendererTrackHandler {
@@ -69,7 +93,7 @@ export class RendererTrackHandler {
   get gridSize(): number {
     return this.renderer.gridSize;
   }
-  get currentBlocks(): Record<string, { state?: string } | undefined> | null | undefined {
+  get currentBlocks(): Record<string, { state?: string; disabled?: boolean; manual?: boolean } | undefined> | null | undefined {
     return this.renderer.currentBlocks;
   }
   get currentNetwork(): { switches?: Record<string, SwitchEntity | undefined> } | null | undefined {
@@ -96,19 +120,8 @@ export class RendererTrackHandler {
 
     let trackColor = '#666';
     if (track.block_section_id && this.currentBlocks) {
-      const block = this.currentBlocks[track.block_section_id];
-      if (block) {
-        const blockState = (block.state || 'free').toLowerCase();
-        if (blockState === 'occupied') {
-          trackColor = '#e83f5b';
-        } else if (blockState === 'reserved') {
-          trackColor = '#04d361';
-        } else if (blockState === 'free') {
-          trackColor = '#4285f4';
-        } else if (blockState === 'caution') {
-          trackColor = '#ffcd1e';
-        }
-      }
+      const resolved = blockTrackColor(this.currentBlocks[track.block_section_id]);
+      if (resolved) trackColor = resolved;
     } else if (track.occupied_by) {
       trackColor = '#e83f5b';
     } else if (track.reserved_by) {

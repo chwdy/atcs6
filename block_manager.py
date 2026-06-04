@@ -807,12 +807,15 @@ class BlockManager:
             return False
         if self.simulation_controller is None:
             return False
-        get_controller = getattr(
-            self.simulation_controller, "get_controller", None
+        # design_new.md line 819: resolve the occupant through the canonical
+        # get_or_create_controller accessor (an OCCUPIED block's occupant always
+        # has a controller, so this never spuriously creates one).
+        get_or_create_controller = getattr(
+            self.simulation_controller, "get_or_create_controller", None
         )
-        if get_controller is None:
+        if get_or_create_controller is None:
             return False
-        controller = get_controller(train_id)
+        controller = get_or_create_controller(train_id)
         if controller is None:
             return False
         travel_direction = getattr(controller, "travel_direction", None)

@@ -1250,6 +1250,10 @@ class TestHandleUnderEmergencyBrake:
         train, controller, _ = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING, current_speed=30.0
         )
+        # set_handle is a manual-mode command (design_new.md line 1757); put the
+        # controller in manual mode with a cab so the lever input is accepted.
+        controller.commands.control_mode = "manual"
+        controller.commands.cab = "A"
 
         result = controller.eb.activate()
         assert result.success is True
@@ -1268,6 +1272,9 @@ class TestHandleUnderEmergencyBrake:
         train, controller, _ = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING, current_speed=30.0
         )
+        # set_handle is a manual-mode command (design_new.md line 1757).
+        controller.commands.control_mode = "manual"
+        controller.commands.cab = "A"
 
         result = controller.eb.activate()
         assert result.success is True
@@ -1282,6 +1289,9 @@ class TestHandleUnderEmergencyBrake:
         train, controller, _ = create_test_train_with_controller(
             state=TrainState.RUNNING_MOVING, current_speed=0.0
         )
+        # set_handle is a manual-mode command (design_new.md line 1757).
+        controller.commands.control_mode = "manual"
+        controller.commands.cab = "A"
 
         result = controller.eb.activate()
         assert result.success is True

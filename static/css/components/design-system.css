@@ -267,14 +267,18 @@
     font-family: var(--font-mono);
 }
 
+/* §4: panel inputs (text/select/number) are 28px (--control-height-xs). This
+   base now meets the spec directly, so panels no longer need a per-feature
+   height override (the .route-editor .property-input override is redundant). */
 .property-input {
     width: 100%;
-    padding: 10px 12px;
+    height: var(--control-height-xs);
+    padding: 0 8px;
     background: var(--bg-dark);
     border: 1px solid var(--border-color);
     color: var(--text-primary);
-    border-radius: 6px;
-    font-size: 13px;
+    border-radius: var(--control-radius-sm);
+    font-size: 12px;
     box-sizing: border-box;
 }
 
@@ -357,37 +361,31 @@
     line-height: 1;
 }
 
-/* Route editor compact controls */
+/* Info callout card — the read-only state/info box at the top of an entity
+   editor (block / signal / platform). Standard card shape per §11: --bg-dark
+   fill, hairline border, token radius. Consolidated from the old
+   .info-box-track / .info-box-signal, which differed only by a hardcoded
+   background tint (#2a3a2e / #2a2a3e). A status accent, when wanted, comes
+   from a left-border layered on top (e.g. .signal-panel-card). */
 .info-box {
     padding: 8px;
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--bg-dark);
     border: 1px solid var(--border-color);
-    border-radius: 4px;
+    border-radius: var(--control-radius-sm);
     margin: 6px 0;
     color: var(--text-secondary);
     line-height: 1.4;
 }
 
-.info-box-track {
-    background: #2a3a2e;
-    padding: 8px;
-    border-radius: 4px;
-    margin: 6px 0;
-}
-
-.info-box-signal {
-    background: #2a2a3e;
-    padding: 6px;
-    border-radius: 4px;
-    margin: 6px 0;
-}
-
+/* Warning variant — §6 status accent: a faint warning tint + 3px warning
+   left-border (the banner-warn treatment), not a hardcoded warm hex. */
 .info-box-warning {
-    background: #3a2a1a;
+    background: rgba(255, 205, 30, 0.10);
     border-left: 3px solid var(--warning-color);
     padding: 8px;
-    border-radius: 4px;
+    border-radius: var(--control-radius-sm);
     margin: 6px 0;
+    color: var(--text-secondary);
 }
 
 /* Badges */
@@ -678,7 +676,6 @@
     color: var(--text-secondary);
     background: transparent;
     border: none;
-    border-right: 1px solid var(--border-color);
     cursor: pointer;
     transition: all 0.15s ease;
     white-space: nowrap;
@@ -686,18 +683,17 @@
     line-height: 1.2;
 }
 
-.switch-btn:last-child {
-    border-right: none;
-}
-
 .switch-btn:hover:not(:disabled) {
     background: var(--bg-hover);
     color: var(--text-primary);
 }
 
+/* Active cell: per DESIGN_LANGUAGE.md §3 "Segmented control" — the active
+   button is an accent *tint*, never a solid fill. The tinted bg + accent text
+   is the affordance; solid fills are reserved for top-level page CTAs. */
 .switch-btn.active {
-    background: var(--accent-color);
-    color: white;
+    background: rgba(130, 87, 229, 0.18);
+    color: var(--accent-hover);
 }
 
 .switch-btn:disabled {
@@ -705,22 +701,22 @@
     cursor: not-allowed;
 }
 
-/* Variant: Success (green) */
+/* Variant: Success (green) — active cell tints to the success hue (§7). */
 .switch-group.success .switch-btn.active {
-    background: var(--success-color);
-    color: white;
+    background: rgba(4, 211, 97, 0.18);
+    color: var(--success-color);
 }
 
 /* Variant: Danger (red) */
 .switch-group.danger .switch-btn.active {
-    background: var(--danger-color);
-    color: white;
+    background: rgba(232, 63, 91, 0.18);
+    color: var(--danger-color);
 }
 
 /* Variant: Warning (yellow) */
 .switch-group.warning .switch-btn.active {
-    background: var(--warning-color);
-    color: #000;
+    background: rgba(255, 205, 30, 0.18);
+    color: var(--warning-color);
 }
 
 /* Size variants */
@@ -842,13 +838,18 @@
     font-weight: 600;
 }
 
+/* §4: panel inputs are 28px (--control-height-xs). The "large" variant keeps a
+   slightly larger, heavier font so a name field still reads as prominent, but
+   not a taller box (a 36–46px input stacks two rows off-screen in a sidebar). */
 .input-large-field {
     width: 100%;
-    padding: 10px 12px;
-    background: var(--bg-input);
+    height: var(--control-height-xs);
+    padding: 0 10px;
+    background: var(--bg-dark);
     border: 1px solid var(--border-color);
-    border-radius: 6px;
-    font-size: 14px;
+    border-radius: var(--control-radius-sm);
+    font-size: 13px;
+    font-weight: 600;
     color: var(--text-primary);
     box-sizing: border-box;
     transition: border-color 0.2s;
@@ -885,11 +886,14 @@
 
 .input-small-field {
     flex: 1;
-    padding: 6px 10px;
-    background: var(--bg-input);
+    width: 100%;
+    height: var(--control-height-xs);
+    padding: 0 8px;
+    background: var(--bg-dark);
     border: 1px solid var(--border-color);
-    border-radius: 4px;
+    border-radius: var(--control-radius-sm);
     font-size: 12px;
+    font-family: var(--font-mono);
     color: var(--text-primary);
     box-sizing: border-box;
     transition: border-color 0.2s;
@@ -905,45 +909,8 @@
 }
 
 .input-small-field-compact {
-    max-width: 120px;
-}
-
-/* Medium input - for secondary important fields */
-.input-medium-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 12px;
-}
-
-.input-medium-label {
-    font-size: 12px;
-    color: var(--text-secondary);
-    font-weight: 500;
-    flex-shrink: 0;
-    min-width: 100px;
-}
-
-.input-medium-field {
     flex: 1;
-    padding: 8px 12px;
-    background: var(--bg-input);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    font-size: 13px;
-    color: var(--text-primary);
-    box-sizing: border-box;
-    transition: border-color 0.2s;
-}
-
-.input-medium-field:focus {
-    outline: none;
-    border-color: var(--accent-color);
-}
-
-.input-medium-field::placeholder {
-    color: var(--text-muted);
+    max-width: 120px;
 }
 
 /* ============================================================================

@@ -1112,11 +1112,11 @@ export function renderTileList(sortedPositions: Coord[], options: TileListOption
   return `
         <div class="tile-list">
             <div class="tile-list-header">${entityType === 'platform' ? 'Platform' : 'Block'} Tiles (${sortedPositions.length})</div>
-            <button id="${extendStartBtnId}" class="btn btn-secondary btn-sm tile-list-extend-btn">➕ Extend Start</button>
+            <button id="${extendStartBtnId}" class="btn btn-secondary btn-sm tile-list-extend-btn"><i class="ti ti-plus"></i> Extend Start</button>
             <div class="tile-list-container">
                 ${tileItems}
             </div>
-            <button id="${extendEndBtnId}" class="btn btn-secondary btn-sm tile-list-extend-btn">➕ Extend End</button>
+            <button id="${extendEndBtnId}" class="btn btn-secondary btn-sm tile-list-extend-btn"><i class="ti ti-plus"></i> Extend End</button>
             <div class="info-box-warning text-xxs text-warning mt-4 mb-0">Only edge tiles (start/end) can be removed</div>
         </div>
     `;

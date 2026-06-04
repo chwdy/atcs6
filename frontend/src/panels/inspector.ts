@@ -215,7 +215,7 @@ interface InspectorSnapshot {
                     </div>
                 </div>
                 <div class="inspector-panel-body" data-role="body">
-                    <div class="inspector-panel-empty">Select a train to begin.</div>
+                    <div class="empty-state">Select a train to begin.</div>
                 </div>
                 <div class="inspector-panel-footer" data-role="footer"></div>
                 <div class="inspector-resize-handle" data-role="resize-handle"></div>
@@ -689,20 +689,20 @@ interface InspectorSnapshot {
         // ----- Rendering ----------------------------------------------------
 
         _renderEmpty(text: string) {
-            this._bodyEl.innerHTML = `<div class="inspector-panel-empty">${text}</div>`;
+            this._bodyEl.innerHTML = `<div class="empty-state">${text}</div>`;
             this._footerEl.textContent = "";
         }
 
         _renderTrainGone() {
             this._bodyEl.innerHTML =
-                '<div class="inspector-panel-empty inspector-panel-warn">Train no longer exists.</div>';
+                '<div class="empty-state empty-state-warn">Train no longer exists.</div>';
             this._footerEl.textContent = "";
         }
 
         _renderError(err: unknown) {
             const msg = (err as { message?: string })?.message || String(err);
             this._bodyEl.innerHTML =
-                `<div class="inspector-panel-empty inspector-panel-error">Error: ${msg}</div>`;
+                `<div class="empty-state empty-state-error">Error: ${msg}</div>`;
         }
 
         _render(snapshot: InspectorSnapshot) {
@@ -767,7 +767,7 @@ interface InspectorSnapshot {
                     <div class="inspector-group-header" data-group-name="${escapeHtml(group.name)}">
                         <span class="inspector-group-caret">${collapsed ? "▸" : "▾"}</span>
                         <span class="inspector-group-name">${escapeHtml(group.name)}</span>
-                        <span class="inspector-group-count">${items.length}</span>
+                        <span class="chip">${items.length}</span>
                     </div>
                     <div class="inspector-group-items">${rows}</div>
                 </div>

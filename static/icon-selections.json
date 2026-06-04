@@ -71,6 +71,18 @@
     "kind": "tabler",
     "value": "minus"
   },
+  "route-mode-circular": {
+    "kind": "tabler",
+    "value": "rotate"
+  },
+  "route-mode-one-off": {
+    "kind": "tabler",
+    "value": "arrow-narrow-right"
+  },
+  "route-mode-round-trip": {
+    "kind": "tabler",
+    "value": "arrows-exchange"
+  },
   "routes-panel": {
     "kind": "tabler",
     "value": "map-route"

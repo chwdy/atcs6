@@ -29,6 +29,8 @@ export interface ControllerSpan {
 export interface TrainController {
   cab?: unknown;
   facing_direction?: unknown;
+  control_mode?: unknown;
+  route_teardown_pending?: unknown;
   span?: ControllerSpan | null;
 }
 
@@ -58,6 +60,10 @@ export interface RenderSnapshotTrain {
   id: string;
   cab: unknown;
   facing: unknown;
+  /** 'manual' | 'ato' (or null). Drives the manual-mode body tint. */
+  controlMode: unknown;
+  /** True while an operator route teardown (abort/deactivate) is latched. */
+  teardownPending: boolean;
   span: RenderSnapshotSpan;
   waitingForBlockId: unknown;
 }
@@ -96,6 +102,8 @@ export function buildRenderSnapshot(
       id: train.id,
       cab: controller.cab ?? null,
       facing: controller.facing_direction ?? null,
+      controlMode: controller.control_mode ?? null,
+      teardownPending: controller.route_teardown_pending === true,
       span: {
         occupiedTiles: span.occupied_tiles,
         leadingEnd: span.leading_end,

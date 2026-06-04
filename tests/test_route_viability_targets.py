@@ -182,6 +182,15 @@ def test_route_tasks_create_save_reload_roundtrip(client, connected_network):
             "task_time": None,
             "target_time": None,
         },
+        {
+            # Terminal stop so the route is activatable (design_new.md line 1282:
+            # the task list must end in a stop, optionally followed by dwell).
+            "task_kind": "stop",
+            "task_location": {"platform_id": "PLT_A"},
+            "task_direction": "forward",
+            "task_time": None,
+            "target_time": None,
+        },
     ]
     upd = client.put(
         "/api/train-routes/RT_TEST",
@@ -191,7 +200,7 @@ def test_route_tasks_create_save_reload_roundtrip(client, connected_network):
 
     # The reload that used to come back empty must now echo the saved tasks.
     got = client.get("/api/train-routes/RT_TEST").get_json()
-    assert len(got["tasks"]) == 3
+    assert len(got["tasks"]) == 4
     assert got["tasks"][0]["task_kind"] == "stop"
     assert got["tasks"][0]["task_location"] == {"platform_id": "PLT_A"}
     assert got["tasks"][0]["task_time"] == 60
@@ -284,7 +293,7 @@ def test_history_records_activation_time(client, connected_network):
             "name": "H2",
             "mode": "one_off",
             "tasks": [
-                {"task_kind": "waypoint", "task_location": {"block_id": "BLK_B"}}
+                {"task_kind": "stop", "task_location": {"block_id": "BLK_B"}}
             ],
         },
     )

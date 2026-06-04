@@ -56,7 +56,6 @@ _CONTROLLER_STORED_FIELDS: List[str] = [
     "ops.handle_position",
     "manual.manual_power_percent",
     "power_on",
-    "path_backed_run_active",
     "atc.clearance_ahead_cm",
     "atc.speed_limit",
     "atc.current_block_speed_limit",
@@ -67,10 +66,11 @@ _CONTROLLER_STORED_FIELDS: List[str] = [
 ]
 
 _CONTROLLER_DERIVED_FIELDS: List[str] = [
-    "received_path_plan",
-    "assigned_path_id",
-    "ato_path_id",
-    "ato_destination_block_id",
+    "path_projection.received_path_plan",
+    "path_projection.assigned_path_id",
+    "path_projection.ato_path_id",
+    "path_projection.ato_destination_block_id",
+    "path_projection.path_backed_run_active",
     "travel_direction",
     "lookahead",
     "target_speed",
@@ -99,40 +99,54 @@ _CONTROLLER_LATCH_FIELDS: List[str] = [
 # ---------------------------------------------------------------------------
 
 _DERIVED_DOC: Dict[str, Dict[str, Any]] = {
-    "received_path_plan": {
+    "path_projection.received_path_plan": {
         "computed_from": ["path_dispatcher.get_active_path(train_id)"],
         "formula_doc": (
-            "train_controller.py:417 / design_new.md §Path — live read of "
-            "PathDispatcher.get_active_path(train_id); auto-flips to None "
-            "when dispatcher transitions path away from ACTIVE."
+            "train_controller/path_projection.py:42 / design_new.md §Path — "
+            "live read of PathDispatcher.get_active_path(train_id); "
+            "auto-flips to None when dispatcher transitions path away from "
+            "ACTIVE."
         ),
     },
-    "assigned_path_id": {
+    "path_projection.assigned_path_id": {
         "computed_from": ["received_path_plan.path_id"],
-        "formula_doc": "train_controller.py:433 — derived from received_path_plan.path_id (or .id fallback).",
+        "formula_doc": (
+            "train_controller/path_projection.py:84 — derived from "
+            "received_path_plan.path_id (or .id fallback)."
+        ),
     },
-    "ato_path_id": {
+    "path_projection.ato_path_id": {
         "computed_from": ["assigned_path_id"],
-        "formula_doc": "train_controller.py:441 — alias for assigned_path_id.",
+        "formula_doc": "train_controller/path_projection.py:92 — alias for assigned_path_id.",
     },
-    "ato_destination_block_id": {
+    "path_projection.ato_destination_block_id": {
+        "computed_from": ["received_path_plan.authority_end_block_id"],
+        "formula_doc": (
+            "train_controller/path_projection.py:97 — derived from "
+            "received_path_plan.authority_end_block_id "
+            "(Path.get_authority_end_block_id())."
+        ),
+    },
+    "path_projection.path_backed_run_active": {
         "computed_from": [
-            "received_path_plan.authority_end_block_id",
-            "received_path_plan.end_block_id (legacy fallback)",
+            "received_path_plan",
+            "active route execution state",
+            "ato_destination_block_id",
         ],
         "formula_doc": (
-            "train_controller.py:446 — derived from "
-            "received_path_plan.authority_end_block_id; falls back to "
-            "legacy end_block_id when v0 schema."
+            "train_controller/path_projection.py:111 — derived projection; "
+            "True when received_path_plan, an active route, or "
+            "ato_destination_block_id backs the run "
+            "(_has_path_backed_run_context)."
         ),
     },
     "travel_direction": {
         "computed_from": ["cab", "current_span"],
         "formula_doc": (
-            "train_controller.py:462 / design_new.md ~L1311 — cab end = head; "
-            "direction is from the opposite physical end through the cab end "
-            "into the next span resource ahead. Returns None when no cab is "
-            "selected."
+            "train_controller/__init__.py:472 / design_new.md ~L1311 — cab "
+            "end = head; direction is from the opposite physical end through "
+            "the cab end into the next span resource ahead. Returns None when "
+            "no cab is selected."
         ),
     },
     "lookahead": {
@@ -146,23 +160,23 @@ _DERIVED_DOC: Dict[str, Dict[str, Any]] = {
             "eb.active",
         ],
         "formula_doc": (
-            "train_controller.py:498 / design_new.md §Lookahead — pure "
-            "derived; recomputes on every read via _calculate_lookahead(). "
+            "train_controller/__init__.py:512 / design_new.md §Lookahead — "
+            "pure derived; recomputes on every read via _calculate_lookahead(). "
             "Distance-0 entry carries the ATC operational limit."
         ),
     },
     "target_speed": {
         "computed_from": ["lookahead[0].speed_limit_kmh"],
         "formula_doc": (
-            "train_controller.py:509 / design_new.md §Lookahead — first "
-            "lookahead point's speed_limit_kmh; returns 0.0 when inf."
+            "train_controller/__init__.py:523 / design_new.md §Lookahead — "
+            "first lookahead point's speed_limit_kmh; returns 0.0 when inf."
         ),
     },
     "speed_limit_reason": {
         "computed_from": ["_last_speed_limit_reason (cached during atc.speed_limit_now())"],
         "formula_doc": (
-            "train_controller.py:526 — last ATC speed-limit reason cached "
-            "during this tick's ATC step; recomputed next tick."
+            "train_controller/__init__.py:546 — last ATC speed-limit reason "
+            "cached during this tick's ATC step; recomputed next tick."
         ),
     },
 }
@@ -217,6 +231,18 @@ def _resolve_latch(controller: Any, name: str, meta: Dict[str, Any]) -> Any:
     return obj
 
 
+def _resolve_attr_path(obj: Any, dotted: str) -> Any:
+    """Walk a dotted attribute path, e.g. ``path_projection.received_path_plan``.
+
+    A bare name (no dot) is a single ``getattr``. Used by both the stored
+    and derived group readers so sub-module fields (``eb.active``,
+    ``path_projection.assigned_path_id``) resolve the same way.
+    """
+    for part in dotted.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
 # ---------------------------------------------------------------------------
 # Serialization helpers
 # ---------------------------------------------------------------------------
@@ -236,7 +262,7 @@ def _safe_property(obj: Any, name: str) -> Dict[str, Any]:
     surfaces them as red rows in the UI.
     """
     try:
-        return {"ok": True, "value": getattr(obj, name)}
+        return {"ok": True, "value": _resolve_attr_path(obj, name)}
     except Exception as exc:  # noqa: BLE001 — intentional broad catch
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -383,10 +409,8 @@ def _build_controller_live_group(controller: Any) -> Dict[str, Any]:
         try:
             # Names may be dotted paths after the sub-module split
             # (e.g. ``eb.active``, ``atc.speed_limit``). Walk the dots.
-            obj: Any = controller
-            for part in name.split("."):
-                obj = getattr(obj, part)
-            items.append(_build_item(name, obj, "stored"))
+            raw = _resolve_attr_path(controller, name)
+            items.append(_build_item(name, raw, "stored"))
         except Exception as exc:  # noqa: BLE001
             items.append(
                 _build_item(

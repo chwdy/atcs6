@@ -26,6 +26,8 @@ export interface EdgePoint {
 export interface BlockInfo {
   name?: string;
   state?: string;
+  disabled?: boolean;
+  manual?: boolean;
   length_cm?: number;
   min_radius_cm?: number;
   speed_limit_kmh?: number;

@@ -668,6 +668,27 @@ class SwitchManager:
                 prior_owner_train_id=existing_train,
             )
             return False
+
+        # Intrusion check (design_new.md line 663): a train physically entering a
+        # switch must hold a compatible main lock for the route it occupies. The
+        # main-lock key is `(path_id, None)`. If the entering train holds no such
+        # lock — and is not already a recorded occupant of this switch (a
+        # same-train re-entry / already-covered seeded span, which is seeded into
+        # the path's resource_sequence and never newly locked) — the entry is a
+        # fatal intrusion: report it and write no occupancy state.
+        already_occupant = any(
+            owner == train_id for owner in switch.route_owners.values()
+        )
+        holds_main_lock = path_id is not None and (path_id, None) in switch.locks
+        if not holds_main_lock and not already_occupant:
+            self._report_fatal_conflict(
+                switch_id=switch_id,
+                train_id=train_id,
+                conflict_kind=FatalConflictKind.SWITCH_INTRUSION,
+                prior_owner_train_id=None,
+            )
+            return False
+
         switch.add_route_occupant(route, train_id)
 
         if path_id:

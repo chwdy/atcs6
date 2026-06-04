@@ -404,6 +404,12 @@ class RouteExecutor:
         # Canonical Route registry (per design_new.md "Route And RouteExecutor").
         # Keyed by route_id. Mutated only via register_route / unregister_route.
         self.route_registry: Dict[str, "Route"] = {}
+        # Append-only, never-recycled registration index per route_id, used to
+        # compose the diagnostic RouteRun.run_number (design_new.md line 1309).
+        # A route removed and re-added keeps its original index, and the counter
+        # never decreases, so run_numbers stay unique across the registry's life.
+        self._route_registry_index: Dict[str, int] = {}
+        self._next_route_registry_index: int = 0
         # `execution_states` holds the currently-RUNNING run for each train
         # (keyed by train_id; one slot per train). Per design_new.md, a run is
         # not deleted on teardown — its state flips to FINISHED / DEACTIVATED
@@ -449,6 +455,11 @@ class RouteExecutor:
     def register_route(self, route: "Route") -> None:
         """Register a Route in the canonical registry."""
         self.route_registry[route.route_id] = route
+        # Assign a stable append-only index on first registration only; a
+        # re-registered route_id keeps its original index (never recycled).
+        if route.route_id not in self._route_registry_index:
+            self._route_registry_index[route.route_id] = self._next_route_registry_index
+            self._next_route_registry_index += 1
 
     def unregister_route(self, route_id: str) -> Optional["Route"]:
         """Remove a Route from the registry; return the removed Route or None."""
@@ -578,16 +589,15 @@ class RouteExecutor:
     def _compose_run_number(self, route_id: str, run_count: int) -> int:
         """Compose the diagnostic ``RouteRun.run_number``.
 
-        Per design_new.md: ``route_registry_index * 1_000_000 + run_count``.
-        ``route_registry_index`` is the route's insertion order in
-        ``self.route_registry`` (stable in CPython 3.7+ dict ordering).
-        Falls back to 0 when the route is not yet registered.
+        Per design_new.md line 1309: ``route_registry_index * 1_000_000 +
+        run_count``. ``route_registry_index`` is the route's append-only
+        registration order (assigned in ``register_route``, never recycled or
+        compacted on route removal), so the diagnostic run_number stays unique
+        across the registry's lifetime. Falls back to 0 when the route is not
+        yet registered.
         """
-        try:
-            route_registry_index = list(self.route_registry.keys()).index(route_id)
-        except ValueError:
-            route_registry_index = 0
-        return route_registry_index * 100 + run_count
+        route_registry_index = self._route_registry_index.get(route_id, 0)
+        return route_registry_index * 1_000_000 + run_count
 
     def _get_active_path_id(self, train_id: str) -> Optional[str]:
         """Return the dispatcher's currently active path id for train_id."""
@@ -1648,17 +1658,17 @@ class RouteExecutor:
         self,
         train_id: str,
         path_id: str,
-        initiator: Optional[str] = None,
         reason: Optional[str] = None,
     ) -> None:
         """Phase-3 cancellation callback.
 
-        Per design_new.md, every cancellation kind shares the same body. The
-        callback is bookkeeping only: it must not choose a fresh target or
-        create fresh authority. `initiator` is the writer-supplied free-form
-        string (``"eb"``, ``"operator_cancelled"``, ``"power_off"``,
-        ``"deviation"``, ``"revoked"``, …); routing/planning logic must not
-        branch on it.
+        Per design_new.md line 1559, the v1 callback signature is
+        ``(train_id, path_id, reason=None)`` — every cancellation kind shares the
+        same body and no other parameter is accepted. The callback is
+        bookkeeping only: it must not choose a fresh target or create fresh
+        authority. The diagnostic `initiator` is surfaced only on the
+        `path_cancellation` notification and does not cross this callback
+        boundary.
         """
         exec_state = self.execution_states.get(train_id)
         if exec_state is None:
@@ -1670,7 +1680,7 @@ class RouteExecutor:
         # Per design_new.md (fix #17): record cancellation reason on last_error.
         now = self._now()
         exec_state.last_error = ErrorRecord(
-            text=f"cancelled: {initiator}" if initiator else "cancelled",
+            text=f"cancelled: {reason}" if reason else "cancelled",
             time=now,
         )
 
@@ -1916,6 +1926,32 @@ class RouteExecutor:
         to detect the reversal-trap case.
         """
         return self._get_route_target_resolver().find_next_move_target(train_id)
+
+    def waypoint_target_blocks(self, train_id: str) -> set:
+        """Resolved target block_ids of every `task_kind == "waypoint"` task on
+        this train's current RouteRun.
+
+        Public because `PathDispatcher` calls it (through
+        `simulation_controller.route_executor`) during best-effort truncation:
+        per design_new.md line 965 a stored live authority's terminal block must
+        never be a waypoint target, since waypoints are consumed by head-entry on
+        a still-live authority, never by dispatcher path completion.
+        """
+        exec_state = self.execution_states.get(train_id)
+        if exec_state is None:
+            return set()
+        route = self.route_registry.get(exec_state.route_id)
+        if route is None:
+            return set()
+        train = self.network.trains.get(train_id) if self.network else None
+        targets: set = set()
+        for task in route.tasks:
+            if getattr(task, "task_kind", None) != "waypoint":
+                continue
+            block_id = self._resolve_task_target_block(task, train=train)
+            if block_id:
+                targets.add(block_id)
+        return targets
 
     def _resolve_task_target_block(
         self,

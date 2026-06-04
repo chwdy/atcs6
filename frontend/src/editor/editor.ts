@@ -2479,7 +2479,7 @@ export class Editor {
                 ${track.isVirtual ? '<span class="badge badge-new">NEW</span>' : ''}
             </div>
 
-            <div class="info-box-track info-display-large">
+            <div class="info-box info-display-large">
                 <label class="text-secondary font-bold block mb-4">Track Bits</label>
                 <div class="text-2xl font-bold mb-2 text-primary font-mono">${trackBits} <span class="text-lg text-muted">(0b${binaryHTML})</span></div>
                 <div class="text-muted text-base mb-8 info-meta">
@@ -2658,7 +2658,7 @@ export class Editor {
                 : ''
             }
 
-            <button id="view-full-json-btn" class="btn btn-primary btn-full text-sm mt-12">
+            <button id="view-full-json-btn" class="btn btn-outline btn-full text-sm mt-12">
                 <i class="ti ti-braces"></i> View Full JSON
             </button>
         `;

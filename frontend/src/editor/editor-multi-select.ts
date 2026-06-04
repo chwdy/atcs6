@@ -34,34 +34,32 @@ export class MultiSelectActionsHandler {
     this._lastSignature = null;
   }
 
+  // The selection actions live in the shared secondary sidebar now (the same
+  // dedicated panel the block / path editors use), so the panel content element
+  // is that sidebar's content area.
   get panel(): HTMLElement | null {
-    return document.getElementById('multi-select-panel');
-  }
-  get propertiesPanel(): HTMLElement | null {
-    return document.getElementById('properties-panel');
+    return document.getElementById('secondary-sidebar-content');
   }
   get api(): any {
     return this.editor.api;
   }
 
-  // Called by the editor whenever boxSelectState.selectedKeys mutates.
-  // Toggles visibility against the properties panel and re-renders the body
-  // only when the selection summary has actually changed (avoids tearing
-  // down event handlers on every drag tick).
+  // Called by the editor whenever boxSelectState.selectedKeys mutates. The
+  // selection actions live in the shared secondary sidebar (a dedicated panel,
+  // like the block / path editors). Show it while the selection is non-empty
+  // and tear it down the instant the selection clears — which is also what
+  // leaving selection mode does, since every selection tool empties the set in
+  // its onExit. Re-render only when the selection summary actually changes, and
+  // refresh in place (no tab / history / persist churn) while the panel is
+  // already open, so a brush stroke that grows the set tile-by-tile stays cheap.
   update(selectedKeys: Set<string>): void {
-    const panel = this.panel;
-    if (!panel) return;
+    const showing = this.editor._currentEditorType === 'multi-select';
 
-    const size = selectedKeys.size;
-    if (size === 0) {
-      panel.hidden = true;
-      if (this.propertiesPanel) this.propertiesPanel.hidden = false;
+    if (selectedKeys.size === 0) {
+      if (showing) void this.editor.hideSecondarySidebar();
       this._lastSignature = null;
       return;
     }
-
-    panel.hidden = false;
-    if (this.propertiesPanel) this.propertiesPanel.hidden = true;
 
     const summary = this._summarize(selectedKeys);
     const sig = [
@@ -71,10 +69,25 @@ export class MultiSelectActionsHandler {
       [...summary.switchIds].sort().join(','),
       [...summary.signalIds].sort().join(','),
     ].join('|');
-    if (sig === this._lastSignature) return;
-    this._lastSignature = sig;
 
-    this._render(panel, summary);
+    // Already open: swap the body only, leaving the sidebar chrome alone.
+    if (showing) {
+      if (sig === this._lastSignature) return;
+      this._lastSignature = sig;
+      const contentEl = this.panel;
+      if (contentEl) this._render(contentEl, summary);
+      return;
+    }
+
+    // First non-empty selection: bring up the dedicated panel. Mark the editor
+    // type first so showSecondarySidebar records it (and so update() knows the
+    // panel is ours on the next tick).
+    this._lastSignature = sig;
+    this.editor._currentEditorType = 'multi-select';
+    this.editor._currentEditorId = null;
+    this.editor.showSecondarySidebar('Selection', this._buildHtml(summary));
+    const contentEl = this.panel;
+    if (contentEl) this._wire(contentEl, summary);
   }
 
   _summarize(selectedKeys: Set<string>): SelectionSummary {
@@ -107,7 +120,26 @@ export class MultiSelectActionsHandler {
     return [...blockIdSet].map((id) => byId.get(id)).filter(Boolean);
   }
 
+  // Render the panel body into `panel` and wire its controls. Used for the
+  // cheap in-place refresh while the panel is already open (e.g. each tile of a
+  // brush stroke).
   _render(panel: HTMLElement, summary: SelectionSummary): void {
+    panel.innerHTML = this._buildHtml(summary);
+    this._wire(panel, summary);
+  }
+
+  // Attach the action / property-input listeners to a freshly-rendered panel.
+  _wire(panel: HTMLElement, summary: SelectionSummary): void {
+    this._wireActions(panel);
+    const affectedBlocks = this._affectedBlocks(summary.blockIds);
+    if (affectedBlocks.length > 0) this._wirePropertyInputs(panel, affectedBlocks);
+  }
+
+  // The panel markup. Wrapped in `.multi-select-panel` so the few CSS rules
+  // scoped to that class still apply now that the body lives in the shared
+  // secondary sidebar. The sidebar header already shows the "Selection" title,
+  // so the body carries only the Clear dismiss, not a second heading.
+  _buildHtml(summary: SelectionSummary): string {
     const tileCount = summary.tiles.length;
     const blockCount = summary.blockIds.size;
     const tileWord = tileCount === 1 ? 'tile' : 'tiles';
@@ -135,54 +167,52 @@ export class MultiSelectActionsHandler {
     const propertiesSection =
       affectedBlocks.length === 0 ? '' : this._renderPropertiesSection(affectedBlocks);
 
-    panel.innerHTML = `
-            <div class="ms-header">
-                <h3>Selection</h3>
-                <button type="button" class="btn btn-flat ms-clear" data-action="clear" title="Clear selection">Clear</button>
-            </div>
-            <div class="status-header accent-accent ms-summary">
-                <div class="ms-counts">${this._countsHtml(summary)}</div>
-                <div class="chip-row ms-chips">${this._chipsHtml(summary)}</div>
-            </div>
+    return `
+            <div class="multi-select-panel">
+                <div class="ms-header">
+                    <button type="button" class="btn btn-flat ms-clear" data-action="clear" title="Clear selection">Clear</button>
+                </div>
+                <div class="status-header accent-accent ms-summary">
+                    <div class="ms-counts">${this._countsHtml(summary)}</div>
+                    <div class="chip-row ms-chips">${this._chipsHtml(summary)}</div>
+                </div>
 
-            ${propertiesSection}
+                ${propertiesSection}
 
-            <div class="ms-group">
-                <div class="ms-group-label">Block membership</div>
-                <button type="button" class="btn btn-outline ms-btn-block" data-action="create-block">
-                    New block from selection
-                </button>
-                <div class="ms-row">
-                    <select class="ms-input" data-field="add-target-block" ${addDisabled}>
-                        ${blockOptions}
-                    </select>
-                    <button type="button" class="btn btn-outline" data-action="add-to-block" ${addDisabled}>
-                        Add
+                <div class="ms-group">
+                    <div class="ms-group-label">Block membership</div>
+                    <button type="button" class="btn btn-outline ms-btn-block" data-action="create-block">
+                        New block from selection
+                    </button>
+                    <div class="ms-row">
+                        <select class="ms-input" data-field="add-target-block" ${addDisabled}>
+                            ${blockOptions}
+                        </select>
+                        <button type="button" class="btn btn-outline" data-action="add-to-block" ${addDisabled}>
+                            Add
+                        </button>
+                    </div>
+                    <button type="button" class="btn btn-outline ms-btn-block" data-action="remove-from-blocks" ${removeDisabled}>
+                        Remove from ${blockCount === 1 ? 'block' : 'blocks'}
                     </button>
                 </div>
-                <button type="button" class="btn btn-outline ms-btn-block" data-action="remove-from-blocks" ${removeDisabled}>
-                    Remove from ${blockCount === 1 ? 'block' : 'blocks'}
-                </button>
-            </div>
 
-            <div class="ms-group">
-                <div class="ms-group-label">Destructive</div>
-                <div class="ms-row ms-row-equal">
-                    <button type="button" class="btn btn-danger" data-action="delete-tiles">
-                        Delete ${tileCount} ${tileWord}
-                    </button>
-                    <button type="button" class="btn btn-danger" data-action="delete-blocks" ${blockCount === 0 ? 'disabled' : ''}>
-                        Delete ${blockCount} ${blockWord}
-                    </button>
+                <div class="ms-group">
+                    <div class="ms-group-label">Destructive</div>
+                    <div class="ms-row ms-row-equal">
+                        <button type="button" class="btn btn-danger" data-action="delete-tiles">
+                            Delete ${tileCount} ${tileWord}
+                        </button>
+                        <button type="button" class="btn btn-danger" data-action="delete-blocks" ${blockCount === 0 ? 'disabled' : ''}>
+                            Delete ${blockCount} ${blockWord}
+                        </button>
+                    </div>
+                    <p class="ms-hint">
+                        "Delete tiles" removes the tracks. "Delete blocks" tears down the block grouping but keeps the tiles.
+                    </p>
                 </div>
-                <p class="ms-hint">
-                    "Delete tiles" removes the tracks. "Delete blocks" tears down the block grouping but keeps the tiles.
-                </p>
             </div>
         `;
-
-    this._wireActions(panel);
-    if (affectedBlocks.length > 0) this._wirePropertyInputs(panel, affectedBlocks);
   }
 
   // One count segment per entity type present in the selection. Each number is

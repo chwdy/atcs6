@@ -37,13 +37,6 @@
     color: var(--accent-hover);
 }
 
-.routes-empty-state {
-    padding: 28px 14px;
-    border: 1px dashed var(--border-color);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.01);
-}
-
 .routes-list {
     display: flex;
     flex-direction: column;
@@ -167,20 +160,6 @@
     margin-bottom: 6px;
 }
 
-.route-history-status {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    padding: 1px 6px;
-    border-radius: 999px;
-    background: var(--bg-hover);
-    color: var(--text-secondary);
-}
-
-.route-history-status.is-running { color: var(--info-color); }
-.route-history-status.is-finished { color: var(--success-color); }
-.route-history-status.is-deactivated { color: var(--text-tertiary); }
-
 .route-history-tasks {
     display: flex;
     flex-direction: column;
@@ -240,16 +219,6 @@
    ============================================================================ */
 
 .rr-panel { padding: 0; }
-
-.rr-empty {
-    padding: 16px 12px;
-    text-align: center;
-    font-style: italic;
-    font-size: 11px;
-    color: var(--text-secondary);
-    border: 1px dashed var(--border-color);
-    border-radius: var(--control-radius-sm);
-}
 
 /* ---- List ---- */
 
@@ -397,19 +366,6 @@
     display: flex;
     align-items: center;
     gap: 6px;
-}
-
-.rr-section-count {
-    background-color: var(--bg-dark);
-    color: var(--text-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 999px;
-    padding: 0 7px;
-    font-size: 10px;
-    font-family: var(--font-mono);
-    font-weight: 500;
-    letter-spacing: 0;
-    text-transform: none;
 }
 
 /* ---- Per-run overrides grid ----
@@ -730,12 +686,6 @@
 .rr-task-time-muted {
     color: var(--text-tertiary);
     opacity: 0.5;
-}
-
-.route-empty-dashed {
-    padding: 24px 16px;
-    border: 2px dashed var(--border-color);
-    border-radius: 8px;
 }
 
 .waypoint-card {
@@ -1370,11 +1320,6 @@
 }
 
 /* Shared compact panel states */
-.btn-danger-solid {
-    background-color: var(--danger-color);
-    color: #fff;
-}
-
 .control-section-divider {
     border-top: 1px solid var(--border-color);
 }
@@ -1384,7 +1329,7 @@
 }
 
 .property-input-warning {
-    border-color: #ff9500;
+    border-color: var(--block-manual);
 }
 
 .signal-grid-tight {
@@ -1399,9 +1344,9 @@
     border-left: 4px solid var(--signal-state-color);
 }
 
-.signal-state-green { --signal-state-color: #04d361; }
-.signal-state-yellow { --signal-state-color: #ffd93d; }
-.signal-state-red { --signal-state-color: #e83f5b; }
+.signal-state-green { --signal-state-color: var(--success-color); }
+.signal-state-yellow { --signal-state-color: var(--warning-color); }
+.signal-state-red { --signal-state-color: var(--danger-color); }
 
 .signal-state-row,
 .switch-state-row {
@@ -1426,18 +1371,13 @@
     color: var(--signal-state-color, var(--switch-state-color));
 }
 
-.signal-item-empty {
-    color: #888;
-    font-style: italic;
-}
-
 .signal-list-id {
-    color: #00ff88;
+    color: var(--success-color);
     font-weight: 700;
 }
 
 .signal-list-dir {
-    color: #888;
+    color: var(--text-tertiary);
 }
 
 .switch-state-header {
@@ -1450,8 +1390,8 @@
     box-shadow: 0 0 8px var(--switch-state-color);
 }
 
-.switch-state-main { --switch-state-color: #04d361; }
-.switch-state-diverge { --switch-state-color: #ffd93d; }
+.switch-state-main { --switch-state-color: var(--success-color); }
+.switch-state-diverge { --switch-state-color: var(--warning-color); }
 
 .switch-action-row {
     display: flex;
@@ -1580,7 +1520,7 @@
 .block-state-display.block-state-unknown { color: var(--text-tertiary); }
 
 .block-station-names {
-    color: #eebb00;
+    color: var(--warning-color);
     margin-left: 5px;
 }
 

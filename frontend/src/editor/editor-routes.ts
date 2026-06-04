@@ -311,7 +311,7 @@ export class RouteEditorHandler {
 
     if (this.routes.length === 0) {
       content += `
-                <div class="routes-empty-state text-muted text-center">
+                <div class="empty-state">
                     <div class="mb-8">No routes defined</div>
                     <div class="text-sm">Click "New Route" to create a train route</div>
                 </div>
@@ -492,7 +492,7 @@ export class RouteEditorHandler {
       tasksHtml += '</div>';
     } else {
       tasksHtml = `
-                <div class="route-empty-dashed text-muted text-center text-sm">
+                <div class="empty-state">
                     Click "+ Add Task" to add a step, or "Add on map" then click tiles on the layout.
                 </div>
             `;
@@ -694,7 +694,7 @@ export class RouteEditorHandler {
     return `
             <div class="route-history-run">
                 <div class="route-history-run-head">
-                    <span class="route-history-status ${statusClass}">${run.status}</span>
+                    <span class="chip chip-state chip-${statusClass === 'is-finished' ? 'success' : statusClass === 'is-deactivated' ? 'muted' : 'info'}">${run.status}</span>
                     <span class="font-mono text-xs">${run.train_id}</span>
                     <span class="text-xs text-muted">${this._formatTime(run.started_at)}</span>
                 </div>
@@ -718,9 +718,9 @@ export class RouteEditorHandler {
 
   renderRouteHeader(route: any): string {
     const modeOptions = [
-      { value: 'one_off', label: 'One-off', glyph: '→' },
-      { value: 'circular', label: 'Circular', glyph: '↻' },
-      { value: 'round_trip', label: 'Round-trip', glyph: '⇋' },
+      { value: 'one_off', label: 'One-off', glyph: '<i class="ti ti-arrow-narrow-right"></i>' },
+      { value: 'circular', label: 'Circular', glyph: '<i class="ti ti-rotate"></i>' },
+      { value: 'round_trip', label: 'Round-trip', glyph: '<i class="ti ti-arrows-exchange"></i>' },
     ];
 
     const modeSeg = modeOptions

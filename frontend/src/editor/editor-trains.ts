@@ -73,7 +73,7 @@ export class TrainEditorHandler {
                     <label for="train-length">Length (units)</label>
                     <input type="number" id="train-length" value="1" min="1" max="10">
                 </div>
-                <button id="btn-confirm-add-train" class="btn btn-primary btn-full mt-16">Add Train</button>
+                <button id="btn-confirm-add-train" class="btn btn-accent btn-full mt-16">Add Train</button>
             </div>
         `;
 
@@ -159,7 +159,7 @@ export class TrainEditorHandler {
         `;
 
     if (this._trainsListCache.length === 0) {
-      content += '<div class="trains-empty">No trains in network</div>';
+      content += '<div class="empty-state">No trains in network</div>';
     } else {
       content += '<div class="trains-list">';
       for (const train of this._trainsListCache) {

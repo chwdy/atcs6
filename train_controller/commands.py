@@ -364,8 +364,19 @@ class OperatorCommands:
         if position == HandlePosition.EB:
             return c.eb.activate()
 
-        if self.control_mode == "ato" and c.ato.running:
-            return CommandResult(False, "Handle controlled by ATO while running")
+        # Per design_new.md line 1757: set_handle() accepts only when
+        # control_mode == manual, manual_mode_type == simulation, and a cab is
+        # selected; it is rejected in the power_percent submode (that submode is
+        # driven by set_manual_power_percent()). The EB activation above is the
+        # one always-available exception and returns before this gate.
+        if self.control_mode != "manual":
+            return CommandResult(False, "Handle input requires manual mode")
+        if c.manual.manual_mode_type != "simulation":
+            return CommandResult(
+                False, "Handle input requires the manual 'simulation' submode"
+            )
+        if self.cab is None:
+            return CommandResult(False, "Handle input requires a selected cab")
 
         c.ops.handle_position = position
         return CommandResult(True, f"Handle set to {position.value}")

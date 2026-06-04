@@ -152,20 +152,6 @@
     padding: 4px 0;
 }
 
-.inspector-panel-empty {
-    padding: 24px 16px;
-    text-align: center;
-    color: var(--text-secondary);
-    font-style: italic;
-}
-.inspector-panel-empty.inspector-panel-warn {
-    color: var(--warning-color);
-    font-style: normal;
-}
-.inspector-panel-empty.inspector-panel-error {
-    color: var(--danger-color);
-    font-style: normal;
-}
 
 /* ---- Footer ---- */
 .inspector-panel-footer {
@@ -210,15 +196,6 @@
     color: var(--text-primary);
     font-size: 11px;
     letter-spacing: 0.02em;
-}
-
-.inspector-group-count {
-    background-color: var(--bg-dark);
-    color: var(--text-secondary);
-    border-radius: 999px;
-    padding: 1px 8px;
-    font-size: 10px;
-    font-family: var(--font-mono);
 }
 
 .inspector-group.collapsed .inspector-group-items {

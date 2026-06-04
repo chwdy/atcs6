@@ -143,14 +143,26 @@ def update_track(
             raise ValidationError("dead_end_ports must be a list of N/E/S/W")
 
     if "switch_state" in data:
-        # Switch lock ownership lives on `Switch.locks` (design_new.md:651);
-        # reject the change if the owning switch holds any live lock.
         switch_entity = (
             state.network.switches.get(track.switch_id)
             if track.switch_id is not None
             else None
         )
-        if switch_entity is not None and switch_entity.is_locked():
+        switch_manager = getattr(state.network, "switch_manager", None)
+        if switch_entity is not None and switch_manager is not None:
+            # Runtime is wired: route the alignment change through the canonical
+            # SwitchManager workflow (validate locks/occupancy/protection, write
+            # Switch.position, notify BlockManager, drive the power throw +
+            # continuity check) per design_new.md line 680 — nothing writes
+            # Switch.position directly while a runtime surface exists.
+            success, message = switch_manager.request_position_change(
+                track.switch_id, int(data["switch_state"])
+            )
+            if not success:
+                return {"status": "switch_change_rejected", "reason": message}
+        elif switch_entity is not None and switch_entity.is_locked():
+            # Pure editor (no runtime surface): keep the lock guard before the
+            # direct geometric write, which design_new.md line 680 exempts.
             lock_items = list(switch_entity.locks.items())
             holder_path = lock_items[0][0][0] if lock_items else None
             holder_state = lock_items[0][1][1] if lock_items else None
@@ -159,7 +171,8 @@ def update_track(
                 "holder_path": holder_path,
                 "holder_state": holder_state,
             }
-        track.switch_state = int(data["switch_state"])
+        else:
+            track.switch_state = int(data["switch_state"])
 
     if "station_name" in data:
         track.station_name = data["station_name"]

@@ -72,7 +72,7 @@ export class SignalEditorHandler {
       const directionClass = signal.detection_direction ? 'text-white' : 'text-danger';
 
       signalsContent += `
-                <div class="info-box-track signal-panel-card ${signalStateClass} mb-16">
+                <div class="info-box signal-panel-card ${signalStateClass} mb-16">
                     <!-- Header with signal number -->
                     ${signals.length > 1 ? `<div class="text-muted text-xs mb-8">Signal ${i + 1} of ${signals.length}</div>` : ''}
 
@@ -115,7 +115,7 @@ export class SignalEditorHandler {
                     </div>
 
                     <div class="mt-16">
-                        <button class="save-signal-btn btn btn-primary btn-full text-base" data-signal-id="${signal.signal_id}">
+                        <button class="save-signal-btn btn btn-accent btn-full text-base" data-signal-id="${signal.signal_id}">
                             Save Signal Properties
                         </button>
                     </div>
@@ -239,7 +239,7 @@ export class SignalEditorHandler {
 
     const content = `
             <!-- INFO SECTION (Read-only, styled like Train Control) -->
-            <div class="info-box-track signal-panel-card ${signalStateClass}">
+            <div class="info-box signal-panel-card ${signalStateClass}">
                 <!-- Large State Display (Left-aligned) -->
                 <div class="mb-12">
                     <div class="signal-state-row">
@@ -291,7 +291,7 @@ export class SignalEditorHandler {
                 </div>
 
                 <div class="mt-16">
-                    <button id="save-signal-btn" class="btn btn-primary btn-full text-base">
+                    <button id="save-signal-btn" class="btn btn-accent btn-full text-base">
                         Save Signal Properties
                     </button>
                 </div>
@@ -461,7 +461,7 @@ export class SignalEditorHandler {
 
   renderSignalList(signals: any[]): string {
     if (!signals || signals.length === 0) {
-      return '<div class="signal-item signal-item-empty">No signals</div>';
+      return '<div class="empty-state">No signals</div>';
     }
 
     return signals
@@ -470,7 +470,7 @@ export class SignalEditorHandler {
             <div class="signal-item">
                 <span class="signal-list-id">${signal.signal_id || 'Unknown'}</span>
                 <span class="signal-list-dir"> → ${signal.detection_direction || 'N/A'}</span>
-                <span class="signal-state-badge state-${signal.state || 'red'}">${(signal.state || 'red').toUpperCase()}</span>
+                <span class="chip chip-state chip-${signal.state === 'green' ? 'success' : signal.state === 'yellow' ? 'warn' : 'danger'}" style="margin-left:auto">${(signal.state || 'red').toUpperCase()}</span>
             </div>
         `
       )

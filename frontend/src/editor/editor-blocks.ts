@@ -145,7 +145,7 @@ export class BlockEditorHandler {
                 ${renderHeaderId(blockId, blockColor)}
 
                 <!-- INFO SECTION (Read-only, styled like Train Control) -->
-                <div class="info-box-track mb-12">
+                <div class="info-box mb-12">
                     <div class="flex justify-between items-start mb-2">
                         <span class="text-xs text-muted uppercase tracking-wider">State</span>
                         ${block.occupied_by ? `<span class="badge badge-warning text-xxs"><i class="ti ti-train"></i> ${block.occupied_by}</span>` : ''}
@@ -207,7 +207,7 @@ export class BlockEditorHandler {
                     ${renderDirectionSegment('block', block, { idBase: 'block-direction' })}
 
                     <div class="flex gap-8">
-                        <button id="save-block-btn" class="btn btn-primary btn-sm flex-1"><i class="ti ti-device-floppy"></i> Save</button>
+                        <button id="save-block-btn" class="btn btn-accent btn-sm flex-1"><i class="ti ti-device-floppy"></i> Save</button>
                         <button id="delete-block-btn" class="btn btn-danger btn-sm flex-1"><i class="ti ti-trash"></i> Delete</button>
                     </div>
                 </div>

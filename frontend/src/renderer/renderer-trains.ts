@@ -14,6 +14,19 @@
 import { stateManager } from '../lib/state-manager';
 import { BIT_TO_EDGES, getLabelSpacingMultiplier, DIRECTION_PREFERRED_QUADRANTS } from '../lib/constants';
 
+// Train body fill, chosen by control mode / route-teardown state. The dark
+// border (#333) is unchanged; only the inner fill is tinted so the head/tail
+// markers stay readable. Teardown wins over manual when both apply.
+const TRAIN_BODY_DEFAULT = '#ffffff';
+const TRAIN_BODY_MANUAL = '#ffe066'; // light yellow — manual driving
+const TRAIN_BODY_TEARDOWN = '#c8a2ff'; // light purple — route abort/deactivate in progress
+
+export function trainBodyFill(snap: { controlMode?: string | null; teardownPending?: boolean }): string {
+  if (snap.teardownPending) return TRAIN_BODY_TEARDOWN;
+  if (snap.controlMode === 'manual') return TRAIN_BODY_MANUAL;
+  return TRAIN_BODY_DEFAULT;
+}
+
 interface SpanEndpoint {
   tile: [number, number];
   distance_cm: number;
@@ -31,6 +44,10 @@ export interface TrainSnap {
   id: string;
   cab: string | null;
   facing: string | null;
+  /** 'manual' | 'ato' (or null). Drives the manual-mode body tint. */
+  controlMode?: string | null;
+  /** True while an operator route teardown (abort/deactivate) is latched. */
+  teardownPending?: boolean;
   span: TrainSnapSpan;
   waitingForBlockId?: string | null;
 }
@@ -150,6 +167,8 @@ export class RendererTrainHandler {
       id: train.id,
       cab: controller.cab ?? null,
       facing: controller.facing_direction ?? null,
+      controlMode: controller.control_mode ?? null,
+      teardownPending: controller.route_teardown_pending === true,
       span: {
         occupiedTiles: controller.span.occupied_tiles,
         leadingEnd: controller.span.leading_end,
@@ -527,9 +546,10 @@ export class RendererTrainHandler {
       }
     };
 
-    // Draw dark border then white fill
+    // Draw dark border then mode-tinted fill (white in ATO/auto, light yellow
+    // while manually driven, light purple while the route is being torn down).
     drawBodySegments('#333', 5 * s);
-    drawBodySegments('#ffffff', 3 * s);
+    drawBodySegments(trainBodyFill(trainSnap), 3 * s);
 
     // === Draw end markers ===
     if (hasLeadingEnd) {

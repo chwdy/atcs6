@@ -12,7 +12,7 @@ vi.mock('../lib/constants', async (importActual) => {
   return { ...actual, getActiveSegments: mocks.getActiveSegments, isCrossing: mocks.isCrossing };
 });
 
-import { RendererTrackHandler, type TrackHandlerRenderer } from './renderer-tracks';
+import { RendererTrackHandler, blockTrackColor, type TrackHandlerRenderer } from './renderer-tracks';
 
 // renderer-tracks.js had no test before the migration; this is fresh coverage
 // for the shared geometry (getEdgePoints/drawGridSegment) and bit-driven draw.
@@ -78,6 +78,34 @@ describe('RendererTrackHandler', () => {
     );
     expect(ctx.fill).toHaveBeenCalledTimes(1);
     expect(ctx.lineTo).toHaveBeenCalledTimes(3);
+  });
+
+  describe('blockTrackColor', () => {
+    it('returns null for a missing block (caller keeps its default)', () => {
+      expect(blockTrackColor(undefined)).toBeNull();
+      expect(blockTrackColor(null)).toBeNull();
+    });
+
+    it('maps live state to the canvas palette', () => {
+      expect(blockTrackColor({ state: 'occupied' })).toBe('#e83f5b');
+      expect(blockTrackColor({ state: 'reserved' })).toBe('#04d361');
+      expect(blockTrackColor({ state: 'free' })).toBe('#4285f4');
+      expect(blockTrackColor({ state: 'caution' })).toBe('#ffcd1e');
+      expect(blockTrackColor({})).toBe('#4285f4'); // missing state -> free
+      expect(blockTrackColor({ state: 'mystery' })).toBeNull(); // unknown -> default
+    });
+
+    it('renders disabled blocks grey and manual blocks orange', () => {
+      expect(blockTrackColor({ disabled: true })).toBe('#6c6c78');
+      expect(blockTrackColor({ manual: true })).toBe('#ff9500');
+    });
+
+    it('lets availability override live state, with disabled winning over manual', () => {
+      // A manual or disabled block reads its availability color even when occupied.
+      expect(blockTrackColor({ manual: true, state: 'occupied' })).toBe('#ff9500');
+      expect(blockTrackColor({ disabled: true, state: 'occupied' })).toBe('#6c6c78');
+      expect(blockTrackColor({ disabled: true, manual: true, state: 'occupied' })).toBe('#6c6c78');
+    });
   });
 
   it('drawTrackFromBits fills each segment, plus a crossing dot when applicable', () => {

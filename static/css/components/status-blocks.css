@@ -194,3 +194,29 @@
     overflow-wrap: anywhere;
     line-height: 1.4;
 }
+
+/* ---- §10 Empty / loading / error state ----
+   The canonical empty-state shape. Every panel that needs an "empty" or
+   "loading" message consumes .empty-state directly instead of minting a
+   per-feature class — that kept the shape from drifting into ten variants
+   (different padding, some missing the italic, some hardcoding the grey).
+   Use .empty-state-warn / .empty-state-error for a status-colored variant
+   (e.g. "Train no longer exists", "Error: …"); those drop the italic so the
+   color carries the meaning. */
+.empty-state {
+    padding: 16px 12px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-style: italic;
+    font-size: 11px;
+}
+
+.empty-state-warn {
+    color: var(--warning-color);
+    font-style: normal;
+}
+
+.empty-state-error {
+    color: var(--danger-color);
+    font-style: normal;
+}

@@ -1,97 +1,12 @@
 /* ============================================================================
-   SHARED EDITOR INPUT HIERARCHY (used by stations/blocks/switches/trains)
+   SHARED EDITOR INPUT HIERARCHY — canonical home is components/design-system.css.
+   The .input-large-* / .input-small-* classes are shared editor primitives
+   (used by stations/blocks/switches/trains/speed-profiles), so they live in the
+   shared component layer, not this feature file. A second copy used to live here
+   and — loading after design-system.css — won the cascade per-property, which
+   reintroduced the pre-§4 heights (36px/26px) and hardcoded border hex. That
+   duplicate is removed; design-system.css is now the single source of truth.
    ============================================================================ */
-.input-large-container {
-    margin-bottom: 12px;
-}
-
-.input-large-label {
-    display: block;
-    margin-bottom: 5px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    text-transform: uppercase;
-    color: var(--text-secondary);
-}
-
-.input-large-field {
-    width: 100%;
-    min-height: 36px;
-    padding: 8px 10px;
-    box-sizing: border-box;
-    border: 1px solid #4a3a6a;
-    border-radius: 6px;
-    background: var(--bg-input);
-    color: var(--text-primary);
-    font-size: 14px;
-    font-weight: 600;
-    font-family: var(--font-mono);
-    text-align: left;
-}
-
-.input-large-field:focus {
-    outline: none;
-    border-color: var(--accent-color);
-    box-shadow: 0 0 0 2px rgba(130, 87, 229, 0.18);
-}
-
-.input-large-field[readonly] {
-    cursor: default;
-}
-
-.input-small-container {
-    margin-bottom: 8px;
-}
-
-.input-small-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 6px;
-}
-
-.input-small-label {
-    display: block;
-    margin-bottom: 4px;
-    font-size: 9px;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    text-transform: uppercase;
-    color: var(--text-secondary);
-}
-
-.input-small-label-inline {
-    margin-bottom: 0;
-    flex: 0 0 94px;
-}
-
-.input-small-field {
-    width: 100%;
-    min-height: 26px;
-    padding: 3px 6px;
-    box-sizing: border-box;
-    border: 1px solid #3a3a4e;
-    border-radius: 5px;
-    background: var(--bg-input);
-    color: var(--text-primary);
-    font-size: 11px;
-    font-family: var(--font-mono);
-}
-
-.input-small-field-compact {
-    flex: 1;
-}
-
-.input-small-field:focus {
-    outline: none;
-    border-color: var(--accent-color);
-    box-shadow: 0 0 0 2px rgba(130, 87, 229, 0.15);
-}
-
-.input-small-field::placeholder {
-    color: var(--text-secondary);
-}
 
 /* Animations referenced by train-control.css and any consumer of pulse */
 @keyframes pulse-glow {
@@ -155,18 +70,6 @@
 .train-list-actions {
     display: flex;
     gap: 6px;
-}
-
-/* Empty state for trains panel */
-.trains-empty {
-    text-align: center;
-    padding: 30px 20px;
-    color: var(--text-secondary);
-}
-
-.trains-empty p {
-    margin: 0 0 12px 0;
-    font-size: 13px;
 }
 
 /* Button warning state */

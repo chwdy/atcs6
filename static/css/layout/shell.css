@@ -719,19 +719,15 @@ textarea {
     cursor: not-allowed;
 }
 
-/* Title row — section heading + the Clear dismiss (§12 principle 6: top-right
-   is action territory). Kept off the count line so the counts get the full
-   callout width. */
+/* Action row — holds the Clear dismiss, pinned top-right (§12 principle 6:
+   top-right is action territory). The panel's "Selection" title is shown by the
+   secondary-sidebar header above, so this row carries no heading of its own. */
 .ms-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 8px;
     margin-bottom: 4px;
-}
-
-.ms-header h3 {
-    margin-bottom: 0;
 }
 
 /* ---- Summary callout — reuses the §11 .status-header shell; layers only the

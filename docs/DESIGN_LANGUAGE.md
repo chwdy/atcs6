@@ -354,6 +354,8 @@ A row of mutually-exclusive buttons inside a single `var(--bg-dark)` container w
 
 **Equal-width by default; `fluid` for long labels.** By default each cell takes an equal share of the row. That breaks when the labels differ in length — `Available | Manual | Disabled` forced into thirds clips the longest word to `Disable…`. When a small fixed set has labels too long for equal cells, add a `fluid` modifier: each cell sizes to its own label and the row wraps to a second line rather than clipping. The set is still small and fixed, so it stays a segment (§4) — `fluid` changes only how the labels fit, not the control. Reach for it whenever a label would otherwise be cut off; don't pre-shrink to a cryptic abbreviation to keep one row, and don't drop to a select just because a label is long.
 
+Reference: `.switch-group` / `.switch-btn` (+ `.switch-group.fluid`, and the `.success` / `.danger` / `.warning` variants) in [components/design-system.css](../static/css/components/design-system.css) is the canonical segmented control — every panel that needs one consumes it directly. The active cell is the accent **tint** (`rgba(130, 87, 229, 0.18)` + `--accent-hover`), never a solid fill, and there are **no internal dividers** — the container outline groups the cells and the active tint marks the selection. The train-control HMI (`.tc-seg-btn`) and train-monitor view-distance (`.tm-seg-btn`) carry their own copies of this shape; those are the entity-panel instances and should fold back onto `.switch-btn`.
+
 ### Tab strip
 
 A row of mutually-exclusive labels that switches the body content below.
@@ -536,9 +538,9 @@ drops the whole control to 40% opacity.
   Each is its own boolean; none excludes another.
 - **Use the styled box, never a bare native input.** `.checkbox-custom` is
   the canonical chrome; a raw `<input type="checkbox">` renders the OS
-  default, which ignores the token palette and breaks the dark theme. (The
-  Assign-row "Force" checkbox is still bare native and should adopt
-  `.checkbox-custom`.)
+  default, which ignores the token palette and breaks the dark theme. Every
+  checkbox in the editor panels uses `.checkbox-custom`, including the
+  Assign-row "Force" checkbox.
 - **Mixed / "some but not all" → indeterminate.** When a checkbox edits a
   flag across a multi-item selection and the items disagree, set the input's
   `indeterminate` property: `.checkbox-custom` fills with a horizontal accent
@@ -877,8 +879,9 @@ sizes across a single row.
 
 ## 10. Empty / loading / error states
 
-- **Empty**: `padding: 16px 12px; text-align: center; color: var(--text-secondary); font-style: italic; font-size: 11px;` ("No elements ahead", "No path assigned", etc.)
+- **Empty**: the canonical `.empty-state` class — `padding: 16px 12px; text-align: center; color: var(--text-secondary); font-style: italic; font-size: 11px;` ("No elements ahead", "No path assigned", etc.). Every panel consumes `.empty-state` directly instead of minting a per-feature empty class (`.trains-empty`, `.rr-empty`, `.routes-empty-state`, … had drifted into ten near-copies with different padding, some missing the italic, one hardcoding the grey). Canonical home: [components/status-blocks.css](../static/css/components/status-blocks.css).
 - **Loading**: same shape, replace italic with subdued spinner glyph if needed.
+- **Status-colored empty**: `.empty-state-warn` / `.empty-state-error` keep the shape but recolor the text to `--warning-color` / `--danger-color` and drop the italic (the color carries the meaning) — e.g. "Train no longer exists", "Error: …".
 - **Error in a row**: `border-left: 3px solid var(--danger-color)` + `background-color: rgba(232, 63, 91, 0.08)` + value text in `var(--danger-color)`.
 
 ---

@@ -43,18 +43,21 @@ SCENE_ENV_VAR = "ATCS_SCENE"
 # demo the server, CLI entry points, and unparameterised tests build by
 # default. Per-call `scene=` arguments, the ATCS_SCENE environment variable,
 # and `set_current_scene()` all take precedence.
-_DEFAULT_SCENE: str = "demo_5"
+_DEFAULT_SCENE: str = "demo_5.1"
 
 # The active scene, resolved at import time from ATCS_SCENE (falling back to
 # the default). `set_current_scene()` reassigns this for the running process.
 CURRENT_SCENE: str = os.environ.get(SCENE_ENV_VAR, _DEFAULT_SCENE)
 
-# Registry of known scene IDs to their importable module names.
+# Registry of known scene IDs to their importable module names. Scene IDs may
+# contain characters illegal in module names (e.g. the dot in "demo_5.1"), so
+# the value is the importable module file, not a transform of the key.
 _SCENE_MODULES: dict[str, str] = {
     "demo_main": "demo_main",
     "demo_3": "demo_3",
     "demo_4": "demo_4",
     "demo_5": "demo_5",
+    "demo_5.1": "demo_5_1",
 }
 
 

@@ -313,7 +313,7 @@ class RouteTargetResolver:
                 return None, f"Platform {loc.platform_id} is disabled"
             if getattr(platform, "manual", False):
                 return None, f"Platform {loc.platform_id} is set to manual"
-            bid = self.platform_block_id(loc.platform_id)
+            bid = self.platform_block_id(loc.platform_id, train=train)
             if not bid:
                 return None, f"Platform {loc.platform_id} has no block"
             reason = _block_unavailable_reason(bid)
@@ -342,7 +342,7 @@ class RouteTargetResolver:
                 # Skip platforms that are themselves unavailable for auto-routing.
                 if getattr(platform, "disabled", False) or getattr(platform, "manual", False):
                     continue
-                bid = self.platform_block_id(pid)
+                bid = self.platform_block_id(pid, train=train)
                 if not bid or _block_unavailable_reason(bid) is not None:
                     continue
                 if fallback is None:
@@ -518,17 +518,47 @@ class RouteTargetResolver:
             return platforms[platform_id]
         return None
 
-    def platform_block_id(self, platform_id: str) -> Optional[str]:
-        """Primary block for a platform, derived from
-        `Platform.ordered_blocks` with a tile-by-tile fallback for
-        platforms whose block assignments have not been populated yet."""
+    def platform_block_id(
+        self,
+        platform_id: str,
+        train: Optional["Train"] = None,
+    ) -> Optional[str]:
+        """Resolve a platform to one concrete dispatcher-facing end block.
+
+        Per design_new.md line 1247, a platform exposes its two platform-end
+        blocks as `ordered_blocks[0]` and `ordered_blocks[-1]`. For a
+        multi-block platform this picks the end whose graph walk from the
+        train's current start block is shorter, using the same shared
+        network-graph walk query (`PathDispatcher.find_paths(...)`, the
+        block-ID adapter over `RailwayPathfinder`) that
+        `PathDispatcher.create_path(...)` uses, ranked by the canonical
+        candidate comparison defined in **`GraphWalkCandidate` payload**
+        (`tile_count`, then `walk_length_cm`), tie-broken to `ordered_blocks[0]`.
+
+        For a single-block platform both platform ends collapse to the same
+        block, so only that one block participates and no graph walk is run —
+        behavior is unchanged. When `train` is omitted, or the train's start
+        block / dispatcher cannot be resolved (early bootstrap, the
+        viability/reachable read-only callers), the resolver also falls back to
+        `ordered_blocks[0]` so those single-end callers keep working.
+
+        A tile-by-tile fallback covers platforms whose `block_assignments`
+        have not been populated yet.
+        """
         platform = self.get_platform(platform_id)
         if not platform:
             return None
 
         ordered_blocks = getattr(platform, "ordered_blocks", None)
         if ordered_blocks:
-            return ordered_blocks[0]
+            end_a = ordered_blocks[0]
+            end_b = ordered_blocks[-1]
+            if end_a == end_b:
+                # Single-block platform (length 1, or both ends the same
+                # block): both ends collapse, so no comparison is needed.
+                return end_a
+            chosen = self._closer_platform_end(train, end_a, end_b)
+            return chosen if chosen is not None else end_a
 
         network = self._e.network
         for x, y in getattr(platform, "positions", []):
@@ -536,3 +566,63 @@ class RouteTargetResolver:
             if track and track.block_section_id:
                 return track.block_section_id
         return None
+
+    def _closer_platform_end(
+        self,
+        train: Optional["Train"],
+        end_a: str,
+        end_b: str,
+    ) -> Optional[str]:
+        """Pick the nearer of a multi-block platform's two end blocks.
+
+        Computes the graph-walk distance from the train's current start block
+        to each end via `PathDispatcher.find_paths(...)` (the same shared
+        walk query `create_path(...)` uses) and returns the end with the
+        shorter walk, comparing by the canonical candidate metrics
+        `(tile_count, walk_length_cm)`. `find_paths(...)` already returns
+        candidates pre-sorted in winning order, so `[0]` is each end's best
+        walk. Ties — including the case where both ends are equidistant —
+        resolve to `end_a` (the platform's `ordered_blocks[0]`), matching the
+        canonical `end_a` dead-heat tie-break. Returns `None` when the
+        comparison cannot be evaluated (no train, no dispatcher, no resolvable
+        start block, or neither end is reachable); the caller then falls back
+        to `ordered_blocks[0]`.
+        """
+        if train is None:
+            return None
+        dispatcher = getattr(self._e, "path_dispatcher", None)
+        start_block_id = self._current_block_id(train)
+        if dispatcher is None or not start_block_id:
+            return None
+
+        train_id = getattr(train, "train_id", None)
+
+        def _best(end_block_id: str) -> Optional[Tuple[int, float]]:
+            """Best candidate's `(tile_count, walk_length_cm)` for this end,
+            or None when no walk reaches it. Direction is left unconstrained:
+            block-relative direction is resolved separately by
+            `resolve_task_direction(...)`; this comparison only ranks reach
+            distance, mirroring the no-direction-filter start-side comparison
+            `create_path(...)` runs."""
+            try:
+                walks = dispatcher.find_paths(
+                    start_block_id, end_block_id, train_id=train_id
+                )
+            except Exception:
+                return None
+            if not walks:
+                return None
+            best = walks[0]
+            tiles = getattr(best, "tiles", None) or []
+            return (len(tiles), float(getattr(best, "distance_cm", 0.0) or 0.0))
+
+        key_a = _best(end_a)
+        key_b = _best(end_b)
+        if key_a is None and key_b is None:
+            return None
+        if key_b is None:
+            return end_a
+        if key_a is None:
+            return end_b
+        # Both reachable: shorter walk wins; exact tie -> end_a.
+        return end_b if key_b < key_a else end_a

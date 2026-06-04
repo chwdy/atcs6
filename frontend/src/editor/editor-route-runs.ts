@@ -75,7 +75,7 @@ export class RouteRunEditorHandler {
 
     if (!this.runs.length) {
       content += `
-                <div class="rr-empty">
+                <div class="empty-state">
                     No route runs yet — assign a train to an active route to start one.
                 </div>
             `;
@@ -282,7 +282,7 @@ export class RouteRunEditorHandler {
                 ${overridesHtml}
 
                 <section class="rr-section">
-                    <h4 class="rr-section-title">Task runs <span class="rr-section-count">${run.task_count}</span></h4>
+                    <h4 class="rr-section-title">Task runs <span class="chip">${run.task_count}</span></h4>
                     ${tasksHtml}
                 </section>
 
@@ -338,7 +338,7 @@ export class RouteRunEditorHandler {
     return `
             <section class="rr-section" data-run-overrides>
                 <h4 class="rr-section-title">Per-run overrides
-                    <span class="rr-section-count">${Object.keys(overrides).length}</span>
+                    <span class="chip">${Object.keys(overrides).length}</span>
                 </h4>
                 <div class="text-xxs text-muted mb-8">
                     Overrides win over the shared route until cleared. Changes apply immediately.
@@ -382,7 +382,7 @@ export class RouteRunEditorHandler {
 
   renderTasksList(tasks: any[], nextPlanningIndex: any): string {
     if (!tasks.length) {
-      return `<div class="rr-empty">This run has no task entries yet.</div>`;
+      return `<div class="empty-state">This run has no task entries yet.</div>`;
     }
 
     const header = `

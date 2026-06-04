@@ -68,6 +68,16 @@ def _coerce_route_task(item: Any) -> RouteTask:
     """Build a RouteTask from a JSON request item."""
     if not isinstance(item, dict):
         raise ValidationError("task entry must be an object")
+    # Per design_new.md line 1280: task_kind is required at task creation;
+    # missing, null, or unrecognized task_kind is a validation error — the
+    # creation path never infers a default kind. (RouteTask.from_dict stays
+    # lenient for deserialization of already-validated persisted routes.)
+    raw_kind = item.get("task_kind")
+    if raw_kind not in ("waypoint", "stop", "dwell"):
+        raise ValidationError(
+            "task_kind is required and must be one of 'waypoint', 'stop', "
+            f"or 'dwell' (got {raw_kind!r})"
+        )
     return RouteTask.from_dict(dict(item))
 
 
@@ -205,6 +215,11 @@ def update_route(
     push_policies = push_policies or {}
 
     definition_edit_touched = False
+    # Set when the tasks edit changes the walk structure (waypoint set,
+    # ordering, or task-kind / direction composition) — triggers RouteRun
+    # teardown per design_new.md lines 1467-1469. Timing-only task edits are
+    # not structural and do not tear down running runs.
+    tasks_structural_edit = False
     # Track which allowlisted fields changed so push policies can be
     # applied after all writes commit.
     changed_overridable: List[str] = []
@@ -227,6 +242,19 @@ def update_route(
                     "task_location required for each task"
                 )
             new_tasks.append(_coerce_route_task(task_data))
+
+        # Structural change = any difference in kind / location / direction /
+        # ordering of the walk. Timing-only edits (task_time / target_time) are
+        # excluded, so they do not force a teardown.
+        old_structure = [
+            (t.task_kind, repr(t.task_location), t.task_direction)
+            for t in route.tasks
+        ]
+        new_structure = [
+            (t.task_kind, repr(t.task_location), t.task_direction)
+            for t in new_tasks
+        ]
+        tasks_structural_edit = old_structure != new_structure
 
         route.tasks.clear()
         for task in new_tasks:
@@ -291,6 +319,29 @@ def update_route(
             if train_id in state.network.trains:
                 route.assign_train(train_id)
 
+    # Per design_new.md lines 1467-1469: a structural Route.tasks edit tears down
+    # every assigned train's currently-RUNNING RouteRun (there is no in-place
+    # reconciliation in v1). Set the per-train route_deactivate latch (which fans
+    # out the inclusive path cancel when a live path exists); the trains stay
+    # assigned, so the next eligible Phase 1 allocates a fresh RouteRun against
+    # the edited Route.tasks, and Phase 3 commits the teardown via
+    # RouteExecutor.remove_train_route_run(train_id). Skipped in editor-only mode
+    # (no runtime surface wired, so there is no RouteRun to tear down).
+    if tasks_structural_edit:
+        sim_controller = getattr(state, "sim_controller", None)
+        if sim_controller is not None:
+            teardown_reason = f"route_tasks_edited:{route.route_id}"
+            for train_id in list(route.assigned_train_ids):
+                controller = sim_controller.get_controller(train_id)
+                if controller is None:
+                    continue
+                controller.route_hooks.phase_latches.set_route_deactivate(
+                    reason=teardown_reason,
+                    has_active_path=(
+                        controller.path_projection.received_path_plan is not None
+                    ),
+                )
+
     if definition_edit_touched:
         route.last_edited_at = time.time()
 
@@ -346,6 +397,20 @@ def activate_route(
         raise ValidationError(
             "Cannot activate a route with no tasks. Add at least one "
             "task before activating."
+        )
+    # Per design_new.md lines 1278-1286: a route is runnable only if it ends in
+    # a stop (optionally followed by dwell tasks) — which also guarantees at
+    # least one stop, so a waypoint-only route is rejected — and carries an
+    # in-range priority. These are enforced at activation time.
+    non_dwell_tasks = [t for t in route.tasks if t.task_kind != "dwell"]
+    if not non_dwell_tasks or non_dwell_tasks[-1].task_kind != "stop":
+        raise ValidationError(
+            "A route must contain at least one stop and end in a stop task "
+            "(optionally followed by dwell tasks) before activation."
+        )
+    if not 0 <= int(route.priority) <= 9:
+        raise ValidationError(
+            f"Route priority must be an integer in 0..9 (got {route.priority!r})."
         )
     if simulation_time is None:
         simulation_time = state.sim_controller.simulation_time

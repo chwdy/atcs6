@@ -48,10 +48,10 @@ export class PlatformEditorHandler {
 
     const content = `
             <div class="platform-editor" data-platform-id="${platformId}">
-                ${renderHeaderId(platformId, '#00d2ff')}
+                ${renderHeaderId(platformId, 'var(--info-color)')}
 
                 <!-- INFO SECTION (Read-only, styled like Block Editor) -->
-                <div class="info-box-track mb-12">
+                <div class="info-box mb-12">
                     <div class="flex justify-between items-start mb-2">
                         <span class="text-xs text-muted uppercase tracking-wider">Info</span>
                     </div>
@@ -114,7 +114,7 @@ export class PlatformEditorHandler {
                     ${renderAvailabilitySegment('platform', platform, { idBase: 'platform-availability' })}
 
                     <div class="flex gap-8">
-                        <button id="save-platform-btn" class="btn btn-primary btn-sm flex-1"><i class="ti ti-device-floppy"></i> Save</button>
+                        <button id="save-platform-btn" class="btn btn-accent btn-sm flex-1"><i class="ti ti-device-floppy"></i> Save</button>
                         <button id="delete-platform-btn" class="btn btn-danger btn-sm flex-1"><i class="ti ti-trash"></i> Delete</button>
                     </div>
                 </div>
@@ -343,7 +343,7 @@ export class StationGroupEditorHandler {
                     <button id="create-station-group-btn" class="btn btn-outline btn-full">Create Station</button>
                 </div>
                 <div class="control-section-header">Existing Stations</div>
-                ${stations.length === 0 ? '<div class="station-list-empty">No logical stations yet.</div>' : ''}
+                ${stations.length === 0 ? '<div class="empty-state">No logical stations yet.</div>' : ''}
                 ${stations
                   .map((s: any) => {
                     const platformIds = s.platform_ids || [];
@@ -497,7 +497,7 @@ export class StationGroupEditorHandler {
                 <div class="text-xs text-muted mb-4">Name</div>
                 <div class="flex gap-8 mb-12">
                     <input id="station-detail-name" class="property-input" value="${(station.name || '').replace(/"/g, '&quot;')}">
-                    <button id="station-detail-save-name-btn" class="btn btn-sm btn-primary">Save</button>
+                    <button id="station-detail-save-name-btn" class="btn btn-sm btn-accent">Save</button>
                 </div>
 
                 ${renderAvailabilitySegment('station', station, { idBase: 'station-availability' })}
@@ -515,7 +515,7 @@ export class StationGroupEditorHandler {
                                 : nonMemberOptions
                             }
                         </select>
-                        <button id="station-detail-add-platform-btn" class="btn btn-sm btn-primary"
+                        <button id="station-detail-add-platform-btn" class="btn btn-sm btn-accent"
                                 ${nonMembers.length === 0 ? 'disabled' : ''}>Add</button>
                     </div>
                 </div>

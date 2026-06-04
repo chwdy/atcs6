@@ -391,13 +391,6 @@
     color: var(--text-secondary);
 }
 
-.station-list-empty {
-    padding: 16px 12px;
-    text-align: center;
-    color: var(--text-secondary);
-    font-style: italic;
-    font-size: 11px;
-}
 
 /* Trains Panel — fills the panel; the .secondary-sidebar-content wrapper owns
    the scroll, so the list itself is not a capped inner scrollbox. */
@@ -1080,30 +1073,6 @@
 
 .signal-item:last-child {
     margin-bottom: 0;
-}
-
-.signal-state-badge {
-    padding: 2px 6px;
-    border-radius: 3px;
-    font-size: 10px;
-    font-weight: bold;
-    letter-spacing: 0.5px;
-    margin-left: auto;
-}
-
-.signal-state-badge.state-red {
-    background: var(--danger-color);
-    color: #fff;
-}
-
-.signal-state-badge.state-green {
-    background: var(--success-color);
-    color: #fff;
-}
-
-.signal-state-badge.state-yellow {
-    background: var(--warning-color);
-    color: #000;
 }
 
 /* Modal Warning Styles */

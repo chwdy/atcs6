@@ -382,7 +382,7 @@ export class SpeedProfileEditorHandler {
                     <button id="sp-new-btn" class="btn btn-primary btn-sm flex-1">+ New Profile</button>
                 </div>`;
     if (!profiles.length) {
-      content += '<div class="trains-empty">No speed profiles</div>';
+      content += '<div class="empty-state">No speed profiles</div>';
     } else {
       content += '<div class="sp-list">';
       for (const p of profiles) content += this._renderProfileRow(p);

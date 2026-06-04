@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { RendererTrainHandler, type TrainHandlerRenderer, type TrainSnap } from './renderer-trains';
+import { RendererTrainHandler, trainBodyFill, type TrainHandlerRenderer, type TrainSnap } from './renderer-trains';
 
 // renderer-trains.js had no test before the migration; this is fresh coverage
 // for its pure geometry helpers (the canvas-drawing entry composes these).
@@ -80,5 +80,24 @@ describe('RendererTrainHandler pure helpers', () => {
     const spy = vi.spyOn(handler, 'drawTrainFromSnapshot').mockImplementation(() => {});
     handler.drawTrain({ id: 'T1' });
     expect(spy).toHaveBeenCalledWith({ id: 'T1' }, snap);
+  });
+
+  describe('trainBodyFill', () => {
+    it('defaults to white for ATO / no special mode', () => {
+      expect(trainBodyFill({})).toBe('#ffffff');
+      expect(trainBodyFill({ controlMode: 'ato' })).toBe('#ffffff');
+    });
+
+    it('tints light yellow while manually driven', () => {
+      expect(trainBodyFill({ controlMode: 'manual' })).toBe('#ffe066');
+    });
+
+    it('tints light purple while a route teardown is pending', () => {
+      expect(trainBodyFill({ teardownPending: true })).toBe('#c8a2ff');
+    });
+
+    it('lets teardown win over manual when both apply', () => {
+      expect(trainBodyFill({ controlMode: 'manual', teardownPending: true })).toBe('#c8a2ff');
+    });
   });
 });

@@ -1,12 +1,4 @@
 /* ============================================================================
-   EMPTY STATE COMPONENT
-   ============================================================================ */
-.empty-state {
-    padding: 32px 16px;
-    text-align: center;
-}
-
-/* ============================================================================
    TRAIN MONITOR — bottom-of-screen lookahead panel
    Visual language deliberately mirrors the inspector panel (see inspector.css):
    dark `--bg-panel` shell with a `--bg-hover` header strip, ghost-style controls
