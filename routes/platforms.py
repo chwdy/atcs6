@@ -20,10 +20,11 @@ def register(app, state: AppState) -> None:
     @app.route("/api/platform", methods=["POST"])
     def create_platform():
         data = request.json or {}
+        positions = data.get("positions")
         x = data.get("x")
         y = data.get("y")
 
-        if x is None or y is None:
+        if not positions and (x is None or y is None):
             return jsonify({"error": "Missing x or y coordinate"}), 400
 
         try:
@@ -31,6 +32,7 @@ def register(app, state: AppState) -> None:
                 state,
                 x=x,
                 y=y,
+                positions=positions,
                 platform_id=data.get("platform_id"),
                 name=data.get("name", ""),
                 length_cm=data.get("length_cm", 0.0),

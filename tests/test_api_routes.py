@@ -423,6 +423,30 @@ class TestPlatformRoutes:
         data = response.get_json()
         assert "platform_id" in data
 
+    def test_create_platform_multi_tile(self, client, network_with_tracks):
+        """POST /api/platform with positions should create a multi-tile platform."""
+        response = client.post(
+            "/api/platform",
+            json={"positions": [[0, 0], [1, 0]], "name": "Multi Platform"},
+        )
+        assert response.status_code == 200
+        data = response.get_json()
+        assert "platform_id" in data
+        assert len(data["positions"]) == 2
+
+    def test_create_platform_multi_tile_invalid_rolls_back(
+        self, client, app_state, network_with_tracks
+    ):
+        """A multi-tile create that fails extension leaves no stray platform."""
+        before = len(app_state.network.platforms)
+        # (5, 5) has no track, so extending the (0, 0) anchor onto it fails;
+        # the anchor must be rolled back rather than left behind.
+        response = client.post(
+            "/api/platform", json={"positions": [[0, 0], [5, 5]], "name": "Bad"}
+        )
+        assert response.status_code == 400
+        assert len(app_state.network.platforms) == before
+
     def test_get_platform(self, client, app_state, network_with_tracks):
         """GET /api/platform/<platform_id> should return platform."""
         platform = app_state.network.add_platform(0, 0, name="Test")

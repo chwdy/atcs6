@@ -190,6 +190,10 @@ export class Editor {
     this.multiSelectHandler = new MultiSelectActionsHandler(this);
 
     this.setupEventListeners();
+    // Keep the status-bar zoom % in sync with the camera no matter who changes
+    // the scale (zoom buttons, wheel, Fit, initial framing). The camera emits
+    // onChange on every viewport mutation.
+    this.renderer.camera.onChange(() => this._syncZoomLabel());
     this.setupBlockManager();
     this._currentEditorType = null; // 'block', 'signal', or 'platform'
     this._currentEditorId = null; // The ID of the item being edited
@@ -1083,23 +1087,27 @@ export class Editor {
     };
   }
 
-  /** Zoom toward a target absolute scale, keeping the world point anchored. */
-  _zoomAt(screenX: number, screenY: number, targetScale: number): void {
-    this.renderer.camera.zoomAt(screenX, screenY, targetScale);
-    this.renderer.requestRedraw({ reason: 'zoom' });
+  /** Sync the status-bar zoom percentage to the camera's current scale. */
+  _syncZoomLabel(): void {
     const zoomLabel = document.getElementById('status-zoom');
     if (zoomLabel) zoomLabel.textContent = `${Math.round(this.renderer.camera.scale * 100)}%`;
   }
 
-  /** Reset zoom to 1.0 and re-fit all tracks if available. */
+  /** Zoom toward a target absolute scale, keeping the world point anchored. */
+  _zoomAt(screenX: number, screenY: number, targetScale: number): void {
+    this.renderer.camera.zoomAt(screenX, screenY, targetScale);
+    this.renderer.requestRedraw({ reason: 'zoom' });
+    this._syncZoomLabel();
+  }
+
+  /** Reset zoom to 1.0 and re-center all tracks if available. */
   _resetZoom(): void {
     this.renderer.camera.scale = 1.0;
     if (this.cachedNetwork?.tracks?.length) {
       this.renderer.camera.centerOnContent(this.cachedNetwork.tracks);
     }
     this.renderer.requestRedraw({ reason: 'reset-zoom' });
-    const zoomLabel = document.getElementById('status-zoom');
-    if (zoomLabel) zoomLabel.textContent = '100%';
+    this._syncZoomLabel();
   }
 
   setupEventListeners(): void {
@@ -1182,7 +1190,7 @@ export class Editor {
       // Left mouse + path-based tools = start drag
       else if (
         e.button === 0 &&
-        ['track', 'block', 'extend-block', 'extend-platform', 'remove-platform-tile', 'remove-block-tile'].includes(
+        ['track', 'block', 'extend-block', 'platform', 'extend-platform', 'remove-platform-tile', 'remove-block-tile'].includes(
           this.selectedTool
         )
       ) {
@@ -1219,8 +1227,8 @@ export class Editor {
           this.renderer.requestRedraw();
         }
       }
-      // Left click with signal/platform/tunnel = single click placement
-      else if (e.button === 0 && ['signal', 'platform', 'tunnel'].includes(this.selectedTool)) {
+      // Left click with signal/tunnel = single click placement
+      else if (e.button === 0 && ['signal', 'tunnel'].includes(this.selectedTool)) {
         this.handleSingleClickPlace(gridPos);
       }
     });
@@ -1386,7 +1394,7 @@ export class Editor {
           ) {
             await this.handleRemovalClick(this.dragStart);
           } else if (
-            ['block', 'track', 'extend-block', 'extend-platform', 'remove-platform-tile', 'remove-block-tile'].includes(
+            ['block', 'track', 'extend-block', 'platform', 'extend-platform', 'remove-platform-tile', 'remove-block-tile'].includes(
               this.selectedTool
             )
           ) {
@@ -1787,7 +1795,7 @@ export class Editor {
     if (!this.dragStart || !this.dragEnd) return;
 
     const dragToolSet = [
-      'track', 'block', 'extend-block', 'extend-platform', 'remove-platform-tile', 'remove-block-tile',
+      'track', 'block', 'extend-block', 'platform', 'extend-platform', 'remove-platform-tile', 'remove-block-tile',
     ];
     if (dragToolSet.includes(this.selectedTool)) {
       const existingTracks = this.cachedNetwork ? this.cachedNetwork.tracks : [];
@@ -1843,7 +1851,7 @@ export class Editor {
         const trackKeys = new Set(tracks.map((t: any) => `${t.x},${t.y}`));
         const filtered = this.previewPath.filter((p: any) => trackKeys.has(`${p.x},${p.y}`));
         this.renderer.setBuildPreview({ kind: 'eraser', path: filtered });
-      } else if (['block', 'extend-block', 'extend-platform'].includes(this.selectedTool) && this.previewPath) {
+      } else if (['block', 'extend-block', 'platform', 'extend-platform'].includes(this.selectedTool) && this.previewPath) {
         this.renderer.setBuildPreview({ kind: 'block', path: this.previewPath });
       } else if (this.previewPath) {
         this.renderer.setBuildPreview({ kind: 'path', path: this.previewPath });
@@ -1855,8 +1863,16 @@ export class Editor {
   }
 
   async commitDragBuild(): Promise<void> {
+    // The platform tool also supports a plain click (no drag) to create a
+    // single-tile platform: a click never builds a previewPath, so seed it with
+    // the tile under the cursor. Other build tools require an actual drag and
+    // bail when there is no path.
     if (!this.previewPath || this.previewPath.length === 0) {
-      return;
+      if (this.selectedTool === 'platform' && this.dragStart) {
+        this.previewPath = [this.dragStart];
+      } else {
+        return;
+      }
     }
 
     try {
@@ -1979,6 +1995,29 @@ export class Editor {
         } catch (err: any) {
           console.error('[Editor] Failed to extend block:', err);
           showToast('Failed to extend block: ' + err.message, 'error', 5000);
+          return;
+        }
+      } else if (this.selectedTool === 'platform') {
+        if (!this.previewPath || this.previewPath.length === 0) return;
+
+        const positions = this.previewPath.map((p: any) => [p.x, p.y]);
+
+        const platformData = await this.showPlatformModal({ mode: 'create' });
+        if (!platformData) return; // User cancelled
+
+        try {
+          await this.api.createPlatform({
+            positions,
+            name: platformData.name,
+            length_cm: platformData.lengthCm,
+            platform_side: platformData.platformSide,
+            top_speed_kmh: platformData.topSpeedKmh,
+            platform_id: platformData.platformId,
+          });
+          showToast(`Platform created with ${positions.length} tile(s)`, 'success');
+        } catch (err: any) {
+          console.error('[Editor] Platform creation failed:', err);
+          showToast('Failed to create platform: ' + err.message, 'error', 5000);
           return;
         }
       } else if (this.selectedTool === 'extend-platform') {
@@ -2255,38 +2294,6 @@ export class Editor {
       } catch (err: any) {
         console.error('[Editor] Signal creation failed:', err);
         showToast('Failed to create signal: ' + err.message, 'error', 5000);
-        return;
-      }
-    } else if (this.selectedTool === 'platform') {
-      try {
-        const validation = await this.api.validatePlatformPlacement(gridPos.x, gridPos.y);
-
-        if (!validation.can_place) {
-          showToast(validation.error || 'Cannot place platform at this position', 'error', 5000);
-          return;
-        }
-
-        const platformData = await this.showPlatformModal({
-          mode: 'create',
-          x: gridPos.x,
-          y: gridPos.y,
-          existingBlock: validation.existing_block,
-        });
-
-        if (!platformData) return; // User cancelled
-
-        await this.api.createPlatform({
-          x: gridPos.x,
-          y: gridPos.y,
-          name: platformData.name,
-          length_cm: platformData.lengthCm,
-          platform_side: platformData.platformSide,
-          top_speed_kmh: platformData.topSpeedKmh,
-          platform_id: platformData.platformId,
-        });
-      } catch (err: any) {
-        console.error('[Editor] Platform creation failed:', err);
-        showToast('Failed to create platform: ' + err.message, 'error', 5000);
         return;
       }
     }

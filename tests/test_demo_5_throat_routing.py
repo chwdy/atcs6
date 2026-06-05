@@ -265,3 +265,100 @@ def test_best_effort_return_leg_truncated_at_b1_still_crosses_sw_lead():
         f"cross-segment same-path conflict exemption regressed: the apex SW_7_10 "
         f"stayed pinned by T3's own SW_8_10 protection and SW_LEAD was rejected."
     )
+
+
+# B_2 tiles (BLK_S2_N_TO_S3_N_B_2): the last switch-clear block on the return
+# leg before SW_8_10. (9,10) is the tile straight off SW_8_10 — "outside 8,10".
+B_2_TILES = [(9, 10), (9, 11)]
+
+
+@pytest.mark.parametrize("dt,label", [(0.1, "1x"), (0.2, "2x")])
+def test_best_effort_return_leg_holds_at_b2_not_b1_when_throat_busy(dt, label):
+    """Regression: with B_1 two-way (the demo default), a BEST_EFFORT return
+    leg that cannot clear the throat truncates to B_2 — BEFORE SW_8_10 — and
+    never parks a truncated authority on B_1 (8,9) or block A.
+
+    Both B_1 (8,9) and A sit straight off a switch (SW_8_10 and SW_XOVER_N) and
+    are two-way, so the junction-fouling exclusion (design_new.md best_effort
+    `create_path` item 11) forbids ending a truncated authority on either: it
+    holds back to B_2, the last switch-clear block, keeping the throat free for
+    cross-traffic. Block A is reserved so the full S3_N->S2_N path is blocked;
+    if the exclusion regressed, truncation would instead land on the now-only-
+    occupancy-free B_1 (8,9), letting the train foul the SW_8_10 junction.
+
+    The companion `test_best_effort_return_leg_truncated_at_b1_still_crosses_sw_lead`
+    pins the opposite side of the same rule: B_1 marked one-way IS an allowed
+    terminal, because a one-way block can host no opposing move.
+    """
+    state = _single_train_demo5("PLT_S3_N_BLOCK", "WEST")
+    sim = state.sim_controller
+    dispatcher = state.path_dispatcher
+    bm = sim.block_manager
+    for _ in range(15):
+        sim.update(dt)
+
+    # Reserve corridor block A so the full return path to S2_N is unreachable;
+    # the only occupancy-free shorter terminal is B_1, which the exclusion must
+    # still refuse (it is two-way and straight off SW_8_10).
+    res = bm.reserve_blocks_for_path(
+        block_ids=["BLK_S2_N_TO_S3_N_A"], path_id="DUMMY_BLOCKER", train_id="BLK",
+        directions={"BLK_S2_N_TO_S3_N_A":
+                    ReservedBlockTraversal(exit_edge="E", block_direction="forward")},
+    )
+    assert res.success, f"could not reserve block A: {res.failure_reason}"
+
+    # BEST_EFFORT Quick Route S3_N -> S2_N; B_1 stays two-way (the demo default).
+    train_route_service.create_route(
+        state, route_id="ROUTE_QR_B2HOLD",
+        name="Quick: T3 -> S2_N (best effort, throat busy)",
+        mode="one_off",
+        tasks=[{"task_kind": "stop",
+                "task_location": {"block_id": "PLT_S2_N_BLOCK"},
+                "task_direction": "forward"}],
+        acquisition_mode="best_effort",
+    )
+    train_route_service.activate_route(state, "ROUTE_QR_B2HOLD")
+    train_service.assign_route(state, "T3", route_id="ROUTE_QR_B2HOLD", force=True)
+
+    path_formed = False
+    settled_at_b2 = False
+    max_ticks = max(120, int(90.0 / dt))
+    for t in range(1, max_ticks):
+        sim.update(dt)
+        ctrl = sim.get_or_create_controller("T3")
+        assert not ctrl.eb.active, (
+            f"T3 emergency-braked at tick {t} (head {ctrl._get_head_tile()})"
+        )
+
+        ap = dispatcher.get_active_path("T3")
+        if ap is not None:
+            path_formed = True
+            auth_end = ap.get_authority_end_block_id()
+            # The core regression guard: a truncated authority on this leg may
+            # only terminate at B_2. Never B_1 (8,9) — that fouls SW_8_10.
+            assert auth_end == "BLK_S2_N_TO_S3_N_B_2", (
+                f"truncated authority ended at {auth_end}, expected "
+                f"BLK_S2_N_TO_S3_N_B_2. The junction-fouling exclusion must hold "
+                f"a two-way terminal back before SW_8_10 (at B_2), not on B_1."
+            )
+
+        head = ctrl._get_head_tile()
+        # The truncated authority must never let the head park on B_1 (8,9).
+        assert head != B_1_TILE, (
+            f"T3 parked head on B_1 {B_1_TILE} at tick {t} — the junction-"
+            f"fouling exclusion should hold it at B_2, outside SW_8_10."
+        )
+
+        spd = ctrl.physics_sync.current_speed_kmh
+        if path_formed and t > 60 and head in B_2_TILES and spd < 0.5:
+            settled_at_b2 = True
+            break
+
+    assert path_formed, (
+        "best-effort path never formed for the S3_N->S2_N return leg with block "
+        "A reserved; create_path should truncate to B_2, not fail."
+    )
+    assert settled_at_b2, (
+        "T3 never settled on B_2 outside SW_8_10. Final head="
+        f"{sim.get_or_create_controller('T3')._get_head_tile()}."
+    )

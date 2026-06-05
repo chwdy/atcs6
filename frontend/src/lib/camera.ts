@@ -184,6 +184,40 @@ export class Camera {
   }
 
   /**
+   * Zoom AND pan so the whole tile list fits inside the canvas. Unlike
+   * centerOnContent (which only re-centers at the current scale), this also
+   * picks the scale. The iso projection turns a grid bbox of width W and
+   * height H into a diamond whose screen footprint spans (W + H + 2) tile-units
+   * in BOTH screen axes (see gridToScreenX/Y: X tracks gx+gy, Y tracks gx-gy,
+   * and both ranges work out to W + H, plus 1 tile of corner footprint on each
+   * side). So we size one tile to fit that span into the smaller canvas
+   * dimension (times `margin` for breathing room), clamp to the zoom range,
+   * then reuse centerOnContent to pan it to the middle.
+   */
+  fitToContent(tracks: ReadonlyArray<GridPoint>, margin = 0.9): void {
+    if (!tracks || tracks.length === 0) return;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const t of tracks) {
+      if (t.x < minX) minX = t.x;
+      if (t.x > maxX) maxX = t.x;
+      if (t.y < minY) minY = t.y;
+      if (t.y > maxY) maxY = t.y;
+    }
+    const canvasW = this.canvas?.width ?? 0;
+    const canvasH = this.canvas?.height ?? 0;
+    const spanTiles = maxX - minX + (maxY - minY) + 2;
+    const avail = Math.min(canvasW, canvasH) * margin;
+    if (spanTiles > 0 && avail > 0) {
+      const tileSize = (2 * avail) / spanTiles;
+      this.scale = Math.max(0.1, Math.min(5, tileSize / this.gridSize));
+    }
+    this.centerOnContent(tracks);
+  }
+
+  /**
    * Pan such that the given world tile lands at the visual center. Used by
    * App._maybeFollowSelectedTrain when Follow Train is on.
    */

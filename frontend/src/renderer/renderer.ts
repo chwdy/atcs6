@@ -715,6 +715,7 @@ class Renderer {
   screenToGridY(screenX: number, screenY: number): number { return this.camera.screenToGridY(screenX, screenY); }
   screenToGrid(screenX: number, screenY: number): { x: number; y: number } { return this.camera.screenToGrid(screenX, screenY); }
   centerOnContent(tracks: ReadonlyArray<{ x: number; y: number }>): void { this.camera.centerOnContent(tracks); }
+  fitToContent(tracks: ReadonlyArray<{ x: number; y: number }>): void { this.camera.fitToContent(tracks); }
 
   /**
    * Public entry point for a full repaint (both layers). Used by callers

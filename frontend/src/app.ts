@@ -666,7 +666,7 @@ class App {
 
       this.editor.setCachedNetwork(network);
       if (!this.hasInitiallyCentered && network.tracks && network.tracks.length > 0) {
-        this.renderer.centerOnContent(network.tracks);
+        this.renderer.fitToContent(network.tracks);
         this.hasInitiallyCentered = true;
       }
       // Fresh network arrived: hand it to the renderer and let the
@@ -850,7 +850,7 @@ class App {
     if (fitBtn) {
       fitBtn.addEventListener('click', () => {
         if (!this.currentNetwork?.tracks?.length) return;
-        this.renderer.centerOnContent(this.currentNetwork.tracks);
+        this.renderer.fitToContent(this.currentNetwork.tracks);
         this.renderer.requestRedraw({ reason: 'fit-view' });
       });
     }

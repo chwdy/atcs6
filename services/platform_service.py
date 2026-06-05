@@ -37,23 +37,40 @@ def require_platform(state: AppState, platform_id: str):
 def create_platform(
     state: AppState,
     *,
-    x: int,
-    y: int,
+    x: Optional[int] = None,
+    y: Optional[int] = None,
+    positions: Optional[List[Any]] = None,
     platform_id: Optional[str] = None,
     name: str = "",
     length_cm: float = 0.0,
     platform_side: str = "both",
     top_speed_kmh: Optional[Any] = None,
 ):
-    """Create a platform anchored at a tile.
+    """Create a platform spanning one or more tiles.
+
+    The tile set comes from ``positions`` (a list of ``[x, y]`` pairs, used by
+    the drag-to-create tool) when given; otherwise it falls back to the single
+    ``(x, y)`` anchor. The first tile is the anchor that fixes the platform's
+    orientation; any remaining tiles are added with the same rules the extend
+    tool uses. If extending the anchor fails, the anchor is deleted so a failed
+    multi-tile create leaves no stray single-tile platform behind.
 
     Raises:
-        ValidationError when the network rejects the placement.
+        ValidationError when no position is supplied or the network rejects
+            the placement.
     """
+    if positions:
+        tiles = [tuple(pos) for pos in positions]
+    elif x is not None and y is not None:
+        tiles = [(x, y)]
+    else:
+        raise ValidationError("Missing platform position")
+
+    anchor_x, anchor_y = tiles[0]
     try:
-        return state.network.add_platform(
-            x=x,
-            y=y,
+        platform = state.network.add_platform(
+            x=anchor_x,
+            y=anchor_y,
             platform_id=platform_id,
             name=name,
             length_cm=length_cm,
@@ -62,6 +79,16 @@ def create_platform(
         )
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
+
+    rest = tiles[1:]
+    if rest:
+        try:
+            state.network.extend_platform(platform.platform_id, rest)
+        except ValueError as exc:
+            state.network.delete_platform(platform.platform_id)
+            raise ValidationError(str(exc)) from exc
+
+    return platform
 
 
 def update_platform(state: AppState, platform_id: str, *, data: Dict[str, Any]):

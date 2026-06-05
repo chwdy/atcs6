@@ -117,4 +117,48 @@ describe('Camera projection + viewport math', () => {
     expect(cam.gridToScreenX(7, -3)).toBeCloseTo(cam.centerX, 9);
     expect(cam.gridToScreenY(7, -3)).toBeCloseTo(cam.centerY, 9);
   });
+
+  it('fitToContent frames the whole bbox inside the canvas and centers it', () => {
+    const canvas = makeCanvas(1200, 800);
+    const cam = new Camera(canvas);
+    cam.resizeToCanvas();
+    cam.scale = 4; // start zoomed in too tight to show everything
+    // A bbox the size of the demo_6 network (x: -22..43, y: -31..30).
+    const minX = -22;
+    const maxX = 43;
+    const minY = -31;
+    const maxY = 30;
+    cam.fitToContent([
+      { x: minX, y: minY },
+      { x: maxX, y: minY },
+      { x: minX, y: maxY },
+      { x: maxX, y: maxY },
+    ]);
+
+    // Every corner of the footprint projects inside the canvas.
+    for (const [gx, gy] of [
+      [minX, minY],
+      [maxX + 1, minY],
+      [minX, maxY + 1],
+      [maxX + 1, maxY + 1],
+    ]) {
+      const sx = cam.gridToScreenX(gx, gy);
+      const sy = cam.gridToScreenY(gx, gy);
+      expect(sx).toBeGreaterThanOrEqual(0);
+      expect(sx).toBeLessThanOrEqual(canvas.width);
+      expect(sy).toBeGreaterThanOrEqual(0);
+      expect(sy).toBeLessThanOrEqual(canvas.height);
+    }
+
+    // The bbox center still lands at the visual center.
+    const cx = (minX + maxX + 1) / 2;
+    const cy = (minY + maxY + 1) / 2;
+    expect(cam.gridToScreenX(cx, cy)).toBeCloseTo(cam.centerX, 6);
+    expect(cam.gridToScreenY(cx, cy)).toBeCloseTo(cam.centerY, 6);
+
+    // Scale stays inside the allowed zoom range and actually zoomed out.
+    expect(cam.scale).toBeGreaterThanOrEqual(0.1);
+    expect(cam.scale).toBeLessThanOrEqual(5);
+    expect(cam.scale).toBeLessThan(4);
+  });
 });

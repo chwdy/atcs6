@@ -1061,6 +1061,14 @@ export class EditorUIHandler {
     }
 
     const applyBits = async (force: boolean) => {
+      // Removing the last segment (newBits === 0, no dead-end ports) deletes
+      // the whole tile. The server reports that with a removed/empty result
+      // that carries no `track` payload, so there is nothing left to re-fetch
+      // — calling getTrack would 404 and throw us into the failure path even
+      // though the removal succeeded. Track removal so we skip the re-fetch and
+      // still fall through to refreshNetwork + reselect, which leaves the now
+      // empty tile selected.
+      let tileRemoved = false;
       if (track.isVirtual) {
         await api.addTracksBulk([
           { x: track.x, y: track.y, track_bits: newBits, directed_paths: [] },
@@ -1068,21 +1076,24 @@ export class EditorUIHandler {
       } else {
         const reqBody: Record<string, unknown> = { track_bits: newBits };
         if (force) reqBody.force = true;
-        await api.updateTrack(track.x, track.y, reqBody);
+        const updateResult = await api.updateTrack(track.x, track.y, reqBody);
+        tileRemoved = !updateResult?.track;
       }
 
-      const updatedTrack = await api.getTrack(track.x, track.y);
-      if (updatedTrack && updatedTrack.is_switch && !updatedTrack.switch_id) {
-        try {
-          await api.createSwitchAt(track.x, track.y, {
-            main_length_cm: 0,
-            diverge_length_cm: 0,
-            main_radius_cm: null,
-            diverge_radius_cm: null,
-          });
-          console.log(`[Editor] Auto-created switch entity at (${track.x}, ${track.y})`);
-        } catch (switchErr) {
-          console.warn('[Editor] Failed to auto-create switch:', switchErr);
+      if (!tileRemoved) {
+        const updatedTrack = await api.getTrack(track.x, track.y);
+        if (updatedTrack && updatedTrack.is_switch && !updatedTrack.switch_id) {
+          try {
+            await api.createSwitchAt(track.x, track.y, {
+              main_length_cm: 0,
+              diverge_length_cm: 0,
+              main_radius_cm: null,
+              diverge_radius_cm: null,
+            });
+            console.log(`[Editor] Auto-created switch entity at (${track.x}, ${track.y})`);
+          } catch (switchErr) {
+            console.warn('[Editor] Failed to auto-create switch:', switchErr);
+          }
         }
       }
 
