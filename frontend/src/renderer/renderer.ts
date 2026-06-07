@@ -222,7 +222,8 @@ type BuildPreview =
   | { kind: 'tracks'; tracks: Track[] }
   | { kind: 'eraser'; path: Array<{ x: number; y: number }> }
   | { kind: 'block'; path: Array<{ x: number; y: number }> }
-  | { kind: 'path'; path: Array<{ x: number; y: number }> };
+  | { kind: 'path'; path: Array<{ x: number; y: number }> }
+  | { kind: 'invalid'; path: Array<{ x: number; y: number }> };
 
 /** The editor's signal/platform placement hover ghost. See BuildPreview. */
 interface HoverPreview {
@@ -906,6 +907,9 @@ class Renderer {
         break;
       case 'path':
         this.trackHandler.drawPreviewPath(p.path);
+        break;
+      case 'invalid':
+        this.trackHandler.drawInvalidPreviewPath(p.path);
         break;
     }
   }

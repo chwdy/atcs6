@@ -410,6 +410,46 @@ export class RendererTrackHandler {
     this.ctx.restore();
   }
 
+  // Drawn when a track drag has no clean route: a red dashed line from the
+  // start tile to the cursor, so the operator sees the tool is tracking but
+  // cannot build here (e.g. a platform in the way, or a forced segment that
+  // can't turn without a square corner). Nothing is committed in this state.
+  drawInvalidPreviewPath(path: Array<{ x: number; y: number }> | null | undefined): void {
+    if (!path || path.length === 0) return;
+
+    this.ctx.save();
+
+    this.ctx.strokeStyle = 'rgba(229, 57, 53, 0.85)';
+    this.ctx.fillStyle = 'rgba(229, 57, 53, 0.35)';
+    this.ctx.lineWidth = 3 * this.scale;
+    this.ctx.setLineDash([6, 4]);
+
+    const cellSize = this.gridSize * this.scale;
+
+    for (let i = 0; i < path.length; i++) {
+      const pos = path[i];
+      const cx = this.gridToScreenX(pos.x, pos.y);
+      const cy = this.gridToScreenY(pos.x, pos.y);
+
+      this.ctx.beginPath();
+      this.ctx.arc(cx, cy, cellSize / 4, 0, Math.PI * 2);
+      this.ctx.fill();
+
+      if (i < path.length - 1) {
+        const next = path[i + 1];
+        const nx = this.gridToScreenX(next.x, next.y);
+        const ny = this.gridToScreenY(next.x, next.y);
+
+        this.ctx.beginPath();
+        this.ctx.moveTo(cx, cy);
+        this.ctx.lineTo(nx, ny);
+        this.ctx.stroke();
+      }
+    }
+
+    this.ctx.restore();
+  }
+
   drawPreviewTracks(tracks: Track[] | null | undefined): void {
     if (!tracks || tracks.length === 0) {
       return;
