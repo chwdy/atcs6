@@ -204,8 +204,10 @@ class LookaheadBuilder:
         """Return the station id contained in `block_id`, or None."""
         if not self._c.network:
             return None
-        for track in self._c.network.tracks.values():
-            if track.block_section_id == block_id and track.station_id:
+        # Use the block->tracks reverse index (get_block_tracks) instead of an
+        # O(all tracks) scan; this runs per-block in the per-tick lookahead.
+        for track in self._c.network.get_block_tracks(block_id):
+            if track.station_id:
                 return track.station_id
         return None
 

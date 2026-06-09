@@ -34,10 +34,22 @@ describe('RendererTrainHandler pure helpers', () => {
     expect(h().getOppositeEdge('Z')).toBe('Z');
   });
 
-  it('getExitEdge follows the track bits', () => {
-    expect(h().getExitEdge(1, 'N')).toBe('S'); // NS
-    expect(h().getExitEdge(2, 'E')).toBe('W'); // EW
-    expect(h().getExitEdge(1, 'E')).toBeNull();
+  it('getActiveExitEdge follows track bits and picks the active switch branch', () => {
+    // Straight track: unambiguous exit, switch state irrelevant.
+    expect(h().getActiveExitEdge({ track_bits: 1 }, 'N')).toBe('S'); // NS
+    expect(h().getActiveExitEdge({ track_bits: 2 }, 'E')).toBe('W'); // EW
+    expect(h().getActiveExitEdge({ track_bits: 1 }, 'E')).toBeNull(); // edge carries no segment
+
+    // EW(2)+NE(4) switch entered from E has two exits: W via the main (EW)
+    // segment, N via the diverge (NE) segment. State selects which.
+    const sw = { track_bits: 2 | 4, is_switch: true };
+    expect(h().getActiveExitEdge({ ...sw, switch_state: 0 }, 'E')).toBe('W'); // main
+    expect(h().getActiveExitEdge({ ...sw, switch_state: 1 }, 'E')).toBe('N'); // diverge
+
+    // Diagonal-only switch NE(4)+NW(8) entered from N: state orders by bit.
+    const diag = { track_bits: 4 | 8, is_switch: true };
+    expect(h().getActiveExitEdge({ ...diag, switch_state: 0 }, 'N')).toBe('E'); // NE (bit 2)
+    expect(h().getActiveExitEdge({ ...diag, switch_state: 1 }, 'N')).toBe('W'); // NW (bit 3)
   });
 
   it('getTrackExits handles straight track and switch selection', () => {
@@ -53,9 +65,19 @@ describe('RendererTrainHandler pure helpers', () => {
 
   it('getTilePathPosition interpolates entry→exit by progress', () => {
     // progress = 1 (distance == length) lands at the exit-edge ('S') offset.
-    const p = h().getTilePathPosition([0, 0], 'N', 50, 50, 1);
+    const p = h().getTilePathPosition([0, 0], 'N', 50, 50, { x: 0, y: 0, track_bits: 1 });
     expect(p.x).toBeCloseTo(-10, 6);
     expect(p.y).toBeCloseTo(10, 6);
+  });
+
+  it('getTilePathPosition slides across a configured switch instead of freezing', () => {
+    // A switch with a real active length must advance with progress, not pin at
+    // the entry edge. Half-way through a 200cm switch entered from W (exit E):
+    // offset is the midpoint between the W and E edge centers — the tile center.
+    const sw = { x: 0, y: 0, track_bits: 2 | 4, is_switch: true, switch_state: 0 };
+    const mid = h().getTilePathPosition([0, 0], 'W', 100, 200, sw);
+    expect(mid.x).toBeCloseTo(0, 6);
+    expect(mid.y).toBeCloseTo(0, 6);
   });
 
   // Phase-6 contract (ported from the old tests/test_render_snapshot.py source

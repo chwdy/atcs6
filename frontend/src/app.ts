@@ -1165,7 +1165,7 @@ class App {
     });
 
     // Add change listeners to debug checkboxes to trigger re-render
-    const checkboxIds = ['debug-show-bits', 'debug-show-coords', 'debug-show-switches', 'debug-show-edges', 'debug-show-blocks', 'debug-show-signals', 'debug-show-block-boundaries', 'debug-show-tunnel-links'];
+    const checkboxIds = ['debug-show-bits', 'debug-show-coords', 'debug-show-switches', 'debug-show-edges', 'debug-show-blocks', 'debug-show-block-voltage', 'debug-show-signals', 'debug-show-block-boundaries', 'debug-show-tunnel-links'];
     checkboxIds.forEach(id => {
       const checkbox = document.getElementById(id);
       if (checkbox) {
@@ -1200,6 +1200,14 @@ class App {
     const blockDirCheckbox = document.getElementById('debug-show-block-dir');
     if (blockDirCheckbox) {
       blockDirCheckbox.addEventListener('change', () => {
+        this.renderer.requestRedraw({ world: false, live: true, reason: 'debug-toggle' });
+      });
+    }
+
+    // One-way constraint arrows are also a live-layer overlay.
+    const oneWayDirCheckbox = document.getElementById('debug-show-oneway-dir');
+    if (oneWayDirCheckbox) {
+      oneWayDirCheckbox.addEventListener('change', () => {
         this.renderer.requestRedraw({ world: false, live: true, reason: 'debug-toggle' });
       });
     }
@@ -1245,6 +1253,8 @@ class App {
 
     // Load current scale on init
     this.loadCurrentScale();
+    // Populate the Advanced (runtime operational tuning) section.
+    this.loadAdvancedSettings();
 
     const applyScale = async (scaleValue: string) => {
       if (!scaleValue) return;
@@ -1274,6 +1284,57 @@ class App {
     scaleApplyBtn.addEventListener('click', () => {
       applyScale(scaleSelect.value);
     });
+  }
+
+  async loadAdvancedSettings(): Promise<void> {
+    const container = document.getElementById('advanced-settings-controls');
+    if (!container) return;
+    let settings: Record<string, number> = {};
+    try {
+      const res = await fetch('/api/settings');
+      settings = (await res.json()).settings || {};
+    } catch (e) {
+      container.innerHTML =
+        '<span class="setting-label-compact">Failed to load settings</span>';
+      return;
+    }
+    const humanize = (k: string): string =>
+      k
+        .replace(/_kmh$/, ' (km/h)')
+        .replace(/_cm$/, ' (cm)')
+        .replace(/_ticks$/, ' (ticks)')
+        .replace(/_/g, ' ')
+        .replace(/^./, (c) => c.toUpperCase());
+    container.innerHTML = '';
+    for (const [key, value] of Object.entries(settings)) {
+      const row = document.createElement('div');
+      row.className = 'setting-row';
+      const label = document.createElement('span');
+      label.className = 'setting-label-compact settings-label-inline';
+      label.textContent = humanize(key);
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.step = 'any';
+      input.className = 'setting-input-compact settings-select-fill';
+      input.value = String(value);
+      input.addEventListener('change', async () => {
+        const v = parseFloat(input.value);
+        if (!Number.isFinite(v)) return;
+        try {
+          await fetch('/api/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ settings: { [key]: v } }),
+          });
+          showToast(`${humanize(key)} updated`, 'success', 1500);
+        } catch (e) {
+          showToast('Failed to update setting', 'error');
+        }
+      });
+      row.appendChild(label);
+      row.appendChild(input);
+      container.appendChild(row);
+    }
   }
 
   async loadCurrentScale(): Promise<void> {

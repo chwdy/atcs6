@@ -58,16 +58,6 @@ interface CostTable {
   reverse: number;
 }
 
-interface AStarNode {
-  pos: Point;
-  g: number;
-  h: number;
-  f: number;
-  parent: AStarNode | null;
-  fromDir: string | null;
-  prevTurnDir: string | null;
-}
-
 interface FindPathOptions {
   avoidConnect?: boolean;
   forcedStartSegment?: string;
@@ -596,9 +586,6 @@ export class ConstructionPathfinder {
       ? this.getExistingTrackDirections(startTrack.track_bits || 0)
       : [];
 
-    const tileSkipsSegment = (t: TrackData | undefined): boolean =>
-      !!(t && (t.type === 'signal' || t.signal_state || t.type === 'station' || t.station_id));
-
     // The end tile lays a connecting segment too; an arrival is only a goal if
     // that segment would not meet the penultimate tile at a 90° corner. A bad
     // arrival is left non-goal so other arrivals (a different incoming
@@ -764,14 +751,13 @@ export class ConstructionPathfinder {
   // rejects inside one tile (see constants.ts). A* forbids it across tiles too,
   // so every direction change is eased by a 45° NS/EW diagonal instead.
 
-  // Screen angle (0/45/90/135) of the segment joining two tile edges.
+  // Screen angle (0/45/90/135) of the segment joining two tile edges. Delegates
+  // to the module-level `screenAngle` (the single source of the edge→angle
+  // mapping); an unrecognized edge pair reads as 0 (horizontal) here, matching
+  // the straight-stub fallback this method's callers expect.
   segScreenAngle(edgeA: string, edgeB: string): number {
-    const has = (a: string, b: string) =>
-      (edgeA === a && edgeB === b) || (edgeA === b && edgeB === a);
-    if (has('NORTH', 'SOUTH')) return 45; // NS ╱
-    if (has('EAST', 'WEST')) return 135; // EW ╲
-    if (has('NORTH', 'EAST') || has('SOUTH', 'WEST')) return 90; // NE/SW vertical
-    return 0; // NW or SE horizontal
+    const a = screenAngle(edgeA, edgeB);
+    return a < 0 ? 0 : a;
   }
 
   // Do two screen angles meet at a right angle? (0↔90 or 45↔135.)
@@ -875,16 +861,6 @@ export class ConstructionPathfinder {
       prevAngle = angle;
     }
     return false;
-  }
-
-  reconstructPath(node: AStarNode): Point[] {
-    const path: Point[] = [];
-    let current: AStarNode | null = node;
-    while (current) {
-      path.unshift(current.pos);
-      current = current.parent;
-    }
-    return path;
   }
 
   diagonalLine(start: Point, end: Point): Point[] {
@@ -1066,10 +1042,19 @@ export const FORCED_SEGMENT_PORTS: Record<string, [string, string]> = {
   SW: ['SOUTH', 'WEST'],
 };
 
-// Screen angle of the piece that joins two tile edges. Mirrors the class
-// method ConstructionPathfinder.segScreenAngle; kept module-level so the
-// standalone pathToTracks below can pick end-tile pieces. Returns -1 for a
-// missing/invalid edge pair so callers fall back to a straight stub.
+// A tile that carries its own rail — a station/platform tile or a signal. The
+// track tool lays nothing on such a tile and the placement search treats it as
+// a skip. Single source for "does this tile already own its rail", used by
+// findPath and the editor's drag-preview rail bridge.
+export function tileSkipsSegment(t: TrackData | undefined): boolean {
+  return !!(t && (t.type === 'signal' || t.signal_state || t.type === 'station' || t.station_id));
+}
+
+// Screen angle of the piece that joins two tile edges. The single source of the
+// edge→angle mapping (the class method ConstructionPathfinder.segScreenAngle
+// delegates here); kept module-level so the standalone pathToTracks below can
+// pick end-tile pieces. Returns -1 for a missing/invalid edge pair so callers
+// fall back to a straight stub.
 function screenAngle(a: string | null, b: string | null): number {
   const has = (x: string, y: string) => (a === x && b === y) || (a === y && b === x);
   if (has('NORTH', 'SOUTH')) return 45; // NS ╱
@@ -1467,7 +1452,10 @@ export function getValidSignalDirections(trackBits: number): string[] {
 // ============================================================================
 
 export function isCrossingForBlock(trackBits: number): boolean {
-  return trackBits === 3 || trackBits === 24 || trackBits === 36;
+  // Diagonal crossings (NW+SE=24, NE+SW=36) isolate their two paths and stay
+  // out of blocks. The orthogonal NS+EW crossing (3) is allowed: the whole tile
+  // acts as one occupancy unit, so a block can run straight through it on one axis.
+  return trackBits === 24 || trackBits === 36;
 }
 
 export function validateBlockTile(track: TrackData | null | undefined): {

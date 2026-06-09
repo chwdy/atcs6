@@ -196,7 +196,8 @@ def test_bfs_reachability_respects_crossing_segment_isolation():
             D   (1, 0)   NS
     """
     network = RailwayNetwork()
-    # Crossing at (1, 1) — has no block (crossings cannot be inside a block).
+    # Crossing at (1, 1) — left out of any block here; the four arms are
+    # separate blocks so the test exercises path isolation through the crossing.
     network.add_track(TrackSegment(x=1, y=1, track_bits=3))
     # NS arms: A north of crossing, D south of crossing.
     network.add_track(TrackSegment(x=1, y=2, track_bits=1))

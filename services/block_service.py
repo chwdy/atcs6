@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from app_state import AppState
-from block_validation import is_crossing
+from block_validation import crossing_disallowed_in_block
 from services.exceptions import (
     ConflictError,
     GoneError,
@@ -395,7 +395,7 @@ def can_extend_block(
     if not track:
         return {"can_extend": False, "reason": "No track at position"}
 
-    if is_crossing(track.track_bits):
+    if crossing_disallowed_in_block(track.track_bits):
         return {
             "can_extend": False,
             "reason": "Cannot add crossing to block - crossings isolate paths",

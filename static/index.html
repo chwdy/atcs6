@@ -366,11 +366,6 @@
                             </div>
                             <div class="tm-upcoming-list" id="monitor-upcoming"></div>
                         </aside>
-                        <!-- Expanded Debug Info Panel (appended dynamically) -->
-                        <div id="train-monitor-debug-container" class="train-monitor-debug-container hidden">
-                            <div class="debug-header">Debug Details</div>
-                            <div id="train-monitor-debug-content"></div>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -464,6 +459,13 @@
                 </section>
 
                 <section class="settings-section">
+                    <h4 class="settings-section-title">Advanced</h4>
+                    <div id="advanced-settings-controls" class="settings-controls advanced-settings-controls">
+                        <span class="setting-label-compact">Loading…</span>
+                    </div>
+                </section>
+
+                <section class="settings-section">
                     <h4 class="settings-section-title">Debug Info</h4>
                     <div class="debug-controls">
                         <label class="checkbox-wrapper" title="Show Track Bits">
@@ -496,10 +498,20 @@
                             <span class="checkbox-custom"></span>
                             <span class="checkbox-label">Block dir</span>
                         </label>
+                        <label class="checkbox-wrapper" title="Draw an amber arrow on each tile of a one-way block (travel direction not 'both'), pointing the way travel is allowed — reverse-only blocks point backward (read as '<'). Bidirectional blocks are skipped. Visual debug only.">
+                            <input type="checkbox" id="debug-show-oneway-dir" class="checkbox-input" />
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-label">One-way dir</span>
+                        </label>
                         <label class="checkbox-wrapper" title="Show Block Details">
                             <input type="checkbox" id="debug-show-blocks" class="checkbox-input" />
                             <span class="checkbox-custom"></span>
                             <span class="checkbox-label">Blocks</span>
+                        </label>
+                        <label class="checkbox-wrapper" title="Show each block's output voltage on its + and − rails">
+                            <input type="checkbox" id="debug-show-block-voltage" class="checkbox-input" />
+                            <span class="checkbox-custom"></span>
+                            <span class="checkbox-label">Block voltage</span>
                         </label>
                         <label class="checkbox-wrapper" title="Show Signal Details">
                             <input type="checkbox" id="debug-show-signals" class="checkbox-input" />

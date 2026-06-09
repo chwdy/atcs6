@@ -730,12 +730,18 @@ class Switch(TrackResource):
         defaults apply and the engine repopulates them. Legacy snapshots
         that carry those keys are silently ignored.
         """
+        if "main_length_cm" not in data or "diverge_length_cm" not in data:
+            raise ValueError(
+                f"Switch.from_dict: switch '{data.get('switch_id')}' is missing "
+                "required 'main_length_cm'/'diverge_length_cm'. Lengths must be "
+                "supplied explicitly (0 is allowed); there is no silent default."
+            )
         switch = cls(
             switch_id=data["switch_id"],
             x=data["x"],
             y=data["y"],
-            main_length_cm=data.get("main_length_cm", 0.0),
-            diverge_length_cm=data.get("diverge_length_cm", 0.0),
+            main_length_cm=float(data["main_length_cm"]),
+            diverge_length_cm=float(data["diverge_length_cm"]),
             main_radius_cm=data.get("main_radius_cm"),
             diverge_radius_cm=data.get("diverge_radius_cm"),
             switch_type=data.get("switch_type", "standard"),

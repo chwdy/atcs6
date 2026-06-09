@@ -1,0 +1,226 @@
+"""
+Block occupancy detection (hardware current sensing).
+
+design_new.md "Power -> Block occupancy detection": each electrically-isolated
+block has a current detector. Current present means a train sits on the block;
+an open circuit means it does not. This module is the read side of the hardware
+boundary for block occupancy, plus the debounce + attribution layer that turns a
+noisy per-block current stream into confirmed, train-attributed entered/vacated
+block observations.
+
+Layers (mirrors the OutputInterface pattern in block_power.py):
+  - InputInterface: abstract per-block current read (raw booleans, no train id).
+  - SimulatedInputInterface: in-memory default; derives current from the model
+    (a block reads current iff some train's live span covers it).
+  - BlockOccupancyDetector: per-block debounce (on/off thresholds) producing the
+    confirmed-occupied set each tick, plus model-based attribution of each
+    confirmed transition to a train.
+
+Authority: the confirmed set is what Block.occupied_by follows. The confirmed
+entered/vacated observations are committed in Phase 3 through the existing
+PathDispatcher.on_controller_progress flow (the controller re-sources its block
+events from the detector instead of from the precise tile diff). Switch
+occupancy is NOT detected here — switches keep commanded Switch.position
+authority and their precise-traversal entry/exit.
+"""
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Callable, Dict, Iterable, Optional, Set, Tuple, TYPE_CHECKING
+
+from constants import OCCUPANCY_OFF_THRESHOLD, OCCUPANCY_ON_THRESHOLD
+
+if TYPE_CHECKING:
+    from network import RailwayNetwork
+    from train_controller import TrainController
+
+
+class InputInterface(ABC):
+    """Read side for hardware sensors that no software output drives
+    (design_new.md Power, Hardware interface boundary).
+
+    v1 reads block current only. A concrete implementation owns the map from a
+    logical block_id to its physical detector channel and is the only place that
+    knows the wiring; nothing above this interface names a pin or bus.
+    """
+
+    @abstractmethod
+    def read_block_currents(self) -> Dict[str, bool]:
+        """Return the raw per-block current map: block_id -> current detected.
+
+        Raw booleans only, with no train identity — a real detector knows only
+        on/off per electrically-isolated block. Attribution to a train is a
+        separate model step (BlockOccupancyDetector.attribute).
+        """
+        raise NotImplementedError
+
+
+class SimulatedInputInterface(InputInterface):
+    """In-memory default used when no real hardware is connected.
+
+    Derives the raw current map from the model: a block reads current iff some
+    train's live span (`current_span.occupied_blocks`) currently covers it. This
+    is "simulate the train entering a block by calculation". A fault-injecting
+    subclass may override `read_block_currents` to assert or withhold current
+    early/late to exercise the snap-to-seam and debounce paths in tests.
+    """
+
+    def __init__(
+        self,
+        network: "RailwayNetwork",
+        controllers: Dict[str, "TrainController"],
+    ) -> None:
+        self._network = network
+        self._controllers = controllers
+
+    def read_block_currents(self) -> Dict[str, bool]:
+        currents: Dict[str, bool] = {bid: False for bid in self._network.blocks}
+        for controller in self._controllers.values():
+            span = getattr(
+                getattr(controller, "physics_sync", None), "current_span", None
+            )
+            if span is None:
+                continue
+            for block_id in span.occupied_blocks or []:
+                if block_id in currents:
+                    currents[block_id] = True
+        return currents
+
+
+@dataclass
+class BlockOccupancyDetector:
+    """Per-block debounce plus model-based attribution.
+
+    Each tick, `step()` reads the raw current map, advances per-block on/off
+    counters, and returns the FULL diff of the confirmed-occupied set
+    (newly_entered, newly_vacated). Diffing the whole set means a fast train that
+    crosses or clears several blocks in one tick is reported in a single pass. A
+    block is confirmed occupied after `on_threshold` consecutive current reads
+    and confirmed clear after `off_threshold` consecutive no-current reads. The
+    bias is fail-safe: quick to occupy, slow to clear, so a momentary open
+    circuit inside the train's span does not vacate the block.
+
+    `attribute()` maps each confirmed transition to a train from the live
+    authority model — an entered block to its reserving train
+    (`Block.reserved_for_train`, the reserved-ahead corridor), a vacated block to
+    its current holder (`Block.occupied_by`) — so `read_block_currents` stays a
+    pure per-block read with no train identity baked in.
+    """
+
+    network: "RailwayNetwork"
+    input_interface: InputInterface
+    controllers: Dict[str, "TrainController"] = field(default_factory=dict)
+    on_threshold: int = OCCUPANCY_ON_THRESHOLD
+    off_threshold: int = OCCUPANCY_OFF_THRESHOLD
+    notify: Optional[Callable[[str, str], None]] = None
+    _on_counts: Dict[str, int] = field(default_factory=dict)
+    _off_counts: Dict[str, int] = field(default_factory=dict)
+    _confirmed: Set[str] = field(default_factory=set)
+
+    def step(self) -> Tuple[Set[str], Set[str]]:
+        """Read the raw currents, advance debounce, and return
+        (newly_entered, newly_vacated) confirmed-block sets for this tick."""
+        raw = self.input_interface.read_block_currents()
+        new_confirmed: Set[str] = set()
+        for block_id in self.network.blocks:
+            present = bool(raw.get(block_id, False))
+            if present:
+                self._on_counts[block_id] = self._on_counts.get(block_id, 0) + 1
+                self._off_counts[block_id] = 0
+            else:
+                self._off_counts[block_id] = self._off_counts.get(block_id, 0) + 1
+                self._on_counts[block_id] = 0
+
+            if block_id in self._confirmed:
+                # Stay confirmed until off_threshold consecutive clears.
+                if self._off_counts[block_id] < self.off_threshold:
+                    new_confirmed.add(block_id)
+            elif self._on_counts[block_id] >= self.on_threshold:
+                new_confirmed.add(block_id)
+
+        entered = new_confirmed - self._confirmed
+        vacated = self._confirmed - new_confirmed
+        self._confirmed = new_confirmed
+        return entered, vacated
+
+    @property
+    def confirmed_occupied(self) -> Set[str]:
+        """The current confirmed-occupied block set (the occupancy authority)."""
+        return set(self._confirmed)
+
+    def seed_occupied(self, block_ids: Iterable[str]) -> None:
+        """Adopt externally-committed occupancy as already confirmed.
+
+        `occupy_block` is also the writer for placement and restore
+        (`place_train` occupies a train's starting blocks directly). Those
+        blocks are occupied before the detector ever observed current on them,
+        so without seeding the first read would emit a spurious entered event
+        for a block the train was already standing on. Seeding makes the
+        detector track only future changes; the block still vacates normally
+        once its current drops for off_threshold ticks.
+        """
+        for block_id in block_ids:
+            if block_id not in self._confirmed:
+                self._confirmed.add(block_id)
+                self._on_counts[block_id] = max(
+                    self._on_counts.get(block_id, 0), self.on_threshold
+                )
+                self._off_counts[block_id] = 0
+
+    def attribute(
+        self, entered: Set[str], vacated: Set[str]
+    ) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+        """Attribute confirmed transitions to trains.
+
+        Returns (entered_by_train, vacated_by_train), each a map
+        train_id -> set of block_ids.
+
+        Entered blocks attribute to `Block.reserved_for_train` (the train that
+        reserved the block it is entering), falling back to the train whose live
+        span covers the block. An entered block that resolves to no train is
+        dropped from the confirmed set so the next tick re-diffs and retries it,
+        rather than committing it to the wrong train. Vacated blocks attribute to
+        `Block.occupied_by`; a vacate whose block is already clear is a benign
+        double-clear and is skipped.
+        """
+        entered_by_train: Dict[str, Set[str]] = {}
+        for block_id in entered:
+            block = self.network.blocks.get(block_id)
+            train_id = getattr(block, "reserved_for_train", None) if block else None
+            if train_id is None:
+                train_id = self._span_owner(block_id)
+            if train_id is None:
+                self._confirmed.discard(block_id)
+                self._emit(
+                    "block_attribution_unresolved",
+                    f"confirmed entry on block {block_id} has no reserving or "
+                    f"covering train; retrying next tick",
+                )
+                continue
+            entered_by_train.setdefault(train_id, set()).add(block_id)
+
+        vacated_by_train: Dict[str, Set[str]] = {}
+        for block_id in vacated:
+            block = self.network.blocks.get(block_id)
+            train_id = getattr(block, "occupied_by", None) if block else None
+            if train_id is None:
+                continue
+            vacated_by_train.setdefault(train_id, set()).add(block_id)
+
+        return entered_by_train, vacated_by_train
+
+    def _span_owner(self, block_id: str) -> Optional[str]:
+        """The train whose live span currently covers `block_id`, if any."""
+        for train_id, controller in self.controllers.items():
+            span = getattr(
+                getattr(controller, "physics_sync", None), "current_span", None
+            )
+            if span is None:
+                continue
+            if block_id in (span.occupied_blocks or []):
+                return train_id
+        return None
+
+    def _emit(self, kind: str, message: str) -> None:
+        if self.notify is not None:
+            self.notify(kind, message)

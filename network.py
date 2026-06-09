@@ -104,6 +104,14 @@ class RailwayNetwork:
         self._tile_to_block: Dict[Tuple[int, int], str] = {}
         self._tile_to_platform: Dict[Tuple[int, int], str] = {}
 
+        # Reverse index block id -> its TrackSegments, derived from
+        # _tile_to_block and built lazily by _block_tiles_index(). Turns
+        # get_block_tracks() from an O(all tracks) scan into an O(block)
+        # lookup; the lookahead calls it thousands of times per tick. None
+        # means "rebuild on next read"; invalidate_pathfinding_cache() resets
+        # it on every topology change (none of which run in the tick loop).
+        self._block_index_cache: Optional[Dict[str, List["TrackSegment"]]] = None
+
         # Cache of built topology-only walk CANDIDATES, keyed by
         # (start_block_id, end_block_id). Populated lazily by
         # RailwayPathfinder.query_graph_walks and shared by every pathfinder
@@ -243,6 +251,10 @@ class RailwayNetwork:
         cache = getattr(self, "_walk_cache", None)
         if cache:
             cache.clear()
+        # The block->tracks reverse index is derived from tile->block
+        # membership, so it is stale after any topology change. Drop it; the
+        # next get_block_tracks() rebuilds it from the new topology.
+        self._block_index_cache = None
 
     def add_track(self, track: TrackSegment):
         """Add a track segment to the network and propagate updates"""
@@ -697,9 +709,30 @@ class RailwayNetwork:
     def get_block(self, block_id: str) -> Optional[Block]:
         return self.blocks.get(block_id)
 
+    def _block_tiles_index(self) -> Dict[str, List[TrackSegment]]:
+        """Lazily-built reverse index: block id -> its TrackSegments.
+
+        Built by a single pass over ``self.tracks`` (preserving
+        ``tracks.values()`` order, so ``get_block_tracks`` returns tracks in
+        the same order as the old full scan). Cached in ``_block_index_cache``
+        and invalidated by ``invalidate_pathfinding_cache`` on any topology
+        change — none of which run inside the sim tick loop, so it is built
+        once and reused across a whole ``update()`` storm.
+        """
+        idx = self._block_index_cache
+        if idx is None:
+            idx = {}
+            for t in self.tracks.values():
+                bid = t.block_section_id
+                if bid is not None:
+                    idx.setdefault(bid, []).append(t)
+            self._block_index_cache = idx
+        return idx
+
     def get_block_tracks(self, block_id: str) -> List[TrackSegment]:
-        """Get all tracks belonging to a block"""
-        return [t for t in self.tracks.values() if t.block_section_id == block_id]
+        """Get all tracks belonging to a block (O(block) via the reverse
+        index in ``_block_tiles_index``, not an O(all tracks) scan)."""
+        return list(self._block_tiles_index().get(block_id, ()))
 
     def get_block_positions(self, block_id: str) -> List[Tuple[int, int]]:
         """Get grid positions of all tracks in block"""

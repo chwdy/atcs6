@@ -325,8 +325,7 @@ class BlockGeometryManager:
         from block_validation import (
             validate_track_for_block,
             validate_block_assignment_continuity,
-            get_adjacent_positions,
-            is_crossing,
+            crossing_disallowed_in_block,
         )
 
         if block_id not in self._n.blocks:
@@ -346,8 +345,9 @@ class BlockGeometryManager:
             if not track:
                 raise ValueError(f"No track at position ({x}, {y})")
 
-            # Check for crossings (never allowed, even with force)
-            if is_crossing(track.track_bits):
+            # Disallowed crossings are never allowed, even with force. The
+            # orthogonal NS+EW crossing may belong to a block.
+            if crossing_disallowed_in_block(track.track_bits):
                 raise ValueError(
                     f"Track at ({x}, {y}): Cannot add crossing to block - crossings isolate paths"
                 )

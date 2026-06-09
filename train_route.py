@@ -140,11 +140,16 @@ class RouteStartMode(Enum):
         FIRST: (default) start at the first task (``task_runs[0]``) — the train
             then auto-advances past already-covered waypoints exactly as it
             does today.
-        NEAREST: start at the ``task_kind == "stop"`` task closest to the
-            train's current position by track distance, skipping stops whose
-            platform is occupied by another train. Falls back to the nearest
-            stop regardless of occupancy when every candidate is occupied, and
-            to FIRST when no stop resolves.
+        NEAREST: seed the run at the best ``task_kind == "stop"`` task for the
+            train to begin at. A stop is eligible only when the train has a
+            viable directed path to its resolved block (respecting the task's
+            direction and ``Block.allowed_travel_directions``). Eligible stops
+            are ranked, each criterion breaking ties left by the ones before:
+            (1) no-reversal — prefer a stop the train can drive straight on
+            from over one it would have to reverse out of; (2) free — prefer a
+            stop no other train has taken; (3) nearest by track distance; (4)
+            lowest task index. Falls back to FIRST when no stop has a viable
+            directed path.
         SPECIFIC: start at the stop named by ``Route.start_task_index`` (or the
             per-assignment override). Falls back to FIRST when the index is out
             of range or does not name a ``stop`` task.

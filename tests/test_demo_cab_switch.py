@@ -46,10 +46,14 @@ pytestmark = pytest.mark.scene("demo_main")
 
 def _enqueue_set_cab(cab: str):
     """Action: enqueue a `set_cab` operator command on the controller's
-    inbox. The drain happens on the next tick's Phase 2 entry."""
+    inbox. Cab selection is manual-only (design_new.md set_cab contract), so
+    the operator switches to manual first; the canonical drain runs set_mode
+    before set_cab in the same tick. The drain happens on the next tick's
+    Phase 2 entry."""
 
     def action(s) -> None:
         controller = s.sim_controller.get_or_create_controller(s.fixture.train_id)
+        controller.commands.enqueue_command("set_mode", {"mode": "manual"})
         controller.commands.enqueue_command("set_cab", {"cab": cab})
 
     return action

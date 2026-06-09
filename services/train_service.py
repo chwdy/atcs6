@@ -320,6 +320,11 @@ def assign_route(
     # seeding").
     if route_executor is not None:
         route_executor._pending_start_overrides.pop(train_id, None)
+        # Also drop any held structural-edit re-assignment for this train: an
+        # explicit assign/retarget/unassign supersedes a pending same-route
+        # re-allocation, so it must not fire on a later deactivate of this train
+        # (per design_new.md "Shared-route edit teardown").
+        route_executor._pending_reassign.pop(train_id, None)
     route_registry = route_executor.route_registry if route_executor else {}
     current_route_id = (
         route_executor.assigned_route_id_for(train_id) if route_executor else None
@@ -474,6 +479,17 @@ def set_handle(state: AppState, train_id: str, *, position: Any) -> CommandResul
     return _controller(state, require_train(state, train_id)).commands.set_handle(
         resolved
     )
+
+
+def release_emergency(state: AppState, train_id: str) -> CommandResult:
+    """Release the emergency brake via the canonical ``eb.release()`` command.
+
+    The handle never releases EB (see ``OperatorCommands.set_handle`` and
+    design_new.md:239); EB is released only by ``eb.release()``, which is
+    latch-gated (stopped, EB cancellation committed, authority cleared). This
+    is the operator surface for the "Release Emergency" / Reset button.
+    """
+    return _controller(state, require_train(state, train_id)).eb.release()
 
 
 def set_mode(state: AppState, train_id: str, *, mode: Any) -> CommandResult:

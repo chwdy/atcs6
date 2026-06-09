@@ -301,10 +301,16 @@ class Block(TrackResource):
                 edge = str(entry[2])
             ordered_tiles.append(BlockTileEntry(x=x, y=y, entry_edge=edge))
 
+        if "length_cm" not in data:
+            raise ValueError(
+                f"Block.from_dict: block '{data.get('block_id')}' is missing "
+                "required 'length_cm'. Length must be supplied explicitly (0 is "
+                "allowed); there is no silent default."
+            )
         return cls(
             block_id=data["block_id"],
             name=data.get("name", ""),
-            length_cm=data.get("length_cm", 0.0),
+            length_cm=float(data["length_cm"]),
             min_radius_cm=data.get("min_radius_cm"),
             speed_limit_kmh=data.get("speed_limit_kmh", data.get("max_speed_kmh")),
             disabled=bool(data.get("disabled", False)),
@@ -351,13 +357,29 @@ class Block(TrackResource):
 
         A block is available when:
         - It is FREE
+        - It is in CAUTION and is either unreserved or reserved by this same
+          path (a physically-free CAUTION block has `occupied_by is None`)
         - It is RESERVED by this same path
         - It is OCCUPIED by the train that will use this path
+
+        `CAUTION` by itself does not make a block unavailable. Per
+        design_new.md "`CAUTION` vs reservation independence", caution is
+        orthogonal to reservation: it caps the following train's speed via
+        `TrainController.CAUTION_SPEED_LIMIT_KMH` but does not block an
+        otherwise-legal reservation. This mirrors the eligibility predicate
+        in `BlockManager.reserve_blocks_for_path(...)`, which never rejects
+        on caution — only on occupancy or a reservation held by another path.
+        A CAUTION block reserved by a *different* path is unavailable (it
+        falls through to the reserved-by-other case).
         """
         if self.disabled:
             return False
         st = self.state
         if st == BlockState.FREE:
+            return True
+        if st == BlockState.CAUTION and (
+            self.reserved_by_path is None or self.reserved_by_path == path_id
+        ):
             return True
         if st == BlockState.RESERVED and self.reserved_by_path == path_id:
             return True
@@ -368,6 +390,27 @@ class Block(TrackResource):
         ):
             return True
         return False
+
+    def excludes_opposing_traversal(self) -> bool:
+        """True when no train coming the other way can reach this block, so a
+        follower stopped just inside it cannot foul an opposing move:
+
+        - the block is one-way (`allowed_travel_directions` restricted to a
+          single direction), which structurally has no opposing traversal; or
+        - the block is in CAUTION — a leader has just passed forward through it,
+          committing the corridor to one-directional following use and still
+          occupying the block ahead in the protect direction, so no opposing
+          move can be routed up to it.
+
+        Canonical home for that exemption: best-effort truncation
+        (`PathDispatcher._terminal_fouls_two_way_switch_block`) consults this
+        rather than re-checking `caution` / `allowed_travel_directions` at the
+        call site, so both exemptions travel with the block.
+        """
+        if self.caution is not None:
+            return True
+        atd = self.allowed_travel_directions
+        return atd is not None and len(atd) < 2
 
     # ========================================================================
     # Mutators - direct primitive writes only.
@@ -494,6 +537,32 @@ class Block(TrackResource):
         if reverse_compass is not None and upper == reverse_compass:
             return "reverse"
         return None
+
+    def block_direction_for_compass_entry(
+        self, entry_edge: Optional[str]
+    ) -> Optional[str]:
+        """Given a compass ENTRY edge (`"N"/"E"/"S"/"W"`), return this block's
+        relative direction (`"forward"` or `"reverse"`), or `None` when the
+        input is missing/unrecognized or the block lacks geometry.
+
+        The entry-keyed companion to `block_direction_for_compass_exit`: a
+        single tile entered through edge `E` exits through its opposite, so the
+        verdict equals `block_direction_for_compass_exit(opposite(E))`. For a
+        multi-tile block the entry edge alone does not fix the direction (the
+        caller decides by entry tile instead), so this returns `None` there.
+        Canonical home for the single-tile entry-edge-vs-anchor direction rule;
+        `RailwayPathfinder` routes its single-tile branches through here rather
+        than re-deriving the anchor.
+        """
+        if entry_edge is None:
+            return None
+        upper = str(entry_edge).strip().upper()
+        if upper not in ("N", "E", "S", "W"):
+            return None
+        if not self.ordered_tiles or len(self.ordered_tiles) != 1:
+            return None
+        opposite = {"N": "S", "S": "N", "E": "W", "W": "E"}
+        return self.block_direction_for_compass_exit(opposite[upper])
 
     def _resolve_reservation_direction(
         self, direction: Optional[str]

@@ -21,6 +21,27 @@ from app_state import AppState
 AUTOSAVE_INTERVAL = 300  # 5 minutes in seconds
 AUTOSAVE_FILENAME = "_autosave"
 
+# Hard ceiling on a single per-tick sim delta. Normal operation — including a
+# few-times `simulation_speed` multiplier — stays well under this, so it is a
+# pass-through in the common case and the loop runs ONE update() per tick. It
+# only ever caps a multi-second hitch: the loop stalled (lock contention with
+# request handlers, GC, a host that fell behind) and resumed with a huge
+# accumulated wall-clock delta. Integrated in one step, such a delta overshoots
+# the train's max speed and teleports the head past its authority, tripping a
+# spurious ATC overspeed EB. Empirically the EB only appears around a ~3.5s
+# step with a full demo trainset, so this sits below that with margin. When a
+# hitch is clamped the surplus sim-time is dropped (the sim briefly runs slower
+# than real time) rather than teleporting; sub-second steps are physically fine.
+MAX_SIM_DELTA_SECONDS = 1.0
+
+
+def _clamp_sim_delta(delta_seconds: float, simulation_speed: float) -> float:
+    """Per-tick sim delta = wall-clock delta x speed, clamped to
+    ``MAX_SIM_DELTA_SECONDS`` (and floored at 0 against clock skew)."""
+    return min(
+        max(delta_seconds, 0.0) * simulation_speed, MAX_SIM_DELTA_SECONDS
+    )
+
 
 def create_simulation_loop(state: AppState) -> Callable[[], None]:
     """Create a simulation loop function bound to the given state.
@@ -41,7 +62,14 @@ def create_simulation_loop(state: AppState) -> Callable[[], None]:
                 last_update_time = current_time
 
                 if state.simulation_running:
-                    sim_delta = delta_seconds * state.simulation_speed
+                    # Clamp the per-tick delta (see MAX_SIM_DELTA_SECONDS) so a
+                    # multi-second hitch can't integrate one giant jump that
+                    # spikes speed past max and trips a spurious overspeed EB.
+                    # Normal ticks (incl. a few-x speed multiplier) pass through
+                    # unchanged: one update() per tick.
+                    sim_delta = _clamp_sim_delta(
+                        delta_seconds, state.simulation_speed
+                    )
                     with state.simulation_lock:
                         state.sim_controller.update(sim_delta)
 

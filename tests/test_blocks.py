@@ -22,8 +22,8 @@ from railway_signal import Signal, SignalType, SignalState
 from enums import BlockState, PlatformSide, Direction, TrainState
 from tests.train_test_helpers import set_train_span
 from block_validation import (
-    validate_block_path,
     is_crossing,
+    crossing_disallowed_in_block,
     validate_track_for_block,
     validate_block_assignment_continuity,
     get_adjacent_positions,
@@ -137,6 +137,66 @@ class TestBlock:
         block.clear()
         assert block.state == BlockState.FREE
 
+    def test_is_available_for_path_caution(self):
+        """A physically-free CAUTION block is available for a path.
+
+        Mirrors the reservation eligibility predicate in
+        `BlockManager.reserve_blocks_for_path(...)`: per design_new.md
+        "`CAUTION` vs reservation independence" (and design_new.md:783, :809),
+        `caution is not None` is not an eligibility failure by itself. A
+        CAUTION block is available unless it is reserved by *another* path.
+        Without this, any consumer that trusts the boolean would wrongly
+        reject a reservable caution block.
+        """
+        from block import CautionState
+
+        # Pure CAUTION (physically free, unreserved) → available.
+        b = Block("B1", ordered_tiles=[(0, 0, "S")])
+        b.caution = CautionState(exit_edge="E")
+        assert b.state == BlockState.CAUTION
+        assert b.is_available_for_path("THIS_PATH", "T1") is True
+
+        # CAUTION reserved by THIS path → available (caution outranks RESERVED
+        # in `Block.state`, but the reservation is ours).
+        b = Block("B2", ordered_tiles=[(0, 0, "S")])
+        b.reserve_for_path("THIS_PATH", "T1", "forward")
+        b.caution = CautionState(exit_edge="E")
+        assert b.state == BlockState.CAUTION
+        assert b.is_available_for_path("THIS_PATH", "T1") is True
+
+        # CAUTION reserved by ANOTHER path → NOT available.
+        b = Block("B3", ordered_tiles=[(0, 0, "S")])
+        b.reserve_for_path("OTHER_PATH", "T2", "forward")
+        b.caution = CautionState(exit_edge="E")
+        assert b.state == BlockState.CAUTION
+        assert b.is_available_for_path("THIS_PATH", "T1") is False
+
+    def test_is_available_for_path_non_caution(self):
+        """Non-caution availability cases are unchanged by the caution fix."""
+        # FREE → available.
+        b = Block("B1", ordered_tiles=[(0, 0, "S")])
+        assert b.is_available_for_path("THIS_PATH", "T1") is True
+
+        # RESERVED by this path → available; by another path → not.
+        b = Block("B2", ordered_tiles=[(0, 0, "S")])
+        b.reserve_for_path("THIS_PATH", "T1", "forward")
+        assert b.is_available_for_path("THIS_PATH", "T1") is True
+        b = Block("B3", ordered_tiles=[(0, 0, "S")])
+        b.reserve_for_path("OTHER_PATH", "T2", "forward")
+        assert b.is_available_for_path("THIS_PATH", "T1") is False
+
+        # OCCUPIED by this train → available; by another train → not.
+        b = Block("B4", ordered_tiles=[(0, 0, "S")])
+        b.occupy("T1")
+        assert b.is_available_for_path("THIS_PATH", "T1") is True
+        b = Block("B5", ordered_tiles=[(0, 0, "S")])
+        b.occupy("T2")
+        assert b.is_available_for_path("THIS_PATH", "T1") is False
+
+        # Disabled → never available.
+        b = Block("B6", ordered_tiles=[(0, 0, "S")], disabled=True)
+        assert b.is_available_for_path("THIS_PATH", "T1") is False
+
     def test_serialization(self):
         block = Block(
             block_id="BLK_TEST", name="Test Block", length_cm=1000, speed_limit_kmh=80
@@ -226,11 +286,29 @@ class TestBlockValidation:
         assert is_crossing(TRACK_NS) == False
         assert is_crossing(TRACK_NS | TRACK_NE) == False
 
-    def test_validate_track_for_block_rejects_crossing(self, diamond_crossing):
+    def test_crossing_disallowed_in_block(self):
+        # The orthogonal NS+EW crossing (3) is allowed inside a block.
+        assert crossing_disallowed_in_block(TRACK_NS | TRACK_EW) == False
+        # Diagonal crossings remain disallowed.
+        assert crossing_disallowed_in_block(TRACK_NW | TRACK_SE) == True
+        assert crossing_disallowed_in_block(TRACK_NE | TRACK_SW) == True
+        # Non-crossings are unaffected.
+        assert crossing_disallowed_in_block(TRACK_NS) == False
+
+    def test_validate_track_for_block_allows_orthogonal_crossing(self, diamond_crossing):
+        # The orthogonal NS+EW crossing (track_bits 3) may belong to a block.
         network = diamond_crossing
         track = network.get_track(1, 1)
-        result = validate_track_for_block(track, network)
-        assert result == False or "crossing" in str(result).lower()
+        is_valid, _ = validate_track_for_block(track, network)
+        assert is_valid == True
+
+    def test_validate_track_for_block_rejects_diagonal_crossing(self, network):
+        # Diagonal crossings (NW+SE, NE+SW) stay out of blocks.
+        network.add_track(TrackSegment(x=0, y=0, track_bits=TRACK_NW | TRACK_SE))
+        track = network.get_track(0, 0)
+        is_valid, msg = validate_track_for_block(track, network)
+        assert is_valid == False
+        assert "crossing" in msg.lower()
 
     def test_validate_track_for_block_rejects_switch(self, y_switch):
         network = y_switch

@@ -454,29 +454,6 @@
 .tm-up-row.kind-station      { border-left-color: var(--info-color); }
 .tm-up-row.kind-switch       { border-left-color: var(--accent-color); }
 
-/* ---- Debug appendix (kept for legacy, restyled to match) ---- */
-.train-monitor-debug-container {
-    width: 320px;
-    background-color: var(--bg-dark);
-    border-left: 1px solid var(--border-color);
-    padding: 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    overflow-y: auto;
-    flex-shrink: 0;
-}
-.train-monitor-debug-container.hidden { display: none; }
-.train-monitor-debug-container .debug-header {
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    padding-bottom: 4px;
-    border-bottom: 1px solid var(--border-color);
-}
-
 /* Adjust row borders for grid layout - maybe make them less prominent or remove */
 
 /* Horizontal form layout: label and input on same line */

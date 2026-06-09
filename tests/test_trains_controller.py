@@ -44,6 +44,7 @@ class TestTrainManualControlBugFixes:
         controller = create_controller_for_train("TRAIN_01", network)
         controller.ops.state = TrainState.READY
         controller.commands.cab = "A"
+        controller.commands.control_mode = "manual"  # cab selection is manual-only
 
         assert controller.commands.set_cab(None).success is True
         assert controller.ops.state == TrainState.READY

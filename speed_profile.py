@@ -16,6 +16,27 @@ The module also provides:
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Any, Optional
 
+from enums import HandlePosition, POWER_MULTIPLIERS, BRAKE_MULTIPLIERS
+
+
+def _multipliers_from_raw(
+    raw: Any, default: Dict[HandlePosition, float]
+) -> Dict[HandlePosition, float]:
+    """Rebuild a {HandlePosition: multiplier} table from serialized {str: float}.
+
+    Falls back to ``default`` when the data is absent or carries no recognized
+    handle keys. Unknown handle strings are skipped rather than raising.
+    """
+    if not isinstance(raw, dict):
+        return dict(default)
+    out: Dict[HandlePosition, float] = {}
+    for key, value in raw.items():
+        try:
+            out[HandlePosition(key)] = float(value)
+        except (ValueError, TypeError):
+            continue
+    return out if out else dict(default)
+
 
 @dataclass
 class SpeedProfile:
@@ -69,6 +90,18 @@ class SpeedProfile:
     reference_speed_kmh: float = 100.0  # Speed at which drag = drag_coefficient km/h/s
     # Top of the usable track_voltage range for the first mapping stage (design line 2028)
     max_voltage: float = 12.0
+    # Per-train notch mapping. Power notches scale `acceleration_rate`; brake
+    # notches scale the operational decel rate (`deceleration_rate ×
+    # operational_decel_ratio`). Different train models have different notch
+    # response, so these live on the profile. Default to the standard table in
+    # `enums`; the consumers (TrainPhysics, ATOComputer) read these, not the
+    # module-level tables.
+    power_multipliers: Dict[HandlePosition, float] = field(
+        default_factory=lambda: dict(POWER_MULTIPLIERS)
+    )
+    brake_multipliers: Dict[HandlePosition, float] = field(
+        default_factory=lambda: dict(BRAKE_MULTIPLIERS)
+    )
 
     def __post_init__(self) -> None:
         """Ensure all calibration curves are sorted by their independent axis."""
@@ -256,6 +289,12 @@ class SpeedProfile:
             "air_resistance_enabled": self.air_resistance_enabled,
             "drag_coefficient": self.drag_coefficient,
             "reference_speed_kmh": self.reference_speed_kmh,
+            "power_multipliers": {
+                h.value: m for h, m in self.power_multipliers.items()
+            },
+            "brake_multipliers": {
+                h.value: m for h, m in self.brake_multipliers.items()
+            },
         }
 
     @classmethod
@@ -290,6 +329,12 @@ class SpeedProfile:
             drag_coefficient=float(data.get("drag_coefficient", 0.001)),
             reference_speed_kmh=float(data.get("reference_speed_kmh", 100.0)),
             max_voltage=float(data.get("max_voltage", 12.0)),
+            power_multipliers=_multipliers_from_raw(
+                data.get("power_multipliers"), POWER_MULTIPLIERS
+            ),
+            brake_multipliers=_multipliers_from_raw(
+                data.get("brake_multipliers"), BRAKE_MULTIPLIERS
+            ),
         )
 
 

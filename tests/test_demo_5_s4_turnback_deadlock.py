@@ -162,3 +162,51 @@ def test_non_reversing_occupant_still_held_back_by_junction_rule():
     seq = [getattr(e, "resource_id", None)
            for e in dispatcher.get_active_path("FOLLOW").resource_sequence]
     assert "SW_X2" not in seq and "BLK_X2_TO_S4_S" not in seq
+
+
+def test_caution_terminal_block_is_exempt_from_junction_rule():
+    """Caution carve-out (design_new.md item 11): the junction-fouling exclusion
+    yields when the two-way terminal block off the switch is in CAUTION. A
+    caution block is one a leader has just passed forward through this junction,
+    so the follower is allowed to close up onto it at the caution speed cap
+    instead of being held a block back.
+
+    Same staging as the held-back case, but BLK_X2_TO_S4_S is put in CAUTION (as
+    LEAD's forward passage to S4-S would have left it). The exclusion must now
+    let FOLLOW's best-effort authority terminate ON BLK_X2_TO_S4_S, rather than
+    stopping short at BLK_S3_S_TO_X2 as it does for a non-caution two-way block.
+    """
+    from block import CautionState
+
+    network, dispatcher, sim = _stage(assign_lead_route=False)
+    foul_block = network.blocks["BLK_X2_TO_S4_S"]
+
+    # The candidate segment FOLLOW would truncate (two-way block off SW_X2).
+    cands = dispatcher._find_walk_candidates(
+        "PLT_S3_S_BLOCK", "PLT_S4_S_BLOCK", "FOLLOW")
+    assert cands, "expected a walk from S3-S to S4-S"
+    segment = cands[0].walk
+    assert "BLK_X2_TO_S4_S" in segment.blocks
+
+    # Baseline: with no caution the exclusion holds the terminal back.
+    assert foul_block.caution is None
+    assert dispatcher._terminal_fouls_two_way_switch_block(
+        segment, "BLK_X2_TO_S4_S") is True
+
+    # Carve-out: with the block in CAUTION the exclusion yields.
+    foul_block.caution = CautionState(exit_edge="W")  # leader vacated toward S4-S
+    assert dispatcher._terminal_fouls_two_way_switch_block(
+        segment, "BLK_X2_TO_S4_S") is False, (
+        "a two-way block in CAUTION must be exempt from the junction-fouling "
+        "exclusion so a follower can close up behind the leader"
+    )
+
+    # End to end: FOLLOW's best-effort authority now closes up ONTO the caution
+    # block, instead of stopping a block short at BLK_S3_S_TO_X2.
+    res = _follow_best_effort_to_s4(dispatcher)
+    assert res.success
+    auth_end = dispatcher.get_active_path("FOLLOW").get_authority_end_block_id()
+    assert auth_end == "BLK_X2_TO_S4_S", (
+        f"the caution carve-out must let FOLLOW terminate on the caution block "
+        f"off SW_X2; got {auth_end!r}"
+    )

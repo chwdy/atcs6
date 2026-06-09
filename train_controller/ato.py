@@ -111,11 +111,6 @@ BRAKE_DEADBAND_KMH = 0.3
 # handle-change rate stays consistent in sim-time rather than per-tick.
 NOMINAL_TICK_DT = 0.1
 
-# ATO speed margin used by the cab-resume / depart-acceptance branch on the
-# controller façade. The margin lets a previously commanded ATO run resume
-# without re-issuing depart when the train is still slightly above stopped.
-ATO_SPEED_MARGIN_KMH = 1.0
-
 
 def ato_speed_tolerance(reference_kmh: float) -> float:
     """Speed-tracking tolerance for ATO at the given reference speed.
@@ -258,7 +253,7 @@ class ATOComputer:
                 # Ensure train is physically stopped before switching cab.
                 if c.physics_sync.current_speed_kmh > 0:
                     c.physics_sync.current_speed_kmh = 0.0
-                result = c.commands.set_cab(required_cab)
+                result = c.commands.set_cab(required_cab, internal=True)
                 if not result.success:
                     return CommandResult(
                         False,
@@ -407,10 +402,10 @@ class ATOComputer:
         profile = self._c._get_speed_profile()
         op_decel = profile.deceleration_rate * profile.operational_decel_ratio
 
-        if handle in POWER_MULTIPLIERS:
-            accel_kmh_s = profile.acceleration_rate * POWER_MULTIPLIERS[handle]
-        elif handle in BRAKE_MULTIPLIERS:
-            accel_kmh_s = -op_decel * BRAKE_MULTIPLIERS[handle]
+        if handle in profile.power_multipliers:
+            accel_kmh_s = profile.acceleration_rate * profile.power_multipliers[handle]
+        elif handle in profile.brake_multipliers:
+            accel_kmh_s = -op_decel * profile.brake_multipliers[handle]
         elif handle == HandlePosition.EB:
             accel_kmh_s = -profile.emergency_brake_rate
         else:
@@ -445,18 +440,22 @@ class ATOComputer:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def pick_brake_notch_for_multiplier(multiplier: float) -> HandlePosition:
-        """Smallest brake notch whose ``BRAKE_MULTIPLIERS`` value ≥
+    def pick_brake_notch_for_multiplier(
+        multiplier: float,
+        brake_multipliers: Dict[HandlePosition, float] = BRAKE_MULTIPLIERS,
+    ) -> HandlePosition:
+        """Smallest brake notch whose ``brake_multipliers`` value ≥
         ``multiplier``.
 
-        Multipliers are relative to op_decel. Caps at B8 — if more
-        decel is required than B8 provides, ATC EB will catch the
+        Multipliers are relative to op_decel. ``brake_multipliers`` is the
+        train's per-profile notch table (defaults to the standard one). Caps at
+        B8 — if more decel is required than B8 provides, ATC EB will catch the
         resulting overspeed.
         """
         if multiplier <= 0:
             return HandlePosition.N
         for handle in _BRAKE_HANDLES_ASCENDING:
-            if BRAKE_MULTIPLIERS[handle] >= multiplier:
+            if brake_multipliers[handle] >= multiplier:
                 return handle
         return HandlePosition.B8
 
@@ -637,12 +636,18 @@ class ATOComputer:
         required_decel_kmh_s = 0.0
         binding_dist_cm = 0.0
         binding_target_kmh = ceiling_at_zero
+        # Lowest operational target anywhere in the sampled window. When this is
+        # ~0 the usable authority ends within the window, even if the limit at
+        # the head (ceiling_at_zero) is still healthy — see the stopped-hold
+        # branch below.
+        min_target_in_window = ceiling_at_zero
         samples: List[Dict[str, Any]] = []
         deadband_approached = False
         for i in range(LOOKAHEAD_SAMPLE_COUNT + 1):
             d_cm = look_cm * i / LOOKAHEAD_SAMPLE_COUNT
             target_at_d = self.sample_curve_at(curves, d_cm, "operational_limit")
             target_at_d = min(target_at_d, train.max_speed, c.atc.speed_limit)
+            min_target_in_window = min(min_target_in_window, target_at_d)
             samples.append(
                 {"distance_cm": round(d_cm, 2), "target_kmh": round(target_at_d, 2)}
             )
@@ -679,7 +684,34 @@ class ATOComputer:
             )
             debug["power_up_tolerance_kmh"] = power_up_tolerance
             debug["speed_trend_kmh_s"] = round(speed_trend_kmh_s, 3)
-            if deadband_approached:
+            # Stored raw (not rounded) so consumers can reproduce the stopped-
+            # hold condition below exactly without a rounding-boundary mismatch.
+            debug["min_target_in_window_kmh"] = float(min_target_in_window)
+            if (
+                speed_kmh <= STOPPED_SPEED_THRESHOLD_KMH
+                and min_target_in_window <= STOPPED_SPEED_THRESHOLD_KMH
+            ):
+                # Stopped with the usable authority ending inside the lookahead
+                # window: the operational curve collapses to ~0 just ahead, so
+                # there is no room to accelerate into. The distance-0 stopping
+                # zone above already covers a ~0 limit AT the head; this covers a
+                # healthy head limit (ceiling_at_zero) with the authority end a
+                # few cm ahead — the best-effort-truncation case. Powering up
+                # here only starts a creep-and-coast limit cycle: a P-notch lurch
+                # over the stop threshold, then a deadband coast back, netting no
+                # progress. That cycle jitters the handle and, because each lurch
+                # pushes speed back above STOPPED_SPEED_THRESHOLD_KMH, keeps
+                # is_stopped() flickering False so RouteExecutor's idle-hold
+                # release never accrues its stall budget. Holding keeps the train
+                # genuinely stopped, so the idle-hold release can recognize the
+                # stall and free the truncated authority.
+                target_handle = HandlePosition.N
+                c.ops.handle_reason = (
+                    f"Hold: stopped, authority ends within {look_cm:.0f}cm "
+                    f"(no usable room to advance)"
+                )
+                debug["mode"] = "hold_authority_end"
+            elif deadband_approached:
                 target_handle = HandlePosition.N
                 c.ops.handle_reason = (
                     f"Coast (limit near): speed={speed_kmh:.1f} "
@@ -715,7 +747,9 @@ class ATOComputer:
 
         # Brake notch from required deceleration as a multiple of op_decel.
         multiplier_needed = required_decel_kmh_s / op_decel
-        target_handle = self.pick_brake_notch_for_multiplier(multiplier_needed)
+        target_handle = self.pick_brake_notch_for_multiplier(
+            multiplier_needed, profile.brake_multipliers
+        )
         overspeed_at_zero = speed_kmh > ceiling_at_zero + ato_speed_tolerance(
             max(speed_kmh, ceiling_at_zero)
         )

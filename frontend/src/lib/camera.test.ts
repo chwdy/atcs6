@@ -161,4 +161,54 @@ describe('Camera projection + viewport math', () => {
     expect(cam.scale).toBeLessThanOrEqual(5);
     expect(cam.scale).toBeLessThan(4);
   });
+
+  it('fitToContent tightly frames a sparse layout that does not fill its bbox', () => {
+    const canvas = makeCanvas(1200, 800);
+    const cam = new Camera(canvas);
+    cam.resizeToCanvas();
+    cam.scale = 4; // start zoomed in too tight to show everything
+
+    // A diagonal line of tiles along y = x. Its grid bbox is a fat 0..10 square,
+    // but the iso projection collapses it to a thin horizontal bar on screen
+    // (x - y is constant, so screen-Y barely moves). The old bbox-diamond fit
+    // zoomed to the empty square and left the bar tiny and floating; the
+    // footprint fit must zoom to the bar itself.
+    const tiles: Array<{ x: number; y: number }> = [];
+    for (let i = 0; i <= 10; i++) tiles.push({ x: i, y: i });
+    cam.fitToContent(tiles);
+
+    // Measure the actual on-screen footprint of every tile corner.
+    let minSx = Infinity;
+    let maxSx = -Infinity;
+    let minSy = Infinity;
+    let maxSy = -Infinity;
+    for (const t of tiles) {
+      for (const [dx, dy] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+        const sx = cam.gridToScreenX(t.x + dx, t.y + dy);
+        const sy = cam.gridToScreenY(t.x + dx, t.y + dy);
+        if (sx < minSx) minSx = sx;
+        if (sx > maxSx) maxSx = sx;
+        if (sy < minSy) minSy = sy;
+        if (sy > maxSy) maxSy = sy;
+      }
+    }
+
+    // The whole footprint stays on-canvas.
+    expect(minSx).toBeGreaterThanOrEqual(0);
+    expect(maxSx).toBeLessThanOrEqual(canvas.width);
+    expect(minSy).toBeGreaterThanOrEqual(0);
+    expect(maxSy).toBeLessThanOrEqual(canvas.height);
+
+    // The limiting axis (width, for this bar) fills the canvas to the margin —
+    // i.e. it is genuinely tight. The old bbox fit only reached ~0.6 here.
+    const widthFill = (maxSx - minSx) / canvas.width;
+    expect(widthFill).toBeCloseTo(0.9, 6);
+
+    // The footprint is centred on the canvas on both axes.
+    expect((minSx + maxSx) / 2).toBeCloseTo(cam.centerX, 6);
+    expect((minSy + maxSy) / 2).toBeCloseTo(cam.centerY, 6);
+
+    expect(cam.scale).toBeGreaterThanOrEqual(0.1);
+    expect(cam.scale).toBeLessThanOrEqual(5);
+  });
 });

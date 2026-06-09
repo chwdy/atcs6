@@ -1840,9 +1840,12 @@ class PathDispatcher:
         block = self.network.blocks.get(terminal_block_id)
         if block is None:
             return False
-        atd = getattr(block, "allowed_travel_directions", None)
-        if atd is not None and len(atd) < 2:
-            return False  # one-way: no opposing move possible, safe to stop
+        # A block no opposing move can reach is safe to stop just inside it,
+        # whether it is one-way or in CAUTION behind a leader (design_new.md
+        # item 11; canonical home Block.excludes_opposing_traversal). Hold the
+        # authority back only for a genuine two-way block entered off a switch.
+        if block.excludes_opposing_traversal():
+            return False
         # Locate the terminal block's first non-switch tile in path order.
         first_idx: Optional[int] = None
         for idx, tile in enumerate(segment.tiles):
@@ -2056,16 +2059,23 @@ class PathDispatcher:
             exit_edge = direction_from_delta(dx, dy)
             if exit_edge is None:
                 continue
-            # block_direction is "forward" or "reverse" — derived from the
-            # block's ordered_tiles. We approximate "forward" since the
-            # canonical algorithm requires Block.ordered_tiles inspection.
+            # block_direction ("forward"/"reverse") from Block.ordered_tiles:
+            # multi-tile by which endpoint the run enters (enter at index-0 tile
+            # => forward), single-tile by the entry edge vs the forward-entry
+            # anchor (design_new.md "Block model" — a single tile can be
+            # traversed in either direction). Matches the ordered-walk path's
+            # RailwayPathfinder._block_run_direction convention.
             block = self.network.blocks.get(block_id)
             block_direction = "forward"
-            if block is not None and hasattr(block, "ordered_tiles"):
-                ordered = block.ordered_tiles or []
-                if ordered and ordered[-1] == curr:
-                    block_direction = "forward"
-                elif ordered and ordered[0] == curr:
+            ordered = (block.ordered_tiles or []) if block is not None else []
+            if ordered:
+                first = (ordered[0].x, ordered[0].y)
+                last = (ordered[-1].x, ordered[-1].y)
+                if first == last:
+                    resolved = block.block_direction_for_compass_exit(exit_edge)
+                    if resolved is not None:
+                        block_direction = resolved
+                elif curr == last:
                     block_direction = "reverse"
             result[block_id] = ReservedBlockTraversal(
                 exit_edge=exit_edge,

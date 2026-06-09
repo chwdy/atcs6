@@ -393,14 +393,17 @@ class TrainPhysics:
         acceleration_rate: float,
         operational_decel_rate: float,
         emergency_brake_rate: float,
+        power_multipliers: Dict[HandlePosition, float] = POWER_MULTIPLIERS,
+        brake_multipliers: Dict[HandlePosition, float] = BRAKE_MULTIPLIERS,
     ) -> float:
         """
         Get acceleration/deceleration rate for current handle position.
 
         Brake notches multiply `operational_decel_rate` (the rate ATO uses
-        for its planned slow-down curve). B6 = 1.00× exactly tracks that
-        curve; B7-B8 sit slightly above 1× for catch-up; B1-B5 sit below.
-        EB bypasses the table and applies `emergency_brake_rate`.
+        for its planned slow-down curve). With the standard table B6 = 1.00×
+        exactly tracks that curve; B7-B8 sit slightly above 1× for catch-up;
+        B1-B5 sit below. EB bypasses the table and applies
+        `emergency_brake_rate`.
 
         Args:
             handle: Current handle position
@@ -408,6 +411,8 @@ class TrainPhysics:
             operational_decel_rate: Operational deceleration rate (km/h/s) =
                 profile.deceleration_rate × profile.operational_decel_ratio
             emergency_brake_rate: Emergency braking rate (km/h/s)
+            power_multipliers / brake_multipliers: per-train notch tables
+                (from the train's SpeedProfile); default to the standard table.
 
         Returns:
             Positive value for acceleration (km/h/s)
@@ -415,16 +420,16 @@ class TrainPhysics:
             Zero for neutral (coast)
         """
         # Power notches (acceleration)
-        if handle in POWER_MULTIPLIERS:
-            return acceleration_rate * POWER_MULTIPLIERS[handle]
+        if handle in power_multipliers:
+            return acceleration_rate * power_multipliers[handle]
 
         # Neutral (coast)
         if handle == HandlePosition.N:
             return 0.0
 
         # Brake notches (deceleration relative to op_decel)
-        if handle in BRAKE_MULTIPLIERS:
-            return -operational_decel_rate * BRAKE_MULTIPLIERS[handle]
+        if handle in brake_multipliers:
+            return -operational_decel_rate * brake_multipliers[handle]
 
         # Emergency brake
         if handle == HandlePosition.EB:
@@ -490,6 +495,8 @@ class TrainPhysics:
             profile.acceleration_rate,
             operational_decel,
             profile.emergency_brake_rate,
+            profile.power_multipliers,
+            profile.brake_multipliers,
         )
 
         new_speed = previous_speed + (acceleration * delta)
@@ -1361,6 +1368,111 @@ class TrainPhysics:
 
         return blocks
 
+    # =========================================================================
+    # Physical-detection reconciliation (snap to the seam)
+    # =========================================================================
+
+    def reconcile_to_detected_occupancy(
+        self, train: "Train", controller: "TrainController"
+    ) -> bool:
+        """Snap the calculated span forward to agree with the current detector.
+
+        Physical detection outranks the calculated position (design_new.md
+        "Power -> Block occupancy detection"). When the detector has confirmed a
+        block entered or vacated for this train but the calculated span still
+        disagrees, slide the rigid span forward one tile at a time until the head
+        has reached every confirmed-entered block and the tail has cleared every
+        confirmed-vacated block — "snap to the seam at least".
+
+        One-directional: it only advances the train forward, never backward, and
+        is a no-op when the calculated span already agrees. Under the v1
+        simulated sensor (current derived from the span) the span always already
+        agrees, so this never moves; it becomes active only with real hardware,
+        or an early/late/fault-injecting sensor, that leads the calculated
+        position. Returns True if it moved the span.
+        """
+        ps = controller.physics_sync
+        span = ps.current_span
+        if span is None:
+            return False
+        entered = ps.pending_detected_entered_blocks
+        vacated = ps.pending_detected_vacated_blocks
+        if not entered and not vacated:
+            return False
+
+        head_is_a = controller._head_end_label() == "end_a"
+        self._work = _work_from_span(span, head_is_a)
+
+        def disagrees() -> bool:
+            occupied = set(self._work.occupied_blocks or [])
+            if any(block_id not in occupied for block_id in entered):
+                return True
+            if any(block_id in occupied for block_id in vacated):
+                return True
+            return False
+
+        moved = False
+        guard = 0
+        while disagrees() and guard < 200:
+            guard += 1
+            if not self._advance_head_to_next_tile(train):
+                break  # end of track / no forward tile — cannot reconcile further
+            moved = True
+
+        if moved:
+            ps.current_span = _span_from_work(self._work)
+        self._work = None
+        return moved
+
+    def _advance_head_to_next_tile(self, train: "Train") -> bool:
+        """Move the head end to the next forward tile (at its entry seam) and
+        retrace the tail and occupied span. Returns False when there is no
+        forward tile. Used only by reconcile_to_detected_occupancy; it records no
+        swept traversals, so it emits no movement events."""
+        work = self._work
+        if work is None:
+            return False
+        if work.head_is_a:
+            head_tile = work.end_a_tile
+            head_entry = work.end_a_entry_edge
+        else:
+            head_tile = work.end_b_tile
+            head_entry = work.end_b_entry_edge
+
+        exit_edge = self._calculate_exit_edge(head_tile, head_entry)
+        if not exit_edge:
+            return False
+        next_tile = self._get_neighbor_tile(head_tile, exit_edge)
+        if next_tile is None:
+            return False
+        next_entry = self._entry_edge_on_next(head_tile, exit_edge, next_tile)
+
+        if work.head_is_a:
+            work.end_a_tile = next_tile
+            work.end_a_entry_edge = next_entry
+            work.end_a_distance_cm = 0.0
+        else:
+            work.end_b_tile = next_tile
+            work.end_b_entry_edge = next_entry
+            work.end_b_distance_cm = 0.0
+
+        self._update_tail_position(train)
+        self._update_occupied_tiles(train)
+        # Rebuild the ordered occupied_blocks from the new tiles, mirroring
+        # _update_block_occupancy but without its diagnostic transition
+        # bookkeeping (last_block_transitions / _last_occupied_blocks), which the
+        # reconciliation must not perturb.
+        ordered_blocks: List[str] = []
+        seen: Set[str] = set()
+        for tile in work.occupied_tiles or []:
+            track = self.network.tracks.get(tile) if self.network else None
+            bid = getattr(track, "block_section_id", None) if track else None
+            if bid and bid not in seen:
+                ordered_blocks.append(bid)
+                seen.add(bid)
+        work.occupied_blocks = ordered_blocks
+        return True
+
     def _validate_position_sync(self, train: "Train") -> bool:
         """
         Diagnostic-only sync check between tile-derived blocks and the local
@@ -1432,14 +1544,48 @@ class TrainPhysics:
         self._set_voltage_for_blocks(train, voltage)
 
     def _set_voltage_for_blocks(self, train: "Train", voltage: float) -> None:
-        """Set specific voltage for all occupied blocks."""
+        """Energize every block this train holds at the same `track_voltage`.
+
+        The held set is the train's occupied blocks plus its reserved-ahead
+        authority corridor (`Block.reserved_for_train`). Pre-energizing the
+        reserved corridor at the same voltage as the occupied blocks means the
+        loco crosses each block boundary without a power gap — the block it is
+        about to enter is already at running voltage rather than dead (see
+        design_new.md "Power", Block power-controller role). This method drives
+        only this train's held blocks; a block whose holder clears (tail vacate /
+        reservation release) is returned to 0V by SimulationController draining
+        `BlockManager.take_blocks_to_deenergize()` after every train has emitted.
+        """
         power_controller = self._get_power_controller()
         if not power_controller:
             return
 
-        occupied = self._get_blocks_for_train(train)
-        for block_id in occupied:
+        for block_id in self._held_blocks_for_train(train):
             power_controller.set_block_voltage(block_id, voltage)
+
+    def _held_blocks_for_train(self, train: "Train") -> Set[str]:
+        """Blocks this train holds: occupied span plus reserved-ahead corridor.
+
+        Occupied blocks come from the movement scratchpad (the physics-canonical
+        view of where the train is this tick). The reserved-ahead corridor is the
+        dispatcher-owned future authority, read from the BlockManager's per-train
+        reserved index (`reserved_blocks_for_train`) — the O(reserved) reverse of
+        `Block.reserved_for_train`, not an all-blocks scan.
+        """
+        held = self._get_blocks_for_train(train)
+        if self.network is None:
+            return held
+        block_manager = getattr(self.network, "block_manager", None)
+        if block_manager is not None:
+            held |= block_manager.reserved_blocks_for_train(train.train_id)
+        else:
+            # Fallback for a network with no BlockManager wired (isolated unit
+            # tests). Production networks always create one (RailwayNetwork).
+            tid = train.train_id
+            for block_id, block in self.network.blocks.items():
+                if getattr(block, "reserved_for_train", None) == tid:
+                    held.add(block_id)
+        return held
 
     # =========================================================================
     # Track Geometry Helpers

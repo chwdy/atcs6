@@ -14,6 +14,7 @@ import { showToast } from '../lib/toast';
 import {
   ConstructionPathfinder,
   pathToTracks,
+  tileSkipsSegment,
   validateBlockPath,
   getValidSignalDirections,
   traceNodeKey,
@@ -925,6 +926,24 @@ export class Editor {
     };
   }
 
+  // "x,y" → track map over cachedNetwork.tracks, rebuilt only when the tracks
+  // array reference changes. cachedNetwork is replaced wholesale on every
+  // network update, so identity comparison is exact; during a drag it is stable,
+  // so the trace/preview methods (updatePreviewPath runs on every mousemove)
+  // reuse this map instead of rebuilding it over all tracks each call.
+  private _tracksByKeyCache: Map<string, any> | null = null;
+  private _tracksByKeySource: any[] | null = null;
+  private _tracksByKey(): Map<string, any> {
+    const tracks = this.cachedNetwork?.tracks || [];
+    if (this._tracksByKeyCache && this._tracksByKeySource === tracks) {
+      return this._tracksByKeyCache;
+    }
+    const byKey = new Map<string, any>(tracks.map((t: any) => [`${t.x},${t.y}`, t]));
+    this._tracksByKeyCache = byKey;
+    this._tracksByKeySource = tracks;
+    return byKey;
+  }
+
   // Walk the existing-track network from `start` to `goal`, following real
   // segment connectivity (switch-aware), and return the ordered list of track
   // tiles on the shortest connecting path — or null if they are not connected.
@@ -932,8 +951,7 @@ export class Editor {
   // exits its track bits actually bind for the edge it was entered by, so the
   // path cannot cheat across the disconnected segments of a switch.
   _traceTrackPath(start: any, goal: any): Array<{ x: number; y: number }> | null {
-    const tracks = this.cachedNetwork?.tracks || [];
-    const byKey = new Map<string, any>(tracks.map((t: any) => [`${t.x},${t.y}`, t]));
+    const byKey = this._tracksByKey();
     if (!byKey.has(`${start.x},${start.y}`) || !byKey.has(`${goal.x},${goal.y}`)) return null;
 
     const { path } = graphSearch<TraceNode>({
@@ -951,8 +969,7 @@ export class Editor {
   // second endpoints of a trace; the start tile is excluded since it already
   // carries the yellow anchor highlight.
   _traceReachableTiles(start: any): Set<string> {
-    const tracks = this.cachedNetwork?.tracks || [];
-    const byKey = new Map<string, any>(tracks.map((t: any) => [`${t.x},${t.y}`, t]));
+    const byKey = this._tracksByKey();
     const startKey = `${start.x},${start.y}`;
     const reachable = new Set<string>();
     if (!byKey.has(startKey)) return reachable;
@@ -1722,8 +1739,7 @@ export class Editor {
   // validateBlockTile), so the block tools stop at them — a drag that can only
   // be completed by crossing one finds no path, which surfaces as the red line.
   private _followExistingDragPath(): Array<{ x: number; y: number }> | null {
-    const tracks = this.cachedNetwork?.tracks || [];
-    const byKey = new Map<string, any>(tracks.map((t: any) => [`${t.x},${t.y}`, t]));
+    const byKey = this._tracksByKey();
     const s = this.dragStart;
     const g = this.dragEnd;
     if (!byKey.has(`${s.x},${s.y}`) || !byKey.has(`${g.x},${g.y}`)) return null;
@@ -1787,7 +1803,7 @@ export class Editor {
           const shown = new Set(this.previewTracks.map((t: any) => `${t.x},${t.y}`));
           const skipTiles = new Map<string, any>();
           for (const t of this.cachedNetwork.tracks) {
-            if (t.station_id || t.type === 'station' || t.signal_state || t.type === 'signal') {
+            if (tileSkipsSegment(t)) {
               skipTiles.set(`${t.x},${t.y}`, t);
             }
           }

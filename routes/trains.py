@@ -363,6 +363,24 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "success", **_train_to_dict(train, state.network)})
         return jsonify({"error": result.message}), 400
 
+    @app.route("/api/trains/<train_id>/release-emergency", methods=["POST"])
+    def release_emergency(train_id):
+        """Release the emergency brake (canonical eb.release()).
+
+        The handle never releases EB; this is the only operator surface that
+        clears the EB latch. eb.release() is latch-gated, so it fails (400)
+        with a diagnostic until the train is stopped and the EB cancellation
+        has committed.
+        """
+        train = train_service.get_train(state, train_id)
+        if not train:
+            return jsonify({"error": "Train not found"}), 404
+
+        result = train_service.release_emergency(state, train_id)
+        if result.success:
+            return jsonify({"status": "success", **_train_to_dict(train, state.network)})
+        return jsonify({"error": result.message}), 400
+
     @app.route("/api/trains/<train_id>/mode", methods=["POST"])
     def set_control_mode(train_id):
         """Set control mode (ATO or Manual)."""

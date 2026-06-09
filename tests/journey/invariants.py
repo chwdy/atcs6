@@ -5,8 +5,9 @@ design_new.md (allowed `(state, cab)` pairs, RUNNING_AT_STATION ⇒ no path,
 no_overspeed, span ⇔ resource consistency).
 """
 
-from typing import Callable
+from typing import Callable, Dict, Set
 
+from constants import OCCUPANCY_OFF_THRESHOLD
 from enums import BlockState, TrainState
 
 from .events import Invariant
@@ -222,48 +223,69 @@ def span_switch_consistency() -> Invariant:
 
 
 def block_occupied_iff_span_covers_block() -> Invariant:
-    """Per design_new.md "Block model" — `Block.occupied_by` is *physical*
-    train presence. The invariant therefore has two directions:
+    """Per design_new.md "Block model" + "Power -> Block occupancy detection" —
+    `Block.occupied_by` is physical train presence, now driven by the debounced
+    current detector. Detection lags the precise span by the sensor/debounce
+    latency, so the invariant accounts for the two debounce windows:
 
-      (a) If any tile of a block is in the train's `current_span.occupied_tiles`,
-          that block MUST have `occupied_by == train_id`. Otherwise the
-          train is physically inside a block the manager believes is free.
+      (a) If any tile of a block is in the train's span, that block MUST be
+          OCCUPIED by the train OR RESERVED for it. A block the head has just
+          entered is part of the train's reserved-ahead corridor until the
+          detector confirms current (entry latency); it is never free and never
+          another train's.
 
-      (b) If `block.occupied_by == train_id` but NO tile of that block is in
-          the span, the block is stale: physical occupancy should have been
-          cleared on tail-vacate but wasn't.
+      (b) If `block.occupied_by == train_id` but NO tile of that block is in the
+          span, the block must be inside the fail-safe exit-debounce wake — the
+          tail cleared it but the detector holds occupancy for up to
+          OCCUPANCY_OFF_THRESHOLD ticks (riding through contact dropouts).
+          Beyond that window with no span coverage, occupancy is stale.
 
-    This is the canonical block↔span correctness check. Failure in direction
-    (a) means an OCCUPIED→FREE transition happened too early (e.g. the
-    Phase-3 still_occupied_block_ids guard in TrainController used a stale
-    `new_span.occupied_blocks`). Failure in direction (b) means a tail-vacate
-    was never reported (the same stale-list bug, but in the other direction).
+    Direction (a) still catches an OCCUPIED→FREE transition while the train is
+    physically on the block (it would be neither occupied nor reserved).
+    Direction (b) still catches a tail-vacate that never fired — its
+    `ticks_since` last coverage grows without bound past the fail-safe window.
     """
+
+    last_span_tick: Dict[str, int] = {}
+    # The detector reads end-of-last-tick positions (one tick of sensor latency)
+    # before the OFF debounce starts counting, so allow a small margin over the
+    # raw OFF threshold. A genuinely stuck occupancy grows unbounded past this.
+    grace = OCCUPANCY_OFF_THRESHOLD + 3
 
     def check(s: Snapshot) -> None:
         train_id = s.fixture.train_id
         span_tiles = {tuple(t) for t in s.occupied_tiles}
 
-        # Direction (a): every tile-in-block must be in a block we own.
+        covered_blocks: Set[str] = set()
         for tile in span_tiles:
             track = s.network.get_track(*tile)
             if track is None:
                 continue
             block_id = getattr(track, "block_section_id", None)
-            if not block_id:
-                continue  # switch / boundary tile
+            if block_id:
+                covered_blocks.add(block_id)
+        for block_id in covered_blocks:
+            last_span_tick[block_id] = s.tick
+
+        # Direction (a): every span-covered block is OCCUPIED by, or RESERVED
+        # for, this train (reserved = entry pending, detector not yet confirmed).
+        for block_id in covered_blocks:
             block = s.network.blocks.get(block_id)
             if block is None:
                 continue
-            assert block.occupied_by == train_id, (
-                f"span tile {tile} is inside block {block_id} but "
-                f"block.occupied_by={block.occupied_by!r} "
-                f"(expected {train_id!r}); block.state={block.state.value}, "
-                f"caution={block.caution!r}, "
-                f"span={sorted(span_tiles)}"
+            assert (
+                block.occupied_by == train_id
+                or block.reserved_for_train == train_id
+            ), (
+                f"span covers block {block_id} but block.occupied_by="
+                f"{block.occupied_by!r} / reserved_for_train="
+                f"{block.reserved_for_train!r} (expected occupied by, or "
+                f"reserved for, {train_id!r}); block.state={block.state.value}, "
+                f"caution={block.caution!r}, span={sorted(span_tiles)}"
             )
 
-        # Direction (b): every block we claim must have at least one span tile.
+        # Direction (b): a block we own with no span coverage must be inside the
+        # fail-safe exit-debounce wake (recently span-covered).
         for bid, block in s.network.blocks.items():
             if block.occupied_by != train_id:
                 continue
@@ -271,11 +293,14 @@ def block_occupied_iff_span_covers_block() -> Invariant:
             block_tiles = {(p[0], p[1]) for p in positions}
             if not block_tiles:
                 continue  # empty/legacy block; nothing to verify
-            assert block_tiles & span_tiles, (
-                f"block {bid} claims occupied_by={train_id} but none of its "
-                f"tiles {sorted(block_tiles)} appear in span "
-                f"{sorted(span_tiles)} (stale physical occupancy — "
-                f"tail-vacate likely never fired)"
+            if block_tiles & span_tiles:
+                continue
+            ticks_since = s.tick - last_span_tick.get(bid, -(10**9))
+            assert ticks_since <= grace, (
+                f"block {bid} claims occupied_by={train_id} but no span tile "
+                f"covers it and its last span coverage was {ticks_since} ticks "
+                f"ago (> fail-safe exit-debounce window {grace}); stale physical "
+                f"occupancy — tail-vacate likely never fired"
             )
 
     return Invariant(name="block_occupied_iff_span_covers_block", check=check)
