@@ -44,14 +44,6 @@ def get_switch(state: AppState, switch_id: str) -> Optional[Switch]:
     return state.network.get_switch(switch_id)
 
 
-def require_switch(state: AppState, switch_id: str) -> Switch:
-    """Return the switch or raise NotFoundError."""
-    switch = state.network.get_switch(switch_id)
-    if switch is None:
-        raise NotFoundError("Switch not found")
-    return switch
-
-
 def get_switch_at(state: AppState, x: int, y: int) -> Optional[Switch]:
     """Return the switch registered at a tile, or None."""
     return state.network.get_switch_at(x, y)

@@ -36,7 +36,6 @@ from bootstrap import (
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
-from railway_signal import SignalState
 from simulation import SimulationController
 
 # Global state

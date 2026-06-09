@@ -223,21 +223,6 @@ class GraphWalkCandidate:
         )
 
 
-def select_best_candidate(
-    candidates: List[GraphWalkCandidate],
-) -> Optional[GraphWalkCandidate]:
-    """Pick the canonical winner from a candidate list.
-
-    Returns the candidate with the lowest `comparison_key()` per the
-    design's tile_count -> walk_length_cm -> candidate_rank -> end_a
-    dead-heat order. `None` when the list is empty.
-    """
-
-    if not candidates:
-        return None
-    return min(candidates, key=lambda c: c.comparison_key())
-
-
 @dataclass
 class PathPrepareResult:
     """Result of preparing a path for train assignment."""

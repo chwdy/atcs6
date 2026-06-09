@@ -632,24 +632,6 @@ class RailwayPathfinder:
                     )
         return self._deduplicate_walks(raw_walks)
 
-    def _bfs_walks(
-        self,
-        start_pos: Tuple[int, int],
-        start_exit: str,
-        start_block_id: str,
-        end_block_id: str,
-    ) -> List[PathSegment]:
-        """Thin shim kept for compatibility.  Delegates to the generalized
-        BFS helper with topology-only mode (switch state ignored)."""
-        return self._bfs_walks_with_switch_mode(
-            start_pos,
-            start_exit,
-            start_block_id,
-            end_block_id,
-            use_switch_state=False,
-            exclude_resources=set(),
-        )
-
     def _bfs_walks_with_switch_mode(
         self,
         start_pos: Tuple[int, int],
@@ -662,9 +644,8 @@ class RailwayPathfinder:
         """BFS through the network from one start (position, exit) pair.
 
         Generalised form that supports switch-state-aware traversal and
-        resource exclusion.  ``_bfs_walks`` delegates here with
-        ``use_switch_state=False`` and an empty exclusion set to preserve
-        the original topology-only behaviour.
+        resource exclusion.  Pass ``use_switch_state=False`` with an empty
+        exclusion set for plain topology-only traversal.
 
         Args:
             start_pos: Starting tile coordinate.

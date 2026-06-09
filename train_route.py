@@ -101,15 +101,6 @@ def _coerce_task_location(value: Any) -> TaskLocation:
     )
 
 
-def task_location_id(loc: TaskLocation) -> str:
-    """Return the underlying id from a TaskLocation variant."""
-    if isinstance(loc, BlockTarget):
-        return loc.block_id
-    if isinstance(loc, PlatformTarget):
-        return loc.platform_id
-    return loc.station_id
-
-
 def task_location_to_dict(loc: TaskLocation) -> Dict[str, str]:
     """Serialize a TaskLocation to its canonical wire shape."""
     if isinstance(loc, BlockTarget):

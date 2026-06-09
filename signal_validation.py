@@ -72,15 +72,6 @@ DIRECTION_VECTORS: Dict[str, Tuple[int, int]] = {
 }
 
 
-# Opposite directions for determining which way trains approach a signal
-OPPOSITE_DIRECTION: Dict[str, str] = {
-    'N': 'S',
-    'S': 'N',
-    'E': 'W',
-    'W': 'E',
-}
-
-
 def can_place_signal(track_bits: int) -> bool:
     """
     Check if a signal can be placed on a track with the given bits.
@@ -138,41 +129,6 @@ def get_direction_vector(direction: str) -> Optional[Tuple[int, int]]:
         Tuple of (dx, dy) or None if invalid direction
     """
     return DIRECTION_VECTORS.get(direction.upper())
-
-
-def get_opposite_direction(direction: str) -> Optional[str]:
-    """
-    Get the opposite direction.
-
-    Args:
-        direction: The direction string
-
-    Returns:
-        The opposite direction string or None if invalid
-    """
-    return OPPOSITE_DIRECTION.get(direction.upper())
-
-
-def get_max_signals_for_track(track_bits: int) -> int:
-    """
-    Get the maximum number of signals allowed on a track type.
-
-    - Diagonal tracks (NE=4, NW=8, SE=16, SW=32): 1 signal (center position only)
-    - Straight tracks (NS=1, EW=2): 2 signals (two positions at each end)
-
-    Args:
-        track_bits: The track configuration bits
-
-    Returns:
-        Maximum number of signals allowed (0 if signals not allowed)
-    """
-    if not can_place_signal(track_bits):
-        return 0
-    # Diagonal tracks have single center position
-    if track_bits in (4, 8, 16, 32):
-        return 1
-    # Straight tracks have two positions
-    return 2
 
 
 def validate_signal_placement(track_bits: int, detection_direction: str) -> Tuple[bool, Optional[str]]:
