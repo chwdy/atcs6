@@ -274,7 +274,7 @@ class TestSwitchService:
         """Enabling `disabled` on an occupied switch is rejected (HTTP 409)."""
         state = state_with_switch_track
         switch = switch_service.create_switch_at_track(state, 5, 0, data={})
-        switch.occupied_by = "TRAIN_A"
+        switch.add_route_occupant(frozenset({"N", "S"}), "TRAIN_A")
         with pytest.raises(ConflictError):
             switch_service.update_switch(state, "SW_5_0", data={"disabled": True})
         assert switch.disabled is False  # rejected, not applied

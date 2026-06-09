@@ -144,14 +144,6 @@ class Switch(TrackResource):
     position: SwitchState = SwitchState.MAIN
     """Authoritative physical alignment of the switch (MAIN=0, DIVERGE=1)."""
 
-    occupied_by: Optional[str] = None
-    """Legacy single-train occupancy field; equals any train currently in
-    ``route_owners`` (or None if empty). Maintained by
-    ``add_route_occupant`` / ``remove_route_occupant`` for diagnostic /
-    legacy reads. New consumers should query ``route_owners`` directly so
-    they can distinguish two trains co-occupying non-conflicting routes
-    (e.g. NW and SE on a scissors crossover in DIVERGE state)."""
-
     route_owners: Dict[FrozenSet[str], str] = field(default_factory=dict)
     """Route-keyed physical occupancy: maps each route currently in use
     (frozenset of two edges, e.g. ``frozenset({"N","W"})``) to the
@@ -280,15 +272,10 @@ class Switch(TrackResource):
         switch tile. Returns True on success; False if another train holds
         a conflicting route (caller treats this as the fatal
         `SWITCH_OCCUPIED_BY_OTHER_TRAIN` conflict per design_new.md:471).
-
-        Also mirrors the new owner into the legacy ``occupied_by`` field
-        for diagnostic / legacy reads.
         """
         if self.has_conflicting_route(route, train_id=train_id):
             return False
         self.route_owners[route] = train_id
-        # Legacy mirror: occupied_by reflects any current occupant.
-        self.occupied_by = train_id
         return True
 
     def remove_route_occupant(
@@ -296,20 +283,24 @@ class Switch(TrackResource):
     ) -> bool:
         """Clear a single route entry owned by ``train_id``. Returns True
         if the entry existed and was owned by ``train_id``; False
-        otherwise. Updates the legacy ``occupied_by`` mirror to reflect
-        any remaining occupant.
+        otherwise.
         """
         existing_train = self.route_owners.get(route)
         if existing_train is None or existing_train != train_id:
             return False
         del self.route_owners[route]
-        # Legacy mirror: occupied_by reflects any remaining occupant
-        # (any one is fine — the field is diagnostic, not authoritative).
-        if self.route_owners:
-            self.occupied_by = next(iter(self.route_owners.values()))
-        else:
-            self.occupied_by = None
         return True
+
+    @property
+    def occupied_by(self) -> Optional[str]:
+        """Any train currently occupying this switch via ``route_owners``,
+        or ``None`` when unoccupied. Derived, not stored: for the
+        single-owner physical-occupancy contract it is exactly the lone
+        occupant; when two trains hold non-conflicting routes (e.g. NW and
+        SE on a scissors crossover) it returns one of them, so it stays a
+        diagnostic read — new consumers should query ``route_owners``.
+        """
+        return next(iter(self.route_owners.values()), None)
 
     # ========================================================================
     # MULTI-OWNER LOCK METHODS (v1)
