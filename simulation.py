@@ -181,55 +181,77 @@ class SimulationController:
         if self.failed_runtime:
             return
 
-        # Step 0 - Global block-current read + debounce + attribution
-        # (design_new.md "Power -> Block occupancy detection"). One world-wide
-        # current read per tick reflecting end-of-last-tick positions. Confirmed
-        # entered/vacated blocks are attributed to trains and stashed per
-        # controller; each train commits its slice in Phase 3 through the normal
-        # on_controller_progress flow, and the precise position is snapped to the
-        # block seam where the hardware leads it.
-        self._detect_block_occupancy()
+        # The per-train lookahead memo is a tick-local optimization: it is only
+        # ever read/written while this flag is True, so every between-tick /
+        # paused / UI caller of get_lookahead() recomputes live and can never
+        # see a stale payload. `bump_lookahead_world_version()` is called at each
+        # phase boundary below so a cached payload is never reused across a state
+        # change within the tick either. The try/finally guarantees the flag is
+        # cleared even if a phase raises (the runtime loop logs and continues).
+        net = self.network
+        net._lookahead_memo_active = True
+        net.bump_lookahead_world_version()
+        try:
+            # Step 0 - Global block-current read + debounce + attribution
+            # (design_new.md "Power -> Block occupancy detection"). One world-wide
+            # current read per tick reflecting end-of-last-tick positions. Confirmed
+            # entered/vacated blocks are attributed to trains and stashed per
+            # controller; each train commits its slice in Phase 3 through the normal
+            # on_controller_progress flow, and the precise position is snapped to the
+            # block seam where the hardware leads it.
+            self._detect_block_occupancy()
+            net.bump_lookahead_world_version()
 
-        # Refresh route-managed scheduling state (time advancement only).
-        self.route_executor.update(delta_seconds)
+            # Refresh route-managed scheduling state (time advancement only).
+            self.route_executor.update(delta_seconds)
+            net.bump_lookahead_world_version()
 
-        # Build candidate train list and let RouteExecutor decide ordering.
-        candidate_train_ids = list(self.network.trains.keys())
-        ordered_train_ids = self.route_executor.order_runnable_trains(
-            candidate_train_ids
-        )
+            # Build candidate train list and let RouteExecutor decide ordering.
+            candidate_train_ids = list(self.network.trains.keys())
+            ordered_train_ids = self.route_executor.order_runnable_trains(
+                candidate_train_ids
+            )
 
-        for train_id in ordered_train_ids:
-            train = self.network.trains.get(train_id)
-            if train is None:
-                continue
+            for train_id in ordered_train_ids:
+                train = self.network.trains.get(train_id)
+                if train is None:
+                    continue
 
-            # Phase 1 - Setup. Run before the per-train transaction so the
-            # planning kernel sits in the outer loop. Skip while the
-            # controller is OFF; the Phase-2 command drain must run first so
-            # that power_on_cmd() can be accepted.
-            controller = self._get_or_create_controller(train)
-            if controller.ops.state != TrainState.OFF:
-                self.route_executor.tick_train_phase1(train_id, delta_seconds)
+                # Phase 1 - Setup. Run before the per-train transaction so the
+                # planning kernel sits in the outer loop. Skip while the
+                # controller is OFF; the Phase-2 command drain must run first so
+                # that power_on_cmd() can be accepted.
+                controller = self._get_or_create_controller(train)
+                if controller.ops.state != TrainState.OFF:
+                    self.route_executor.tick_train_phase1(train_id, delta_seconds)
+                # Phase 1 may have reserved blocks, locked/aligned switches, or
+                # (re)built this train's path — invalidate before Phase 2 reads.
+                net.bump_lookahead_world_version()
 
-            self._update_train(train, delta_seconds)
+                self._update_train(train, delta_seconds)
+                # Phase 2/3 moved the head and may have completed/cancelled the
+                # path — invalidate before the next train (and next tick) reads.
+                net.bump_lookahead_world_version()
 
-        # After every train has emitted its held-block voltages, drop any block
-        # whose holder cleared this tick (tail vacate / reservation release) to
-        # 0V. BlockManager queued those blocks as their holders cleared and
-        # re-checks each is still unheld, so the energized set is exactly each
-        # train's occupied blocks plus its reserved-ahead corridor (design_new.md
-        # "Power", Block power-controller role). The all-blocks sweep is the
-        # fallback for a runtime with no BlockManager wired.
-        if self.block_manager is not None:
-            for block_id in self.block_manager.take_blocks_to_deenergize():
-                self.power_controller.set_block_voltage(block_id, 0.0)
-        else:
-            self.power_controller.deenergize_unheld_blocks()
+            # After every train has emitted its held-block voltages, drop any block
+            # whose holder cleared this tick (tail vacate / reservation release) to
+            # 0V. BlockManager queued those blocks as their holders cleared and
+            # re-checks each is still unheld, so the energized set is exactly each
+            # train's occupied blocks plus its reserved-ahead corridor (design_new.md
+            # "Power", Block power-controller role). The all-blocks sweep is the
+            # fallback for a runtime with no BlockManager wired.
+            if self.block_manager is not None:
+                for block_id in self.block_manager.take_blocks_to_deenergize():
+                    self.power_controller.set_block_voltage(block_id, 0.0)
+            else:
+                self.power_controller.deenergize_unheld_blocks()
 
-        # After all trains, refresh signals so they reflect every block state
-        # change (including path completions) committed during the tick.
-        self.network.update_signals_from_blocks()
+            # After all trains, refresh signals so they reflect every block state
+            # change (including path completions) committed during the tick.
+            self.network.update_signals_from_blocks()
+            net.bump_lookahead_world_version()
+        finally:
+            net._lookahead_memo_active = False
 
     def _detect_block_occupancy(self) -> None:
         """Step 0 of the tick: read every block's current detector, debounce,

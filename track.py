@@ -250,6 +250,18 @@ class TrackSegment:
     # `Path.resource_sequence[*].entry_edge` (per-resource frame data). Live
     # consumers read those instead of any tile-stored direction.
 
+    # === DERIVED-GEOMETRY CACHES (not part of the entity's identity) ===
+    # `edges` and `switch_points` are pure functions of `track_bits` (and, for
+    # `edges`, `dead_end_ports`). Both are read millions of times per simulation
+    # run while the geometry stays constant, so each property memoizes its result
+    # against the inputs it derives from and recomputes only when those inputs
+    # change. init=False / compare=False keeps them out of __init__, __eq__, and
+    # __repr__ so they never affect construction or equality.
+    _edges_cache: Any = field(default=None, init=False, repr=False, compare=False)
+    _switch_points_cache: Any = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
     def __post_init__(self):
         # Normalize dead-end inputs
         self.dead_end_ports = {
@@ -310,11 +322,25 @@ class TrackSegment:
     # ========== Computed properties ==========
     @property
     def edges(self) -> Set[str]:
-        """Edges that are connected by either track paths or dead-ends."""
-        connected = {
-            edge for edge, mask in EDGE_MASKS.items() if self.track_bits & mask
-        }
-        return connected | self.dead_end_ports
+        """Edges that are connected by either track paths or dead-ends.
+
+        Memoized against ``(track_bits, dead_end_ports)`` — the only inputs it
+        derives from — and recomputed only when either changes. Returns a
+        ``frozenset`` so the shared cached value can never be mutated in place
+        by a caller; all consumers use it read-only (membership / iteration /
+        len / set algebra).
+        """
+        bits = self.track_bits
+        deads = self.dead_end_ports
+        cache = self._edges_cache
+        if cache is not None and cache[0] == bits and cache[1] == deads:
+            return cache[2]
+        connected = {edge for edge, mask in EDGE_MASKS.items() if bits & mask}
+        result = frozenset(connected | deads)
+        # Snapshot dead_end_ports (set(...)) so a later in-place mutation of the
+        # live set is detected by the `cache[1] == deads` check above.
+        self._edges_cache = (bits, set(deads), result)
+        return result
 
     @property
     def num_paths(self) -> int:
@@ -323,16 +349,27 @@ class TrackSegment:
 
     @property
     def switch_points(self) -> Dict[str, List[str]]:
-        """Map of switch edges -> sorted exits (only edges with 2+ exits)."""
+        """Map of switch edges -> sorted exits (only edges with 2+ exits).
+
+        Memoized against ``track_bits`` — its only input — and recomputed only
+        when the bits change. Consumers use the result read-only (`is_switch`,
+        membership, iteration), so the shared cached dict is safe to return.
+        """
+        bits = self.track_bits
+        cache = self._switch_points_cache
+        if cache is not None and cache[0] == bits:
+            return cache[1]
         edge_exits: Dict[str, List[str]] = {e: [] for e in "NESW"}
         for bit in range(6):
-            if self.track_bits & (1 << bit):
+            if bits & (1 << bit):
                 e1, e2 = BIT_TO_EDGES[bit]
                 edge_exits[e1].append(e2)
                 edge_exits[e2].append(e1)
-        return {
+        result = {
             edge: sorted(exits) for edge, exits in edge_exits.items() if len(exits) >= 2
         }
+        self._switch_points_cache = (bits, result)
+        return result
 
     @property
     def is_switch(self) -> bool:

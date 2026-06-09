@@ -43,6 +43,23 @@ DEFAULT_TILE_LENGTH_CM = 50.0
 DEFAULT_TRAIN_LENGTH_CM = 50.0
 
 
+# Shared grid-adjacency edge offsets. Hoisted to module scope so the per-tile
+# graph helpers (get_connection_edges / get_neighbor / _get_neighbor_coords) do
+# not rebuild these constant dicts on every call — those helpers run millions of
+# times per simulation run. Coordinate convention:
+#   N (North) = Y+ ; E (East) = X+ ; S (South) = Y- ; W (West) = X-
+_EDGE_OFFSETS: Dict[str, Tuple[int, int]] = {
+    "N": (0, 1),
+    "E": (1, 0),
+    "S": (0, -1),
+    "W": (-1, 0),
+}
+_OFFSET_TO_EDGE: Dict[Tuple[int, int], str] = {
+    v: k for k, v in _EDGE_OFFSETS.items()
+}
+_OPPOSITE_EDGE: Dict[str, str] = {"N": "S", "S": "N", "E": "W", "W": "E"}
+
+
 def _bits_form_switch(bits: int) -> bool:
     """True if the bit pattern alone would make a tile a switch (any port
     with 2+ exits). Mirrors `TrackSegment.switch_points` without needing
@@ -73,6 +90,17 @@ class RailwayNetwork:
         self.stations = self.platforms
         self.station_groups: Dict[str, Station] = {}
         self.switches: Dict[str, "Switch"] = {}  # NEW: Switch entity management
+
+        # Lookahead memo coordination (perf; see TrainController.
+        # _compute_canonical_lookahead). `_lookahead_world_version` is bumped by
+        # the SimulationController at every tick phase boundary; the per-train
+        # lookahead memo keys on it, so a new tick — or any intra-tick mutation
+        # phase — invalidates every cached payload. `_lookahead_memo_active` is
+        # True ONLY while a tick is running: the memo is read/written only then,
+        # so every between-tick / paused / UI caller recomputes the lookahead
+        # live and can never observe a stale payload.
+        self._lookahead_world_version: int = 0
+        self._lookahead_memo_active: bool = False
 
         # The one speed-profile store for the whole runtime. TrainPhysics /
         # TrainController._get_speed_profile read it to drive trains, and the
@@ -275,6 +303,14 @@ class RailwayNetwork:
         # Propagate to this tile and neighbors
         self.propagate_from_tile(track.x, track.y)
 
+    def bump_lookahead_world_version(self) -> None:
+        """Invalidate every per-train lookahead memo (see ``__init__``).
+
+        Called by the SimulationController at each tick phase boundary so a
+        cached lookahead is never reused across a state change.
+        """
+        self._lookahead_world_version += 1
+
     def get_track(self, x: int, y: int) -> Optional[TrackSegment]:
         """Get track segment at specified position"""
         return self.tracks.get((x, y))
@@ -298,17 +334,10 @@ class RailwayNetwork:
             S (South) = Y- direction (0, -1)
             W (West)  = X- direction (-1, 0)
         """
-        offsets = {
-            "N": (0, 1),  # North neighbor is at y+1
-            "E": (1, 0),  # East neighbor is at x+1
-            "S": (0, -1),  # South neighbor is at y-1
-            "W": (-1, 0),  # West neighbor is at x-1
-        }
-
-        if edge not in offsets:
+        if edge not in _EDGE_OFFSETS:
             return None
 
-        dx, dy = offsets[edge]
+        dx, dy = _EDGE_OFFSETS[edge]
         neighbor_key = (x + dx, y + dy)
         grid_neighbor = self.tracks.get(neighbor_key)
         if grid_neighbor is not None:
@@ -331,17 +360,10 @@ class RailwayNetwork:
         Returns:
             (nx, ny) tuple if valid direction, None otherwise
         """
-        offsets = {
-            "N": (0, 1),
-            "E": (1, 0),
-            "S": (0, -1),
-            "W": (-1, 0),
-        }
-
-        if edge not in offsets:
+        if edge not in _EDGE_OFFSETS:
             return None
 
-        dx, dy = offsets[edge]
+        dx, dy = _EDGE_OFFSETS[edge]
         return (x + dx, y + dy)
 
     def get_connection_edges(
@@ -364,14 +386,6 @@ class RailwayNetwork:
             matching opposite edges in their ``track_bits``, or because a
             tunnel links them. Returns ``None`` otherwise.
         """
-        _EDGE_OFFSETS: Dict[str, Tuple[int, int]] = {
-            "N": (0, 1),
-            "E": (1, 0),
-            "S": (0, -1),
-            "W": (-1, 0),
-        }
-        _OPPOSITE: Dict[str, str] = {"N": "S", "S": "N", "E": "W", "W": "E"}
-
         ax, ay = tile_a
         bx, by = tile_b
         track_a = self.get_track(ax, ay)
@@ -381,10 +395,9 @@ class RailwayNetwork:
 
         # 1. Grid-adjacent path.
         dx, dy = bx - ax, by - ay
-        _OFFSET_TO_EDGE = {v: k for k, v in _EDGE_OFFSETS.items()}
         edge_a = _OFFSET_TO_EDGE.get((dx, dy))
         if edge_a is not None:
-            edge_b = _OPPOSITE[edge_a]
+            edge_b = _OPPOSITE_EDGE[edge_a]
             if edge_a in track_a.edges and edge_b in track_b.edges:
                 return (edge_a, edge_b)
 

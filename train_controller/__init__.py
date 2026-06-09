@@ -43,6 +43,7 @@ Design Principles:
 
 import logging
 import math
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, FrozenSet, List, Optional, Tuple
 
@@ -89,6 +90,13 @@ logger = logging.getLogger(__name__)
 
 OPPOSITE_EDGES = {"N": "S", "S": "N", "E": "W", "W": "E"}
 EDGE_TO_DIRECTION_NAME = {"N": "NORTH", "E": "EAST", "S": "SOUTH", "W": "WEST"}
+
+# When `ATCS_LOOKAHEAD_SHADOW=1`, every lookahead memo HIT recomputes the payload
+# fresh and asserts it is byte-identical to the cached one (raising on mismatch).
+# This is the correctness gate for the memo: run the demo + test suite with it on
+# to prove the memo key captures every input the computation reads. Off (the
+# default) in production — the recompute would defeat the memo's purpose.
+_LOOKAHEAD_SHADOW = os.environ.get("ATCS_LOOKAHEAD_SHADOW") == "1"
 
 
 # `TRACK_END_SAFETY_MARGIN_CM`, `PLATFORM_SAFETY_MARGIN_CM`, and
@@ -427,6 +435,15 @@ class TrainController:
         self.manual = ManualDriving(self)
         self.commands = OperatorCommands(self)
         self.ops = OperationalStateMachine(self)
+
+        # Per-tick memo for `_get_effective_path_tiles()` — see that method.
+        # Keyed on the active path's tile-list content so it self-invalidates
+        # when the dispatcher reroutes / extends / truncates the path.
+        self._effective_path_tiles_cache = None
+
+        # Tick-local memo for `_compute_canonical_lookahead()` — see that method
+        # and the wrapper just above its `_impl`. Stores `(key, payload)`.
+        self._lookahead_memo = None
 
     def _get_lookahead_builder(self):
         if self._lookahead_builder is None:
@@ -2226,9 +2243,25 @@ class TrainController:
         path_tiles = plan.get_path_tiles()
         if not path_tiles:
             return None
+
+        # The conversion is a pure function of (path_tiles, network), and the
+        # network geometry is fixed for the controller's lifetime, so the result
+        # only changes when the path's tile list changes. `_get_effective_path_
+        # tiles()` is called many times per tick (cab-direction checks, authority
+        # probes, path-projection), each re-walking the whole path through
+        # per-tile network lookups, so memoize on the tile-list *content*:
+        # `PathTileEntry` is a value dataclass, so the `==` compare is cheap and
+        # detects any reroute / extend / truncate the dispatcher applies in place
+        # (where the plan object identity would stay the same).
+        cache = self._effective_path_tiles_cache
+        if cache is not None and cache[0] == path_tiles:
+            return cache[1]
+
         from path_utils import convert_tiles_to_train_path
 
-        return convert_tiles_to_train_path(path_tiles, network=self.network)
+        result = convert_tiles_to_train_path(path_tiles, network=self.network)
+        self._effective_path_tiles_cache = (path_tiles, result)
+        return result
 
     def _has_active_route_context(self, train: "Train") -> bool:
         """Return True when the train still belongs to an active route."""
@@ -3571,7 +3604,79 @@ class TrainController:
         """
         return self._compute_canonical_lookahead()
 
+    def _lookahead_memo_key(self):
+        """Cheap, COMPLETE key for the lookahead memo, or None to skip caching.
+
+        Returns a tuple of every input the payload depends on that is not
+        already pinned by one `_lookahead_world_version`:
+          - the network world version — bumped at every tick phase boundary, so
+            within one version every network / path / config input the
+            computation reads (block state, signal state, switch position +
+            lock, active-path geometry, speed profile, max_speed,
+            safety margin) is constant;
+          - the controller-local inputs that can change between calls inside a
+            single version: head tile + head distance (physics moves the head),
+            active cab, and EB state.
+        `current_speed_kmh` is deliberately absent — the braking-curve envelope
+        is purely position-based and never reads it (verified in
+        `calculate_speed_curves`). Returns None when there is no network.
+        """
+        net = self.network
+        if net is None:
+            return None
+        return (
+            getattr(net, "_lookahead_world_version", 0),
+            self._get_head_tile(),
+            self._get_head_distance_cm(),
+            self.commands.cab,
+            self.eb.active,
+        )
+
     def _compute_canonical_lookahead(self) -> Dict[str, Any]:
+        """Canonical lookahead payload (design_new.md "Lookahead is a pure
+        derived value"). The computation itself lives in
+        `_compute_canonical_lookahead_impl()`; this wrapper adds a tick-local
+        memo.
+
+        The lookahead is recomputed many times per tick (cab-direction / ATC /
+        ATO probes) with identical inputs, so while a tick is running
+        (`network._lookahead_memo_active`) the payload is cached on the
+        controller keyed by `_lookahead_memo_key()` and reused for the duration
+        of one `(version, head, cab, eb)`.
+
+        This is a backend recompute-avoidance, never a frontend cache: the memo
+        is consulted ONLY mid-tick, so every between-tick / paused / UI / test
+        caller of `get_lookahead()` runs the live computation and can never
+        observe a stale payload. Within a tick the world version (bumped at each
+        phase boundary) plus the head/cab/eb key guarantees freshness;
+        `ATCS_LOOKAHEAD_SHADOW=1` proves it by recomputing on every memo hit and
+        asserting byte-equality with the cached payload.
+        """
+        net = self.network
+        if net is None or not getattr(net, "_lookahead_memo_active", False):
+            # Outside a tick: always recompute live; never serve/store a cache.
+            return self._compute_canonical_lookahead_impl()
+
+        key = self._lookahead_memo_key()
+        memo = self._lookahead_memo
+        if key is not None and memo is not None and memo[0] == key:
+            if not _LOOKAHEAD_SHADOW:
+                return memo[1]
+            fresh = self._compute_canonical_lookahead_impl()
+            if fresh != memo[1]:
+                raise AssertionError(
+                    f"Stale lookahead memo for train {self.train_id!r}: "
+                    f"cached payload != fresh recompute at key={key!r}. The "
+                    "memo key is missing an input the computation reads."
+                )
+            return fresh
+
+        result = self._compute_canonical_lookahead_impl()
+        if key is not None:
+            self._lookahead_memo = (key, result)
+        return result
+
+    def _compute_canonical_lookahead_impl(self) -> Dict[str, Any]:
         train = self._get_train()
         if not train or not self.network:
             # Per design_new.md line 1728: emit the distance-0 anchor with a
